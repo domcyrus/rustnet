@@ -1,0 +1,62 @@
+# English translations for RustNet
+
+# Basic UI elements
+rustnet: "RustNet"
+overview: "Overview"
+connections: "Connections"
+processes: "Processes"
+help: "Help"
+network: "Network"
+statistics: "Statistics" 
+top_processes: "Top Processes"
+connection_details: "Connection Details"
+process_details: "Process Details"
+traffic: "Traffic"
+
+# Properties
+interface: "Interface"
+protocol: "Protocol"
+local_address: "Local Address"
+remote_address: "Remote Address"
+state: "State"
+process: "Process"
+pid: "PID"
+age: "Age"
+country: "Country"
+city: "City"
+bytes_sent: "Bytes Sent"
+bytes_received: "Bytes Received"
+packets_sent: "Packets Sent"
+packets_received: "Packets Received"
+last_activity: "Last Activity"
+process_name: "Process Name"
+command_line: "Command Line"
+user: "User"
+cpu_usage: "CPU Usage"
+memory_usage: "Memory Usage"
+process_connections: "Process Connections"
+
+# Statistics
+tcp_connections: "TCP Connections"
+udp_connections: "UDP Connections"
+total_connections: "Total Connections"
+
+# Status messages
+no_connections: "No connections found"
+no_processes: "No processes found"
+process_not_found: "Process not found"
+no_pid_for_connection: "No process ID for this connection"
+press_for_process_details: "Press for process details"
+press_h_for_help: "Press 'h' for help"
+default: "default"
+language: "Language"
+
+# Help screen
+help_intro: "is a cross-platform network monitoring tool"
+help_quit: "Quit the application"
+help_refresh: "Refresh connections"
+help_navigate: "Navigate up/down"
+help_select: "Select connection/view details"
+help_back: "Go back to previous view"
+help_toggle_location: "Toggle IP location display"
+help_toggle_help: "Toggle help screen"

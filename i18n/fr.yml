@@ -1,0 +1,62 @@
+# Traductions françaises pour RustNet
+
+# Éléments de base de l'interface utilisateur
+rustnet: "RustNet"
+overview: "Vue d'ensemble"
+connections: "Connexions"
+processes: "Processus"
+help: "Aide"
+network: "Réseau"
+statistics: "Statistiques" 
+top_processes: "Processus principaux"
+connection_details: "Détails de connexion"
+process_details: "Détails du processus"
+traffic: "Trafic"
+
+# Propriétés
+interface: "Interface"
+protocol: "Protocole"
+local_address: "Adresse locale"
+remote_address: "Adresse distante"
+state: "État"
+process: "Processus"
+pid: "PID"
+age: "Âge"
+country: "Pays"
+city: "Ville"
+bytes_sent: "Octets envoyés"
+bytes_received: "Octets reçus"
+packets_sent: "Paquets envoyés"
+packets_received: "Paquets reçus"
+last_activity: "Dernière activité"
+process_name: "Nom du processus"
+command_line: "Ligne de commande"
+user: "Utilisateur"
+cpu_usage: "Utilisation CPU"
+memory_usage: "Utilisation mémoire"
+process_connections: "Connexions du processus"
+
+# Statistiques
+tcp_connections: "Connexions TCP"
+udp_connections: "Connexions UDP"
+total_connections: "Connexions totales"
+
+# Messages d'état
+no_connections: "Aucune connexion trouvée"
+no_processes: "Aucun processus trouvé"
+process_not_found: "Processus non trouvé"
+no_pid_for_connection: "Pas d'ID de processus pour cette connexion"
+press_for_process_details: "Appuyez pour les détails du processus"
+press_h_for_help: "Appuyez sur 'h' pour l'aide"
+default: "défaut"
+language: "Langue"
+
+# Écran d'aide
+help_intro: "est un outil de surveillance réseau multiplateforme"
+help_quit: "Quitter l'application"
+help_refresh: "Rafraîchir les connexions"
+help_navigate: "Naviguer haut/bas"
+help_select: "Sélectionner connexion/voir détails"
+help_back: "Retourner à la vue précédente"
+help_toggle_location: "Activer/désactiver l'affichage de localisation IP"
+help_toggle_help: "Activer/désactiver l'écran d'aide"

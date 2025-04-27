@@ -1,0 +1,21 @@
+[package]
+name = "rustnet"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+chrono = "0.4"
+clap = { version = "4.0", features = ["derive"] }
+crossterm = "0.27"
+log = "0.4"
+maxminddb = "0.24"
+pcap = "2.0"
+pnet_datalink = "0.35"
+ratatui = { version = "0.26", features = ["crossterm"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+simplelog = "0.12"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = "0.16"
