@@ -1,10 +1,10 @@
 use anyhow::{anyhow, Result};
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, info};
 use maxminddb::geoip2;
-use pcap::{Capture, Device};
+use pcap::{Capture, Device, Packet};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -17,7 +17,7 @@ use windows::*;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
-use macos::*;
+use macos::get_interface_addresses;
 
 /// Connection protocol
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +53,7 @@ pub enum ConnectionState {
     LastAck,
     Listen,
     Closing,
+    Reset, // Added Reset variant
     Unknown,
 }
 
@@ -70,6 +71,7 @@ impl std::fmt::Display for ConnectionState {
             ConnectionState::LastAck => write!(f, "LAST_ACK"),
             ConnectionState::Listen => write!(f, "LISTEN"),
             ConnectionState::Closing => write!(f, "CLOSING"),
+            ConnectionState::Reset => write!(f, "RESET"),
             ConnectionState::Unknown => write!(f, "UNKNOWN"),
         }
     }
@@ -135,6 +137,27 @@ impl Connection {
     pub fn is_active(&self) -> bool {
         self.idle_time() < Duration::from_secs(60)
     }
+
+    /// Update the connection with packet data
+    pub fn update_with_packet(&mut self, is_outgoing: bool, packet_size: usize) {
+        self.last_activity = SystemTime::now();
+
+        if is_outgoing {
+            self.packets_sent += 1;
+            self.bytes_sent += packet_size as u64;
+        } else {
+            self.packets_received += 1;
+            self.bytes_received += packet_size as u64;
+        }
+    }
+
+    /// Get connection key for HashMap lookups
+    pub fn get_key(&self) -> String {
+        format!(
+            "{:?}:{}:{:?}:{}",
+            self.protocol, self.local_addr, self.protocol, self.remote_addr
+        )
+    }
 }
 
 /// Process information
@@ -165,6 +188,8 @@ pub struct NetworkMonitor {
     capture: Option<Capture<pcap::Active>>,
     connections: HashMap<String, Connection>,
     geo_db: Option<maxminddb::Reader<Vec<u8>>>,
+    collect_process_info: bool,
+    last_packet_check: Instant,
 }
 
 impl NetworkMonitor {
@@ -178,27 +203,27 @@ impl NetworkMonitor {
                 .ok_or_else(|| anyhow!("Interface not found: {}", iface))?;
 
             info!("Opening capture on interface: {}", iface);
-            Some(
-                Capture::from_device(device)?
-                    .immediate_mode(true)
-                    .timeout(500)
-                    .snaplen(65535)
-                    .promisc(true)
-                    .open()?,
-            )
+            let cap = Capture::from_device(device)?
+                .immediate_mode(true)
+                .timeout(100)
+                .snaplen(65535)
+                .promisc(true)
+                .open()?;
+
+            Some(cap)
         } else {
             // Get default interface if none specified
             let device = Device::lookup()?.ok_or_else(|| anyhow!("No default device found"))?;
 
             info!("Opening capture on default interface: {}", device.name);
-            Some(
-                Capture::from_device(device)?
-                    .immediate_mode(true)
-                    .timeout(500)
-                    .snaplen(65535)
-                    .promisc(true)
-                    .open()?,
-            )
+            let cap = Capture::from_device(device)?
+                .immediate_mode(true)
+                .timeout(100)
+                .snaplen(65535)
+                .promisc(true)
+                .open()?;
+
+            Some(cap)
         };
 
         // Set BPF filter to capture all TCP and UDP traffic
@@ -214,7 +239,7 @@ impl NetworkMonitor {
             .ok()
             .map(|data| maxminddb::Reader::from_source(data).ok())
             .flatten();
-            
+
         if geo_db.is_some() {
             info!("Loaded MaxMind GeoIP database");
         } else {
@@ -226,7 +251,14 @@ impl NetworkMonitor {
             capture,
             connections: HashMap::new(),
             geo_db,
+            collect_process_info: false,
+            last_packet_check: Instant::now(),
         })
+    }
+
+    /// Set whether to collect process information for connections
+    pub fn set_collect_process_info(&mut self, collect: bool) {
+        self.collect_process_info = collect;
     }
 
     /// Get network device list
@@ -237,53 +269,265 @@ impl NetworkMonitor {
 
     /// Get active connections
     pub fn get_connections(&mut self) -> Result<Vec<Connection>> {
-        // Get connections from system
+        // Process packets from capture
+        self.process_packets()?;
+
+        // Get connections from system methods
         let mut connections = Vec::new();
 
         // Use platform-specific code to get connections
         self.get_platform_connections(&mut connections)?;
 
-        // Update with processes
-        for conn in &mut connections {
-            if conn.pid.is_none() {
-                // Use the platform-specific method
-                if let Some(process) = self.get_platform_process_for_connection(conn) {
-                    conn.pid = Some(process.pid);
-                    conn.process_name = Some(process.name.clone());
+        // Add connections from packet capture
+        for (_, conn) in &self.connections {
+            // Check if this connection exists in the list already
+            let exists = connections.iter().any(|c| {
+                c.protocol == conn.protocol
+                    && c.local_addr == conn.local_addr
+                    && c.remote_addr == conn.remote_addr
+            });
+
+            if !exists && conn.is_active() {
+                connections.push(conn.clone());
+            }
+        }
+
+        // Update with processes only if flag is set
+        if self.collect_process_info {
+            for conn in &mut connections {
+                if conn.pid.is_none() {
+                    // Use the platform-specific method
+                    if let Some(process) = self.get_platform_process_for_connection(conn) {
+                        conn.pid = Some(process.pid);
+                        conn.process_name = Some(process.name.clone());
+                    }
                 }
             }
         }
 
+        // Sort connections by last activity
+        connections.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+
         Ok(connections)
     }
 
-    /// Parse socket address from string
-    fn parse_addr(&self, addr_str: &str) -> Option<SocketAddr> {
-        // Handle different address formats
-        let addr_str = addr_str.trim_end_matches('.');
-
-        if addr_str == "*" || addr_str == "*:*" {
-            // Default to 0.0.0.0:0 for wildcard
-            return Some(SocketAddr::from(([0, 0, 0, 0], 0)));
+    /// Process packets from capture
+    fn process_packets(&mut self) -> Result<()> {
+        // Only check packets every 100ms to avoid too frequent checks
+        if self.last_packet_check.elapsed() < Duration::from_millis(100) {
+            return Ok(());
         }
+        self.last_packet_check = Instant::now();
 
-        // Try to parse directly
-        if let Ok(addr) = addr_str.parse::<SocketAddr>() {
-            return Some(addr);
-        }
+        // Define a helper function to process a single packet
+        // This avoids the borrowing issues
+        let process_single_packet =
+            |data: &[u8],
+             connections: &mut HashMap<String, Connection>,
+             interface: &Option<String>| {
+                // Check if it's an ethernet frame
+                if data.len() < 14 {
+                    return; // Too short for Ethernet
+                }
 
-        // Try to parse IPv4:port format
-        if let Some(colon_pos) = addr_str.rfind(':') {
-            let ip_part = &addr_str[..colon_pos];
-            let port_part = &addr_str[colon_pos + 1..];
+                // Skip Ethernet header (14 bytes) to get to IP header
+                let ip_data = &data[14..];
 
-            if let (Ok(ip), Ok(port)) = (ip_part.parse::<IpAddr>(), port_part.parse::<u16>()) {
-                return Some(SocketAddr::new(ip, port));
+                // Make sure we have enough data for an IP header
+                if ip_data.len() < 20 {
+                    return; // Too short for IP
+                }
+
+                // Check if it's IPv4
+                let version_ihl = ip_data[0];
+                let version = version_ihl >> 4;
+                if version != 4 {
+                    return; // Not IPv4
+                }
+
+                // Extract protocol (TCP=6, UDP=17)
+                let protocol = ip_data[9];
+
+                // Extract source and destination IP
+                let src_ip = IpAddr::from([ip_data[12], ip_data[13], ip_data[14], ip_data[15]]);
+                let dst_ip = IpAddr::from([ip_data[16], ip_data[17], ip_data[18], ip_data[19]]);
+
+                // Calculate IP header length
+                let ihl = version_ihl & 0x0F;
+                let ip_header_len = (ihl as usize) * 4;
+
+                // Skip to TCP/UDP header
+                let transport_data = &ip_data[ip_header_len..];
+                if transport_data.len() < 8 {
+                    return; // Too short for TCP/UDP
+                }
+
+                // Determine if packet is outgoing based on IP address
+                // For now using a simple heuristic - consider private IPs as local
+                let is_outgoing = match src_ip {
+                    IpAddr::V4(ipv4) => {
+                        let octets = ipv4.octets();
+                        // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8
+                        octets[0] == 10
+                            || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31)
+                            || (octets[0] == 192 && octets[1] == 168)
+                            || octets[0] == 127
+                    }
+                    IpAddr::V6(_) => false, // Simplification
+                };
+
+                match protocol {
+                    6 => {
+                        // TCP
+                        if transport_data.len() < 20 {
+                            return; // Too short for TCP
+                        }
+
+                        // Extract ports
+                        let src_port = ((transport_data[0] as u16) << 8) | transport_data[1] as u16;
+                        let dst_port = ((transport_data[2] as u16) << 8) | transport_data[3] as u16;
+
+                        // Extract TCP flags
+                        let flags = transport_data[13];
+
+                        // Determine connection state from flags
+                        let state = match flags {
+                            0x02 => ConnectionState::SynSent,     // SYN
+                            0x12 => ConnectionState::SynReceived, // SYN+ACK
+                            0x10 => ConnectionState::Established, // ACK
+                            0x01 => ConnectionState::FinWait1,    // FIN
+                            0x11 => ConnectionState::FinWait2,    // FIN+ACK
+                            0x04 => ConnectionState::Reset,       // RST
+                            0x14 => ConnectionState::Closing,     // RST+ACK
+                            _ => ConnectionState::Established,    // Default to established
+                        };
+
+                        // Determine local and remote addresses
+                        let (local_addr, remote_addr) = if is_outgoing {
+                            (
+                                SocketAddr::new(src_ip, src_port),
+                                SocketAddr::new(dst_ip, dst_port),
+                            )
+                        } else {
+                            (
+                                SocketAddr::new(dst_ip, dst_port),
+                                SocketAddr::new(src_ip, src_port),
+                            )
+                        };
+
+                        // Create or update connection
+                        let conn_key = format!(
+                            "{:?}:{}-{:?}:{}",
+                            Protocol::TCP,
+                            local_addr,
+                            Protocol::TCP,
+                            remote_addr
+                        );
+
+                        if let Some(conn) = connections.get_mut(&conn_key) {
+                            conn.last_activity = SystemTime::now();
+                            if is_outgoing {
+                                conn.packets_sent += 1;
+                                conn.bytes_sent += data.len() as u64;
+                            } else {
+                                conn.packets_received += 1;
+                                conn.bytes_received += data.len() as u64;
+                            }
+                            conn.state = state;
+                        } else {
+                            let mut conn =
+                                Connection::new(Protocol::TCP, local_addr, remote_addr, state);
+                            conn.last_activity = SystemTime::now();
+                            if is_outgoing {
+                                conn.packets_sent += 1;
+                                conn.bytes_sent += data.len() as u64;
+                            } else {
+                                conn.packets_received += 1;
+                                conn.bytes_received += data.len() as u64;
+                            }
+                            connections.insert(conn_key, conn);
+                        }
+                    }
+                    17 => {
+                        // UDP
+                        // Extract ports
+                        let src_port = ((transport_data[0] as u16) << 8) | transport_data[1] as u16;
+                        let dst_port = ((transport_data[2] as u16) << 8) | transport_data[3] as u16;
+
+                        // Determine local and remote addresses
+                        let (local_addr, remote_addr) = if is_outgoing {
+                            (
+                                SocketAddr::new(src_ip, src_port),
+                                SocketAddr::new(dst_ip, dst_port),
+                            )
+                        } else {
+                            (
+                                SocketAddr::new(dst_ip, dst_port),
+                                SocketAddr::new(src_ip, src_port),
+                            )
+                        };
+
+                        // Create or update connection
+                        let conn_key = format!(
+                            "{:?}:{}-{:?}:{}",
+                            Protocol::UDP,
+                            local_addr,
+                            Protocol::UDP,
+                            remote_addr
+                        );
+
+                        if let Some(conn) = connections.get_mut(&conn_key) {
+                            conn.last_activity = SystemTime::now();
+                            if is_outgoing {
+                                conn.packets_sent += 1;
+                                conn.bytes_sent += data.len() as u64;
+                            } else {
+                                conn.packets_received += 1;
+                                conn.bytes_received += data.len() as u64;
+                            }
+                        } else {
+                            let mut conn = Connection::new(
+                                Protocol::UDP,
+                                local_addr,
+                                remote_addr,
+                                ConnectionState::Unknown,
+                            );
+                            conn.last_activity = SystemTime::now();
+                            if is_outgoing {
+                                conn.packets_sent += 1;
+                                conn.bytes_sent += data.len() as u64;
+                            } else {
+                                conn.packets_received += 1;
+                                conn.bytes_received += data.len() as u64;
+                            }
+                            connections.insert(conn_key, conn);
+                        }
+                    }
+                    _ => {} // Ignore other protocols
+                }
+            };
+
+        // Get packets from the capture
+        if let Some(ref mut cap) = self.capture {
+            // Process up to 100 packets
+            for _ in 0..100 {
+                match cap.next_packet() {
+                    Ok(packet) => {
+                        // Use the local helper function to avoid borrowing issues
+                        process_single_packet(packet.data, &mut self.connections, &self.interface);
+                    }
+                    Err(_) => {
+                        break; // No more packets or error
+                    }
+                }
             }
         }
 
-        None
+        Ok(())
     }
+
+    /// We don't need this method anymore since packet processing is done inline
+    // fn process_packet(&mut self, packet: Packet) { ... }
 
     /// Get platform-specific process for a connection
     pub fn get_platform_process_for_connection(&self, connection: &Connection) -> Option<Process> {
@@ -315,23 +559,67 @@ impl NetworkMonitor {
         }
     }
 
+    /// Get platform-specific connections
+    fn get_platform_connections(&mut self, connections: &mut Vec<Connection>) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            // Use Linux-specific implementation
+            linux::get_platform_connections(connections, &self.interface)?;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // Use macOS-specific implementation
+            macos::get_platform_connections(connections, &self.interface)?;
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // Use Windows-specific implementation
+            windows::get_platform_connections(connections, &self.interface)?;
+        }
+
+        Ok(())
+    }
+
+    /// Get IP addresses associated with an interface
+    fn get_interface_addresses(&self, interface: &str) -> Result<Vec<IpAddr>> {
+        #[cfg(target_os = "linux")]
+        {
+            // Linux implementation
+            unimplemented!()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // Use macOS implementation
+            macos::get_interface_addresses(interface)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            // Windows implementation
+            unimplemented!()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            Ok(Vec::new())
+        }
+    }
+
     /// Get location information for an IP address
     pub fn get_ip_location(&self, ip: IpAddr) -> Option<IpLocation> {
         if let Some(ref reader) = self.geo_db {
             // Access fields directly on the lookup result (geoip2::City)
             if let Ok(lookup_result) = reader.lookup::<geoip2::City>(ip) {
-                let country = lookup_result.country.as_ref().and_then(|c| {
-                    let code = c.iso_code.map(String::from);
-                    let name = c
-                        .names
-                        .as_ref()
-                        .and_then(|n| n.get("en").map(|s| s.to_string()));
-                    if code.is_some() || name.is_some() {
-                        Some((code, name))
-                    } else {
-                        None
-                    }
-                });
+                let country_code = lookup_result
+                    .country
+                    .as_ref()
+                    .and_then(|c| c.iso_code)
+                    .map(|s| s.to_string());
+
+                let country_name = lookup_result
+                    .country
+                    .as_ref()
+                    .and_then(|c| c.names.as_ref())
+                    .and_then(|n| n.get("en"))
+                    .map(|s| s.to_string());
 
                 let city_name = lookup_result
                     .city
@@ -340,19 +628,45 @@ impl NetworkMonitor {
                     .and_then(|n| n.get("en"))
                     .map(|s| s.to_string());
 
-                let location = lookup_result
-                    .location
-                    .as_ref()
-                    .map(|l| (l.latitude, l.longitude));
+                let latitude = lookup_result.location.as_ref().and_then(|l| l.latitude);
+
+                let longitude = lookup_result.location.as_ref().and_then(|l| l.longitude);
 
                 return Some(IpLocation {
-                    country_code: country.as_ref().and_then(|(code, _)| code.clone()),
-                    country_name: country.as_ref().and_then(|(_, name)| name.clone()),
+                    country_code,
+                    country_name,
                     city_name,
-                    latitude: location.and_then(|(lat, _)| lat),
-                    longitude: location.and_then(|(_, lon)| lon),
+                    latitude,
+                    longitude,
                     isp: None, // Not available in GeoLite2-City
                 });
+            }
+        }
+
+        None
+    }
+
+    /// Parse an address string into a SocketAddr
+    fn parse_addr(&self, addr_str: &str) -> Option<std::net::SocketAddr> {
+        // Handle IPv6 address format [addr]:port
+        let addr_str = addr_str.trim();
+
+        // Direct parse attempt
+        if let Ok(addr) = addr_str.parse() {
+            return Some(addr);
+        }
+
+        // Handle common formats
+        if addr_str.contains(':') {
+            // Try parsing as "addr:port"
+            return addr_str.parse().ok();
+        } else {
+            // If only port is provided, assume 127.0.0.1:port
+            if let Ok(port) = addr_str.parse::<u16>() {
+                return Some(std::net::SocketAddr::new(
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                    port,
+                ));
             }
         }
 

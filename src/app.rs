@@ -70,16 +70,11 @@ impl App {
         let interface = self.config.interface.clone();
         let mut monitor = NetworkMonitor::new(interface)?;
 
-        // Get initial connections
-        self.connections = monitor.get_connections()?;
+        // Disable process information collection by default for better performance
+        monitor.set_collect_process_info(false);
 
-        // Get processes for connections
-        for conn in &self.connections {
-            // Use the platform-specific method
-            if let Some(process) = monitor.get_platform_process_for_connection(conn) {
-                self.processes.insert(process.pid, process);
-            }
-        }
+        // Get initial connections without process info
+        self.connections = monitor.get_connections()?;
 
         // Start monitoring in background thread
         let monitor = Arc::new(Mutex::new(monitor));
@@ -203,14 +198,6 @@ impl App {
         if let Some(monitor_arc) = &self.network_monitor {
             let mut monitor = monitor_arc.lock().unwrap(); // Lock the mutex
             self.connections = monitor.get_connections()?;
-
-            // Update processes
-            for conn in &self.connections {
-                // Use the platform-specific method
-                if let Some(process) = monitor.get_platform_process_for_connection(conn) {
-                    self.processes.insert(process.pid, process);
-                }
-            }
         }
 
         Ok(())
@@ -221,17 +208,48 @@ impl App {
         if let Some(monitor_arc) = &self.network_monitor {
             let mut monitor = monitor_arc.lock().unwrap(); // Lock the mutex
             self.connections = monitor.get_connections()?;
-
-            // Clear and update processes
-            self.processes.clear();
-            for conn in &self.connections {
-                // Use the platform-specific method
-                if let Some(process) = monitor.get_platform_process_for_connection(conn) {
-                    self.processes.insert(process.pid, process);
-                }
-            }
         }
 
         Ok(())
+    }
+
+    /// Get process info for selected connection
+    pub fn get_process_for_selected_connection(&mut self) -> Option<Process> {
+        if self.connections.is_empty() || self.selected_connection_idx >= self.connections.len() {
+            return None;
+        }
+
+        // Get the selected connection
+        let connection = &mut self.connections[self.selected_connection_idx].clone();
+
+        // Check if we already have process info in our local cache
+        if let Some(pid) = connection.pid {
+            if let Some(process) = self.processes.get(&pid) {
+                return Some(process.clone());
+            }
+        }
+
+        // Otherwise, look it up on demand
+        if let Some(monitor_arc) = &self.network_monitor {
+            let monitor = monitor_arc.lock().unwrap();
+
+            // Look up the process info for this specific connection
+            if let Some(process) = monitor.get_platform_process_for_connection(connection) {
+                // Update our local cache
+                let pid = process.pid;
+                self.processes.insert(pid, process.clone());
+
+                // Update the connection in our list
+                if self.selected_connection_idx < self.connections.len() {
+                    self.connections[self.selected_connection_idx].pid = Some(pid);
+                    self.connections[self.selected_connection_idx].process_name =
+                        Some(self.processes[&pid].name.clone());
+                }
+
+                return Some(process);
+            }
+        }
+
+        None
     }
 }
