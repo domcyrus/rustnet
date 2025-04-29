@@ -144,19 +144,28 @@ fn draw_connections_list(f: &mut Frame, app: &App, area: Rect) {
             .pid
             .map(|p| p.to_string())
             .unwrap_or_else(|| "-".to_string());
+
         let process_str = conn.process_name.clone().unwrap_or_else(|| "-".to_string());
         let process_display = format!("{} ({})", process_str, pid_str);
 
-        let remote_display = conn.remote_addr.to_string();
+        // Format addresses with hostnames if enabled - no mutable borrowing
+        let local_display = app.format_socket_addr(conn.local_addr);
+        let remote_display = app.format_socket_addr(conn.remote_addr);
 
         let cells = [
             Cell::from(conn.protocol.to_string()),
-            Cell::from(conn.local_addr.to_string()),
+            Cell::from(local_display),
             Cell::from(remote_display),
             Cell::from(conn.state.to_string()),
             Cell::from(process_display),
         ];
         rows.push(Row::new(cells));
+    }
+
+    // Create table state with current selection
+    let mut state = ratatui::widgets::TableState::default();
+    if !app.connections.is_empty() {
+        state.select(Some(app.selected_connection_idx));
     }
 
     let connections = Table::new(rows, &widths)
@@ -166,10 +175,10 @@ fn draw_connections_list(f: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .title(app.i18n.get("connections")),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED)) // Changed from row_highlight_style to highlight_style
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
 
-    f.render_widget(connections, area);
+    f.render_stateful_widget(connections, area, &mut state);
 }
 
 /// Draw side panel with stats
@@ -309,12 +318,16 @@ fn draw_connection_details(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
         Span::raw(conn.protocol.to_string()),
     ]));
 
+    // Format addresses with hostnames if enabled
+    let local_display = app.format_socket_addr(conn.local_addr);
+    let remote_display = app.format_socket_addr(conn.remote_addr);
+
     details_text.push(Line::from(vec![
         Span::styled(
             format!("{}: ", app.i18n.get("local_address")),
             Style::default().fg(Color::Yellow),
         ),
-        Span::raw(conn.local_addr.to_string()),
+        Span::raw(local_display),
     ]));
 
     details_text.push(Line::from(vec![
@@ -322,7 +335,7 @@ fn draw_connection_details(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
             format!("{}: ", app.i18n.get("remote_address")),
             Style::default().fg(Color::Yellow),
         ),
-        Span::raw(conn.remote_addr.to_string()),
+        Span::raw(remote_display),
     ]));
 
     if app.show_locations && !conn.remote_addr.ip().is_unspecified() {
@@ -545,6 +558,10 @@ fn draw_process_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> 
 
         let mut items = Vec::new();
         for conn in &connections {
+            // Format addresses with hostnames if enabled
+            let local_display = app.format_socket_addr(conn.local_addr);
+            let remote_display = app.format_socket_addr(conn.remote_addr);
+
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("{}: ", conn.protocol),
@@ -552,7 +569,7 @@ fn draw_process_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> 
                 ),
                 Span::raw(format!(
                     "{} -> {} ({})",
-                    conn.local_addr, conn.remote_addr, conn.state
+                    local_display, remote_display, conn.state
                 )),
             ])));
         }
@@ -618,6 +635,10 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
         Line::from(vec![
             Span::styled("l ", Style::default().fg(Color::Yellow)),
             Span::raw(app.i18n.get("help_toggle_location")),
+        ]),
+        Line::from(vec![
+            Span::styled("d ", Style::default().fg(Color::Yellow)),
+            Span::raw(app.i18n.get("help_toggle_dns")),
         ]),
         Line::from(vec![
             Span::styled("h ", Style::default().fg(Color::Yellow)),

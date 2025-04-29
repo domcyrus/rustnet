@@ -1,6 +1,8 @@
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use dns_lookup::lookup_addr;
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -39,12 +41,24 @@ pub struct App {
     pub connections: Vec<Connection>,
     /// Process map (pid to process)
     pub processes: HashMap<u32, Process>,
+    /// Currently selected connection
+    pub selected_connection: Option<Connection>,
     /// Currently selected connection index
     pub selected_connection_idx: usize,
     /// Currently selected process index
     pub selected_process_idx: usize,
     /// Show IP locations (requires MaxMind DB)
     pub show_locations: bool,
+    /// Show DNS hostnames instead of IP addresses
+    pub show_hostnames: bool,
+    /// Last connection sort time
+    last_sort_time: std::time::Instant,
+    /// Connection order map (for stable ordering)
+    connection_order: HashMap<String, usize>,
+    /// Next order index for new connections
+    next_order_index: usize,
+    /// DNS cache to avoid repeated lookups
+    dns_cache: HashMap<IpAddr, String>,
 }
 
 impl App {
@@ -58,9 +72,15 @@ impl App {
             network_monitor: None,
             connections: Vec::new(),
             processes: HashMap::new(),
+            selected_connection: None,
             selected_connection_idx: 0,
             selected_process_idx: 0,
             show_locations: true,
+            show_hostnames: false,
+            last_sort_time: std::time::Instant::now(),
+            connection_order: HashMap::new(),
+            next_order_index: 0,
+            dns_cache: HashMap::new(),
         })
     }
 
@@ -121,15 +141,27 @@ impl App {
                 Some(Action::Quit)
             }
             KeyCode::Char('r') => Some(Action::Refresh),
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 if !self.connections.is_empty() {
+                    self.selected_connection = Some(
+                        self.connections
+                            [(self.selected_connection_idx + 1) % self.connections.len()]
+                        .clone(),
+                    );
                     self.selected_connection_idx =
                         (self.selected_connection_idx + 1) % self.connections.len();
                 }
                 None
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            KeyCode::Up => {
                 if !self.connections.is_empty() {
+                    self.selected_connection = Some(
+                        self.connections[self
+                            .selected_connection_idx
+                            .checked_sub(1)
+                            .unwrap_or(self.connections.len() - 1)]
+                        .clone(),
+                    );
                     self.selected_connection_idx = self
                         .selected_connection_idx
                         .checked_sub(1)
@@ -149,6 +181,14 @@ impl App {
             }
             KeyCode::Char('l') => {
                 self.show_locations = !self.show_locations;
+                None
+            }
+            KeyCode::Char('d') => {
+                self.show_hostnames = !self.show_hostnames;
+                // Clear DNS cache when toggling off to ensure fresh lookups when toggled on again
+                if !self.show_hostnames {
+                    self.dns_cache.clear();
+                }
                 None
             }
             _ => None,
@@ -194,10 +234,63 @@ impl App {
 
     /// Update application state on tick
     pub fn on_tick(&mut self) -> Result<()> {
+        // Store currently selected connection (if any)
+        let selected = self.selected_connection.clone();
+
         // Update connections from network monitor if available
         if let Some(monitor_arc) = &self.network_monitor {
             let mut monitor = monitor_arc.lock().unwrap(); // Lock the mutex
-            self.connections = monitor.get_connections()?;
+            let mut new_connections = monitor.get_connections()?;
+            drop(monitor); // Release the mutex lock before self-mutation
+
+            // Extract keys for sorting
+            let mut keys_to_process = Vec::new();
+            for conn in &new_connections {
+                let key = self.get_connection_key(conn);
+                keys_to_process.push(key);
+            }
+
+            // Update connection order
+            for key in keys_to_process {
+                if !self.connection_order.contains_key(&key) {
+                    self.connection_order.insert(key, self.next_order_index);
+                    self.next_order_index += 1;
+                }
+            }
+
+            // Sort connections by their assigned order
+            new_connections.sort_by(|a, b| {
+                let key_a = self.get_connection_key(a);
+                let key_b = self.get_connection_key(b);
+
+                let order_a = self.connection_order.get(&key_a).unwrap_or(&usize::MAX);
+                let order_b = self.connection_order.get(&key_b).unwrap_or(&usize::MAX);
+
+                order_a.cmp(order_b)
+            });
+
+            // Update connections with the sorted list
+            self.connections = new_connections;
+
+            // Restore selected connection position if possible
+            if let Some(ref conn) = selected {
+                if let Some(idx) = self.find_connection_index(conn) {
+                    self.selected_connection_idx = idx;
+                    self.selected_connection = Some(self.connections[idx].clone());
+                } else if !self.connections.is_empty() {
+                    // If previously selected connection is gone, select first one
+                    self.selected_connection_idx = 0;
+                    self.selected_connection = Some(self.connections[0].clone());
+                } else {
+                    // If no connections left, clear selection
+                    self.selected_connection_idx = 0;
+                    self.selected_connection = None;
+                }
+            } else if !self.connections.is_empty() && self.selected_connection.is_none() {
+                // If no previous selection but we have connections, select the first one
+                self.selected_connection_idx = 0;
+                self.selected_connection = Some(self.connections[0].clone());
+            }
         }
 
         Ok(())
@@ -205,9 +298,58 @@ impl App {
 
     /// Refresh application data
     pub fn refresh(&mut self) -> Result<()> {
+        // Store currently selected connection (if any)
+        let selected = self.selected_connection.clone();
+
         if let Some(monitor_arc) = &self.network_monitor {
             let mut monitor = monitor_arc.lock().unwrap(); // Lock the mutex
-            self.connections = monitor.get_connections()?;
+            let mut new_connections = monitor.get_connections()?;
+            drop(monitor); // Release the mutex lock before self-mutation
+
+            // Extract keys for sorting
+            let mut keys_to_process = Vec::new();
+            for conn in &new_connections {
+                let key = self.get_connection_key(conn);
+                keys_to_process.push(key);
+            }
+
+            // Update connection order
+            for key in keys_to_process {
+                if !self.connection_order.contains_key(&key) {
+                    self.connection_order.insert(key, self.next_order_index);
+                    self.next_order_index += 1;
+                }
+            }
+
+            // Sort connections by their assigned order
+            new_connections.sort_by(|a, b| {
+                let key_a = self.get_connection_key(a);
+                let key_b = self.get_connection_key(b);
+
+                let order_a = self.connection_order.get(&key_a).unwrap_or(&usize::MAX);
+                let order_b = self.connection_order.get(&key_b).unwrap_or(&usize::MAX);
+
+                order_a.cmp(order_b)
+            });
+
+            // Update connections with the sorted list
+            self.connections = new_connections;
+
+            // Restore selected connection position if possible
+            if let Some(ref conn) = selected {
+                if let Some(idx) = self.find_connection_index(conn) {
+                    self.selected_connection_idx = idx;
+                    self.selected_connection = Some(self.connections[idx].clone());
+                } else if !self.connections.is_empty() {
+                    // If previously selected connection is gone, select first one
+                    self.selected_connection_idx = 0;
+                    self.selected_connection = Some(self.connections[0].clone());
+                } else {
+                    // If no connections left, clear selection
+                    self.selected_connection_idx = 0;
+                    self.selected_connection = None;
+                }
+            }
         }
 
         Ok(())
@@ -251,5 +393,118 @@ impl App {
         }
 
         None
+    }
+
+    /// Generate a unique key for a connection
+    fn get_connection_key(&self, conn: &Connection) -> String {
+        format!(
+            "{:?}-{}-{}-{:?}",
+            conn.protocol, conn.local_addr, conn.remote_addr, conn.state
+        )
+    }
+
+    /// Assign stable order indices to connections
+    fn update_connection_order(&mut self, connections: &mut Vec<Connection>) {
+        // This ensures that new connections get added at the end and existing connections maintain their order
+        for conn in connections.iter() {
+            let key = self.get_connection_key(conn);
+            if !self.connection_order.contains_key(&key) {
+                self.connection_order.insert(key, self.next_order_index);
+                self.next_order_index += 1;
+            }
+        }
+    }
+
+    /// Sort connections in a stable way
+    fn sort_connections_stable(&mut self, connections: &mut Vec<Connection>) {
+        // Update order indices for any new connections
+        self.update_connection_order(connections);
+
+        // Sort connections by their assigned order
+        connections.sort_by(|a, b| {
+            let key_a = self.get_connection_key(a);
+            let key_b = self.get_connection_key(b);
+
+            let order_a = self.connection_order.get(&key_a).unwrap_or(&usize::MAX);
+            let order_b = self.connection_order.get(&key_b).unwrap_or(&usize::MAX);
+
+            order_a.cmp(order_b)
+        });
+    }
+
+    /// Find the index of a connection that matches the selected connection
+    fn find_connection_index(&self, selected: &Connection) -> Option<usize> {
+        let selected_key = self.get_connection_key(selected);
+
+        for (i, conn) in self.connections.iter().enumerate() {
+            let key = self.get_connection_key(conn);
+            if key == selected_key {
+                return Some(i);
+            }
+        }
+
+        None
+    }
+
+    /// Resolve an IP address to a hostname with caching
+    pub fn resolve_hostname(&mut self, ip: IpAddr) -> String {
+        // Check if the IP is in the cache
+        if let Some(hostname) = self.dns_cache.get(&ip) {
+            return hostname.clone();
+        }
+
+        // Special handling for common IP addresses
+        if ip.is_loopback() {
+            let hostname = "localhost".to_string();
+            self.dns_cache.insert(ip, hostname.clone());
+            return hostname;
+        }
+
+        if ip.is_unspecified() {
+            let hostname = "*".to_string();
+            self.dns_cache.insert(ip, hostname.clone());
+            return hostname;
+        }
+
+        // Perform DNS resolution using the dns-lookup crate
+        match lookup_addr(&ip) {
+            Ok(hostname) => {
+                // Cache the result
+                let hostname = hostname.trim_end_matches('.').to_string();
+                self.dns_cache.insert(ip, hostname.clone());
+                hostname
+            }
+            Err(_) => {
+                // If resolution fails, return the IP as a string
+                let ip_str = ip.to_string();
+                self.dns_cache.insert(ip, ip_str.clone());
+                ip_str
+            }
+        }
+    }
+
+    /// Format a socket address with hostname if enabled (without mutating self)
+    pub fn format_socket_addr(&self, addr: std::net::SocketAddr) -> String {
+        if self.show_hostnames {
+            let ip = addr.ip();
+            // Check if it's in the cache
+            if let Some(hostname) = self.dns_cache.get(&ip) {
+                return format!("{}:{}", hostname, addr.port());
+            }
+
+            // Special handling without cache insertion
+            if ip.is_loopback() {
+                return format!("localhost:{}", addr.port());
+            }
+
+            if ip.is_unspecified() {
+                return format!("*:{}", addr.port());
+            }
+
+            // Just return the address as string if not in cache
+            addr.to_string()
+        } else {
+            addr.to_string()
+        }
     }
 }

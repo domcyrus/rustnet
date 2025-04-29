@@ -8,6 +8,7 @@ anyhow = "1.0"
 chrono = "0.4"
 clap = { version = "4.0", features = ["derive"] }
 crossterm = "0.27"
+dns-lookup = "2.0.4"
 log = "0.4"
 maxminddb = "0.24"
 pcap = "2.0"

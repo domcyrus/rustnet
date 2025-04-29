@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use log::{debug, error, info};
 use maxminddb::geoip2;
-use pcap::{Capture, Device, Packet};
+use pcap::{Capture, Device};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant, SystemTime};
@@ -16,8 +16,6 @@ use windows::*;
 
 #[cfg(target_os = "macos")]
 mod macos;
-#[cfg(target_os = "macos")]
-use macos::get_interface_addresses;
 
 /// Connection protocol
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,7 +322,7 @@ impl NetworkMonitor {
         let process_single_packet =
             |data: &[u8],
              connections: &mut HashMap<String, Connection>,
-             interface: &Option<String>| {
+             _interface: &Option<String>| {
                 // Check if it's an ethernet frame
                 if data.len() < 14 {
                     return; // Too short for Ethernet
