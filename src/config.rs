@@ -15,6 +15,8 @@ pub struct Config {
     pub refresh_interval: u64,
     /// Show IP locations (requires MaxMind DB)
     pub show_locations: bool,
+    /// Filter out localhost (loopback) traffic
+    pub filter_localhost: bool,
     /// Custom configuration file path
     pub config_path: Option<PathBuf>,
 }
@@ -27,6 +29,7 @@ impl Default for Config {
             geoip_db_path: None,
             refresh_interval: 1000,
             show_locations: true,
+            filter_localhost: true,
             config_path: None,
         }
     }
@@ -80,6 +83,13 @@ impl Config {
                                 config.show_locations = true;
                             } else if value == "false" {
                                 config.show_locations = false;
+                            }
+                        }
+                        "filter_localhost" => {
+                            if value == "true" {
+                                config.filter_localhost = true;
+                            } else if value == "false" {
+                                config.filter_localhost = false;
                             }
                         }
                         _ => {

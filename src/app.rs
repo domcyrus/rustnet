@@ -87,7 +87,8 @@ impl App {
     pub fn start_capture(&mut self) -> Result<()> {
         // Create network monitor
         let interface = self.config.interface.clone();
-        let mut monitor = NetworkMonitor::new(interface)?;
+        let filter_localhost = self.config.filter_localhost;
+        let mut monitor = NetworkMonitor::new(interface, filter_localhost)?;
 
         // Disable process information collection by default for better performance
         monitor.set_collect_process_info(false);

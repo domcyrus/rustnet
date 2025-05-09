@@ -156,12 +156,13 @@ pub struct NetworkMonitor {
     connections: HashMap<String, Connection>,
     // geo_db: Option<maxminddb::Reader<Vec<u8>>>, // Field removed as unused (dependent on get_ip_location)
     collect_process_info: bool,
+    filter_localhost: bool,
     last_packet_check: Instant,
 }
 
 impl NetworkMonitor {
     /// Create a new network monitor
-    pub fn new(interface: Option<String>) -> Result<Self> {
+    pub fn new(interface: Option<String>, filter_localhost: bool) -> Result<Self> {
         let mut capture = if let Some(iface) = &interface {
             // Open capture on specific interface
             let device = Device::list()?
@@ -219,6 +220,7 @@ impl NetworkMonitor {
             connections: HashMap::new(),
             // geo_db, // Field removed
             collect_process_info: false,
+            filter_localhost,
             // Initialize last_packet_check to a time in the past
             // to ensure the first call to process_packets runs.
             last_packet_check: Instant::now() - Duration::from_millis(200),
@@ -270,6 +272,13 @@ impl NetworkMonitor {
 
         // Sort connections by last activity
         connections.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+
+        // Filter localhost connections if the flag is set
+        if self.filter_localhost {
+            connections.retain(|conn| {
+                !(conn.local_addr.ip().is_loopback() && conn.remote_addr.ip().is_loopback())
+            });
+        }
 
         Ok(connections)
     }
