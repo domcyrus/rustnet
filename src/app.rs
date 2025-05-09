@@ -482,16 +482,33 @@ impl App {
             "localhost".to_string()
         } else if ip.is_unspecified() {
             "*".to_string()
-        } else if !(ip.is_private()
-            || ip.is_loopback()
-            || ip.is_link_local()
-            || ip.is_broadcast()
-            || ip.is_documentation()
-            || ip.is_multicast()
-            || ip.is_unspecified())
-        {
-            // Attempt lookup for likely global IPs
-            debug!("Attempting reverse DNS lookup for {}", ip);
+        } else {
+            let is_likely_global = match ip {
+                IpAddr::V4(ipv4) => !(ipv4.is_private()
+                    || ipv4.is_loopback()
+                    || ipv4.is_link_local()
+                    || ipv4.is_broadcast()
+                    // Check for documentation ranges explicitly for IPv4
+                    || ipv4.octets()[0] == 192 && ipv4.octets()[1] == 0 && ipv4.octets()[2] == 2 // TEST-NET-1
+                    || ipv4.octets()[0] == 198 && ipv4.octets()[1] == 51 && ipv4.octets()[2] == 100 // TEST-NET-2
+                    || ipv4.octets()[0] == 203 && ipv4.octets()[1] == 0 && ipv4.octets()[2] == 113 // TEST-NET-3
+                    || ipv4.is_multicast()
+                    || ipv4.is_unspecified()),
+                IpAddr::V6(ipv6) => !(ipv6.is_loopback()
+                    // For IPv6, is_documentation() is stable.
+                    // is_private() is not a concept for IPv6 in the same way, Unique Local Addresses (ULA) are fc00::/7
+                    // but is_global equivalent is often !is_loopback && !is_multicast && !is_link_local && !is_unique_local etc.
+                    // We'll rely on not being loopback, multicast, link-local, or documentation.
+                    || (ipv6.segments()[0] & 0xfe00) == 0xfc00 // ULA fc00::/7
+                    || ipv6.is_link_local() 
+                    || ipv6.is_documentation() // 2001:db8::/32
+                    || ipv6.is_multicast()
+                    || ipv6.is_unspecified()),
+            };
+
+            if is_likely_global {
+                // Attempt lookup for likely global IPs
+                debug!("Attempting reverse DNS lookup for {}", ip);
             match dns_lookup::lookup_addr(&ip) {
                 Ok(hostname) => { // dns_lookup v2.0.4 returns String, not Vec<String>
                     debug!("Resolved {} to {}", ip, &hostname);

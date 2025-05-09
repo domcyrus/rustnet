@@ -7,6 +7,7 @@ use ratatui::{
     Frame, Terminal as RatatuiTerminal,
 };
 use std::collections::HashMap;
+use std::net::SocketAddr; // Import SocketAddr
 
 use crate::app::{App, DetailFocusField, ViewMode}; // Added DetailFocusField
 use crate::network::{Connection, Protocol};
