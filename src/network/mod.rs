@@ -546,8 +546,9 @@ impl NetworkMonitor {
                         }
                     }
                     _ => {} // Ignore other protocols
-                }
-            };
+                } // This closes the `if is_likely_global { ... } else { ... }` expression
+            }   // This closes the `else { ... }` block that started on line 485
+            ;   // This terminates the `let name_to_cache = ...;` statement
 
         // Get packets from the capture
         if let Some(ref mut cap) = self.capture {
