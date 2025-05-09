@@ -383,38 +383,6 @@ impl NetworkMonitor {
     fn process_packets(&mut self) -> Result<()> {
         log::debug!("NetworkMonitor::process_packets - Entered process_packets");
 
-        // If it's the very first run (during App::start_capture), be extremely lightweight.
-        if !self.initial_packet_processing_done {
-            log::debug!("NetworkMonitor::process_packets - First run, skipping detailed packet processing for quick startup.");
-            // Optionally, process a single packet or none at all.
-            // For now, let's try processing 0-1 packets to see if it helps.
-            if let Some(ref mut cap) = self.capture {
-                match cap.next_packet() {
-                    Ok(packet) => {
-                        process_single_packet(packet.data, &mut self.connections, &self.local_ips, &self.interface);
-                        log::debug!("NetworkMonitor::process_packets - Processed one packet on first run.");
-                    }
-                    Err(pcap::Error::TimeoutExpired) => {
-                        log::debug!("NetworkMonitor::process_packets - No packets on first check.");
-                    }
-                    Err(e) => {
-                        error!("NetworkMonitor::process_packets - Error reading packet on first run: {}", e);
-                    }
-                }
-            }
-            self.initial_packet_processing_done = true;
-            self.last_packet_check = Instant::now(); // Update timestamp
-            return Ok(());
-        }
-
-        // Only check packets every 100ms to avoid too frequent checks for subsequent runs
-        if self.last_packet_check.elapsed() < Duration::from_millis(100) {
-            return Ok(());
-        }
-        self.last_packet_check = Instant::now();
-
-        // Define a helper function to process a single packet
-        // This avoids the borrowing issues
         // Define a helper function to process a single packet
         // This avoids some borrowing issues with self.local_ips if it were passed directly
         // Instead, we pass the HashMap and the local_ips set.
@@ -590,9 +558,38 @@ impl NetworkMonitor {
                         }
                     }
                     _ => {} // Ignore other protocols
-                } // This closes the `if is_likely_global { ... } else { ... }` expression
-            }   // This closes the `else { ... }` block that started on line 485
-            ;   // This terminates the `let name_to_cache = ...;` statement
+                } // This closes the `match protocol`
+            }; // This closes the `process_single_packet` closure definition
+
+        // If it's the very first run (during App::start_capture), be extremely lightweight.
+        if !self.initial_packet_processing_done {
+            log::debug!("NetworkMonitor::process_packets - First run, skipping detailed packet processing for quick startup.");
+            // Optionally, process a single packet or none at all.
+            // For now, let's try processing 0-1 packets to see if it helps.
+            if let Some(ref mut cap) = self.capture {
+                match cap.next_packet() {
+                    Ok(packet) => {
+                        process_single_packet(packet.data, &mut self.connections, &self.local_ips, &self.interface);
+                        log::debug!("NetworkMonitor::process_packets - Processed one packet on first run.");
+                    }
+                    Err(pcap::Error::TimeoutExpired) => {
+                        log::debug!("NetworkMonitor::process_packets - No packets on first check.");
+                    }
+                    Err(e) => {
+                        error!("NetworkMonitor::process_packets - Error reading packet on first run: {}", e);
+                    }
+                }
+            }
+            self.initial_packet_processing_done = true;
+            self.last_packet_check = Instant::now(); // Update timestamp
+            return Ok(());
+        }
+
+        // Only check packets every 100ms to avoid too frequent checks for subsequent runs
+        if self.last_packet_check.elapsed() < Duration::from_millis(100) {
+            return Ok(());
+        }
+        self.last_packet_check = Instant::now();
 
         // Get packets from the capture
         if let Some(ref mut cap) = self.capture {
