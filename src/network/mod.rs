@@ -172,7 +172,7 @@ impl NetworkMonitor {
             info!("Opening capture on interface: {}", iface);
             let cap = Capture::from_device(device)?
                 .immediate_mode(true)
-                .timeout(10) // Reduced timeout
+                .timeout(-1) // Set to non-blocking
                 .snaplen(65535)
                 .promisc(true)
                 .open()?;
@@ -185,7 +185,7 @@ impl NetworkMonitor {
             info!("Opening capture on default interface: {}", device.name);
             let cap = Capture::from_device(device)?
                 .immediate_mode(true)
-                .timeout(10) // Reduced timeout
+                .timeout(-1) // Set to non-blocking
                 .snaplen(65535)
                 .promisc(true)
                 .open()?;
