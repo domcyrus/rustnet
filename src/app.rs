@@ -100,7 +100,7 @@ impl App {
     }
 
     /// Dumps all current connections to the log file.
-    pub fn log_all_connections(&mut self) { // Renamed method
+    pub fn log_all_connections(&mut self) { // Ensuring no hidden characters in this definition
         log::info!("Dumping all current connections to log:");
         if self.connections.is_empty() {
             log::info!("No connections to dump.");
@@ -220,7 +220,7 @@ impl App {
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => { // Ctrl + d
                 self.test_method(); // Call the new test method
-                self.log_all_connections(); // Renamed method call
+                self.log_all_connections(); // Ensuring no hidden characters in this call
                 None
             }
             KeyCode::Char('d') => {
