@@ -48,7 +48,6 @@ pub fn get_platform_connections(
             );
         }
 
-        Ok(())
     // Note: get_linux_process_for_connection, get_process_by_pid, 
     // get_connections_from_ss, get_connections_from_netstat, get_connections_from_pcap
     // remain methods on NetworkMonitor as they are called via `monitor.method_name()`
