@@ -698,6 +698,10 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
             Span::styled("h ", Style::default().fg(Color::Yellow)),
             Span::raw(app.i18n.get("help_toggle_help")),
         ]),
+        Line::from(vec![
+            Span::styled("Ctrl+D ", Style::default().fg(Color::Yellow)),
+            Span::raw(app.i18n.get("help_dump_connections")),
+        ]),
     ];
 
     let help = Paragraph::new(help_text)
