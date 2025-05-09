@@ -259,43 +259,4 @@ impl I18n {
             "Toggle help screen".to_string(),
         );
     }
-
-    /// Get available languages
-    pub fn available_languages() -> Vec<(String, String)> {
-        let mut languages = Vec::new();
-
-        // Add built-in languages
-        languages.push(("en".to_string(), "English".to_string()));
-
-        // Look for translation files in current directory
-        if let Ok(entries) = fs::read_dir("i18n") {
-            for entry in entries.flatten() {
-                if let Some(filename) = entry.path().file_stem() {
-                    if let Some(lang_code) = filename.to_str() {
-                        if lang_code != "en" {
-                            languages.push((lang_code.to_string(), Self::language_name(lang_code)));
-                        }
-                    }
-                }
-            }
-        }
-
-        languages
-    }
-
-    /// Get language name from ISO code
-    fn language_name(code: &str) -> String {
-        match code {
-            "en" => "English".to_string(),
-            "fr" => "Français".to_string(),
-            "de" => "Deutsch".to_string(),
-            "es" => "Español".to_string(),
-            "it" => "Italiano".to_string(),
-            "pt" => "Português".to_string(),
-            "ru" => "Русский".to_string(),
-            "ja" => "日本語".to_string(),
-            "zh" => "中文".to_string(),
-            _ => code.to_string(),
-        }
-    }
 }

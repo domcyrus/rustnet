@@ -166,38 +166,4 @@ impl Config {
 
         paths
     }
-
-    /// Save configuration to file
-    pub fn save(&self) -> Result<()> {
-        let config_path = if let Some(ref path) = self.config_path {
-            path.clone()
-        } else {
-            Self::find_config_file()?
-        };
-
-        // Create parent directories if they don't exist
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let mut content = String::new();
-        content.push_str("# RustNet configuration file\n\n");
-
-        if let Some(ref interface) = self.interface {
-            content.push_str(&format!("interface: {}\n", interface));
-        }
-
-        content.push_str(&format!("language: {}\n", self.language));
-
-        if let Some(ref geoip_path) = self.geoip_db_path {
-            content.push_str(&format!("geoip_db_path: {}\n", geoip_path.display()));
-        }
-
-        content.push_str(&format!("refresh_interval: {}\n", self.refresh_interval));
-        content.push_str(&format!("show_locations: {}\n", self.show_locations));
-
-        fs::write(config_path, content)?;
-
-        Ok(())
-    }
 }

@@ -33,8 +33,7 @@ pub struct App {
     pub i18n: I18n,
     /// Current view mode
     pub mode: ViewMode,
-    /// Whether the application should quit
-    pub should_quit: bool,
+    // Whether the application should quit - field removed as it was unused, Action::Quit handles this
     /// Network monitor instance
     network_monitor: Option<Arc<Mutex<NetworkMonitor>>>,
     /// Active connections
@@ -45,14 +44,12 @@ pub struct App {
     pub selected_connection: Option<Connection>,
     /// Currently selected connection index
     pub selected_connection_idx: usize,
-    /// Currently selected process index
-    pub selected_process_idx: usize,
+    // Currently selected process index - field removed as it was unused
     /// Show IP locations (requires MaxMind DB)
     pub show_locations: bool,
     /// Show DNS hostnames instead of IP addresses
     pub show_hostnames: bool,
-    /// Last connection sort time
-    last_sort_time: std::time::Instant,
+    // Last connection sort time - field removed as it was unused
     /// Connection order map (for stable ordering)
     connection_order: HashMap<String, usize>,
     /// Next order index for new connections
@@ -68,16 +65,16 @@ impl App {
             config,
             i18n,
             mode: ViewMode::Overview,
-            should_quit: false,
+            // should_quit: false, // Field removed
             network_monitor: None,
             connections: Vec::new(),
             processes: HashMap::new(),
             selected_connection: None,
             selected_connection_idx: 0,
-            selected_process_idx: 0,
+            // selected_process_idx: 0, // Field removed
             show_locations: true,
             show_hostnames: false,
-            last_sort_time: std::time::Instant::now(),
+            // last_sort_time: std::time::Instant::now(), // Field removed
             connection_order: HashMap::new(),
             next_order_index: 0,
             dns_cache: HashMap::new(),
@@ -403,35 +400,6 @@ impl App {
         )
     }
 
-    /// Assign stable order indices to connections
-    fn update_connection_order(&mut self, connections: &mut Vec<Connection>) {
-        // This ensures that new connections get added at the end and existing connections maintain their order
-        for conn in connections.iter() {
-            let key = self.get_connection_key(conn);
-            if !self.connection_order.contains_key(&key) {
-                self.connection_order.insert(key, self.next_order_index);
-                self.next_order_index += 1;
-            }
-        }
-    }
-
-    /// Sort connections in a stable way
-    fn sort_connections_stable(&mut self, connections: &mut Vec<Connection>) {
-        // Update order indices for any new connections
-        self.update_connection_order(connections);
-
-        // Sort connections by their assigned order
-        connections.sort_by(|a, b| {
-            let key_a = self.get_connection_key(a);
-            let key_b = self.get_connection_key(b);
-
-            let order_a = self.connection_order.get(&key_a).unwrap_or(&usize::MAX);
-            let order_b = self.connection_order.get(&key_b).unwrap_or(&usize::MAX);
-
-            order_a.cmp(order_b)
-        });
-    }
-
     /// Find the index of a connection that matches the selected connection
     fn find_connection_index(&self, selected: &Connection) -> Option<usize> {
         let selected_key = self.get_connection_key(selected);
@@ -444,43 +412,6 @@ impl App {
         }
 
         None
-    }
-
-    /// Resolve an IP address to a hostname with caching
-    pub fn resolve_hostname(&mut self, ip: IpAddr) -> String {
-        // Check if the IP is in the cache
-        if let Some(hostname) = self.dns_cache.get(&ip) {
-            return hostname.clone();
-        }
-
-        // Special handling for common IP addresses
-        if ip.is_loopback() {
-            let hostname = "localhost".to_string();
-            self.dns_cache.insert(ip, hostname.clone());
-            return hostname;
-        }
-
-        if ip.is_unspecified() {
-            let hostname = "*".to_string();
-            self.dns_cache.insert(ip, hostname.clone());
-            return hostname;
-        }
-
-        // Perform DNS resolution using the dns-lookup crate
-        match lookup_addr(&ip) {
-            Ok(hostname) => {
-                // Cache the result
-                let hostname = hostname.trim_end_matches('.').to_string();
-                self.dns_cache.insert(ip, hostname.clone());
-                hostname
-            }
-            Err(_) => {
-                // If resolution fails, return the IP as a string
-                let ip_str = ip.to_string();
-                self.dns_cache.insert(ip, ip_str.clone());
-                ip_str
-            }
-        }
     }
 
     /// Format a socket address with hostname if enabled (without mutating self)

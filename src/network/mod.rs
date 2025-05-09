@@ -22,8 +22,8 @@ mod macos;
 pub enum Protocol {
     TCP,
     UDP,
-    ICMP,
-    Other(u8),
+    // ICMP, // Variant removed as unused
+    // Other(u8), // Variant removed as unused
 }
 
 impl std::fmt::Display for Protocol {
@@ -31,8 +31,8 @@ impl std::fmt::Display for Protocol {
         match self {
             Protocol::TCP => write!(f, "TCP"),
             Protocol::UDP => write!(f, "UDP"),
-            Protocol::ICMP => write!(f, "ICMP"),
-            Protocol::Other(proto) => write!(f, "Proto({})", proto),
+            // Protocol::ICMP => write!(f, "ICMP"), // Variant removed
+            // Protocol::Other(proto) => write!(f, "Proto({})", proto), // Variant removed
         }
     }
 }
@@ -46,7 +46,7 @@ pub enum ConnectionState {
     FinWait1,
     FinWait2,
     TimeWait,
-    Closed,
+    // Closed, // Variant removed as unused
     CloseWait,
     LastAck,
     Listen,
@@ -64,7 +64,7 @@ impl std::fmt::Display for ConnectionState {
             ConnectionState::FinWait1 => write!(f, "FIN_WAIT_1"),
             ConnectionState::FinWait2 => write!(f, "FIN_WAIT_2"),
             ConnectionState::TimeWait => write!(f, "TIME_WAIT"),
-            ConnectionState::Closed => write!(f, "CLOSED"),
+            // ConnectionState::Closed => write!(f, "CLOSED"), // Variant removed
             ConnectionState::CloseWait => write!(f, "CLOSE_WAIT"),
             ConnectionState::LastAck => write!(f, "LAST_ACK"),
             ConnectionState::Listen => write!(f, "LISTEN"),
@@ -135,27 +135,6 @@ impl Connection {
     pub fn is_active(&self) -> bool {
         self.idle_time() < Duration::from_secs(60)
     }
-
-    /// Update the connection with packet data
-    pub fn update_with_packet(&mut self, is_outgoing: bool, packet_size: usize) {
-        self.last_activity = SystemTime::now();
-
-        if is_outgoing {
-            self.packets_sent += 1;
-            self.bytes_sent += packet_size as u64;
-        } else {
-            self.packets_received += 1;
-            self.bytes_received += packet_size as u64;
-        }
-    }
-
-    /// Get connection key for HashMap lookups
-    pub fn get_key(&self) -> String {
-        format!(
-            "{:?}:{}:{:?}:{}",
-            self.protocol, self.local_addr, self.protocol, self.remote_addr
-        )
-    }
 }
 
 /// Process information
@@ -169,23 +148,14 @@ pub struct Process {
     pub memory_usage: Option<u64>,
 }
 
-/// IP location information
-#[derive(Debug, Clone)]
-pub struct IpLocation {
-    pub country_code: Option<String>,
-    pub country_name: Option<String>,
-    pub city_name: Option<String>,
-    pub latitude: Option<f64>,
-    pub longitude: Option<f64>,
-    pub isp: Option<String>,
-}
+// IP location information - struct removed as unused (dependent on get_ip_location)
 
 /// Network monitor
 pub struct NetworkMonitor {
     interface: Option<String>,
     capture: Option<Capture<pcap::Active>>,
     connections: HashMap<String, Connection>,
-    geo_db: Option<maxminddb::Reader<Vec<u8>>>,
+    // geo_db: Option<maxminddb::Reader<Vec<u8>>>, // Field removed as unused (dependent on get_ip_location)
     collect_process_info: bool,
     last_packet_check: Instant,
 }
@@ -232,23 +202,23 @@ impl NetworkMonitor {
             }
         }
 
-        // Try to load MaxMind database if available
-        let geo_db = std::fs::read("GeoLite2-City.mmdb")
-            .ok()
-            .map(|data| maxminddb::Reader::from_source(data).ok())
-            .flatten();
+        // Try to load MaxMind database if available - logic removed as geo_db field is removed
+        // let geo_db = std::fs::read("GeoLite2-City.mmdb")
+        //     .ok()
+        //     .map(|data| maxminddb::Reader::from_source(data).ok())
+        //     .flatten();
 
-        if geo_db.is_some() {
-            info!("Loaded MaxMind GeoIP database");
-        } else {
-            debug!("MaxMind GeoIP database not found");
-        }
+        // if geo_db.is_some() {
+        //     info!("Loaded MaxMind GeoIP database");
+        // } else {
+        //     debug!("MaxMind GeoIP database not found");
+        // }
 
         Ok(Self {
             interface,
             capture,
             connections: HashMap::new(),
-            geo_db,
+            // geo_db, // Field removed
             collect_process_info: false,
             last_packet_check: Instant::now(),
         })
@@ -257,12 +227,6 @@ impl NetworkMonitor {
     /// Set whether to collect process information for connections
     pub fn set_collect_process_info(&mut self, collect: bool) {
         self.collect_process_info = collect;
-    }
-
-    /// Get network device list
-    pub fn get_devices() -> Result<Vec<String>> {
-        let devices = Device::list()?;
-        Ok(devices.into_iter().map(|dev| dev.name).collect())
     }
 
     /// Get active connections
@@ -579,7 +543,7 @@ impl NetworkMonitor {
     }
 
     /// Get IP addresses associated with an interface
-    fn get_interface_addresses(&self, interface: &str) -> Result<Vec<IpAddr>> {
+    fn get_interface_addresses(&self, _interface: &str) -> Result<Vec<IpAddr>> {
         #[cfg(target_os = "linux")]
         {
             // Linux implementation

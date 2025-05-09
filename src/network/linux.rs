@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use log::{debug, error, info, warn};
 use pnet_datalink;
 use std::net::{IpAddr, SocketAddr};
@@ -73,54 +73,6 @@ impl NetworkMonitor {
 
         // Last resort: parse /proc directly
         try_proc_parsing(connection)
-    }
-
-    /// Get process information by PID
-    pub(super) fn get_process_by_pid(&self, pid: u32) -> Option<Process> {
-        // Read process name from /proc/{pid}/comm
-        let comm_path = format!("/proc/{}/comm", pid);
-        if let Ok(name) = std::fs::read_to_string(comm_path) {
-            let name = name.trim().to_string();
-
-            // Read command line
-            let cmdline_path = format!("/proc/{}/cmdline", pid);
-            let cmdline = std::fs::read_to_string(cmdline_path)
-                .ok()
-                .map(|s| s.replace('\0', " ").trim().to_string());
-
-            // Read process status for user info
-            let status_path = format!("/proc/{}/status", pid);
-            let status = std::fs::read_to_string(status_path).ok();
-            let mut user = None;
-
-            if let Some(status) = status {
-                for line in status.lines() {
-                    if line.starts_with("Uid:") {
-                        let uid = line
-                            .split_whitespace()
-                            .nth(1)
-                            .and_then(|s| s.parse::<u32>().ok());
-
-                        if let Some(uid) = uid {
-                            // Try to get username from /etc/passwd
-                            user = get_username_by_uid(uid);
-                        }
-                        break;
-                    }
-                }
-            }
-
-            return Some(Process {
-                pid,
-                name,
-                command_line: cmdline,
-                user,
-                cpu_usage: None,
-                memory_usage: None,
-            });
-        }
-
-        None
     }
 
     /// Get connections from ss command
@@ -530,23 +482,6 @@ fn get_process_name_by_pid(pid: u32) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{}/comm", pid))
         .ok()
         .map(|s| s.trim().to_string())
-}
-
-/// Get username by UID
-fn get_username_by_uid(uid: u32) -> Option<String> {
-    if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
-        for line in passwd.lines() {
-            let fields: Vec<&str> = line.split(':').collect();
-            if fields.len() >= 3 {
-                if let Ok(line_uid) = fields[2].parse::<u32>() {
-                    if line_uid == uid {
-                        return Some(fields[0].to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
 }
 
 // Helper function to get local IP address

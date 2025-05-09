@@ -693,14 +693,3 @@ fn format_bytes(bytes: u64) -> String {
         format!("{} B", bytes)
     }
 }
-
-// Extension trait to provide table state for connections
-impl App {
-    fn table_state(&self, selected: usize) -> ratatui::widgets::TableState {
-        let mut state = ratatui::widgets::TableState::default();
-        if !self.connections.is_empty() {
-            state.select(Some(selected));
-        }
-        state
-    }
-}
