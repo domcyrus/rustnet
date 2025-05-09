@@ -225,42 +225,49 @@ pub struct NetworkMonitor {
 impl NetworkMonitor {
     /// Create a new network monitor
     pub fn new(interface: Option<String>, filter_localhost: bool) -> Result<Self> {
+        log::info!("NetworkMonitor::new - Initializing");
         let mut capture = if let Some(iface) = &interface {
             // Open capture on specific interface
-            let device = Device::list()?
+            log::info!("NetworkMonitor::new - Listing devices for specific interface: {}", iface);
+            let device_list = Device::list()?;
+            log::info!("NetworkMonitor::new - Device list obtained");
+            let device = device_list
                 .into_iter()
                 .find(|dev| dev.name == *iface)
                 .ok_or_else(|| anyhow!("Interface not found: {}", iface))?;
 
             info!("Opening capture on interface: {}", iface);
-            let cap = Capture::from_device(device)?
+            let cap = Capture::from_device(device.clone())? // Clone device as it's used for logging too
                 .immediate_mode(true)
                 .timeout(0) // Return immediately if no packets are available
                 .snaplen(65535)
                 .promisc(true)
                 .open()?;
-
+            log::info!("NetworkMonitor::new - Capture opened on interface: {}", device.name);
             Some(cap)
         } else {
             // Get default interface if none specified
+            log::info!("NetworkMonitor::new - Looking up default device");
             let device = Device::lookup()?.ok_or_else(|| anyhow!("No default device found"))?;
+            log::info!("NetworkMonitor::new - Default device found: {}", device.name);
 
             info!("Opening capture on default interface: {}", device.name);
-            let cap = Capture::from_device(device)?
+            let cap = Capture::from_device(device.clone())? // Clone device for logging
                 .immediate_mode(true)
                 .timeout(0) // Return immediately if no packets are available
                 .snaplen(65535)
                 .promisc(true)
                 .open()?;
-
+            log::info!("NetworkMonitor::new - Capture opened on default interface: {}", device.name);
             Some(cap)
         };
 
         // Set BPF filter to capture all TCP and UDP traffic
         if let Some(ref mut cap) = capture {
+            log::info!("NetworkMonitor::new - Applying BPF filter 'tcp or udp'");
             match cap.filter("tcp or udp", true) {
-                Ok(_) => info!("Applied packet filter: tcp or udp"),
-                Err(e) => error!("Error setting packet filter: {}", e),
+                Ok(_) => info!("NetworkMonitor::new - Applied packet filter: tcp or udp"),
+                Err(e) => error!("NetworkMonitor::new - Error setting packet filter: {}", e),
             }
         }
 
@@ -277,20 +284,23 @@ impl NetworkMonitor {
         // }
 
         // Get all local IP addresses
+        log::info!("NetworkMonitor::new - Getting local IP addresses using pnet_datalink");
         let mut local_ips = std::collections::HashSet::new();
-        let interfaces = pnet_datalink::interfaces();
-        for iface in interfaces {
+        let pnet_interfaces = pnet_datalink::interfaces();
+        log::info!("NetworkMonitor::new - pnet_datalink::interfaces() returned {} interfaces", pnet_interfaces.len());
+        for iface in pnet_interfaces {
             for ip_network in iface.ips {
                 local_ips.insert(ip_network.ip());
             }
         }
 
         if local_ips.is_empty() {
-            log::warn!("Could not determine any local IP addresses. Connection directionality might be inaccurate.");
+            log::warn!("NetworkMonitor::new - Could not determine any local IP addresses. Connection directionality might be inaccurate.");
         } else {
-            log::debug!("Found local IPs: {:?}", local_ips);
+            log::debug!("NetworkMonitor::new - Found local IPs: {:?}", local_ips);
         }
 
+        log::info!("NetworkMonitor::new - Initialization complete");
         Ok(Self {
             interface,
             capture,
@@ -312,16 +322,22 @@ impl NetworkMonitor {
 
     /// Get active connections
     pub fn get_connections(&mut self) -> Result<Vec<Connection>> {
+        log::debug!("NetworkMonitor::get_connections - Starting to fetch connections");
         // Process packets from capture
+        log::debug!("NetworkMonitor::get_connections - Calling process_packets");
         self.process_packets()?;
+        log::debug!("NetworkMonitor::get_connections - process_packets returned");
 
         // Get connections from system methods
         let mut connections = Vec::new();
 
         // Use platform-specific code to get connections
+        log::debug!("NetworkMonitor::get_connections - Calling get_platform_connections");
         self.get_platform_connections(&mut connections)?;
+        log::debug!("NetworkMonitor::get_connections - get_platform_connections returned {} connections", connections.len());
 
         // Add connections from packet capture
+        log::debug!("NetworkMonitor::get_connections - Merging packet capture connections (current count: {})", self.connections.len());
         for (_, conn) in &self.connections {
             // Check if this connection exists in the list already
             let exists = connections.iter().any(|c| {
@@ -357,7 +373,7 @@ impl NetworkMonitor {
                 !(conn.local_addr.ip().is_loopback() && conn.remote_addr.ip().is_loopback())
             });
         }
-
+        log::info!("NetworkMonitor::get_connections - Finished fetching connections. Total: {}", connections.len());
         Ok(connections)
     }
 

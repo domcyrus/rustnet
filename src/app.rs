@@ -74,7 +74,8 @@ pub struct App {
 impl App {
     /// Create a new application instance
     pub fn new(config: Config, i18n: I18n) -> Result<Self> {
-        Ok(Self {
+        log::info!("App::new - Starting application initialization");
+        let app = Self {
             config,
             i18n,
             mode: ViewMode::Overview,
@@ -93,21 +94,28 @@ impl App {
             dns_cache: HashMap::new(),
             connections_data_shared: None,
             detail_focus: DetailFocusField::LocalIp, // Default focus to Local IP
-        })
+        };
+        log::info!("App::new - Application initialized successfully");
+        Ok(app)
     }
 
     /// Start network capture
     pub fn start_capture(&mut self) -> Result<()> {
+        log::info!("App::start_capture - Starting network capture setup");
         // Create network monitor
         let interface = self.config.interface.clone();
         let filter_localhost = self.config.filter_localhost;
+        log::info!("App::start_capture - Calling NetworkMonitor::new");
         let mut monitor = NetworkMonitor::new(interface, filter_localhost)?;
+        log::info!("App::start_capture - NetworkMonitor::new returned");
 
         // Disable process information collection by default for better performance
         monitor.set_collect_process_info(false);
 
         // Get initial connections without process info
+        log::info!("App::start_capture - Calling initial monitor.get_connections()");
         self.connections = monitor.get_connections()?;
+        log::info!("App::start_capture - Initial monitor.get_connections() returned {} connections", self.connections.len());
 
         // Start monitoring in background thread
         let monitor = Arc::new(Mutex::new(monitor));
@@ -133,7 +141,7 @@ impl App {
         });
 
         self.network_monitor = Some(monitor);
-
+        log::info!("App::start_capture - Network capture setup complete");
         Ok(())
     }
 
