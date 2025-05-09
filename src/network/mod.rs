@@ -580,7 +580,7 @@ impl NetworkMonitor {
                         // Use the local helper function to avoid borrowing issues
                         process_single_packet(packet.data, &mut self.connections, &self.local_ips, &self.interface);
                     }
-                    Err(pcap::Error::Timeout) => {
+                    Err(pcap::Error::TimeoutExpired) => {
                         // This is expected if timeout(0) is working and no packets are available
                         // log::trace!("NetworkMonitor::process_packets - cap.next_packet() timed out (iteration {})", i); // Too verbose for error log
                         continue; // Try next iteration
