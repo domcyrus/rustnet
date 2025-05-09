@@ -206,7 +206,7 @@ impl App {
                 None
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => { // Ctrl + d
-                self.dump_connections_to_log();
+                App::dump_connections_to_log(self);
                 None
             }
             KeyCode::Char('d') => {
