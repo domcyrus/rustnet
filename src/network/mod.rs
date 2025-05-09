@@ -89,6 +89,36 @@ pub struct Connection {
     pub packets_received: u64,
     pub created_at: SystemTime,
     pub last_activity: SystemTime,
+    pub service_port: Option<u16>,
+    pub service_name: Option<String>,
+}
+
+/// Returns the common service name for a given port and protocol.
+fn get_service_name_raw(port: u16, protocol: Protocol) -> Option<&'static str> {
+    match (protocol, port) {
+        (Protocol::TCP, 20) => Some("FTP-Data"),
+        (Protocol::TCP, 21) => Some("FTP"),
+        (Protocol::TCP, 22) => Some("SSH"),
+        (Protocol::TCP, 23) => Some("Telnet"),
+        (Protocol::TCP, 25) => Some("SMTP"),
+        (Protocol::TCP, 53) => Some("DNS"),
+        (Protocol::UDP, 53) => Some("DNS"),
+        (Protocol::TCP, 80) => Some("HTTP"),
+        (Protocol::TCP, 110) => Some("POP3"),
+        (Protocol::UDP, 123) => Some("NTP"),
+        (Protocol::TCP, 143) => Some("IMAP"),
+        (Protocol::UDP, 161) => Some("SNMP"),
+        (Protocol::UDP, 162) => Some("SNMPTRAP"),
+        (Protocol::TCP, 389) => Some("LDAP"),
+        (Protocol::TCP, 443) => Some("HTTPS"),
+        (Protocol::TCP, 465) => Some("SMTPS"), // SMTP over SSL
+        (Protocol::TCP, 587) => Some("SMTP"),  // SMTP Submission
+        (Protocol::TCP, 636) => Some("LDAPS"),
+        (Protocol::TCP, 993) => Some("IMAPS"),
+        (Protocol::TCP, 995) => Some("POP3S"),
+        // Add more common services as needed
+        _ => None,
+    }
 }
 
 impl Connection {
@@ -113,7 +143,58 @@ impl Connection {
             packets_received: 0,
             created_at: now,
             last_activity: now,
+            service_port: None, // Initialize, will be set below
+            service_name: None, // Initialize, will be set below
+        };
+
+        // Determine service name
+        let mut determined_service_port: Option<u16> = None;
+        let mut determined_service_name_str: Option<&'static str> = None;
+
+        if state == ConnectionState::Listen {
+            // For listening sockets, the service is always on the local port
+            if let Some(name_str) = get_service_name_raw(local_addr.port(), protocol) {
+                determined_service_port = Some(local_addr.port());
+                determined_service_name_str = Some(name_str);
+            }
+        } else {
+            // For other states, check if local port is a well-known service port
+            let local_is_service = local_addr.port() <= 1023 && get_service_name_raw(local_addr.port(), protocol).is_some();
+            // Check if remote port is a well-known service port
+            let remote_is_service = remote_addr.port() <= 1023 && get_service_name_raw(remote_addr.port(), protocol).is_some();
+
+            if local_is_service {
+                // If local port is a service (e.g., running a server), prioritize it
+                if let Some(name_str) = get_service_name_raw(local_addr.port(), protocol) {
+                    determined_service_port = Some(local_addr.port());
+                    determined_service_name_str = Some(name_str);
+                }
+            } else if remote_is_service {
+                // If local is not a service (or ephemeral) and remote is, then remote defines the service
+                if let Some(name_str) = get_service_name_raw(remote_addr.port(), protocol) {
+                    determined_service_port = Some(remote_addr.port());
+                    determined_service_name_str = Some(name_str);
+                }
+            }
         }
+        
+        let mut new_conn = Self {
+            protocol,
+            local_addr,
+            remote_addr,
+            state,
+            pid: None,
+            process_name: None,
+            bytes_sent: 0,
+            bytes_received: 0,
+            packets_sent: 0,
+            packets_received: 0,
+            created_at: now,
+            last_activity: now,
+            service_port: determined_service_port,
+            service_name: determined_service_name_str.map(|s| s.to_string()),
+        };
+        new_conn // Return the fully initialized connection
     }
 
     /// Get connection age as duration

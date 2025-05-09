@@ -118,6 +118,7 @@ fn draw_connections_list(f: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(22), // Local
         Constraint::Length(22), // Remote
         Constraint::Length(12), // State
+        Constraint::Length(10), // Service
         Constraint::Min(10),    // Process
     ];
 
@@ -126,6 +127,7 @@ fn draw_connections_list(f: &mut Frame, app: &App, area: Rect) {
         "Local Address",
         "Remote Address",
         "State",
+        "Service",
         "Process",
     ]
     .iter()
@@ -151,12 +153,14 @@ fn draw_connections_list(f: &mut Frame, app: &App, area: Rect) {
         // Format addresses with hostnames if enabled - no mutable borrowing
         let local_display = app.format_socket_addr(conn.local_addr);
         let remote_display = app.format_socket_addr(conn.remote_addr);
+        let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
 
         let cells = [
             Cell::from(conn.protocol.to_string()),
             Cell::from(local_display),
             Cell::from(remote_display),
             Cell::from(conn.state.to_string()),
+            Cell::from(service_display),
             Cell::from(process_display),
         ];
         rows.push(Row::new(cells));
