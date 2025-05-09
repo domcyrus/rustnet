@@ -114,7 +114,7 @@ impl App {
                 // Sleep to avoid high CPU usage
                 drop(connections);
                 drop(monitor);
-                thread::sleep(std::time::Duration::from_millis(1000));
+                thread::sleep(std::time::Duration::from_millis(250)); // Update data more frequently
             }
         });
 
