@@ -219,7 +219,9 @@ impl NetworkMonitor {
             connections: HashMap::new(),
             // geo_db, // Field removed
             collect_process_info: false,
-            last_packet_check: Instant::now(),
+            // Initialize last_packet_check to a time in the past
+            // to ensure the first call to process_packets runs.
+            last_packet_check: Instant::now() - Duration::from_millis(200),
         })
     }
 
