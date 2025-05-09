@@ -61,3 +61,4 @@ help_back: 'Go back to previous view'
 help_toggle_location: 'Toggle IP location display'
 help_toggle_help: 'Toggle help screen'
 help_toggle_dns: 'Toggle DNS hostname display'
+help_dump_connections: "Dump all connections to log file"
