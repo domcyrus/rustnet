@@ -112,7 +112,7 @@ fn draw_overview(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> {
 }
 
 /// Draw connections list
-fn draw_connections_list(f: &mut Frame, app: &App, area: Rect) {
+fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
     let widths = [
         Constraint::Length(6),  // Protocol
         Constraint::Length(22), // Local
@@ -292,7 +292,7 @@ fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
 }
 
 /// Draw connection details view
-fn draw_connection_details(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
+fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> {
     if app.connections.is_empty() {
         let text = Paragraph::new(app.i18n.get("no_connections"))
             .block(

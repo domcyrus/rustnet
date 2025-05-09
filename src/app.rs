@@ -1,7 +1,8 @@
 use anyhow::Result;
 use arboard::Clipboard; // For clipboard access
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use log::error; // For logging clipboard errors
+use dns_lookup; // For reverse DNS lookups
+use log::{debug, error}; // For logging
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -463,28 +464,47 @@ impl App {
         None
     }
 
-    /// Format a socket address with hostname if enabled (without mutating self)
-    pub fn format_socket_addr(&self, addr: std::net::SocketAddr) -> String {
-        if self.show_hostnames {
-            let ip = addr.ip();
-            // Check if it's in the cache
-            if let Some(hostname) = self.dns_cache.get(&ip) {
-                return format!("{}:{}", hostname, addr.port());
-            }
-
-            // Special handling without cache insertion
-            if ip.is_loopback() {
-                return format!("localhost:{}", addr.port());
-            }
-
-            if ip.is_unspecified() {
-                return format!("*:{}", addr.port());
-            }
-
-            // Just return the address as string if not in cache
-            addr.to_string()
-        } else {
-            addr.to_string()
+    /// Format a socket address with hostname if enabled (mutates self to update DNS cache)
+    pub fn format_socket_addr(&mut self, addr: std::net::SocketAddr) -> String {
+        if !self.show_hostnames {
+            return addr.to_string();
         }
+
+        let ip = addr.ip();
+
+        // Check cache first
+        if let Some(cached_name) = self.dns_cache.get(&ip) {
+            return format!("{}:{}", cached_name, addr.port());
+        }
+
+        // Determine hostname or IP string
+        let name_to_cache = if ip.is_loopback() {
+            "localhost".to_string()
+        } else if ip.is_unspecified() {
+            "*".to_string()
+        } else if ip.is_global() { // Attempt lookup for global IPs
+            debug!("Attempting reverse DNS lookup for {}", ip);
+            match dns_lookup::lookup_addr(&ip) {
+                Ok(hostnames) => {
+                    if let Some(hostname) = hostnames.first() {
+                        debug!("Resolved {} to {}", ip, hostname);
+                        hostname.clone()
+                    } else {
+                        debug!("No hostnames found for {}", ip);
+                        ip.to_string() // No hostnames returned
+                    }
+                }
+                Err(e) => {
+                    debug!("Reverse DNS lookup failed for {}: {}", ip, e);
+                    ip.to_string() // Lookup failed
+                }
+            }
+        } else { // For non-global IPs (private, link-local, etc.), use the IP string
+            ip.to_string()
+        };
+
+        // Cache the result (either hostname or IP string)
+        self.dns_cache.insert(ip, name_to_cache.clone());
+        format!("{}:{}", name_to_cache, addr.port())
     }
 }
