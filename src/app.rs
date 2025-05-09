@@ -1,5 +1,7 @@
 use anyhow::Result;
+use arboard::Clipboard; // For clipboard access
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use log::error; // For logging clipboard errors
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -22,6 +24,13 @@ pub enum ViewMode {
     ConnectionDetails,
     ProcessDetails,
     Help,
+}
+
+/// Fields that can be focused for copying in the Connection Details view
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetailFocusField {
+    LocalIp,
+    RemoteIp,
 }
 
 /// Application state
@@ -57,6 +66,8 @@ pub struct App {
     dns_cache: HashMap<IpAddr, String>,
     /// Shared connection data updated by the background thread
     connections_data_shared: Option<Arc<Mutex<Vec<Connection>>>>,
+    /// Which field is focused for copying in the details view
+    pub detail_focus: DetailFocusField,
 }
 
 impl App {
@@ -80,6 +91,7 @@ impl App {
             next_order_index: 0,
             dns_cache: HashMap::new(),
             connections_data_shared: None,
+            detail_focus: DetailFocusField::LocalIp, // Default focus to Local IP
         })
     }
 
@@ -205,6 +217,38 @@ impl App {
             }
             KeyCode::Char('p') => {
                 self.mode = ViewMode::ProcessDetails;
+                None
+            }
+            KeyCode::Up | KeyCode::Down => {
+                self.detail_focus = match self.detail_focus {
+                    DetailFocusField::LocalIp => DetailFocusField::RemoteIp,
+                    DetailFocusField::RemoteIp => DetailFocusField::LocalIp,
+                };
+                None
+            }
+            KeyCode::Char('c') => {
+                if !self.connections.is_empty() && self.selected_connection_idx < self.connections.len() {
+                    let conn = &self.connections[self.selected_connection_idx];
+                    let ip_to_copy = match self.detail_focus {
+                        DetailFocusField::LocalIp => conn.local_addr.ip().to_string(),
+                        DetailFocusField::RemoteIp => conn.remote_addr.ip().to_string(),
+                    };
+
+                    match Clipboard::new() {
+                        Ok(mut clipboard) => {
+                            if let Err(e) = clipboard.set_text(ip_to_copy.clone()) {
+                                error!("Failed to copy IP to clipboard: {} for IP: {}", e, ip_to_copy);
+                            } else {
+                                // Optionally: Add a status message to App to show "Copied!"
+                                // For now, we just log errors or success.
+                                log::info!("Copied to clipboard: {}", ip_to_copy);
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to initialize clipboard: {}", e);
+                        }
+                    }
+                }
                 None
             }
             _ => None,

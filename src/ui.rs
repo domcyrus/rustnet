@@ -8,7 +8,7 @@ use ratatui::{
 };
 use std::collections::HashMap;
 
-use crate::app::{App, ViewMode};
+use crate::app::{App, DetailFocusField, ViewMode}; // Added DetailFocusField
 use crate::network::{Connection, Protocol};
 
 pub type Terminal<B> = RatatuiTerminal<B>;
@@ -314,6 +314,19 @@ fn draw_connection_details(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
         .split(area);
 
     let mut details_text: Vec<Line> = Vec::new();
+
+    // Styles for focused IP
+    let local_ip_style = if app.detail_focus == DetailFocusField::LocalIp {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let remote_ip_style = if app.detail_focus == DetailFocusField::RemoteIp {
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+
     details_text.push(Line::from(vec![
         Span::styled(
             format!("{}: ", app.i18n.get("protocol")),
@@ -331,7 +344,7 @@ fn draw_connection_details(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
             format!("{}: ", app.i18n.get("local_address")),
             Style::default().fg(Color::Yellow),
         ),
-        Span::raw(local_display),
+        Span::styled(local_display, local_ip_style), // Apply style
     ]));
 
     details_text.push(Line::from(vec![
@@ -339,7 +352,7 @@ fn draw_connection_details(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
             format!("{}: ", app.i18n.get("remote_address")),
             Style::default().fg(Color::Yellow),
         ),
-        Span::raw(remote_display),
+        Span::styled(remote_display, remote_ip_style), // Apply style
     ]));
 
     if app.show_locations && !conn.remote_addr.ip().is_unspecified() {
@@ -382,13 +395,18 @@ fn draw_connection_details(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
         Span::raw(format!("{:?}", conn.age())),
     ]));
 
-    details_text.push(Line::from(""));
+    details_text.push(Line::from("")); // Spacer
+    details_text.push(Line::from(Span::styled(
+        "Use Up/Down to select IP, 'c' to copy.", // Hint text
+        Style::default().fg(Color::DarkGray),
+    )));
     details_text.push(Line::from(vec![Span::styled(
         format!("{} (p)", app.i18n.get("press_for_process_details")),
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::ITALIC),
     )]));
+
 
     let details = Paragraph::new(details_text)
         .block(
