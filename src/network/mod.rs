@@ -220,6 +220,7 @@ pub struct NetworkMonitor {
     filter_localhost: bool,
     local_ips: std::collections::HashSet<IpAddr>,
     last_packet_check: Instant,
+    initial_packet_processing_done: bool, // New flag
 }
 
 impl NetworkMonitor {
@@ -312,6 +313,7 @@ impl NetworkMonitor {
             // Initialize last_packet_check to a time in the past
             // to ensure the first call to process_packets runs.
             last_packet_check: Instant::now() - Duration::from_millis(200),
+            initial_packet_processing_done: false, // Initialize the new flag
         })
     }
 
@@ -380,7 +382,32 @@ impl NetworkMonitor {
     /// Process packets from capture
     fn process_packets(&mut self) -> Result<()> {
         log::debug!("NetworkMonitor::process_packets - Entered process_packets");
-        // Only check packets every 100ms to avoid too frequent checks
+
+        // If it's the very first run (during App::start_capture), be extremely lightweight.
+        if !self.initial_packet_processing_done {
+            log::debug!("NetworkMonitor::process_packets - First run, skipping detailed packet processing for quick startup.");
+            // Optionally, process a single packet or none at all.
+            // For now, let's try processing 0-1 packets to see if it helps.
+            if let Some(ref mut cap) = self.capture {
+                match cap.next_packet() {
+                    Ok(packet) => {
+                        process_single_packet(packet.data, &mut self.connections, &self.local_ips, &self.interface);
+                        log::debug!("NetworkMonitor::process_packets - Processed one packet on first run.");
+                    }
+                    Err(pcap::Error::TimeoutExpired) => {
+                        log::debug!("NetworkMonitor::process_packets - No packets on first check.");
+                    }
+                    Err(e) => {
+                        error!("NetworkMonitor::process_packets - Error reading packet on first run: {}", e);
+                    }
+                }
+            }
+            self.initial_packet_processing_done = true;
+            self.last_packet_check = Instant::now(); // Update timestamp
+            return Ok(());
+        }
+
+        // Only check packets every 100ms to avoid too frequent checks for subsequent runs
         if self.last_packet_check.elapsed() < Duration::from_millis(100) {
             return Ok(());
         }
