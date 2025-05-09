@@ -55,6 +55,8 @@ pub struct App {
     next_order_index: usize,
     /// DNS cache to avoid repeated lookups
     dns_cache: HashMap<IpAddr, String>,
+    /// Shared connection data updated by the background thread
+    connections_data_shared: Option<Arc<Mutex<Vec<Connection>>>>,
 }
 
 impl App {
@@ -77,6 +79,7 @@ impl App {
             connection_order: HashMap::new(),
             next_order_index: 0,
             dns_cache: HashMap::new(),
+            connections_data_shared: None,
         })
     }
 
@@ -97,6 +100,7 @@ impl App {
         let monitor_clone = Arc::clone(&monitor);
         let connections_update = Arc::new(Mutex::new(Vec::new()));
         let connections_update_clone = Arc::clone(&connections_update);
+        self.connections_data_shared = Some(connections_update_clone.clone()); // Store Arc for on_tick
 
         thread::spawn(move || -> Result<()> {
             loop {
@@ -233,11 +237,9 @@ impl App {
         // Store currently selected connection (if any)
         let selected = self.selected_connection.clone();
 
-        // Update connections from network monitor if available
-        if let Some(monitor_arc) = &self.network_monitor {
-            let mut monitor = monitor_arc.lock().unwrap(); // Lock the mutex
-            let mut new_connections = monitor.get_connections()?;
-            drop(monitor); // Release the mutex lock before self-mutation
+        // Update connections from shared data updated by the background thread
+        if let Some(shared_data_arc) = &self.connections_data_shared {
+            let mut new_connections = shared_data_arc.lock().unwrap().clone();
 
             // Extract keys for sorting
             let mut keys_to_process = Vec::new();
@@ -287,6 +289,9 @@ impl App {
                 self.selected_connection_idx = 0;
                 self.selected_connection = Some(self.connections[0].clone());
             }
+        } else {
+            // connections_data_shared is None, likely before start_capture fully initializes it.
+            // self.connections will not be updated this tick.
         }
 
         Ok(())
