@@ -106,6 +106,7 @@ fn get_service_name_raw(port: u16, protocol: Protocol) -> Option<&'static str> {
         (Protocol::TCP, 80) => Some("HTTP"),
         (Protocol::TCP, 110) => Some("POP3"),
         (Protocol::UDP, 123) => Some("NTP"),
+        (Protocol::UDP, 137) => Some("NetBIOS-NS"), // NetBIOS Name Service
         (Protocol::TCP, 143) => Some("IMAP"),
         (Protocol::UDP, 161) => Some("SNMP"),
         (Protocol::UDP, 162) => Some("SNMPTRAP"),
