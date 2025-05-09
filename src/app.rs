@@ -500,8 +500,8 @@ impl App {
                     // but is_global equivalent is often !is_loopback && !is_multicast && !is_link_local && !is_unique_local etc.
                     // We'll rely on not being loopback, multicast, link-local, or documentation.
                     || (ipv6.segments()[0] & 0xfe00) == 0xfc00 // ULA fc00::/7
-                    || ipv6.is_link_local() 
-                    || ipv6.is_documentation() // 2001:db8::/32
+                    || (ipv6.segments()[0] & 0xffc0) == 0xfe80 // Link-local fe80::/10
+                    || (ipv6.segments()[0] == 0x2001 && ipv6.segments()[1] == 0x0db8) // Documentation 2001:db8::/32
                     || ipv6.is_multicast()
                     || ipv6.is_unspecified()),
             };

@@ -588,29 +588,32 @@ fn draw_process_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> 
 
         // Find all connections for this process
         let pid = process.pid;
-        let connections: Vec<&Connection> = app
+        // Clone connections for this PID to avoid borrow issues later with app.format_socket_addr
+        let connections_for_pid: Vec<Connection> = app
             .connections
             .iter()
             .filter(|c| c.pid == Some(pid))
+            .cloned() // Clone the Connection objects
             .collect();
 
-        let connections_count = connections.len();
+        let connections_count = connections_for_pid.len();
 
-        // Collect addresses to format to avoid borrowing issues
-        let addresses_to_format: Vec<(SocketAddr, SocketAddr)> = connections
+        // Collect addresses to format from the cloned connections
+        let addresses_to_format: Vec<(SocketAddr, SocketAddr)> = connections_for_pid
             .iter()
             .map(|conn| (conn.local_addr, conn.remote_addr))
             .collect();
 
         let mut formatted_proc_conn_addresses = Vec::new();
         for (local_addr, remote_addr) in addresses_to_format {
-            let local_display = app.format_socket_addr(local_addr);
-            let remote_display = app.format_socket_addr(remote_addr);
+            let local_display = app.format_socket_addr(local_addr); // Mutably borrows app
+            let remote_display = app.format_socket_addr(remote_addr); // Mutably borrows app
             formatted_proc_conn_addresses.push((local_display, remote_display));
         }
 
         let mut items = Vec::new();
-        for (idx, conn) in connections.iter().enumerate() {
+        // Iterate over the cloned connections_for_pid
+        for (idx, conn) in connections_for_pid.iter().enumerate() {
             let (local_display, remote_display) = formatted_proc_conn_addresses[idx].clone();
 
             items.push(ListItem::new(Line::from(vec![
