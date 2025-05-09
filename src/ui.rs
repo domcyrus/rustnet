@@ -116,8 +116,8 @@ fn draw_overview(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> {
 fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
     let widths = [
         Constraint::Length(6),  // Protocol
-        Constraint::Length(22), // Local
-        Constraint::Length(22), // Remote
+        Constraint::Length(28), // Local Address - Increased width
+        Constraint::Length(28), // Remote Address - Increased width
         Constraint::Length(12), // State
         Constraint::Length(10), // Service
         Constraint::Min(10),    // Process
