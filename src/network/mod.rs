@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
-use log::{debug, error, info};
-use maxminddb::geoip2;
+use log::{error, info};
 use pcap::{Capture, Device};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};

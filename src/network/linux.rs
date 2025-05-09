@@ -266,7 +266,6 @@ fn try_ss_command(connection: &Connection) -> Option<Process> {
     let proto_flag = match connection.protocol {
         Protocol::TCP => "-t",
         Protocol::UDP => "-u",
-        _ => return None,
     };
 
     let local_port = connection.local_addr.port();
@@ -352,7 +351,6 @@ fn try_netstat_command(connection: &Connection) -> Option<Process> {
                     fields[proto_idx].eq_ignore_ascii_case("udp")
                         || fields[proto_idx].eq_ignore_ascii_case("udp6")
                 }
-                _ => false,
             };
 
             if matches_protocol
