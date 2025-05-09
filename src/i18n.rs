@@ -251,6 +251,10 @@ impl I18n {
             "Toggle IP location display".to_string(),
         );
         self.translations.insert(
+            "help_toggle_dns".to_string(),
+            "Toggle DNS resolution".to_string(),
+        );
+        self.translations.insert(
             "help_toggle_help".to_string(),
             "Toggle help screen".to_string(),
         );

@@ -4,15 +4,19 @@ use std::process::Command;
 
 use super::{Connection, ConnectionState, NetworkMonitor, Process, Protocol};
 
+/// Get platform-specific connections for Windows
+pub fn get_platform_connections(
+    monitor: &NetworkMonitor,
+    connections: &mut Vec<Connection>,
+) -> Result<()> {
+    // Use netstat on Windows for both TCP and UDP
+    monitor.get_connections_from_netstat(connections)?;
+
+    Ok(())
+}
+
+// Methods below remain part of NetworkMonitor impl
 impl NetworkMonitor {
-    /// Get connections using platform-specific methods
-    pub(super) fn get_platform_connections(&self, connections: &mut Vec<Connection>) -> Result<()> {
-        // Use netstat on Windows for both TCP and UDP
-        self.get_connections_from_netstat(connections)?;
-
-        Ok(())
-    }
-
     /// Get platform-specific process for a connection
     pub(super) fn get_platform_process_for_connection(
         &self,

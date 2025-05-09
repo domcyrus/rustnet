@@ -64,13 +64,9 @@ pub fn get_interface_addresses(interface: &str) -> Result<Vec<IpAddr>> {
 
 /// Get platform-specific connections for macOS
 pub fn get_platform_connections(
+    monitor: &NetworkMonitor,
     connections: &mut Vec<Connection>,
-    interface: &Option<String>,
 ) -> Result<()> {
-    // Create a temporary NetworkMonitor to use its methods
-    // We only need this to access network-related methods
-    let monitor = NetworkMonitor::new(interface.clone())?;
-
     // Try different commands to maximize connection detection
     // First try netstat - more reliable on macOS than lsof in some cases
     monitor.get_connections_from_netstat(connections)?;
@@ -85,7 +81,7 @@ pub fn get_platform_connections(
     );
 
     // Filter by interface if specified
-    if let Some(iface) = interface {
+    if let Some(iface) = &monitor.interface {
         debug!("Filtering connections for interface: {}", iface);
         let connection_count_before = connections.len();
 

@@ -1,19 +1,22 @@
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
+use pnet_datalink;
 use std::net::{IpAddr, SocketAddr};
 use std::process::Command;
 
 use super::{Connection, ConnectionState, NetworkMonitor, Process, Protocol};
 
-impl NetworkMonitor {
-    /// Get connections using platform-specific methods
-    pub(super) fn get_platform_connections(&self, connections: &mut Vec<Connection>) -> Result<()> {
-        // Debug output
-        debug!("Attempting to get connections using platform-specific methods");
+/// Get platform-specific connections for Linux
+pub fn get_platform_connections(
+    monitor: &NetworkMonitor,
+    connections: &mut Vec<Connection>,
+) -> Result<()> {
+    // Debug output
+    debug!("Attempting to get connections using platform-specific methods");
 
         // Use ss command to get TCP connections
         info!("Running ss command to get TCP connections...");
-        let ss_result = self.get_connections_from_ss(connections);
+        let ss_result = monitor.get_connections_from_ss(connections);
         if let Err(e) = &ss_result {
             error!("Error running ss command: {}", e);
         } else {
@@ -22,7 +25,7 @@ impl NetworkMonitor {
 
         // Use netstat to get UDP connections
         info!("Running netstat command to get UDP connections...");
-        let netstat_result = self.get_connections_from_netstat(connections);
+        let netstat_result = monitor.get_connections_from_netstat(connections);
         if let Err(e) = &netstat_result {
             error!("Error running netstat command: {}", e);
         } else {
@@ -38,7 +41,7 @@ impl NetworkMonitor {
         // If we didn't get any connections from commands, try using pcap
         if connections.is_empty() {
             warn!("No connections found from commands, trying packet capture...");
-            self.get_connections_from_pcap(connections)?;
+            monitor.get_connections_from_pcap(connections)?;
             debug!(
                 "Found {} connections from packet capture",
                 connections.len()
@@ -46,8 +49,14 @@ impl NetworkMonitor {
         }
 
         Ok(())
-    }
+    // Note: get_linux_process_for_connection, get_process_by_pid, 
+    // get_connections_from_ss, get_connections_from_netstat, get_connections_from_pcap
+    // remain methods on NetworkMonitor as they are called via `monitor.method_name()`
+    Ok(())
+}
 
+// Methods below remain part of NetworkMonitor impl
+impl NetworkMonitor {
     /// Get Linux-specific process for a connection
     pub(super) fn get_linux_process_for_connection(
         &self,

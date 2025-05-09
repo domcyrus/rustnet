@@ -562,17 +562,17 @@ impl NetworkMonitor {
         #[cfg(target_os = "linux")]
         {
             // Use Linux-specific implementation
-            linux::get_platform_connections(connections, &self.interface)?;
+            linux::get_platform_connections(self, connections)?;
         }
         #[cfg(target_os = "macos")]
         {
             // Use macOS-specific implementation
-            macos::get_platform_connections(connections, &self.interface)?;
+            macos::get_platform_connections(self, connections)?;
         }
         #[cfg(target_os = "windows")]
         {
             // Use Windows-specific implementation
-            windows::get_platform_connections(connections, &self.interface)?;
+            windows::get_platform_connections(self, connections)?;
         }
 
         Ok(())
