@@ -205,6 +205,10 @@ impl App {
                 self.show_locations = !self.show_locations;
                 None
             }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => { // Ctrl + d
+                self.dump_connections_to_log();
+                None
+            }
             KeyCode::Char('d') => {
                 self.show_hostnames = !self.show_hostnames;
                 // Clear DNS cache when toggling off to ensure fresh lookups when toggled on again
@@ -213,10 +217,7 @@ impl App {
                 }
                 None
             }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => { // Ctrl + d
-                self.dump_connections_to_log();
-                None
-            }
+            // This block will be moved up
             _ => None,
         }
     }
