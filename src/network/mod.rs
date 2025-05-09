@@ -217,19 +217,13 @@ impl NetworkMonitor {
 
         // Get all local IP addresses
         let mut local_ips = std::collections::HashSet::new();
-        match pnet_datalink::interfaces() {
-            Ok(interfaces) => {
-                for iface in interfaces {
-                    for ip_network in iface.ips {
-                        local_ips.insert(ip_network.ip());
-                    }
-                }
-            }
-            Err(e) => {
-                error!("Failed to get network interfaces: {}", e);
-                // Continue without local IP knowledge, is_outgoing heuristic will be less reliable
+        let interfaces = pnet_datalink::interfaces();
+        for iface in interfaces {
+            for ip_network in iface.ips {
+                local_ips.insert(ip_network.ip());
             }
         }
+
         if local_ips.is_empty() {
             log::warn!("Could not determine any local IP addresses. Connection directionality might be inaccurate.");
         } else {
