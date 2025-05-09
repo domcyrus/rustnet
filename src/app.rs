@@ -207,7 +207,7 @@ impl App {
             }
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => { // Ctrl + d
                 self.test_method(); // Call the new test method
-                self.dump_connections_to_log();
+                self.log_all_connections(); // Renamed method call
                 None
             }
             KeyCode::Char('d') => {
