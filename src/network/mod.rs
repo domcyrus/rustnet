@@ -322,22 +322,22 @@ impl NetworkMonitor {
 
     /// Get active connections
     pub fn get_connections(&mut self) -> Result<Vec<Connection>> {
-        log::error!("NetworkMonitor::get_connections - DIAGNOSTIC: Starting to fetch connections");
+        log::debug!("NetworkMonitor::get_connections - Starting to fetch connections");
         // Process packets from capture
-        log::error!("NetworkMonitor::get_connections - DIAGNOSTIC: Calling process_packets");
+        log::debug!("NetworkMonitor::get_connections - Calling process_packets");
         self.process_packets()?;
-        log::error!("NetworkMonitor::get_connections - DIAGNOSTIC: process_packets returned");
+        log::debug!("NetworkMonitor::get_connections - process_packets returned");
 
         // Get connections from system methods
         let mut connections = Vec::new();
 
         // Use platform-specific code to get connections
-        log::error!("NetworkMonitor::get_connections - DIAGNOSTIC: Calling get_platform_connections");
+        log::debug!("NetworkMonitor::get_connections - Calling get_platform_connections");
         self.get_platform_connections(&mut connections)?;
-        log::error!("NetworkMonitor::get_connections - DIAGNOSTIC: get_platform_connections returned {} connections", connections.len());
+        log::debug!("NetworkMonitor::get_connections - get_platform_connections returned {} connections", connections.len());
 
         // Add connections from packet capture
-        log::error!("NetworkMonitor::get_connections - DIAGNOSTIC: Merging packet capture connections (current count: {})", self.connections.len());
+        log::debug!("NetworkMonitor::get_connections - Merging packet capture connections (current count: {})", self.connections.len());
         for (_, conn) in &self.connections {
             // Check if this connection exists in the list already
             let exists = connections.iter().any(|c| {
@@ -373,13 +373,13 @@ impl NetworkMonitor {
                 !(conn.local_addr.ip().is_loopback() && conn.remote_addr.ip().is_loopback())
             });
         }
-        log::error!("NetworkMonitor::get_connections - DIAGNOSTIC: Finished fetching connections. Total: {}", connections.len());
+        log::info!("NetworkMonitor::get_connections - Finished fetching connections. Total: {}", connections.len());
         Ok(connections)
     }
 
     /// Process packets from capture
     fn process_packets(&mut self) -> Result<()> {
-        log::error!("NetworkMonitor::process_packets - DIAGNOSTIC: Entered process_packets");
+        log::debug!("NetworkMonitor::process_packets - Entered process_packets");
         // Only check packets every 100ms to avoid too frequent checks
         if self.last_packet_check.elapsed() < Duration::from_millis(100) {
             return Ok(());
@@ -569,11 +569,12 @@ impl NetworkMonitor {
 
         // Get packets from the capture
         if let Some(ref mut cap) = self.capture {
-            log::error!("NetworkMonitor::process_packets - DIAGNOSTIC: Starting packet processing loop (up to 100 iterations)");
+            log::debug!("NetworkMonitor::process_packets - Starting packet processing loop (up to 20 iterations)");
             let loop_start_time = Instant::now();
             let mut packets_processed_in_loop = 0;
-            // Process up to 100 packets
-            for i in 0..100 {
+            // Process up to a smaller number of packets to reduce blocking time
+            const MAX_PACKETS_PER_CALL: usize = 20;
+            for i in 0..MAX_PACKETS_PER_CALL {
                 match cap.next_packet() {
                     Ok(packet) => {
                         packets_processed_in_loop += 1;
@@ -582,25 +583,26 @@ impl NetworkMonitor {
                     }
                     Err(pcap::Error::TimeoutExpired) => {
                         // This is expected if timeout(0) is working and no packets are available
-                        // log::trace!("NetworkMonitor::process_packets - cap.next_packet() timed out (iteration {})", i); // Too verbose for error log
-                        continue; // Try next iteration
+                        log::trace!("NetworkMonitor::process_packets - cap.next_packet() timed out (iteration {})", i);
+                        break; // No more packets for now, exit loop
                     }
                     Err(e) => {
-                        log::error!("NetworkMonitor::process_packets - DIAGNOSTIC: Error reading packet (iteration {}): {}", i, e);
+                        error!("NetworkMonitor::process_packets - Error reading packet (iteration {}): {}", i, e);
                         break; // Error reading packet
                     }
                 }
             }
             let loop_duration = loop_start_time.elapsed();
-            log::error!(
-                "NetworkMonitor::process_packets - DIAGNOSTIC: Packet processing loop finished in {:?}. Packets processed: {}/100 iterations.",
+            log::debug!(
+                "NetworkMonitor::process_packets - Packet processing loop finished in {:?}. Packets processed: {}/{} iterations.",
                 loop_duration,
-                packets_processed_in_loop
+                packets_processed_in_loop,
+                MAX_PACKETS_PER_CALL
             );
         } else {
-            log::error!("NetworkMonitor::process_packets - DIAGNOSTIC: No capture device available.");
+            log::warn!("NetworkMonitor::process_packets - No capture device available.");
         }
-        log::error!("NetworkMonitor::process_packets - DIAGNOSTIC: Exiting process_packets");
+        log::debug!("NetworkMonitor::process_packets - Exiting process_packets");
         Ok(())
     }
 
