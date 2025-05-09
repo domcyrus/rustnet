@@ -141,7 +141,21 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
     let mut rows = Vec::new();
-    for conn in &app.connections {
+    // Collect addresses to format to avoid borrowing issues with app.format_socket_addr
+    let addresses_to_format: Vec<(SocketAddr, SocketAddr)> = app
+        .connections
+        .iter()
+        .map(|conn| (conn.local_addr, conn.remote_addr))
+        .collect();
+
+    let mut formatted_addresses = Vec::new();
+    for (local_addr, remote_addr) in addresses_to_format {
+        let local_display = app.format_socket_addr(local_addr);
+        let remote_display = app.format_socket_addr(remote_addr);
+        formatted_addresses.push((local_display, remote_display));
+    }
+
+    for (idx, conn) in app.connections.iter().enumerate() {
         let pid_str = conn
             .pid
             .map(|p| p.to_string())
@@ -150,9 +164,7 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
         let process_str = conn.process_name.clone().unwrap_or_else(|| "-".to_string());
         let process_display = format!("{} ({})", process_str, pid_str);
 
-        // Format addresses with hostnames if enabled - no mutable borrowing
-        let local_display = app.format_socket_addr(conn.local_addr);
-        let remote_display = app.format_socket_addr(conn.remote_addr);
+        let (local_display, remote_display) = formatted_addresses[idx].clone();
         let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
 
         let cells = [
@@ -306,7 +318,15 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
         return Ok(());
     }
 
-    let conn = &app.connections[app.selected_connection_idx];
+    let conn_idx = app.selected_connection_idx;
+    let local_addr_to_format = app.connections[conn_idx].local_addr;
+    let remote_addr_to_format = app.connections[conn_idx].remote_addr;
+
+    // Format addresses before further immutable borrows of app.connections
+    let local_display = app.format_socket_addr(local_addr_to_format);
+    let remote_display = app.format_socket_addr(remote_addr_to_format);
+    
+    let conn = &app.connections[conn_idx]; // Now we can immutably borrow again
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -335,10 +355,7 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
         Span::raw(conn.protocol.to_string()),
     ]));
 
-    // Format addresses with hostnames if enabled
-    let local_display = app.format_socket_addr(conn.local_addr);
-    let remote_display = app.format_socket_addr(conn.remote_addr);
-
+    // Use pre-formatted addresses
     details_text.push(Line::from(vec![
         Span::styled(
             format!("{}: ", app.i18n.get("local_address")),
@@ -578,11 +595,22 @@ fn draw_process_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> 
 
         let connections_count = connections.len();
 
+        // Collect addresses to format to avoid borrowing issues
+        let addresses_to_format: Vec<(SocketAddr, SocketAddr)> = connections
+            .iter()
+            .map(|conn| (conn.local_addr, conn.remote_addr))
+            .collect();
+
+        let mut formatted_proc_conn_addresses = Vec::new();
+        for (local_addr, remote_addr) in addresses_to_format {
+            let local_display = app.format_socket_addr(local_addr);
+            let remote_display = app.format_socket_addr(remote_addr);
+            formatted_proc_conn_addresses.push((local_display, remote_display));
+        }
+
         let mut items = Vec::new();
-        for conn in &connections {
-            // Format addresses with hostnames if enabled
-            let local_display = app.format_socket_addr(conn.local_addr);
-            let remote_display = app.format_socket_addr(conn.remote_addr);
+        for (idx, conn) in connections.iter().enumerate() {
+            let (local_display, remote_display) = formatted_proc_conn_addresses[idx].clone();
 
             items.push(ListItem::new(Line::from(vec![
                 Span::styled(

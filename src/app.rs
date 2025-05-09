@@ -482,17 +482,20 @@ impl App {
             "localhost".to_string()
         } else if ip.is_unspecified() {
             "*".to_string()
-        } else if ip.is_global() { // Attempt lookup for global IPs
+        } else if !(ip.is_private()
+            || ip.is_loopback()
+            || ip.is_link_local()
+            || ip.is_broadcast()
+            || ip.is_documentation()
+            || ip.is_multicast()
+            || ip.is_unspecified())
+        {
+            // Attempt lookup for likely global IPs
             debug!("Attempting reverse DNS lookup for {}", ip);
             match dns_lookup::lookup_addr(&ip) {
-                Ok(hostnames) => {
-                    if let Some(hostname) = hostnames.first() {
-                        debug!("Resolved {} to {}", ip, hostname);
-                        hostname.clone()
-                    } else {
-                        debug!("No hostnames found for {}", ip);
-                        ip.to_string() // No hostnames returned
-                    }
+                Ok(hostname) => { // dns_lookup v2.0.4 returns String, not Vec<String>
+                    debug!("Resolved {} to {}", ip, &hostname);
+                    hostname // It's already a String
                 }
                 Err(e) => {
                     debug!("Reverse DNS lookup failed for {}: {}", ip, e);
