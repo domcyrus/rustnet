@@ -200,7 +200,7 @@ pub(super) fn try_netstat_command(connection: &Connection) -> Option<Process> {
 }
 
 /// Try Windows API to get process information
-pub(super) fn try_windows_api(connection: &Connection) -> Option<Process> {
+pub(super) fn try_windows_api(_connection: &Connection) -> Option<Process> {
     // This would require using the Windows API (like GetExtendedTcpTable)
     // For simplicity, we'll just return None as a placeholder
     // In a real implementation, you'd use the windows crate to make API calls

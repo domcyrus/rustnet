@@ -130,7 +130,7 @@ impl Connection {
         state: ConnectionState,
     ) -> Self {
         let now = SystemTime::now();
-        Self {
+        let mut new_conn = Self {
             protocol,
             local_addr,
             remote_addr,
@@ -143,18 +143,15 @@ impl Connection {
             packets_received: 0,
             created_at: now,
             last_activity: now,
-            // service_port: None, // Field removed
-            service_name: None, // Initialize, will be set below
+            service_name: None, // Will be set below
         };
 
         // Determine service name
-        // let mut determined_service_port: Option<u16> = None; // Variable removed
         let mut determined_service_name_str: Option<&'static str> = None;
 
         if state == ConnectionState::Listen {
             // For listening sockets, the service is always on the local port
             if let Some(name_str) = get_service_name_raw(local_addr.port(), protocol) {
-                // determined_service_port = Some(local_addr.port()); // Line removed
                 determined_service_name_str = Some(name_str);
             }
         } else {
@@ -166,34 +163,17 @@ impl Connection {
             if local_is_service {
                 // If local port is a service (e.g., running a server), prioritize it
                 if let Some(name_str) = get_service_name_raw(local_addr.port(), protocol) {
-                    // determined_service_port = Some(local_addr.port()); // Line removed
                     determined_service_name_str = Some(name_str);
                 }
             } else if remote_is_service {
                 // If local is not a service (or ephemeral) and remote is, then remote defines the service
                 if let Some(name_str) = get_service_name_raw(remote_addr.port(), protocol) {
-                    // determined_service_port = Some(remote_addr.port()); // Line removed
                     determined_service_name_str = Some(name_str);
                 }
             }
         }
         
-        let new_conn = Self {
-            protocol,
-            local_addr,
-            remote_addr,
-            state,
-            pid: None,
-            process_name: None,
-            bytes_sent: 0,
-            bytes_received: 0,
-            packets_sent: 0,
-            packets_received: 0,
-            created_at: now,
-            last_activity: now,
-            // service_port: determined_service_port, // Field removed
-            service_name: determined_service_name_str.map(|s| s.to_string()),
-        };
+        new_conn.service_name = determined_service_name_str.map(|s| s.to_string());
         new_conn // Return the fully initialized connection
     }
 
@@ -255,7 +235,7 @@ impl NetworkMonitor {
             info!("Opening capture on interface: {}", iface);
             let cap = Capture::from_device(device)?
                 .immediate_mode(true)
-                .timeout(-1) // Set to non-blocking
+                .timeout(0) // Return immediately if no packets are available
                 .snaplen(65535)
                 .promisc(true)
                 .open()?;
@@ -268,7 +248,7 @@ impl NetworkMonitor {
             info!("Opening capture on default interface: {}", device.name);
             let cap = Capture::from_device(device)?
                 .immediate_mode(true)
-                .timeout(-1) // Set to non-blocking
+                .timeout(0) // Return immediately if no packets are available
                 .snaplen(65535)
                 .promisc(true)
                 .open()?;
