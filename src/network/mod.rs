@@ -157,6 +157,7 @@ pub struct NetworkMonitor {
     // geo_db: Option<maxminddb::Reader<Vec<u8>>>, // Field removed as unused (dependent on get_ip_location)
     collect_process_info: bool,
     filter_localhost: bool,
+    local_ips: std::collections::HashSet<IpAddr>,
     last_packet_check: Instant,
 }
 
@@ -214,9 +215,31 @@ impl NetworkMonitor {
         //     debug!("MaxMind GeoIP database not found");
         // }
 
+        // Get all local IP addresses
+        let mut local_ips = std::collections::HashSet::new();
+        match pnet_datalink::interfaces() {
+            Ok(interfaces) => {
+                for iface in interfaces {
+                    for ip_network in iface.ips {
+                        local_ips.insert(ip_network.ip());
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to get network interfaces: {}", e);
+                // Continue without local IP knowledge, is_outgoing heuristic will be less reliable
+            }
+        }
+        if local_ips.is_empty() {
+            log::warn!("Could not determine any local IP addresses. Connection directionality might be inaccurate.");
+        } else {
+            log::debug!("Found local IPs: {:?}", local_ips);
+        }
+
         Ok(Self {
             interface,
             capture,
+            local_ips,
             connections: HashMap::new(),
             // geo_db, // Field removed
             collect_process_info: false,
@@ -293,10 +316,13 @@ impl NetworkMonitor {
 
         // Define a helper function to process a single packet
         // This avoids the borrowing issues
-        let process_single_packet =
-            |data: &[u8],
-             connections: &mut HashMap<String, Connection>,
-             _interface: &Option<String>| {
+        // Define a helper function to process a single packet
+        // This avoids some borrowing issues with self.local_ips if it were passed directly
+        // Instead, we pass the HashMap and the local_ips set.
+        let process_single_packet = |data: &[u8],
+                                     monitor_connections: &mut HashMap<String, Connection>,
+                                     local_ips_set: &std::collections::HashSet<IpAddr>,
+                                     _interface: &Option<String>| {
                 // Check if it's an ethernet frame
                 if data.len() < 14 {
                     return; // Too short for Ethernet
@@ -335,18 +361,7 @@ impl NetworkMonitor {
                 }
 
                 // Determine if packet is outgoing based on IP address
-                // For now using a simple heuristic - consider private IPs as local
-                let is_outgoing = match src_ip {
-                    IpAddr::V4(ipv4) => {
-                        let octets = ipv4.octets();
-                        // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8
-                        octets[0] == 10
-                            || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31)
-                            || (octets[0] == 192 && octets[1] == 168)
-                            || octets[0] == 127
-                    }
-                    IpAddr::V6(_) => false, // Simplification
-                };
+                let is_outgoing = local_ips_set.contains(&src_ip);
 
                 match protocol {
                     6 => {
@@ -396,7 +411,7 @@ impl NetworkMonitor {
                             remote_addr
                         );
 
-                        if let Some(conn) = connections.get_mut(&conn_key) {
+                        if let Some(conn) = monitor_connections.get_mut(&conn_key) {
                             conn.last_activity = SystemTime::now();
                             if is_outgoing {
                                 conn.packets_sent += 1;
@@ -417,7 +432,7 @@ impl NetworkMonitor {
                                 conn.packets_received += 1;
                                 conn.bytes_received += data.len() as u64;
                             }
-                            connections.insert(conn_key, conn);
+                            monitor_connections.insert(conn_key, conn);
                         }
                     }
                     17 => {
@@ -448,7 +463,7 @@ impl NetworkMonitor {
                             remote_addr
                         );
 
-                        if let Some(conn) = connections.get_mut(&conn_key) {
+                        if let Some(conn) = monitor_connections.get_mut(&conn_key) {
                             conn.last_activity = SystemTime::now();
                             if is_outgoing {
                                 conn.packets_sent += 1;
@@ -472,7 +487,7 @@ impl NetworkMonitor {
                                 conn.packets_received += 1;
                                 conn.bytes_received += data.len() as u64;
                             }
-                            connections.insert(conn_key, conn);
+                            monitor_connections.insert(conn_key, conn);
                         }
                     }
                     _ => {} // Ignore other protocols
@@ -486,7 +501,7 @@ impl NetworkMonitor {
                 match cap.next_packet() {
                     Ok(packet) => {
                         // Use the local helper function to avoid borrowing issues
-                        process_single_packet(packet.data, &mut self.connections, &self.interface);
+                        process_single_packet(packet.data, &mut self.connections, &self.local_ips, &self.interface);
                     }
                     Err(_) => {
                         break; // No more packets or error
