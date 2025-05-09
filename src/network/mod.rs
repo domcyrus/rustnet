@@ -89,7 +89,7 @@ pub struct Connection {
     pub packets_received: u64,
     pub created_at: SystemTime,
     pub last_activity: SystemTime,
-    pub service_port: Option<u16>,
+    // pub service_port: Option<u16>, // Field removed as it's unused
     pub service_name: Option<String>,
 }
 
@@ -143,18 +143,18 @@ impl Connection {
             packets_received: 0,
             created_at: now,
             last_activity: now,
-            service_port: None, // Initialize, will be set below
+            // service_port: None, // Field removed
             service_name: None, // Initialize, will be set below
         };
 
         // Determine service name
-        let mut determined_service_port: Option<u16> = None;
+        // let mut determined_service_port: Option<u16> = None; // Variable removed
         let mut determined_service_name_str: Option<&'static str> = None;
 
         if state == ConnectionState::Listen {
             // For listening sockets, the service is always on the local port
             if let Some(name_str) = get_service_name_raw(local_addr.port(), protocol) {
-                determined_service_port = Some(local_addr.port());
+                // determined_service_port = Some(local_addr.port()); // Line removed
                 determined_service_name_str = Some(name_str);
             }
         } else {
@@ -166,19 +166,19 @@ impl Connection {
             if local_is_service {
                 // If local port is a service (e.g., running a server), prioritize it
                 if let Some(name_str) = get_service_name_raw(local_addr.port(), protocol) {
-                    determined_service_port = Some(local_addr.port());
+                    // determined_service_port = Some(local_addr.port()); // Line removed
                     determined_service_name_str = Some(name_str);
                 }
             } else if remote_is_service {
                 // If local is not a service (or ephemeral) and remote is, then remote defines the service
                 if let Some(name_str) = get_service_name_raw(remote_addr.port(), protocol) {
-                    determined_service_port = Some(remote_addr.port());
+                    // determined_service_port = Some(remote_addr.port()); // Line removed
                     determined_service_name_str = Some(name_str);
                 }
             }
         }
         
-        let mut new_conn = Self {
+        let new_conn = Self {
             protocol,
             local_addr,
             remote_addr,
@@ -191,7 +191,7 @@ impl Connection {
             packets_received: 0,
             created_at: now,
             last_activity: now,
-            service_port: determined_service_port,
+            // service_port: determined_service_port, // Field removed
             service_name: determined_service_name_str.map(|s| s.to_string()),
         };
         new_conn // Return the fully initialized connection
