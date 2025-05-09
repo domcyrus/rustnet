@@ -99,6 +99,19 @@ impl App {
         Ok(app)
     }
 
+    /// Dumps all current connections to the log file.
+    pub fn log_all_connections(&mut self) { // Renamed method
+        log::info!("Dumping all current connections to log:");
+        if self.connections.is_empty() {
+            log::info!("No connections to dump.");
+            return;
+        }
+        for (index, conn) in self.connections.iter().enumerate() {
+            log::info!("Connection [{}]: {:?}", index, conn);
+        }
+        log::info!("Finished dumping {} connections.", self.connections.len());
+    }
+
     /// Start network capture
     pub fn start_capture(&mut self) -> Result<()> {
         log::info!("App::start_capture - Starting network capture setup");
