@@ -543,4 +543,8 @@ impl App {
         self.dns_cache.insert(ip, name_to_cache.clone());
         format!("{}:{}", name_to_cache, addr.port())
     }
+
+    fn test_method(&mut self) { // New diagnostic method
+        log::info!("<<<<<< App::test_method CALLED >>>>>>");
+    }
 }
