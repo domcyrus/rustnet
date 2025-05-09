@@ -521,7 +521,9 @@ impl App {
             }
         } else { // For non-global IPs (private, link-local, etc.), use the IP string
             ip.to_string()
-        };
+        } // Closes the `if is_likely_global { ... } else { ... }` expression
+    } // Closes the `else { ... }` block that started on line 485
+    ; // Terminates the `let name_to_cache = ...;` statement
 
         // Cache the result (either hostname or IP string)
         self.dns_cache.insert(ip, name_to_cache.clone());
