@@ -7,8 +7,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::thread;
-// Remove Instant as start_time is being removed
-// use std::time::Instant; 
+use std::time::Instant; // Added Instant back as it's used in on_tick
 
 use crate::config::Config;
 use crate::i18n::I18n;
