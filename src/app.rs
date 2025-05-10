@@ -186,19 +186,37 @@ impl App {
         self.processes_data_shared = Some(Arc::clone(&processes_update_shared));
 
         thread::spawn(move || -> Result<()> { // process_thread_connections_arc is moved here
-            log::info!("Process Information Fetching Thread: SPAWNED AND RUNNING");
+            log::info!("PROCESS_THREAD: SPAWNED AND ENTERED CLOSURE");
             loop {
-                log::debug!("Process Information Fetching Thread: Loop start, sleeping for {:?}", PROCESS_INFO_UPDATE_INTERVAL);
+                log::info!("PROCESS_THREAD: Top of loop, about to sleep for {:?}.", PROCESS_INFO_UPDATE_INTERVAL);
                 thread::sleep(PROCESS_INFO_UPDATE_INTERVAL);
-                log::debug!("Process Information Fetching Thread: AWAKE after sleep");
+                log::info!("PROCESS_THREAD: Awake after sleep.");
 
-                let connections_to_check = { // Scope for connections_guard
-                    let connections_guard = process_thread_connections_arc.lock().unwrap(); // Use its thread-specific Arc clone
-                    connections_guard.clone() // Clone to release lock quickly
+                log::debug!("PROCESS_THREAD: Attempting to lock connections_data_shared (process_thread_connections_arc).");
+                let connections_to_check = {
+                    let connections_guard = match process_thread_connections_arc.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => {
+                            log::error!("PROCESS_THREAD: Failed to lock connections_data_shared (poisoned): {:?}", poisoned);
+                            return Err(anyhow::anyhow!("PROCESS_THREAD: Failed to lock connections_data_shared (poisoned)"));
+                        }
+                    };
+                    log::debug!("PROCESS_THREAD: Locked connections_data_shared successfully.");
+                    let cloned_conns = connections_guard.clone();
+                    drop(connections_guard); // Release lock ASAP
+                    log::debug!("PROCESS_THREAD: Cloned connections_to_check (count: {}), connections_data_shared lock released.", cloned_conns.len());
+                    cloned_conns
                 };
 
-                // Lock the Arc<Mutex<NetworkMonitor>> to get MutexGuard<NetworkMonitor>
-                let monitor_guard = monitor_clone_procs.lock().unwrap();
+                log::debug!("PROCESS_THREAD: Attempting to lock NetworkMonitor (monitor_clone_procs).");
+                let monitor_guard = match monitor_clone_procs.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => {
+                        log::error!("PROCESS_THREAD: Failed to lock NetworkMonitor (poisoned): {:?}", poisoned);
+                        return Err(anyhow::anyhow!("PROCESS_THREAD: Failed to lock NetworkMonitor (poisoned)"));
+                    }
+                };
+                log::debug!("PROCESS_THREAD: Locked NetworkMonitor successfully.");
                 let mut collected_processes_this_cycle: HashMap<u32, Process> = HashMap::new();
 
                 // Iterate over connections to gather or update process information
@@ -299,19 +317,42 @@ impl App {
                 }
 
                 if !final_processes_to_update.is_empty() {
-                    let mut processes_shared_guard = processes_update_shared.lock().unwrap();
-                    for (pid, process) in final_processes_to_update.iter() { // Iterate without consuming
-                        processes_shared_guard.insert(*pid, process.clone()); // Clone process
+                    log::debug!("PROCESS_THREAD: Attempting to lock processes_update_shared for writing ({} updates).", final_processes_to_update.len());
+                    let mut processes_shared_guard = match processes_update_shared.lock() {
+                        Ok(guard) => guard,
+                        Err(poisoned) => {
+                            log::error!("PROCESS_THREAD: Failed to lock processes_update_shared for writing (poisoned): {:?}", poisoned);
+                            return Err(anyhow::anyhow!("PROCESS_THREAD: Failed to lock processes_update_shared for writing (poisoned)"));
+                        }
+                    };
+                    log::debug!("PROCESS_THREAD: Locked processes_update_shared successfully for writing.");
+                    for (pid, process) in final_processes_to_update.iter() {
+                        processes_shared_guard.insert(*pid, process.clone());
                     }
-                    log::info!("Process Information Fetching Thread: Updated shared processes. Added: {}, Total in shared map: {}.",
+                    log::info!("PROCESS_THREAD: Committed {} processes to shared map. Total in shared map now: {}.",
                                 final_processes_to_update.len(), processes_shared_guard.len());
+                    drop(processes_shared_guard);
+                    log::debug!("PROCESS_THREAD: processes_update_shared lock released after writing.");
                 } else {
-                    // Lock for reading to log current count even if no updates were made this cycle
-                    let processes_shared_guard = processes_update_shared.lock().unwrap();
-                    log::debug!("Process Information Fetching Thread: No new/updated processes with non-empty names to commit. Total in shared map: {}.",
+                    let processes_shared_guard = match processes_update_shared.lock() {
+                         Ok(guard) => guard,
+                         Err(poisoned) => {
+                            log::error!("PROCESS_THREAD: Failed to lock processes_update_shared for reading count (poisoned): {:?}", poisoned);
+                            // Don't terminate the thread for a read failure if just logging count
+                            Vec::new(); // Dummy to satisfy type, though not used. Error already logged.
+                            // This path means we can't log the current count.
+                            log::warn!("PROCESS_THREAD: Could not read current count from poisoned processes_update_shared.");
+                            // Continue the loop
+                            continue;
+                        }
+                    };
+                    log::debug!("PROCESS_THREAD: No new/updated processes with non-empty names to commit. Total in shared map: {}.",
                                 processes_shared_guard.len());
+                    drop(processes_shared_guard);
                 }
+                log::info!("PROCESS_THREAD: End of loop iteration.");
             }
+            // Ok(()) // This line is effectively unreachable due to infinite loop, but kept for type consistency if loop could break.
         });
 
         self.network_monitor = Some(monitor_arc);
