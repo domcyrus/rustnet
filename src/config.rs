@@ -17,6 +17,8 @@ pub struct Config {
     pub show_locations: bool,
     /// Filter out localhost (loopback) traffic
     pub filter_localhost: bool,
+    /// Interval in milliseconds for the packet processing loop's sleep. 0 means minimal sleep for continuous processing.
+    pub packet_processing_interval_ms: u64,
     /// Custom configuration file path
     pub config_path: Option<PathBuf>,
 }
@@ -30,6 +32,7 @@ impl Default for Config {
             refresh_interval: 1000,
             show_locations: true,
             filter_localhost: true,
+            packet_processing_interval_ms: 0, // Default to continuous processing (minimal sleep)
             config_path: None,
         }
     }
@@ -90,6 +93,11 @@ impl Config {
                                 config.filter_localhost = true;
                             } else if value == "false" {
                                 config.filter_localhost = false;
+                            }
+                        }
+                        "packet_processing_interval_ms" => {
+                            if let Ok(interval) = value.parse::<u64>() {
+                                config.packet_processing_interval_ms = interval;
                             }
                         }
                         _ => {

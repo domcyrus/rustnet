@@ -49,6 +49,15 @@ fn main() -> Result<()> {
                 .help("Interface language (en, fr, etc.)")
                 .required(false),
         )
+        .arg(
+            Arg::new("packet_processing_interval")
+                .short('P')
+                .long("packet-processing-interval")
+                .value_name("MILLISECONDS")
+                .help("Interval for packet processing loop sleep (ms). 0 for continuous.")
+                .value_parser(clap::value_parser!(u64))
+                .required(false),
+        )
         .get_matches();
 
     // Initialize configuration
@@ -66,6 +75,11 @@ fn main() -> Result<()> {
     if let Some(language) = matches.get_one::<String>("language") {
         config.language = language.to_string();
         info!("Using language: {}", language);
+    }
+
+    if let Some(interval) = matches.get_one::<u64>("packet_processing_interval") {
+        config.packet_processing_interval_ms = *interval;
+        info!("Using packet processing interval: {}ms", interval);
     }
 
     // Initialize internationalization

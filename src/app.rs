@@ -137,6 +137,8 @@ impl App {
         let connections_update_clone = Arc::clone(&connections_update);
         self.connections_data_shared = Some(connections_update_clone.clone()); // Store Arc for on_tick
 
+        let app_config = self.config.clone(); // Clone config to move into the thread
+
         thread::spawn(move || -> Result<()> {
             loop {
                 let mut monitor = monitor_clone.lock().unwrap();
@@ -159,10 +161,16 @@ impl App {
                 let mut connections = connections_update_clone.lock().unwrap();
                 *connections = new_connections;
 
-                // Sleep to avoid high CPU usage
+                // Sleep to avoid high CPU usage, controlled by config
                 drop(connections);
                 drop(monitor);
-                thread::sleep(std::time::Duration::from_millis(250)); // Update data more frequently
+                
+                let sleep_duration_ms = if app_config.packet_processing_interval_ms == 0 {
+                    1 // Minimal sleep (1ms) to prevent 100% CPU usage on one core
+                } else {
+                    app_config.packet_processing_interval_ms
+                };
+                thread::sleep(std::time::Duration::from_millis(sleep_duration_ms));
             }
         });
 
