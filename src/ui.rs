@@ -120,7 +120,7 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(28), // Remote Address
         Constraint::Length(12), // State
         Constraint::Length(10), // Service
-        Constraint::Length(10), // Bandwidth - New Column
+        Constraint::Length(18), // Bandwidth (Down/Up) - Adjusted Width
         Constraint::Min(10),    // Process
     ];
 
@@ -130,7 +130,7 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
         "Remote Address",
         "State",
         "Service",
-        "Bandwidth", // New Header
+        "Down / Up", // Updated Header
         "Process",
     ]
     .iter()
@@ -169,8 +169,10 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
 
         let (local_display, remote_display) = formatted_addresses[idx].clone();
         let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
-        let total_bytes = conn.bytes_sent + conn.bytes_received;
-        let bandwidth_display = format_rate(total_bytes, conn.age());
+        
+        let incoming_rate_str = format_rate(conn.bytes_received, conn.age());
+        let outgoing_rate_str = format_rate(conn.bytes_sent, conn.age());
+        let bandwidth_display = format!("{} / {}", incoming_rate_str, outgoing_rate_str);
 
 
         let cells = [
@@ -179,7 +181,7 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
             Cell::from(remote_display),
             Cell::from(conn.state.to_string()),
             Cell::from(service_display),
-            Cell::from(bandwidth_display), // New Cell
+            Cell::from(bandwidth_display), // Updated Cell
             Cell::from(process_display),
         ];
         rows.push(Row::new(cells));
@@ -210,7 +212,7 @@ fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Interface
-            Constraint::Length(8), // Summary stats
+            Constraint::Length(10), // Summary stats - Increased height for new lines
             Constraint::Min(0),    // Process list
         ])
         .split(area);
@@ -261,6 +263,17 @@ fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
             app.connections.len()
         )),
         Line::from(format!("{}: {}", app.i18n.get("processes"), process_count)),
+        Line::from(""), // Spacer
+        Line::from(format!(
+            "{}: {}",
+            app.i18n.get("total_incoming"),
+            format_bytes(app.connections.iter().map(|c| c.bytes_received).sum())
+        )),
+        Line::from(format!(
+            "{}: {}",
+            app.i18n.get("total_outgoing"),
+            format_bytes(app.connections.iter().map(|c| c.bytes_sent).sum())
+        )),
     ];
 
     let stats_para = Paragraph::new(stats_text)
