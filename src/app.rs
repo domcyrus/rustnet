@@ -102,14 +102,15 @@ impl App {
             connections_data_shared: None,
             processes_data_shared: None, // Initialize new shared data
             detail_focus: DetailFocusField::LocalIp, // Default focus to Local IP
-            // last_process_info_update removed
+                                         // last_process_info_update removed
         };
         log::info!("App::new - Application initialized successfully");
         Ok(app)
     }
 
     /// Dumps all current connections to the log file.
-    pub fn log_all_connections(&mut self) { // Ensuring no hidden characters in this definition
+    pub fn log_all_connections(&mut self) {
+        // Ensuring no hidden characters in this definition
         log::info!("Dumping all current connections to log:");
         if self.connections.is_empty() {
             log::info!("No connections to dump.");
@@ -136,11 +137,14 @@ impl App {
         // Get initial connections without process info
         log::info!("App::start_capture - Calling initial monitor.get_connections()");
         self.connections = monitor.get_connections()?;
-        log::info!("App::start_capture - Initial monitor.get_connections() returned {} connections", self.connections.len());
+        log::info!(
+            "App::start_capture - Initial monitor.get_connections() returned {} connections",
+            self.connections.len()
+        );
 
         // Start monitoring in background thread
         let monitor_arc = Arc::new(Mutex::new(monitor)); // Correctly initialize monitor_arc
-        
+
         // --- Packet Processing Thread ---
         let monitor_clone_packets = Arc::clone(&monitor_arc);
         let original_connections_shared_arc = Arc::new(Mutex::new(Vec::new())); // Original Arc for connections
@@ -148,11 +152,12 @@ impl App {
 
         let packet_thread_connections_arc = Arc::clone(&original_connections_shared_arc); // Clone for the packet processing thread
         let app_config_packets = self.config.clone();
-        thread::spawn(move || -> Result<()> { // packet_thread_connections_arc is moved here
+        thread::spawn(move || -> Result<()> {
+            // packet_thread_connections_arc is moved here
             loop {
                 // Lock the Arc<Mutex<NetworkMonitor>> to get MutexGuard<NetworkMonitor>
                 let mut monitor_guard = monitor_clone_packets.lock().unwrap();
-                
+
                 // First, process any pending packets
                 if let Err(e) = monitor_guard.process_packets() {
                     error!("Packet thread: Error processing packets: {}", e);
@@ -171,9 +176,9 @@ impl App {
                 let mut connections_shared_guard = packet_thread_connections_arc.lock().unwrap();
                 *connections_shared_guard = new_connections;
                 drop(connections_shared_guard);
-                
+
                 let sleep_duration_ms = if app_config_packets.packet_processing_interval_ms == 0 {
-                    1 
+                    1
                 } else {
                     app_config_packets.packet_processing_interval_ms
                 };
@@ -187,10 +192,14 @@ impl App {
         let processes_update_shared = Arc::new(Mutex::new(HashMap::new()));
         self.processes_data_shared = Some(Arc::clone(&processes_update_shared));
 
-        thread::spawn(move || -> Result<()> { // process_thread_connections_arc is moved here
+        thread::spawn(move || -> Result<()> {
+            // process_thread_connections_arc is moved here
             log::info!("PROCESS_THREAD: SPAWNED AND ENTERED CLOSURE");
             loop {
-                log::info!("PROCESS_THREAD: Top of loop, about to sleep for {:?}.", PROCESS_INFO_UPDATE_INTERVAL);
+                log::info!(
+                    "PROCESS_THREAD: Top of loop, about to sleep for {:?}.",
+                    PROCESS_INFO_UPDATE_INTERVAL
+                );
                 thread::sleep(PROCESS_INFO_UPDATE_INTERVAL);
                 log::info!("PROCESS_THREAD: Awake after sleep.");
 
@@ -200,7 +209,9 @@ impl App {
                         Ok(guard) => guard,
                         Err(poisoned) => {
                             log::error!("PROCESS_THREAD: Failed to lock connections_data_shared (poisoned): {:?}", poisoned);
-                            return Err(anyhow::anyhow!("PROCESS_THREAD: Failed to lock connections_data_shared (poisoned)"));
+                            return Err(anyhow::anyhow!(
+                                "PROCESS_THREAD: Failed to lock connections_data_shared (poisoned)"
+                            ));
                         }
                     };
                     log::debug!("PROCESS_THREAD: Locked connections_data_shared successfully.");
@@ -210,12 +221,19 @@ impl App {
                     cloned_conns
                 };
 
-                log::debug!("PROCESS_THREAD: Attempting to lock NetworkMonitor (monitor_clone_procs).");
+                log::debug!(
+                    "PROCESS_THREAD: Attempting to lock NetworkMonitor (monitor_clone_procs)."
+                );
                 let monitor_guard = match monitor_clone_procs.lock() {
                     Ok(guard) => guard,
                     Err(poisoned) => {
-                        log::error!("PROCESS_THREAD: Failed to lock NetworkMonitor (poisoned): {:?}", poisoned);
-                        return Err(anyhow::anyhow!("PROCESS_THREAD: Failed to lock NetworkMonitor (poisoned)"));
+                        log::error!(
+                            "PROCESS_THREAD: Failed to lock NetworkMonitor (poisoned): {:?}",
+                            poisoned
+                        );
+                        return Err(anyhow::anyhow!(
+                            "PROCESS_THREAD: Failed to lock NetworkMonitor (poisoned)"
+                        ));
                     }
                 };
                 log::debug!("PROCESS_THREAD: Locked NetworkMonitor successfully.");
@@ -223,26 +241,40 @@ impl App {
 
                 // Iterate over connections to gather or update process information
                 if !connections_to_check.is_empty() {
-                    log::debug!("Process thread: First few connections_to_check (max 3 of {} total):", connections_to_check.len());
+                    log::debug!(
+                        "Process thread: First few connections_to_check (max 3 of {} total):",
+                        connections_to_check.len()
+                    );
                     for (i, conn_to_log) in connections_to_check.iter().take(3).enumerate() {
-                        log::debug!("  Connections_to_check[{}]: PID: {:?}, Name: {:?}", i, conn_to_log.pid, conn_to_log.process_name);
+                        log::debug!(
+                            "  Connections_to_check[{}]: PID: {:?}, Name: {:?}",
+                            i,
+                            conn_to_log.pid,
+                            conn_to_log.process_name
+                        );
                     }
                 } else {
                     log::debug!("Process thread: connections_to_check is empty.");
                 }
 
-                for conn in connections_to_check { // connections_to_check is a Vec<Connection>
+                for conn in connections_to_check {
+                    // connections_to_check is a Vec<Connection>
                     let mut final_process_candidate: Option<Process> = None;
 
                     // Step 1: Use info from 'conn' if PID and non-empty name are present.
                     if let (Some(c_pid), Some(c_name)) = (conn.pid, &conn.process_name) {
                         if !c_name.is_empty() {
-                            final_process_candidate = Some(Process { pid: c_pid, name: c_name.clone() });
+                            final_process_candidate = Some(Process {
+                                pid: c_pid,
+                                name: c_name.clone(),
+                            });
                         }
                     }
 
                     // Step 2: Try to get info from platform-specific lookup.
-                    if let Some(platform_p) = monitor_guard.get_platform_process_for_connection(&conn) {
+                    if let Some(platform_p) =
+                        monitor_guard.get_platform_process_for_connection(&conn)
+                    {
                         if !platform_p.name.is_empty() {
                             // Platform lookup provided a non-empty name; this is preferred.
                             // It will overwrite final_process_candidate if it was set in Step 1,
@@ -282,7 +314,9 @@ impl App {
                         // If the candidate's name is empty, only insert it if the map
                         // doesn't already contain a non-empty name for this PID.
                         if p_info.name.is_empty() {
-                            if let Some(existing_entry) = collected_processes_this_cycle.get(&p_info.pid) {
+                            if let Some(existing_entry) =
+                                collected_processes_this_cycle.get(&p_info.pid)
+                            {
                                 if !existing_entry.name.is_empty() {
                                     continue; // Don't overwrite a good name with an empty one.
                                 }
@@ -298,22 +332,30 @@ impl App {
 
                 if !collected_processes_this_cycle.is_empty() {
                     log::debug!("Process thread: collected_processes_this_cycle (before filter, {} entries, showing max 5):", collected_processes_this_cycle.len());
-                    for (i, (pid, process)) in collected_processes_this_cycle.iter().take(5).enumerate() {
+                    for (i, (pid, process)) in
+                        collected_processes_this_cycle.iter().take(5).enumerate()
+                    {
                         log::debug!("  Collected[{}]: PID: {}, Name: '{}'", i, pid, process.name);
                     }
                 } else {
                     log::debug!("Process thread: collected_processes_this_cycle is empty.");
                 }
-                
-                // Filter out processes with empty names before updating shared state
-                let final_processes_to_update: HashMap<u32, Process> = collected_processes_this_cycle.into_iter()
-                    .filter(|(_, process)| !process.name.is_empty())
-                    .collect();
 
-                log::debug!("Process thread: final_processes_to_update (after filter, count: {}):", final_processes_to_update.len());
+                // Filter out processes with empty names before updating shared state
+                let final_processes_to_update: HashMap<u32, Process> =
+                    collected_processes_this_cycle
+                        .into_iter()
+                        .filter(|(_, process)| !process.name.is_empty())
+                        .collect();
+
+                log::debug!(
+                    "Process thread: final_processes_to_update (after filter, count: {}):",
+                    final_processes_to_update.len()
+                );
                 if !final_processes_to_update.is_empty() {
                     log::debug!("Process thread: First few final_processes_to_update (max 3):");
-                    for (i, (pid, process)) in final_processes_to_update.iter().take(3).enumerate() {
+                    for (i, (pid, process)) in final_processes_to_update.iter().take(3).enumerate()
+                    {
                         log::debug!("  Final[{}]: PID: {}, Name: '{}'", i, pid, process.name);
                     }
                 }
@@ -327,22 +369,26 @@ impl App {
                             return Err(anyhow::anyhow!("PROCESS_THREAD: Failed to lock processes_update_shared for writing (poisoned)"));
                         }
                     };
-                    log::debug!("PROCESS_THREAD: Locked processes_update_shared successfully for writing.");
+                    log::debug!(
+                        "PROCESS_THREAD: Locked processes_update_shared successfully for writing."
+                    );
                     for (pid, process) in final_processes_to_update.iter() {
                         processes_shared_guard.insert(*pid, process.clone());
                     }
                     log::info!("PROCESS_THREAD: Committed {} processes to shared map. Total in shared map now: {}.",
                                 final_processes_to_update.len(), processes_shared_guard.len());
                     drop(processes_shared_guard);
-                    log::debug!("PROCESS_THREAD: processes_update_shared lock released after writing.");
+                    log::debug!(
+                        "PROCESS_THREAD: processes_update_shared lock released after writing."
+                    );
                 } else {
                     let processes_shared_guard = match processes_update_shared.lock() {
-                         Ok(guard) => guard,
-                         Err(poisoned) => {
+                        Ok(guard) => guard,
+                        Err(poisoned) => {
                             log::error!("PROCESS_THREAD: Failed to lock processes_update_shared for reading count (poisoned): {:?}", poisoned);
                             // Don't terminate the thread for a read failure if just logging count
                             let _dummy: Vec<Process> = Vec::new(); // Specify type for dummy Vec
-                            // This path means we can't log the current count.
+                                                                   // This path means we can't log the current count.
                             log::warn!("PROCESS_THREAD: Could not read current count from poisoned processes_update_shared.");
                             // Continue the loop
                             continue;
@@ -421,7 +467,8 @@ impl App {
                 self.show_locations = !self.show_locations;
                 None
             }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => { // Ctrl + d
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Ctrl + d
                 self.test_method(); // Call the new test method
                 self.log_all_connections(); // Ensuring no hidden characters in this call
                 None
@@ -454,7 +501,9 @@ impl App {
                 None
             }
             KeyCode::Char('c') => {
-                if !self.connections.is_empty() && self.selected_connection_idx < self.connections.len() {
+                if !self.connections.is_empty()
+                    && self.selected_connection_idx < self.connections.len()
+                {
                     let conn = &self.connections[self.selected_connection_idx];
                     let ip_to_copy = match self.detail_focus {
                         DetailFocusField::LocalIp => conn.local_addr.ip().to_string(),
@@ -464,7 +513,10 @@ impl App {
                     match Clipboard::new() {
                         Ok(mut clipboard) => {
                             if let Err(e) = clipboard.set_text(ip_to_copy.clone()) {
-                                error!("Failed to copy IP to clipboard: {} for IP: {}", e, ip_to_copy);
+                                error!(
+                                    "Failed to copy IP to clipboard: {} for IP: {}",
+                                    e, ip_to_copy
+                                );
                             } else {
                                 // Optionally: Add a status message to App to show "Copied!"
                                 // For now, we just log errors or success.
@@ -498,7 +550,10 @@ impl App {
         let now = Instant::now(); // Get current time once for this tick
 
         // Store currently selected connection (if any)
-        let selected_conn_key = self.selected_connection.as_ref().map(|sc| self.get_connection_key(sc));
+        let selected_conn_key = self
+            .selected_connection
+            .as_ref()
+            .map(|sc| self.get_connection_key(sc));
 
         // Update connections from shared data updated by the background thread
         if let Some(shared_data_arc) = &self.connections_data_shared {
@@ -525,11 +580,15 @@ impl App {
             }
 
             // Sort connections: non-loopback first, then loopback, then by assigned order
-            new_connections_list.sort_by(|a, b| { // Sort new_connections_list
-                let is_a_loopback = a.local_addr.ip().is_loopback() || a.remote_addr.ip().is_loopback();
-                let is_b_loopback = b.local_addr.ip().is_loopback() || b.remote_addr.ip().is_loopback();
+            new_connections_list.sort_by(|a, b| {
+                // Sort new_connections_list
+                let is_a_loopback =
+                    a.local_addr.ip().is_loopback() || a.remote_addr.ip().is_loopback();
+                let is_b_loopback =
+                    b.local_addr.ip().is_loopback() || b.remote_addr.ip().is_loopback();
 
-                is_a_loopback.cmp(&is_b_loopback) // false (non-loopback) < true (loopback)
+                is_a_loopback
+                    .cmp(&is_b_loopback) // false (non-loopback) < true (loopback)
                     .then_with(|| {
                         let key_a = self.get_connection_key(a);
                         let key_b = self.get_connection_key(b);
@@ -547,7 +606,7 @@ impl App {
 
             // Restore selected connection position if possible
             if let Some(key) = selected_conn_key {
-                 if let Some(idx) = self.find_connection_index_by_key(&key) {
+                if let Some(idx) = self.find_connection_index_by_key(&key) {
                     self.selected_connection_idx = idx;
                     self.selected_connection = Some(self.connections[idx].clone());
                 } else if !self.connections.is_empty() {
@@ -572,7 +631,6 @@ impl App {
             }
         }
 
-
         // If process info was updated, ensure the main connections list reflects this.
         // This part is tricky because self.connections was already updated from shared_data.
         // The iteration above directly mutates self.connections.
@@ -581,13 +639,18 @@ impl App {
         if let Some(shared_procs_arc) = &self.processes_data_shared {
             match shared_procs_arc.lock() {
                 Ok(shared_procs_guard) => {
-                    if self.processes.len() != shared_procs_guard.len() || !shared_procs_guard.is_empty() {
+                    if self.processes.len() != shared_procs_guard.len()
+                        || !shared_procs_guard.is_empty()
+                    {
                         log::debug!("App::on_tick - Updating self.processes from shared_procs_arc. Old count: {}, New count from shared: {}", self.processes.len(), shared_procs_guard.len());
                     }
                     self.processes = shared_procs_guard.clone(); // Update local cache from background thread's findings
                 }
                 Err(poisoned) => {
-                    log::error!("App::on_tick - Failed to lock processes_data_shared (poisoned): {:?}", poisoned);
+                    log::error!(
+                        "App::on_tick - Failed to lock processes_data_shared (poisoned): {:?}",
+                        poisoned
+                    );
                 }
             }
         } else {
@@ -610,10 +673,13 @@ impl App {
                         name: name.clone(),
                     });
 
-                    if process_entry.name != *name { // Update if name is different or was empty
+                    if process_entry.name != *name {
+                        // Update if name is different or was empty
                         process_entry.name = name.clone();
                         processes_updated_directly_from_connections += 1;
-                    } else if processes_updated_directly_from_connections == 0 && !self.processes.contains_key(&pid){
+                    } else if processes_updated_directly_from_connections == 0
+                        && !self.processes.contains_key(&pid)
+                    {
                         // This case handles if the entry was just inserted by or_insert_with
                         // and it's the first direct update in this tick.
                         // However, or_insert_with already handles insertion.
@@ -630,14 +696,15 @@ impl App {
             log::debug!("App::on_tick - Directly updated/inserted {} processes into self.processes from self.connections. New total count: {}", processes_updated_directly_from_connections, self.processes.len());
         }
 
-
         if !self.processes.is_empty() {
-                log::debug!("App::on_tick - self.processes is now non-empty. Count: {}", self.processes.len());
+            log::debug!(
+                "App::on_tick - self.processes is now non-empty. Count: {}",
+                self.processes.len()
+            );
         } else if self.processes.is_empty() && !self.connections.is_empty() {
-                // Only log if connections exist but processes map is still empty after all updates.
-                log::debug!("App::on_tick - self.processes is STILL empty despite connections existing and direct update attempt.");
+            // Only log if connections exist but processes map is still empty after all updates.
+            log::debug!("App::on_tick - self.processes is STILL empty despite connections existing and direct update attempt.");
         }
-
 
         // Enrich self.connections with process info from the (now potentially more complete) self.processes cache
         for conn in &mut self.connections {
@@ -654,7 +721,11 @@ impl App {
                         // Cache has PID but with an empty name.
                         // Normalize conn.process_name to None if it's currently Some("").
                         // Otherwise, leave it (it might be None or a valid Some("real_name") from another source).
-                        if conn.process_name.as_ref().map_or(false, |name| name.is_empty()) {
+                        if conn
+                            .process_name
+                            .as_ref()
+                            .map_or(false, |name| name.is_empty())
+                        {
                             conn.process_name = None;
                         }
                     }
@@ -662,7 +733,11 @@ impl App {
                     // Case 2: PID not found in cache.
                     // Normalize conn.process_name to None if it's currently Some("").
                     // Otherwise, leave it (it might be None or a valid Some("real_name") from another source).
-                     if conn.process_name.as_ref().map_or(false, |name| name.is_empty()) {
+                    if conn
+                        .process_name
+                        .as_ref()
+                        .map_or(false, |name| name.is_empty())
+                    {
                         conn.process_name = None;
                     }
                 }
@@ -671,7 +746,6 @@ impl App {
                 conn.process_name = None;
             }
         }
-        // Removed direct process fetching from on_tick.
 
         Ok(())
     }
@@ -703,10 +777,13 @@ impl App {
 
             // Sort connections: non-loopback first, then loopback, then by assigned order
             new_connections.sort_by(|a, b| {
-                let is_a_loopback = a.local_addr.ip().is_loopback() || a.remote_addr.ip().is_loopback();
-                let is_b_loopback = b.local_addr.ip().is_loopback() || b.remote_addr.ip().is_loopback();
+                let is_a_loopback =
+                    a.local_addr.ip().is_loopback() || a.remote_addr.ip().is_loopback();
+                let is_b_loopback =
+                    b.local_addr.ip().is_loopback() || b.remote_addr.ip().is_loopback();
 
-                is_a_loopback.cmp(&is_b_loopback) // false (non-loopback) < true (loopback)
+                is_a_loopback
+                    .cmp(&is_b_loopback) // false (non-loopback) < true (loopback)
                     .then_with(|| {
                         let key_a = self.get_connection_key(a);
                         let key_b = self.get_connection_key(b);
@@ -824,13 +901,18 @@ impl App {
         format!("{}:{}", name_to_cache, addr.port())
     }
 
-    fn test_method(&mut self) { // New diagnostic method
+    fn test_method(&mut self) {
+        // New diagnostic method
         log::info!("<<<<<< App::test_method CALLED >>>>>>");
     }
 
     /// Calculates and updates the average send/receive rate for a connection based on its history.
     /// Also prunes the history.
-    fn calculate_and_update_average_rate(conn: &mut Connection, current_time: Instant, window: Duration) {
+    fn calculate_and_update_average_rate(
+        conn: &mut Connection,
+        current_time: Instant,
+        window: Duration,
+    ) {
         if conn.rate_history.len() < 2 {
             conn.current_incoming_rate_bps = 0.0;
             conn.current_outgoing_rate_bps = 0.0;
@@ -840,9 +922,11 @@ impl App {
         // Sort history by timestamp just in case, though it should be appended in order.
         // conn.rate_history.sort_by_key(|k| k.0); // Usually not needed if NetworkMonitor appends correctly
 
-        let latest_entry_data = match conn.rate_history.last().cloned() { // Clone the entry data
+        let latest_entry_data = match conn.rate_history.last().cloned() {
+            // Clone the entry data
             Some(entry_data) => entry_data,
-            None => { // Should be caught by len < 2 check, but defensive
+            None => {
+                // Should be caught by len < 2 check, but defensive
                 conn.current_incoming_rate_bps = 0.0;
                 conn.current_outgoing_rate_bps = 0.0;
                 return;
@@ -865,19 +949,24 @@ impl App {
                     break;
                 }
             }
-        } else { // window_start_time underflowed, means window is larger than history span from latest_time
+        } else {
+            // window_start_time underflowed, means window is larger than history span from latest_time
             oldest_relevant_entry_idx = Some(0); // Use the very first entry
         }
-        
+
         let (rate_in, rate_out) = match oldest_relevant_entry_idx {
-            Some(idx) if idx < conn.rate_history.len() -1 => { // Ensure we have at least two points: oldest_relevant and latest
+            Some(idx) if idx < conn.rate_history.len() - 1 => {
+                // Ensure we have at least two points: oldest_relevant and latest
                 let oldest_relevant_entry = &conn.rate_history[idx];
                 let time_delta = latest_time.duration_since(oldest_relevant_entry.0);
                 let time_delta_secs = time_delta.as_secs_f64();
 
-                if time_delta_secs > 0.001 { // Avoid division by zero or tiny intervals
-                    let bytes_sent_delta = latest_bytes_sent.saturating_sub(oldest_relevant_entry.1);
-                    let bytes_received_delta = latest_bytes_received.saturating_sub(oldest_relevant_entry.2);
+                if time_delta_secs > 0.001 {
+                    // Avoid division by zero or tiny intervals
+                    let bytes_sent_delta =
+                        latest_bytes_sent.saturating_sub(oldest_relevant_entry.1);
+                    let bytes_received_delta =
+                        latest_bytes_received.saturating_sub(oldest_relevant_entry.2);
 
                     let out_bps = (bytes_sent_delta as f64 * 8.0) / time_delta_secs;
                     let in_bps = (bytes_received_delta as f64 * 8.0) / time_delta_secs;
@@ -896,21 +985,26 @@ impl App {
         let prune_older_than = current_time.checked_sub(window + RATE_HISTORY_PRUNE_EXTENSION);
         if let Some(prune_time) = prune_older_than {
             conn.rate_history.retain(|(t, _, _)| *t >= prune_time);
-        } else { // If window + buffer is too large, effectively don't prune based on current_time
-             // Or, if history is very short, this might not prune much.
-             // A simpler prune: ensure we don't keep excessively old data if current_time is far ahead of latest_time
+        } else {
+            // If window + buffer is too large, effectively don't prune based on current_time
+            // Or, if history is very short, this might not prune much.
+            // A simpler prune: ensure we don't keep excessively old data if current_time is far ahead of latest_time
             if let Some(latest_hist_time) = conn.rate_history.last().map(|e| e.0) {
-                let absolute_prune_time = latest_hist_time.checked_sub(window + RATE_HISTORY_PRUNE_EXTENSION);
+                let absolute_prune_time =
+                    latest_hist_time.checked_sub(window + RATE_HISTORY_PRUNE_EXTENSION);
                 if let Some(apt) = absolute_prune_time {
-                     conn.rate_history.retain(|(t, _, _)| *t >= apt);
+                    conn.rate_history.retain(|(t, _, _)| *t >= apt);
                 }
             }
         }
-         // Ensure at least one entry is kept if history is not empty, to allow future rate calculations.
-        if conn.rate_history.is_empty() && latest_entry_data.0 >= current_time.checked_sub(window + RATE_HISTORY_PRUNE_EXTENSION).unwrap_or(latest_entry_data.0) {
+        // Ensure at least one entry is kept if history is not empty, to allow future rate calculations.
+        if conn.rate_history.is_empty()
+            && latest_entry_data.0
+                >= current_time
+                    .checked_sub(window + RATE_HISTORY_PRUNE_EXTENSION)
+                    .unwrap_or(latest_entry_data.0)
+        {
             conn.rate_history.push(latest_entry_data); // Push the cloned data
         }
-
-
     }
 }
