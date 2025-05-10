@@ -714,7 +714,7 @@ impl NetworkMonitor {
             let loop_start_time = Instant::now();
             let mut packets_processed_in_loop = 0;
             // Process up to a larger number of packets to better capture high-speed traffic
-            const MAX_PACKETS_PER_CALL: usize = 1000; // Increased from 20
+            const MAX_PACKETS_PER_CALL: usize = 1000; // Ensure this is 1000
             for i in 0..MAX_PACKETS_PER_CALL {
                 match cap.next_packet() {
                     Ok(packet) => {
