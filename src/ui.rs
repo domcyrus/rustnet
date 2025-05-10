@@ -3,14 +3,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Tabs, Wrap},
+    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap},
     Frame, Terminal as RatatuiTerminal,
 };
 // Removed unused import: use std::collections::HashMap;
 use std::net::SocketAddr; // Import SocketAddr
 
 use crate::app::{App, DetailFocusField, ViewMode}; // Added DetailFocusField
-use crate::network::{Connection, Protocol};
+use crate::network::Protocol;
 
 pub type Terminal<B> = RatatuiTerminal<B>;
 

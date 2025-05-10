@@ -161,10 +161,10 @@ impl Connection {
 pub struct Process {
     pub pid: u32,
     pub name: String,
-    pub command_line: Option<String>,
-    pub user: Option<String>,
-    pub cpu_usage: Option<f32>,
-    pub memory_usage: Option<u64>,
+    // pub command_line: Option<String>, // Field removed as unused
+    // pub user: Option<String>, // Field removed as unused
+    // pub cpu_usage: Option<f32>, // Field removed as unused
+    // pub memory_usage: Option<u64>, // Field removed as unused
 }
 
 // IP location information - struct removed as unused (dependent on get_ip_location)

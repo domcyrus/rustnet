@@ -592,20 +592,6 @@ impl App {
         Ok(())
     }
 
-    /// Get process info for selected connection
-    pub fn get_process_for_selected_connection(&mut self) -> Option<Process> {
-        if self.connections.is_empty() || self.selected_connection_idx >= self.connections.len() {
-            return None;
-        }
-
-        // Get the selected connection
-        let connection = &self.connections[self.selected_connection_idx];
-
-        // Return process info from local cache if available
-        // On-demand fetching removed to keep this non-blocking.
-        connection.pid.and_then(|pid| self.processes.get(&pid).cloned())
-    }
-
     /// Generate a unique key for a connection
     fn get_connection_key(&self, conn: &Connection) -> String {
         format!(
