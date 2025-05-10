@@ -186,8 +186,11 @@ impl App {
         self.processes_data_shared = Some(Arc::clone(&processes_update_shared));
 
         thread::spawn(move || -> Result<()> { // process_thread_connections_arc is moved here
+            log::info!("Process Information Fetching Thread: SPAWNED AND RUNNING");
             loop {
+                log::debug!("Process Information Fetching Thread: Loop start, sleeping for {:?}", PROCESS_INFO_UPDATE_INTERVAL);
                 thread::sleep(PROCESS_INFO_UPDATE_INTERVAL);
+                log::debug!("Process Information Fetching Thread: AWAKE after sleep");
 
                 let connections_to_check = { // Scope for connections_guard
                     let connections_guard = process_thread_connections_arc.lock().unwrap(); // Use its thread-specific Arc clone
@@ -297,14 +300,15 @@ impl App {
 
                 if !final_processes_to_update.is_empty() {
                     let mut processes_shared_guard = processes_update_shared.lock().unwrap();
-                    for (pid, process) in final_processes_to_update {
-                        processes_shared_guard.insert(pid, process);
+                    for (pid, process) in final_processes_to_update.iter() { // Iterate without consuming
+                        processes_shared_guard.insert(*pid, process.clone()); // Clone process
                     }
-                    log::debug!("Process thread: Committed {} processes to shared map. Total in map: {}.", 
-                                processes_shared_guard.len(), processes_shared_guard.len());
+                    log::info!("Process Information Fetching Thread: Updated shared processes. Added: {}, Total in shared map: {}.",
+                                final_processes_to_update.len(), processes_shared_guard.len());
                 } else {
+                    // Lock for reading to log current count even if no updates were made this cycle
                     let processes_shared_guard = processes_update_shared.lock().unwrap();
-                    log::debug!("Process thread: No new/updated processes with non-empty names to commit. Total in map: {}.", 
+                    log::debug!("Process Information Fetching Thread: No new/updated processes with non-empty names to commit. Total in shared map: {}.",
                                 processes_shared_guard.len());
                 }
             }
@@ -567,8 +571,21 @@ impl App {
 
         // Update self.processes cache from processes_data_shared
         if let Some(shared_procs_arc) = &self.processes_data_shared {
-            let shared_procs = shared_procs_arc.lock().unwrap();
-            self.processes = shared_procs.clone(); // Update local cache
+            let shared_procs_guard = shared_procs_arc.lock().unwrap();
+            if self.processes.len() != shared_procs_guard.len() || !shared_procs_guard.is_empty() {
+                log::debug!("App::on_tick - Updating self.processes. Old count: {}, New count from shared: {}", self.processes.len(), shared_procs_guard.len());
+            }
+            self.processes = shared_procs_guard.clone(); // Update local cache
+            drop(shared_procs_guard); // Release lock
+
+            if !self.processes.is_empty() {
+                 log::debug!("App::on_tick - self.processes is now non-empty. Count: {}", self.processes.len());
+            } else if self.processes.is_empty() && (self.connections_data_shared.as_ref().map_or(0, |s| s.lock().unwrap().len()) > 0) {
+                 // Only log if connections exist but processes map is still empty after update attempt
+                 log::debug!("App::on_tick - self.processes is empty after update from shared_procs_arc.");
+            }
+        } else {
+            log::warn!("App::on_tick - processes_data_shared is None, cannot update self.processes.");
         }
 
         // Enrich self.connections with process info from the updated self.processes cache
