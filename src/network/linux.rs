@@ -130,8 +130,12 @@ impl NetworkMonitor {
                                     if let Some(name_start) = process_info.find("users:(") {
                                         let name_part = &process_info[name_start + 7..];
                                         if let Some(name_end) = name_part.find(',') {
-                                            conn.process_name =
-                                                Some(name_part[..name_end].to_string());
+                                            let raw_name = &name_part[..name_end];
+                                            let trimmed_name = raw_name
+                                                .trim_start_matches("(\"")
+                                                .trim_end_matches('"')
+                                                .to_string();
+                                            conn.process_name = Some(trimmed_name);
                                         }
                                     }
                                 }
@@ -294,7 +298,11 @@ fn try_ss_command(connection: &Connection) -> Option<Process> {
                             let name = if let Some(name_start) = line.find("users:(") {
                                 let name_part = &line[name_start + 7..];
                                 if let Some(name_end) = name_part.find(',') {
-                                    name_part[..name_end].to_string()
+                                    let raw_name = &name_part[..name_end];
+                                    raw_name
+                                        .trim_start_matches("(\"")
+                                        .trim_end_matches('"')
+                                        .to_string()
                                 } else {
                                     format!("process-{}", pid)
                                 }
