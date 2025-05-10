@@ -342,15 +342,19 @@ impl App {
                 }
             }
 
-            // Sort connections by their assigned order
+            // Sort connections: non-loopback first, then loopback, then by assigned order
             new_connections.sort_by(|a, b| {
-                let key_a = self.get_connection_key(a);
-                let key_b = self.get_connection_key(b);
+                let is_a_loopback = a.local_addr.ip().is_loopback() || a.remote_addr.ip().is_loopback();
+                let is_b_loopback = b.local_addr.ip().is_loopback() || b.remote_addr.ip().is_loopback();
 
-                let order_a = self.connection_order.get(&key_a).unwrap_or(&usize::MAX);
-                let order_b = self.connection_order.get(&key_b).unwrap_or(&usize::MAX);
-
-                order_a.cmp(order_b)
+                is_a_loopback.cmp(&is_b_loopback) // false (non-loopback) < true (loopback)
+                    .then_with(|| {
+                        let key_a = self.get_connection_key(a);
+                        let key_b = self.get_connection_key(b);
+                        let order_a = self.connection_order.get(&key_a).unwrap_or(&usize::MAX);
+                        let order_b = self.connection_order.get(&key_b).unwrap_or(&usize::MAX);
+                        order_a.cmp(order_b)
+                    })
             });
 
             // Update connections with the sorted list
@@ -408,15 +412,19 @@ impl App {
                 }
             }
 
-            // Sort connections by their assigned order
+            // Sort connections: non-loopback first, then loopback, then by assigned order
             new_connections.sort_by(|a, b| {
-                let key_a = self.get_connection_key(a);
-                let key_b = self.get_connection_key(b);
+                let is_a_loopback = a.local_addr.ip().is_loopback() || a.remote_addr.ip().is_loopback();
+                let is_b_loopback = b.local_addr.ip().is_loopback() || b.remote_addr.ip().is_loopback();
 
-                let order_a = self.connection_order.get(&key_a).unwrap_or(&usize::MAX);
-                let order_b = self.connection_order.get(&key_b).unwrap_or(&usize::MAX);
-
-                order_a.cmp(order_b)
+                is_a_loopback.cmp(&is_b_loopback) // false (non-loopback) < true (loopback)
+                    .then_with(|| {
+                        let key_a = self.get_connection_key(a);
+                        let key_b = self.get_connection_key(b);
+                        let order_a = self.connection_order.get(&key_a).unwrap_or(&usize::MAX);
+                        let order_b = self.connection_order.get(&key_b).unwrap_or(&usize::MAX);
+                        order_a.cmp(order_b)
+                    })
             });
 
             // Update connections with the sorted list
