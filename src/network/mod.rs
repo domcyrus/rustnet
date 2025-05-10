@@ -93,34 +93,7 @@ pub struct Connection {
     pub service_name: Option<String>,
 }
 
-/// Returns the common service name for a given port and protocol.
-fn get_service_name_raw(port: u16, protocol: Protocol) -> Option<&'static str> {
-    match (protocol, port) {
-        (Protocol::TCP, 20) => Some("FTP-Data"),
-        (Protocol::TCP, 21) => Some("FTP"),
-        (Protocol::TCP, 22) => Some("SSH"),
-        (Protocol::TCP, 23) => Some("Telnet"),
-        (Protocol::TCP, 25) => Some("SMTP"),
-        (Protocol::TCP, 53) => Some("DNS"),
-        (Protocol::UDP, 53) => Some("DNS"),
-        (Protocol::TCP, 80) => Some("HTTP"),
-        (Protocol::TCP, 110) => Some("POP3"),
-        (Protocol::UDP, 123) => Some("NTP"),
-        (Protocol::UDP, 137) => Some("NetBIOS-NS"), // NetBIOS Name Service
-        (Protocol::TCP, 143) => Some("IMAP"),
-        (Protocol::UDP, 161) => Some("SNMP"),
-        (Protocol::UDP, 162) => Some("SNMPTRAP"),
-        (Protocol::TCP, 389) => Some("LDAP"),
-        (Protocol::TCP, 443) => Some("HTTPS"),
-        (Protocol::TCP, 465) => Some("SMTPS"), // SMTP over SSL
-        (Protocol::TCP, 587) => Some("SMTP"),  // SMTP Submission
-        (Protocol::TCP, 636) => Some("LDAPS"),
-        (Protocol::TCP, 993) => Some("IMAPS"),
-        (Protocol::TCP, 995) => Some("POP3S"),
-        // Add more common services as needed
-        _ => None,
-    }
-}
+// get_service_name_raw function is removed.
 
 impl Connection {
     /// Create a new connection
@@ -144,38 +117,9 @@ impl Connection {
             packets_received: 0,
             created_at: now,
             last_activity: now,
-            service_name: None, // Will be set below
+            service_name: None, // Service name will be set by NetworkMonitor
         };
-
-        // Determine service name
-        let mut determined_service_name_str: Option<&'static str> = None;
-
-        if state == ConnectionState::Listen {
-            // For listening sockets, the service is always on the local port
-            if let Some(name_str) = get_service_name_raw(local_addr.port(), protocol) {
-                determined_service_name_str = Some(name_str);
-            }
-        } else {
-            // For other states, check if local port is a well-known service port
-            let local_is_service = local_addr.port() <= 1023 && get_service_name_raw(local_addr.port(), protocol).is_some();
-            // Check if remote port is a well-known service port
-            let remote_is_service = remote_addr.port() <= 1023 && get_service_name_raw(remote_addr.port(), protocol).is_some();
-
-            if local_is_service {
-                // If local port is a service (e.g., running a server), prioritize it
-                if let Some(name_str) = get_service_name_raw(local_addr.port(), protocol) {
-                    determined_service_name_str = Some(name_str);
-                }
-            } else if remote_is_service {
-                // If local is not a service (or ephemeral) and remote is, then remote defines the service
-                if let Some(name_str) = get_service_name_raw(remote_addr.port(), protocol) {
-                    determined_service_name_str = Some(name_str);
-                }
-            }
-        }
-        
-        new_conn.service_name = determined_service_name_str.map(|s| s.to_string());
-        new_conn // Return the fully initialized connection
+        new_conn
     }
 
     /// Get connection age as duration
@@ -217,11 +161,95 @@ pub struct NetworkMonitor {
     capture: Option<Capture<pcap::Active>>,
     connections: HashMap<String, Connection>,
     // geo_db: Option<maxminddb::Reader<Vec<u8>>>, // Field removed as unused (dependent on get_ip_location)
+    service_lookup: ServiceLookup, // Added ServiceLookup
     collect_process_info: bool,
     filter_localhost: bool,
     local_ips: std::collections::HashSet<IpAddr>,
     last_packet_check: Instant,
     initial_packet_processing_done: bool, // New flag
+}
+
+/// Manages lookup of service names from a services file.
+#[derive(Debug)]
+struct ServiceLookup {
+    services: HashMap<(u16, Protocol), String>,
+}
+
+impl ServiceLookup {
+    /// Creates a new ServiceLookup by parsing a services file.
+    fn new(file_path_str: &str) -> Result<Self> {
+        let mut services = HashMap::new();
+        let file_path = Path::new(file_path_str);
+
+        if !file_path.exists() {
+            warn!("Service definition file not found at '{}'. Service names will not be available.", file_path_str);
+            return Ok(Self { services }); // Return empty lookup if file not found
+        }
+
+        let file = File::open(file_path)?;
+        let reader = BufReader::new(file);
+
+        for line_result in reader.lines() {
+            let line = match line_result {
+                Ok(l) => l,
+                Err(e) => {
+                    warn!("Error reading line from services file: {}", e);
+                    continue;
+                }
+            };
+
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            // Split the line into parts. Expecting: name  port/protocol  [aliases...]
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 2 {
+                debug!("Skipping malformed line in services file: {}", line);
+                continue;
+            }
+
+            let service_name = parts[0].to_string();
+            let port_protocol_str = parts[1];
+
+            // Split port/protocol
+            let port_protocol_parts: Vec<&str> = port_protocol_str.split('/').collect();
+            if port_protocol_parts.len() != 2 {
+                debug!("Skipping malformed port/protocol in services file: {} from line: {}", port_protocol_str, line);
+                continue;
+            }
+
+            let port = match port_protocol_parts[0].parse::<u16>() {
+                Ok(p) => p,
+                Err(_) => {
+                    debug!("Skipping invalid port in services file: {} from line: {}", port_protocol_parts[0], line);
+                    continue;
+                }
+            };
+
+            let protocol_str = port_protocol_parts[1].to_lowercase();
+            let protocol = match protocol_str.as_str() {
+                "tcp" => Protocol::TCP,
+                "udp" => Protocol::UDP,
+                _ => {
+                    debug!("Skipping unknown protocol in services file: {} from line: {}", protocol_str, line);
+                    continue;
+                }
+            };
+
+            // Insert the primary service name. Aliases are ignored for simplicity.
+            // If a port/protocol combo is already defined, the first one encountered wins.
+            services.entry((port, protocol)).or_insert(service_name);
+        }
+        debug!("ServiceLookup initialized with {} entries from '{}'", services.len(), file_path_str);
+        Ok(Self { services })
+    }
+
+    /// Gets the service name for a given port and protocol.
+    fn get(&self, port: u16, protocol: Protocol) -> Option<String> {
+        self.services.get(&(port, protocol)).cloned()
+    }
 }
 
 impl NetworkMonitor {
@@ -302,11 +330,26 @@ impl NetworkMonitor {
             log::debug!("NetworkMonitor::new - Found local IPs: {:?}", local_ips);
         }
 
+        // Initialize ServiceLookup
+        // TODO: Consider making the path configurable, e.g., via Config struct or environment variable.
+        let services_file_path = "assets/services";
+        log::info!("NetworkMonitor::new - Attempting to load service definitions from: {}", services_file_path);
+        let service_lookup = match ServiceLookup::new(services_file_path) {
+            Ok(sl) => sl,
+            Err(e) => {
+                error!("NetworkMonitor::new - Failed to load service definitions from '{}': {}. Proceeding without service names.", services_file_path, e);
+                // Fallback to an empty ServiceLookup if loading fails
+                ServiceLookup { services: HashMap::new() }
+            }
+        };
+
+
         log::info!("NetworkMonitor::new - Initialization complete");
         Ok(Self {
             interface,
             capture,
             local_ips,
+            service_lookup, // Added service_lookup
             connections: HashMap::new(),
             // geo_db, // Field removed
             collect_process_info: false,
@@ -373,9 +416,53 @@ impl NetworkMonitor {
                 !(conn.local_addr.ip().is_loopback() && conn.remote_addr.ip().is_loopback())
             });
         }
+
+        // Set service names for all connections
+        for conn in &mut connections {
+            self.set_connection_service_name(conn);
+        }
+
         log::info!("NetworkMonitor::get_connections - Finished fetching connections. Total: {}", connections.len());
         Ok(connections)
     }
+
+    /// Sets the service name for a given connection based on its port and protocol.
+    /// This method encapsulates the logic for choosing which port (local or remote)
+    /// determines the service, similar to the original logic in `Connection::new`.
+    fn set_connection_service_name(&self, conn: &mut Connection) {
+        let local_port = conn.local_addr.port();
+        let remote_port = conn.remote_addr.port();
+        let protocol = conn.protocol;
+
+        let mut final_service_name: Option<String> = None;
+
+        if conn.state == ConnectionState::Listen {
+            // For listening sockets, the service is always on the local port
+            final_service_name = self.service_lookup.get(local_port, protocol);
+        } else {
+            // For other states, check if local port is a well-known service port
+            // and has a known service name.
+            let local_service_name_opt = self.service_lookup.get(local_port, protocol);
+            let local_is_well_known_port = local_port <= 1023; // Standard service port range
+            
+            if local_is_well_known_port && local_service_name_opt.is_some() {
+                final_service_name = local_service_name_opt;
+            } else {
+                // If local port is not a well-known service, check the remote port.
+                let remote_service_name_opt = self.service_lookup.get(remote_port, protocol);
+                let remote_is_well_known_port = remote_port <= 1023;
+
+                if remote_is_well_known_port && remote_service_name_opt.is_some() {
+                    final_service_name = remote_service_name_opt;
+                }
+                // If neither are "well-known services" on standard ports with known names,
+                // the service name remains None, matching the original logic's strictness.
+                // More sophisticated heuristics (e.g. for non-standard ports) could be added here if desired.
+            }
+        }
+        conn.service_name = final_service_name;
+    }
+
 
     /// Process packets from capture
     pub fn process_packets(&mut self) -> Result<()> {

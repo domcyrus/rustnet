@@ -1,0 +1,27 @@
+# RustNet bundled services file
+# Format: service-name  port/protocol  [aliases...]  [# comment]
+
+# Common services
+http      80/tcp    www       # World Wide Web HTTP
+https     443/tcp             # HTTP over TLS/SSL
+ssh       22/tcp              # Secure Shell Login
+ftp       21/tcp              # File Transfer Protocol (Control)
+ftp-data  20/tcp              # File Transfer Protocol (Data)
+telnet    23/tcp              # Telnet
+smtp      25/tcp    mail      # Simple Mail Transfer Protocol
+domain    53/tcp              # Domain Name System (DNS)
+domain    53/udp              # Domain Name System (DNS)
+pop3      110/tcp   postoffice # Post Office Protocol - Version 3
+ntp       123/udp             # Network Time Protocol
+imap      143/tcp   imap4     # Internet Message Access Protocol
+snmp      161/udp             # Simple Network Management Protocol
+snmptrap  162/udp   snmp-trap # SNMP Trap
+ldap      389/tcp             # Lightweight Directory Access Protocol
+smtps     465/tcp             # SMTP over SSL (deprecated in favor of STARTTLS on 587)
+submission 587/tcp            # SMTP Message Submission (MSA)
+ldaps     636/tcp             # LDAP over SSL
+imaps     993/tcp             # IMAP over SSL
+pop3s     995/tcp             # POP3 over SSL
+
+# Example of a service on a non-standard port (for testing, if needed)
+# my-custom-http 8080/tcp     # Custom HTTP server
