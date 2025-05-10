@@ -511,23 +511,32 @@ impl App {
         // Enrich self.connections with process info from the updated self.processes cache
         for conn in &mut self.connections {
             if let Some(pid) = conn.pid {
-                if let Some(process_info) = self.processes.get(&pid) {
-                    if !process_info.name.is_empty() {
-                        // We have a non-empty name from the cache.
-                        // Update conn.process_name if it's currently None or different from the new non-empty name.
-                        if conn.process_name.as_ref() != Some(&process_info.name) {
-                            conn.process_name = Some(process_info.name.clone());
+                if let Some(cached_process_info) = self.processes.get(&pid) {
+                    // Case 1: Cache has process info for this PID.
+                    if !cached_process_info.name.is_empty() {
+                        // Cache has a non-empty name. This is authoritative.
+                        // Update conn.process_name if it's currently None or different.
+                        if conn.process_name.as_ref() != Some(&cached_process_info.name) {
+                            conn.process_name = Some(cached_process_info.name.clone());
                         }
                     } else {
-                        // Cached process name is empty, so connection's process_name should be None.
-                        conn.process_name = None;
+                        // Cache has PID but with an empty name.
+                        // Normalize conn.process_name to None if it's currently Some("").
+                        // Otherwise, leave it (it might be None or a valid Some("real_name") from another source).
+                        if conn.process_name.as_ref().map_or(false, |name| name.is_empty()) {
+                            conn.process_name = None;
+                        }
                     }
                 } else {
-                    // Process info not found for this PID in our cache, ensure connection's process_name is None.
-                    conn.process_name = None;
+                    // Case 2: PID not found in cache.
+                    // Normalize conn.process_name to None if it's currently Some("").
+                    // Otherwise, leave it (it might be None or a valid Some("real_name") from another source).
+                     if conn.process_name.as_ref().map_or(false, |name| name.is_empty()) {
+                        conn.process_name = None;
+                    }
                 }
             } else {
-                // Connection has no PID, ensure process_name is also None.
+                // Case 3: Connection has no PID. Ensure process_name is None.
                 conn.process_name = None;
             }
         }
