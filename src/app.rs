@@ -70,8 +70,9 @@ pub struct App {
     connections_data_shared: Option<Arc<Mutex<Vec<Connection>>>>,
     /// Which field is focused for copying in the details view
     pub detail_focus: DetailFocusField,
-    /// Timestamp of the last process information update
-    last_process_info_update: Instant,
+    // last_process_info_update field removed, new thread handles its own timing.
+    /// Shared process data updated by the new background thread
+    processes_data_shared: Option<Arc<Mutex<HashMap<u32, Process>>>>,
 }
 
 const PROCESS_INFO_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
@@ -98,8 +99,9 @@ impl App {
             next_order_index: 0,
             dns_cache: HashMap::new(),
             connections_data_shared: None,
+            processes_data_shared: None, // Initialize new shared data
             detail_focus: DetailFocusField::LocalIp, // Default focus to Local IP
-            last_process_info_update: Instant::now(), // Initialize last process update time
+            // last_process_info_update removed
         };
         log::info!("App::new - Application initialized successfully");
         Ok(app)
@@ -137,50 +139,93 @@ impl App {
 
         // Start monitoring in background thread
         let monitor = Arc::new(Mutex::new(monitor));
-        let monitor_clone = Arc::clone(&monitor);
-        let connections_update = Arc::new(Mutex::new(Vec::new()));
-        let connections_update_clone = Arc::clone(&connections_update);
-        self.connections_data_shared = Some(connections_update_clone.clone()); // Store Arc for on_tick
+        let monitor_arc = Arc::new(Mutex::new(monitor));
+        
+        // --- Packet Processing Thread ---
+        let monitor_clone_packets = Arc::clone(&monitor_arc);
+        let connections_update_shared = Arc::new(Mutex::new(Vec::new()));
+        self.connections_data_shared = Some(Arc::clone(&connections_update_shared));
 
-        let app_config = self.config.clone(); // Clone config to move into the thread
-
+        let app_config_packets = self.config.clone();
         thread::spawn(move || -> Result<()> {
             loop {
-                let mut monitor = monitor_clone.lock().unwrap();
+                let mut monitor_guard = monitor_clone_packets.lock().unwrap();
                 // First, process any pending packets
-                if let Err(e) = monitor.process_packets() {
-                    error!("Background thread: Error processing packets: {}", e);
-                    // Decide if we should continue or break, for now, let's log and continue
+                if let Err(e) = monitor_guard.process_packets() {
+                    error!("Packet thread: Error processing packets: {}", e);
                 }
                 // Then, get the updated connections
-                let new_connections = match monitor.get_connections() {
+                let new_connections = match monitor_guard.get_connections() {
                     Ok(conns) => conns,
                     Err(e) => {
-                        error!("Background thread: Error getting connections: {}", e);
-                        // Continue with an empty vec or the last known good, for now, empty
+                        error!("Packet thread: Error getting connections: {}", e);
                         Vec::new()
                     }
                 };
+                drop(monitor_guard); // Release lock on monitor
 
                 // Update shared connections
-                let mut connections = connections_update_clone.lock().unwrap();
-                *connections = new_connections;
-
-                // Sleep to avoid high CPU usage, controlled by config
-                drop(connections);
-                drop(monitor);
+                let mut connections_shared_guard = connections_update_shared.lock().unwrap();
+                *connections_shared_guard = new_connections;
+                drop(connections_shared_guard);
                 
-                let sleep_duration_ms = if app_config.packet_processing_interval_ms == 0 {
-                    1 // Minimal sleep (1ms) to prevent 100% CPU usage on one core
+                let sleep_duration_ms = if app_config_packets.packet_processing_interval_ms == 0 {
+                    1 
                 } else {
-                    app_config.packet_processing_interval_ms
+                    app_config_packets.packet_processing_interval_ms
                 };
                 thread::sleep(std::time::Duration::from_millis(sleep_duration_ms));
             }
         });
 
-        self.network_monitor = Some(monitor);
-        log::info!("App::start_capture - Network capture setup complete");
+        // --- Process Information Fetching Thread ---
+        let monitor_clone_procs = Arc::clone(&monitor_arc);
+        let connections_read_clone_procs = Arc::clone(&connections_update_shared);
+        let processes_update_shared = Arc::new(Mutex::new(HashMap::new()));
+        self.processes_data_shared = Some(Arc::clone(&processes_update_shared));
+
+        thread::spawn(move || -> Result<()> {
+            loop {
+                thread::sleep(PROCESS_INFO_UPDATE_INTERVAL);
+
+                let connections_to_check = { // Scope for connections_guard
+                    let connections_guard = connections_read_clone_procs.lock().unwrap();
+                    connections_guard.clone() // Clone to release lock quickly
+                };
+
+                let monitor_guard = monitor_clone_procs.lock().unwrap();
+                let mut updated_processes_batch = HashMap::new();
+
+                for conn in connections_to_check {
+                    // Check if we need to fetch/update process info for this connection
+                    // For simplicity, we can try to fetch if pid is present but not in our shared map,
+                    // or if pid itself is None (get_platform_process_for_connection might find it).
+                    // More sophisticated logic could check timestamps if process names can change.
+                    let needs_fetch = conn.pid.map_or(true, |pid| {
+                        !processes_update_shared.lock().unwrap().contains_key(&pid) || 
+                        processes_update_shared.lock().unwrap().get(&pid).map_or(true, |p| p.name.is_empty())
+                    });
+
+                    if needs_fetch {
+                        if let Some(process_info) = monitor_guard.get_platform_process_for_connection(&conn) {
+                            updated_processes_batch.insert(process_info.pid, process_info);
+                        }
+                    }
+                }
+                drop(monitor_guard); // Release lock on monitor
+
+                if !updated_processes_batch.is_empty() {
+                    let mut processes_shared_guard = processes_update_shared.lock().unwrap();
+                    for (pid, process) in updated_processes_batch {
+                        processes_shared_guard.insert(pid, process);
+                    }
+                    log::debug!("Process thread: Updated {} processes.", processes_shared_guard.len());
+                }
+            }
+        });
+
+        self.network_monitor = Some(monitor_arc);
+        log::info!("App::start_capture - Network capture and process info threads started");
         Ok(())
     }
 
@@ -450,30 +495,27 @@ impl App {
         // This part is tricky because self.connections was already updated from shared_data.
         // The iteration above directly mutates self.connections.
 
-        // Check if it's time to update process information for all connections
-        if self.last_process_info_update.elapsed() >= PROCESS_INFO_UPDATE_INTERVAL {
-            if let Some(monitor_arc) = &self.network_monitor {
-                let monitor = monitor_arc.lock().unwrap(); // Lock the mutex
-                // Iterate over indices to allow mutable borrowing of self.connections[i]
-                // and also access self.processes map.
-                for i in 0..self.connections.len() {
-                    // Only fetch if PID or process_name is missing
-                    if self.connections[i].pid.is_none() || self.connections[i].process_name.is_none() {
-                        // Clone the connection to avoid borrowing issues with monitor
-                        let conn_clone = self.connections[i].clone();
-                        if let Some(process) = monitor.get_platform_process_for_connection(&conn_clone) {
-                            // Update the connection in self.connections
-                            self.connections[i].pid = Some(process.pid);
-                            self.connections[i].process_name = Some(process.name.clone());
-                            // Cache the process info
-                            self.processes.insert(process.pid, process);
-                        }
+        // Update self.processes cache from processes_data_shared
+        if let Some(shared_procs_arc) = &self.processes_data_shared {
+            let shared_procs = shared_procs_arc.lock().unwrap();
+            self.processes = shared_procs.clone(); // Update local cache
+        }
+
+        // Enrich self.connections with process info from the updated self.processes cache
+        for conn in &mut self.connections {
+            if conn.pid.is_none() { // If connection itself doesn't have a PID from platform layer
+                // Try to find a PID if platform_get_connections gave one but packet processing didn't
+                // This case might be rare if get_connections already tries to populate PIDs
+            }
+            if let Some(pid) = conn.pid {
+                if conn.process_name.is_none() { // Only update if missing
+                    if let Some(process_info) = self.processes.get(&pid) {
+                        conn.process_name = Some(process_info.name.clone());
                     }
                 }
             }
-            self.last_process_info_update = Instant::now();
         }
-
+        // Removed direct process fetching from on_tick.
 
         Ok(())
     }
@@ -549,37 +591,11 @@ impl App {
         }
 
         // Get the selected connection
-        let connection = &mut self.connections[self.selected_connection_idx].clone();
+        let connection = &self.connections[self.selected_connection_idx];
 
-        // Check if we already have process info in our local cache
-        if let Some(pid) = connection.pid {
-            if let Some(process) = self.processes.get(&pid) {
-                return Some(process.clone());
-            }
-        }
-
-        // Otherwise, look it up on demand
-        if let Some(monitor_arc) = &self.network_monitor {
-            let monitor = monitor_arc.lock().unwrap();
-
-            // Look up the process info for this specific connection
-            if let Some(process) = monitor.get_platform_process_for_connection(connection) {
-                // Update our local cache
-                let pid = process.pid;
-                self.processes.insert(pid, process.clone());
-
-                // Update the connection in our list
-                if self.selected_connection_idx < self.connections.len() {
-                    self.connections[self.selected_connection_idx].pid = Some(pid);
-                    self.connections[self.selected_connection_idx].process_name =
-                        Some(self.processes[&pid].name.clone());
-                }
-
-                return Some(process);
-            }
-        }
-
-        None
+        // Return process info from local cache if available
+        // On-demand fetching removed to keep this non-blocking.
+        connection.pid.and_then(|pid| self.processes.get(&pid).cloned())
     }
 
     /// Generate a unique key for a connection
