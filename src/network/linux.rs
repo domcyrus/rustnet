@@ -89,8 +89,20 @@ impl NetworkMonitor {
                     continue;
                 }
 
+                // ss -tupn output fields: Netid, State, Recv-Q, Send-Q, Local Address:Port, Peer Address:Port, Process
+                // Example: tcp ESTAB 0 0 10.0.0.1:1234 10.0.0.2:80 users:(("myproc",pid=789,fd=5))
+                // Example: udp UNCONN 0 0 *:bootpc *:* users:(("dhclient",pid=123,fd=3))
+
+                // Parse protocol (Netid)
+                let protocol = match fields[0] {
+                    "tcp" | "tcp6" => Protocol::TCP,
+                    "udp" | "udp6" => Protocol::UDP,
+                    _ => continue, // Skip if not tcp or udp
+                };
+
                 // Parse state
-                let state = match fields[0] {
+                let state_str = if fields.len() > 1 { fields[1] } else { "" };
+                let state = match state_str {
                     "ESTAB" => ConnectionState::Established,
                     "LISTEN" => ConnectionState::Listen,
                     "TIME-WAIT" => ConnectionState::TimeWait,
@@ -101,36 +113,35 @@ impl NetworkMonitor {
                     "FIN-WAIT-2" => ConnectionState::FinWait2,
                     "LAST-ACK" => ConnectionState::LastAck,
                     "CLOSING" => ConnectionState::Closing,
+                    "UNCONN" if protocol == Protocol::UDP => ConnectionState::Established, // UDP is connectionless, UNCONN is normal
                     _ => ConnectionState::Unknown,
                 };
 
-                // Parse protocol
-                let protocol = match fields[0] {
-                    "tcp" | "tcp6" => Protocol::TCP,
-                    "udp" | "udp6" => Protocol::UDP,
-                    _ => continue,
-                };
+                // Ensure we have enough fields for addresses
+                if fields.len() < 6 { // Need up to Peer Address:Port
+                    continue;
+                }
 
-                // Parse local and remote addresses
+                // Parse local and remote addresses (fields[4] and fields[5])
                 if let (Some(local), Some(remote)) =
-                    (self.parse_addr(fields[3]), self.parse_addr(fields[4]))
+                    (self.parse_addr(fields[4]), self.parse_addr(fields[5]))
                 {
                     let mut conn = Connection::new(protocol, local, remote, state);
 
-                    // Parse PID and process name
-                    if fields.len() >= 6 {
-                        let process_info = fields[5];
+                    // Parse PID and process name (fields[6], if present)
+                    if fields.len() >= 7 {
+                        let process_info = fields[6]; // Process info is in the 7th field (index 6)
                         if let Some(pid_start) = process_info.find("pid=") {
                             let pid_part = &process_info[pid_start + 4..];
                             if let Some(pid_end) = pid_part.find(',') {
                                 if let Ok(pid) = pid_part[..pid_end].parse::<u32>() {
                                     conn.pid = Some(pid);
 
-                                    // Try to get process name
-                                    if let Some(name_start) = process_info.find("users:(") {
-                                        let name_part = &process_info[name_start + 7..];
-                                        if let Some(name_end) = name_part.find(',') {
-                                            let raw_name = &name_part[..name_end];
+                                    // Try to get process name from users:(("name",pid=...,fd=...))
+                                    if let Some(name_section_start) = process_info.find("users:((\"") {
+                                        let name_candidate_part = &process_info[name_section_start + 9..];
+                                        if let Some(name_candidate_end) = name_candidate_part.find('"') {
+                                            let raw_name = &name_candidate_part[..name_candidate_end];
                                             let trimmed_name = raw_name
                                                 .trim_start_matches("(\"")
                                                 .trim_end_matches('"')
@@ -202,14 +213,20 @@ impl NetworkMonitor {
                 ) {
                     let mut conn = Connection::new(protocol, local, remote, state);
 
-                    // Parse PID
-                    let pid_pos = 6;
-                    if fields.len() > pid_pos && fields[pid_pos] != "-" {
-                        if let Ok(pid) = fields[pid_pos].parse::<u32>() {
+                    // Parse PID and process name from "PID/Program name"
+                    let pid_program_pos = 6; // Assuming this is the correct index for "PID/Program name"
+                    if fields.len() > pid_program_pos && fields[pid_program_pos] != "-" {
+                        let pid_str_parts: Vec<&str> = fields[pid_program_pos].split('/').collect();
+                        if let Ok(pid) = pid_str_parts[0].parse::<u32>() {
                             conn.pid = Some(pid);
+                            if pid_str_parts.len() > 1 {
+                                // Check if the process name part is not empty or just "-"
+                                if !pid_str_parts[1].is_empty() && pid_str_parts[1] != "-" {
+                                    conn.process_name = Some(pid_str_parts[1].to_string());
+                                }
+                            }
                         }
                     }
-
                     connections.push(conn);
                 }
             }

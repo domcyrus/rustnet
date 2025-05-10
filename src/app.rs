@@ -199,21 +199,25 @@ impl App {
                 let mut updated_processes_batch = HashMap::new();
 
                 for conn in connections_to_check {
-                    // Check if we need to fetch/update process info for this connection
-                    // Fetch process details only if the connection has a PID and
-                    // the details are missing or incomplete in the shared map.
-                    let needs_fetch = if let Some(pid) = conn.pid {
-                        let processes_guard = processes_update_shared.lock().unwrap();
-                        !processes_guard.contains_key(&pid) || 
-                        processes_guard.get(&pid).map_or(true, |p| p.name.is_empty())
-                    } else {
-                        false // If connection has no PID, NetworkMonitor::get_connections is responsible for finding it.
+                    // Determine if we need to fetch or update process info for this connection.
+                    let needs_fetch = match conn.pid {
+                        Some(pid) => {
+                            // PID exists, check if we have details or if they are incomplete.
+                            let processes_guard = processes_update_shared.lock().unwrap();
+                            !processes_guard.contains_key(&pid) ||
+                            processes_guard.get(&pid).map_or(true, |p| p.name.is_empty())
+                        }
+                        None => true, // PID is missing, so we definitely need to try fetching.
                     };
 
                     if needs_fetch {
-                        // Since conn.pid is Some at this point if needs_fetch is true,
-                        // get_platform_process_for_connection will use that PID.
+                        // Attempt to get process information.
+                        // If conn.pid was None, get_platform_process_for_connection will try to find it.
+                        // If conn.pid was Some, it will use that PID to refresh/confirm details.
                         if let Some(process_info) = monitor_guard.get_platform_process_for_connection(&conn) {
+                            // If process_info is found (or re-found), add it to our batch update.
+                            // This ensures that even if a PID was initially None, if it's resolved now,
+                            // it gets into the processes_update_shared map.
                             updated_processes_batch.insert(process_info.pid, process_info);
                         }
                     }
