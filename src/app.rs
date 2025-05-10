@@ -199,6 +199,15 @@ impl App {
                 let mut collected_processes_this_cycle: HashMap<u32, Process> = HashMap::new();
 
                 // Iterate over connections to gather or update process information
+                if !connections_to_check.is_empty() {
+                    log::debug!("Process thread: First few connections_to_check (max 3 of {} total):", connections_to_check.len());
+                    for (i, conn_to_log) in connections_to_check.iter().take(3).enumerate() {
+                        log::debug!("  Connections_to_check[{}]: PID: {:?}, Name: {:?}", i, conn_to_log.pid, conn_to_log.process_name);
+                    }
+                } else {
+                    log::debug!("Process thread: connections_to_check is empty.");
+                }
+
                 for conn in connections_to_check { // connections_to_check is a Vec<Connection>
                     let mut process_info_candidate: Option<Process> = None;
 
@@ -243,10 +252,27 @@ impl App {
                 }
                 drop(monitor_guard); // Release monitor lock
 
+                if !collected_processes_this_cycle.is_empty() {
+                    log::debug!("Process thread: collected_processes_this_cycle (before filter, {} entries, showing max 5):", collected_processes_this_cycle.len());
+                    for (i, (pid, process)) in collected_processes_this_cycle.iter().take(5).enumerate() {
+                        log::debug!("  Collected[{}]: PID: {}, Name: '{}'", i, pid, process.name);
+                    }
+                } else {
+                    log::debug!("Process thread: collected_processes_this_cycle is empty.");
+                }
+                
                 // Filter out processes with empty names before updating shared state
                 let final_processes_to_update: HashMap<u32, Process> = collected_processes_this_cycle.into_iter()
                     .filter(|(_, process)| !process.name.is_empty())
                     .collect();
+
+                log::debug!("Process thread: final_processes_to_update (after filter, count: {}):", final_processes_to_update.len());
+                if !final_processes_to_update.is_empty() {
+                    log::debug!("Process thread: First few final_processes_to_update (max 3):");
+                    for (i, (pid, process)) in final_processes_to_update.iter().take(3).enumerate() {
+                        log::debug!("  Final[{}]: PID: {}, Name: '{}'", i, pid, process.name);
+                    }
+                }
 
                 if !final_processes_to_update.is_empty() {
                     let mut processes_shared_guard = processes_update_shared.lock().unwrap();
