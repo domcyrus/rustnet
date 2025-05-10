@@ -610,26 +610,69 @@ impl App {
         // This part is tricky because self.connections was already updated from shared_data.
         // The iteration above directly mutates self.connections.
 
-        // Update self.processes cache from processes_data_shared
+        // Update self.processes cache from processes_data_shared (from background thread)
         if let Some(shared_procs_arc) = &self.processes_data_shared {
-            let shared_procs_guard = shared_procs_arc.lock().unwrap();
-            if self.processes.len() != shared_procs_guard.len() || !shared_procs_guard.is_empty() {
-                log::debug!("App::on_tick - Updating self.processes. Old count: {}, New count from shared: {}", self.processes.len(), shared_procs_guard.len());
-            }
-            self.processes = shared_procs_guard.clone(); // Update local cache
-            drop(shared_procs_guard); // Release lock
-
-            if !self.processes.is_empty() {
-                 log::debug!("App::on_tick - self.processes is now non-empty. Count: {}", self.processes.len());
-            } else if self.processes.is_empty() && (self.connections_data_shared.as_ref().map_or(0, |s| s.lock().unwrap().len()) > 0) {
-                 // Only log if connections exist but processes map is still empty after update attempt
-                 log::debug!("App::on_tick - self.processes is empty after update from shared_procs_arc.");
+            match shared_procs_arc.lock() {
+                Ok(shared_procs_guard) => {
+                    if self.processes.len() != shared_procs_guard.len() || !shared_procs_guard.is_empty() {
+                        log::debug!("App::on_tick - Updating self.processes from shared_procs_arc. Old count: {}, New count from shared: {}", self.processes.len(), shared_procs_guard.len());
+                    }
+                    self.processes = shared_procs_guard.clone(); // Update local cache from background thread's findings
+                }
+                Err(poisoned) => {
+                    log::error!("App::on_tick - Failed to lock processes_data_shared (poisoned): {:?}", poisoned);
+                }
             }
         } else {
-            log::warn!("App::on_tick - processes_data_shared is None, cannot update self.processes.");
+            log::warn!("App::on_tick - processes_data_shared is None, cannot update self.processes from background thread.");
         }
 
-        // Enrich self.connections with process info from the updated self.processes cache
+        // Directly populate self.processes from self.connections if PIDs and names are already known.
+        // This ensures that information gathered by NetworkMonitor during its scans contributes
+        // to the process count, even if the background process thread is delayed or encounters issues.
+        let mut processes_updated_directly_from_connections = 0;
+        for conn in &self.connections {
+            if let (Some(pid), Some(name)) = (conn.pid, &conn.process_name) {
+                if !name.is_empty() {
+                    // Insert or update in self.processes.
+                    // If an entry for this PID already exists, this will update its name if different.
+                    // If the existing entry had an empty name, it will be updated.
+                    // If the existing entry had a non-empty name, it will be updated if `name` is different.
+                    let process_entry = self.processes.entry(pid).or_insert_with(|| Process {
+                        pid,
+                        name: name.clone(),
+                    });
+
+                    if process_entry.name != *name { // Update if name is different or was empty
+                        process_entry.name = name.clone();
+                        processes_updated_directly_from_connections += 1;
+                    } else if processes_updated_directly_from_connections == 0 && !self.processes.contains_key(&pid){
+                        // This case handles if the entry was just inserted by or_insert_with
+                        // and it's the first direct update in this tick.
+                        // However, or_insert_with already handles insertion.
+                        // The main point is to count if an effective update/insertion happened.
+                        // A simpler way to count is if the map size changes or an existing value changes.
+                        // For simplicity, we'll count if we performed an assignment to entry.name.
+                        // The counter is mainly for logging.
+                    }
+                }
+            }
+        }
+
+        if processes_updated_directly_from_connections > 0 {
+            log::debug!("App::on_tick - Directly updated/inserted {} processes into self.processes from self.connections. New total count: {}", processes_updated_directly_from_connections, self.processes.len());
+        }
+
+
+        if !self.processes.is_empty() {
+                log::debug!("App::on_tick - self.processes is now non-empty. Count: {}", self.processes.len());
+        } else if self.processes.is_empty() && !self.connections.is_empty() {
+                // Only log if connections exist but processes map is still empty after all updates.
+                log::debug!("App::on_tick - self.processes is STILL empty despite connections existing and direct update attempt.");
+        }
+
+
+        // Enrich self.connections with process info from the (now potentially more complete) self.processes cache
         for conn in &mut self.connections {
             if let Some(pid) = conn.pid {
                 if let Some(cached_process_info) = self.processes.get(&pid) {
