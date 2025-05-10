@@ -968,9 +968,9 @@ impl App {
                     let bytes_received_delta =
                         latest_bytes_received.saturating_sub(oldest_relevant_entry.2);
 
-                    let out_bps = (bytes_sent_delta as f64 * 8.0) / time_delta_secs;
-                    let in_bps = (bytes_received_delta as f64 * 8.0) / time_delta_secs;
-                    (in_bps, out_bps)
+                    let out_bytes_per_sec = bytes_sent_delta as f64 / time_delta_secs;
+                    let in_bytes_per_sec = bytes_received_delta as f64 / time_delta_secs;
+                    (in_bytes_per_sec, out_bytes_per_sec)
                 } else {
                     (0.0, 0.0)
                 }
