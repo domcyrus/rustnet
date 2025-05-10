@@ -1,8 +1,11 @@
 use anyhow::{anyhow, Result};
-use log::{error, info};
+use log::{debug, error, info, warn}; // Added debug, warn
 use pcap::{Capture, Device};
 use std::collections::HashMap;
+use std::fs::File; // Added for file operations
+use std::io::{BufRead, BufReader}; // Added for buffered reading
 use std::net::{IpAddr, SocketAddr};
+use std::path::Path; // Added for path operations
 use std::time::{Duration, Instant, SystemTime};
 
 #[cfg(target_os = "linux")]
@@ -17,7 +20,7 @@ use windows::*;
 mod macos;
 
 /// Connection protocol
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)] // Added Hash
 pub enum Protocol {
     TCP,
     UDP,
@@ -104,7 +107,7 @@ impl Connection {
         state: ConnectionState,
     ) -> Self {
         let now = SystemTime::now();
-        let mut new_conn = Self {
+        let new_conn = Self { // Removed mut
             protocol,
             local_addr,
             remote_addr,
@@ -573,18 +576,22 @@ impl NetworkMonitor {
                                 conn.bytes_received += data.len() as u64;
                             }
                             conn.state = state;
+                            // Update service name for existing connection
+                            self.set_connection_service_name(conn);
                         } else {
-                            let mut conn =
+                            let mut new_conn =
                                 Connection::new(Protocol::TCP, local_addr, remote_addr, state);
-                            conn.last_activity = SystemTime::now();
+                            new_conn.last_activity = SystemTime::now();
                             if is_outgoing {
-                                conn.packets_sent += 1;
-                                conn.bytes_sent += data.len() as u64;
+                                new_conn.packets_sent += 1;
+                                new_conn.bytes_sent += data.len() as u64;
                             } else {
-                                conn.packets_received += 1;
-                                conn.bytes_received += data.len() as u64;
+                                new_conn.packets_received += 1;
+                                new_conn.bytes_received += data.len() as u64;
                             }
-                            monitor_connections.insert(conn_key, conn);
+                            // Set service name for new connection before inserting
+                            self.set_connection_service_name(&mut new_conn);
+                            monitor_connections.insert(conn_key, new_conn);
                         }
                     }
                     17 => {
@@ -624,22 +631,26 @@ impl NetworkMonitor {
                                 conn.packets_received += 1;
                                 conn.bytes_received += data.len() as u64;
                             }
+                            // Update service name for existing connection
+                            self.set_connection_service_name(conn);
                         } else {
-                            let mut conn = Connection::new(
+                            let mut new_conn = Connection::new(
                                 Protocol::UDP,
                                 local_addr,
                                 remote_addr,
                                 ConnectionState::Unknown,
                             );
-                            conn.last_activity = SystemTime::now();
+                            new_conn.last_activity = SystemTime::now();
                             if is_outgoing {
-                                conn.packets_sent += 1;
-                                conn.bytes_sent += data.len() as u64;
+                                new_conn.packets_sent += 1;
+                                new_conn.bytes_sent += data.len() as u64;
                             } else {
-                                conn.packets_received += 1;
-                                conn.bytes_received += data.len() as u64;
+                                new_conn.packets_received += 1;
+                                new_conn.bytes_received += data.len() as u64;
                             }
-                            monitor_connections.insert(conn_key, conn);
+                            // Set service name for new connection before inserting
+                            self.set_connection_service_name(&mut new_conn);
+                            monitor_connections.insert(conn_key, new_conn);
                         }
                     }
                     _ => {} // Ignore other protocols
