@@ -452,18 +452,21 @@ impl NetworkMonitor {
         for platform_conn in platform_conns_vec {
             let key = self.get_connection_key_for_merge(&platform_conn);
             if let Some(existing_conn) = merged_connections.get_mut(&key) {
-                // Connection exists from packet capture, update with platform info
-                existing_conn.state = platform_conn.state; // Platform tools might have more current state
+                // Connection exists from packet capture (which has rate_history and byte counts).
+                // Update it with potentially more accurate state, PID, and process_name from platform tools.
+                existing_conn.state = platform_conn.state;
                 if platform_conn.pid.is_some() {
                     existing_conn.pid = platform_conn.pid;
                 }
                 if platform_conn.process_name.is_some() {
-                    existing_conn.process_name = platform_conn.process_name; // platform_conn.process_name is Option<String>, so clone is implicit or not needed if moved
+                    existing_conn.process_name = platform_conn.process_name;
                 }
-                // Byte counts, packet counts, and rate_history from existing_conn (packet data) are preserved.
+                // Crucially, existing_conn.bytes_sent, .bytes_received, .packets_sent, .packets_received,
+                // and .rate_history (from packet capture) are preserved.
             } else {
                 // Connection only found by platform tools, add it.
-                // It will have 0 byte counts and empty rate_history initially.
+                // It will have 0 byte/packet counts and empty rate_history initially,
+                // as these are primarily populated by packet capture.
                 merged_connections.insert(key, platform_conn);
             }
         }
