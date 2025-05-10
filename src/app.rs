@@ -209,44 +209,65 @@ impl App {
                 }
 
                 for conn in connections_to_check { // connections_to_check is a Vec<Connection>
-                    let mut process_info_candidate: Option<Process> = None;
+                    let mut final_process_candidate: Option<Process> = None;
 
-                    // Attempt to get authoritative process info from platform-specific lookup
-                    if let Some(platform_process) = monitor_guard.get_platform_process_for_connection(&conn) {
-                        if !platform_process.name.is_empty() {
-                            process_info_candidate = Some(platform_process);
-                        } else {
-                            // Platform lookup gave PID but empty name.
-                            // If conn already has a PID and non-empty name, prefer that.
-                            if let (Some(pid_from_conn), Some(name_from_conn)) = (conn.pid, &conn.process_name) {
-                                if platform_process.pid == pid_from_conn && !name_from_conn.is_empty() {
-                                    process_info_candidate = Some(Process { pid: pid_from_conn, name: name_from_conn.clone() });
-                                } else if platform_process.pid == pid_from_conn { // PID matches, but conn name is also empty or None
-                                     process_info_candidate = Some(platform_process); // Keep platform's empty name version
-                                }
-                            } else { // conn has no PID or no name, stick with platform's (empty name) version
-                                process_info_candidate = Some(platform_process);
-                            }
+                    // Step 1: Use info from 'conn' if PID and non-empty name are present.
+                    if let (Some(c_pid), Some(c_name)) = (conn.pid, &conn.process_name) {
+                        if !c_name.is_empty() {
+                            final_process_candidate = Some(Process { pid: c_pid, name: c_name.clone() });
                         }
-                    } else {
-                        // Platform-specific lookup failed. Fallback to info already in Connection struct.
-                        if let (Some(pid_val), Some(name_val)) = (conn.pid, &conn.process_name) {
-                            if !name_val.is_empty() {
-                                process_info_candidate = Some(Process { pid: pid_val, name: name_val.clone() });
+                    }
+
+                    // Step 2: Try to get info from platform-specific lookup.
+                    if let Some(platform_p) = monitor_guard.get_platform_process_for_connection(&conn) {
+                        if !platform_p.name.is_empty() {
+                            // Platform lookup provided a non-empty name; this is preferred.
+                            // It will overwrite final_process_candidate if it was set in Step 1,
+                            // or set it if it was None.
+                            final_process_candidate = Some(platform_p);
+                        } else {
+                            // Platform lookup provided a PID but an empty name.
+                            // We should only use this if final_process_candidate is currently None
+                            // (meaning 'conn' didn't have a valid PID and non-empty name),
+                            // or if final_process_candidate is for the same PID but also has an empty name.
+                            if let Some(ref existing_candidate) = final_process_candidate {
+                                if existing_candidate.pid == platform_p.pid {
+                                    // Already have a candidate for this PID.
+                                    // If existing_candidate.name is non-empty (from Step 1), we keep it.
+                                    // If existing_candidate.name is empty (should not happen if Step 1 set it),
+                                    // then platform_p (also empty name) is fine.
+                                    // So, only update if existing_candidate.name is empty.
+                                    if existing_candidate.name.is_empty() {
+                                        final_process_candidate = Some(platform_p);
+                                    }
+                                } else {
+                                    // Existing candidate is for a different PID.
+                                    // This scenario is tricky: platform lookup (empty name) for P_PID,
+                                    // conn had (non-empty name) for C_PID.
+                                    // For now, we don't add platform_p if it conflicts PID-wise with a named candidate.
+                                    // If final_process_candidate was None, this branch isn't hit.
+                                }
+                            } else {
+                                // No candidate from Step 1, so use platform's result (PID with empty name).
+                                final_process_candidate = Some(platform_p);
                             }
                         }
                     }
 
                     // If we have a candidate, add/update it in our cycle's collection
-                    if let Some(p_info) = process_info_candidate {
-                        // If name is empty, only insert if PID isn't already there with a non-empty name.
+                    if let Some(p_info) = final_process_candidate {
+                        // If the candidate's name is empty, only insert it if the map
+                        // doesn't already contain a non-empty name for this PID.
                         if p_info.name.is_empty() {
                             if let Some(existing_entry) = collected_processes_this_cycle.get(&p_info.pid) {
                                 if !existing_entry.name.is_empty() {
-                                    continue; // Don't overwrite a good name with an empty one
+                                    continue; // Don't overwrite a good name with an empty one.
                                 }
                             }
                         }
+                        // Insert the candidate. If it has a non-empty name, it might overwrite an
+                        // existing empty-named entry. If it has an empty name, it will only be
+                        // inserted if no entry exists or the existing one is also empty-named.
                         collected_processes_this_cycle.insert(p_info.pid, p_info);
                     }
                 }
