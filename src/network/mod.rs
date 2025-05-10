@@ -426,7 +426,7 @@ impl NetworkMonitor {
 
         // Add connections from packet capture
         log::debug!("NetworkMonitor::get_connections - Merging packet capture connections (current count: {})", self.connections.len());
-        let mut packet_conn_keys_to_update_pid: Vec<(String, u32)> = Vec::new();
+        let mut packet_conn_updates: Vec<(String, u32, String)> = Vec::new();
 
         for (key, conn_from_packets) in &self.connections {
             // Check if this connection exists in the list already (from platform tools)
@@ -443,18 +443,20 @@ impl NetworkMonitor {
                 if conn_to_add_to_results.pid.is_none() {
                     if let Some(process_details) = self.get_platform_process_for_connection(&conn_to_add_to_results) {
                         conn_to_add_to_results.pid = Some(process_details.pid);
-                        // Mark this key for PID update in self.connections (the HashMap)
-                        packet_conn_keys_to_update_pid.push((key.clone(), process_details.pid));
+                        conn_to_add_to_results.process_name = Some(process_details.name.clone());
+                        // Mark this key for PID and name update in self.connections (the HashMap)
+                        packet_conn_updates.push((key.clone(), process_details.pid, process_details.name.clone()));
                     }
                 }
                 connections.push(conn_to_add_to_results);
             }
         }
         
-        // Update PIDs in self.connections (the HashMap) for packet-only connections where PID was just found
-        for (key, pid_to_set) in packet_conn_keys_to_update_pid {
+        // Update PIDs and names in self.connections (the HashMap) for packet-only connections where details were just found
+        for (key, pid_to_set, name_to_set) in packet_conn_updates {
             if let Some(conn_in_map) = self.connections.get_mut(&key) {
                 conn_in_map.pid = Some(pid_to_set);
+                conn_in_map.process_name = Some(name_to_set);
             }
         }
 
