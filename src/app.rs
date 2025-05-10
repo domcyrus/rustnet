@@ -201,15 +201,19 @@ impl App {
 
                 for conn in connections_to_check {
                     // Check if we need to fetch/update process info for this connection
-                    // For simplicity, we can try to fetch if pid is present but not in our shared map,
-                    // or if pid itself is None (get_platform_process_for_connection might find it).
-                    // More sophisticated logic could check timestamps if process names can change.
-                    let needs_fetch = conn.pid.map_or(true, |pid| {
-                        !processes_update_shared.lock().unwrap().contains_key(&pid) || 
-                        processes_update_shared.lock().unwrap().get(&pid).map_or(true, |p| p.name.is_empty())
-                    });
+                    // Fetch process details only if the connection has a PID and
+                    // the details are missing or incomplete in the shared map.
+                    let needs_fetch = if let Some(pid) = conn.pid {
+                        let processes_guard = processes_update_shared.lock().unwrap();
+                        !processes_guard.contains_key(&pid) || 
+                        processes_guard.get(&pid).map_or(true, |p| p.name.is_empty())
+                    } else {
+                        false // If connection has no PID, NetworkMonitor::get_connections is responsible for finding it.
+                    };
 
                     if needs_fetch {
+                        // Since conn.pid is Some at this point if needs_fetch is true,
+                        // get_platform_process_for_connection will use that PID.
                         if let Some(process_info) = monitor_guard.get_platform_process_for_connection(&conn) {
                             updated_processes_batch.insert(process_info.pid, process_info);
                         }

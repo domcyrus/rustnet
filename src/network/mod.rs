@@ -435,7 +435,15 @@ impl NetworkMonitor {
             });
 
             if !exists && conn.is_active() {
-                connections.push(conn.clone());
+                let mut new_conn_to_add = conn.clone();
+                // Attempt to find process info (especially PID) for this packet-derived connection
+                if let Some(process_details) = self.get_platform_process_for_connection(&new_conn_to_add) {
+                    new_conn_to_add.pid = Some(process_details.pid);
+                    // We could set the name here too, but App's process thread is designed for full details.
+                    // Setting PID is the crucial part for linkage.
+                    // new_conn_to_add.process_name = Some(process_details.name); 
+                }
+                connections.push(new_conn_to_add);
             }
         }
 
