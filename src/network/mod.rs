@@ -653,6 +653,7 @@ impl NetworkMonitor {
                                 conn.packets_received += 1;
                                 conn.bytes_received += data.len() as u64;
                             }
+                            conn.rate_history.push((Instant::now(), conn.bytes_sent, conn.bytes_received));
                             // Update service name for existing connection
                             set_connection_service_name_for_connection(conn, service_lookup);
                         } else {
@@ -670,6 +671,7 @@ impl NetworkMonitor {
                                 new_conn.packets_received += 1;
                                 new_conn.bytes_received += data.len() as u64;
                             }
+                            new_conn.rate_history.push((Instant::now(), new_conn.bytes_sent, new_conn.bytes_received));
                             // Set service name for new connection before inserting
                             set_connection_service_name_for_connection(&mut new_conn, service_lookup);
                             monitor_connections.insert(conn_key, new_conn);
