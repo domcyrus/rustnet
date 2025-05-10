@@ -325,11 +325,8 @@ impl NetworkMonitor {
 
     /// Get active connections
     pub fn get_connections(&mut self) -> Result<Vec<Connection>> {
-        log::debug!("NetworkMonitor::get_connections - Starting to fetch connections");
-        // Process packets from capture
-        log::debug!("NetworkMonitor::get_connections - Calling process_packets");
-        self.process_packets()?;
-        log::debug!("NetworkMonitor::get_connections - process_packets returned");
+        log::debug!("NetworkMonitor::get_connections - Starting to fetch connections (without packet processing)");
+        // Packet processing is now handled externally.
 
         // Get connections from system methods
         let mut connections = Vec::new();
@@ -381,7 +378,7 @@ impl NetworkMonitor {
     }
 
     /// Process packets from capture
-    fn process_packets(&mut self) -> Result<()> {
+    pub fn process_packets(&mut self) -> Result<()> {
         log::debug!("NetworkMonitor::process_packets - Entered process_packets");
 
         // Define a helper function to process a single packet

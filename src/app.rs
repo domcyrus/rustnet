@@ -140,7 +140,20 @@ impl App {
         thread::spawn(move || -> Result<()> {
             loop {
                 let mut monitor = monitor_clone.lock().unwrap();
-                let new_connections = monitor.get_connections()?;
+                // First, process any pending packets
+                if let Err(e) = monitor.process_packets() {
+                    error!("Background thread: Error processing packets: {}", e);
+                    // Decide if we should continue or break, for now, let's log and continue
+                }
+                // Then, get the updated connections
+                let new_connections = match monitor.get_connections() {
+                    Ok(conns) => conns,
+                    Err(e) => {
+                        error!("Background thread: Error getting connections: {}", e);
+                        // Continue with an empty vec or the last known good, for now, empty
+                        Vec::new()
+                    }
+                };
 
                 // Update shared connections
                 let mut connections = connections_update_clone.lock().unwrap();
