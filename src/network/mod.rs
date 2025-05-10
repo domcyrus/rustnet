@@ -94,9 +94,9 @@ pub struct Connection {
     pub last_activity: SystemTime,
     pub service_name: Option<String>,
     // Fields for current rate calculation
-    pub prev_bytes_sent: u64, // Still used by NetworkMonitor for cumulative tracking if needed elsewhere
-    pub prev_bytes_received: u64, // Still used by NetworkMonitor for cumulative tracking if needed elsewhere
-    pub last_rate_update_time: Instant, // Still used by NetworkMonitor for cumulative tracking if needed elsewhere
+    // pub prev_bytes_sent: u64, // Field removed as unused
+    // pub prev_bytes_received: u64, // Field removed as unused
+    // pub last_rate_update_time: Instant, // Field removed as unused
     pub current_incoming_rate_bps: f64,
     pub current_outgoing_rate_bps: f64,
     pub rate_history: Vec<(Instant, u64, u64)>, // Stores (timestamp, total_bytes_sent, total_bytes_received)
@@ -128,9 +128,9 @@ impl Connection {
             last_activity: now,
             service_name: None, // Service name will be set by NetworkMonitor
             // Initialize new fields for rate calculation
-            prev_bytes_sent: 0,
-            prev_bytes_received: 0,
-            last_rate_update_time: Instant::now(),
+            // prev_bytes_sent: 0, // Field removed
+            // prev_bytes_received: 0, // Field removed
+            // last_rate_update_time: Instant::now(), // Field removed
             current_incoming_rate_bps: 0.0,
             current_outgoing_rate_bps: 0.0,
             rate_history: Vec::new(),
