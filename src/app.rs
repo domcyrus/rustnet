@@ -138,8 +138,7 @@ impl App {
         log::info!("App::start_capture - Initial monitor.get_connections() returned {} connections", self.connections.len());
 
         // Start monitoring in background thread
-        let monitor = Arc::new(Mutex::new(monitor));
-        let monitor_arc = Arc::new(Mutex::new(monitor));
+        let monitor_arc = Arc::new(Mutex::new(monitor)); // Correctly initialize monitor_arc
         
         // --- Packet Processing Thread ---
         let monitor_clone_packets = Arc::clone(&monitor_arc);
@@ -149,7 +148,9 @@ impl App {
         let app_config_packets = self.config.clone();
         thread::spawn(move || -> Result<()> {
             loop {
+                // Lock the Arc<Mutex<NetworkMonitor>> to get MutexGuard<NetworkMonitor>
                 let mut monitor_guard = monitor_clone_packets.lock().unwrap();
+                
                 // First, process any pending packets
                 if let Err(e) = monitor_guard.process_packets() {
                     error!("Packet thread: Error processing packets: {}", e);
@@ -162,7 +163,7 @@ impl App {
                         Vec::new()
                     }
                 };
-                drop(monitor_guard); // Release lock on monitor
+                // monitor_guard is dropped here, releasing the lock on NetworkMonitor
 
                 // Update shared connections
                 let mut connections_shared_guard = connections_update_shared.lock().unwrap();
@@ -193,6 +194,7 @@ impl App {
                     connections_guard.clone() // Clone to release lock quickly
                 };
 
+                // Lock the Arc<Mutex<NetworkMonitor>> to get MutexGuard<NetworkMonitor>
                 let monitor_guard = monitor_clone_procs.lock().unwrap();
                 let mut updated_processes_batch = HashMap::new();
 
@@ -212,7 +214,7 @@ impl App {
                         }
                     }
                 }
-                drop(monitor_guard); // Release lock on monitor
+                // monitor_guard is dropped here, releasing the lock on NetworkMonitor
 
                 if !updated_processes_batch.is_empty() {
                     let mut processes_shared_guard = processes_update_shared.lock().unwrap();
