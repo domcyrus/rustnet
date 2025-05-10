@@ -710,7 +710,7 @@ impl NetworkMonitor {
 
         // Get packets from the capture
         if let Some(ref mut cap) = self.capture {
-            log::debug!("NetworkMonitor::process_packets - Starting packet processing loop (up to 20 iterations)");
+            log::debug!("NetworkMonitor::process_packets - Starting packet processing loop (up to {} iterations)", MAX_PACKETS_PER_CALL);
             let loop_start_time = Instant::now();
             let mut packets_processed_in_loop = 0;
             // Process a moderate number of packets per call to balance responsiveness and data capture
