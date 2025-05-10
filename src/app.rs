@@ -512,23 +512,23 @@ impl App {
         for conn in &mut self.connections {
             if let Some(pid) = conn.pid {
                 if let Some(process_info) = self.processes.get(&pid) {
-                    // Update if the cached name is different or if the connection's name is currently None
-                    // and the new name is not empty.
-                    if (!process_info.name.is_empty() && conn.process_name.as_ref() != Some(&process_info.name)) || conn.process_name.is_none() {
-                        conn.process_name = Some(process_info.name.clone());
-                    }
-                } else {
-                    // Process info not found for this PID in our cache,
-                    // but connection might have an outdated name. Clear it.
-                    if conn.process_name.is_some() {
+                    if !process_info.name.is_empty() {
+                        // We have a non-empty name from the cache.
+                        // Update conn.process_name if it's currently None or different from the new non-empty name.
+                        if conn.process_name.as_ref() != Some(&process_info.name) {
+                            conn.process_name = Some(process_info.name.clone());
+                        }
+                    } else {
+                        // Cached process name is empty, so connection's process_name should be None.
                         conn.process_name = None;
                     }
+                } else {
+                    // Process info not found for this PID in our cache, ensure connection's process_name is None.
+                    conn.process_name = None;
                 }
             } else {
                 // Connection has no PID, ensure process_name is also None.
-                if conn.process_name.is_some() {
-                    conn.process_name = None;
-                }
+                conn.process_name = None;
             }
         }
         // Removed direct process fetching from on_tick.
