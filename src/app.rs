@@ -333,7 +333,7 @@ impl App {
     /// Update application state on tick
     pub fn on_tick(&mut self) -> Result<()> {
         // Store currently selected connection (if any)
-        let selected = self.selected_connection.clone();
+        let selected_conn_key = self.selected_connection.as_ref().map(|sc| self.get_connection_key(sc));
 
         // Update connections from shared data updated by the background thread
         if let Some(shared_data_arc) = &self.connections_data_shared {
@@ -370,11 +370,35 @@ impl App {
             });
 
             // Update connections with the sorted list
-            self.connections = new_connections;
+            self.connections = new_connections; // self.connections is now updated
+
+            // Calculate current rates for each connection
+            let now = Instant::now();
+            for conn in &mut self.connections {
+                let time_delta = now.duration_since(conn.last_rate_update_time);
+                let time_delta_secs = time_delta.as_secs_f64();
+
+                if time_delta_secs > 0.0 {
+                    let bytes_sent_delta = conn.bytes_sent.saturating_sub(conn.prev_bytes_sent);
+                    let bytes_received_delta = conn.bytes_received.saturating_sub(conn.prev_bytes_received);
+
+                    conn.current_outgoing_rate_bps = bytes_sent_delta as f64 / time_delta_secs;
+                    conn.current_incoming_rate_bps = bytes_received_delta as f64 / time_delta_secs;
+                } else {
+                    // Avoid division by zero if time_delta is too small or zero
+                    conn.current_outgoing_rate_bps = 0.0;
+                    conn.current_incoming_rate_bps = 0.0;
+                }
+
+                conn.prev_bytes_sent = conn.bytes_sent;
+                conn.prev_bytes_received = conn.bytes_received;
+                conn.last_rate_update_time = now;
+            }
+
 
             // Restore selected connection position if possible
-            if let Some(ref conn) = selected {
-                if let Some(idx) = self.find_connection_index(conn) {
+            if let Some(key) = selected_conn_key {
+                 if let Some(idx) = self.find_connection_index_by_key(&key) {
                     self.selected_connection_idx = idx;
                     self.selected_connection = Some(self.connections[idx].clone());
                 } else if !self.connections.is_empty() {
@@ -394,6 +418,26 @@ impl App {
         } else {
             // connections_data_shared is None, likely before start_capture fully initializes it.
             // self.connections will not be updated this tick.
+            // Still, update rates for existing connections if any (e.g. from initial load)
+            let now = Instant::now();
+            for conn in &mut self.connections {
+                let time_delta = now.duration_since(conn.last_rate_update_time);
+                let time_delta_secs = time_delta.as_secs_f64();
+
+                if time_delta_secs > 0.0 {
+                    let bytes_sent_delta = conn.bytes_sent.saturating_sub(conn.prev_bytes_sent);
+                    let bytes_received_delta = conn.bytes_received.saturating_sub(conn.prev_bytes_received);
+
+                    conn.current_outgoing_rate_bps = bytes_sent_delta as f64 / time_delta_secs;
+                    conn.current_incoming_rate_bps = bytes_received_delta as f64 / time_delta_secs;
+                } else {
+                    conn.current_outgoing_rate_bps = 0.0;
+                    conn.current_incoming_rate_bps = 0.0;
+                }
+                conn.prev_bytes_sent = conn.bytes_sent;
+                conn.prev_bytes_received = conn.bytes_received;
+                conn.last_rate_update_time = now;
+            }
         }
 
         Ok(())
@@ -510,17 +554,13 @@ impl App {
         )
     }
 
-    /// Find the index of a connection that matches the selected connection
-    fn find_connection_index(&self, selected: &Connection) -> Option<usize> {
-        let selected_key = self.get_connection_key(selected);
-
+    /// Find the index of a connection by its key
+    fn find_connection_index_by_key(&self, target_key: &str) -> Option<usize> {
         for (i, conn) in self.connections.iter().enumerate() {
-            let key = self.get_connection_key(conn);
-            if key == selected_key {
+            if self.get_connection_key(conn) == target_key {
                 return Some(i);
             }
         }
-
         None
     }
 

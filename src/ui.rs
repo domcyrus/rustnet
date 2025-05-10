@@ -170,8 +170,8 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
         let (local_display, remote_display) = formatted_addresses[idx].clone();
         let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
         
-        let incoming_rate_str = format_rate(conn.bytes_received, conn.age());
-        let outgoing_rate_str = format_rate(conn.bytes_sent, conn.age());
+        let incoming_rate_str = format_rate_from_bps(conn.current_incoming_rate_bps);
+        let outgoing_rate_str = format_rate_from_bps(conn.current_outgoing_rate_bps);
         let bandwidth_display = format!("{} / {}", incoming_rate_str, outgoing_rate_str);
 
 
@@ -267,12 +267,12 @@ fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
         Line::from(format!(
             "{}: {}",
             app.i18n.get("total_incoming"),
-            format_rate(app.connections.iter().map(|c| c.bytes_received).sum(), app.start_time.elapsed())
+            format_rate_from_bps(app.connections.iter().map(|c| c.current_incoming_rate_bps).sum())
         )),
         Line::from(format!(
             "{}: {}",
             app.i18n.get("total_outgoing"),
-            format_rate(app.connections.iter().map(|c| c.bytes_sent).sum(), app.start_time.elapsed())
+            format_rate_from_bps(app.connections.iter().map(|c| c.current_outgoing_rate_bps).sum())
         )),
     ];
 
@@ -754,17 +754,24 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(status_bar, area);
 }
 
-/// Format rate to human readable form (KB/s, MB/s, etc.)
+/// Format rate (given as bytes and duration) to human readable form (KB/s, MB/s, etc.)
 fn format_rate(bytes: u64, duration: std::time::Duration) -> String {
-    if duration.as_secs() == 0 {
+    if duration.as_secs_f64() < 0.001 { // Avoid division by zero or extremely small durations
         return "-".to_string();
     }
-
     let bytes_per_second = bytes as f64 / duration.as_secs_f64();
+    format_rate_from_bps(bytes_per_second)
+}
 
+/// Format rate (given as f64 bytes_per_second) to human readable form (KB/s, MB/s, etc.)
+fn format_rate_from_bps(bytes_per_second: f64) -> String {
     const KB_PER_SEC: f64 = 1024.0;
     const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
     const GB_PER_SEC: f64 = MB_PER_SEC * 1024.0;
+
+    if bytes_per_second.is_nan() || bytes_per_second.is_infinite() {
+        return "-".to_string();
+    }
 
     if bytes_per_second >= GB_PER_SEC {
         format!("{:.2} GB/s", bytes_per_second / GB_PER_SEC)
@@ -772,8 +779,10 @@ fn format_rate(bytes: u64, duration: std::time::Duration) -> String {
         format!("{:.2} MB/s", bytes_per_second / MB_PER_SEC)
     } else if bytes_per_second >= KB_PER_SEC {
         format!("{:.2} KB/s", bytes_per_second / KB_PER_SEC)
-    } else {
+    } else if bytes_per_second > 0.1 || bytes_per_second == 0.0 { // Show B/s for very small rates or zero
         format!("{:.0} B/s", bytes_per_second)
+    } else { // For very small, non-zero rates, indicate less than 1 B/s
+        "<1 B/s".to_string()
     }
 }
 

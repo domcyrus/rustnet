@@ -92,8 +92,13 @@ pub struct Connection {
     pub packets_received: u64,
     pub created_at: SystemTime,
     pub last_activity: SystemTime,
-    // pub service_port: Option<u16>, // Field removed as it's unused
     pub service_name: Option<String>,
+    // Fields for current rate calculation
+    pub prev_bytes_sent: u64,
+    pub prev_bytes_received: u64,
+    pub last_rate_update_time: Instant,
+    pub current_incoming_rate_bps: f64,
+    pub current_outgoing_rate_bps: f64,
 }
 
 // get_service_name_raw function is removed.
@@ -121,6 +126,12 @@ impl Connection {
             created_at: now,
             last_activity: now,
             service_name: None, // Service name will be set by NetworkMonitor
+            // Initialize new fields for rate calculation
+            prev_bytes_sent: 0,
+            prev_bytes_received: 0,
+            last_rate_update_time: Instant::now(),
+            current_incoming_rate_bps: 0.0,
+            current_outgoing_rate_bps: 0.0,
         };
         new_conn
     }
