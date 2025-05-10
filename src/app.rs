@@ -125,7 +125,7 @@ impl App {
         let interface = self.config.interface.clone();
         let filter_localhost = self.config.filter_localhost;
         log::info!("App::start_capture - Calling NetworkMonitor::new");
-        let monitor = NetworkMonitor::new(interface, filter_localhost)?; // monitor is not mut anymore
+        let mut monitor = NetworkMonitor::new(interface, filter_localhost)?; // Made monitor mutable
         log::info!("App::start_capture - NetworkMonitor::new returned");
 
         // Process info collection is now handled by App::on_tick, so set_collect_process_info is removed.
@@ -420,34 +420,12 @@ impl App {
             // connections_data_shared is None, likely before start_capture fully initializes it.
             // self.connections will not be updated this tick.
             // Still, update rates for existing connections if any (e.g. from initial load)
-            // Also, attempt to update process info if interval has passed
             let now = Instant::now();
-            let mut process_info_updated_this_tick = false;
-
-            if self.last_process_info_update.elapsed() >= PROCESS_INFO_UPDATE_INTERVAL {
-                if let Some(monitor_arc) = &self.network_monitor {
-                    let monitor = monitor_arc.lock().unwrap();
-                    for i in 0..self.connections.len() {
-                        // Check if process info is missing
-                        if self.connections[i].pid.is_none() || self.connections[i].process_name.is_none() {
-                             // Clone the connection to pass to get_platform_process_for_connection
-                            let conn_clone = self.connections[i].clone();
-                            if let Some(process) = monitor.get_platform_process_for_connection(&conn_clone) {
-                                self.connections[i].pid = Some(process.pid);
-                                self.connections[i].process_name = Some(process.name.clone());
-                                self.processes.insert(process.pid, process);
-                            }
-                        }
-                    }
-                }
-                self.last_process_info_update = now;
-                process_info_updated_this_tick = true;
-            }
+            // Removed unused process_info_updated_this_tick and its related block.
+            // The main process info update logic is handled later in this function.
             
             for conn in &mut self.connections {
-                // Update rates only if process info wasn't updated this tick,
-                // or always update rates (current behavior).
-                // For simplicity, let's always update rates.
+                // Update rates.
                 let time_delta = now.duration_since(conn.last_rate_update_time);
                 let time_delta_secs = time_delta.as_secs_f64();
 

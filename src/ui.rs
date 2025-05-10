@@ -6,7 +6,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, List, ListItem, Paragraph, Row, Table, Tabs, Wrap},
     Frame, Terminal as RatatuiTerminal,
 };
-use std::collections::HashMap;
+// Removed unused import: use std::collections::HashMap;
 use std::net::SocketAddr; // Import SocketAddr
 
 use crate::app::{App, DetailFocusField, ViewMode}; // Added DetailFocusField
