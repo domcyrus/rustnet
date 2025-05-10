@@ -305,10 +305,6 @@ fn try_ss_command(connection: &Connection) -> Option<Process> {
                             return Some(Process {
                                 pid,
                                 name,
-                                command_line: None,
-                                user: None,
-                                cpu_usage: None,
-                                memory_usage: None,
                             });
                         }
                     }
@@ -370,10 +366,6 @@ fn try_netstat_command(connection: &Connection) -> Option<Process> {
                         return Some(Process {
                             pid,
                             name,
-                            command_line: None,
-                            user: None,
-                            cpu_usage: None,
-                            memory_usage: None,
                         });
                     }
                 }
@@ -453,10 +445,6 @@ fn try_proc_parsing(connection: &Connection) -> Option<Process> {
                                                         |name| Process {
                                                             pid,
                                                             name,
-                                                            command_line: None,
-                                                            user: None,
-                                                            cpu_usage: None,
-                                                            memory_usage: None,
                                                         },
                                                     );
                                                 }
