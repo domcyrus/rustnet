@@ -339,7 +339,7 @@ impl App {
                          Err(poisoned) => {
                             log::error!("PROCESS_THREAD: Failed to lock processes_update_shared for reading count (poisoned): {:?}", poisoned);
                             // Don't terminate the thread for a read failure if just logging count
-                            Vec::new(); // Dummy to satisfy type, though not used. Error already logged.
+                            let _dummy: Vec<Process> = Vec::new(); // Specify type for dummy Vec
                             // This path means we can't log the current count.
                             log::warn!("PROCESS_THREAD: Could not read current count from poisoned processes_update_shared.");
                             // Continue the loop
