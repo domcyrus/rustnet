@@ -426,24 +426,35 @@ impl NetworkMonitor {
 
         // Add connections from packet capture
         log::debug!("NetworkMonitor::get_connections - Merging packet capture connections (current count: {})", self.connections.len());
-        for (_, conn) in &self.connections {
-            // Check if this connection exists in the list already
-            let exists = connections.iter().any(|c| {
-                c.protocol == conn.protocol
-                    && c.local_addr == conn.local_addr
-                    && c.remote_addr == conn.remote_addr
+        let mut packet_conn_keys_to_update_pid: Vec<(String, u32)> = Vec::new();
+
+        for (key, conn_from_packets) in &self.connections {
+            // Check if this connection exists in the list already (from platform tools)
+            let exists_in_platform_list = connections.iter().any(|c_plat| {
+                c_plat.protocol == conn_from_packets.protocol
+                    && c_plat.local_addr == conn_from_packets.local_addr
+                    && c_plat.remote_addr == conn_from_packets.remote_addr
             });
 
-            if !exists && conn.is_active() {
-                let mut new_conn_to_add = conn.clone();
-                // Attempt to find process info (especially PID) for this packet-derived connection
-                if let Some(process_details) = self.get_platform_process_for_connection(&new_conn_to_add) {
-                    new_conn_to_add.pid = Some(process_details.pid);
-                    // We could set the name here too, but App's process thread is designed for full details.
-                    // Setting PID is the crucial part for linkage.
-                    // new_conn_to_add.process_name = Some(process_details.name); 
+            if !exists_in_platform_list && conn_from_packets.is_active() {
+                let mut conn_to_add_to_results = conn_from_packets.clone();
+                
+                // If packet-captured connection doesn't have a PID yet, try to resolve it.
+                if conn_to_add_to_results.pid.is_none() {
+                    if let Some(process_details) = self.get_platform_process_for_connection(&conn_to_add_to_results) {
+                        conn_to_add_to_results.pid = Some(process_details.pid);
+                        // Mark this key for PID update in self.connections (the HashMap)
+                        packet_conn_keys_to_update_pid.push((key.clone(), process_details.pid));
+                    }
                 }
-                connections.push(new_conn_to_add);
+                connections.push(conn_to_add_to_results);
+            }
+        }
+        
+        // Update PIDs in self.connections (the HashMap) for packet-only connections where PID was just found
+        for (key, pid_to_set) in packet_conn_keys_to_update_pid {
+            if let Some(conn_in_map) = self.connections.get_mut(&key) {
+                conn_in_map.pid = Some(pid_to_set);
             }
         }
 
@@ -587,6 +598,12 @@ impl NetworkMonitor {
                             let mut new_conn =
                                 Connection::new(Protocol::TCP, local_addr, remote_addr, state);
                             new_conn.last_activity = SystemTime::now();
+                            // Attempt to get PID immediately for new packet-only connections
+                            // Note: get_platform_process_for_connection is on NetworkMonitor,
+                            // so this needs to be called where `self` (NetworkMonitor) is available,
+                            // or PID resolution needs to be handled differently for packet-only connections.
+                            // For now, we'll rely on get_connections to attempt PID resolution later,
+                            // or the App's process thread. The change below in get_connections is more direct.
                             if is_outgoing {
                                 new_conn.packets_sent += 1;
                                 new_conn.bytes_sent += data.len() as u64;

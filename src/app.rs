@@ -510,15 +510,24 @@ impl App {
 
         // Enrich self.connections with process info from the updated self.processes cache
         for conn in &mut self.connections {
-            if conn.pid.is_none() { // If connection itself doesn't have a PID from platform layer
-                // Try to find a PID if platform_get_connections gave one but packet processing didn't
-                // This case might be rare if get_connections already tries to populate PIDs
-            }
             if let Some(pid) = conn.pid {
-                if conn.process_name.is_none() { // Only update if missing
-                    if let Some(process_info) = self.processes.get(&pid) {
+                if let Some(process_info) = self.processes.get(&pid) {
+                    // Update if the cached name is different or if the connection's name is currently None
+                    // and the new name is not empty.
+                    if (!process_info.name.is_empty() && conn.process_name.as_ref() != Some(&process_info.name)) || conn.process_name.is_none() {
                         conn.process_name = Some(process_info.name.clone());
                     }
+                } else {
+                    // Process info not found for this PID in our cache,
+                    // but connection might have an outdated name. Clear it.
+                    if conn.process_name.is_some() {
+                        conn.process_name = None;
+                    }
+                }
+            } else {
+                // Connection has no PID, ensure process_name is also None.
+                if conn.process_name.is_some() {
+                    conn.process_name = None;
                 }
             }
         }
