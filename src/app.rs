@@ -70,8 +70,11 @@ pub struct App {
     connections_data_shared: Option<Arc<Mutex<Vec<Connection>>>>,
     /// Which field is focused for copying in the details view
     pub detail_focus: DetailFocusField,
-    // start_time field removed as it's no longer used
+    /// Timestamp of the last process information update
+    last_process_info_update: Instant,
 }
+
+const PROCESS_INFO_UPDATE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl App {
     /// Create a new application instance
@@ -96,7 +99,7 @@ impl App {
             dns_cache: HashMap::new(),
             connections_data_shared: None,
             detail_focus: DetailFocusField::LocalIp, // Default focus to Local IP
-            // start_time initialization removed
+            last_process_info_update: Instant::now(), // Initialize last process update time
         };
         log::info!("App::new - Application initialized successfully");
         Ok(app)
@@ -122,11 +125,10 @@ impl App {
         let interface = self.config.interface.clone();
         let filter_localhost = self.config.filter_localhost;
         log::info!("App::start_capture - Calling NetworkMonitor::new");
-        let mut monitor = NetworkMonitor::new(interface, filter_localhost)?;
+        let monitor = NetworkMonitor::new(interface, filter_localhost)?; // monitor is not mut anymore
         log::info!("App::start_capture - NetworkMonitor::new returned");
 
-        // Disable process information collection by default for better performance
-        monitor.set_collect_process_info(false);
+        // Process info collection is now handled by App::on_tick, so set_collect_process_info is removed.
 
         // Get initial connections without process info
         log::info!("App::start_capture - Calling initial monitor.get_connections()");
@@ -418,8 +420,34 @@ impl App {
             // connections_data_shared is None, likely before start_capture fully initializes it.
             // self.connections will not be updated this tick.
             // Still, update rates for existing connections if any (e.g. from initial load)
+            // Also, attempt to update process info if interval has passed
             let now = Instant::now();
+            let mut process_info_updated_this_tick = false;
+
+            if self.last_process_info_update.elapsed() >= PROCESS_INFO_UPDATE_INTERVAL {
+                if let Some(monitor_arc) = &self.network_monitor {
+                    let monitor = monitor_arc.lock().unwrap();
+                    for i in 0..self.connections.len() {
+                        // Check if process info is missing
+                        if self.connections[i].pid.is_none() || self.connections[i].process_name.is_none() {
+                             // Clone the connection to pass to get_platform_process_for_connection
+                            let conn_clone = self.connections[i].clone();
+                            if let Some(process) = monitor.get_platform_process_for_connection(&conn_clone) {
+                                self.connections[i].pid = Some(process.pid);
+                                self.connections[i].process_name = Some(process.name.clone());
+                                self.processes.insert(process.pid, process);
+                            }
+                        }
+                    }
+                }
+                self.last_process_info_update = now;
+                process_info_updated_this_tick = true;
+            }
+            
             for conn in &mut self.connections {
+                // Update rates only if process info wasn't updated this tick,
+                // or always update rates (current behavior).
+                // For simplicity, let's always update rates.
                 let time_delta = now.duration_since(conn.last_rate_update_time);
                 let time_delta_secs = time_delta.as_secs_f64();
 
@@ -438,6 +466,36 @@ impl App {
                 conn.last_rate_update_time = now;
             }
         }
+
+
+        // If process info was updated, ensure the main connections list reflects this.
+        // This part is tricky because self.connections was already updated from shared_data.
+        // The iteration above directly mutates self.connections.
+
+        // Check if it's time to update process information for all connections
+        if self.last_process_info_update.elapsed() >= PROCESS_INFO_UPDATE_INTERVAL {
+            if let Some(monitor_arc) = &self.network_monitor {
+                let monitor = monitor_arc.lock().unwrap(); // Lock the mutex
+                // Iterate over indices to allow mutable borrowing of self.connections[i]
+                // and also access self.processes map.
+                for i in 0..self.connections.len() {
+                    // Only fetch if PID or process_name is missing
+                    if self.connections[i].pid.is_none() || self.connections[i].process_name.is_none() {
+                        // Clone the connection to avoid borrowing issues with monitor
+                        let conn_clone = self.connections[i].clone();
+                        if let Some(process) = monitor.get_platform_process_for_connection(&conn_clone) {
+                            // Update the connection in self.connections
+                            self.connections[i].pid = Some(process.pid);
+                            self.connections[i].process_name = Some(process.name.clone());
+                            // Cache the process info
+                            self.processes.insert(process.pid, process);
+                        }
+                    }
+                }
+            }
+            self.last_process_info_update = Instant::now();
+        }
+
 
         Ok(())
     }

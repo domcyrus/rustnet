@@ -212,8 +212,7 @@ fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Interface
-            Constraint::Length(10), // Summary stats - Increased height for new lines
-            Constraint::Min(0),    // Process list
+            Constraint::Min(0),    // Summary stats (takes remaining space)
         ])
         .split(area);
 
@@ -283,42 +282,9 @@ fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
                 .title(app.i18n.get("statistics")),
         )
         .style(Style::default().fg(Color::White));
-    f.render_widget(stats_para, chunks[1]);
+    f.render_widget(stats_para, chunks[1]); // Render stats into the second chunk which now takes remaining space
 
-    let mut process_counts: HashMap<u32, usize> = HashMap::new();
-    for conn in &app.connections {
-        if let Some(pid) = conn.pid {
-            *process_counts.entry(pid).or_insert(0) += 1;
-        }
-    }
-
-    let mut process_list: Vec<(u32, usize)> = process_counts.into_iter().collect();
-    process_list.sort_by(|a, b| b.1.cmp(&a.1));
-
-    let mut items = Vec::new();
-    for (pid, count) in process_list.iter().take(10) {
-        if let Some(process) = app.processes.get(pid) {
-            let item = ListItem::new(Line::from(vec![
-                Span::raw(format!("{}: ", process.name)),
-                Span::styled(
-                    format!("{} {}", count, app.i18n.get("connections")),
-                    Style::default().fg(Color::Yellow),
-                ),
-            ]));
-            items.push(item);
-        }
-    }
-
-    let processes = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(app.i18n.get("top_processes")),
-        )
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD))
-        .highlight_symbol("> ");
-
-    f.render_widget(processes, chunks[2]);
+    // Removed "Top Processes" list rendering
 
     Ok(())
 }

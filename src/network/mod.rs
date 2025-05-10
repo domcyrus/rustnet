@@ -176,7 +176,7 @@ pub struct NetworkMonitor {
     connections: HashMap<String, Connection>,
     // geo_db: Option<maxminddb::Reader<Vec<u8>>>, // Field removed as unused (dependent on get_ip_location)
     service_lookup: ServiceLookup, // Added ServiceLookup
-    collect_process_info: bool,
+    // collect_process_info: bool, // Removed, App will manage process info fetching
     filter_localhost: bool,
     local_ips: std::collections::HashSet<IpAddr>,
     // last_packet_check: Instant, // Removed for continuous processing by default
@@ -403,16 +403,13 @@ impl NetworkMonitor {
             service_lookup, // Added service_lookup
             connections: HashMap::new(),
             // geo_db, // Field removed
-            collect_process_info: false,
+            // collect_process_info: false, // Removed
             filter_localhost,
             // last_packet_check and initial_packet_processing_done removed
         })
     }
 
-    /// Set whether to collect process information for connections
-    pub fn set_collect_process_info(&mut self, collect: bool) {
-        self.collect_process_info = collect;
-    }
+    // set_collect_process_info method removed
 
     /// Get active connections
     pub fn get_connections(&mut self) -> Result<Vec<Connection>> {
@@ -442,18 +439,8 @@ impl NetworkMonitor {
             }
         }
 
-        // Update with processes only if flag is set
-        if self.collect_process_info {
-            for conn in &mut connections {
-                if conn.pid.is_none() {
-                    // Use the platform-specific method
-                    if let Some(process) = self.get_platform_process_for_connection(conn) {
-                        conn.pid = Some(process.pid);
-                        conn.process_name = Some(process.name.clone());
-                    }
-                }
-            }
-        }
+        // Process information fetching is now handled by App::on_tick to allow for lazy loading.
+        // The self.collect_process_info flag and related block are removed from here.
 
         // Sort connections by last activity
         connections.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
