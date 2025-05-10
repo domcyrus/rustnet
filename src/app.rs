@@ -147,7 +147,9 @@ impl App {
 
         // --- Packet Processing Thread ---
         let monitor_clone_packets = Arc::clone(&monitor_arc);
-        let original_connections_shared_arc = Arc::new(Mutex::new(Vec::new())); // Original Arc for connections
+        // Initialize connections_data_shared with the initial connections
+        let initial_connections_for_shared = self.connections.clone();
+        let original_connections_shared_arc = Arc::new(Mutex::new(initial_connections_for_shared)); 
         self.connections_data_shared = Some(Arc::clone(&original_connections_shared_arc)); // Clone for App's use
 
         let packet_thread_connections_arc = Arc::clone(&original_connections_shared_arc); // Clone for the packet processing thread
