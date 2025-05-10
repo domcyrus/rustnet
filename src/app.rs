@@ -936,46 +936,32 @@ impl App {
         let latest_bytes_sent = latest_entry_data.1;
         let latest_bytes_received = latest_entry_data.2;
 
-        // Find the oldest entry within the window relative to the latest_time
-        let window_start_time = latest_time.checked_sub(window);
+        // Find the "start_sample_for_rate": the latest sample that is 'window' duration older than 'latest_time'.
+        // If no such sample, use the oldest sample in history.
+        let target_start_time = latest_time.checked_sub(window);
+        
+        let start_sample_for_rate = conn.rate_history.iter()
+            .rev() // Iterate backwards from the second to last element
+            .skip(1) 
+            .find(|(t, _, _)| target_start_time.map_or(false, |tgt_st| *t <= tgt_st))
+            .unwrap_or_else(|| conn.rate_history.first().unwrap_or(&latest_entry_data)); // Fallback to oldest or latest if only one
 
-        let mut oldest_relevant_entry_idx = None;
-        if let Some(start_time) = window_start_time {
-            // Iterate backwards to find the first entry outside the window, then pick the next one
-            // Or, find the first entry *within* the window from the start.
-            for (i, entry) in conn.rate_history.iter().enumerate() {
-                if entry.0 >= start_time {
-                    oldest_relevant_entry_idx = Some(i);
-                    break;
-                }
+        let (rate_in, rate_out) = if latest_time > start_sample_for_rate.0 { // Ensure time has passed
+            let time_delta = latest_time.duration_since(start_sample_for_rate.0);
+            let time_delta_secs = time_delta.as_secs_f64();
+
+            if time_delta_secs > 0.001 { // Avoid division by zero or tiny intervals
+                let bytes_sent_delta = latest_bytes_sent.saturating_sub(start_sample_for_rate.1);
+                let bytes_received_delta = latest_bytes_received.saturating_sub(start_sample_for_rate.2);
+
+                let out_bytes_per_sec = bytes_sent_delta as f64 / time_delta_secs;
+                let in_bytes_per_sec = bytes_received_delta as f64 / time_delta_secs;
+                (in_bytes_per_sec, out_bytes_per_sec)
+            } else {
+                (0.0, 0.0) // Time delta too small
             }
         } else {
-            // window_start_time underflowed, means window is larger than history span from latest_time
-            oldest_relevant_entry_idx = Some(0); // Use the very first entry
-        }
-
-        let (rate_in, rate_out) = match oldest_relevant_entry_idx {
-            Some(idx) if idx < conn.rate_history.len() - 1 => {
-                // Ensure we have at least two points: oldest_relevant and latest
-                let oldest_relevant_entry = &conn.rate_history[idx];
-                let time_delta = latest_time.duration_since(oldest_relevant_entry.0);
-                let time_delta_secs = time_delta.as_secs_f64();
-
-                if time_delta_secs > 0.001 {
-                    // Avoid division by zero or tiny intervals
-                    let bytes_sent_delta =
-                        latest_bytes_sent.saturating_sub(oldest_relevant_entry.1);
-                    let bytes_received_delta =
-                        latest_bytes_received.saturating_sub(oldest_relevant_entry.2);
-
-                    let out_bytes_per_sec = bytes_sent_delta as f64 / time_delta_secs;
-                    let in_bytes_per_sec = bytes_received_delta as f64 / time_delta_secs;
-                    (in_bytes_per_sec, out_bytes_per_sec)
-                } else {
-                    (0.0, 0.0)
-                }
-            }
-            _ => (0.0, 0.0), // Not enough data points in the window or only one point
+            (0.0, 0.0) // No time difference or start_sample is not older
         };
 
         conn.current_incoming_rate_bps = rate_in;
