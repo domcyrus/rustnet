@@ -840,17 +840,17 @@ impl App {
         // Sort history by timestamp just in case, though it should be appended in order.
         // conn.rate_history.sort_by_key(|k| k.0); // Usually not needed if NetworkMonitor appends correctly
 
-        let latest_entry = match conn.rate_history.last() {
-            Some(entry) => entry,
+        let latest_entry_data = match conn.rate_history.last().cloned() { // Clone the entry data
+            Some(entry_data) => entry_data,
             None => { // Should be caught by len < 2 check, but defensive
                 conn.current_incoming_rate_bps = 0.0;
                 conn.current_outgoing_rate_bps = 0.0;
                 return;
             }
         };
-        let latest_time = latest_entry.0;
-        let latest_bytes_sent = latest_entry.1;
-        let latest_bytes_received = latest_entry.2;
+        let latest_time = latest_entry_data.0;
+        let latest_bytes_sent = latest_entry_data.1;
+        let latest_bytes_received = latest_entry_data.2;
 
         // Find the oldest entry within the window relative to the latest_time
         let window_start_time = latest_time.checked_sub(window);
@@ -907,8 +907,8 @@ impl App {
             }
         }
          // Ensure at least one entry is kept if history is not empty, to allow future rate calculations.
-        if conn.rate_history.is_empty() && latest_entry.0 >= current_time.checked_sub(window + RATE_HISTORY_PRUNE_EXTENSION).unwrap_or(latest_entry.0) {
-            conn.rate_history.push(*latest_entry);
+        if conn.rate_history.is_empty() && latest_entry_data.0 >= current_time.checked_sub(window + RATE_HISTORY_PRUNE_EXTENSION).unwrap_or(latest_entry_data.0) {
+            conn.rate_history.push(latest_entry_data); // Push the cloned data
         }
 
 
