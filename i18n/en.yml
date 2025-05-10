@@ -40,6 +40,8 @@ process_connections: 'Process Connections'
 tcp_connections: 'TCP Connections'
 udp_connections: 'UDP Connections'
 total_connections: 'Total Connections'
+total_incoming: "Total Incoming"
+total_outgoing: "Total Outgoing"
 
 # Status messages
 no_connections: 'No connections found'
