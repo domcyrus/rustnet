@@ -142,11 +142,12 @@ impl App {
         
         // --- Packet Processing Thread ---
         let monitor_clone_packets = Arc::clone(&monitor_arc);
-        let connections_update_shared = Arc::new(Mutex::new(Vec::new()));
-        self.connections_data_shared = Some(Arc::clone(&connections_update_shared));
+        let original_connections_shared_arc = Arc::new(Mutex::new(Vec::new())); // Original Arc for connections
+        self.connections_data_shared = Some(Arc::clone(&original_connections_shared_arc)); // Clone for App's use
 
+        let packet_thread_connections_arc = Arc::clone(&original_connections_shared_arc); // Clone for the packet processing thread
         let app_config_packets = self.config.clone();
-        thread::spawn(move || -> Result<()> {
+        thread::spawn(move || -> Result<()> { // packet_thread_connections_arc is moved here
             loop {
                 // Lock the Arc<Mutex<NetworkMonitor>> to get MutexGuard<NetworkMonitor>
                 let mut monitor_guard = monitor_clone_packets.lock().unwrap();
@@ -165,8 +166,8 @@ impl App {
                 };
                 // monitor_guard is dropped here, releasing the lock on NetworkMonitor
 
-                // Update shared connections
-                let mut connections_shared_guard = connections_update_shared.lock().unwrap();
+                // Update shared connections using the thread-specific Arc clone
+                let mut connections_shared_guard = packet_thread_connections_arc.lock().unwrap();
                 *connections_shared_guard = new_connections;
                 drop(connections_shared_guard);
                 
