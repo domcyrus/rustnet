@@ -255,6 +255,43 @@ impl ServiceLookup {
     }
 }
 
+/// Sets the service name for a given connection based on its port and protocol.
+/// This function encapsulates the logic for choosing which port (local or remote)
+/// determines the service.
+fn set_connection_service_name_for_connection(conn: &mut Connection, service_lookup: &ServiceLookup) {
+    let local_port = conn.local_addr.port();
+    let remote_port = conn.remote_addr.port();
+    let protocol = conn.protocol;
+
+    let mut final_service_name: Option<String> = None;
+
+    if conn.state == ConnectionState::Listen {
+        // For listening sockets, the service is always on the local port
+        final_service_name = service_lookup.get(local_port, protocol);
+    } else {
+        // For other states, check if local port is a well-known service port
+        // and has a known service name.
+        let local_service_name_opt = service_lookup.get(local_port, protocol);
+        let local_is_well_known_port = local_port <= 1023; // Standard service port range
+        
+        if local_is_well_known_port && local_service_name_opt.is_some() {
+            final_service_name = local_service_name_opt;
+        } else {
+            // If local port is not a well-known service, check the remote port.
+            let remote_service_name_opt = service_lookup.get(remote_port, protocol);
+            let remote_is_well_known_port = remote_port <= 1023;
+
+            if remote_is_well_known_port && remote_service_name_opt.is_some() {
+                final_service_name = remote_service_name_opt;
+            }
+            // If neither are "well-known services" on standard ports with known names,
+            // the service name remains None, matching the original logic's strictness.
+            // More sophisticated heuristics (e.g. for non-standard ports) could be added here if desired.
+        }
+    }
+    conn.service_name = final_service_name;
+}
+
 impl NetworkMonitor {
     /// Create a new network monitor
     pub fn new(interface: Option<String>, filter_localhost: bool) -> Result<Self> {
@@ -422,50 +459,14 @@ impl NetworkMonitor {
 
         // Set service names for all connections
         for conn in &mut connections {
-            self.set_connection_service_name(conn);
+            set_connection_service_name_for_connection(conn, &self.service_lookup);
         }
 
         log::info!("NetworkMonitor::get_connections - Finished fetching connections. Total: {}", connections.len());
         Ok(connections)
     }
 
-    /// Sets the service name for a given connection based on its port and protocol.
-    /// This method encapsulates the logic for choosing which port (local or remote)
-    /// determines the service, similar to the original logic in `Connection::new`.
-    fn set_connection_service_name(&self, conn: &mut Connection) {
-        let local_port = conn.local_addr.port();
-        let remote_port = conn.remote_addr.port();
-        let protocol = conn.protocol;
-
-        let mut final_service_name: Option<String> = None;
-
-        if conn.state == ConnectionState::Listen {
-            // For listening sockets, the service is always on the local port
-            final_service_name = self.service_lookup.get(local_port, protocol);
-        } else {
-            // For other states, check if local port is a well-known service port
-            // and has a known service name.
-            let local_service_name_opt = self.service_lookup.get(local_port, protocol);
-            let local_is_well_known_port = local_port <= 1023; // Standard service port range
-            
-            if local_is_well_known_port && local_service_name_opt.is_some() {
-                final_service_name = local_service_name_opt;
-            } else {
-                // If local port is not a well-known service, check the remote port.
-                let remote_service_name_opt = self.service_lookup.get(remote_port, protocol);
-                let remote_is_well_known_port = remote_port <= 1023;
-
-                if remote_is_well_known_port && remote_service_name_opt.is_some() {
-                    final_service_name = remote_service_name_opt;
-                }
-                // If neither are "well-known services" on standard ports with known names,
-                // the service name remains None, matching the original logic's strictness.
-                // More sophisticated heuristics (e.g. for non-standard ports) could be added here if desired.
-            }
-        }
-        conn.service_name = final_service_name;
-    }
-
+// Moved set_connection_service_name to be a free function to avoid borrow checker issues in process_packets.
 
     /// Process packets from capture
     pub fn process_packets(&mut self) -> Result<()> {
@@ -473,11 +474,12 @@ impl NetworkMonitor {
 
         // Define a helper function to process a single packet
         // This avoids some borrowing issues with self.local_ips if it were passed directly
-        // Instead, we pass the HashMap and the local_ips set.
+        // Instead, we pass the HashMap, the local_ips set, and the service_lookup.
         let process_single_packet = |data: &[u8],
                                      monitor_connections: &mut HashMap<String, Connection>,
                                      local_ips_set: &std::collections::HashSet<IpAddr>,
-                                     _interface: &Option<String>| {
+                                     _interface: &Option<String>,
+                                     service_lookup: &ServiceLookup| { // Added service_lookup
                 // Check if it's an ethernet frame
                 if data.len() < 14 {
                     return; // Too short for Ethernet
@@ -577,7 +579,7 @@ impl NetworkMonitor {
                             }
                             conn.state = state;
                             // Update service name for existing connection
-                            self.set_connection_service_name(conn);
+                            set_connection_service_name_for_connection(conn, service_lookup);
                         } else {
                             let mut new_conn =
                                 Connection::new(Protocol::TCP, local_addr, remote_addr, state);
@@ -590,7 +592,7 @@ impl NetworkMonitor {
                                 new_conn.bytes_received += data.len() as u64;
                             }
                             // Set service name for new connection before inserting
-                            self.set_connection_service_name(&mut new_conn);
+                            set_connection_service_name_for_connection(&mut new_conn, service_lookup);
                             monitor_connections.insert(conn_key, new_conn);
                         }
                     }
@@ -632,7 +634,7 @@ impl NetworkMonitor {
                                 conn.bytes_received += data.len() as u64;
                             }
                             // Update service name for existing connection
-                            self.set_connection_service_name(conn);
+                            set_connection_service_name_for_connection(conn, service_lookup);
                         } else {
                             let mut new_conn = Connection::new(
                                 Protocol::UDP,
@@ -649,7 +651,7 @@ impl NetworkMonitor {
                                 new_conn.bytes_received += data.len() as u64;
                             }
                             // Set service name for new connection before inserting
-                            self.set_connection_service_name(&mut new_conn);
+                            set_connection_service_name_for_connection(&mut new_conn, service_lookup);
                             monitor_connections.insert(conn_key, new_conn);
                         }
                     }
@@ -665,7 +667,7 @@ impl NetworkMonitor {
             if let Some(ref mut cap) = self.capture {
                 match cap.next_packet() {
                     Ok(packet) => {
-                        process_single_packet(packet.data, &mut self.connections, &self.local_ips, &self.interface);
+                        process_single_packet(packet.data, &mut self.connections, &self.local_ips, &self.interface, &self.service_lookup);
                         log::debug!("NetworkMonitor::process_packets - Processed one packet on first run.");
                     }
                     Err(pcap::Error::TimeoutExpired) => {
@@ -699,7 +701,7 @@ impl NetworkMonitor {
                     Ok(packet) => {
                         packets_processed_in_loop += 1;
                         // Use the local helper function to avoid borrowing issues
-                        process_single_packet(packet.data, &mut self.connections, &self.local_ips, &self.interface);
+                        process_single_packet(packet.data, &mut self.connections, &self.local_ips, &self.interface, &self.service_lookup);
                     }
                     Err(pcap::Error::TimeoutExpired) => {
                         // This is expected if timeout(0) is working and no packets are available
