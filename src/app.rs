@@ -488,7 +488,8 @@ impl App {
 
             // Restore selected connection position if possible
             if let Some(ref conn) = selected {
-                if let Some(idx) = self.find_connection_index(conn) {
+                let selected_key = self.get_connection_key(conn);
+                if let Some(idx) = self.find_connection_index_by_key(&selected_key) {
                     self.selected_connection_idx = idx;
                     self.selected_connection = Some(self.connections[idx].clone());
                 } else if !self.connections.is_empty() {
