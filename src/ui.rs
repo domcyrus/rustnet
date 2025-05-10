@@ -116,10 +116,11 @@ fn draw_overview(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> {
 fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
     let widths = [
         Constraint::Length(6),  // Protocol
-        Constraint::Length(28), // Local Address - Increased width
-        Constraint::Length(28), // Remote Address - Increased width
+        Constraint::Length(28), // Local Address
+        Constraint::Length(28), // Remote Address
         Constraint::Length(12), // State
         Constraint::Length(10), // Service
+        Constraint::Length(10), // Bandwidth - New Column
         Constraint::Min(10),    // Process
     ];
 
@@ -129,6 +130,7 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
         "Remote Address",
         "State",
         "Service",
+        "Bandwidth", // New Header
         "Process",
     ]
     .iter()
@@ -167,6 +169,9 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
 
         let (local_display, remote_display) = formatted_addresses[idx].clone();
         let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
+        let total_bytes = conn.bytes_sent + conn.bytes_received;
+        let bandwidth_display = format_rate(total_bytes, conn.age());
+
 
         let cells = [
             Cell::from(conn.protocol.to_string()),
@@ -174,6 +179,7 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
             Cell::from(remote_display),
             Cell::from(conn.state.to_string()),
             Cell::from(service_display),
+            Cell::from(bandwidth_display), // New Cell
             Cell::from(process_display),
         ];
         rows.push(Row::new(cells));
@@ -733,6 +739,29 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         .alignment(ratatui::layout::Alignment::Left);
 
     f.render_widget(status_bar, area);
+}
+
+/// Format rate to human readable form (KB/s, MB/s, etc.)
+fn format_rate(bytes: u64, duration: std::time::Duration) -> String {
+    if duration.as_secs() == 0 {
+        return "-".to_string();
+    }
+
+    let bytes_per_second = bytes as f64 / duration.as_secs_f64();
+
+    const KB_PER_SEC: f64 = 1024.0;
+    const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
+    const GB_PER_SEC: f64 = MB_PER_SEC * 1024.0;
+
+    if bytes_per_second >= GB_PER_SEC {
+        format!("{:.2} GB/s", bytes_per_second / GB_PER_SEC)
+    } else if bytes_per_second >= MB_PER_SEC {
+        format!("{:.2} MB/s", bytes_per_second / MB_PER_SEC)
+    } else if bytes_per_second >= KB_PER_SEC {
+        format!("{:.2} KB/s", bytes_per_second / KB_PER_SEC)
+    } else {
+        format!("{:.0} B/s", bytes_per_second)
+    }
 }
 
 /// Format bytes to human readable form (KB, MB, etc.)
