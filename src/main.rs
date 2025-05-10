@@ -143,7 +143,7 @@ fn run_app<B: ratatui::prelude::Backend>(
     app.start_capture()?;
     info!("Network capture started");
 
-    let tick_rate = Duration::from_millis(100); // Reduced tick rate for more responsiveness
+    let tick_rate = Duration::from_millis(app.config.refresh_interval); // Use configured refresh interval
     let mut last_tick = std::time::Instant::now();
 
     loop {
