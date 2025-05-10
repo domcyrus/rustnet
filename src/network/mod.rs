@@ -420,9 +420,17 @@ impl NetworkMonitor {
 
         // Get connections from system methods (ss, netstat)
         let mut platform_conns_vec = Vec::new();
-        log::debug!("NetworkMonitor::get_connections - Calling get_platform_connections (ss/netstat)");
-        self.get_platform_connections(&mut platform_conns_vec)?;
-        log::debug!("NetworkMonitor::get_connections - get_platform_connections returned {} connections", platform_conns_vec.len());
+        log::debug!("NetworkMonitor::get_connections - Attempting to populate platform_conns_vec via get_platform_connections.");
+        match self.get_platform_connections(&mut platform_conns_vec) {
+            Ok(_) => log::debug!("NetworkMonitor::get_connections - get_platform_connections call completed. platform_conns_vec now has {} entries.", platform_conns_vec.len()),
+            Err(e) => {
+                log::error!("NetworkMonitor::get_connections - Error from get_platform_connections: {}. platform_conns_vec might be empty or partially filled.", e);
+                // Continue with whatever platform_conns_vec contains.
+            }
+        }
+        if platform_conns_vec.is_empty() {
+            log::warn!("NetworkMonitor::get_connections - platform_conns_vec is empty after get_platform_connections call.");
+        }
 
         // Use a HashMap to merge, ensuring packet data (especially rate_history) is prioritized.
         // Key: String representation of (protocol, local_addr, remote_addr)

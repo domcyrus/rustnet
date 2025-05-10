@@ -77,10 +77,20 @@ impl NetworkMonitor {
 
     /// Get connections from ss command
     fn get_connections_from_ss(&self, connections: &mut Vec<Connection>) -> Result<()> {
-        let output = Command::new("ss").args(["-tupn"]).output()?;
+        debug!("Executing 'ss -tupn' to get TCP/UDP connections.");
+        let cmd_output = Command::new("ss").args(["-tupn"]).output();
 
-        if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout);
+        match cmd_output {
+            Ok(output) => {
+                if output.status.success() {
+                    let text = String::from_utf8_lossy(&output.stdout);
+                    let line_count = text.lines().count();
+                    debug!("'ss -tupn' command successful. Output lines: {}", line_count);
+                    if line_count < 5 && line_count > 0 { // Log short output
+                        debug!("'ss -tupn' output (first {} lines):\n{}", line_count, text);
+                    } else if line_count == 0 {
+                        debug!("'ss -tupn' produced no output.");
+                    }
 
             for line in text.lines().skip(1) {
                 // Skip header
@@ -157,17 +167,37 @@ impl NetworkMonitor {
                     connections.push(conn);
                 }
             }
+                } else {
+                    let stderr_text = String::from_utf8_lossy(&output.stderr);
+                    error!("'ss -tupn' command failed with status {}. Stderr: {}", output.status, stderr_text);
+                    // Proceeding, as netstat might provide data or this is a transient issue.
+                }
+            }
+            Err(e) => {
+                error!("Failed to execute 'ss -tupn' command: {}", e);
+                return Err(e.into()); // Propagate the error to stop further processing in get_platform_connections for this call
+            }
         }
-
+        debug!("Finished processing 'ss' output. Current connections vec size: {}", connections.len());
         Ok(())
     }
 
     /// Get connections from netstat command
     fn get_connections_from_netstat(&self, connections: &mut Vec<Connection>) -> Result<()> {
-        let output = Command::new("netstat").args(["-tupn"]).output()?;
+        debug!("Executing 'netstat -tupn' as supplementary/fallback.");
+        let cmd_output = Command::new("netstat").args(["-tupn"]).output();
 
-        if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout);
+        match cmd_output {
+            Ok(output) => {
+                if output.status.success() {
+                    let text = String::from_utf8_lossy(&output.stdout);
+                    let line_count = text.lines().count();
+                    debug!("'netstat -tupn' command successful. Output lines: {}", line_count);
+                     if line_count < 5 && line_count > 0 { // Log short output
+                        debug!("'netstat -tupn' output (first {} lines):\n{}", line_count, text);
+                    } else if line_count == 0 {
+                        debug!("'netstat -tupn' produced no output.");
+                    }
 
             for line in text.lines().skip(2) {
                 // Skip headers
@@ -230,8 +260,17 @@ impl NetworkMonitor {
                     connections.push(conn);
                 }
             }
+                } else {
+                    let stderr_text = String::from_utf8_lossy(&output.stderr);
+                    error!("'netstat -tupn' command failed with status {}. Stderr: {}", output.status, stderr_text);
+                }
+            }
+            Err(e) => {
+                error!("Failed to execute 'netstat -tupn' command: {}", e);
+                return Err(e.into());
+            }
         }
-
+        debug!("Finished processing 'netstat' output. Current connections vec size after netstat: {}", connections.len());
         Ok(())
     }
 
