@@ -563,28 +563,27 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
 // format_rate function removed as it's no longer used.
 // format_rate_from_bps is now the primary function for formatting rates.
 
-/// Format rate (given as f64 bytes_per_second) to human readable form (KB/s, MB/s, etc.)
-fn format_rate_from_bps(bytes_per_second: f64) -> String {
-    const KB_PER_SEC: f64 = 1024.0;
-    const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
-    const GB_PER_SEC: f64 = MB_PER_SEC * 1024.0;
+/// Format rate (given as f64 bits_per_second) to human readable form (Kbps, Mbps, etc.)
+fn format_rate_from_bps(bits_per_second: f64) -> String {
+    const KBPS: f64 = 1000.0; // Kilobits per second
+    const MBPS: f64 = KBPS * 1000.0; // Megabits per second
+    const GBPS: f64 = MBPS * 1000.0; // Gigabits per second
 
-    if bytes_per_second.is_nan() || bytes_per_second.is_infinite() {
+    if bits_per_second.is_nan() || bits_per_second.is_infinite() {
         return "-".to_string();
     }
 
-    if bytes_per_second >= GB_PER_SEC {
-        format!("{:.2} GB/s", bytes_per_second / GB_PER_SEC)
-    } else if bytes_per_second >= MB_PER_SEC {
-        format!("{:.2} MB/s", bytes_per_second / MB_PER_SEC)
-    } else if bytes_per_second >= KB_PER_SEC {
-        format!("{:.2} KB/s", bytes_per_second / KB_PER_SEC)
-    } else if bytes_per_second > 0.1 || bytes_per_second == 0.0 {
-        // Show B/s for very small rates or zero
-        format!("{:.0} B/s", bytes_per_second)
+    if bits_per_second >= GBPS {
+        format!("{:.2} Gbps", bits_per_second / GBPS)
+    } else if bits_per_second >= MBPS {
+        format!("{:.2} Mbps", bits_per_second / MBPS)
+    } else if bits_per_second >= KBPS {
+        format!("{:.2} Kbps", bits_per_second / KBPS)
+    } else if bits_per_second >= 0.0 { // Show bps for small rates or zero
+        format!("{:.0} bps", bits_per_second)
     } else {
-        // For very small, non-zero rates, indicate less than 1 B/s
-        "<1 B/s".to_string()
+        // Should not happen if input is always >= 0, but as a fallback
+        "-".to_string()
     }
 }
 
