@@ -713,8 +713,8 @@ impl NetworkMonitor {
             log::debug!("NetworkMonitor::process_packets - Starting packet processing loop (up to 20 iterations)");
             let loop_start_time = Instant::now();
             let mut packets_processed_in_loop = 0;
-            // Process up to a larger number of packets to better capture high-speed traffic
-            const MAX_PACKETS_PER_CALL: usize = 1000; // Ensure this is 1000
+            // Process a moderate number of packets per call to balance responsiveness and data capture
+            const MAX_PACKETS_PER_CALL: usize = 100; // Reduced from 1000 to 100
             for i in 0..MAX_PACKETS_PER_CALL {
                 match cap.next_packet() {
                     Ok(packet) => {
