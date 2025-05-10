@@ -181,16 +181,16 @@ impl App {
 
         // --- Process Information Fetching Thread ---
         let monitor_clone_procs = Arc::clone(&monitor_arc);
-        let connections_read_clone_procs = Arc::clone(&connections_update_shared);
+        let process_thread_connections_arc = Arc::clone(&original_connections_shared_arc); // Clone from original for this thread
         let processes_update_shared = Arc::new(Mutex::new(HashMap::new()));
         self.processes_data_shared = Some(Arc::clone(&processes_update_shared));
 
-        thread::spawn(move || -> Result<()> {
+        thread::spawn(move || -> Result<()> { // process_thread_connections_arc is moved here
             loop {
                 thread::sleep(PROCESS_INFO_UPDATE_INTERVAL);
 
                 let connections_to_check = { // Scope for connections_guard
-                    let connections_guard = connections_read_clone_procs.lock().unwrap();
+                    let connections_guard = process_thread_connections_arc.lock().unwrap(); // Use its thread-specific Arc clone
                     connections_guard.clone() // Clone to release lock quickly
                 };
 
