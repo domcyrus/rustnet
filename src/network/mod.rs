@@ -780,25 +780,43 @@ impl NetworkMonitor {
 
     /// Parse an address string into a SocketAddr
     fn parse_addr(&self, addr_str: &str) -> Option<std::net::SocketAddr> {
-        // Handle IPv6 address format [addr]:port
         let addr_str = addr_str.trim();
 
-        // Direct parse attempt
-        if let Ok(addr) = addr_str.parse() {
-            return Some(addr);
+        // Attempt direct parsing first, which handles common cases like "1.2.3.4:80" or "[::1]:8080"
+        if let Ok(socket_addr) = addr_str.parse::<std::net::SocketAddr>() {
+            return Some(socket_addr);
         }
 
-        // Handle common formats
-        if addr_str.contains(':') {
-            // Try parsing as "addr:port"
-            return addr_str.parse().ok();
+        // If direct parsing fails, try to handle formats like "host:*" or "ip:*"
+        // by splitting host and port.
+        if let Some(last_colon_idx) = addr_str.rfind(':') {
+            let (host_str_candidate, port_str) = addr_str.split_at(last_colon_idx);
+            let port_str = &port_str[1..]; // Skip the colon
+
+            let host_str = if host_str_candidate.starts_with('[') && host_str_candidate.ends_with(']') {
+                // IPv6 like [::1]
+                &host_str_candidate[1..host_str_candidate.len() - 1]
+            } else {
+                host_str_candidate
+            };
+
+            if let Ok(ip_addr) = host_str.parse::<std::net::IpAddr>() {
+                let port_num = if port_str == "*" {
+                    0 // Map wildcard port to 0
+                } else {
+                    match port_str.parse::<u16>() {
+                        Ok(p) => p,
+                        Err(_) => return None, // Invalid port string
+                    }
+                };
+                return Some(std::net::SocketAddr::new(ip_addr, port_num));
+            }
         } else {
-            // If only port is provided, assume 127.0.0.1:port
-            if let Ok(port) = addr_str.parse::<u16>() {
-                return Some(std::net::SocketAddr::new(
-                    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
-                    port,
-                ));
+            // If no colon, it might be just a port number (for localhost)
+            if let Ok(port_num) = addr_str.parse::<u16>() {
+                // Default to localhost if only port is provided
+                let local_ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
+                return Some(std::net::SocketAddr::new(local_ip, port_num));
             }
         }
 
