@@ -166,11 +166,10 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
 
         let (local_display, remote_display) = formatted_addresses[idx].clone();
         let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
-        
+
         let incoming_rate_str = format_rate_from_bps(conn.current_incoming_rate_bps);
         let outgoing_rate_str = format_rate_from_bps(conn.current_outgoing_rate_bps);
         let bandwidth_display = format!("{} / {}", incoming_rate_str, outgoing_rate_str);
-
 
         let cells = [
             Cell::from(conn.protocol.to_string()),
@@ -263,12 +262,22 @@ fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
         Line::from(format!(
             "{}: {}",
             app.i18n.get("total_incoming"),
-            format_rate_from_bps(app.connections.iter().map(|c| c.current_incoming_rate_bps).sum())
+            format_rate_from_bps(
+                app.connections
+                    .iter()
+                    .map(|c| c.current_incoming_rate_bps)
+                    .sum()
+            )
         )),
         Line::from(format!(
             "{}: {}",
             app.i18n.get("total_outgoing"),
-            format_rate_from_bps(app.connections.iter().map(|c| c.current_outgoing_rate_bps).sum())
+            format_rate_from_bps(
+                app.connections
+                    .iter()
+                    .map(|c| c.current_outgoing_rate_bps)
+                    .sum()
+            )
         )),
     ];
 
@@ -280,8 +289,6 @@ fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
         )
         .style(Style::default().fg(Color::White));
     f.render_widget(stats_para, chunks[1]); // Render stats into the second chunk which now takes remaining space
-
-    // Removed "Top Processes" list rendering
 
     Ok(())
 }
@@ -308,7 +315,7 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
     // Format addresses before further immutable borrows of app.connections
     let local_display = app.format_socket_addr(local_addr_to_format);
     let remote_display = app.format_socket_addr(remote_addr_to_format);
-    
+
     let conn = &app.connections[conn_idx]; // Now we can immutably borrow again
 
     let chunks = Layout::default()
@@ -320,12 +327,16 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
 
     // Styles for focused IP
     let local_ip_style = if app.detail_focus == DetailFocusField::LocalIp {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
     let remote_ip_style = if app.detail_focus == DetailFocusField::RemoteIp {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
@@ -400,7 +411,6 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
         "Use Up/Down to select IP, 'c' to copy.", // Hint text
         Style::default().fg(Color::DarkGray),
     )));
-
 
     let details = Paragraph::new(details_text)
         .block(
@@ -569,9 +579,11 @@ fn format_rate_from_bps(bytes_per_second: f64) -> String {
         format!("{:.2} MB/s", bytes_per_second / MB_PER_SEC)
     } else if bytes_per_second >= KB_PER_SEC {
         format!("{:.2} KB/s", bytes_per_second / KB_PER_SEC)
-    } else if bytes_per_second > 0.1 || bytes_per_second == 0.0 { // Show B/s for very small rates or zero
+    } else if bytes_per_second > 0.1 || bytes_per_second == 0.0 {
+        // Show B/s for very small rates or zero
         format!("{:.0} B/s", bytes_per_second)
-    } else { // For very small, non-zero rates, indicate less than 1 B/s
+    } else {
+        // For very small, non-zero rates, indicate less than 1 B/s
         "<1 B/s".to_string()
     }
 }
