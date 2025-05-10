@@ -196,40 +196,69 @@ impl App {
 
                 // Lock the Arc<Mutex<NetworkMonitor>> to get MutexGuard<NetworkMonitor>
                 let monitor_guard = monitor_clone_procs.lock().unwrap();
-                let mut updated_processes_batch = HashMap::new();
+                let mut collected_processes_this_cycle: HashMap<u32, Process> = HashMap::new();
 
-                for conn in connections_to_check {
-                    // Determine if we need to fetch or update process info for this connection.
-                    let needs_fetch = match conn.pid {
-                        Some(pid) => {
-                            // PID exists, check if we have details or if they are incomplete.
-                            let processes_guard = processes_update_shared.lock().unwrap();
-                            !processes_guard.contains_key(&pid) ||
-                            processes_guard.get(&pid).map_or(true, |p| p.name.is_empty())
-                        }
-                        None => true, // PID is missing, so we definitely need to try fetching.
-                    };
+                // Iterate over connections to gather or update process information
+                for conn in connections_to_check { // connections_to_check is a Vec<Connection>
+                    let mut process_info_candidate: Option<Process> = None;
 
-                    if needs_fetch {
-                        // Attempt to get process information.
-                        // If conn.pid was None, get_platform_process_for_connection will try to find it.
-                        // If conn.pid was Some, it will use that PID to refresh/confirm details.
-                        if let Some(process_info) = monitor_guard.get_platform_process_for_connection(&conn) {
-                            // If process_info is found (or re-found), add it to our batch update.
-                            // This ensures that even if a PID was initially None, if it's resolved now,
-                            // it gets into the processes_update_shared map.
-                            updated_processes_batch.insert(process_info.pid, process_info);
+                    // Attempt to get authoritative process info from platform-specific lookup
+                    if let Some(platform_process) = monitor_guard.get_platform_process_for_connection(&conn) {
+                        if !platform_process.name.is_empty() {
+                            process_info_candidate = Some(platform_process);
+                        } else {
+                            // Platform lookup gave PID but empty name.
+                            // If conn already has a PID and non-empty name, prefer that.
+                            if let (Some(pid_from_conn), Some(name_from_conn)) = (conn.pid, &conn.process_name) {
+                                if platform_process.pid == pid_from_conn && !name_from_conn.is_empty() {
+                                    process_info_candidate = Some(Process { pid: pid_from_conn, name: name_from_conn.clone() });
+                                } else if platform_process.pid == pid_from_conn { // PID matches, but conn name is also empty or None
+                                     process_info_candidate = Some(platform_process); // Keep platform's empty name version
+                                }
+                            } else { // conn has no PID or no name, stick with platform's (empty name) version
+                                process_info_candidate = Some(platform_process);
+                            }
                         }
+                    } else {
+                        // Platform-specific lookup failed. Fallback to info already in Connection struct.
+                        if let (Some(pid_val), Some(name_val)) = (conn.pid, &conn.process_name) {
+                            if !name_val.is_empty() {
+                                process_info_candidate = Some(Process { pid: pid_val, name: name_val.clone() });
+                            }
+                        }
+                    }
+
+                    // If we have a candidate, add/update it in our cycle's collection
+                    if let Some(p_info) = process_info_candidate {
+                        // If name is empty, only insert if PID isn't already there with a non-empty name.
+                        if p_info.name.is_empty() {
+                            if let Some(existing_entry) = collected_processes_this_cycle.get(&p_info.pid) {
+                                if !existing_entry.name.is_empty() {
+                                    continue; // Don't overwrite a good name with an empty one
+                                }
+                            }
+                        }
+                        collected_processes_this_cycle.insert(p_info.pid, p_info);
                     }
                 }
-                // monitor_guard is dropped here, releasing the lock on NetworkMonitor
+                drop(monitor_guard); // Release monitor lock
 
-                if !updated_processes_batch.is_empty() {
+                // Filter out processes with empty names before updating shared state
+                let final_processes_to_update: HashMap<u32, Process> = collected_processes_this_cycle.into_iter()
+                    .filter(|(_, process)| !process.name.is_empty())
+                    .collect();
+
+                if !final_processes_to_update.is_empty() {
                     let mut processes_shared_guard = processes_update_shared.lock().unwrap();
-                    for (pid, process) in updated_processes_batch {
+                    for (pid, process) in final_processes_to_update {
                         processes_shared_guard.insert(pid, process);
                     }
-                    log::debug!("Process thread: Updated {} processes.", processes_shared_guard.len());
+                    log::debug!("Process thread: Committed {} processes to shared map. Total in map: {}.", 
+                                processes_shared_guard.len(), processes_shared_guard.len());
+                } else {
+                    let processes_shared_guard = processes_update_shared.lock().unwrap();
+                    log::debug!("Process thread: No new/updated processes with non-empty names to commit. Total in map: {}.", 
+                                processes_shared_guard.len());
                 }
             }
         });
