@@ -120,7 +120,7 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(28), // Remote Address
         Constraint::Length(12), // State
         Constraint::Length(10), // Service
-        Constraint::Length(18), // Bandwidth (Down/Up) - Adjusted Width
+        Constraint::Length(22), // Bandwidth (Down/Up) - Increased Width
         Constraint::Min(10),    // Process
     ];
 
@@ -267,12 +267,12 @@ fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
         Line::from(format!(
             "{}: {}",
             app.i18n.get("total_incoming"),
-            format_bytes(app.connections.iter().map(|c| c.bytes_received).sum())
+            format_rate(app.connections.iter().map(|c| c.bytes_received).sum(), app.start_time.elapsed())
         )),
         Line::from(format!(
             "{}: {}",
             app.i18n.get("total_outgoing"),
-            format_bytes(app.connections.iter().map(|c| c.bytes_sent).sum())
+            format_rate(app.connections.iter().map(|c| c.bytes_sent).sum(), app.start_time.elapsed())
         )),
     ];
 

@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant; // Added for Instant
 
 use crate::config::Config;
 use crate::i18n::I18n;
@@ -69,6 +70,8 @@ pub struct App {
     connections_data_shared: Option<Arc<Mutex<Vec<Connection>>>>,
     /// Which field is focused for copying in the details view
     pub detail_focus: DetailFocusField,
+    /// Application start time, used for calculating total average rates
+    pub start_time: Instant,
 }
 
 impl App {
@@ -94,6 +97,7 @@ impl App {
             dns_cache: HashMap::new(),
             connections_data_shared: None,
             detail_focus: DetailFocusField::LocalIp, // Default focus to Local IP
+            start_time: Instant::now(), // Initialize start_time
         };
         log::info!("App::new - Application initialized successfully");
         Ok(app)
