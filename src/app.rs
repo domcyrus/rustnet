@@ -600,10 +600,14 @@ impl App {
             }
         } else {
             // connections_data_shared is None, likely before start_capture fully initializes it.
-            // Update rates for existing self.connections in place.
-            // This logic is correct as it uses the conn's own persisted prev_bytes and last_rate_update_time.
-            for conn in &mut self.connections {
-                let time_delta = now.duration_since(conn.last_rate_update_time);
+            // Still, update rates for existing connections if any (e.g. from initial load)
+            // let now = Instant::now(); // Use `now` from top of on_tick
+            // Removed unused process_info_updated_this_tick and its related block.
+            // The main process info update logic is handled later in this function.
+            
+            for conn in &mut self.connections { // This operates on the persistent self.connections
+                // Update rates.
+                let time_delta = now.duration_since(conn.last_rate_update_time); // This uses the correct last_rate_update_time
                 let time_delta_secs = time_delta.as_secs_f64();
 
                 if time_delta_secs > 0.0 {
@@ -624,7 +628,7 @@ impl App {
 
 
         // If process info was updated, ensure the main connections list reflects this.
-            for conn in &new_connections {
+            for conn in &self.connections { // Corrected from new_connections to self.connections
                 let key = self.get_connection_key(conn);
                 keys_to_process.push(key);
             }
