@@ -493,15 +493,137 @@ impl App {
 
     /// Update application state on tick
     pub fn on_tick(&mut self) -> Result<()> {
+        let now = Instant::now(); // Get current time once for this tick
+
         // Store currently selected connection (if any)
         let selected_conn_key = self.selected_connection.as_ref().map(|sc| self.get_connection_key(sc));
 
+        // Create a map of old connection states for rate calculation
+        // This captures the state from the end of the previous tick.
+        let mut old_rate_states = HashMap::new();
+        for old_conn in &self.connections {
+            old_rate_states.insert(
+                self.get_connection_key(old_conn),
+                (old_conn.prev_bytes_sent, old_conn.prev_bytes_received, old_conn.last_rate_update_time)
+            );
+        }
+
         // Update connections from shared data updated by the background thread
         if let Some(shared_data_arc) = &self.connections_data_shared {
-            let mut new_connections = shared_data_arc.lock().unwrap().clone();
+            let mut new_connections_list = shared_data_arc.lock().unwrap().clone();
 
-            // Extract keys for sorting
+            // Calculate current rates for each connection in the new_connections_list
+            // and update their prev_bytes and last_rate_update_time for the next tick.
+            for conn_mut in &mut new_connections_list {
+                let conn_key = self.get_connection_key(conn_mut);
+                if let Some((prev_s, prev_r, last_update)) = old_rate_states.get(&conn_key) {
+                    let time_delta = now.duration_since(*last_update);
+                    let time_delta_secs = time_delta.as_secs_f64();
+
+                    if time_delta_secs > 0.0 {
+                        let bytes_sent_delta = conn_mut.bytes_sent.saturating_sub(*prev_s);
+                        let bytes_received_delta = conn_mut.bytes_received.saturating_sub(*prev_r);
+
+                        conn_mut.current_outgoing_rate_bps = bytes_sent_delta as f64 / time_delta_secs;
+                        conn_mut.current_incoming_rate_bps = bytes_received_delta as f64 / time_delta_secs;
+                    } else {
+                        // Time delta is zero or negative, set rate to 0 or carry over previous rate if meaningful
+                        // For simplicity, setting to 0 if time_delta_secs is not positive.
+                        conn_mut.current_outgoing_rate_bps = 0.0;
+                        conn_mut.current_incoming_rate_bps = 0.0;
+                    }
+                } else {
+                    // This connection was not in self.connections last tick (new for rate calculation)
+                    conn_mut.current_outgoing_rate_bps = 0.0;
+                    conn_mut.current_incoming_rate_bps = 0.0;
+                }
+                // Prepare for the next tick: current totals become previous, update time to now
+                conn_mut.prev_bytes_sent = conn_mut.bytes_sent;
+                conn_mut.prev_bytes_received = conn_mut.bytes_received;
+                conn_mut.last_rate_update_time = now;
+            }
+
+            // Extract keys for sorting from the (now rate-updated) new_connections_list
             let mut keys_to_process = Vec::new();
+            for conn in &new_connections_list { // Iterate over new_connections_list
+                let key = self.get_connection_key(conn);
+                keys_to_process.push(key);
+            }
+
+            // Update connection order
+            for key in keys_to_process {
+                if !self.connection_order.contains_key(&key) {
+                    self.connection_order.insert(key, self.next_order_index);
+                    self.next_order_index += 1;
+                }
+            }
+
+            // Sort connections: non-loopback first, then loopback, then by assigned order
+            new_connections_list.sort_by(|a, b| { // Sort new_connections_list
+                let is_a_loopback = a.local_addr.ip().is_loopback() || a.remote_addr.ip().is_loopback();
+                let is_b_loopback = b.local_addr.ip().is_loopback() || b.remote_addr.ip().is_loopback();
+
+                is_a_loopback.cmp(&is_b_loopback) // false (non-loopback) < true (loopback)
+                    .then_with(|| {
+                        let key_a = self.get_connection_key(a);
+                        let key_b = self.get_connection_key(b);
+                        let order_a = self.connection_order.get(&key_a).unwrap_or(&usize::MAX);
+                        let order_b = self.connection_order.get(&key_b).unwrap_or(&usize::MAX);
+                        order_a.cmp(order_b)
+                    })
+            });
+
+            // Update connections with the sorted list (which now also has correct current rates)
+            self.connections = new_connections_list; // self.connections is now updated
+
+            // The block below that previously calculated rates is now removed,
+            // as rates are calculated on new_connections_list before this assignment.
+
+            // Restore selected connection position if possible
+            if let Some(key) = selected_conn_key {
+                 if let Some(idx) = self.find_connection_index_by_key(&key) {
+                    self.selected_connection_idx = idx;
+                    self.selected_connection = Some(self.connections[idx].clone());
+                } else if !self.connections.is_empty() {
+                    // If previously selected connection is gone, select first one
+                    self.selected_connection_idx = 0;
+                    self.selected_connection = Some(self.connections[0].clone());
+                } else {
+                    // If no connections left, clear selection
+                    self.selected_connection_idx = 0;
+                    self.selected_connection = None;
+                }
+            } else if !self.connections.is_empty() && self.selected_connection.is_none() {
+                // If no previous selection but we have connections, select the first one
+                self.selected_connection_idx = 0;
+                self.selected_connection = Some(self.connections[0].clone());
+            }
+        } else {
+            // connections_data_shared is None, likely before start_capture fully initializes it.
+            // Update rates for existing self.connections in place.
+            // This logic is correct as it uses the conn's own persisted prev_bytes and last_rate_update_time.
+            for conn in &mut self.connections {
+                let time_delta = now.duration_since(conn.last_rate_update_time);
+                let time_delta_secs = time_delta.as_secs_f64();
+
+                if time_delta_secs > 0.0 {
+                    let bytes_sent_delta = conn.bytes_sent.saturating_sub(conn.prev_bytes_sent);
+                    let bytes_received_delta = conn.bytes_received.saturating_sub(conn.prev_bytes_received);
+
+                    conn.current_outgoing_rate_bps = bytes_sent_delta as f64 / time_delta_secs;
+                    conn.current_incoming_rate_bps = bytes_received_delta as f64 / time_delta_secs;
+                } else {
+                    conn.current_outgoing_rate_bps = 0.0;
+                    conn.current_incoming_rate_bps = 0.0;
+                }
+                conn.prev_bytes_sent = conn.bytes_sent;
+                conn.prev_bytes_received = conn.bytes_received;
+                conn.last_rate_update_time = now;
+            }
+        }
+
+
+        // If process info was updated, ensure the main connections list reflects this.
             for conn in &new_connections {
                 let key = self.get_connection_key(conn);
                 keys_to_process.push(key);
