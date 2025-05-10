@@ -699,32 +699,35 @@ impl NetworkMonitor {
 
         // Get packets from the capture
         if let Some(ref mut cap) = self.capture {
-            log::debug!("NetworkMonitor::process_packets - Starting packet processing loop.");
+            log::debug!("NetworkMonitor::process_packets - Starting packet processing loop (up to 20 iterations)");
             let loop_start_time = Instant::now();
             let mut packets_processed_in_loop = 0;
-            
-            loop { // Process all immediately available packets
+            // Process up to a smaller number of packets to reduce blocking time
+            const MAX_PACKETS_PER_CALL: usize = 20;
+            for i in 0..MAX_PACKETS_PER_CALL {
                 match cap.next_packet() {
                     Ok(packet) => {
                         packets_processed_in_loop += 1;
+                        // Use the local helper function to avoid borrowing issues
                         process_single_packet(packet.data, &mut self.connections, &self.local_ips, &self.interface, &self.service_lookup);
                     }
                     Err(pcap::Error::TimeoutExpired) => {
-                        // No more packets immediately available in the buffer
-                        log::trace!("NetworkMonitor::process_packets - cap.next_packet() timed out (no more packets for this cycle)");
-                        break; 
+                        // This is expected if timeout(0) is working and no packets are available
+                        log::trace!("NetworkMonitor::process_packets - cap.next_packet() timed out (iteration {})", i);
+                        break; // No more packets for now, exit loop
                     }
                     Err(e) => {
-                        error!("NetworkMonitor::process_packets - Error reading packet: {}", e);
-                        break; // Error reading packet, stop processing for this cycle
+                        error!("NetworkMonitor::process_packets - Error reading packet (iteration {}): {}", i, e);
+                        break; // Error reading packet
                     }
                 }
             }
             let loop_duration = loop_start_time.elapsed();
             log::debug!(
-                "NetworkMonitor::process_packets - Packet processing cycle finished in {:?}. Packets processed this cycle: {}.",
+                "NetworkMonitor::process_packets - Packet processing loop finished in {:?}. Packets processed: {}/{} iterations.",
                 loop_duration,
-                packets_processed_in_loop
+                packets_processed_in_loop,
+                MAX_PACKETS_PER_CALL
             );
         } else {
             log::warn!("NetworkMonitor::process_packets - No capture device available.");
