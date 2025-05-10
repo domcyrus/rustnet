@@ -94,11 +94,12 @@ pub struct Connection {
     pub last_activity: SystemTime,
     pub service_name: Option<String>,
     // Fields for current rate calculation
-    pub prev_bytes_sent: u64,
-    pub prev_bytes_received: u64,
-    pub last_rate_update_time: Instant,
+    pub prev_bytes_sent: u64, // Still used by NetworkMonitor for cumulative tracking if needed elsewhere
+    pub prev_bytes_received: u64, // Still used by NetworkMonitor for cumulative tracking if needed elsewhere
+    pub last_rate_update_time: Instant, // Still used by NetworkMonitor for cumulative tracking if needed elsewhere
     pub current_incoming_rate_bps: f64,
     pub current_outgoing_rate_bps: f64,
+    pub rate_history: Vec<(Instant, u64, u64)>, // Stores (timestamp, total_bytes_sent, total_bytes_received)
 }
 
 // get_service_name_raw function is removed.
@@ -132,6 +133,7 @@ impl Connection {
             last_rate_update_time: Instant::now(),
             current_incoming_rate_bps: 0.0,
             current_outgoing_rate_bps: 0.0,
+            rate_history: Vec::new(),
         };
         new_conn
     }
@@ -594,18 +596,13 @@ impl NetworkMonitor {
                                 conn.bytes_received += data.len() as u64;
                             }
                             conn.state = state;
+                            conn.rate_history.push((Instant::now(), conn.bytes_sent, conn.bytes_received));
                             // Update service name for existing connection
                             set_connection_service_name_for_connection(conn, service_lookup);
                         } else {
                             let mut new_conn =
                                 Connection::new(Protocol::TCP, local_addr, remote_addr, state);
                             new_conn.last_activity = SystemTime::now();
-                            // Attempt to get PID immediately for new packet-only connections
-                            // Note: get_platform_process_for_connection is on NetworkMonitor,
-                            // so this needs to be called where `self` (NetworkMonitor) is available,
-                            // or PID resolution needs to be handled differently for packet-only connections.
-                            // For now, we'll rely on get_connections to attempt PID resolution later,
-                            // or the App's process thread. The change below in get_connections is more direct.
                             if is_outgoing {
                                 new_conn.packets_sent += 1;
                                 new_conn.bytes_sent += data.len() as u64;
@@ -613,6 +610,7 @@ impl NetworkMonitor {
                                 new_conn.packets_received += 1;
                                 new_conn.bytes_received += data.len() as u64;
                             }
+                            new_conn.rate_history.push((Instant::now(), new_conn.bytes_sent, new_conn.bytes_received));
                             // Set service name for new connection before inserting
                             set_connection_service_name_for_connection(&mut new_conn, service_lookup);
                             monitor_connections.insert(conn_key, new_conn);
