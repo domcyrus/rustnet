@@ -754,14 +754,8 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(status_bar, area);
 }
 
-/// Format rate (given as bytes and duration) to human readable form (KB/s, MB/s, etc.)
-fn format_rate(bytes: u64, duration: std::time::Duration) -> String {
-    if duration.as_secs_f64() < 0.001 { // Avoid division by zero or extremely small durations
-        return "-".to_string();
-    }
-    let bytes_per_second = bytes as f64 / duration.as_secs_f64();
-    format_rate_from_bps(bytes_per_second)
-}
+// format_rate function removed as it's no longer used.
+// format_rate_from_bps is now the primary function for formatting rates.
 
 /// Format rate (given as f64 bytes_per_second) to human readable form (KB/s, MB/s, etc.)
 fn format_rate_from_bps(bytes_per_second: f64) -> String {
