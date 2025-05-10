@@ -121,8 +121,6 @@ impl I18n {
         self.translations
             .insert("connections".to_string(), "Connections".to_string());
         self.translations
-            .insert("processes".to_string(), "Processes".to_string());
-        self.translations
             .insert("help".to_string(), "Help".to_string());
         self.translations
             .insert("network".to_string(), "Network".to_string());
@@ -134,8 +132,6 @@ impl I18n {
             "connection_details".to_string(),
             "Connection Details".to_string(),
         );
-        self.translations
-            .insert("process_details".to_string(), "Process Details".to_string());
         self.translations
             .insert("traffic".to_string(), "Traffic".to_string());
 
@@ -182,10 +178,6 @@ impl I18n {
             .insert("cpu_usage".to_string(), "CPU Usage".to_string());
         self.translations
             .insert("memory_usage".to_string(), "Memory Usage".to_string());
-        self.translations.insert(
-            "process_connections".to_string(),
-            "Process Connections".to_string(),
-        );
 
         // Statistics
         self.translations
@@ -202,19 +194,9 @@ impl I18n {
             "no_connections".to_string(),
             "No connections found".to_string(),
         );
-        self.translations
-            .insert("no_processes".to_string(), "No processes found".to_string());
-        self.translations.insert(
-            "process_not_found".to_string(),
-            "Process not found".to_string(),
-        );
         self.translations.insert(
             "no_pid_for_connection".to_string(),
             "No process ID for this connection".to_string(),
-        );
-        self.translations.insert(
-            "press_for_process_details".to_string(),
-            "Press for process details".to_string(),
         );
         self.translations.insert(
             "press_h_for_help".to_string(),

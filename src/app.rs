@@ -24,7 +24,6 @@ pub enum Action {
 pub enum ViewMode {
     Overview,
     ConnectionDetails,
-    ProcessDetails,
     Help,
 }
 
@@ -241,7 +240,6 @@ impl App {
         match self.mode {
             ViewMode::Overview => self.handle_overview_keys(key),
             ViewMode::ConnectionDetails => self.handle_details_keys(key),
-            ViewMode::ProcessDetails => self.handle_process_keys(key),
             ViewMode::Help => self.handle_help_keys(key),
         }
     }
@@ -321,10 +319,6 @@ impl App {
                 self.mode = ViewMode::Overview;
                 None
             }
-            KeyCode::Char('p') => {
-                self.mode = ViewMode::ProcessDetails;
-                None
-            }
             KeyCode::Up | KeyCode::Down => {
                 self.detail_focus = match self.detail_focus {
                     DetailFocusField::LocalIp => DetailFocusField::RemoteIp,
@@ -355,17 +349,6 @@ impl App {
                         }
                     }
                 }
-                None
-            }
-            _ => None,
-        }
-    }
-
-    /// Handle keys in process details mode
-    fn handle_process_keys(&mut self, key: KeyEvent) -> Option<Action> {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.mode = ViewMode::ConnectionDetails;
                 None
             }
             _ => None,

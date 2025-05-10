@@ -56,7 +56,6 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Result<()> {
     match app.mode {
         ViewMode::Overview => draw_overview(f, app, chunks[1])?,
         ViewMode::ConnectionDetails => draw_connection_details(f, app, chunks[1])?,
-        ViewMode::ProcessDetails => draw_process_details(f, app, chunks[1])?,
         ViewMode::Help => draw_help(f, app, chunks[1])?,
     }
 
@@ -73,7 +72,6 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
             app.i18n.get("connections"),
             Style::default().fg(Color::Green),
         ),
-        Span::styled(app.i18n.get("processes"), Style::default().fg(Color::Green)),
         Span::styled(app.i18n.get("help"), Style::default().fg(Color::Green)),
     ];
 
@@ -86,8 +84,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         .select(match app.mode {
             ViewMode::Overview => 0,
             ViewMode::ConnectionDetails => 1,
-            ViewMode::ProcessDetails => 2,
-            ViewMode::Help => 3,
+            ViewMode::Help => 2,
         })
         .style(Style::default().fg(Color::White))
         .highlight_style(
@@ -403,12 +400,6 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
         "Use Up/Down to select IP, 'c' to copy.", // Hint text
         Style::default().fg(Color::DarkGray),
     )));
-    details_text.push(Line::from(vec![Span::styled(
-        format!("{} (p)", app.i18n.get("press_for_process_details")),
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::ITALIC),
-    )]));
 
 
     let details = Paragraph::new(details_text)
@@ -473,167 +464,6 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
         .wrap(Wrap { trim: true });
 
     f.render_widget(traffic, chunks[1]);
-
-    Ok(())
-}
-
-/// Draw process details view
-fn draw_process_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> {
-    if app.connections.is_empty() {
-        let text = Paragraph::new(app.i18n.get("no_processes"))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(app.i18n.get("process_details")),
-            )
-            .style(Style::default().fg(Color::Red))
-            .alignment(ratatui::layout::Alignment::Center);
-        f.render_widget(text, area);
-        return Ok(());
-    }
-
-    // Look up process info on demand for the selected connection
-    // This now returns an owned Process, not a reference
-    if let Some(process) = app.get_process_for_selected_connection() {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(10), // Process details
-                Constraint::Min(0),     // Process connections
-            ])
-            .split(area);
-
-        let mut details_text: Vec<Line> = Vec::new();
-        details_text.push(Line::from(vec![
-            Span::styled(
-                format!("{}: ", app.i18n.get("process_name")),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(&process.name),
-        ]));
-
-        details_text.push(Line::from(vec![
-            Span::styled(
-                format!("{}: ", app.i18n.get("pid")),
-                Style::default().fg(Color::Yellow),
-            ),
-            Span::raw(process.pid.to_string()),
-        ]));
-
-        if let Some(ref cmd) = process.command_line {
-            details_text.push(Line::from(vec![
-                Span::styled(
-                    format!("{}: ", app.i18n.get("command_line")),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(cmd),
-            ]));
-        }
-
-        if let Some(ref user) = process.user {
-            details_text.push(Line::from(vec![
-                Span::styled(
-                    format!("{}: ", app.i18n.get("user")),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(user),
-            ]));
-        }
-
-        if let Some(cpu) = process.cpu_usage {
-            details_text.push(Line::from(vec![
-                Span::styled(
-                    format!("{}: ", app.i18n.get("cpu_usage")),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(format!("{:.1}%", cpu)),
-            ]));
-        }
-
-        if let Some(mem) = process.memory_usage {
-            details_text.push(Line::from(vec![
-                Span::styled(
-                    format!("{}: ", app.i18n.get("memory_usage")),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::raw(format_bytes(mem)),
-            ]));
-        }
-
-        let details = Paragraph::new(details_text)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(app.i18n.get("process_details")),
-            )
-            .style(Style::default().fg(Color::White))
-            .wrap(Wrap { trim: true });
-
-        f.render_widget(details, chunks[0]);
-
-        // Find all connections for this process
-        let pid = process.pid;
-        // Clone connections for this PID to avoid borrow issues later with app.format_socket_addr
-        let connections_for_pid: Vec<Connection> = app
-            .connections
-            .iter()
-            .filter(|c| c.pid == Some(pid))
-            .cloned() // Clone the Connection objects
-            .collect();
-
-        let connections_count = connections_for_pid.len();
-
-        // Collect addresses to format from the cloned connections
-        let addresses_to_format: Vec<(SocketAddr, SocketAddr)> = connections_for_pid
-            .iter()
-            .map(|conn| (conn.local_addr, conn.remote_addr))
-            .collect();
-
-        let mut formatted_proc_conn_addresses = Vec::new();
-        for (local_addr, remote_addr) in addresses_to_format {
-            let local_display = app.format_socket_addr(local_addr); // Mutably borrows app
-            let remote_display = app.format_socket_addr(remote_addr); // Mutably borrows app
-            formatted_proc_conn_addresses.push((local_display, remote_display));
-        }
-
-        let mut items = Vec::new();
-        // Iterate over the cloned connections_for_pid
-        for (idx, conn) in connections_for_pid.iter().enumerate() {
-            let (local_display, remote_display) = formatted_proc_conn_addresses[idx].clone();
-
-            items.push(ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!("{}: ", conn.protocol),
-                    Style::default().fg(Color::Green),
-                ),
-                Span::raw(format!(
-                    "{} -> {} ({})",
-                    local_display, remote_display, conn.state
-                )),
-            ])));
-        }
-
-        let connections_list = List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(format!(
-                "{} ({})",
-                app.i18n.get("process_connections"),
-                connections_count
-            )))
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
-            .highlight_symbol("> ");
-
-        f.render_widget(connections_list, chunks[1]);
-    } else {
-        let text = Paragraph::new(app.i18n.get("process_not_found"))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(app.i18n.get("process_details")),
-            )
-            .style(Style::default().fg(Color::Red))
-            .alignment(ratatui::layout::Alignment::Center);
-        f.render_widget(text, area);
-    }
 
     Ok(())
 }
