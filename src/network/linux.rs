@@ -14,41 +14,41 @@ pub fn get_platform_connections(
     // Debug output
     debug!("Attempting to get connections using platform-specific methods");
 
-        // Use ss command to get TCP connections
-        info!("Running ss command to get TCP connections...");
-        let ss_result = monitor.get_connections_from_ss(connections);
-        if let Err(e) = &ss_result {
-            error!("Error running ss command: {}", e);
-        } else {
-            info!("ss command executed successfully");
-        }
+    // Use ss command to get TCP connections
+    info!("Running ss command to get TCP connections...");
+    let ss_result = monitor.get_connections_from_ss(connections);
+    if let Err(e) = &ss_result {
+        error!("Error running ss command: {}", e);
+    } else {
+        info!("ss command executed successfully");
+    }
 
-        // Use netstat to get UDP connections
-        info!("Running netstat command to get UDP connections...");
-        let netstat_result = monitor.get_connections_from_netstat(connections);
-        if let Err(e) = &netstat_result {
-            error!("Error running netstat command: {}", e);
-        } else {
-            info!("netstat command executed successfully");
-        }
+    // Use netstat to get UDP connections
+    info!("Running netstat command to get UDP connections...");
+    let netstat_result = monitor.get_connections_from_netstat(connections);
+    if let Err(e) = &netstat_result {
+        error!("Error running netstat command: {}", e);
+    } else {
+        info!("netstat command executed successfully");
+    }
 
-        // Check if we got any connections
+    // Check if we got any connections
+    debug!(
+        "Found {} connections from command output",
+        connections.len()
+    );
+
+    // If we didn't get any connections from commands, try using pcap
+    if connections.is_empty() {
+        warn!("No connections found from commands, trying packet capture...");
+        monitor.get_connections_from_pcap(connections)?;
         debug!(
-            "Found {} connections from command output",
+            "Found {} connections from packet capture",
             connections.len()
         );
+    }
 
-        // If we didn't get any connections from commands, try using pcap
-        if connections.is_empty() {
-            warn!("No connections found from commands, trying packet capture...");
-            monitor.get_connections_from_pcap(connections)?;
-            debug!(
-                "Found {} connections from packet capture",
-                connections.len()
-            );
-        }
-
-    // Note: get_linux_process_for_connection, get_process_by_pid, 
+    // Note: get_linux_process_for_connection, get_process_by_pid,
     // get_connections_from_ss, get_connections_from_netstat, get_connections_from_pcap
     // remain methods on NetworkMonitor as they are called via `monitor.method_name()`
     Ok(())
@@ -85,91 +85,105 @@ impl NetworkMonitor {
                 if output.status.success() {
                     let text = String::from_utf8_lossy(&output.stdout);
                     let line_count = text.lines().count();
-                    debug!("'ss -tupn' command successful. Output lines: {}", line_count);
-                    if line_count < 5 && line_count > 0 { // Log short output
+                    debug!(
+                        "'ss -tupn' command successful. Output lines: {}",
+                        line_count
+                    );
+                    if line_count < 5 && line_count > 0 {
+                        // Log short output
                         debug!("'ss -tupn' output (first {} lines):\n{}", line_count, text);
                     } else if line_count == 0 {
                         debug!("'ss -tupn' produced no output.");
                     }
 
-            for line in text.lines().skip(1) {
-                // Skip header
-                let fields: Vec<&str> = line.split_whitespace().collect();
-                if fields.len() < 5 {
-                    continue;
-                }
+                    for line in text.lines().skip(1) {
+                        // Skip header
+                        let fields: Vec<&str> = line.split_whitespace().collect();
+                        if fields.len() < 5 {
+                            continue;
+                        }
 
-                // ss -tupn output fields: Netid, State, Recv-Q, Send-Q, Local Address:Port, Peer Address:Port, Process
-                // Example: tcp ESTAB 0 0 10.0.0.1:1234 10.0.0.2:80 users:(("myproc",pid=789,fd=5))
-                // Example: udp UNCONN 0 0 *:bootpc *:* users:(("dhclient",pid=123,fd=3))
+                        // ss -tupn output fields: Netid, State, Recv-Q, Send-Q, Local Address:Port, Peer Address:Port, Process
+                        // Example: tcp ESTAB 0 0 10.0.0.1:1234 10.0.0.2:80 users:(("myproc",pid=789,fd=5))
+                        // Example: udp UNCONN 0 0 *:bootpc *:* users:(("dhclient",pid=123,fd=3))
 
-                // Parse protocol (Netid)
-                let protocol = match fields[0] {
-                    "tcp" | "tcp6" => Protocol::TCP,
-                    "udp" | "udp6" => Protocol::UDP,
-                    _ => continue, // Skip if not tcp or udp
-                };
+                        // Parse protocol (Netid)
+                        let protocol = match fields[0] {
+                            "tcp" | "tcp6" => Protocol::TCP,
+                            "udp" | "udp6" => Protocol::UDP,
+                            _ => continue, // Skip if not tcp or udp
+                        };
 
-                // Parse state
-                let state_str = if fields.len() > 1 { fields[1] } else { "" };
-                let state = match state_str {
-                    "ESTAB" => ConnectionState::Established,
-                    "LISTEN" => ConnectionState::Listen,
-                    "TIME-WAIT" => ConnectionState::TimeWait,
-                    "CLOSE-WAIT" => ConnectionState::CloseWait,
-                    "SYN-SENT" => ConnectionState::SynSent,
-                    "SYN-RECV" => ConnectionState::SynReceived,
-                    "FIN-WAIT-1" => ConnectionState::FinWait1,
-                    "FIN-WAIT-2" => ConnectionState::FinWait2,
-                    "LAST-ACK" => ConnectionState::LastAck,
-                    "CLOSING" => ConnectionState::Closing,
-                    "UNCONN" if protocol == Protocol::UDP => ConnectionState::Established, // UDP is connectionless, UNCONN is normal
-                    _ => ConnectionState::Unknown,
-                };
+                        // Parse state
+                        let state_str = if fields.len() > 1 { fields[1] } else { "" };
+                        let state = match state_str {
+                            "ESTAB" => ConnectionState::Established,
+                            "LISTEN" => ConnectionState::Listen,
+                            "TIME-WAIT" => ConnectionState::TimeWait,
+                            "CLOSE-WAIT" => ConnectionState::CloseWait,
+                            "SYN-SENT" => ConnectionState::SynSent,
+                            "SYN-RECV" => ConnectionState::SynReceived,
+                            "FIN-WAIT-1" => ConnectionState::FinWait1,
+                            "FIN-WAIT-2" => ConnectionState::FinWait2,
+                            "LAST-ACK" => ConnectionState::LastAck,
+                            "CLOSING" => ConnectionState::Closing,
+                            "UNCONN" if protocol == Protocol::UDP => ConnectionState::Established, // UDP is connectionless, UNCONN is normal
+                            _ => ConnectionState::Unknown,
+                        };
 
-                // Ensure we have enough fields for addresses
-                if fields.len() < 6 { // Need up to Peer Address:Port
-                    continue;
-                }
+                        // Ensure we have enough fields for addresses
+                        if fields.len() < 6 {
+                            // Need up to Peer Address:Port
+                            continue;
+                        }
 
-                // Parse local and remote addresses (fields[4] and fields[5])
-                if let (Some(local), Some(remote)) =
-                    (self.parse_addr(fields[4]), self.parse_addr(fields[5]))
-                {
-                    let mut conn = Connection::new(protocol, local, remote, state);
+                        // Parse local and remote addresses (fields[4] and fields[5])
+                        if let (Some(local), Some(remote)) =
+                            (self.parse_addr(fields[4]), self.parse_addr(fields[5]))
+                        {
+                            let mut conn = Connection::new(protocol, local, remote, state);
 
-                    // Parse PID and process name (fields[6], if present)
-                    if fields.len() >= 7 {
-                        let process_info = fields[6]; // Process info is in the 7th field (index 6)
-                        if let Some(pid_start) = process_info.find("pid=") {
-                            let pid_part = &process_info[pid_start + 4..];
-                            if let Some(pid_end) = pid_part.find(',') {
-                                if let Ok(pid) = pid_part[..pid_end].parse::<u32>() {
-                                    conn.pid = Some(pid);
+                            // Parse PID and process name (fields[6], if present)
+                            if fields.len() >= 7 {
+                                let process_info = fields[6]; // Process info is in the 7th field (index 6)
+                                if let Some(pid_start) = process_info.find("pid=") {
+                                    let pid_part = &process_info[pid_start + 4..];
+                                    if let Some(pid_end) = pid_part.find(',') {
+                                        if let Ok(pid) = pid_part[..pid_end].parse::<u32>() {
+                                            conn.pid = Some(pid);
 
-                                    // Try to get process name from users:(("name",pid=...,fd=...))
-                                    if let Some(name_section_start) = process_info.find("users:((\"") {
-                                        let name_candidate_part = &process_info[name_section_start + 9..];
-                                        if let Some(name_candidate_end) = name_candidate_part.find('"') {
-                                            let raw_name = &name_candidate_part[..name_candidate_end];
-                                            let trimmed_name = raw_name
-                                                .trim_start_matches("(\"")
-                                                .trim_end_matches('"')
-                                                .to_string();
-                                            conn.process_name = Some(trimmed_name);
+                                            // Try to get process name from users:(("name",pid=...,fd=...))
+                                            if let Some(name_section_start) =
+                                                process_info.find("users:((\"")
+                                            {
+                                                let name_candidate_part =
+                                                    &process_info[name_section_start + 9..];
+                                                if let Some(name_candidate_end) =
+                                                    name_candidate_part.find('"')
+                                                {
+                                                    let raw_name =
+                                                        &name_candidate_part[..name_candidate_end];
+                                                    let trimmed_name = raw_name
+                                                        .trim_start_matches("(\"")
+                                                        .trim_end_matches('"')
+                                                        .to_string();
+                                                    conn.process_name = Some(trimmed_name);
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
+
+                            connections.push(conn);
                         }
                     }
-
-                    connections.push(conn);
-                }
-            }
                 } else {
                     let stderr_text = String::from_utf8_lossy(&output.stderr);
-                    error!("'ss -tupn' command failed with status {}. Stderr: {}", output.status, stderr_text);
+                    error!(
+                        "'ss -tupn' command failed with status {}. Stderr: {}",
+                        output.status, stderr_text
+                    );
                     // Proceeding, as netstat might provide data or this is a transient issue.
                 }
             }
@@ -178,7 +192,10 @@ impl NetworkMonitor {
                 return Err(e.into()); // Propagate the error to stop further processing in get_platform_connections for this call
             }
         }
-        debug!("Finished processing 'ss' output. Current connections vec size: {}", connections.len());
+        debug!(
+            "Finished processing 'ss' output. Current connections vec size: {}",
+            connections.len()
+        );
         Ok(())
     }
 
@@ -192,77 +209,88 @@ impl NetworkMonitor {
                 if output.status.success() {
                     let text = String::from_utf8_lossy(&output.stdout);
                     let line_count = text.lines().count();
-                    debug!("'netstat -tupn' command successful. Output lines: {}", line_count);
-                     if line_count < 5 && line_count > 0 { // Log short output
-                        debug!("'netstat -tupn' output (first {} lines):\n{}", line_count, text);
+                    debug!(
+                        "'netstat -tupn' command successful. Output lines: {}",
+                        line_count
+                    );
+                    if line_count < 5 && line_count > 0 {
+                        // Log short output
+                        debug!(
+                            "'netstat -tupn' output (first {} lines):\n{}",
+                            line_count, text
+                        );
                     } else if line_count == 0 {
                         debug!("'netstat -tupn' produced no output.");
                     }
 
-            for line in text.lines().skip(2) {
-                // Skip headers
-                let fields: Vec<&str> = line.split_whitespace().collect();
-                if fields.len() < 5 {
-                    continue;
-                }
+                    for line in text.lines().skip(2) {
+                        // Skip headers
+                        let fields: Vec<&str> = line.split_whitespace().collect();
+                        if fields.len() < 5 {
+                            continue;
+                        }
 
-                // Parse protocol
-                let protocol = match fields[0].to_lowercase().as_str() {
-                    "tcp" | "tcp6" => Protocol::TCP,
-                    "udp" | "udp6" => Protocol::UDP,
-                    _ => continue,
-                };
+                        // Parse protocol
+                        let protocol = match fields[0].to_lowercase().as_str() {
+                            "tcp" | "tcp6" => Protocol::TCP,
+                            "udp" | "udp6" => Protocol::UDP,
+                            _ => continue,
+                        };
 
-                // Parse state
-                let state_pos = 5;
-                let state = if fields.len() > state_pos {
-                    match fields[state_pos] {
-                        "ESTABLISHED" => ConnectionState::Established,
-                        "LISTENING" | "LISTEN" => ConnectionState::Listen,
-                        "TIME_WAIT" => ConnectionState::TimeWait,
-                        "CLOSE_WAIT" => ConnectionState::CloseWait,
-                        "SYN_SENT" => ConnectionState::SynSent,
-                        "SYN_RECEIVED" | "SYN_RECV" => ConnectionState::SynReceived,
-                        "FIN_WAIT_1" => ConnectionState::FinWait1,
-                        "FIN_WAIT_2" => ConnectionState::FinWait2,
-                        "LAST_ACK" => ConnectionState::LastAck,
-                        "CLOSING" => ConnectionState::Closing,
-                        _ => ConnectionState::Unknown,
-                    }
-                } else {
-                    ConnectionState::Unknown
-                };
+                        // Parse state
+                        let state_pos = 5;
+                        let state = if fields.len() > state_pos {
+                            match fields[state_pos] {
+                                "ESTABLISHED" => ConnectionState::Established,
+                                "LISTENING" | "LISTEN" => ConnectionState::Listen,
+                                "TIME_WAIT" => ConnectionState::TimeWait,
+                                "CLOSE_WAIT" => ConnectionState::CloseWait,
+                                "SYN_SENT" => ConnectionState::SynSent,
+                                "SYN_RECEIVED" | "SYN_RECV" => ConnectionState::SynReceived,
+                                "FIN_WAIT_1" => ConnectionState::FinWait1,
+                                "FIN_WAIT_2" => ConnectionState::FinWait2,
+                                "LAST_ACK" => ConnectionState::LastAck,
+                                "CLOSING" => ConnectionState::Closing,
+                                _ => ConnectionState::Unknown,
+                            }
+                        } else {
+                            ConnectionState::Unknown
+                        };
 
-                // Parse local and remote addresses
-                let local_idx = 1;
-                let remote_idx = 2;
+                        // Parse local and remote addresses
+                        let local_idx = 1;
+                        let remote_idx = 2;
 
-                if let (Some(local), Some(remote)) = (
-                    self.parse_addr(fields[local_idx]),
-                    self.parse_addr(fields[remote_idx]),
-                ) {
-                    let mut conn = Connection::new(protocol, local, remote, state);
+                        if let (Some(local), Some(remote)) = (
+                            self.parse_addr(fields[local_idx]),
+                            self.parse_addr(fields[remote_idx]),
+                        ) {
+                            let mut conn = Connection::new(protocol, local, remote, state);
 
-                    // Parse PID and process name from "PID/Program name"
-                    let pid_program_pos = 6; // Assuming this is the correct index for "PID/Program name"
-                    if fields.len() > pid_program_pos && fields[pid_program_pos] != "-" {
-                        let pid_str_parts: Vec<&str> = fields[pid_program_pos].split('/').collect();
-                        if let Ok(pid) = pid_str_parts[0].parse::<u32>() {
-                            conn.pid = Some(pid);
-                            if pid_str_parts.len() > 1 {
-                                // Check if the process name part is not empty or just "-"
-                                if !pid_str_parts[1].is_empty() && pid_str_parts[1] != "-" {
-                                    conn.process_name = Some(pid_str_parts[1].to_string());
+                            // Parse PID and process name from "PID/Program name"
+                            let pid_program_pos = 6; // Assuming this is the correct index for "PID/Program name"
+                            if fields.len() > pid_program_pos && fields[pid_program_pos] != "-" {
+                                let pid_str_parts: Vec<&str> =
+                                    fields[pid_program_pos].split('/').collect();
+                                if let Ok(pid) = pid_str_parts[0].parse::<u32>() {
+                                    conn.pid = Some(pid);
+                                    if pid_str_parts.len() > 1 {
+                                        // Check if the process name part is not empty or just "-"
+                                        if !pid_str_parts[1].is_empty() && pid_str_parts[1] != "-" {
+                                            conn.process_name = Some(pid_str_parts[1].to_string());
+                                        }
+                                    }
                                 }
                             }
+                            connections.push(conn);
                         }
                     }
-                    connections.push(conn);
-                }
-            }
                 } else {
                     let stderr_text = String::from_utf8_lossy(&output.stderr);
-                    error!("'netstat -tupn' command failed with status {}. Stderr: {}", output.status, stderr_text);
+                    error!(
+                        "'netstat -tupn' command failed with status {}. Stderr: {}",
+                        output.status, stderr_text
+                    );
                 }
             }
             Err(e) => {
@@ -270,7 +298,10 @@ impl NetworkMonitor {
                 return Err(e.into());
             }
         }
-        debug!("Finished processing 'netstat' output. Current connections vec size after netstat: {}", connections.len());
+        debug!(
+            "Finished processing 'netstat' output. Current connections vec size after netstat: {}",
+            connections.len()
+        );
         Ok(())
     }
 
@@ -326,6 +357,7 @@ fn try_ss_command(connection: &Connection) -> Option<Process> {
     let proto_flag = match connection.protocol {
         Protocol::TCP => "-t",
         Protocol::UDP => "-u",
+        Protocol::ICMP => return None, // ss doesn't support ICMP directly
     };
 
     let local_port = connection.local_addr.port();
@@ -366,10 +398,7 @@ fn try_ss_command(connection: &Connection) -> Option<Process> {
                                 format!("process-{}", pid)
                             };
 
-                            return Some(Process {
-                                pid,
-                                name,
-                            });
+                            return Some(Process { pid, name });
                         }
                     }
                 }
@@ -411,6 +440,7 @@ fn try_netstat_command(connection: &Connection) -> Option<Process> {
                     fields[proto_idx].eq_ignore_ascii_case("udp")
                         || fields[proto_idx].eq_ignore_ascii_case("udp6")
                 }
+                Protocol::ICMP => false, // netstat doesn't show ICMP connections directly
             };
 
             if matches_protocol
@@ -427,10 +457,7 @@ fn try_netstat_command(connection: &Connection) -> Option<Process> {
                         let name = get_process_name_by_pid(pid)
                             .unwrap_or_else(|| format!("process-{}", pid));
 
-                        return Some(Process {
-                            pid,
-                            name,
-                        });
+                        return Some(Process { pid, name });
                     }
                 }
 
@@ -505,12 +532,8 @@ fn try_proc_parsing(connection: &Connection) -> Option<Process> {
                                                     .contains(&format!("socket:[{}]", inode))
                                                 {
                                                     // Found process with this socket
-                                                    return get_process_name_by_pid(pid).map(
-                                                        |name| Process {
-                                                            pid,
-                                                            name,
-                                                        },
-                                                    );
+                                                    return get_process_name_by_pid(pid)
+                                                        .map(|name| Process { pid, name });
                                                 }
                                             }
                                         }
