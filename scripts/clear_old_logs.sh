@@ -39,8 +39,15 @@ if [ -n "$files_to_delete" ]; then
         echo " - $file_to_delete"
     done
     # Actual deletion
-    echo "$files_to_delete" | xargs -d '\n' rm -f
-    
+    for file_to_delete in $files_to_delete; do
+        # Check if the file exists before trying to delete it
+        if [ -e "$file_to_delete" ]; then
+            rm -f "$file_to_delete"
+        else
+            echo "Warning: File '$file_to_delete' does not exist."
+        fi
+    done
+
     # Count how many were actually passed to xargs (can be tricky if names have newlines)
     # A simpler way is to count lines from the `files_to_delete` variable
     num_deleted=$(echo "$files_to_delete" | wc -l)
