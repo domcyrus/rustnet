@@ -585,7 +585,7 @@ impl NetworkMonitor {
 
         let loop_duration = loop_start_time.elapsed();
         log::debug!(
-            "NetworkMonitor::process_packets_impl - Packet processing finished in {:?}. Processed {} packets.", 
+            "NetworkMonitor::process_packets_impl - Packet processing finished in {:?}. Processed {} packets.",
             loop_duration,
             packets_count
         );
@@ -910,50 +910,135 @@ impl NetworkMonitor {
             conn.protocol, conn.local_addr, conn.protocol, conn.remote_addr
         )
     }
+}
+/// Parse an address string into a SocketAddr
+fn parse_addr(addr_str: &str) -> Option<std::net::SocketAddr> {
+    let addr_str = addr_str.trim();
 
-    /// Parse an address string into a SocketAddr
-    fn parse_addr(&self, addr_str: &str) -> Option<std::net::SocketAddr> {
-        let addr_str = addr_str.trim();
+    // 1. Try standard "host:port" or "[ipv6]:port" format
+    if let Ok(socket_addr) = addr_str.parse::<std::net::SocketAddr>() {
+        return Some(socket_addr);
+    }
 
-        // Attempt direct parsing first, which handles common cases like "1.2.3.4:80" or "[::1]:8080"
-        if let Ok(socket_addr) = addr_str.parse::<std::net::SocketAddr>() {
+    // 2. Try to handle port-only case (for localhost)
+    if let Ok(port) = addr_str.parse::<u16>() {
+        return Some(std::net::SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            port,
+        ));
+    }
+
+    // 3. Handle "ip.port" format (dot notation)
+    if let Some(dot_idx) = addr_str.rfind('.') {
+        if let Some(socket_addr) = parse_with_separator(addr_str, dot_idx) {
             return Some(socket_addr);
         }
+    }
 
-        // If direct parsing fails, try to handle formats like "host:*" or "ip:*"
-        // by splitting host and port.
-        if let Some(last_colon_idx) = addr_str.rfind(':') {
-            let (host_str_candidate, port_str) = addr_str.split_at(last_colon_idx);
-            let port_str = &port_str[1..]; // Skip the colon
-
-            let host_str =
-                if host_str_candidate.starts_with('[') && host_str_candidate.ends_with(']') {
-                    // IPv6 like [::1]
-                    &host_str_candidate[1..host_str_candidate.len() - 1]
-                } else {
-                    host_str_candidate
-                };
-
-            if let Ok(ip_addr) = host_str.parse::<std::net::IpAddr>() {
-                let port_num = if port_str == "*" {
-                    0 // Map wildcard port to 0
-                } else {
-                    match port_str.parse::<u16>() {
-                        Ok(p) => p,
-                        Err(_) => return None, // Invalid port string
-                    }
-                };
-                return Some(std::net::SocketAddr::new(ip_addr, port_num));
-            }
-        } else {
-            // If no colon, it might be just a port number (for localhost)
-            if let Ok(port_num) = addr_str.parse::<u16>() {
-                // Default to localhost if only port is provided
-                let local_ip = std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1));
-                return Some(std::net::SocketAddr::new(local_ip, port_num));
-            }
+    // 4. Handle "host:port" format with special port handling
+    if let Some(colon_idx) = addr_str.rfind(':') {
+        if let Some(socket_addr) = parse_with_separator(addr_str, colon_idx) {
+            return Some(socket_addr);
         }
+    }
 
-        None
+    None
+}
+
+/// Helper method to parse address with either dot or colon separator
+fn parse_with_separator(addr_str: &str, sep_idx: usize) -> Option<std::net::SocketAddr> {
+    let (host_part, port_part) = addr_str.split_at(sep_idx);
+    // Skip the separator character
+    let port_part = &port_part[1..];
+
+    // Extract host, handling possible IPv6 brackets
+    let host = if host_part.starts_with('[') && host_part.ends_with(']') {
+        &host_part[1..host_part.len() - 1]
+    } else {
+        host_part
+    };
+
+    // Parse the host to an IP address
+    let ip_addr = host.parse::<std::net::IpAddr>().ok()?;
+
+    // Parse the port, handling wildcard "*"
+    let port = if port_part == "*" {
+        0 // Map wildcard port to 0
+    } else {
+        port_part.parse::<u16>().ok()?
+    };
+
+    Some(std::net::SocketAddr::new(ip_addr, port))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    #[test]
+    fn test_parse_addr() {
+        // Create an instance of NetworkMonitor to test its methods
+        // Table of test cases: (input, expected_output)
+        let test_cases = [
+            // Standard IPv4
+            (
+                "192.168.1.1:80",
+                Some(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                    80,
+                )),
+            ),
+            // Standard IPv6
+            (
+                "[::1]:8080",
+                Some(SocketAddr::new(
+                    IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
+                    8080,
+                )),
+            ),
+            // Port only
+            (
+                "8080",
+                Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080)),
+            ),
+            // Wrong dot notation
+            ("192.168.1.80", None),
+            // Correct dot notation
+            (
+                "192.168.1.80.80",
+                Some(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(192, 168, 1, 80)),
+                    80,
+                )),
+            ),
+            // Wildcard port
+            (
+                "192.168.1.1:*",
+                Some(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                    0,
+                )),
+            ),
+            // Wildcard dot notation is not valid
+            ("192.168.1.*", None),
+            // With whitespace
+            (
+                " 192.168.1.1:80 ",
+                Some(SocketAddr::new(
+                    IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                    80,
+                )),
+            ),
+            // Invalid inputs
+            ("invalid", None),
+            ("256.256.256.256:80", None),
+            ("192.168.1.1:99999", None),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = parse_addr(input);
+            assert_eq!(result, expected, "Failed for input: {}", input);
+        }
     }
 }

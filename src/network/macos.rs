@@ -213,7 +213,7 @@ impl NetworkMonitor {
                     let parts: Vec<&str> = addr_str.split("->").collect();
                     if parts.len() == 2 {
                         if let (Some(local), Some(remote)) =
-                            (self.parse_addr(parts[0]), self.parse_addr(parts[1]))
+                            (super::parse_addr(parts[0]), super::parse_addr(parts[1]))
                         {
                             // Check if this connection is already in our list
                             let conn_key =
@@ -231,7 +231,7 @@ impl NetworkMonitor {
                 } else {
                     // Only local address (likely LISTEN)
                     let addr_str = &proto_addr[proto_end + 1..];
-                    if let Some(local) = self.parse_addr(addr_str) {
+                    if let Some(local) = super::parse_addr(addr_str) {
                         // Use 0.0.0.0:0 as remote for listening sockets
                         let remote = if local.ip().is_ipv4() {
                             "0.0.0.0:0".parse().unwrap()
@@ -268,11 +268,28 @@ impl NetworkMonitor {
             .args(["-anv", "-p", "tcp"])
             .output()?;
 
+        /* potential output
+        netstat -anv -p tcp
+        Active Internet connections (including servers)
+        Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)          rxbytes      txbytes  rhiwat  shiwat    pid   epid state  options           gencnt    flags   flags1 usecnt rtncnt fltrs
+        tcp4       0      0  127.0.0.1.52734        127.0.0.1.51321        ESTABLISHED         4080         1732  406848  146988  82345      0 00102 00000004 0000000001becd9c 00000080 01000900      1      0 000000
+        tcp4       0      0  127.0.0.1.51321        127.0.0.1.52734        ESTABLISHED         3984         1780 6291456 6291456      0      0 00082 00000008 0000000001becd9b 00000882 04100900      1      0 000000
+        tcp4       0      0  192.168.0.174.51320    140.82.114.25.443      ESTABLISHED         9134        16292  131072  132432  62474      0 00102 00000008 0000000001beca47 00000080 04000900      1      0 000000
+        tcp4       0      0  192.168.0.174.51309    140.82.114.25.443      ESTABLISHED         8988         4658  131072  132432  62474      0 00102 00000008 0000000001beb124 00000080 04000900      1      0 000000
+        tcp4       0      0  192.168.0.174.51301    3.233.158.31.443       ESTABLISHED        11354         9972  131072  131100  62474      0 00102 00000000 0000000001be9d00 00000080 04000900      1      0 000000
+        tcp4       0      0  192.168.0.174.51291    54.171.126.41.443      ESTABLISHED         7490         1526  131072  131768  62474      0 00102 00000008 0000000001be9a45 00000080 04000900      1      0 000000
+        tcp4       0      0  192.168.0.174.51192    54.171.126.41.443      ESTABLISHED         7438         1533  131072  131768  62474      0 00102 00000008 0000000001be80a3 00000080 04000900      1      0 000000
+        tcp4       0      0  192.168.0.174.51123    18.194.226.249.443     ESTABLISHED       252210       516756  131072  131072  62474      0 00102 00000000 0000000001b9f8e7 00000080 04000900      1      0 000000
+        tcp4       0      0  192.168.0.174.51121    18.196.224.240.443     ESTABLISHED       343870      1519981  131072  131072  62474      0 00102 00000000 0000000001b9f8cc 00000080 04000900      1      0 000000
+        tcp4       0      0  192.168.0.174.51120    75.2.108.140.443       ESTABLISHED       463676       210134  131072  131072  62474      0 00102 00000000 0000000001b9f813 00000080 04000900      1      0 000000
+         */
+
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
 
             for line in text.lines().skip(2) {
                 // Skip headers
+
                 let fields: Vec<&str> = line.split_whitespace().collect();
                 if fields.len() < 5 {
                     continue;
@@ -310,8 +327,8 @@ impl NetworkMonitor {
                 }
 
                 if let (Some(local), Some(remote)) = (
-                    self.parse_addr(fields[local_idx]),
-                    self.parse_addr(fields[remote_idx]),
+                    super::parse_addr(fields[local_idx]),
+                    super::parse_addr(fields[remote_idx]),
                 ) {
                     // Check if this connection is already in our list
                     let conn_key = format!("{:?}:{}-{:?}:{}", protocol, local, protocol, remote);
@@ -349,7 +366,7 @@ impl NetworkMonitor {
                     continue;
                 }
 
-                if let Some(local) = self.parse_addr(fields[local_idx]) {
+                if let Some(local) = super::parse_addr(fields[local_idx]) {
                     // Use 0.0.0.0:0 as remote for UDP
                     let remote = if local.ip().is_ipv4() {
                         "0.0.0.0:0".parse().unwrap()
@@ -411,8 +428,8 @@ impl NetworkMonitor {
                     let remote_addr_str = fields[4];
 
                     if let (Some(local), Some(remote)) = (
-                        self.parse_addr(local_addr_str),
-                        self.parse_addr(remote_addr_str),
+                        super::parse_addr(local_addr_str),
+                        super::parse_addr(remote_addr_str),
                     ) {
                         // Determine connection state
                         let state = match state_str {
@@ -461,7 +478,7 @@ impl NetworkMonitor {
                     // Extract local address
                     let local_addr_str = fields[3];
 
-                    if let Some(local) = self.parse_addr(local_addr_str) {
+                    if let Some(local) = super::parse_addr(local_addr_str) {
                         // Use 0.0.0.0:0 as remote for UDP
                         let remote = if local.ip().is_ipv4() {
                             "0.0.0.0:0".parse().unwrap()
@@ -544,10 +561,6 @@ pub(super) fn try_lsof_command(connection: &Connection) -> Option<Process> {
                 return Some(Process {
                     pid,
                     name: process_name,
-                    command_line: None,
-                    user,
-                    cpu_usage: None,
-                    memory_usage: None,
                 });
             }
         }
@@ -598,21 +611,14 @@ pub(super) fn try_netstat_command(connection: &Connection) -> Option<Process> {
                     if let Some(pid_str) = fields.get(8) {
                         if let Ok(pid) = pid_str.parse::<u32>() {
                             // Now get process name using ps
-                            return get_process_name_by_pid(pid).map(|name| Process {
-                                pid,
-                                name,
-                                command_line: None,
-                                user: None,
-                                cpu_usage: None,
-                                memory_usage: None,
-                            });
+                            return get_process_name_by_pid(pid)
+                                .map(|name| Process { pid, name: name });
                         }
                     }
                 }
             }
         }
     }
-
     None
 }
 
