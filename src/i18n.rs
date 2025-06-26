@@ -28,8 +28,7 @@ impl I18n {
 
     /// Get translation for a key
     pub fn get(&self, key: &str) -> String {
-        self.translations
-            .get(key)
+        self.translations.get(key)
             .cloned()
             .unwrap_or_else(|| key.to_string())
     }
@@ -239,6 +238,22 @@ impl I18n {
         self.translations.insert(
             "help_toggle_help".to_string(),
             "Toggle help screen".to_string(),
+        );
+        self.translations.insert(
+            "help_dump_connections".to_string(),
+            "Dump connections to file".to_string(),
+        );
+        self.translations.insert(
+            "processes".to_string(),
+            "Processes".to_string(),
+        );
+        self.translations.insert(
+            "total_incoming".to_string(),
+            "Total Incoming".to_string(),
+        );
+        self.translations.insert(
+            "total_outgoing".to_string(),
+            "Total Outgoing".to_string(),
         );
     }
 }

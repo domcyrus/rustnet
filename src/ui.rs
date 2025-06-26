@@ -42,6 +42,12 @@ pub fn restore_terminal<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>
 
 /// Draw the UI
 pub fn draw(f: &mut Frame, app: &mut App) -> Result<()> {
+    // If still loading, show loading screen instead of normal UI
+    if app.is_loading {
+        draw_loading_screen(f, app);
+        return Ok(());
+    }
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -49,7 +55,7 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Result<()> {
             Constraint::Min(0),    // Content
             Constraint::Length(1), // Status bar
         ])
-        .split(f.size()); // Changed from f.area() to f.size()
+        .split(f.area());
 
     draw_tabs(f, app, chunks[0]);
 
@@ -196,7 +202,7 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
                 .borders(Borders::ALL)
                 .title(app.i18n.get("connections")),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
 
     f.render_stateful_widget(connections, area, &mut state);
@@ -558,6 +564,64 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
         .alignment(ratatui::layout::Alignment::Left);
 
     f.render_widget(status_bar, area);
+}
+
+/// Draw loading screen with progress message
+fn draw_loading_screen(f: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(0),    // Content
+            Constraint::Length(1), // Status
+        ])
+        .split(f.area());
+
+    // Draw header
+    let header = Paragraph::new("RustNet - Network Monitor")
+        .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(header, chunks[0]);
+
+    // Draw loading content
+    let loading_content = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(5),
+            Constraint::Percentage(40),
+        ])
+        .split(chunks[1]);
+
+    let loading_text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(app.get_spinner_char(), Style::default().fg(Color::Yellow)),
+            Span::styled(" ", Style::default()),
+            Span::styled(&app.loading_message, Style::default().fg(Color::White)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Please wait while we discover network connections", Style::default().fg(Color::Cyan)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("This may take 10-30 seconds depending on your system", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+
+    let loading_paragraph = Paragraph::new(loading_text)
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title("Loading"));
+    f.render_widget(loading_paragraph, loading_content[1]);
+
+    // Draw status
+    let status = "Press Ctrl+C to cancel";
+    let status_bar = Paragraph::new(status)
+        .style(Style::default().fg(Color::White).bg(Color::Blue))
+        .alignment(ratatui::layout::Alignment::Center);
+    f.render_widget(status_bar, chunks[2]);
 }
 
 // format_rate function removed as it's no longer used.

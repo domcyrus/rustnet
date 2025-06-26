@@ -139,14 +139,21 @@ fn run_app<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,
     mut app: app::App,
 ) -> Result<()> {
-    // Start the network capture in a separate thread
-    app.start_capture()?;
-    info!("Network capture started");
-
     let tick_rate = Duration::from_millis(app.config.refresh_interval); // Use configured refresh interval
     let mut last_tick = std::time::Instant::now();
+    let mut capture_started = false;
 
     loop {
+        // Start capture on first iteration (after UI is ready)
+        if !capture_started {
+            if let Err(err) = app.start_capture() {
+                error!("Failed to start network capture: {}", err);
+                // Continue anyway, some features may still work
+            }
+            info!("Network capture started");
+            capture_started = true;
+        }
+
         // Draw the UI
         terminal.draw(|f| {
             if let Err(err) = ui::draw(f, &mut app) {

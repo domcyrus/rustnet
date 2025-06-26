@@ -1,5 +1,4 @@
 use anyhow::Result;
-use std::net::SocketAddr;
 use std::process::Command;
 
 use super::{Connection, ConnectionState, NetworkMonitor, Process, Protocol};
@@ -47,17 +46,9 @@ impl NetworkMonitor {
                 // Remove quotes
                 let name = parts[0].trim_matches('"').to_string();
 
-                // Parse memory usage
-                let mem_str = parts.get(4).unwrap_or(&"").trim_matches('"');
-                let memory_usage = parse_windows_memory(mem_str);
-
                 return Some(Process {
                     pid,
                     name,
-                    command_line: None, // Would need another command to get this
-                    user: None,         // Would need another command to get this
-                    cpu_usage: None,
-                    memory_usage,
                 });
             }
         }
@@ -66,13 +57,13 @@ impl NetworkMonitor {
     }
 
     /// Get connections from netstat command
-    fn get_connections_from_netstat(&self, connections: &mut Vec<Connection>) -> Result<()> {
+    pub(super) fn get_connections_from_netstat(&self, connections: &mut Vec<Connection>) -> Result<()> {
         let output = Command::new("netstat").args(["-ano"]).output()?;
 
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
 
-            for line in text.lines().skip(2) {
+            for line in text.lines().skip(4) {
                 // Skip headers
                 let fields: Vec<&str> = line.split_whitespace().collect();
                 if fields.len() < 5 {
@@ -111,8 +102,8 @@ impl NetworkMonitor {
                 let remote_idx = 2;
 
                 if let (Some(local), Some(remote)) = (
-                    self.parse_addr(fields[local_idx]),
-                    self.parse_addr(fields[remote_idx]),
+                    super::parse_addr(fields[local_idx]),
+                    super::parse_addr(fields[remote_idx]),
                 ) {
                     let mut conn = Connection::new(protocol, local, remote, state);
 
@@ -183,10 +174,6 @@ pub(super) fn try_netstat_command(connection: &Connection) -> Option<Process> {
                         return Some(Process {
                             pid,
                             name,
-                            command_line: None,
-                            user: None,
-                            cpu_usage: None,
-                            memory_usage: None,
                         });
                     }
                 }
@@ -222,25 +209,4 @@ fn get_process_name_by_pid(pid: u32) -> Option<String> {
     let name = line[1..name_end].to_string();
 
     Some(name)
-}
-
-/// Parse Windows memory usage string (e.g., "8,432 K")
-pub(super) fn parse_windows_memory(mem_str: &str) -> Option<u64> {
-    let mem_str = mem_str.replace(',', "");
-    let parts: Vec<&str> = mem_str.split_whitespace().collect();
-
-    if parts.len() == 2 {
-        if let Ok(value) = parts[0].parse::<u64>() {
-            match parts[1].trim() {
-                "K" => Some(value * 1024),
-                "M" => Some(value * 1024 * 1024),
-                "G" => Some(value * 1024 * 1024 * 1024),
-                _ => Some(value),
-            }
-        } else {
-            None
-        }
-    } else {
-        None
-    }
 }

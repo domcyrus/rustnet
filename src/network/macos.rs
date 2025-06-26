@@ -1,66 +1,10 @@
 use anyhow::Result;
-use log::{debug, info, warn};
+use log::debug;
 use std::collections::HashSet;
-use std::net::IpAddr;
+use std::net::SocketAddr;
 use std::process::Command;
 
 use super::{Connection, ConnectionState, NetworkMonitor, Process, Protocol};
-
-/// Get IP addresses associated with an interface
-pub fn get_interface_addresses(interface: &str) -> Result<Vec<IpAddr>> {
-    let mut addresses = Vec::new();
-
-    // Use ifconfig to get interface IP addresses on macOS
-    let output = Command::new("ifconfig").arg(interface).output()?;
-
-    if output.status.success() {
-        let text = String::from_utf8_lossy(&output.stdout);
-        debug!("ifconfig output for {}: {}", interface, text);
-
-        // Parse IPv4 addresses
-        for line in text.lines() {
-            if line.contains("inet ") && !line.contains("127.0.0.1") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let Ok(ip) = parts[1].parse() {
-                        debug!("Found IPv4 address: {}", ip);
-                        addresses.push(ip);
-                    }
-                }
-            }
-            // Parse IPv6 addresses
-            else if line.contains("inet6 ") && !line.contains("::1") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let Ok(ip) = parts[1].parse() {
-                        debug!("Found IPv6 address: {}", ip);
-                        addresses.push(ip);
-                    }
-                }
-            }
-        }
-    } else {
-        warn!("ifconfig command failed for interface {}", interface);
-        // Try fallback with ipconfig getifaddr
-        if let Ok(output) = Command::new("ipconfig")
-            .args(["getifaddr", interface])
-            .output()
-        {
-            if output.status.success() {
-                let ip_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if let Ok(ip) = ip_str.parse() {
-                    addresses.push(ip);
-                }
-            }
-        }
-    }
-
-    // Add loopback addresses for completeness
-    addresses.push("127.0.0.1".parse().unwrap());
-    addresses.push("::1".parse().unwrap());
-
-    Ok(addresses)
-}
 
 /// Get platform-specific connections for macOS
 pub fn get_platform_connections(
@@ -80,65 +24,12 @@ pub fn get_platform_connections(
         connections.len() - before_count
     );
 
-    // Filter by interface if specified
-    if let Some(iface) = &monitor.interface {
-        debug!("Filtering connections for interface: {}", iface);
-        let connection_count_before = connections.len();
-
-        // Get interface addresses
-        let interface_addresses = match get_interface_addresses(iface) {
-            Ok(addrs) => {
-                debug!(
-                    "Interface {} has {} addresses: {:?}",
-                    iface,
-                    addrs.len(),
-                    addrs
-                );
-                addrs
-            }
-            Err(e) => {
-                warn!("Failed to get addresses for interface {}: {}", iface, e);
-                Vec::new()
-            }
-        };
-
-        if !interface_addresses.is_empty() {
-            // Filter connections only if we found interface addresses
-            connections.retain(|conn| {
-                let local_ip = conn.local_addr.ip();
-                let is_interface_match = interface_addresses.iter().any(|&addr| local_ip == addr);
-                let is_unspecified = local_ip.is_unspecified();
-
-                is_interface_match || is_unspecified
-            });
-
-            info!(
-                "Interface filtering: {} -> {} connections for interface {}",
-                connection_count_before,
-                connections.len(),
-                iface
-            );
-        } else {
-            // If we couldn't get interface addresses, don't filter
-            info!(
-                "Could not determine IP addresses for interface {}, showing all connections",
-                iface
-            );
-        }
-    }
-
-    // If still no connections, try using ss command with less filtering
-    if connections.is_empty() {
-        debug!("No connections found with standard methods, trying alternative approaches");
-        monitor.get_connections_from_ss(connections)?;
-    }
-
     Ok(())
 }
 
 impl NetworkMonitor {
     /// Get connections from lsof command
-    fn get_connections_from_lsof(&self, connections: &mut Vec<Connection>) -> Result<()> {
+    pub(super) fn get_connections_from_lsof(&self, connections: &mut Vec<Connection>) -> Result<()> {
         // Track unique connections to avoid duplicates
         let mut seen_connections = HashSet::new();
         for conn in connections.iter() {
@@ -259,7 +150,7 @@ impl NetworkMonitor {
     }
 
     /// Get connections from netstat command
-    fn get_connections_from_netstat(&self, connections: &mut Vec<Connection>) -> Result<()> {
+    pub(super) fn get_connections_from_netstat(&self, connections: &mut Vec<Connection>) -> Result<()> {
         // Track unique connections to avoid duplicates
         let mut seen_connections = HashSet::new();
 
@@ -267,22 +158,6 @@ impl NetworkMonitor {
         let output = Command::new("netstat")
             .args(["-anv", "-p", "tcp"])
             .output()?;
-
-        /* potential output
-        netstat -anv -p tcp
-        Active Internet connections (including servers)
-        Proto Recv-Q Send-Q  Local Address          Foreign Address        (state)          rxbytes      txbytes  rhiwat  shiwat    pid   epid state  options           gencnt    flags   flags1 usecnt rtncnt fltrs
-        tcp4       0      0  127.0.0.1.52734        127.0.0.1.51321        ESTABLISHED         4080         1732  406848  146988  82345      0 00102 00000004 0000000001becd9c 00000080 01000900      1      0 000000
-        tcp4       0      0  127.0.0.1.51321        127.0.0.1.52734        ESTABLISHED         3984         1780 6291456 6291456      0      0 00082 00000008 0000000001becd9b 00000882 04100900      1      0 000000
-        tcp4       0      0  192.168.0.174.51320    140.82.114.25.443      ESTABLISHED         9134        16292  131072  132432  62474      0 00102 00000008 0000000001beca47 00000080 04000900      1      0 000000
-        tcp4       0      0  192.168.0.174.51309    140.82.114.25.443      ESTABLISHED         8988         4658  131072  132432  62474      0 00102 00000008 0000000001beb124 00000080 04000900      1      0 000000
-        tcp4       0      0  192.168.0.174.51301    3.233.158.31.443       ESTABLISHED        11354         9972  131072  131100  62474      0 00102 00000000 0000000001be9d00 00000080 04000900      1      0 000000
-        tcp4       0      0  192.168.0.174.51291    54.171.126.41.443      ESTABLISHED         7490         1526  131072  131768  62474      0 00102 00000008 0000000001be9a45 00000080 04000900      1      0 000000
-        tcp4       0      0  192.168.0.174.51192    54.171.126.41.443      ESTABLISHED         7438         1533  131072  131768  62474      0 00102 00000008 0000000001be80a3 00000080 04000900      1      0 000000
-        tcp4       0      0  192.168.0.174.51123    18.194.226.249.443     ESTABLISHED       252210       516756  131072  131072  62474      0 00102 00000000 0000000001b9f8e7 00000080 04000900      1      0 000000
-        tcp4       0      0  192.168.0.174.51121    18.196.224.240.443     ESTABLISHED       343870      1519981  131072  131072  62474      0 00102 00000000 0000000001b9f8cc 00000080 04000900      1      0 000000
-        tcp4       0      0  192.168.0.174.51120    75.2.108.140.443       ESTABLISHED       463676       210134  131072  131072  62474      0 00102 00000000 0000000001b9f813 00000080 04000900      1      0 000000
-         */
 
         if output.status.success() {
             let text = String::from_utf8_lossy(&output.stdout);
@@ -392,195 +267,69 @@ impl NetworkMonitor {
 
         Ok(())
     }
+}
 
-    /// Try ss command as an alternative (if available on system)
-    fn get_connections_from_ss(&self, connections: &mut Vec<Connection>) -> Result<()> {
-        // Check if ss command is available
-        let ss_check = Command::new("which").arg("ss").output();
-        if ss_check.is_err() || !ss_check.unwrap().status.success() {
-            debug!("ss command not available");
-            return Ok(());
-        }
-
-        let mut seen_connections = HashSet::new();
-        for conn in connections.iter() {
-            let key = format!(
-                "{:?}:{}-{:?}:{}",
-                conn.protocol, conn.local_addr, conn.protocol, conn.remote_addr
-            );
-            seen_connections.insert(key);
-        }
-
-        // Try ss command for TCP
-        if let Ok(output) = Command::new("ss").args(["-tn"]).output() {
-            if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout);
-                for line in text.lines().skip(1) {
-                    // Skip header
-                    let fields: Vec<&str> = line.split_whitespace().collect();
-                    if fields.len() < 5 {
-                        continue;
-                    }
-
-                    // Extract state, local and remote addresses
-                    let state_str = fields[0];
-                    let local_addr_str = fields[3];
-                    let remote_addr_str = fields[4];
-
-                    if let (Some(local), Some(remote)) = (
-                        super::parse_addr(local_addr_str),
-                        super::parse_addr(remote_addr_str),
-                    ) {
-                        // Determine connection state
-                        let state = match state_str {
-                            "ESTAB" => ConnectionState::Established,
-                            "LISTEN" => ConnectionState::Listen,
-                            "TIME-WAIT" => ConnectionState::TimeWait,
-                            "CLOSE-WAIT" => ConnectionState::CloseWait,
-                            "SYN-SENT" => ConnectionState::SynSent,
-                            "SYN-RECV" => ConnectionState::SynReceived,
-                            "FIN-WAIT-1" => ConnectionState::FinWait1,
-                            "FIN-WAIT-2" => ConnectionState::FinWait2,
-                            "LAST-ACK" => ConnectionState::LastAck,
-                            "CLOSING" => ConnectionState::Closing,
-                            _ => ConnectionState::Unknown,
-                        };
-
-                        // Add connection if not already seen
-                        let conn_key = format!(
-                            "{:?}:{}-{:?}:{}",
-                            Protocol::TCP,
-                            local,
-                            Protocol::TCP,
-                            remote
-                        );
-
-                        if !seen_connections.contains(&conn_key) {
-                            connections.push(Connection::new(Protocol::TCP, local, remote, state));
-                            seen_connections.insert(conn_key);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Try ss command for UDP
-        if let Ok(output) = Command::new("ss").args(["-un"]).output() {
-            if output.status.success() {
-                let text = String::from_utf8_lossy(&output.stdout);
-                for line in text.lines().skip(1) {
-                    // Skip header
-                    let fields: Vec<&str> = line.split_whitespace().collect();
-                    if fields.len() < 4 {
-                        continue;
-                    }
-
-                    // Extract local address
-                    let local_addr_str = fields[3];
-
-                    if let Some(local) = super::parse_addr(local_addr_str) {
-                        // Use 0.0.0.0:0 as remote for UDP
-                        let remote = if local.ip().is_ipv4() {
-                            "0.0.0.0:0".parse().unwrap()
-                        } else {
-                            "[::]:0".parse().unwrap()
-                        };
-
-                        // Add connection if not already seen
-                        let conn_key = format!(
-                            "{:?}:{}-{:?}:{}",
-                            Protocol::UDP,
-                            local,
-                            Protocol::UDP,
-                            remote
-                        );
-
-                        if !seen_connections.contains(&conn_key) {
-                            connections.push(Connection::new(
-                                Protocol::UDP,
-                                local,
-                                remote,
-                                ConnectionState::Unknown,
-                            ));
-                            seen_connections.insert(conn_key);
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(())
+/// Parses the NAME field of lsof output to extract local and remote addresses.
+pub(super) fn parse_lsof_addrs(addr_field: &str) -> Option<(SocketAddr, SocketAddr)> {
+    if let Some(arrow_idx) = addr_field.find("->") {
+        let local_str = &addr_field[..arrow_idx];
+        let remote_str = &addr_field[arrow_idx + 2..];
+        let local_addr = super::parse_addr(local_str)?;
+        let remote_addr = super::parse_addr(remote_str)?;
+        Some((local_addr, remote_addr))
+    } else {
+        let local_addr = super::parse_addr(addr_field)?;
+        let remote_addr = "0.0.0.0:0".parse().ok()?;
+        Some((local_addr, remote_addr))
     }
 }
 
 /// Get process information using lsof command
 pub(super) fn try_lsof_command(connection: &Connection) -> Option<Process> {
-    // Build lsof command with specific filters
-    let local_port = connection.local_addr.port();
-    let is_listening = connection.state == ConnectionState::Listen;
+    let proto_arg = match connection.protocol {
+        Protocol::TCP => "TCP",
+        Protocol::UDP => "UDP",
+        Protocol::ICMP => return None,
+    };
 
-    // Different command based on whether it's LISTEN or ESTABLISHED
-    let args;
-    let port_spec;
-
-    if is_listening {
-        port_spec = format!(":{}", local_port);
-        args = vec!["-i", &port_spec, "-n", "-P"];
-    } else {
-        let remote_port = connection.remote_addr.port();
-        if remote_port == 0 {
-            port_spec = format!(":{}", local_port);
-            args = vec!["-i", &port_spec, "-n", "-P"];
-        } else {
-            port_spec = format!(":{}->{}", local_port, remote_port);
-            args = vec!["-i", &port_spec, "-n", "-P"];
-        }
-    }
-
-    let output = Command::new("lsof").args(&args).output().ok()?;
+    let output = Command::new("lsof")
+        .args(["-i", proto_arg, "-n", "-P"])
+        .output()
+        .ok()?;
 
     if output.status.success() {
         let text = String::from_utf8_lossy(&output.stdout);
         for line in text.lines().skip(1) {
-            // Skip header
             let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 2 {
+            if fields.len() < 9 {
                 continue;
             }
 
-            // Get process name and PID
-            let process_name = fields[0].to_string();
-            if let Ok(pid) = fields[1].parse::<u32>() {
-                // Try to get user
-                let user = if fields.len() > 2 {
-                    Some(fields[2].to_string())
-                } else {
-                    None
-                };
+            if let Some((lsof_local, lsof_remote)) = parse_lsof_addrs(fields[8]) {
+                let c = connection;
+                let match1 = c.local_addr == lsof_local && c.remote_addr == lsof_remote;
+                let match2 = c.local_addr == lsof_remote && c.remote_addr == lsof_local;
 
-                return Some(Process {
-                    pid,
-                    name: process_name,
-                });
+                if match1 || match2 {
+                    if let Ok(pid) = fields[1].parse::<u32>() {
+                        return Some(Process {
+                            pid,
+                            name: fields[0].to_string(),
+                        });
+                    }
+                }
             }
         }
     }
-
-    // If we couldn't find it with lsof, try alternate methods
     None
 }
 
 /// Get process information using netstat command
 pub(super) fn try_netstat_command(connection: &Connection) -> Option<Process> {
-    // macOS netstat doesn't show process info directly
-    // We need to use a combination with ps
-
-    // First try lsof as that works best
     if let Some(process) = try_lsof_command(connection) {
         return Some(process);
     }
 
-    // If lsof failed, try netstat -p tcp -v which shows PIDs on newer macOS
     let output = Command::new("netstat")
         .args(["-p", "tcp", "-v"])
         .output()
@@ -592,27 +341,24 @@ pub(super) fn try_netstat_command(connection: &Connection) -> Option<Process> {
         let remote_port = connection.remote_addr.port();
 
         for line in text.lines().skip(2) {
-            // Skip headers
             let fields: Vec<&str> = line.split_whitespace().collect();
             if fields.len() < 9 {
-                // Need at least 9 fields for PID
                 continue;
             }
 
-            // Check if local port matches
-            if let Some(local_addr) = fields.get(3) {
-                if local_addr.contains(&format!(":{}", local_port))
-                    && (remote_port == 0
-                        || fields
-                            .get(4)
-                            .map_or(false, |addr| addr.contains(&format!(":{}", remote_port))))
-                {
-                    // Try to get PID from the field where it's usually stored
-                    if let Some(pid_str) = fields.get(8) {
-                        if let Ok(pid) = pid_str.parse::<u32>() {
-                            // Now get process name using ps
-                            return get_process_name_by_pid(pid)
-                                .map(|name| Process { pid, name: name });
+            if let Some(local_addr_str) = fields.get(3) {
+                if let Some(remote_addr_str) = fields.get(4) {
+                    if let (Some(local_addr), Some(remote_addr)) = (
+                        super::parse_addr(local_addr_str),
+                        super::parse_addr(remote_addr_str),
+                    ) {
+                        if local_addr.port() == local_port && remote_addr.port() == remote_port {
+                            if let Some(pid_str) = fields.get(8) {
+                                if let Ok(pid) = pid_str.parse::<u32>() {
+                                    return get_process_name_by_pid(pid)
+                                        .map(|name| Process { pid, name });
+                                }
+                            }
                         }
                     }
                 }
@@ -642,3 +388,4 @@ pub(super) fn get_process_name_by_pid(pid: u32) -> Option<String> {
         Some(name.to_string())
     }
 }
+

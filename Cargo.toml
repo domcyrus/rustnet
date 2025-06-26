@@ -1,23 +1,21 @@
 [package]
 name = "rustnet"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 anyhow = "1.0"
-chrono = "0.4"
-clap = { version = "4.0", features = ["derive"] }
-crossterm = "0.27"
-dns-lookup = "2.0.4"
+arboard = "3.5"
+crossterm = "0.29"
+dns-lookup = "2.0"
 log = "0.4"
-maxminddb = "0.24"
-pcap = "2.0"
+pcap = "2.2"
 pnet_datalink = "0.35"
-ratatui = { version = "0.26", features = ["crossterm"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9"
+clap = { version = "4.5", features = ["derive"] }
+simple-logging = "2.0.2"
 simplelog = "0.12"
-arboard = "3.4.0" # For clipboard access
+chrono = "0.4"
+ratatui = { version = "0.29.0", features = ["all-widgets"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.16"
