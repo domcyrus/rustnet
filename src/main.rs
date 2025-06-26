@@ -139,12 +139,19 @@ fn run_app<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,
     mut app: app::App,
 ) -> Result<()> {
-    let tick_rate = Duration::from_millis(app.config.refresh_interval); // Use configured refresh interval
+    let tick_rate = Duration::from_millis(200); // Faster refresh for better loading animation
     let mut last_tick = std::time::Instant::now();
     let mut capture_started = false;
 
     loop {
-        // Start capture on first iteration (after UI is ready)
+        // Draw the UI first to show loading screen immediately
+        terminal.draw(|f| {
+            if let Err(err) = ui::draw(f, &mut app) {
+                error!("UI draw error: {}", err);
+            }
+        })?;
+
+        // Start capture on first iteration (after first UI render)
         if !capture_started {
             if let Err(err) = app.start_capture() {
                 error!("Failed to start network capture: {}", err);
@@ -154,20 +161,26 @@ fn run_app<B: ratatui::prelude::Backend>(
             capture_started = true;
         }
 
-        // Draw the UI
-        terminal.draw(|f| {
-            if let Err(err) = ui::draw(f, &mut app) {
-                error!("UI draw error: {}", err);
-            }
-        })?;
-
         // Handle timeout (for periodic UI updates)
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or(Duration::from_secs(0));
 
-        // Handle input events
-        if crossterm::event::poll(timeout)? {
+        // Update app state on tick (especially important during loading for spinner animation)
+        let should_tick = last_tick.elapsed() >= tick_rate;
+        if should_tick {
+            app.on_tick()?;
+            last_tick = std::time::Instant::now();
+        }
+
+        // Handle input events (use shorter timeout during loading for responsive spinner)
+        let input_timeout = if app.is_loading { 
+            Duration::from_millis(100) 
+        } else { 
+            timeout 
+        };
+        
+        if crossterm::event::poll(input_timeout)? {
             if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
                 // Handle key event
                 if let Some(action) = app.handle_key(key) {
@@ -184,12 +197,6 @@ fn run_app<B: ratatui::prelude::Backend>(
                     }
                 }
             }
-        }
-
-        // Update app state on tick
-        if last_tick.elapsed() >= tick_rate {
-            app.on_tick()?;
-            last_tick = std::time::Instant::now();
         }
     }
 

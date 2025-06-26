@@ -61,7 +61,9 @@ const PROCESS_INFO_UPDATE_INTERVAL: Duration = Duration::from_secs(5);
 impl App {
     pub fn new(config: Config, i18n: I18n) -> Result<Self> {
         log::info!("App::new - Starting application initialization");
+        let monitor_start = std::time::Instant::now();
         let monitor = NetworkMonitor::new(config.interface.clone(), config.filter_localhost)?;
+        log::info!("App::new - NetworkMonitor created in {:?}", monitor_start.elapsed());
         let app = Self {
             config,
             i18n,
@@ -89,9 +91,10 @@ impl App {
 
     pub fn start_capture(&mut self) -> Result<()> {
         log::info!("App::start_capture - Starting network capture setup");
+        let start_time = std::time::Instant::now();
 
         // Update loading message
-        self.loading_message = "Discovering network connections...".to_string();
+        self.loading_message = "Starting background threads...".to_string();
 
         // --- Packet Capture Thread ---
         let (packet_tx, packet_rx) = mpsc::channel::<Vec<u8>>();
@@ -111,7 +114,10 @@ impl App {
         thread::spawn(move || {
             log::info!("Starting connection management thread");
             
-            // Do immediate initial connection discovery
+            // Add a small delay to let the UI render first
+            thread::sleep(Duration::from_millis(100));
+            
+            // Do initial connection discovery
             log::info!("Performing initial connection discovery...");
             match monitor_clone.lock().unwrap().get_connections() {
                 Ok(initial_conns) => {
@@ -180,11 +186,10 @@ impl App {
             }
         });
 
-        log::info!("App::start_capture - All threads started");
+        log::info!("App::start_capture - All threads started in {:?}", start_time.elapsed());
         
-        // Mark loading as complete
-        self.is_loading = false;
-        self.loading_message.clear();
+        // Don't mark loading as complete here - let the background thread discovery do that
+        self.loading_message = "Threads started, discovering connections...".to_string();
         
         Ok(())
     }
