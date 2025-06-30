@@ -206,13 +206,13 @@ fn draw_connections_list(
 ) {
     let widths = [
         Constraint::Length(4),  // Protocol (TCP/UDP fits in 4)
-        Constraint::Length(20), // Local Address (optimized)
-        Constraint::Length(26), // Remote Address (optimized) 
+        Constraint::Length(18), // Local Address (slightly reduced)
+        Constraint::Length(22), // Remote Address (slightly reduced) 
         Constraint::Length(8),  // State (EST/LIS/etc fit in 8)
         Constraint::Length(8),  // Service (port names fit in 8)
-        Constraint::Length(30), // DPI/Application (EXPANDED for hostnames!)
-        Constraint::Length(14), // Bandwidth (compressed format)
-        Constraint::Min(8),     // Process (truncated)
+        Constraint::Length(25), // DPI/Application (slightly reduced)
+        Constraint::Length(12), // Bandwidth (slightly reduced)
+        Constraint::Min(20),    // Process (much more space!)
     ];
 
     let header_cells = [
@@ -246,16 +246,16 @@ fn draw_connections_list(
             let process_str = conn.process_name.clone().unwrap_or_else(|| "-".to_string());
             let process_display = if conn.pid.is_some() {
                 let full_display = format!("{} ({})", process_str, pid_str);
-                // Truncate process display to fit in column (roughly 8 chars available)
-                if full_display.len() > 8 {
-                    format!("{:.5}...", &full_display)
+                // Truncate process display to fit in column (roughly 20+ chars available)
+                if full_display.len() > 25 {
+                    format!("{}...", &full_display[..22])
                 } else {
                     full_display
                 }
             } else {
                 // Truncate process name if no PID
-                if process_str.len() > 8 {
-                    format!("{:.5}...", process_str)
+                if process_str.len() > 25 {
+                    format!("{}...", &process_str[..22])
                 } else {
                     process_str
                 }
