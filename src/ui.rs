@@ -44,6 +44,7 @@ pub struct UIState {
     pub selected_tab: usize,
     pub selected_connection_key: Option<String>,
     pub show_help: bool,
+    pub quit_confirmation: bool,
 }
 
 impl UIState {
@@ -111,6 +112,7 @@ impl Default for UIState {
             selected_tab: 0,
             selected_connection_key: None,
             show_help: false,
+            quit_confirmation: false,
         }
     }
 }
@@ -147,7 +149,7 @@ pub fn draw(
         _ => {}
     }
 
-    draw_status_bar(f, connections.len(), chunks[2]);
+    draw_status_bar(f, ui_state, connections.len(), chunks[2]);
 
     Ok(())
 }
@@ -637,8 +639,12 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("q, Ctrl+C ", Style::default().fg(Color::Yellow)),
-            Span::raw("Quit application"),
+            Span::styled("q ", Style::default().fg(Color::Yellow)),
+            Span::raw("Quit application (press twice to confirm)"),
+        ]),
+        Line::from(vec![
+            Span::styled("Ctrl+C ", Style::default().fg(Color::Yellow)),
+            Span::raw("Quit immediately"),
         ]),
         Line::from(vec![
             Span::styled("Tab ", Style::default().fg(Color::Yellow)),
@@ -676,14 +682,24 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
 }
 
 /// Draw status bar
-fn draw_status_bar(f: &mut Frame, connection_count: usize, area: Rect) {
-    let status = format!(
-        " Press 'h' for help | Connections: {} | Tab to switch views ",
-        connection_count
-    );
+fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, area: Rect) {
+    let status = if ui_state.quit_confirmation {
+        " Press 'q' again to quit or any other key to cancel ".to_string()
+    } else {
+        format!(
+            " Press 'h' for help | Connections: {} | Tab to switch views ",
+            connection_count
+        )
+    };
+
+    let style = if ui_state.quit_confirmation {
+        Style::default().fg(Color::Black).bg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::White).bg(Color::Blue)
+    };
 
     let status_bar = Paragraph::new(status)
-        .style(Style::default().fg(Color::White).bg(Color::Blue))
+        .style(style)
         .alignment(ratatui::layout::Alignment::Left);
 
     f.render_widget(status_bar, area);

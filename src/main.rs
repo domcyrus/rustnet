@@ -165,19 +165,32 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                 use crossterm::event::{KeyCode, KeyModifiers};
 
                 match (key.code, key.modifiers) {
-                    // Quit
-                    (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                        info!("User requested application exit");
+                    // Quit with confirmation
+                    (KeyCode::Char('q'), _) => {
+                        if ui_state.quit_confirmation {
+                            info!("User confirmed application exit");
+                            break;
+                        } else {
+                            info!("User requested quit - showing confirmation");
+                            ui_state.quit_confirmation = true;
+                        }
+                    }
+
+                    // Ctrl+C always quits immediately
+                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                        info!("User requested immediate exit with Ctrl+C");
                         break;
                     }
 
                     // Tab navigation
                     (KeyCode::Tab, _) => {
+                        ui_state.quit_confirmation = false;
                         ui_state.selected_tab = (ui_state.selected_tab + 1) % 3;
                     }
 
                     // Help toggle
                     (KeyCode::Char('h'), _) => {
+                        ui_state.quit_confirmation = false;
                         ui_state.show_help = !ui_state.show_help;
                         if ui_state.show_help {
                             ui_state.selected_tab = 2; // Switch to help tab
@@ -188,15 +201,18 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
 
                     // Navigation in connection list
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                        ui_state.quit_confirmation = false;
                         ui_state.move_selection_up(&connections);
                     }
 
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                        ui_state.quit_confirmation = false;
                         ui_state.move_selection_down(&connections);
                     }
 
                     // Enter to view details
                     (KeyCode::Enter, _) => {
+                        ui_state.quit_confirmation = false;
                         if ui_state.selected_tab == 0 && !connections.is_empty() {
                             ui_state.selected_tab = 1; // Switch to details view
                         }
@@ -204,6 +220,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
 
                     // Escape to go back
                     (KeyCode::Esc, _) => {
+                        ui_state.quit_confirmation = false;
                         if ui_state.selected_tab == 1 {
                             ui_state.selected_tab = 0; // Back to overview
                         } else if ui_state.selected_tab == 2 {
@@ -211,7 +228,10 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         }
                     }
 
-                    _ => {}
+                    // Any other key resets quit confirmation
+                    _ => {
+                        ui_state.quit_confirmation = false;
+                    }
                 }
             }
         }
