@@ -20,6 +20,37 @@ impl std::fmt::Display for Protocol {
     }
 }
 
+impl std::fmt::Display for ApplicationProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApplicationProtocol::Http(info) => {
+                if let Some(host) = &info.host {
+                    write!(f, "HTTP ({})", host)
+                } else {
+                    write!(f, "HTTP")
+                }
+            }
+            ApplicationProtocol::Https(info) => {
+                if let Some(sni) = &info.sni {
+                    write!(f, "HTTPS ({})", sni)
+                } else {
+                    write!(f, "HTTPS")
+                }
+            }
+            ApplicationProtocol::Dns(info) => {
+                if let Some(query) = &info.query_name {
+                    write!(f, "DNS ({})", query)
+                } else {
+                    write!(f, "DNS")
+                }
+            }
+            ApplicationProtocol::Ssh => write!(f, "SSH"),
+            ApplicationProtocol::Quic => write!(f, "QUIC"),
+            ApplicationProtocol::Unknown => write!(f, "-"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
     Listen,

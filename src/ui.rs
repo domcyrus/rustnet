@@ -147,11 +147,12 @@ fn draw_connections_list(
 ) {
     let widths = [
         Constraint::Length(6),  // Protocol
-        Constraint::Length(28), // Local Address
-        Constraint::Length(38), // Remote Address
+        Constraint::Length(24), // Local Address (reduced)
+        Constraint::Length(32), // Remote Address (reduced)
         Constraint::Length(12), // State
         Constraint::Length(10), // Service
-        Constraint::Length(22), // Bandwidth
+        Constraint::Length(16), // DPI/Application
+        Constraint::Length(18), // Bandwidth (reduced)
         Constraint::Min(10),    // Process
     ];
 
@@ -161,6 +162,7 @@ fn draw_connections_list(
         "Remote Address",
         "State",
         "Service",
+        "Application",
         "Down / Up",
         "Process",
     ]
@@ -191,6 +193,12 @@ fn draw_connections_list(
 
             let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
 
+            // DPI/Application protocol display
+            let dpi_display = match &conn.dpi_info {
+                Some(dpi) => dpi.application.to_string(),
+                None => "-".to_string(),
+            };
+
             let incoming_rate = format_rate(conn.current_incoming_rate_bps);
             let outgoing_rate = format_rate(conn.current_outgoing_rate_bps);
             let bandwidth_display = format!("{} / {}", incoming_rate, outgoing_rate);
@@ -201,6 +209,7 @@ fn draw_connections_list(
                 Cell::from(conn.remote_addr.to_string()),
                 Cell::from(conn.state()),
                 Cell::from(service_display),
+                Cell::from(dpi_display),
                 Cell::from(bandwidth_display),
                 Cell::from(process_display),
             ];
@@ -385,6 +394,63 @@ fn draw_connection_details(
         Span::styled("Service: ", Style::default().fg(Color::Yellow)),
         Span::raw(conn.service_name.clone().unwrap_or_else(|| "-".to_string())),
     ]));
+
+    // Add DPI information
+    match &conn.dpi_info {
+        Some(dpi) => {
+            details_text.push(Line::from(vec![
+                Span::styled("Application: ", Style::default().fg(Color::Yellow)),
+                Span::raw(dpi.application.to_string()),
+            ]));
+
+            // Add protocol-specific details
+            match &dpi.application {
+                crate::network::types::ApplicationProtocol::Http(info) => {
+                    if let Some(method) = &info.method {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  HTTP Method: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(method.clone()),
+                        ]));
+                    }
+                    if let Some(path) = &info.path {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  HTTP Path: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(path.clone()),
+                        ]));
+                    }
+                    if let Some(status) = info.status_code {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  HTTP Status: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(status.to_string()),
+                        ]));
+                    }
+                }
+                crate::network::types::ApplicationProtocol::Https(info) => {
+                    if let Some(version) = &info.version {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  TLS Version: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(format!("{:?}", version)),
+                        ]));
+                    }
+                }
+                crate::network::types::ApplicationProtocol::Dns(info) => {
+                    if let Some(query_type) = &info.query_type {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  DNS Type: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(format!("{:?}", query_type)),
+                        ]));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None => {
+            details_text.push(Line::from(vec![
+                Span::styled("Application: ", Style::default().fg(Color::Yellow)),
+                Span::raw("-".to_string()),
+            ]));
+        }
+    }
 
     let details = Paragraph::new(details_text)
         .block(
