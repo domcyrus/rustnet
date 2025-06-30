@@ -42,15 +42,74 @@ pub fn restore_terminal<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>
 /// UI state for managing the interface
 pub struct UIState {
     pub selected_tab: usize,
-    pub selected_connection: usize,
+    pub selected_connection_key: Option<String>,
     pub show_help: bool,
+}
+
+impl UIState {
+    /// Get the current selected connection index, if any
+    pub fn get_selected_index(&self, connections: &[Connection]) -> Option<usize> {
+        if let Some(ref selected_key) = self.selected_connection_key {
+            connections.iter()
+                .position(|conn| conn.key() == *selected_key)
+        } else if !connections.is_empty() {
+            Some(0) // Default to first connection
+        } else {
+            None
+        }
+    }
+
+    /// Set the selected connection to the one at the given index
+    pub fn set_selected_by_index(&mut self, connections: &[Connection], index: usize) {
+        if let Some(conn) = connections.get(index) {
+            self.selected_connection_key = Some(conn.key());
+        }
+    }
+
+    /// Move selection up by one position
+    pub fn move_selection_up(&mut self, connections: &[Connection]) {
+        if connections.is_empty() {
+            return;
+        }
+
+        let current_index = self.get_selected_index(connections).unwrap_or(0);
+        if current_index > 0 {
+            self.set_selected_by_index(connections, current_index - 1);
+        }
+    }
+
+    /// Move selection down by one position
+    pub fn move_selection_down(&mut self, connections: &[Connection]) {
+        if connections.is_empty() {
+            return;
+        }
+
+        let current_index = self.get_selected_index(connections).unwrap_or(0);
+        if current_index < connections.len().saturating_sub(1) {
+            self.set_selected_by_index(connections, current_index + 1);
+        }
+    }
+
+    /// Ensure we have a valid selection when connections list changes
+    pub fn ensure_valid_selection(&mut self, connections: &[Connection]) {
+        if connections.is_empty() {
+            self.selected_connection_key = None;
+            return;
+        }
+
+        // If no selection or selection is no longer valid, select first connection
+        if self.selected_connection_key.is_none() || 
+           self.get_selected_index(connections).is_none() {
+            self.set_selected_by_index(connections, 0);
+        }
+    }
 }
 
 impl Default for UIState {
     fn default() -> Self {
         Self {
             selected_tab: 0,
-            selected_connection: 0,
+            selected_connection_key: None,
             show_help: false,
         }
     }
@@ -146,24 +205,24 @@ fn draw_connections_list(
     area: Rect,
 ) {
     let widths = [
-        Constraint::Length(6),  // Protocol
-        Constraint::Length(24), // Local Address (reduced)
-        Constraint::Length(32), // Remote Address (reduced)
-        Constraint::Length(12), // State
-        Constraint::Length(10), // Service
-        Constraint::Length(16), // DPI/Application
-        Constraint::Length(18), // Bandwidth (reduced)
-        Constraint::Min(10),    // Process
+        Constraint::Length(4),  // Protocol (TCP/UDP fits in 4)
+        Constraint::Length(20), // Local Address (optimized)
+        Constraint::Length(26), // Remote Address (optimized) 
+        Constraint::Length(8),  // State (EST/LIS/etc fit in 8)
+        Constraint::Length(8),  // Service (port names fit in 8)
+        Constraint::Length(30), // DPI/Application (EXPANDED for hostnames!)
+        Constraint::Length(14), // Bandwidth (compressed format)
+        Constraint::Min(8),     // Process (truncated)
     ];
 
     let header_cells = [
-        "Proto",
+        "Pro",           // Shortened
         "Local Address",
-        "Remote Address",
+        "Remote Address", 
         "State",
         "Service",
-        "Application",
-        "Down / Up",
+        "Application / Host",  // More descriptive for DPI
+        "Down/Up",            // Compressed
         "Process",
     ]
     .iter()
@@ -186,22 +245,82 @@ fn draw_connections_list(
 
             let process_str = conn.process_name.clone().unwrap_or_else(|| "-".to_string());
             let process_display = if conn.pid.is_some() {
-                format!("{} ({})", process_str, pid_str)
+                let full_display = format!("{} ({})", process_str, pid_str);
+                // Truncate process display to fit in column (roughly 8 chars available)
+                if full_display.len() > 8 {
+                    format!("{:.5}...", &full_display)
+                } else {
+                    full_display
+                }
             } else {
-                process_str
+                // Truncate process name if no PID
+                if process_str.len() > 8 {
+                    format!("{:.5}...", process_str)
+                } else {
+                    process_str
+                }
             };
 
+            // Truncate service name to fit in 8 chars
             let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
+            let service_display = if service_display.len() > 8 {
+                format!("{:.5}...", service_display)
+            } else {
+                service_display
+            };
 
-            // DPI/Application protocol display
+            // DPI/Application protocol display (enhanced for hostnames)
             let dpi_display = match &conn.dpi_info {
-                Some(dpi) => dpi.application.to_string(),
+                Some(dpi) => {
+                    match &dpi.application {
+                        crate::network::types::ApplicationProtocol::Http(info) => {
+                            if let Some(host) = &info.host {
+                                // Limit hostname to 28 chars to fit in 30-char column
+                                if host.len() > 28 {
+                                    format!("HTTP {:.25}...", host)
+                                } else {
+                                    format!("HTTP {}", host)
+                                }
+                            } else {
+                                "HTTP".to_string()
+                            }
+                        }
+                        crate::network::types::ApplicationProtocol::Https(info) => {
+                            if let Some(sni) = &info.sni {
+                                // Limit SNI to 26 chars to fit "HTTPS " prefix
+                                if sni.len() > 24 {
+                                    format!("HTTPS {:.21}...", sni)
+                                } else {
+                                    format!("HTTPS {}", sni)
+                                }
+                            } else {
+                                "HTTPS".to_string()
+                            }
+                        }
+                        crate::network::types::ApplicationProtocol::Dns(info) => {
+                            if let Some(query) = &info.query_name {
+                                // Limit query to 26 chars to fit "DNS " prefix  
+                                if query.len() > 26 {
+                                    format!("DNS {:.23}...", query)
+                                } else {
+                                    format!("DNS {}", query)
+                                }
+                            } else {
+                                "DNS".to_string()
+                            }
+                        }
+                        crate::network::types::ApplicationProtocol::Ssh => "SSH".to_string(),
+                        crate::network::types::ApplicationProtocol::Quic => "QUIC".to_string(),
+                        crate::network::types::ApplicationProtocol::Unknown => "-".to_string(),
+                    }
+                }
                 None => "-".to_string(),
             };
 
-            let incoming_rate = format_rate(conn.current_incoming_rate_bps);
-            let outgoing_rate = format_rate(conn.current_outgoing_rate_bps);
-            let bandwidth_display = format!("{} / {}", incoming_rate, outgoing_rate);
+            // Compact bandwidth display to fit in 14 chars
+            let incoming_rate = format_rate_compact(conn.current_incoming_rate_bps);
+            let outgoing_rate = format_rate_compact(conn.current_outgoing_rate_bps);
+            let bandwidth_display = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
 
             let cells = [
                 Cell::from(conn.protocol.to_string()),
@@ -219,12 +338,8 @@ fn draw_connections_list(
 
     // Create table state with current selection
     let mut state = ratatui::widgets::TableState::default();
-    if !connections.is_empty() {
-        state.select(Some(
-            ui_state
-                .selected_connection
-                .min(connections.len().saturating_sub(1)),
-        ));
+    if let Some(selected_index) = ui_state.get_selected_index(connections) {
+        state.select(Some(selected_index));
     }
 
     let connections_table = Table::new(rows, &widths)
@@ -343,9 +458,7 @@ fn draw_connection_details(
         return Ok(());
     }
 
-    let conn_idx = ui_state
-        .selected_connection
-        .min(connections.len().saturating_sub(1));
+    let conn_idx = ui_state.get_selected_index(connections).unwrap_or(0);
     let conn = &connections[conn_idx];
 
     let chunks = Layout::default()
@@ -628,6 +741,25 @@ fn format_rate(bytes_per_second: f64) -> String {
         format!("{:.2} KB/s", bytes_per_second / KB_PER_SEC)
     } else if bytes_per_second > 0.0 {
         format!("{:.0} B/s", bytes_per_second)
+    } else {
+        "-".to_string()
+    }
+}
+
+/// Format rate to compact form for tight spaces
+fn format_rate_compact(bytes_per_second: f64) -> String {
+    const KB_PER_SEC: f64 = 1024.0;
+    const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
+    const GB_PER_SEC: f64 = MB_PER_SEC * 1024.0;
+
+    if bytes_per_second >= GB_PER_SEC {
+        format!("{:.1}G", bytes_per_second / GB_PER_SEC)
+    } else if bytes_per_second >= MB_PER_SEC {
+        format!("{:.1}M", bytes_per_second / MB_PER_SEC)
+    } else if bytes_per_second >= KB_PER_SEC {
+        format!("{:.0}K", bytes_per_second / KB_PER_SEC)
+    } else if bytes_per_second > 0.0 {
+        format!("{:.0}B", bytes_per_second)
     } else {
         "-".to_string()
     }

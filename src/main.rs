@@ -139,6 +139,9 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
         let connections = app.get_connections();
         let stats = app.get_stats();
 
+        // Ensure we have a valid selection (handles connection removals)
+        ui_state.ensure_valid_selection(&connections);
+
         // Draw the UI
         terminal.draw(|f| {
             if let Err(err) = ui::draw(f, app, &ui_state, &connections, &stats) {
@@ -185,17 +188,11 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
 
                     // Navigation in connection list
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                        if !connections.is_empty() && ui_state.selected_connection > 0 {
-                            ui_state.selected_connection -= 1;
-                        }
+                        ui_state.move_selection_up(&connections);
                     }
 
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                        if !connections.is_empty()
-                            && ui_state.selected_connection < connections.len().saturating_sub(1)
-                        {
-                            ui_state.selected_connection += 1;
-                        }
+                        ui_state.move_selection_down(&connections);
                     }
 
                     // Enter to view details

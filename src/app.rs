@@ -440,8 +440,8 @@ impl App {
                     .filter(|conn| conn.is_active())
                     .collect();
 
-                // Sort by last activity
-                snapshot_data.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+                // Sort by creation time (oldest first, newest last for maximum stability)
+                snapshot_data.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
                 let filtered_count = snapshot_data.len();
 
