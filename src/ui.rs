@@ -1,10 +1,10 @@
 use anyhow::Result;
 use ratatui::{
+    Frame, Terminal as RatatuiTerminal,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap},
-    Frame, Terminal as RatatuiTerminal,
 };
 // Removed unused import: use std::collections::HashMap;
 use std::net::SocketAddr; // Import SocketAddr
@@ -181,7 +181,7 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
             Cell::from(conn.protocol.to_string()),
             Cell::from(local_display),
             Cell::from(remote_display),
-            Cell::from(conn.state.to_string()),
+            Cell::from(conn.state()),
             Cell::from(service_display),
             Cell::from(bandwidth_display), // Updated Cell
             Cell::from(process_display),
@@ -381,7 +381,7 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
             format!("{}: ", app.i18n.get("state")),
             Style::default().fg(Color::Yellow),
         ),
-        Span::raw(conn.state.to_string()),
+        Span::raw(conn.state()),
     ]));
 
     details_text.push(Line::from(vec![
@@ -579,7 +579,11 @@ fn draw_loading_screen(f: &mut Frame, app: &App) {
 
     // Draw header
     let header = Paragraph::new("RustNet - Network Monitor")
-        .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
         .alignment(ratatui::layout::Alignment::Center)
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(header, chunks[0]);
@@ -602,13 +606,15 @@ fn draw_loading_screen(f: &mut Frame, app: &App) {
             Span::styled(&app.loading_message, Style::default().fg(Color::White)),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("Please wait while we discover network connections", Style::default().fg(Color::Cyan)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Please wait while we discover network connections",
+            Style::default().fg(Color::Cyan),
+        )]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("This may take 10-30 seconds depending on your system", Style::default().fg(Color::DarkGray)),
-        ]),
+        Line::from(vec![Span::styled(
+            "This may take 10-30 seconds depending on your system",
+            Style::default().fg(Color::DarkGray),
+        )]),
     ];
 
     let loading_paragraph = Paragraph::new(loading_text)

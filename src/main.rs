@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::{Arg, Command};
-use log::{error, info, LevelFilter};
+use log::{LevelFilter, error, info};
 use ratatui::prelude::CrosstermBackend;
 use simplelog::{Config as LogConfig, WriteLogger};
 use std::fs::{self, File};
@@ -174,12 +174,12 @@ fn run_app<B: ratatui::prelude::Backend>(
         }
 
         // Handle input events (use shorter timeout during loading for responsive spinner)
-        let input_timeout = if app.is_loading { 
-            Duration::from_millis(100) 
-        } else { 
-            timeout 
+        let input_timeout = if app.is_loading {
+            Duration::from_millis(100)
+        } else {
+            timeout
         };
-        
+
         if crossterm::event::poll(input_timeout)? {
             if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
                 // Handle key event
@@ -187,13 +187,13 @@ fn run_app<B: ratatui::prelude::Backend>(
                     match action {
                         app::Action::Quit => {
                             info!("User requested application exit");
+                            app.shutdown();
                             break;
                         }
                         app::Action::Refresh => {
                             info!("User requested refresh");
                             app.refresh()?;
-                        }
-                        // Add more actions as needed
+                        } // Add more actions as needed
                     }
                 }
             }

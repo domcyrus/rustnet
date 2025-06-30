@@ -17,7 +17,6 @@ A cross-platform network monitoring tool built with Rust and TUI interface.
 ### Prerequisites
 
 - Rust and Cargo (install from [rustup.rs](https://rustup.rs/))
-- For GeoIP lookup: MaxMind GeoLite2 City database (place `GeoLite2-City.mmdb` in the application directory)
 
 ### Building from source
 
@@ -112,7 +111,10 @@ RustNet attempts to identify the process associated with each network connection
 - **Windows**: Uses `netstat` command or Windows API
 - **macOS**: Uses `lsof` command or `netstat`
 
+## TODOs
+
 ### GeoIP Lookup
+For GeoIP lookup: MaxMind GeoLite2 City database (place `GeoLite2-City.mmdb` in the application directory)
 
 When a MaxMind GeoLite2 City database is available, RustNet can display geographical information about remote IP addresses. To use this feature:
 

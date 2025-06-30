@@ -1,366 +1,153 @@
+// linux.rs
 use anyhow::Result;
-use log::{debug, error, info};
-use pnet_datalink;
-use std::net::{IpAddr, SocketAddr};
-use std::process::Command;
+use std::collections::HashMap;
+use std::fs;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use super::{Connection, ConnectionState, NetworkMonitor, Process, Protocol};
+use super::{Connection, Protocol, ProtocolState};
 
-/// Get platform-specific connections for Linux
-pub fn get_platform_connections(
-    monitor: &NetworkMonitor,
-    connections: &mut Vec<Connection>,
-) -> Result<()> {
-    debug!("Attempting to get connections using platform-specific methods");
+/// Get connections with process information from /proc
+pub fn get_connections_with_process_info(connections: &mut Vec<Connection>) -> Result<()> {
+    // Parse TCP connections
+    parse_proc_net_file("/proc/net/tcp", Protocol::TCP, connections)?;
+    parse_proc_net_file("/proc/net/tcp6", Protocol::TCP, connections)?;
 
-    info!("Running ss command to get TCP connections...");
-    if let Err(e) = monitor.get_connections_from_ss(connections) {
-        error!("Error running ss command: {}", e);
+    // Parse UDP connections
+    parse_proc_net_file("/proc/net/udp", Protocol::UDP, connections)?;
+    parse_proc_net_file("/proc/net/udp6", Protocol::UDP, connections)?;
+
+    // Build a map of inodes to process info
+    let inode_to_process = build_inode_to_process_map()?;
+
+    // Enrich connections with process info
+    for conn in connections.iter_mut() {
+        if let Some(inode) = get_socket_inode(conn) {
+            if let Some((pid, name)) = inode_to_process.get(&inode) {
+                conn.pid = Some(*pid);
+                conn.process_name = Some(name.clone());
+            }
+        }
     }
-
-    info!("Running netstat command to get UDP connections...");
-    if let Err(e) = monitor.get_connections_from_netstat(connections) {
-        error!("Error running netstat command: {}", e);
-    }
-
-    debug!(
-        "Found {} connections from command output",
-        connections.len()
-    );
 
     Ok(())
 }
 
-impl NetworkMonitor {
-    pub(super) fn get_linux_process_for_connection(
-        &self,
-        connection: &Connection,
-    ) -> Option<Process> {
-        if let Some(process) = try_ss_command(connection) {
-            return Some(process);
-        }
-
-        if let Some(process) = try_netstat_command(connection) {
-            return Some(process);
-        }
-
-        try_proc_parsing(connection)
-    }
-
-    fn get_connections_from_ss(&self, connections: &mut Vec<Connection>) -> Result<()> {
-        debug!("Executing 'ss -tupn' to get TCP/UDP connections.");
-        let cmd_output = Command::new("ss").args(["-tupn"]).output();
-
-        match cmd_output {
-            Ok(output) => {
-                if output.status.success() {
-                    let text = String::from_utf8_lossy(&output.stdout);
-                    for line in text.lines().skip(1) {
-                        let fields: Vec<&str> = line.split_whitespace().collect();
-                        if fields.len() < 5 {
-                            continue;
-                        }
-
-                        let protocol = match fields[0] {
-                            "tcp" | "tcp6" => Protocol::TCP,
-                            "udp" | "udp6" => Protocol::UDP,
-                            _ => continue,
-                        };
-
-                        let state_str = if fields.len() > 1 { fields[1] } else { "" };
-                        let state = match state_str {
-                            "ESTAB" => ConnectionState::Established,
-                            "LISTEN" => ConnectionState::Listen,
-                            "TIME-WAIT" => ConnectionState::TimeWait,
-                            "CLOSE-WAIT" => ConnectionState::CloseWait,
-                            "SYN-SENT" => ConnectionState::SynSent,
-                            "SYN-RECV" => ConnectionState::SynReceived,
-                            "FIN-WAIT-1" => ConnectionState::FinWait1,
-                            "FIN-WAIT-2" => ConnectionState::FinWait2,
-                            "LAST-ACK" => ConnectionState::LastAck,
-                            "CLOSING" => ConnectionState::Closing,
-                            "UNCONN" if protocol == Protocol::UDP => ConnectionState::Established,
-                            _ => ConnectionState::Unknown,
-                        };
-
-                        if fields.len() < 6 {
-                            continue;
-                        }
-
-                        if let (Some(local), Some(remote)) =
-                            (super::parse_addr(fields[4]), super::parse_addr(fields[5]))
-                        {
-                            let mut conn = Connection::new(protocol, local, remote, state);
-
-                            if fields.len() >= 7 {
-                                let process_info = fields[6];
-                                if let Some(pid_start) = process_info.find("pid=") {
-                                    let pid_part = &process_info[pid_start + 4..];
-                                    if let Some(pid_end) = pid_part.find(',') {
-                                        if let Ok(pid) = pid_part[..pid_end].parse::<u32>() {
-                                            conn.pid = Some(pid);
-                                            if let Some(name_start) = process_info.find("users:((\"") {
-                                                let name_part = &process_info[name_start + 9..];
-                                                if let Some(name_end) = name_part.find('"') {
-                                                    conn.process_name = Some(name_part[..name_end].to_string());
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            connections.push(conn);
-                        }
-                    }
-                } else {
-                    let stderr_text = String::from_utf8_lossy(&output.stderr);
-                    error!(
-                        "'ss -tupn' command failed with status {}. Stderr: {}",
-                        output.status, stderr_text
-                    );
-                }
-            }
-            Err(e) => {
-                error!("Failed to execute 'ss -tupn' command: {}", e);
-                return Err(e.into());
-            }
-        }
-        Ok(())
-    }
-
-    fn get_connections_from_netstat(&self, connections: &mut Vec<Connection>) -> Result<()> {
-        debug!("Executing 'netstat -tupn' as supplementary/fallback.");
-        let cmd_output = Command::new("netstat").args(["-tupn"]).output();
-
-        match cmd_output {
-            Ok(output) => {
-                if output.status.success() {
-                    let text = String::from_utf8_lossy(&output.stdout);
-                    for line in text.lines().skip(2) {
-                        let fields: Vec<&str> = line.split_whitespace().collect();
-                        if fields.len() < 5 {
-                            continue;
-                        }
-
-                        let protocol = match fields[0].to_lowercase().as_str() {
-                            "tcp" | "tcp6" => Protocol::TCP,
-                            "udp" | "udp6" => Protocol::UDP,
-                            _ => continue,
-                        };
-
-                        let state = if fields.len() > 5 {
-                            match fields[5] {
-                                "ESTABLISHED" => ConnectionState::Established,
-                                "LISTENING" | "LISTEN" => ConnectionState::Listen,
-                                "TIME_WAIT" => ConnectionState::TimeWait,
-                                "CLOSE_WAIT" => ConnectionState::CloseWait,
-                                "SYN_SENT" => ConnectionState::SynSent,
-                                "SYN_RECEIVED" | "SYN_RECV" => ConnectionState::SynReceived,
-                                "FIN_WAIT_1" => ConnectionState::FinWait1,
-                                "FIN_WAIT_2" => ConnectionState::FinWait2,
-                                "LAST_ACK" => ConnectionState::LastAck,
-                                "CLOSING" => ConnectionState::Closing,
-                                _ => ConnectionState::Unknown,
-                            }
-                        } else {
-                            ConnectionState::Unknown
-                        };
-
-                        if let (Some(local), Some(remote)) = (
-                            super::parse_addr(fields[3]),
-                            super::parse_addr(fields[4]),
-                        ) {
-                            let mut conn = Connection::new(protocol, local, remote, state);
-
-                            if fields.len() > 6 && fields[6] != "-" {
-                                let pid_str_parts: Vec<&str> = fields[6].split('/').collect();
-                                if let Ok(pid) = pid_str_parts[0].parse::<u32>() {
-                                    conn.pid = Some(pid);
-                                    if pid_str_parts.len() > 1 && pid_str_parts[1] != "-" {
-                                        conn.process_name = Some(pid_str_parts[1].to_string());
-                                    }
-                                }
-                            }
-                            connections.push(conn);
-                        }
-                    }
-                } else {
-                    let stderr_text = String::from_utf8_lossy(&output.stderr);
-                    error!(
-                        "'netstat -tupn' command failed with status {}. Stderr: {}",
-                        output.status, stderr_text
-                    );
-                }
-            }
-            Err(e) => {
-                error!("Failed to execute 'netstat -tupn' command: {}", e);
-                return Err(e.into());
-            }
-        }
-        Ok(())
-    }
-}
-
-fn try_ss_command(connection: &Connection) -> Option<Process> {
-    let proto_flag = match connection.protocol {
-        Protocol::TCP => "-t",
-        Protocol::UDP => "-u",
-        Protocol::ICMP => return None,
+/// Parse a /proc/net file and add connections
+fn parse_proc_net_file(
+    path: &str,
+    protocol: Protocol,
+    connections: &mut Vec<Connection>,
+) -> Result<()> {
+    let content = match fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()), // File might not exist
     };
 
-    let local_port = connection.local_addr.port();
-    let remote_port = connection.remote_addr.port();
+    for (i, line) in content.lines().enumerate() {
+        if i == 0 {
+            continue; // Skip header
+        }
 
-    let output = Command::new("ss")
-        .args([proto_flag, "-p", "-n", "sport", &format!(":{}", local_port)])
-        .output()
-        .ok()?;
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 10 {
+            continue;
+        }
 
-    if output.status.success() {
-        let text = String::from_utf8_lossy(&output.stdout);
+        // Parse local address
+        let local_addr = match parse_hex_address(parts[1]) {
+            Some(addr) => addr,
+            None => continue,
+        };
 
-        for line in text.lines().skip(1) {
-            if line.contains(&format!(":{}", local_port))
-                && line.contains(&format!(":{}", remote_port))
-            {
-                if let Some(pid_start) = line.find("pid=") {
-                    let pid_part = &line[pid_start + 4..];
-                    if let Some(pid_end) = pid_part.find(',') {
-                        if let Ok(pid) = pid_part[..pid_end].parse::<u32>() {
-                            let name = if let Some(name_start) = line.find("users:(") {
-                                let name_part = &line[name_start + 7..];
-                                if let Some(name_end) = name_part.find(',') {
-                                    let raw_name = &name_part[..name_end];
-                                    raw_name
-                                        .trim_start_matches("(\"")
-                                        .trim_end_matches('"')
-                                        .to_string()
-                                } else {
-                                    format!("process-{}", pid)
-                                }
-                            } else {
-                                format!("process-{}", pid)
-                            };
+        // Parse remote address
+        let remote_addr = match parse_hex_address(parts[2]) {
+            Some(addr) => addr,
+            None => continue,
+        };
 
-                            return Some(Process { pid, name });
-                        }
-                    }
-                }
-                break;
+        // Create a basic connection with minimal state
+        let state = match protocol {
+            Protocol::TCP => ProtocolState::Tcp(super::TcpState::Established),
+            Protocol::UDP => ProtocolState::Udp,
+            _ => continue,
+        };
+
+        let mut conn = Connection::new(protocol, local_addr, remote_addr, state);
+
+        // Try to get inode from column 9 (0-indexed)
+        if parts.len() > 9 {
+            if let Ok(inode) = parts[9].parse::<u64>() {
+                // Store inode temporarily (we'll use a hack here - store in bytes_sent)
+                conn.bytes_sent = inode;
             }
         }
+
+        connections.push(conn);
     }
 
-    None
+    Ok(())
 }
 
-fn try_netstat_command(connection: &Connection) -> Option<Process> {
-    let output = Command::new("netstat").args(["-tupn"]).output().ok()?;
-
-    if output.status.success() {
-        let text = String::from_utf8_lossy(&output.stdout);
-        let local_addr = format!("{}", connection.local_addr);
-        let remote_addr = format!("{}", connection.remote_addr);
-
-        for line in text.lines().skip(2) {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 5 {
-                continue;
-            }
-
-            let local_idx = 3;
-            let remote_idx = 4;
-            let proto_idx = 0;
-
-            let matches_protocol = match connection.protocol {
-                Protocol::TCP => {
-                    fields[proto_idx].eq_ignore_ascii_case("tcp")
-                        || fields[proto_idx].eq_ignore_ascii_case("tcp6")
-                }
-                Protocol::UDP => {
-                    fields[proto_idx].eq_ignore_ascii_case("udp")
-                        || fields[proto_idx].eq_ignore_ascii_case("udp6")
-                }
-                Protocol::ICMP => false,
-            };
-
-            if matches_protocol
-                && (fields[local_idx].contains(&local_addr)
-                    || fields[local_idx].contains(&format!(":{}", connection.local_addr.port())))
-                && (fields[remote_idx].contains(&remote_addr)
-                    || fields[remote_idx].contains(&format!(":{}", connection.remote_addr.port())))
-            {
-                let pid_pos = 6;
-                if fields.len() > pid_pos && fields[pid_pos] != "-" {
-                    if let Ok(pid) = fields[pid_pos].parse::<u32>() {
-                        let name = get_process_name_by_pid(pid)
-                            .unwrap_or_else(|| format!("process-{}", pid));
-
-                        return Some(Process { pid, name });
-                    }
-                }
-
-                break;
-            }
-        }
-    }
-
-    None
-}
-
-fn try_proc_parsing(connection: &Connection) -> Option<Process> {
-    let local_addr = match connection.local_addr.ip() {
-        std::net::IpAddr::V4(ip) => {
-            format!("{:X}", u32::from_be_bytes(ip.octets()))
-        }
-        std::net::IpAddr::V6(_) => {
-            return None;
-        }
-    };
-
-    let local_port = format!("{:X}", connection.local_addr.port());
-
-    let proc_path = if connection.protocol == Protocol::TCP {
-        if connection.local_addr.is_ipv4() {
-            "/proc/net/tcp"
-        } else {
-            "/proc/net/tcp6"
-        }
-    } else if connection.protocol == Protocol::UDP {
-        if connection.local_addr.is_ipv4() {
-            "/proc/net/udp"
-        } else {
-            "/proc/net/udp6"
-        }
-    } else {
+/// Parse hex address from /proc/net format
+fn parse_hex_address(hex_addr: &str) -> Option<SocketAddr> {
+    let parts: Vec<&str> = hex_addr.split(':').collect();
+    if parts.len() != 2 {
         return None;
-    };
+    }
 
-    if let Ok(contents) = std::fs::read_to_string(proc_path) {
-        for line in contents.lines().skip(1) {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 10 {
-                continue;
-            }
+    let ip_hex = parts[0];
+    let port = u16::from_str_radix(parts[1], 16).ok()?;
 
-            if let Some(colon_pos) = fields[1].rfind(':') {
-                let addr = &fields[1][..colon_pos];
-                let port = &fields[1][colon_pos + 1..];
+    // Determine if IPv4 or IPv6 based on length
+    if ip_hex.len() == 8 {
+        // IPv4
+        let ip_bytes = u32::from_str_radix(ip_hex, 16).ok()?;
+        let ip = Ipv4Addr::from(ip_bytes.to_le_bytes());
+        Some(SocketAddr::new(IpAddr::V4(ip), port))
+    } else if ip_hex.len() == 32 {
+        // IPv6
+        let mut bytes = [0u8; 16];
+        for i in 0..4 {
+            let chunk = &ip_hex[i * 8..(i + 1) * 8];
+            let value = u32::from_str_radix(chunk, 16).ok()?;
+            bytes[i * 4..(i + 1) * 4].copy_from_slice(&value.to_le_bytes());
+        }
+        let ip = Ipv6Addr::from(bytes);
+        Some(SocketAddr::new(IpAddr::V6(ip), port))
+    } else {
+        None
+    }
+}
 
-                if port == local_port && (addr == local_addr || addr == "00000000") {
-                    let inode = fields[9];
+/// Build a map of socket inodes to process information
+fn build_inode_to_process_map() -> Result<HashMap<u64, (u32, String)>> {
+    let mut inode_map = HashMap::new();
 
-                    if let Ok(entries) = std::fs::read_dir("/proc") {
-                        for entry in entries.flatten() {
-                            if let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() {
-                                let fd_path = entry.path().join("fd");
-                                if let Ok(fds) = std::fs::read_dir(fd_path) {
-                                    for fd in fds.flatten() {
-                                        if let Ok(target) = std::fs::read_link(fd.path()) {
-                                            if target.to_string_lossy().contains(&format!("socket:[{}]", inode)) {
-                                                return get_process_name_by_pid(pid)
-                                                    .map(|name| Process { pid, name });
-                                            }
+    // Iterate through /proc/[pid]/fd/
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let path = entry.path();
+
+        // Check if it's a PID directory
+        if let Some(pid_str) = path.file_name().and_then(|s| s.to_str()) {
+            if let Ok(pid) = pid_str.parse::<u32>() {
+                // Get process name
+                let comm_path = path.join("comm");
+                let process_name = fs::read_to_string(&comm_path)
+                    .unwrap_or_else(|_| "unknown".to_string())
+                    .trim()
+                    .to_string();
+
+                // Check all file descriptors
+                let fd_dir = path.join("fd");
+                if let Ok(fd_entries) = fs::read_dir(&fd_dir) {
+                    for fd_entry in fd_entries {
+                        if let Ok(fd_entry) = fd_entry {
+                            if let Ok(link) = fs::read_link(fd_entry.path()) {
+                                if let Some(link_str) = link.to_str() {
+                                    if link_str.starts_with("socket:[") {
+                                        if let Some(inode) = extract_socket_inode(link_str) {
+                                            inode_map.insert(inode, (pid, process_name.clone()));
                                         }
                                     }
                                 }
@@ -372,11 +159,25 @@ fn try_proc_parsing(connection: &Connection) -> Option<Process> {
         }
     }
 
-    None
+    Ok(inode_map)
 }
 
-fn get_process_name_by_pid(pid: u32) -> Option<String> {
-    std::fs::read_to_string(format!("/proc/{}/comm", pid))
-        .ok()
-        .map(|s| s.trim().to_string())
+/// Extract inode from socket link like "socket:[12345]"
+fn extract_socket_inode(link: &str) -> Option<u64> {
+    if link.starts_with("socket:[") && link.ends_with(']') {
+        let inode_str = &link[8..link.len() - 1];
+        inode_str.parse().ok()
+    } else {
+        None
+    }
+}
+
+/// Get socket inode for a connection
+fn get_socket_inode(conn: &Connection) -> Option<u64> {
+    // We stored the inode in bytes_sent temporarily
+    if conn.bytes_sent > 0 {
+        Some(conn.bytes_sent)
+    } else {
+        None
+    }
 }
