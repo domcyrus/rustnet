@@ -53,14 +53,18 @@ impl std::fmt::Display for ApplicationProtocol {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
+    #[allow(dead_code)]
     Listen,
     SynSent,
     SynReceived,
     Established,
     FinWait1,
     FinWait2,
+    #[allow(dead_code)]
     CloseWait,
+    #[allow(dead_code)]
     LastAck,
+    #[allow(dead_code)]
     TimeWait,
     Closing,
     Closed,
@@ -70,8 +74,14 @@ pub enum TcpState {
 pub enum ProtocolState {
     Tcp(TcpState),
     Udp,
-    Icmp { icmp_type: u8, icmp_code: u8 },
-    Arp { operation: ArpOperation },
+    Icmp {
+        icmp_type: u8,
+        #[allow(dead_code)]
+        icmp_code: u8,
+    },
+    Arp {
+        operation: ArpOperation,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +97,7 @@ pub enum ApplicationProtocol {
     Dns(DnsInfo),
     Ssh,
     Quic,
+    #[allow(dead_code)]
     Unknown,
 }
 
@@ -105,6 +116,7 @@ pub enum HttpVersion {
     Http10,
     Http11,
     Http2,
+    #[allow(dead_code)]
     Http3,
 }
 
@@ -113,11 +125,13 @@ pub struct TlsInfo {
     pub version: Option<TlsVersion>,
     pub sni: Option<String>,
     pub alpn: Vec<String>,
+    #[allow(dead_code)]
     pub cipher_suite: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsVersion {
+    #[allow(dead_code)]
     Ssl3,
     Tls10,
     Tls11,
@@ -129,6 +143,7 @@ pub enum TlsVersion {
 pub struct DnsInfo {
     pub query_name: Option<String>,
     pub query_type: Option<DnsQueryType>,
+    #[allow(dead_code)]
     pub response_ips: Vec<std::net::IpAddr>,
     pub is_response: bool,
 }
@@ -146,14 +161,19 @@ pub enum DnsQueryType {
 #[derive(Debug, Clone)]
 pub struct DpiInfo {
     pub application: ApplicationProtocol,
+    #[allow(dead_code)]
     pub first_packet_time: Instant,
+    #[allow(dead_code)]
     pub last_update_time: Instant,
 }
 
 #[derive(Debug, Clone)]
 pub struct RateInfo {
+    #[allow(dead_code)]
     pub incoming_bps: f64,
+    #[allow(dead_code)]
     pub outgoing_bps: f64,
+    #[allow(dead_code)]
     pub last_calculation: Instant,
 }
 
@@ -198,7 +218,9 @@ pub struct Connection {
     pub dpi_info: Option<DpiInfo>,
 
     // Performance metrics
+    #[allow(dead_code)]
     pub current_rate_bps: RateInfo,
+    #[allow(dead_code)]
     pub rtt_estimate: Option<Duration>,
 
     // Backward compatibility fields
@@ -247,15 +269,17 @@ impl Connection {
 
     /// Check if connection is active (had activity in the last minute)
     pub fn is_active(&self) -> bool {
-        self.last_activity.elapsed().unwrap_or_default() < Duration::from_secs(60)
+        self.last_activity.elapsed().unwrap_or_default() < Duration::from_secs(300)
     }
 
     /// Get the age of the connection
+    #[allow(dead_code)]
     pub fn age(&self) -> Duration {
         self.created_at.elapsed().unwrap_or_default()
     }
 
     /// Get time since last activity
+    #[allow(dead_code)]
     pub fn idle_time(&self) -> Duration {
         self.last_activity.elapsed().unwrap_or_default()
     }
@@ -280,6 +304,7 @@ impl Connection {
     }
 
     /// Update transfer rates
+    #[allow(dead_code)]
     pub fn update_rates(&mut self, new_sent: u64, new_received: u64) {
         let now = Instant::now();
         let elapsed = now

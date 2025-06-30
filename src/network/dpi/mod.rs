@@ -5,16 +5,14 @@ mod http;
 mod quic;
 mod tls;
 
-pub use dns::analyze_dns;
-pub use http::analyze_http;
-pub use quic::is_quic_packet;
-pub use tls::analyze_tls;
 
 /// Result of DPI analysis
 #[derive(Debug, Clone)]
 pub struct DpiResult {
     pub application: ApplicationProtocol,
-    pub confidence: f32,       // 0.0 to 1.0
+    #[allow(dead_code)]
+    pub confidence: f32,       // 0.0 to 1.0 (not used for merging per user request)
+    #[allow(dead_code)]
     pub needs_more_data: bool, // True if more packets would help
 }
 
@@ -23,7 +21,7 @@ pub fn analyze_tcp_packet(
     payload: &[u8],
     local_port: u16,
     remote_port: u16,
-    is_outgoing: bool,
+    _is_outgoing: bool,
 ) -> Option<DpiResult> {
     if payload.is_empty() {
         return None;
@@ -70,7 +68,7 @@ pub fn analyze_udp_packet(
     payload: &[u8],
     local_port: u16,
     remote_port: u16,
-    is_outgoing: bool,
+    _is_outgoing: bool,
 ) -> Option<DpiResult> {
     if payload.is_empty() {
         return None;

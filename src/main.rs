@@ -1,4 +1,5 @@
 use anyhow::Result;
+use arboard::Clipboard;
 use clap::{Arg, Command};
 use log::{LevelFilter, error, info};
 use ratatui::prelude::CrosstermBackend;
@@ -159,6 +160,13 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
             last_tick = std::time::Instant::now();
         }
 
+        // Clear clipboard message after timeout
+        if let Some((_, time)) = &ui_state.clipboard_message {
+            if time.elapsed().as_secs() >= 3 {
+                ui_state.clipboard_message = None;
+            }
+        }
+
         // Handle input events
         if crossterm::event::poll(timeout)? {
             if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
@@ -210,11 +218,58 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         ui_state.move_selection_down(&connections);
                     }
 
+                    // Page Up/Down navigation
+                    (KeyCode::PageUp, _) => {
+                        ui_state.quit_confirmation = false;
+                        // Move up by roughly 10 items (or adjust based on terminal height)
+                        ui_state.move_selection_page_up(&connections, 10);
+                    }
+
+                    (KeyCode::PageDown, _) => {
+                        ui_state.quit_confirmation = false;
+                        // Move down by roughly 10 items (or adjust based on terminal height)
+                        ui_state.move_selection_page_down(&connections, 10);
+                    }
+
                     // Enter to view details
                     (KeyCode::Enter, _) => {
                         ui_state.quit_confirmation = false;
                         if ui_state.selected_tab == 0 && !connections.is_empty() {
                             ui_state.selected_tab = 1; // Switch to details view
+                        }
+                    }
+
+                    // Copy remote address to clipboard
+                    (KeyCode::Char('c'), _) => {
+                        ui_state.quit_confirmation = false;
+                        if let Some(selected_idx) = ui_state.get_selected_index(&connections) {
+                            if let Some(conn) = connections.get(selected_idx) {
+                                let remote_addr = conn.remote_addr.to_string();
+                                match Clipboard::new() {
+                                    Ok(mut clipboard) => {
+                                        if let Err(e) = clipboard.set_text(&remote_addr) {
+                                            error!("Failed to copy to clipboard: {}", e);
+                                            ui_state.clipboard_message = Some((
+                                                format!("Failed to copy: {}", e),
+                                                std::time::Instant::now()
+                                            ));
+                                        } else {
+                                            info!("Copied {} to clipboard", remote_addr);
+                                            ui_state.clipboard_message = Some((
+                                                format!("Copied {} to clipboard", remote_addr),
+                                                std::time::Instant::now()
+                                            ));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to access clipboard: {}", e);
+                                        ui_state.clipboard_message = Some((
+                                            format!("Clipboard error: {}", e),
+                                            std::time::Instant::now()
+                                        ));
+                                    }
+                                }
+                            }
                         }
                     }
 

@@ -11,6 +11,7 @@ pub struct ServiceLookup {
     /// Map of (port, protocol) -> service name
     services: HashMap<(u16, Protocol), String>,
     /// Common alternative names for services
+    #[allow(dead_code)]
     aliases: HashMap<String, String>,
 }
 
@@ -139,6 +140,7 @@ impl ServiceLookup {
     }
 
     /// Look up service name with fallback to common names
+    #[allow(dead_code)]
     pub fn lookup_with_fallback(&self, port: u16, protocol: Protocol) -> Option<String> {
         if let Some(name) = self.lookup(port, protocol) {
             return Some(name.to_string());
@@ -155,6 +157,7 @@ impl ServiceLookup {
     }
 
     /// Get a display name for a service (formats well-known services better)
+    #[allow(dead_code)]
     pub fn display_name(&self, port: u16, protocol: Protocol) -> String {
         match self.lookup(port, protocol) {
             Some("http") => "HTTP".to_string(),
@@ -183,6 +186,7 @@ impl ServiceLookup {
     }
 
     /// Get all services for a specific protocol
+    #[allow(dead_code)]
     pub fn services_by_protocol(&self, protocol: Protocol) -> Vec<(u16, &str)> {
         let mut services: Vec<(u16, &str)> = self
             .services
@@ -201,11 +205,13 @@ impl ServiceLookup {
     }
 
     /// Get the number of services loaded
+    #[allow(dead_code)]
     pub fn len(&self) -> usize {
         self.services.len()
     }
 
     /// Check if the lookup table is empty
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.services.is_empty()
     }

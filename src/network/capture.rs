@@ -1,7 +1,6 @@
 // network/capture.rs - Packet capture setup and utilities
 use anyhow::{Result, anyhow};
 use pcap::{Active, Capture, Device, Error as PcapError};
-use std::time::Duration;
 
 /// Packet capture configuration
 #[derive(Debug, Clone)]
@@ -80,7 +79,7 @@ fn find_best_device() -> Result<Device> {
                         std::net::IpAddr::V4(v4) => {
                             !v4.is_link_local() && !v4.is_loopback() && !v4.is_unspecified()
                         }
-                        std::net::IpAddr::V6(v6) => false, // Skip IPv6 for now
+                        std::net::IpAddr::V6(_v6) => false, // Skip IPv6 for now
                     }
                 })
         })
@@ -145,7 +144,7 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     let device_name = device.name.clone();
 
     // Create capture handle
-    let mut cap = Capture::from_device(device)?
+    let cap = Capture::from_device(device)?
         .promisc(config.promiscuous)
         .snaplen(config.snaplen)
         .buffer_size(config.buffer_size)
@@ -222,7 +221,7 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                             std::net::IpAddr::V4(v4) => {
                                 !v4.is_link_local() && !v4.is_loopback() && !v4.is_unspecified()
                             }
-                            std::net::IpAddr::V6(v6) => false, // Skip IPv6 for now
+                            std::net::IpAddr::V6(_v6) => false, // Skip IPv6 for now
                         }
                     });
 
@@ -269,6 +268,7 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
 }
 
 /// List available capture devices
+#[allow(dead_code)]
 pub fn list_devices() -> Result<Vec<DeviceInfo>> {
     let devices = Device::list()?;
 
@@ -305,6 +305,7 @@ pub fn list_devices() -> Result<Vec<DeviceInfo>> {
 
 /// Information about a network device
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct DeviceInfo {
     pub name: String,
     pub description: Option<String>,
@@ -350,6 +351,7 @@ impl PacketReader {
 pub struct CaptureStats {
     pub received: u32,
     pub dropped: u32,
+    #[allow(dead_code)]
     pub if_dropped: u32,
 }
 
@@ -361,8 +363,8 @@ mod tests {
     fn test_default_config() {
         let config = CaptureConfig::default();
         assert!(config.promiscuous);
-        assert_eq!(config.snaplen, 1024);
-        assert!(config.filter.is_some());
+        assert_eq!(config.snaplen, 200);
+        assert!(config.filter.is_none()); // Default starts without filter
     }
 
     #[test]

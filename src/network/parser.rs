@@ -18,6 +18,7 @@ pub struct ParsedPacket {
 
 pub struct ParserConfig {
     pub enable_dpi: bool,
+    #[allow(dead_code)]
     pub dpi_packet_limit: usize, // Only inspect first N packets per connection
 }
 
@@ -37,6 +38,7 @@ pub struct PacketParser {
 }
 
 impl PacketParser {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         let mut local_ips = std::collections::HashSet::new();
         for iface in pnet_datalink::interfaces() {

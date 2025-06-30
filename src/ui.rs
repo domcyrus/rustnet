@@ -6,7 +6,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap},
 };
-use std::time::Instant;
 
 use crate::app::{App, AppStats};
 use crate::network::types::{Connection, Protocol};
@@ -45,6 +44,7 @@ pub struct UIState {
     pub selected_connection_key: Option<String>,
     pub show_help: bool,
     pub quit_confirmation: bool,
+    pub clipboard_message: Option<(String, std::time::Instant)>,
 }
 
 impl UIState {
@@ -76,6 +76,9 @@ impl UIState {
         let current_index = self.get_selected_index(connections).unwrap_or(0);
         if current_index > 0 {
             self.set_selected_by_index(connections, current_index - 1);
+        } else {
+            // Wrap around to the bottom
+            self.set_selected_by_index(connections, connections.len() - 1);
         }
     }
 
@@ -88,6 +91,38 @@ impl UIState {
         let current_index = self.get_selected_index(connections).unwrap_or(0);
         if current_index < connections.len().saturating_sub(1) {
             self.set_selected_by_index(connections, current_index + 1);
+        } else {
+            // Wrap around to the top
+            self.set_selected_by_index(connections, 0);
+        }
+    }
+
+    /// Move selection up by one page
+    pub fn move_selection_page_up(&mut self, connections: &[Connection], page_size: usize) {
+        if connections.is_empty() {
+            return;
+        }
+
+        let current_index = self.get_selected_index(connections).unwrap_or(0);
+        if current_index >= page_size {
+            self.set_selected_by_index(connections, current_index - page_size);
+        } else {
+            self.set_selected_by_index(connections, 0);
+        }
+    }
+
+    /// Move selection down by one page
+    pub fn move_selection_page_down(&mut self, connections: &[Connection], page_size: usize) {
+        if connections.is_empty() {
+            return;
+        }
+
+        let current_index = self.get_selected_index(connections).unwrap_or(0);
+        let new_index = current_index + page_size;
+        if new_index < connections.len() {
+            self.set_selected_by_index(connections, new_index);
+        } else {
+            self.set_selected_by_index(connections, connections.len() - 1);
         }
     }
 
@@ -113,6 +148,7 @@ impl Default for UIState {
             selected_connection_key: None,
             show_help: false,
             quit_confirmation: false,
+            clipboard_message: None,
         }
     }
 }
@@ -652,7 +688,15 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         ]),
         Line::from(vec![
             Span::styled("↑/k, ↓/j ", Style::default().fg(Color::Yellow)),
-            Span::raw("Navigate connections"),
+            Span::raw("Navigate connections (wraps around)"),
+        ]),
+        Line::from(vec![
+            Span::styled("Page Up/Down ", Style::default().fg(Color::Yellow)),
+            Span::raw("Navigate connections by page"),
+        ]),
+        Line::from(vec![
+            Span::styled("c ", Style::default().fg(Color::Yellow)),
+            Span::raw("Copy remote address to clipboard"),
         ]),
         Line::from(vec![
             Span::styled("Enter ", Style::default().fg(Color::Yellow)),
@@ -685,15 +729,28 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
 fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, area: Rect) {
     let status = if ui_state.quit_confirmation {
         " Press 'q' again to quit or any other key to cancel ".to_string()
+    } else if let Some((ref msg, ref time)) = ui_state.clipboard_message {
+        // Show clipboard message for 3 seconds
+        if time.elapsed().as_secs() < 3 {
+            format!(" {} ", msg)
+        } else {
+            format!(
+                " Press 'h' for help | 'c' to copy address | Connections: {} ",
+                connection_count
+            )
+        }
     } else {
         format!(
-            " Press 'h' for help | Connections: {} | Tab to switch views ",
+            " Press 'h' for help | 'c' to copy address | Connections: {} ",
             connection_count
         )
     };
 
     let style = if ui_state.quit_confirmation {
         Style::default().fg(Color::Black).bg(Color::Yellow)
+    } else if ui_state.clipboard_message.is_some() && 
+              ui_state.clipboard_message.as_ref().unwrap().1.elapsed().as_secs() < 3 {
+        Style::default().fg(Color::Black).bg(Color::Green)
     } else {
         Style::default().fg(Color::White).bg(Color::Blue)
     };

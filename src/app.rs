@@ -3,7 +3,6 @@ use anyhow::Result;
 use crossbeam::channel::{self, Receiver, Sender};
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -12,11 +11,11 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::network::{
     capture::{CaptureConfig, PacketReader, setup_packet_capture},
     merge::{
-        create_connection_from_packet, enrich_with_process_info, enrich_with_service_name,
+        create_connection_from_packet,
         merge_packet_into_connection,
     },
     parser::{PacketParser, ParsedPacket, ParserConfig},
-    platform::{ProcessLookup, create_process_lookup},
+    platform::create_process_lookup,
     services::ServiceLookup,
     types::Connection,
 };
@@ -548,7 +547,7 @@ impl App {
 fn update_connection(
     connections: &DashMap<String, Connection>,
     parsed: ParsedPacket,
-    stats: &AppStats,
+    _stats: &AppStats,
 ) {
     let key = parsed.connection_key.clone();
     let now = SystemTime::now();

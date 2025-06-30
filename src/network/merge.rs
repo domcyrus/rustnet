@@ -1,7 +1,7 @@
 // network/merge.rs - Connection merging and update utilities
 use crate::network::dpi::DpiResult;
 use crate::network::parser::ParsedPacket;
-use crate::network::types::{ApplicationProtocol, Connection, DpiInfo, RateInfo};
+use crate::network::types::{Connection, DpiInfo, RateInfo};
 use std::time::{Instant, SystemTime};
 
 /// Merge a parsed packet into an existing connection
@@ -77,47 +77,13 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                 last_update_time: Instant::now(),
             });
         }
-        Some(existing) => {
-            // Only update if new info has higher confidence or is more specific
-            if should_update_dpi(
-                &existing.application,
-                &dpi_result.application,
-                dpi_result.confidence,
-            ) {
-                conn.dpi_info = Some(DpiInfo {
-                    application: dpi_result.application.clone(),
-                    first_packet_time: existing.first_packet_time,
-                    last_update_time: Instant::now(),
-                });
-            }
-        }
-    }
-}
-
-/// Determine if we should update DPI info based on confidence and specificity
-fn should_update_dpi(
-    existing: &ApplicationProtocol,
-    new: &ApplicationProtocol,
-    new_confidence: f32,
-) -> bool {
-    // High confidence always wins
-    if new_confidence >= 0.95 {
-        return true;
-    }
-
-    // Specific protocols override Unknown
-    match (existing, new) {
-        (ApplicationProtocol::Unknown, _) => true,
-        (_, ApplicationProtocol::Unknown) => false,
-        // HTTPS is more specific than HTTP
-        (ApplicationProtocol::Http(_), ApplicationProtocol::Https(_)) => true,
-        (ApplicationProtocol::Https(_), ApplicationProtocol::Http(_)) => false,
-        // Otherwise, only update if confidence is good
-        _ => new_confidence >= 0.8,
+        // If we already have DPI info we don't want to overwrite it
+        _ => {}
     }
 }
 
 /// Enrich connection with process information
+#[allow(dead_code)]
 pub fn enrich_with_process_info(
     mut conn: Connection,
     pid: u32,
@@ -129,12 +95,14 @@ pub fn enrich_with_process_info(
 }
 
 /// Enrich connection with service name
+#[allow(dead_code)]
 pub fn enrich_with_service_name(mut conn: Connection, service_name: String) -> Connection {
     conn.service_name = Some(service_name);
     conn
 }
 
 /// Update connection rates based on current stats
+#[allow(dead_code)]
 pub fn update_connection_rates(mut conn: Connection, now: Instant) -> Connection {
     let elapsed = now
         .duration_since(conn.current_rate_bps.last_calculation)
@@ -157,6 +125,7 @@ pub fn update_connection_rates(mut conn: Connection, now: Instant) -> Connection
 }
 
 /// Merge two connections (useful for combining data from different sources)
+#[allow(dead_code)]
 pub fn merge_connections(mut primary: Connection, secondary: &Connection) -> Connection {
     // Use secondary's process info if primary doesn't have it
     if primary.pid.is_none() && secondary.pid.is_some() {
@@ -189,11 +158,7 @@ pub fn merge_connections(mut primary: Connection, secondary: &Connection) -> Con
     if let Some(secondary_dpi) = &secondary.dpi_info {
         match &primary.dpi_info {
             None => primary.dpi_info = Some(secondary_dpi.clone()),
-            Some(primary_dpi) => {
-                if should_update_dpi(&primary_dpi.application, &secondary_dpi.application, 0.9) {
-                    primary.dpi_info = Some(secondary_dpi.clone());
-                }
-            }
+            Some(_) => {}
         }
     }
 
@@ -201,11 +166,13 @@ pub fn merge_connections(mut primary: Connection, secondary: &Connection) -> Con
 }
 
 /// Check if two connections represent the same flow
+#[allow(dead_code)]
 pub fn connections_match(a: &Connection, b: &Connection) -> bool {
     a.protocol == b.protocol && a.local_addr == b.local_addr && a.remote_addr == b.remote_addr
 }
 
 /// Check if a connection matches a parsed packet
+#[allow(dead_code)]
 pub fn connection_matches_packet(conn: &Connection, parsed: &ParsedPacket) -> bool {
     conn.protocol == parsed.protocol
         && conn.local_addr == parsed.local_addr
