@@ -93,6 +93,9 @@ pub struct App {
 
     /// Loading state
     is_loading: Arc<AtomicBool>,
+
+    /// Current network interface name
+    current_interface: Arc<RwLock<Option<String>>>,
 }
 
 impl App {
@@ -111,6 +114,7 @@ impl App {
             service_lookup: Arc::new(service_lookup),
             stats: Arc::new(AppStats::default()),
             is_loading: Arc::new(AtomicBool::new(true)),
+            current_interface: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -177,11 +181,14 @@ impl App {
 
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
+        let current_interface = Arc::clone(&self.current_interface);
 
         thread::spawn(move || {
             match setup_packet_capture(capture_config) {
-                Ok(capture) => {
-                    info!("Packet capture started successfully");
+                Ok((capture, device_name)) => {
+                    // Store the actual interface name being used
+                    *current_interface.write().unwrap() = Some(device_name.clone());
+                    info!("Packet capture started successfully on interface: {}", device_name);
                     let mut reader = PacketReader::new(capture);
                     let mut packets_read = 0u64;
                     let mut last_log = Instant::now();
@@ -523,6 +530,11 @@ impl App {
     /// Check if application is still loading
     pub fn is_loading(&self) -> bool {
         self.is_loading.load(Ordering::Relaxed)
+    }
+
+    /// Get the current network interface name
+    pub fn get_current_interface(&self) -> Option<String> {
+        self.current_interface.read().unwrap().clone()
     }
 
     /// Stop all threads gracefully

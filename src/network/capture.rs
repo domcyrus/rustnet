@@ -132,7 +132,7 @@ fn find_best_device() -> Result<Device> {
 }
 
 /// Setup packet capture with the given configuration
-pub fn setup_packet_capture(config: CaptureConfig) -> Result<Capture<Active>> {
+pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, String)> {
     // Find the capture device
     let device = find_capture_device(&config.interface)?;
 
@@ -141,6 +141,8 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<Capture<Active>> {
         device.name,
         device.desc.as_deref().unwrap_or("no description")
     );
+
+    let device_name = device.name.clone();
 
     // Create capture handle
     let mut cap = Capture::from_device(device)?
@@ -161,7 +163,7 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<Capture<Active>> {
 
     // Note: We're not setting non-blocking mode as we're using timeout instead
 
-    Ok(cap)
+    Ok((cap, device_name))
 }
 
 /// Find a capture device by name or return the default

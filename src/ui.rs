@@ -82,7 +82,7 @@ pub fn draw(
     draw_tabs(f, ui_state, chunks[0]);
 
     match ui_state.selected_tab {
-        0 => draw_overview(f, ui_state, connections, stats, chunks[1])?,
+        0 => draw_overview(f, ui_state, connections, stats, app, chunks[1])?,
         1 => draw_connection_details(f, ui_state, connections, chunks[1])?,
         2 => draw_help(f, chunks[1])?,
         _ => {}
@@ -124,6 +124,7 @@ fn draw_overview(
     ui_state: &UIState,
     connections: &[Connection],
     stats: &AppStats,
+    app: &App,
     area: Rect,
 ) -> Result<()> {
     let chunks = Layout::default()
@@ -132,7 +133,7 @@ fn draw_overview(
         .split(area);
 
     draw_connections_list(f, ui_state, connections, chunks[0]);
-    draw_stats_panel(f, connections, stats, chunks[1])?;
+    draw_stats_panel(f, connections, stats, app, chunks[1])?;
 
     Ok(())
 }
@@ -235,13 +236,14 @@ fn draw_stats_panel(
     f: &mut Frame,
     connections: &[Connection],
     stats: &AppStats,
+    app: &App,
     area: Rect,
 ) -> Result<()> {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8), // Connection stats
-            Constraint::Min(0),    // Traffic stats
+            Constraint::Length(10), // Connection stats (increased for interface line)
+            Constraint::Min(0),     // Traffic stats
         ])
         .split(area);
 
@@ -255,7 +257,12 @@ fn draw_stats_panel(
         .filter(|c| c.protocol == Protocol::UDP)
         .count();
 
+    let interface_name = app.get_current_interface()
+        .unwrap_or_else(|| "Unknown".to_string());
+
     let conn_stats_text: Vec<Line> = vec![
+        Line::from(format!("Interface: {}", interface_name)),
+        Line::from(""),
         Line::from(format!("TCP Connections: {}", tcp_count)),
         Line::from(format!("UDP Connections: {}", udp_count)),
         Line::from(format!("Total Connections: {}", connections.len())),
