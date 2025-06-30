@@ -1,651 +1,561 @@
+// app.rs - Main application orchestration (with debug logging)
 use anyhow::Result;
-use arboard::Clipboard;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use log::error;
+use crossbeam::channel::{self, Receiver, Sender};
+use dashmap::DashMap;
+use log::{debug, error, info, warn};
 use std::collections::HashMap;
-use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
-use crate::config::Config;
-use crate::i18n::I18n;
-use crate::network::{self, Connection, NetworkMonitor, Process};
+use crate::network::{
+    capture::{CaptureConfig, PacketReader, setup_packet_capture},
+    merge::{
+        create_connection_from_packet, enrich_with_process_info, enrich_with_service_name,
+        merge_packet_into_connection,
+    },
+    parser::{PacketParser, ParsedPacket, ParserConfig},
+    platform::{ProcessLookup, create_process_lookup},
+    services::ServiceLookup,
+    types::Connection,
+};
 
-/// Application actions
-pub enum Action {
-    Quit,
-    Refresh,
+/// Application configuration
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// Network interface to capture from (None for default)
+    pub interface: Option<String>,
+    /// Filter localhost connections
+    pub filter_localhost: bool,
+    /// UI refresh interval in milliseconds
+    pub refresh_interval: u64,
+    /// Enable deep packet inspection
+    pub enable_dpi: bool,
+    /// Process lookup interval in seconds
+    pub process_lookup_interval: u64,
+    /// Connection timeout in seconds (remove inactive connections)
+    pub connection_timeout: u64,
+    /// BPF filter for packet capture
+    pub bpf_filter: Option<String>,
 }
 
-/// Application view modes
-pub enum ViewMode {
-    Overview,
-    ConnectionDetails,
-    Help,
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            interface: None,
+            filter_localhost: true,
+            refresh_interval: 1000,
+            enable_dpi: true,
+            process_lookup_interval: 2,
+            connection_timeout: 60,
+            bpf_filter: None, // No filter by default to see all packets
+        }
+    }
 }
 
-/// Fields that can be focused for copying in the Connection Details view
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DetailFocusField {
-    LocalIp,
-    RemoteIp,
+/// Application statistics
+#[derive(Debug)]
+pub struct AppStats {
+    pub packets_processed: AtomicU64,
+    pub packets_dropped: AtomicU64,
+    pub connections_tracked: AtomicU64,
+    pub last_update: RwLock<Instant>,
 }
 
-/// Application state
+impl Default for AppStats {
+    fn default() -> Self {
+        Self {
+            packets_processed: AtomicU64::new(0),
+            packets_dropped: AtomicU64::new(0),
+            connections_tracked: AtomicU64::new(0),
+            last_update: RwLock::new(Instant::now()),
+        }
+    }
+}
+
+/// Main application state
 pub struct App {
-    pub config: Config,
-    pub i18n: I18n,
-    pub mode: ViewMode,
-    network_monitor: Arc<Mutex<NetworkMonitor>>,
-    pub connections: Vec<Connection>,
-    pub processes: HashMap<u32, Process>,
-    pub selected_connection: Option<Connection>,
-    pub selected_connection_idx: usize,
-    pub show_locations: bool,
-    pub show_hostnames: bool,
-    connection_order: HashMap<String, usize>,
-    next_order_index: usize,
-    dns_cache: HashMap<IpAddr, String>,
-    connections_data_shared: Arc<Mutex<Vec<Connection>>>,
-    pub detail_focus: DetailFocusField,
-    processes_data_shared: Arc<Mutex<HashMap<u32, Process>>>,
-    pub is_loading: bool,
-    pub loading_message: String,
-    loading_spinner_index: usize,
-    should_stop: Arc<AtomicBool>,
-}
+    /// Configuration
+    config: Config,
 
-const PROCESS_INFO_UPDATE_INTERVAL: Duration = Duration::from_secs(5);
+    /// Control flag for graceful shutdown
+    should_stop: Arc<AtomicBool>,
+
+    /// Current connections snapshot for UI
+    connections_snapshot: Arc<RwLock<Vec<Connection>>>,
+
+    /// Service name lookup
+    service_lookup: Arc<ServiceLookup>,
+
+    /// Application statistics
+    stats: Arc<AppStats>,
+
+    /// Loading state
+    is_loading: Arc<AtomicBool>,
+}
 
 impl App {
-    pub fn new(config: Config, i18n: I18n) -> Result<Self> {
-        log::info!("App::new - Starting application initialization");
-        let monitor_start = std::time::Instant::now();
-        let monitor = NetworkMonitor::new(config.interface.clone(), config.filter_localhost)?;
-        log::info!(
-            "App::new - NetworkMonitor created in {:?}",
-            monitor_start.elapsed()
-        );
-        let app = Self {
+    /// Create a new application instance
+    pub fn new(config: Config) -> Result<Self> {
+        // Load service definitions
+        let service_lookup = ServiceLookup::from_file("/etc/services").unwrap_or_else(|e| {
+            warn!("Failed to load /etc/services: {}, using defaults", e);
+            ServiceLookup::with_defaults()
+        });
+
+        Ok(Self {
             config,
-            i18n,
-            mode: ViewMode::Overview,
-            network_monitor: Arc::new(Mutex::new(monitor)),
-            connections: Vec::new(),
-            processes: HashMap::new(),
-            selected_connection: None,
-            selected_connection_idx: 0,
-            show_locations: true,
-            show_hostnames: false,
-            connection_order: HashMap::new(),
-            next_order_index: 0,
-            dns_cache: HashMap::new(),
-            connections_data_shared: Arc::new(Mutex::new(Vec::new())),
-            processes_data_shared: Arc::new(Mutex::new(HashMap::new())),
-            detail_focus: DetailFocusField::LocalIp,
-            is_loading: true,
-            loading_message: "Initializing network monitor...".to_string(),
-            loading_spinner_index: 0,
             should_stop: Arc::new(AtomicBool::new(false)),
-        };
-        log::info!("App::new - Application initialized successfully");
-        Ok(app)
+            connections_snapshot: Arc::new(RwLock::new(Vec::new())),
+            service_lookup: Arc::new(service_lookup),
+            stats: Arc::new(AppStats::default()),
+            is_loading: Arc::new(AtomicBool::new(true)),
+        })
     }
 
-    pub fn start_capture(&mut self) -> Result<()> {
-        log::info!("App::start_capture - Starting network capture setup");
-        let start_time = std::time::Instant::now();
+    /// Start all background threads
+    pub fn start(&mut self) -> Result<()> {
+        info!("Starting network monitor application");
 
-        // Update loading message
-        self.loading_message = "Starting background threads...".to_string();
+        // Create shared connection map
+        let connections: Arc<DashMap<String, Connection>> = Arc::new(DashMap::new());
 
-        // --- Packet Capture Thread ---
-        let (packet_tx, packet_rx) = mpsc::channel::<Vec<u8>>();
-        let interface_name = self.config.interface.clone();
-        let should_stop_capture = Arc::clone(&self.should_stop);
+        // Start packet capture pipeline
+        self.start_packet_capture_pipeline(connections.clone())?;
+
+        // Start process enrichment thread
+        self.start_process_enrichment(connections.clone())?;
+
+        // Start snapshot provider for UI
+        self.start_snapshot_provider(connections.clone())?;
+
+        // Start cleanup thread
+        self.start_cleanup_thread(connections)?;
+
+        // Mark loading as complete after a short delay
+        let is_loading = Arc::clone(&self.is_loading);
         thread::spawn(move || {
-            log::info!("Starting packet capture thread");
-            if let Err(e) =
-                network::packet_capture_thread(interface_name, packet_tx, should_stop_capture)
-            {
-                error!(
-                    "Packet capture thread failed (this is normal if not running as root): {}",
-                    e
-                );
-                log::info!("Packet capture disabled, will rely on platform connections only");
-            }
+            thread::sleep(Duration::from_millis(500));
+            is_loading.store(false, Ordering::Relaxed);
         });
 
-        // --- Connection Management Thread ---
-        let monitor_clone: Arc<Mutex<NetworkMonitor>> = Arc::clone(&self.network_monitor);
-        let connections_shared_clone: Arc<Mutex<Vec<Connection>>> =
-            Arc::clone(&self.connections_data_shared);
-        let tick_rate = self.config.refresh_interval;
-        let should_stop_mgmt = Arc::clone(&self.should_stop);
+        Ok(())
+    }
+
+    /// Start packet capture and processing pipeline
+    fn start_packet_capture_pipeline(
+        &self,
+        connections: Arc<DashMap<String, Connection>>,
+    ) -> Result<()> {
+        // Create packet channel
+        let (packet_tx, packet_rx) = channel::unbounded();
+
+        // Start capture thread
+        self.start_capture_thread(packet_tx)?;
+
+        // Start multiple packet processing threads
+        let num_processors = thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(4);
+
+        for i in 0..num_processors {
+            self.start_packet_processor(i, packet_rx.clone(), connections.clone());
+        }
+
+        Ok(())
+    }
+
+    /// Start packet capture thread
+    fn start_capture_thread(&self, packet_tx: Sender<Vec<u8>>) -> Result<()> {
+        let capture_config = CaptureConfig {
+            interface: self.config.interface.clone(),
+            filter: self.config.bpf_filter.clone(),
+            ..Default::default()
+        };
+
+        let should_stop = Arc::clone(&self.should_stop);
+        let stats = Arc::clone(&self.stats);
+
         thread::spawn(move || {
-            log::info!("Starting connection management thread");
+            match setup_packet_capture(capture_config) {
+                Ok(capture) => {
+                    info!("Packet capture started successfully");
+                    let mut reader = PacketReader::new(capture);
+                    let mut packets_read = 0u64;
+                    let mut last_log = Instant::now();
+                    let mut last_stats_check = Instant::now();
 
-            // Add a small delay to let the UI render first
-            thread::sleep(Duration::from_millis(100));
+                    loop {
+                        if should_stop.load(Ordering::Relaxed) {
+                            info!("Capture thread stopping");
+                            break;
+                        }
 
-            // Do initial connection discovery
-            log::info!("Performing initial connection discovery...");
-            match monitor_clone.lock().unwrap().get_connections() {
-                Ok(initial_conns) => {
-                    log::info!(
-                        "Initial discovery found {} connections",
-                        initial_conns.len()
-                    );
-                    *connections_shared_clone.lock().unwrap() = initial_conns;
-                }
-                Err(e) => {
-                    error!("Error in initial connection discovery: {}", e);
-                }
-            }
+                        match reader.next_packet() {
+                            Ok(Some(packet)) => {
+                                packets_read += 1;
 
-            loop {
-                // Process all pending packets from the queue (may be empty if capture failed)
-                let packets: Vec<_> = packet_rx.try_iter().collect();
-                if !packets.is_empty() {
-                    log::debug!("Processing {} packets", packets.len());
-                    for packet_data in packets {
-                        monitor_clone.lock().unwrap().process_packet(&packet_data);
-                    }
-                }
+                                // Log first packet immediately
+                                if packets_read == 1 {
+                                    info!("First packet captured! Size: {} bytes", packet.len());
+                                }
 
-                // Update shared connections periodically
-                match monitor_clone.lock().unwrap().get_connections() {
-                    Ok(conns) => {
-                        log::debug!(
-                            "Connection management thread: Found {} connections",
-                            conns.len()
-                        );
-                        *connections_shared_clone.lock().unwrap() = conns;
-                    }
-                    Err(e) => {
-                        error!("Error getting connections in management thread: {}", e);
-                    }
-                }
+                                // Log every 100 packets or every 5 seconds
+                                if packets_read % 100 == 0
+                                    || last_log.elapsed() > Duration::from_secs(5)
+                                {
+                                    info!("Read {} packets so far", packets_read);
+                                    last_log = Instant::now();
+                                }
 
-                if should_stop_mgmt.load(Ordering::Relaxed) {
-                    log::info!("Connection management thread stopping");
-                    break;
-                }
-
-                thread::sleep(Duration::from_millis(tick_rate / 10)); // Sleep for 1/10th of the tick rate or in other words we update connections 10 times per tick
-            }
-        });
-
-        // --- Process Information Fetching Thread ---
-        let monitor_clone_procs: Arc<Mutex<NetworkMonitor>> = Arc::clone(&self.network_monitor);
-        let connections_shared_procs: Arc<Mutex<Vec<Connection>>> =
-            Arc::clone(&self.connections_data_shared);
-        let processes_shared_clone: Arc<Mutex<HashMap<u32, Process>>> =
-            Arc::clone(&self.processes_data_shared);
-        let should_stop_platform_info = Arc::clone(&self.should_stop);
-        thread::spawn(move || {
-            loop {
-                thread::sleep(PROCESS_INFO_UPDATE_INTERVAL);
-
-                let connections_to_check = connections_shared_procs.lock().unwrap().clone();
-                let mut collected_processes: HashMap<u32, Process> = HashMap::new();
-
-                for conn in connections_to_check {
-                    if conn.pid.is_none() {
-                        if let Some(process) = monitor_clone_procs
-                            .lock()
-                            .unwrap()
-                            .get_platform_process_for_connection(&conn)
-                        {
-                            if !process.name.is_empty() {
-                                collected_processes.insert(process.pid, process);
+                                if packet_tx.send(packet).is_err() {
+                                    warn!("Packet channel closed");
+                                    break;
+                                }
+                            }
+                            Ok(None) => {
+                                // Timeout - check stats every second
+                                if last_stats_check.elapsed() > Duration::from_secs(1) {
+                                    if let Ok(capture_stats) = reader.stats() {
+                                        if capture_stats.received > 0 {
+                                            debug!(
+                                                "Capture stats - Received: {}, Dropped: {}",
+                                                capture_stats.received, capture_stats.dropped
+                                            );
+                                        }
+                                        stats
+                                            .packets_dropped
+                                            .store(capture_stats.dropped as u64, Ordering::Relaxed);
+                                    }
+                                    last_stats_check = Instant::now();
+                                }
+                            }
+                            Err(e) => {
+                                error!("Capture error: {}", e);
+                                break;
                             }
                         }
                     }
-                }
 
-                if !collected_processes.is_empty() {
-                    let mut processes_guard = processes_shared_clone.lock().unwrap();
-                    for (pid, process) in collected_processes {
-                        processes_guard.insert(pid, process);
-                    }
+                    info!(
+                        "Capture thread exiting, total packets read: {}",
+                        packets_read
+                    );
                 }
-                if should_stop_platform_info.load(Ordering::Relaxed) {
-                    log::info!("Process information thread stopping");
-                    break;
+                Err(e) => {
+                    error!("Failed to start packet capture: {}", e);
+                    error!(
+                        "Make sure you have permission to capture packets (try running with sudo)"
+                    );
+                    warn!("Application will run in process-only mode");
                 }
             }
         });
 
-        log::info!(
-            "App::start_capture - All threads started in {:?}",
-            start_time.elapsed()
-        );
-
-        // Don't mark loading as complete here - let the background thread discovery do that
-        self.loading_message = "Threads started, discovering connections...".to_string();
-
         Ok(())
     }
 
-    pub fn handle_key(&mut self, key: KeyEvent) -> Option<Action> {
-        match self.mode {
-            ViewMode::Overview => self.handle_overview_keys(key),
-            ViewMode::ConnectionDetails => self.handle_details_keys(key),
-            ViewMode::Help => self.handle_help_keys(key),
-        }
+    /// Start a packet processor thread
+    fn start_packet_processor(
+        &self,
+        id: usize,
+        packet_rx: Receiver<Vec<u8>>,
+        connections: Arc<DashMap<String, Connection>>,
+    ) {
+        let should_stop = Arc::clone(&self.should_stop);
+        let stats = Arc::clone(&self.stats);
+        let parser_config = ParserConfig {
+            enable_dpi: self.config.enable_dpi,
+            ..Default::default()
+        };
+
+        thread::spawn(move || {
+            info!("Packet processor {} started", id);
+            let parser = PacketParser::with_config(parser_config);
+            let mut batch = Vec::new();
+            let mut total_processed = 0u64;
+            let mut last_log = Instant::now();
+
+            loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    info!("Packet processor {} stopping", id);
+                    break;
+                }
+
+                // Collect packets in batches
+                batch.clear();
+                let deadline = Instant::now() + Duration::from_millis(10);
+
+                while batch.len() < 100 && Instant::now() < deadline {
+                    match packet_rx.recv_timeout(Duration::from_millis(1)) {
+                        Ok(packet) => batch.push(packet),
+                        Err(_) => break,
+                    }
+                }
+
+                // Process batch
+                let mut parsed_count = 0;
+                for packet_data in &batch {
+                    if let Some(parsed) = parser.parse_packet(packet_data) {
+                        update_connection(&connections, parsed, &stats);
+                        parsed_count += 1;
+                    }
+                }
+
+                if !batch.is_empty() {
+                    total_processed += batch.len() as u64;
+                    stats
+                        .packets_processed
+                        .fetch_add(batch.len() as u64, Ordering::Relaxed);
+
+                    // Log progress
+                    if total_processed % 100 == 0 || last_log.elapsed() > Duration::from_secs(5) {
+                        debug!(
+                            "Processor {}: {} packets processed ({} parsed)",
+                            id, total_processed, parsed_count
+                        );
+                        last_log = Instant::now();
+                    }
+                }
+            }
+
+            info!(
+                "Packet processor {} exiting, total processed: {}",
+                id, total_processed
+            );
+        });
     }
 
-    pub fn shutdown(&mut self) {
-        log::info!("App shutting down, signaling threads to stop");
-        self.should_stop.store(true, Ordering::Relaxed);
-    }
+    /// Start process enrichment thread
+    fn start_process_enrichment(
+        &self,
+        connections: Arc<DashMap<String, Connection>>,
+    ) -> Result<()> {
+        let process_lookup = create_process_lookup()?;
+        let should_stop = Arc::clone(&self.should_stop);
+        let interval = Duration::from_secs(self.config.process_lookup_interval);
 
-    fn handle_overview_keys(&mut self, key: KeyEvent) -> Option<Action> {
-        match key.code {
-            KeyCode::Char('q') | KeyCode::Char('c')
-                if key.modifiers.contains(KeyModifiers::CONTROL) =>
-            {
-                Some(Action::Quit)
-            }
-            KeyCode::Char('r') => Some(Action::Refresh),
-            KeyCode::Down => {
-                if !self.connections.is_empty() {
-                    self.selected_connection_idx =
-                        (self.selected_connection_idx + 1) % self.connections.len();
-                    self.selected_connection =
-                        Some(self.connections[self.selected_connection_idx].clone());
-                }
-                None
-            }
-            KeyCode::Up => {
-                if !self.connections.is_empty() {
-                    self.selected_connection_idx = self
-                        .selected_connection_idx
-                        .checked_sub(1)
-                        .unwrap_or(self.connections.len() - 1);
-                    self.selected_connection =
-                        Some(self.connections[self.selected_connection_idx].clone());
-                }
-                None
-            }
-            KeyCode::Enter => {
-                if !self.connections.is_empty() {
-                    self.mode = ViewMode::ConnectionDetails;
-                }
-                None
-            }
-            KeyCode::Char('h') => {
-                self.mode = ViewMode::Help;
-                None
-            }
-            KeyCode::Char('l') => {
-                self.show_locations = !self.show_locations;
-                None
-            }
-            KeyCode::Char('d') => {
-                self.show_hostnames = !self.show_hostnames;
-                if !self.show_hostnames {
-                    self.dns_cache.clear();
-                }
-                None
-            }
-            _ => None,
-        }
-    }
+        thread::spawn(move || {
+            info!("Process enrichment thread started");
+            let mut last_refresh = Instant::now();
 
-    fn handle_details_keys(&mut self, key: KeyEvent) -> Option<Action> {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.mode = ViewMode::Overview;
-                None
-            }
-            KeyCode::Up | KeyCode::Down => {
-                self.detail_focus = match self.detail_focus {
-                    DetailFocusField::LocalIp => DetailFocusField::RemoteIp,
-                    DetailFocusField::RemoteIp => DetailFocusField::LocalIp,
-                };
-                None
-            }
-            KeyCode::Char('c') => {
-                if let Some(conn) = self.connections.get(self.selected_connection_idx) {
-                    let ip_to_copy = match self.detail_focus {
-                        DetailFocusField::LocalIp => conn.local_addr.ip().to_string(),
-                        DetailFocusField::RemoteIp => conn.remote_addr.ip().to_string(),
-                    };
-                    if let Ok(mut clipboard) = Clipboard::new() {
-                        if let Err(e) = clipboard.set_text(ip_to_copy.clone()) {
-                            error!("Failed to copy IP to clipboard: {}", e);
+            loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    info!("Process enrichment thread stopping");
+                    break;
+                }
+
+                // Refresh process lookup periodically
+                if last_refresh.elapsed() > Duration::from_secs(5) {
+                    if let Err(e) = process_lookup.refresh() {
+                        debug!("Process lookup refresh failed: {}", e);
+                    }
+                    last_refresh = Instant::now();
+                }
+
+                // Enrich connections without process info
+                let mut enriched = 0;
+                for mut entry in connections.iter_mut() {
+                    if entry.process_name.is_none() {
+                        if let Some((pid, name)) = process_lookup.get_process_for_connection(&entry)
+                        {
+                            entry.pid = Some(pid);
+                            entry.process_name = Some(name);
+                            enriched += 1;
                         }
                     }
                 }
-                None
-            }
-            _ => None,
-        }
-    }
 
-    fn handle_help_keys(&mut self, key: KeyEvent) -> Option<Action> {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('h') => {
-                self.mode = ViewMode::Overview;
-                None
-            }
-            _ => None,
-        }
-    }
-
-    fn get_connection_key(&self, conn: &Connection) -> String {
-        format!(
-            "{:?}-{}-{}-{:?}",
-            conn.protocol,
-            conn.local_addr,
-            conn.remote_addr,
-            conn.state()
-        )
-    }
-
-    fn find_connection_index_by_key(&self, target_key: &str) -> Option<usize> {
-        self.connections
-            .iter()
-            .position(|conn| self.get_connection_key(conn) == target_key)
-    }
-
-    pub fn on_tick(&mut self) -> Result<()> {
-        let selected_conn_key = self
-            .selected_connection
-            .as_ref()
-            .map(|sc| self.get_connection_key(sc));
-
-        let mut new_connections_list = self.connections_data_shared.lock().unwrap().clone();
-        log::debug!(
-            "on_tick: Processing {} connections from shared data",
-            new_connections_list.len()
-        );
-
-        // Update loading status based on connections availability
-        if self.is_loading {
-            if !new_connections_list.is_empty() {
-                self.is_loading = false;
-                self.loading_message.clear();
-            } else {
-                // Update spinner animation and vary the loading message
-                self.loading_spinner_index = (self.loading_spinner_index + 1) % 4;
-
-                // Vary the loading message to show progress
-                let elapsed = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()
-                    % 10;
-
-                self.loading_message = match elapsed {
-                    0..=2 => "Scanning network interfaces...".to_string(),
-                    3..=5 => "Discovering active connections...".to_string(),
-                    6..=8 => "Gathering process information...".to_string(),
-                    _ => "Please wait, this may take 10-30 seconds...".to_string(),
-                };
-            }
-        }
-
-        let mut keys_to_process = Vec::new();
-        for conn in &new_connections_list {
-            keys_to_process.push(self.get_connection_key(conn));
-        }
-
-        for key in keys_to_process {
-            self.connection_order.entry(key).or_insert_with(|| {
-                let index = self.next_order_index;
-                self.next_order_index += 1;
-                index
-            });
-        }
-
-        new_connections_list.sort_by(|a, b| {
-            let is_a_loopback = a.local_addr.ip().is_loopback() || a.remote_addr.ip().is_loopback();
-            let is_b_loopback = b.local_addr.ip().is_loopback() || b.remote_addr.ip().is_loopback();
-            is_a_loopback.cmp(&is_b_loopback).then_with(|| {
-                let key_a = self.get_connection_key(a);
-                let key_b = self.get_connection_key(b);
-                let order_a = self.connection_order.get(&key_a).unwrap_or(&usize::MAX);
-                let order_b = self.connection_order.get(&key_b).unwrap_or(&usize::MAX);
-                order_a.cmp(order_b)
-            })
-        });
-
-        self.connections = new_connections_list;
-
-        if let Some(key) = selected_conn_key {
-            if let Some(idx) = self.find_connection_index_by_key(&key) {
-                self.selected_connection_idx = idx;
-                self.selected_connection = Some(self.connections[idx].clone());
-            } else if !self.connections.is_empty() {
-                self.selected_connection_idx = 0;
-                self.selected_connection = Some(self.connections[0].clone());
-            } else {
-                self.selected_connection_idx = 0;
-                self.selected_connection = None;
-            }
-        } else if !self.connections.is_empty() && self.selected_connection.is_none() {
-            self.selected_connection_idx = 0;
-            self.selected_connection = Some(self.connections[0].clone());
-        }
-
-        if let Ok(shared_procs_guard) = self.processes_data_shared.lock() {
-            self.processes = shared_procs_guard.clone();
-        }
-
-        for conn in &mut self.connections {
-            if let Some(pid) = conn.pid {
-                if let Some(cached_process_info) = self.processes.get(&pid) {
-                    if !cached_process_info.name.is_empty() {
-                        conn.process_name = Some(cached_process_info.name.clone());
-                    }
+                if enriched > 0 {
+                    debug!("Enriched {} connections with process info", enriched);
                 }
+
+                thread::sleep(interval);
             }
-        }
+        });
 
         Ok(())
     }
 
-    /// Format a socket address for display
-    pub fn format_socket_addr(&mut self, addr: std::net::SocketAddr) -> String {
-        if self.show_hostnames {
-            // Try to resolve hostname
-            if let Some(hostname) = self.dns_cache.get(&addr.ip()) {
-                format!("{}:{}", hostname, addr.port())
-            } else {
-                // Attempt to resolve hostname if not in cache
-                if let Ok(hostname) = dns_lookup::lookup_addr(&addr.ip()) {
-                    if hostname != addr.ip().to_string() {
-                        // Cache the result
-                        self.dns_cache.insert(addr.ip(), hostname.clone());
-                        return format!("{}:{}", hostname, addr.port());
-                    }
+    /// Start snapshot provider thread for UI updates
+    fn start_snapshot_provider(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
+        let snapshot = Arc::clone(&self.connections_snapshot);
+        let should_stop = Arc::clone(&self.should_stop);
+        let stats = Arc::clone(&self.stats);
+        let service_lookup = Arc::clone(&self.service_lookup);
+        let filter_localhost = self.config.filter_localhost;
+        let refresh_interval = Duration::from_millis(self.config.refresh_interval);
+
+        thread::spawn(move || {
+            info!("Snapshot provider thread started");
+
+            loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    info!("Snapshot provider thread stopping");
+                    break;
                 }
-                // Cache the IP as fallback to avoid repeated lookups
-                self.dns_cache.insert(addr.ip(), addr.ip().to_string());
-                addr.to_string()
+
+                // Create snapshot
+                let start = Instant::now();
+                let total_connections = connections.len();
+
+                let mut snapshot_data: Vec<Connection> = connections
+                    .iter()
+                    .map(|entry| {
+                        let mut conn = entry.value().clone();
+
+                        // Enrich with service name
+                        if conn.service_name.is_none() {
+                            if let Some(service) =
+                                service_lookup.lookup(conn.local_addr.port(), conn.protocol)
+                            {
+                                conn.service_name = Some(service.to_string());
+                            } else if let Some(service) =
+                                service_lookup.lookup(conn.remote_addr.port(), conn.protocol)
+                            {
+                                conn.service_name = Some(service.to_string());
+                            }
+                        }
+
+                        conn
+                    })
+                    .filter(|conn| {
+                        // Apply filters
+                        if filter_localhost {
+                            !(conn.local_addr.ip().is_loopback()
+                                && conn.remote_addr.ip().is_loopback())
+                        } else {
+                            true
+                        }
+                    })
+                    .filter(|conn| conn.is_active())
+                    .collect();
+
+                // Sort by last activity
+                snapshot_data.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+
+                let filtered_count = snapshot_data.len();
+
+                // Update snapshot
+                *snapshot.write().unwrap() = snapshot_data;
+
+                // Update stats
+                stats
+                    .connections_tracked
+                    .store(total_connections as u64, Ordering::Relaxed);
+                *stats.last_update.write().unwrap() = Instant::now();
+
+                debug!(
+                    "Snapshot updated in {:?} - Total: {}, Filtered: {}",
+                    start.elapsed(),
+                    total_connections,
+                    filtered_count
+                );
+
+                thread::sleep(refresh_interval);
             }
-        } else {
-            addr.to_string()
+        });
+
+        Ok(())
+    }
+
+    /// Start cleanup thread to remove old connections
+    fn start_cleanup_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
+        let should_stop = Arc::clone(&self.should_stop);
+        let timeout = Duration::from_secs(self.config.connection_timeout);
+
+        thread::spawn(move || {
+            info!("Cleanup thread started");
+
+            loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    info!("Cleanup thread stopping");
+                    break;
+                }
+
+                // Remove inactive connections
+                let now = SystemTime::now();
+                let mut removed = 0;
+
+                connections.retain(|_, conn| {
+                    let should_keep = now
+                        .duration_since(conn.last_activity)
+                        .unwrap_or(Duration::from_secs(0))
+                        < timeout;
+
+                    if !should_keep {
+                        removed += 1;
+                    }
+
+                    should_keep
+                });
+
+                if removed > 0 {
+                    debug!("Removed {} inactive connections", removed);
+                }
+
+                thread::sleep(Duration::from_secs(10));
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Get current connections for UI display
+    pub fn get_connections(&self) -> Vec<Connection> {
+        self.connections_snapshot.read().unwrap().clone()
+    }
+
+    /// Get application statistics
+    pub fn get_stats(&self) -> AppStats {
+        AppStats {
+            packets_processed: AtomicU64::new(self.stats.packets_processed.load(Ordering::Relaxed)),
+            packets_dropped: AtomicU64::new(self.stats.packets_dropped.load(Ordering::Relaxed)),
+            connections_tracked: AtomicU64::new(
+                self.stats.connections_tracked.load(Ordering::Relaxed),
+            ),
+            last_update: RwLock::new(*self.stats.last_update.read().unwrap()),
         }
     }
 
-    /// Refresh the application state
-    pub fn refresh(&mut self) -> Result<()> {
-        // Trigger a fresh connection update
-        self.on_tick()
+    /// Check if application is still loading
+    pub fn is_loading(&self) -> bool {
+        self.is_loading.load(Ordering::Relaxed)
     }
 
-    /// Get the current spinner character for loading animation
-    pub fn get_spinner_char(&self) -> &str {
-        const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸"];
-        SPINNER_CHARS[self.loading_spinner_index]
+    /// Stop all threads gracefully
+    pub fn stop(&self) {
+        info!("Stopping application");
+        self.should_stop.store(true, Ordering::Relaxed);
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::Config;
-    use crate::i18n::I18n;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+/// Update or create a connection from a parsed packet
+fn update_connection(
+    connections: &DashMap<String, Connection>,
+    parsed: ParsedPacket,
+    stats: &AppStats,
+) {
+    let key = parsed.connection_key.clone();
+    let now = SystemTime::now();
 
-    fn create_test_app() -> App {
-        let config = Config::default();
-        let i18n = I18n::new("en").unwrap();
-        App::new(config, i18n).unwrap()
-    }
+    connections
+        .entry(key.clone())
+        .and_modify(|conn| {
+            *conn = merge_packet_into_connection(conn.clone(), &parsed, now);
+        })
+        .or_insert_with(|| {
+            debug!("New connection detected: {}", key);
+            create_connection_from_packet(&parsed, now)
+        });
+}
 
-    #[test]
-    fn test_dns_toggle_functionality() {
-        let mut app = create_test_app();
-
-        // Initially DNS hostnames should be disabled
-        assert!(!app.show_hostnames);
-        assert!(app.dns_cache.is_empty());
-
-        // Test IP address formatting without DNS
-        let test_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53);
-        let formatted = app.format_socket_addr(test_addr);
-        assert_eq!(formatted, "8.8.8.8:53");
-
-        // Enable DNS resolution
-        app.show_hostnames = true;
-
-        // Format the same address with DNS enabled
-        let formatted_with_dns = app.format_socket_addr(test_addr);
-        // Should either be resolved hostname or cached IP
-        assert!(!formatted_with_dns.is_empty());
-        assert!(formatted_with_dns.contains(":53"));
-
-        // Check that cache is populated
-        assert!(app.dns_cache.contains_key(&test_addr.ip()));
-    }
-
-    #[test]
-    fn test_dns_cache_behavior() {
-        let mut app = create_test_app();
-        app.show_hostnames = true;
-
-        let test_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080);
-
-        // First call should populate cache
-        let first_result = app.format_socket_addr(test_addr);
-        assert!(app.dns_cache.contains_key(&test_addr.ip()));
-
-        // Second call should use cache
-        let second_result = app.format_socket_addr(test_addr);
-        assert_eq!(first_result, second_result);
-
-        // Disable DNS and clear cache
-        app.show_hostnames = false;
-        app.dns_cache.clear();
-
-        let ip_only_result = app.format_socket_addr(test_addr);
-        assert_eq!(ip_only_result, "127.0.0.1:8080");
-    }
-
-    #[test]
-    fn test_view_mode_switching() {
-        let mut app = create_test_app();
-
-        // Should start in Overview mode
-        assert!(matches!(app.mode, ViewMode::Overview));
-
-        // Test switching to Help
-        app.mode = ViewMode::Help;
-        assert!(matches!(app.mode, ViewMode::Help));
-
-        // Test switching to Connection Details
-        app.mode = ViewMode::ConnectionDetails;
-        assert!(matches!(app.mode, ViewMode::ConnectionDetails));
-    }
-
-    #[test]
-    fn test_connection_selection() {
-        let mut app = create_test_app();
-
-        // Initially no connections
-        assert!(app.connections.is_empty());
-        assert_eq!(app.selected_connection_idx, 0);
-        assert!(app.selected_connection.is_none());
-
-        // Add some test connections
-        let conn1 = crate::network::Connection::new(
-            crate::network::Protocol::TCP,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 3000),
-            crate::network::ConnectionState::Established,
-        );
-        let conn2 = crate::network::Connection::new(
-            crate::network::Protocol::UDP,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8081),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 3001),
-            crate::network::ConnectionState::Listen,
-        );
-
-        app.connections = vec![conn1, conn2];
-
-        // Test that we can select connections
-        assert_eq!(app.connections.len(), 2);
-        app.selected_connection_idx = 1;
-        assert_eq!(app.selected_connection_idx, 1);
-    }
-
-    #[test]
-    fn test_detail_focus_field() {
-        let mut app = create_test_app();
-
-        // Should start with LocalIp focused
-        assert!(matches!(app.detail_focus, DetailFocusField::LocalIp));
-
-        // Test switching focus
-        app.detail_focus = DetailFocusField::RemoteIp;
-        assert!(matches!(app.detail_focus, DetailFocusField::RemoteIp));
-    }
-
-    #[test]
-    fn test_app_initialization() {
-        let config = Config::default();
-        let i18n = I18n::new("en").unwrap();
-        let app_result = App::new(config, i18n);
-
-        assert!(app_result.is_ok());
-        let app = app_result.unwrap();
-
-        // Check initial state
-        assert!(matches!(app.mode, ViewMode::Overview));
-        assert!(app.show_locations);
-        assert!(!app.show_hostnames);
-        assert!(app.connections.is_empty());
-        assert!(app.dns_cache.is_empty());
-        assert_eq!(app.selected_connection_idx, 0);
-        assert!(app.is_loading); // Should start in loading state
-    }
-
-    #[test]
-    fn test_loading_state_and_spinner() {
-        let mut app = create_test_app();
-
-        // Should start loading
-        assert!(app.is_loading);
-        assert!(!app.loading_message.is_empty());
-
-        // Test spinner animation
-        let first_char = app.get_spinner_char().to_string();
-        app.loading_spinner_index = (app.loading_spinner_index + 1) % 4;
-        let second_char = app.get_spinner_char().to_string();
-        assert_ne!(first_char, second_char);
-
-        // Test loading completion
-        app.is_loading = false;
-        app.loading_message.clear();
-        assert!(!app.is_loading);
-        assert!(app.loading_message.is_empty());
+impl Drop for App {
+    fn drop(&mut self) {
+        self.stop();
+        // Give threads time to stop gracefully
+        thread::sleep(Duration::from_millis(100));
     }
 }

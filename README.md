@@ -86,6 +86,31 @@ refresh_interval: 1000
 show_locations: true
 ```
 
+## Architecture
+
+┌─────────────────┐
+│ Packet Capture  │ ──packets──> channel
+└─────────────────┘                  │
+                                     ├──> ┌──────────────────┐
+                                     ├──> │ Packet Processor │ ──> DashMap
+                                     ├──> │    (Thread 0)    │      │
+                                     └──> │    (Thread N)    │      │
+                                          └──────────────────┘      │
+                                                                    │
+┌─────────────────-┐                                                │
+│Process Enrichment│ ──────────────────────────────────────────> DashMap
+└─────────────────-┘                                                │
+                                                                    │
+┌─────────────────┐                                                 │
+│Snapshot Provider│ <────────────────────────────────────────── DashMap
+└─────────────────┘                                                │
+         │                                                         │
+         └──> RwLock<Vec<Connection>> (for UI)                     │
+                                                                   │
+┌─────────────────┐                                                │
+│ Cleanup Thread  │ <────────────────────────────────────────── DashMap
+└─────────────────┘
+
 ## Internationalization
 
 RustNet supports multiple languages. The application looks for language files in the following locations:
@@ -96,6 +121,7 @@ RustNet supports multiple languages. The application looks for language files in
 4. `/usr/share/rustnet/i18n/[language].yml`
 
 Currently supported languages:
+
 - English (en)
 - French (fr)
 
@@ -114,6 +140,7 @@ RustNet attempts to identify the process associated with each network connection
 ## TODOs
 
 ### GeoIP Lookup
+
 For GeoIP lookup: MaxMind GeoLite2 City database (place `GeoLite2-City.mmdb` in the application directory)
 
 When a MaxMind GeoLite2 City database is available, RustNet can display geographical information about remote IP addresses. To use this feature:

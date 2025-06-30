@@ -6,11 +6,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap},
 };
-// Removed unused import: use std::collections::HashMap;
-use std::net::SocketAddr; // Import SocketAddr
+use std::time::Instant;
 
-use crate::app::{App, DetailFocusField, ViewMode}; // Added DetailFocusField
-use crate::network::Protocol;
+use crate::app::{App, AppStats};
+use crate::network::types::{Connection, Protocol};
 
 pub type Terminal<B> = RatatuiTerminal<B>;
 
@@ -40,11 +39,34 @@ pub fn restore_terminal<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>
     Ok(())
 }
 
+/// UI state for managing the interface
+pub struct UIState {
+    pub selected_tab: usize,
+    pub selected_connection: usize,
+    pub show_help: bool,
+}
+
+impl Default for UIState {
+    fn default() -> Self {
+        Self {
+            selected_tab: 0,
+            selected_connection: 0,
+            show_help: false,
+        }
+    }
+}
+
 /// Draw the UI
-pub fn draw(f: &mut Frame, app: &mut App) -> Result<()> {
-    // If still loading, show loading screen instead of normal UI
-    if app.is_loading {
-        draw_loading_screen(f, app);
+pub fn draw(
+    f: &mut Frame,
+    app: &App,
+    ui_state: &UIState,
+    connections: &[Connection],
+    stats: &AppStats,
+) -> Result<()> {
+    // If still loading, show loading screen
+    if app.is_loading() {
+        draw_loading_screen(f);
         return Ok(());
     }
 
@@ -57,41 +79,35 @@ pub fn draw(f: &mut Frame, app: &mut App) -> Result<()> {
         ])
         .split(f.area());
 
-    draw_tabs(f, app, chunks[0]);
+    draw_tabs(f, ui_state, chunks[0]);
 
-    match app.mode {
-        ViewMode::Overview => draw_overview(f, app, chunks[1])?,
-        ViewMode::ConnectionDetails => draw_connection_details(f, app, chunks[1])?,
-        ViewMode::Help => draw_help(f, app, chunks[1])?,
+    match ui_state.selected_tab {
+        0 => draw_overview(f, ui_state, connections, stats, chunks[1])?,
+        1 => draw_connection_details(f, ui_state, connections, chunks[1])?,
+        2 => draw_help(f, chunks[1])?,
+        _ => {}
     }
 
-    draw_status_bar(f, app, chunks[2]);
+    draw_status_bar(f, connections.len(), chunks[2]);
 
     Ok(())
 }
 
 /// Draw mode tabs
-fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
+fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect) {
     let titles = vec![
-        Span::styled(app.i18n.get("overview"), Style::default().fg(Color::Green)),
-        Span::styled(
-            app.i18n.get("connections"),
-            Style::default().fg(Color::Green),
-        ),
-        Span::styled(app.i18n.get("help"), Style::default().fg(Color::Green)),
+        Span::styled("Overview", Style::default().fg(Color::Green)),
+        Span::styled("Details", Style::default().fg(Color::Green)),
+        Span::styled("Help", Style::default().fg(Color::Green)),
     ];
 
     let tabs = Tabs::new(titles.into_iter().map(Line::from).collect::<Vec<_>>())
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(app.i18n.get("rustnet")),
+                .title("RustNet Monitor"),
         )
-        .select(match app.mode {
-            ViewMode::Overview => 0,
-            ViewMode::ConnectionDetails => 1,
-            ViewMode::Help => 2,
-        })
+        .select(ui_state.selected_tab)
         .style(Style::default().fg(Color::White))
         .highlight_style(
             Style::default()
@@ -103,27 +119,38 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Draw the overview mode
-fn draw_overview(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> {
+fn draw_overview(
+    f: &mut Frame,
+    ui_state: &UIState,
+    connections: &[Connection],
+    stats: &AppStats,
+    area: Rect,
+) -> Result<()> {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(area);
 
-    draw_connections_list(f, app, chunks[0]);
-    draw_side_panel(f, app, chunks[1])?;
+    draw_connections_list(f, ui_state, connections, chunks[0]);
+    draw_stats_panel(f, connections, stats, chunks[1])?;
 
     Ok(())
 }
 
 /// Draw connections list
-fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
+fn draw_connections_list(
+    f: &mut Frame,
+    ui_state: &UIState,
+    connections: &[Connection],
+    area: Rect,
+) {
     let widths = [
         Constraint::Length(6),  // Protocol
         Constraint::Length(28), // Local Address
-        Constraint::Length(38), // Remote Address - Increased Width
+        Constraint::Length(38), // Remote Address
         Constraint::Length(12), // State
         Constraint::Length(10), // Service
-        Constraint::Length(22), // Bandwidth (Down/Up)
+        Constraint::Length(22), // Bandwidth
         Constraint::Min(10),    // Process
     ];
 
@@ -133,7 +160,7 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
         "Remote Address",
         "State",
         "Service",
-        "Down / Up", // Updated Header
+        "Down / Up",
         "Process",
     ]
     .iter()
@@ -146,167 +173,153 @@ fn draw_connections_list(f: &mut Frame, app: &mut App, area: Rect) {
     });
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
-    let mut rows = Vec::new();
-    // Collect addresses to format to avoid borrowing issues with app.format_socket_addr
-    let addresses_to_format: Vec<(SocketAddr, SocketAddr)> = app
-        .connections
+    let rows: Vec<Row> = connections
         .iter()
-        .map(|conn| (conn.local_addr, conn.remote_addr))
+        .map(|conn| {
+            let pid_str = conn
+                .pid
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| "-".to_string());
+
+            let process_str = conn.process_name.clone().unwrap_or_else(|| "-".to_string());
+            let process_display = if conn.pid.is_some() {
+                format!("{} ({})", process_str, pid_str)
+            } else {
+                process_str
+            };
+
+            let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
+
+            let incoming_rate = format_rate(conn.current_incoming_rate_bps);
+            let outgoing_rate = format_rate(conn.current_outgoing_rate_bps);
+            let bandwidth_display = format!("{} / {}", incoming_rate, outgoing_rate);
+
+            let cells = [
+                Cell::from(conn.protocol.to_string()),
+                Cell::from(conn.local_addr.to_string()),
+                Cell::from(conn.remote_addr.to_string()),
+                Cell::from(conn.state()),
+                Cell::from(service_display),
+                Cell::from(bandwidth_display),
+                Cell::from(process_display),
+            ];
+            Row::new(cells)
+        })
         .collect();
-
-    let mut formatted_addresses = Vec::new();
-    for (local_addr, remote_addr) in addresses_to_format {
-        let local_display = app.format_socket_addr(local_addr);
-        let remote_display = app.format_socket_addr(remote_addr);
-        formatted_addresses.push((local_display, remote_display));
-    }
-
-    for (idx, conn) in app.connections.iter().enumerate() {
-        let pid_str = conn
-            .pid
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "-".to_string());
-
-        let process_str = conn.process_name.clone().unwrap_or_else(|| "-".to_string());
-        let process_display = format!("{} ({})", process_str, pid_str);
-
-        let (local_display, remote_display) = formatted_addresses[idx].clone();
-        let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
-
-        let incoming_rate_str = format_rate_from_bytes_per_second(conn.current_incoming_rate_bps);
-        let outgoing_rate_str = format_rate_from_bytes_per_second(conn.current_outgoing_rate_bps);
-        let bandwidth_display = format!("{} / {}", incoming_rate_str, outgoing_rate_str);
-
-        let cells = [
-            Cell::from(conn.protocol.to_string()),
-            Cell::from(local_display),
-            Cell::from(remote_display),
-            Cell::from(conn.state()),
-            Cell::from(service_display),
-            Cell::from(bandwidth_display), // Updated Cell
-            Cell::from(process_display),
-        ];
-        rows.push(Row::new(cells));
-    }
 
     // Create table state with current selection
     let mut state = ratatui::widgets::TableState::default();
-    if !app.connections.is_empty() {
-        state.select(Some(app.selected_connection_idx));
+    if !connections.is_empty() {
+        state.select(Some(
+            ui_state
+                .selected_connection
+                .min(connections.len().saturating_sub(1)),
+        ));
     }
 
-    let connections = Table::new(rows, &widths)
+    let connections_table = Table::new(rows, &widths)
         .header(header)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(app.i18n.get("connections")),
+                .title("Active Connections"),
         )
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
 
-    f.render_stateful_widget(connections, area, &mut state);
+    f.render_stateful_widget(connections_table, area, &mut state);
 }
 
-/// Draw side panel with stats
-fn draw_side_panel(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
+/// Draw stats panel
+fn draw_stats_panel(
+    f: &mut Frame,
+    connections: &[Connection],
+    stats: &AppStats,
+    area: Rect,
+) -> Result<()> {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Interface
-            Constraint::Min(0),    // Summary stats (takes remaining space)
+            Constraint::Length(8), // Connection stats
+            Constraint::Min(0),    // Traffic stats
         ])
         .split(area);
 
-    let interface_text = format!(
-        "{}: {}",
-        app.i18n.get("interface"),
-        app.config
-            .interface
-            .clone()
-            .unwrap_or_else(|| app.i18n.get("default").to_string())
-    );
-    let interface_para = Paragraph::new(interface_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(app.i18n.get("network")),
-        )
-        .style(Style::default().fg(Color::White));
-    f.render_widget(interface_para, chunks[0]);
-
-    let tcp_count = app
-        .connections
+    // Connection statistics
+    let tcp_count = connections
         .iter()
         .filter(|c| c.protocol == Protocol::TCP)
         .count();
-    let udp_count = app
-        .connections
+    let udp_count = connections
         .iter()
         .filter(|c| c.protocol == Protocol::UDP)
         .count();
-    let process_count = app.processes.len();
 
-    let stats_text: Vec<Line> = vec![
+    let conn_stats_text: Vec<Line> = vec![
+        Line::from(format!("TCP Connections: {}", tcp_count)),
+        Line::from(format!("UDP Connections: {}", udp_count)),
+        Line::from(format!("Total Connections: {}", connections.len())),
+        Line::from(""),
         Line::from(format!(
-            "{}: {}",
-            app.i18n.get("tcp_connections"),
-            tcp_count
+            "Packets Processed: {}",
+            stats
+                .packets_processed
+                .load(std::sync::atomic::Ordering::Relaxed)
         )),
         Line::from(format!(
-            "{}: {}",
-            app.i18n.get("udp_connections"),
-            udp_count
-        )),
-        Line::from(format!(
-            "{}: {}",
-            app.i18n.get("total_connections"),
-            app.connections.len()
-        )),
-        Line::from(format!("{}: {}", app.i18n.get("processes"), process_count)),
-        Line::from(""), // Spacer
-        Line::from(format!(
-            "{}: {}",
-            app.i18n.get("total_incoming"),
-            format_rate_from_bytes_per_second(
-                app.connections
-                    .iter()
-                    .map(|c| c.current_incoming_rate_bps)
-                    .sum()
-            )
-        )),
-        Line::from(format!(
-            "{}: {}",
-            app.i18n.get("total_outgoing"),
-            format_rate_from_bytes_per_second(
-                app.connections
-                    .iter()
-                    .map(|c| c.current_outgoing_rate_bps)
-                    .sum()
-            )
+            "Packets Dropped: {}",
+            stats
+                .packets_dropped
+                .load(std::sync::atomic::Ordering::Relaxed)
         )),
     ];
 
-    let stats_para = Paragraph::new(stats_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(app.i18n.get("statistics")),
-        )
+    let conn_stats = Paragraph::new(conn_stats_text)
+        .block(Block::default().borders(Borders::ALL).title("Statistics"))
         .style(Style::default().fg(Color::White));
-    f.render_widget(stats_para, chunks[1]); // Render stats into the second chunk which now takes remaining space
+    f.render_widget(conn_stats, chunks[0]);
+
+    // Traffic statistics
+    let total_incoming: f64 = connections
+        .iter()
+        .map(|c| c.current_incoming_rate_bps)
+        .sum();
+    let total_outgoing: f64 = connections
+        .iter()
+        .map(|c| c.current_outgoing_rate_bps)
+        .sum();
+
+    let traffic_stats_text: Vec<Line> = vec![
+        Line::from(format!("Total Incoming: {}", format_rate(total_incoming))),
+        Line::from(format!("Total Outgoing: {}", format_rate(total_outgoing))),
+        Line::from(""),
+        Line::from(format!(
+            "Last Update: {:?} ago",
+            stats.last_update.read().unwrap().elapsed()
+        )),
+    ];
+
+    let traffic_stats = Paragraph::new(traffic_stats_text)
+        .block(Block::default().borders(Borders::ALL).title("Traffic"))
+        .style(Style::default().fg(Color::White));
+    f.render_widget(traffic_stats, chunks[1]);
 
     Ok(())
 }
 
 /// Draw connection details view
-fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<()> {
-    if app.connections.is_empty() {
-        let text = Paragraph::new(app.i18n.get("no_connections"))
+fn draw_connection_details(
+    f: &mut Frame,
+    ui_state: &UIState,
+    connections: &[Connection],
+    area: Rect,
+) -> Result<()> {
+    if connections.is_empty() {
+        let text = Paragraph::new("No connections available")
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(app.i18n.get("connection_details")),
+                    .title("Connection Details"),
             )
             .style(Style::default().fg(Color::Red))
             .alignment(ratatui::layout::Alignment::Center);
@@ -314,89 +327,46 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
         return Ok(());
     }
 
-    let conn_idx = app.selected_connection_idx;
-    let local_addr_to_format = app.connections[conn_idx].local_addr;
-    let remote_addr_to_format = app.connections[conn_idx].remote_addr;
-
-    // Format addresses before further immutable borrows of app.connections
-    let local_display = app.format_socket_addr(local_addr_to_format);
-    let remote_display = app.format_socket_addr(remote_addr_to_format);
-
-    let conn = &app.connections[conn_idx]; // Now we can immutably borrow again
+    let conn_idx = ui_state
+        .selected_connection
+        .min(connections.len().saturating_sub(1));
+    let conn = &connections[conn_idx];
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
+    // Connection details
     let mut details_text: Vec<Line> = Vec::new();
 
-    // Styles for focused IP
-    let local_ip_style = if app.detail_focus == DetailFocusField::LocalIp {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    let remote_ip_style = if app.detail_focus == DetailFocusField::RemoteIp {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-
     details_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("protocol")),
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled("Protocol: ", Style::default().fg(Color::Yellow)),
         Span::raw(conn.protocol.to_string()),
     ]));
 
-    // Use pre-formatted addresses
     details_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("local_address")),
-            Style::default().fg(Color::Yellow),
-        ),
-        Span::styled(local_display, local_ip_style), // Apply style
+        Span::styled("Local Address: ", Style::default().fg(Color::Yellow)),
+        Span::raw(conn.local_addr.to_string()),
     ]));
 
     details_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("remote_address")),
-            Style::default().fg(Color::Yellow),
-        ),
-        Span::styled(remote_display, remote_ip_style), // Apply style
+        Span::styled("Remote Address: ", Style::default().fg(Color::Yellow)),
+        Span::raw(conn.remote_addr.to_string()),
     ]));
 
-    if app.show_locations && !conn.remote_addr.ip().is_unspecified() {
-        // Commented out private field access
-    }
-
     details_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("state")),
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled("State: ", Style::default().fg(Color::Yellow)),
         Span::raw(conn.state()),
     ]));
 
     details_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("process")),
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled("Process: ", Style::default().fg(Color::Yellow)),
         Span::raw(conn.process_name.clone().unwrap_or_else(|| "-".to_string())),
     ]));
 
     details_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("pid")),
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled("PID: ", Style::default().fg(Color::Yellow)),
         Span::raw(
             conn.pid
                 .map(|p| p.to_string())
@@ -405,76 +375,59 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
     ]));
 
     details_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("age")),
-            Style::default().fg(Color::Yellow),
-        ),
-        Span::raw(format!("{:?}", conn.age())),
+        Span::styled("Service: ", Style::default().fg(Color::Yellow)),
+        Span::raw(conn.service_name.clone().unwrap_or_else(|| "-".to_string())),
     ]));
-
-    details_text.push(Line::from("")); // Spacer
-    details_text.push(Line::from(Span::styled(
-        "Use Up/Down to select IP, 'c' to copy.", // Hint text
-        Style::default().fg(Color::DarkGray),
-    )));
 
     let details = Paragraph::new(details_text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(app.i18n.get("connection_details")),
+                .title("Connection Information"),
         )
         .style(Style::default().fg(Color::White))
         .wrap(Wrap { trim: true });
 
     f.render_widget(details, chunks[0]);
 
+    // Traffic details
     let mut traffic_text: Vec<Line> = Vec::new();
+
     traffic_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("bytes_sent")),
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled("Bytes Sent: ", Style::default().fg(Color::Yellow)),
         Span::raw(format_bytes(conn.bytes_sent)),
     ]));
 
     traffic_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("bytes_received")),
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled("Bytes Received: ", Style::default().fg(Color::Yellow)),
         Span::raw(format_bytes(conn.bytes_received)),
     ]));
 
     traffic_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("packets_sent")),
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled("Packets Sent: ", Style::default().fg(Color::Yellow)),
         Span::raw(conn.packets_sent.to_string()),
     ]));
 
     traffic_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("packets_received")),
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled("Packets Received: ", Style::default().fg(Color::Yellow)),
         Span::raw(conn.packets_received.to_string()),
     ]));
 
     traffic_text.push(Line::from(vec![
-        Span::styled(
-            format!("{}: ", app.i18n.get("last_activity")),
-            Style::default().fg(Color::Yellow),
-        ),
-        Span::raw(format!("{:?}", conn.idle_time())),
+        Span::styled("Current Rate (In): ", Style::default().fg(Color::Yellow)),
+        Span::raw(format_rate(conn.current_incoming_rate_bps)),
+    ]));
+
+    traffic_text.push(Line::from(vec![
+        Span::styled("Current Rate (Out): ", Style::default().fg(Color::Yellow)),
+        Span::raw(format_rate(conn.current_outgoing_rate_bps)),
     ]));
 
     let traffic = Paragraph::new(traffic_text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(app.i18n.get("traffic")),
+                .title("Traffic Statistics"),
         )
         .style(Style::default().fg(Color::White))
         .wrap(Wrap { trim: true });
@@ -485,62 +438,48 @@ fn draw_connection_details(f: &mut Frame, app: &mut App, area: Rect) -> Result<(
 }
 
 /// Draw help screen
-fn draw_help(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
+fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
     let help_text: Vec<Line> = vec![
         Line::from(vec![
             Span::styled(
-                "RustNet ",
+                "RustNet Monitor ",
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(app.i18n.get("help_intro")),
+            Span::raw("- Network Connection Monitor"),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("q, Ctrl+C ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.i18n.get("help_quit")),
+            Span::raw("Quit application"),
         ]),
         Line::from(vec![
-            Span::styled("r ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.i18n.get("help_refresh")),
+            Span::styled("Tab ", Style::default().fg(Color::Yellow)),
+            Span::raw("Switch between tabs"),
         ]),
         Line::from(vec![
             Span::styled("↑/k, ↓/j ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.i18n.get("help_navigate")),
+            Span::raw("Navigate connections"),
         ]),
         Line::from(vec![
             Span::styled("Enter ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.i18n.get("help_select")),
+            Span::raw("View connection details"),
         ]),
         Line::from(vec![
             Span::styled("Esc ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.i18n.get("help_back")),
-        ]),
-        Line::from(vec![
-            Span::styled("l ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.i18n.get("help_toggle_location")),
-        ]),
-        Line::from(vec![
-            Span::styled("d ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.i18n.get("help_toggle_dns")),
+            Span::raw("Return to overview"),
         ]),
         Line::from(vec![
             Span::styled("h ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.i18n.get("help_toggle_help")),
+            Span::raw("Toggle this help screen"),
         ]),
-        Line::from(vec![
-            Span::styled("Ctrl+D ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.i18n.get("help_dump_connections")),
-        ]),
+        Line::from(""),
+        Line::from("Press any key to continue..."),
     ];
 
     let help = Paragraph::new(help_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(app.i18n.get("help")),
-        )
+        .block(Block::default().borders(Borders::ALL).title("Help"))
         .style(Style::default().fg(Color::White))
         .wrap(Wrap { trim: true })
         .alignment(ratatui::layout::Alignment::Left);
@@ -551,12 +490,10 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
 }
 
 /// Draw status bar
-fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
+fn draw_status_bar(f: &mut Frame, connection_count: usize, area: Rect) {
     let status = format!(
-        "{} | {} | {}",
-        app.i18n.get("press_h_for_help"),
-        format!("{}: {}", app.i18n.get("language"), app.config.language),
-        format!("{}: {}", app.i18n.get("connections"), app.connections.len())
+        " Press 'h' for help | Connections: {} | Tab to switch views ",
+        connection_count
     );
 
     let status_bar = Paragraph::new(status)
@@ -566,81 +503,49 @@ fn draw_status_bar(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(status_bar, area);
 }
 
-/// Draw loading screen with progress message
-fn draw_loading_screen(f: &mut Frame, app: &App) {
+/// Draw loading screen
+fn draw_loading_screen(f: &mut Frame) {
     let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Header
-            Constraint::Min(0),    // Content
-            Constraint::Length(1), // Status
-        ])
-        .split(f.area());
-
-    // Draw header
-    let header = Paragraph::new("RustNet - Network Monitor")
-        .style(
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )
-        .alignment(ratatui::layout::Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(header, chunks[0]);
-
-    // Draw loading content
-    let loading_content = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Percentage(40),
             Constraint::Length(5),
             Constraint::Percentage(40),
         ])
-        .split(chunks[1]);
+        .split(f.area());
 
     let loading_text = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled(app.get_spinner_char(), Style::default().fg(Color::Yellow)),
-            Span::styled(" ", Style::default()),
-            Span::styled(&app.loading_message, Style::default().fg(Color::White)),
+            Span::styled("⣾ ", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "Loading network connections...",
+                Style::default().fg(Color::White),
+            ),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Please wait while we discover network connections",
-            Style::default().fg(Color::Cyan),
-        )]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "This may take 10-30 seconds depending on your system",
+            "This may take a few seconds",
             Style::default().fg(Color::DarkGray),
         )]),
     ];
 
     let loading_paragraph = Paragraph::new(loading_text)
         .alignment(ratatui::layout::Alignment::Center)
-        .block(Block::default().borders(Borders::ALL).title("Loading"));
-    f.render_widget(loading_paragraph, loading_content[1]);
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("RustNet Monitor"),
+        );
 
-    // Draw status
-    let status = "Press Ctrl+C to cancel";
-    let status_bar = Paragraph::new(status)
-        .style(Style::default().fg(Color::White).bg(Color::Blue))
-        .alignment(ratatui::layout::Alignment::Center);
-    f.render_widget(status_bar, chunks[2]);
+    f.render_widget(loading_paragraph, chunks[1]);
 }
 
-// format_rate function removed as it's no longer used.
-
-/// Format rate (given as f64 bytes_per_second) to human readable form (KB/s, MB/s, etc.)
-fn format_rate_from_bytes_per_second(bytes_per_second: f64) -> String {
+/// Format rate to human readable form
+fn format_rate(bytes_per_second: f64) -> String {
     const KB_PER_SEC: f64 = 1024.0;
     const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
     const GB_PER_SEC: f64 = MB_PER_SEC * 1024.0;
-
-    if bytes_per_second.is_nan() || bytes_per_second.is_infinite() {
-        return "-".to_string();
-    }
 
     if bytes_per_second >= GB_PER_SEC {
         format!("{:.2} GB/s", bytes_per_second / GB_PER_SEC)
@@ -648,16 +553,14 @@ fn format_rate_from_bytes_per_second(bytes_per_second: f64) -> String {
         format!("{:.2} MB/s", bytes_per_second / MB_PER_SEC)
     } else if bytes_per_second >= KB_PER_SEC {
         format!("{:.2} KB/s", bytes_per_second / KB_PER_SEC)
-    } else if bytes_per_second > 0.1 || bytes_per_second == 0.0 {
-        // Show B/s for very small rates or zero
+    } else if bytes_per_second > 0.0 {
         format!("{:.0} B/s", bytes_per_second)
     } else {
-        // For very small, non-zero rates, indicate less than 1 B/s
-        "<1 B/s".to_string()
+        "-".to_string()
     }
 }
 
-/// Format bytes to human readable form (KB, MB, etc.)
+/// Format bytes to human readable form
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
