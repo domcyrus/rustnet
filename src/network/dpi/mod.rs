@@ -5,13 +5,12 @@ mod http;
 mod quic;
 mod tls;
 
-
 /// Result of DPI analysis
 #[derive(Debug, Clone)]
 pub struct DpiResult {
     pub application: ApplicationProtocol,
     #[allow(dead_code)]
-    pub confidence: f32,       // 0.0 to 1.0 (not used for merging per user request)
+    pub confidence: f32, // 0.0 to 1.0 (not used for merging per user request)
     #[allow(dead_code)]
     pub needs_more_data: bool, // True if more packets would help
 }

@@ -1,3 +1,4 @@
+use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -127,6 +128,21 @@ pub struct TlsInfo {
     pub alpn: Vec<String>,
     #[allow(dead_code)]
     pub cipher_suite: Option<u16>,
+    pub certificate_cn: Option<String>,
+    pub certificate_san: Vec<String>,
+}
+
+impl TlsInfo {
+    pub fn new() -> Self {
+        Self {
+            version: None,
+            sni: None,
+            alpn: Vec::new(),
+            cipher_suite: None,
+            certificate_cn: None,
+            certificate_san: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +153,18 @@ pub enum TlsVersion {
     Tls11,
     Tls12,
     Tls13,
+}
+
+impl fmt::Display for TlsVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TlsVersion::Ssl3 => write!(f, "SSL 3.0"),
+            TlsVersion::Tls10 => write!(f, "TLS 1.0"),
+            TlsVersion::Tls11 => write!(f, "TLS 1.1"),
+            TlsVersion::Tls12 => write!(f, "TLS 1.2"),
+            TlsVersion::Tls13 => write!(f, "TLS 1.3"),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
