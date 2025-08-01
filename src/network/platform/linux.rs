@@ -1,6 +1,6 @@
 // network/platform/linux.rs - Linux process lookup
 use super::{ConnectionKey, ProcessLookup};
-use crate::types::{Connection, Protocol};
+use crate::network::types::{Connection, Protocol};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::fs;

@@ -1,8 +1,48 @@
+use log::{debug, error, info, warn};
+use procfs::net::tcp;
+
 // network/merge.rs - Connection merging and update utilities
 use crate::network::dpi::DpiResult;
-use crate::network::parser::ParsedPacket;
-use crate::network::types::{Connection, DpiInfo, RateInfo};
+use crate::network::parser::{ParsedPacket, TcpFlags};
+use crate::network::types::{Connection, DpiInfo, ProtocolState, RateInfo, TcpState};
 use std::time::{Instant, SystemTime};
+
+/// Update TCP connection state based on observed flags and current state
+/// This implements the TCP state machine according to RFC 793
+fn update_tcp_state(current_state: TcpState, flags: &TcpFlags, is_outgoing: bool) -> TcpState {
+    info!(
+        "Updating TCP state: current_state={:?}, flags={:?}, is_outgoing={}",
+        current_state, flags, is_outgoing
+    );
+    match (current_state, flags.syn, flags.ack, flags.fin, flags.rst) {
+        // Connection establishment - three-way handshake
+        (TcpState::Unknown, true, false, false, false) if !is_outgoing => TcpState::SynReceived,
+        (TcpState::Unknown, true, false, false, false) if is_outgoing => TcpState::SynSent,
+
+        (TcpState::Listen, true, false, false, false) if !is_outgoing => TcpState::SynReceived,
+        (TcpState::Listen, true, false, false, false) if is_outgoing => TcpState::SynSent,
+        (TcpState::SynSent, true, true, false, false) if !is_outgoing => TcpState::Established,
+        (TcpState::SynReceived, false, true, false, false) if is_outgoing => TcpState::Established,
+        // This might happen if we start parsing connections after the SYN-ACK
+        (TcpState::Unknown, false, true, false, false) => TcpState::Established,
+
+        // Connection termination - normal close
+        (TcpState::Established, false, _, true, false) if is_outgoing => TcpState::FinWait1,
+        (TcpState::Established, false, _, true, false) if !is_outgoing => TcpState::CloseWait,
+        (TcpState::FinWait1, false, true, false, false) if !is_outgoing => TcpState::FinWait2,
+        (TcpState::FinWait1, false, _, true, false) if !is_outgoing => TcpState::Closing,
+        (TcpState::FinWait2, false, _, true, false) if !is_outgoing => TcpState::TimeWait,
+        (TcpState::CloseWait, false, _, true, false) if is_outgoing => TcpState::LastAck,
+        (TcpState::LastAck, false, true, false, false) if !is_outgoing => TcpState::Closed,
+        (TcpState::Closing, false, true, false, false) if !is_outgoing => TcpState::TimeWait,
+
+        // Connection reset
+        (_, _, _, _, true) => TcpState::Closed,
+
+        // Keep current state if no state transition
+        _ => current_state,
+    }
+}
 
 /// Merge a parsed packet into an existing connection
 pub fn merge_packet_into_connection(
@@ -23,7 +63,29 @@ pub fn merge_packet_into_connection(
     }
 
     // Update protocol state (from packet flags/state)
-    conn.protocol_state = parsed.state;
+    if parsed.tcp_flags.is_some() {
+        let current_tcp_state = match conn.protocol_state {
+            ProtocolState::Tcp(state) => state,
+            _ => {
+                warn!("Merging packet into non-TCP connection, resetting to Unknown state");
+                TcpState::Unknown // Default to unknown if not TCP
+            }
+        };
+        let new_tcp_state = update_tcp_state(
+            current_tcp_state,
+            &parsed.tcp_flags.unwrap(),
+            parsed.is_outgoing,
+        );
+        info!(
+            "Updated TCP state: {:?} -> {:?}",
+            current_tcp_state, new_tcp_state
+        );
+        conn.protocol_state = ProtocolState::Tcp(new_tcp_state);
+    } else {
+        // If no TCP flags, assume UDP or other protocol state
+        conn.protocol_state = parsed.protocol_state.clone();
+    }
+    conn.protocol_state = parsed.protocol_state;
 
     // Update DPI info if available and better than what we have
     if let Some(dpi_result) = &parsed.dpi_result {
@@ -39,8 +101,29 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
         parsed.protocol,
         parsed.local_addr,
         parsed.remote_addr,
-        parsed.state,
+        parsed.protocol_state.clone(),
     );
+
+    if parsed.tcp_flags.is_some() {
+        // If TCP, set initial state based on flags
+        if let Some(tcp_flags) = &parsed.tcp_flags {
+            let old_state = conn.protocol_state.clone();
+            conn.protocol_state = ProtocolState::Tcp(update_tcp_state(
+                TcpState::Unknown,
+                tcp_flags,
+                parsed.is_outgoing,
+            ));
+            info!(
+                "Created connection from packet: {:?} -> {:?}, old state: {:?}, new state: {:?}",
+                parsed.local_addr, parsed.remote_addr, old_state, conn.protocol_state
+            );
+        } else {
+            conn.protocol_state = ProtocolState::Tcp(TcpState::Unknown);
+        }
+    } else {
+        // For non-TCP protocols, use the provided state directly
+        conn.protocol_state = parsed.protocol_state.clone();
+    }
 
     // Set initial stats based on packet direction
     if parsed.is_outgoing {
@@ -200,7 +283,15 @@ mod tests {
             protocol: Protocol::TCP,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-            state: ProtocolState::Tcp(TcpState::Established),
+            protocol_state: ProtocolState::Tcp(TcpState::Unknown),
+            tcp_flags: Some(TcpFlags {
+                syn: false,
+                ack: false,
+                fin: true,
+                rst: false,
+                psh: false,
+                urg: false,
+            }),
             is_outgoing,
             packet_len: 100,
             dpi_result: None,

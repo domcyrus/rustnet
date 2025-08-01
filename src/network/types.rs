@@ -69,6 +69,7 @@ pub enum TcpState {
     TimeWait,
     Closing,
     Closed,
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy)]

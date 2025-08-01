@@ -3,6 +3,35 @@ use crate::network::dpi::{self, DpiResult};
 use crate::network::types::*;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+// Define TCP flags as bit masks
+const TCP_FIN: u8 = 0x01;
+const TCP_SYN: u8 = 0x02;
+const TCP_RST: u8 = 0x04;
+const TCP_PSH: u8 = 0x08;
+const TCP_ACK: u8 = 0x10;
+const TCP_URG: u8 = 0x20;
+
+#[derive(Debug, Clone, Copy)]
+pub struct TcpFlags {
+    pub fin: bool,
+    pub syn: bool,
+    pub rst: bool,
+    pub psh: bool,
+    pub ack: bool,
+    pub urg: bool,
+}
+
+fn parse_tcp_flags(flags: u8) -> TcpFlags {
+    TcpFlags {
+        fin: (flags & TCP_FIN) != 0,
+        syn: (flags & TCP_SYN) != 0,
+        rst: (flags & TCP_RST) != 0,
+        psh: (flags & TCP_PSH) != 0,
+        ack: (flags & TCP_ACK) != 0,
+        urg: (flags & TCP_URG) != 0,
+    }
+}
+
 /// Result of parsing a packet
 #[derive(Debug)]
 pub struct ParsedPacket {
@@ -10,7 +39,8 @@ pub struct ParsedPacket {
     pub protocol: Protocol,
     pub local_addr: SocketAddr,
     pub remote_addr: SocketAddr,
-    pub state: ProtocolState,
+    pub tcp_flags: Option<TcpFlags>,
+    pub protocol_state: ProtocolState,
     pub is_outgoing: bool,
     pub packet_len: usize,
     pub dpi_result: Option<DpiResult>, // DPI results if available
@@ -207,7 +237,7 @@ impl PacketParser {
         let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
         let flags = transport_data[13];
 
-        let tcp_state = parse_tcp_flags(flags);
+        let tcp_flags = parse_tcp_flags(flags);
 
         let (local_addr, remote_addr) = if is_outgoing {
             (
@@ -239,7 +269,8 @@ impl PacketParser {
             protocol: Protocol::TCP,
             local_addr,
             remote_addr,
-            state: ProtocolState::Tcp(tcp_state),
+            tcp_flags: Some(tcp_flags),
+            protocol_state: ProtocolState::Tcp(TcpState::Unknown),
             is_outgoing,
             packet_len,
             dpi_result,
@@ -286,7 +317,8 @@ impl PacketParser {
             protocol: Protocol::UDP,
             local_addr,
             remote_addr,
-            state: ProtocolState::Udp,
+            tcp_flags: None,
+            protocol_state: ProtocolState::Udp,
             is_outgoing,
             packet_len,
             dpi_result,
@@ -323,7 +355,8 @@ impl PacketParser {
             protocol: Protocol::ICMP,
             local_addr,
             remote_addr,
-            state: ProtocolState::Icmp {
+            tcp_flags: None,
+            protocol_state: ProtocolState::Icmp {
                 icmp_type,
                 icmp_code,
             },
@@ -363,7 +396,8 @@ impl PacketParser {
             protocol: Protocol::ICMP,
             local_addr,
             remote_addr,
-            state: ProtocolState::Icmp {
+            tcp_flags: None,
+            protocol_state: ProtocolState::Icmp {
                 icmp_type,
                 icmp_code,
             },
@@ -408,7 +442,8 @@ impl PacketParser {
             protocol: Protocol::ARP,
             local_addr,
             remote_addr,
-            state: ProtocolState::Arp { operation },
+            tcp_flags: None,
+            protocol_state: ProtocolState::Arp { operation },
             is_outgoing,
             packet_len: data.len(),
             dpi_result: None,
@@ -462,20 +497,5 @@ impl PacketParser {
                 return (next_header, offset);
             }
         }
-    }
-}
-
-// ... rest of parsing methods
-
-fn parse_tcp_flags(flags: u8) -> TcpState {
-    match flags {
-        0x02 => TcpState::SynSent,
-        0x12 => TcpState::SynReceived,
-        0x10 => TcpState::Established,
-        0x01 => TcpState::FinWait1,
-        0x11 => TcpState::FinWait2,
-        0x04 => TcpState::Closed,
-        0x14 => TcpState::Closing,
-        _ => TcpState::Established,
     }
 }
