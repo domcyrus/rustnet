@@ -51,7 +51,8 @@ impl UIState {
     /// Get the current selected connection index, if any
     pub fn get_selected_index(&self, connections: &[Connection]) -> Option<usize> {
         if let Some(ref selected_key) = self.selected_connection_key {
-            connections.iter()
+            connections
+                .iter()
                 .position(|conn| conn.key() == *selected_key)
         } else if !connections.is_empty() {
             Some(0) // Default to first connection
@@ -134,8 +135,8 @@ impl UIState {
         }
 
         // If no selection or selection is no longer valid, select first connection
-        if self.selected_connection_key.is_none() || 
-           self.get_selected_index(connections).is_none() {
+        if self.selected_connection_key.is_none() || self.get_selected_index(connections).is_none()
+        {
             self.set_selected_by_index(connections, 0);
         }
     }
@@ -245,7 +246,7 @@ fn draw_connections_list(
     let widths = [
         Constraint::Length(4),  // Protocol (TCP/UDP fits in 4)
         Constraint::Length(18), // Local Address (slightly reduced)
-        Constraint::Length(22), // Remote Address (slightly reduced) 
+        Constraint::Length(22), // Remote Address (slightly reduced)
         Constraint::Length(8),  // State (EST/LIS/etc fit in 8)
         Constraint::Length(8),  // Service (port names fit in 8)
         Constraint::Length(25), // DPI/Application (slightly reduced)
@@ -254,12 +255,12 @@ fn draw_connections_list(
     ];
 
     let header_cells = [
-        "Pro",           // Shortened
+        "Pro", // Shortened
         "Local Address",
-        "Remote Address", 
+        "Remote Address",
         "State",
         "Service",
-        "Application / Host",  // More descriptive for DPI
+        "Application / Host", // More descriptive for DPI
         "Down/Up",            // Compressed
         "Process",
     ]
@@ -337,7 +338,7 @@ fn draw_connections_list(
                         }
                         crate::network::types::ApplicationProtocol::Dns(info) => {
                             if let Some(query) = &info.query_name {
-                                // Limit query to 26 chars to fit "DNS " prefix  
+                                // Limit query to 26 chars to fit "DNS " prefix
                                 if query.len() > 26 {
                                     format!("DNS {:.23}...", query)
                                 } else {
@@ -419,7 +420,8 @@ fn draw_stats_panel(
         .filter(|c| c.protocol == Protocol::UDP)
         .count();
 
-    let interface_name = app.get_current_interface()
+    let interface_name = app
+        .get_current_interface()
         .unwrap_or_else(|| "Unknown".to_string());
 
     let conn_stats_text: Vec<Line> = vec![
@@ -711,7 +713,6 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Toggle this help screen"),
         ]),
         Line::from(""),
-        Line::from("Press any key to continue..."),
     ];
 
     let help = Paragraph::new(help_text)
@@ -748,8 +749,16 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
 
     let style = if ui_state.quit_confirmation {
         Style::default().fg(Color::Black).bg(Color::Yellow)
-    } else if ui_state.clipboard_message.is_some() && 
-              ui_state.clipboard_message.as_ref().unwrap().1.elapsed().as_secs() < 3 {
+    } else if ui_state.clipboard_message.is_some()
+        && ui_state
+            .clipboard_message
+            .as_ref()
+            .unwrap()
+            .1
+            .elapsed()
+            .as_secs()
+            < 3
+    {
         Style::default().fg(Color::Black).bg(Color::Green)
     } else {
         Style::default().fg(Color::White).bg(Color::Blue)
