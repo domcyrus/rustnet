@@ -10,10 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::{
     capture::{CaptureConfig, PacketReader, setup_packet_capture},
-    merge::{
-        create_connection_from_packet,
-        merge_packet_into_connection,
-    },
+    merge::{create_connection_from_packet, merge_packet_into_connection},
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
     services::ServiceLookup,
@@ -187,7 +184,10 @@ impl App {
                 Ok((capture, device_name)) => {
                     // Store the actual interface name being used
                     *current_interface.write().unwrap() = Some(device_name.clone());
-                    info!("Packet capture started successfully on interface: {}", device_name);
+                    info!(
+                        "Packet capture started successfully on interface: {}",
+                        device_name
+                    );
                     let mut reader = PacketReader::new(capture);
                     let mut packets_read = 0u64;
                     let mut last_log = Instant::now();
@@ -208,8 +208,8 @@ impl App {
                                     info!("First packet captured! Size: {} bytes", packet.len());
                                 }
 
-                                // Log every 100 packets or every 5 seconds
-                                if packets_read % 100 == 0
+                                // Log every 10000 packets or every 5 seconds
+                                if packets_read % 10000 == 0
                                     || last_log.elapsed() > Duration::from_secs(5)
                                 {
                                     info!("Read {} packets so far", packets_read);
@@ -317,7 +317,7 @@ impl App {
                         .fetch_add(batch.len() as u64, Ordering::Relaxed);
 
                     // Log progress
-                    if total_processed % 100 == 0 || last_log.elapsed() > Duration::from_secs(5) {
+                    if total_processed % 10000 == 0 || last_log.elapsed() > Duration::from_secs(5) {
                         debug!(
                             "Processor {}: {} packets processed ({} parsed)",
                             id, total_processed, parsed_count

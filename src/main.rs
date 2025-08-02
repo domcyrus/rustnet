@@ -14,11 +14,6 @@ mod network;
 mod ui;
 
 fn main() -> Result<()> {
-    // Set up logging
-    setup_logging()?;
-
-    info!("Starting RustNet Monitor");
-
     // Parse command line arguments
     let matches = Command::new("rustnet")
         .version("0.1.0")
@@ -54,7 +49,26 @@ fn main() -> Result<()> {
                 .help("Disable deep packet inspection")
                 .action(clap::ArgAction::SetTrue),
         )
+        .arg(
+            Arg::new("log-level")
+                .short('l')
+                .long("log-level")
+                .value_name("LEVEL")
+                .help("Set the log level")
+                .value_parser(clap::value_parser!(LevelFilter))
+                .default_value("info")
+                .required(false),
+        )
         .get_matches();
+    // Set up logging
+    setup_logging(
+        matches
+            .get_one::<LevelFilter>("log-level")
+            .cloned()
+            .unwrap_or(LevelFilter::Info),
+    )?;
+
+    info!("Starting RustNet Monitor");
 
     // Build configuration from command line arguments
     let mut config = app::Config::default();
@@ -106,7 +120,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn setup_logging() -> Result<()> {
+fn setup_logging(level: LevelFilter) -> Result<()> {
     // Create logs directory if it doesn't exist
     let log_dir = Path::new("logs");
     if !log_dir.exists() {
@@ -118,11 +132,7 @@ fn setup_logging() -> Result<()> {
     let log_file_path = log_dir.join(format!("rustnet_{}.log", timestamp));
 
     // Initialize the logger
-    WriteLogger::init(
-        LevelFilter::Debug,
-        LogConfig::default(),
-        File::create(log_file_path)?,
-    )?;
+    WriteLogger::init(level, LogConfig::default(), File::create(log_file_path)?)?;
 
     Ok(())
 }
@@ -251,13 +261,13 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                                             error!("Failed to copy to clipboard: {}", e);
                                             ui_state.clipboard_message = Some((
                                                 format!("Failed to copy: {}", e),
-                                                std::time::Instant::now()
+                                                std::time::Instant::now(),
                                             ));
                                         } else {
                                             info!("Copied {} to clipboard", remote_addr);
                                             ui_state.clipboard_message = Some((
                                                 format!("Copied {} to clipboard", remote_addr),
-                                                std::time::Instant::now()
+                                                std::time::Instant::now(),
                                             ));
                                         }
                                     }
@@ -265,7 +275,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                                         error!("Failed to access clipboard: {}", e);
                                         ui_state.clipboard_message = Some((
                                             format!("Clipboard error: {}", e),
-                                            std::time::Instant::now()
+                                            std::time::Instant::now(),
                                         ));
                                     }
                                 }

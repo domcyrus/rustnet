@@ -1,5 +1,4 @@
-use log::{debug, error, info, warn};
-use procfs::net::tcp;
+use log::{debug, warn};
 
 // network/merge.rs - Connection merging and update utilities
 use crate::network::dpi::DpiResult;
@@ -10,7 +9,7 @@ use std::time::{Instant, SystemTime};
 /// Update TCP connection state based on observed flags and current state
 /// This implements the TCP state machine according to RFC 793
 fn update_tcp_state(current_state: TcpState, flags: &TcpFlags, is_outgoing: bool) -> TcpState {
-    info!(
+    debug!(
         "Updating TCP state: current_state={:?}, flags={:?}, is_outgoing={}",
         current_state, flags, is_outgoing
     );
@@ -77,7 +76,7 @@ pub fn merge_packet_into_connection(
             &parsed.tcp_flags.unwrap(),
             parsed.is_outgoing,
         );
-        info!(
+        debug!(
             "Updated TCP state: {:?} -> {:?}",
             current_tcp_state, new_tcp_state
         );
@@ -113,7 +112,7 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
                 tcp_flags,
                 parsed.is_outgoing,
             ));
-            info!(
+            debug!(
                 "Created connection from packet: {:?} -> {:?}, old state: {:?}, new state: {:?}",
                 parsed.local_addr, parsed.remote_addr, old_state, conn.protocol_state
             );
