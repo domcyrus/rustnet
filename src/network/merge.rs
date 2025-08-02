@@ -25,6 +25,7 @@ fn update_tcp_state(current_state: TcpState, flags: &TcpFlags, is_outgoing: bool
         (TcpState::SynReceived, false, true, false, false) if is_outgoing => TcpState::Established,
         // This might happen if we start parsing connections after the SYN-ACK
         (TcpState::Unknown, false, true, false, false) => TcpState::Established,
+        (TcpState::Unknown, false, true, true, false) => TcpState::Established,
 
         // Connection termination - normal close
         (TcpState::Established, false, _, true, false) if is_outgoing => TcpState::FinWait1,
@@ -85,7 +86,6 @@ pub fn merge_packet_into_connection(
         // If no TCP flags, assume UDP or other protocol state
         conn.protocol_state = parsed.protocol_state.clone();
     }
-    conn.protocol_state = parsed.protocol_state;
 
     // Update DPI info if available and better than what we have
     if let Some(dpi_result) = &parsed.dpi_result {
