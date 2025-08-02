@@ -249,4 +249,4 @@ This project is licensed under the Apache License, Version 2.0 - see the [LICENS
 
 - Built with [ratatui](https://github.com/ratatui-org/ratatui) for the terminal UI
 - Packet capture powered by [libpcap](https://www.tcpdump.org/)
-- Inspired by tools like `netstat`, `ss`, and `iftop`
+- Inspired by tools like `sniffnet`, `netstat`, `ss`, and `iftop`
