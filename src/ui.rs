@@ -350,7 +350,6 @@ fn draw_connections_list(
                         }
                         crate::network::types::ApplicationProtocol::Ssh => "SSH".to_string(),
                         crate::network::types::ApplicationProtocol::Quic => "QUIC".to_string(),
-                        crate::network::types::ApplicationProtocol::Unknown => "-".to_string(),
                     }
                 }
                 None => "-".to_string(),

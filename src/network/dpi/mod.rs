@@ -9,10 +9,6 @@ mod tls;
 #[derive(Debug, Clone)]
 pub struct DpiResult {
     pub application: ApplicationProtocol,
-    #[allow(dead_code)]
-    pub confidence: f32, // 0.0 to 1.0 (not used for merging per user request)
-    #[allow(dead_code)]
-    pub needs_more_data: bool, // True if more packets would help
 }
 
 /// Analyze a TCP packet payload
@@ -32,8 +28,6 @@ pub fn analyze_tcp_packet(
     if let Some(http_result) = http::analyze_http(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::Http(http_result),
-            confidence: 1.0,
-            needs_more_data: false,
         });
     }
 
@@ -42,8 +36,6 @@ pub fn analyze_tcp_packet(
         if let Some(tls_result) = tls::analyze_tls(payload) {
             return Some(DpiResult {
                 application: ApplicationProtocol::Https(tls_result),
-                confidence: 1.0,
-                needs_more_data: false,
             });
         }
     }
@@ -52,8 +44,6 @@ pub fn analyze_tcp_packet(
     if local_port == 22 || remote_port == 22 || payload.starts_with(b"SSH-") {
         return Some(DpiResult {
             application: ApplicationProtocol::Ssh,
-            confidence: 1.0,
-            needs_more_data: false,
         });
     }
 
@@ -78,8 +68,6 @@ pub fn analyze_udp_packet(
         if let Some(dns_result) = dns::analyze_dns(payload) {
             return Some(DpiResult {
                 application: ApplicationProtocol::Dns(dns_result),
-                confidence: 1.0,
-                needs_more_data: false,
             });
         }
     }
@@ -88,8 +76,6 @@ pub fn analyze_udp_packet(
     if (local_port == 443 || remote_port == 443) && quic::is_quic_packet(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::Quic,
-            confidence: 0.9, // QUIC detection is less certain
-            needs_more_data: true,
         });
     }
 

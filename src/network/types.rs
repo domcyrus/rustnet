@@ -47,7 +47,6 @@ impl std::fmt::Display for ApplicationProtocol {
             }
             ApplicationProtocol::Ssh => write!(f, "SSH"),
             ApplicationProtocol::Quic => write!(f, "QUIC"),
-            ApplicationProtocol::Unknown => write!(f, "-"),
         }
     }
 }
@@ -55,6 +54,7 @@ impl std::fmt::Display for ApplicationProtocol {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
     #[allow(dead_code)]
+    // Listening is not used in our model because we track connections after they are established
     Listen,
     SynSent,
     SynReceived,
@@ -99,8 +99,6 @@ pub enum ApplicationProtocol {
     Dns(DnsInfo),
     Ssh,
     Quic,
-    #[allow(dead_code)]
-    Unknown,
 }
 
 #[derive(Debug, Clone)]
@@ -118,8 +116,6 @@ pub enum HttpVersion {
     Http10,
     Http11,
     Http2,
-    #[allow(dead_code)]
-    Http3,
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +218,7 @@ pub struct Connection {
     pub protocol: Protocol,
     pub local_addr: SocketAddr,
     pub remote_addr: SocketAddr,
+    pub remote_host: Option<String>,
 
     // Protocol state
     pub protocol_state: ProtocolState,
@@ -248,8 +245,10 @@ pub struct Connection {
 
     // Performance metrics
     #[allow(dead_code)]
+    // TODO: implement proper bits per second rate tracking
     pub current_rate_bps: RateInfo,
     #[allow(dead_code)]
+    // TODO: implement RTT estimation
     pub rtt_estimate: Option<Duration>,
 
     // Backward compatibility fields
@@ -270,6 +269,7 @@ impl Connection {
             protocol,
             local_addr,
             remote_addr,
+            remote_host: None,
             protocol_state: state,
             pid: None,
             process_name: None,

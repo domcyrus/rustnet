@@ -267,55 +267,6 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
     }
 }
 
-/// List available capture devices
-#[allow(dead_code)]
-pub fn list_devices() -> Result<Vec<DeviceInfo>> {
-    let devices = Device::list()?;
-
-    Ok(devices
-        .into_iter()
-        .map(|d| {
-            // Check if device is active by checking flags and addresses
-            let is_active = d.flags.is_up()
-                && d.flags.is_running()
-                && d.addresses.iter().any(|addr| {
-                    // Has at least one non-link-local address
-                    match &addr.addr {
-                        std::net::IpAddr::V4(v4) => !v4.is_link_local() && !v4.is_loopback(),
-                        std::net::IpAddr::V6(v6) => !v6.is_loopback() && !v6.is_multicast(),
-                    }
-                });
-
-            DeviceInfo {
-                name: d.name,
-                description: d.desc,
-                addresses: d
-                    .addresses
-                    .into_iter()
-                    .map(|addr| format!("{}", addr.addr))
-                    .collect(),
-                is_loopback: d.flags.is_loopback(),
-                is_up: d.flags.is_up(),
-                is_running: d.flags.is_running(),
-                is_active,
-            }
-        })
-        .collect())
-}
-
-/// Information about a network device
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct DeviceInfo {
-    pub name: String,
-    pub description: Option<String>,
-    pub addresses: Vec<String>,
-    pub is_loopback: bool,
-    pub is_up: bool,
-    pub is_running: bool,
-    pub is_active: bool,
-}
-
 /// Simple packet reader that handles timeouts gracefully
 pub struct PacketReader {
     capture: Capture<Active>,
@@ -352,6 +303,7 @@ pub struct CaptureStats {
     pub received: u32,
     pub dropped: u32,
     #[allow(dead_code)]
+    // TODO: implement interface-specific dropped packets
     pub if_dropped: u32,
 }
 
@@ -365,20 +317,5 @@ mod tests {
         assert!(config.promiscuous);
         assert_eq!(config.snaplen, 200);
         assert!(config.filter.is_none()); // Default starts without filter
-    }
-
-    #[test]
-    fn test_list_devices() {
-        // This might fail in some test environments
-        if let Ok(devices) = list_devices() {
-            for device in devices {
-                println!("Device: {} - {:?}", device.name, device.description);
-                println!("  Addresses: {:?}", device.addresses);
-                println!(
-                    "  Loopback: {}, Up: {}, Running: {}",
-                    device.is_loopback, device.is_up, device.is_running
-                );
-            }
-        }
     }
 }
