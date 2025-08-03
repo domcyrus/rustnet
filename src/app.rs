@@ -98,8 +98,8 @@ impl App {
     /// Create a new application instance
     pub fn new(config: Config) -> Result<Self> {
         // Load service definitions
-        let service_lookup = ServiceLookup::from_file("/etc/services").unwrap_or_else(|e| {
-            warn!("Failed to load /etc/services: {}, using defaults", e);
+        let service_lookup = ServiceLookup::from_embedded().unwrap_or_else(|e| {
+            warn!("Failed to load embedded services: {}, using defaults", e);
             ServiceLookup::with_defaults()
         });
 

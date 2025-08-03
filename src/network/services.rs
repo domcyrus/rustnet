@@ -1,18 +1,15 @@
 use crate::network::types::Protocol;
 use anyhow::Result;
+use log::debug;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::Path;
+
+const SERVICES_DATA: &str = include_str!("../../assets/services");
 
 /// Service name lookup table
 #[derive(Debug, Clone)]
 pub struct ServiceLookup {
     /// Map of (port, protocol) -> service name
     services: HashMap<(u16, Protocol), String>,
-    /// Common alternative names for services
-    #[allow(dead_code)]
-    aliases: HashMap<String, String>,
 }
 
 impl ServiceLookup {
@@ -20,20 +17,14 @@ impl ServiceLookup {
     pub fn new() -> Self {
         Self {
             services: HashMap::new(),
-            aliases: HashMap::new(),
         }
     }
 
-    /// Load services from a file (typically /etc/services format)
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+    // Load services from embedded data.
+    pub fn from_embedded() -> Result<Self> {
         let mut services = HashMap::new();
-        let mut aliases = HashMap::new();
 
-        let file = File::open(path)?;
-        let reader = BufReader::new(file);
-
-        for line in reader.lines() {
-            let line = line?;
+        for line in SERVICES_DATA.lines() {
             let line = line.trim();
 
             // Skip comments and empty lines
@@ -71,18 +62,13 @@ impl ServiceLookup {
             services
                 .entry((port, protocol))
                 .or_insert_with(|| service_name.to_string());
-
-            // Store aliases if any
-            for &alias in &parts[2..] {
-                if !alias.starts_with('#') {
-                    aliases.insert(alias.to_string(), service_name.to_string());
-                } else {
-                    break; // Rest is comment
-                }
-            }
         }
+        if services.is_empty() {
+            return Err(anyhow::anyhow!("No services found in embedded data"));
+        }
+        debug!("Loaded {} services from embedded data", services.len());
 
-        Ok(Self { services, aliases })
+        Ok(Self { services })
     }
 
     /// Create with common well-known services
@@ -138,83 +124,6 @@ impl ServiceLookup {
     pub fn lookup(&self, port: u16, protocol: Protocol) -> Option<&str> {
         self.services.get(&(port, protocol)).map(|s| s.as_str())
     }
-
-    /// Look up service name with fallback to common names
-    #[allow(dead_code)]
-    pub fn lookup_with_fallback(&self, port: u16, protocol: Protocol) -> Option<String> {
-        if let Some(name) = self.lookup(port, protocol) {
-            return Some(name.to_string());
-        }
-
-        // Common dynamic port ranges with generic names
-        match port {
-            1024..=5000 => Some("user-port".to_string()),
-            5001..=32767 => Some("dynamic".to_string()),
-            32768..=60999 => Some("private".to_string()),
-            61000..=65535 => Some("ephemeral".to_string()),
-            _ => None,
-        }
-    }
-
-    /// Get a display name for a service (formats well-known services better)
-    #[allow(dead_code)]
-    pub fn display_name(&self, port: u16, protocol: Protocol) -> String {
-        match self.lookup(port, protocol) {
-            Some("http") => "HTTP".to_string(),
-            Some("https") => "HTTPS".to_string(),
-            Some("ssh") => "SSH".to_string(),
-            Some("ftp") => "FTP".to_string(),
-            Some("smtp") => "SMTP".to_string(),
-            Some("imap") => "IMAP".to_string(),
-            Some("pop3") => "POP3".to_string(),
-            Some("dns") => "DNS".to_string(),
-            Some("dhcp-server") => "DHCP Server".to_string(),
-            Some("dhcp-client") => "DHCP Client".to_string(),
-            Some("ntp") => "NTP".to_string(),
-            Some("rdp") => "RDP".to_string(),
-            Some("vnc") => "VNC".to_string(),
-            Some(name) => {
-                // Capitalize first letter
-                let mut chars = name.chars();
-                match chars.next() {
-                    None => String::new(),
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                }
-            }
-            None => format!("{}/{}", port, protocol),
-        }
-    }
-
-    /// Get all services for a specific protocol
-    #[allow(dead_code)]
-    pub fn services_by_protocol(&self, protocol: Protocol) -> Vec<(u16, &str)> {
-        let mut services: Vec<(u16, &str)> = self
-            .services
-            .iter()
-            .filter_map(|((port, proto), name)| {
-                if *proto == protocol {
-                    Some((*port, name.as_str()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        services.sort_by_key(|(port, _)| *port);
-        services
-    }
-
-    /// Get the number of services loaded
-    #[allow(dead_code)]
-    pub fn len(&self) -> usize {
-        self.services.len()
-    }
-
-    /// Check if the lookup table is empty
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.services.is_empty()
-    }
 }
 
 impl Default for ServiceLookup {
@@ -235,44 +144,5 @@ mod tests {
         assert_eq!(lookup.lookup(443, Protocol::TCP), Some("https"));
         assert_eq!(lookup.lookup(22, Protocol::TCP), Some("ssh"));
         assert_eq!(lookup.lookup(53, Protocol::UDP), Some("dns"));
-    }
-
-    #[test]
-    fn test_display_names() {
-        let lookup = ServiceLookup::with_defaults();
-
-        assert_eq!(lookup.display_name(80, Protocol::TCP), "HTTP");
-        assert_eq!(lookup.display_name(443, Protocol::TCP), "HTTPS");
-        assert_eq!(lookup.display_name(12345, Protocol::TCP), "12345/TCP");
-    }
-
-    #[test]
-    fn test_lookup_with_fallback() {
-        let lookup = ServiceLookup::with_defaults();
-
-        assert_eq!(
-            lookup.lookup_with_fallback(80, Protocol::TCP),
-            Some("http".to_string())
-        );
-        assert_eq!(
-            lookup.lookup_with_fallback(50000, Protocol::TCP),
-            Some("private".to_string())
-        );
-        assert_eq!(
-            lookup.lookup_with_fallback(65000, Protocol::TCP),
-            Some("ephemeral".to_string())
-        );
-    }
-
-    #[test]
-    fn test_services_by_protocol() {
-        let lookup = ServiceLookup::with_defaults();
-
-        let tcp_services = lookup.services_by_protocol(Protocol::TCP);
-        assert!(tcp_services.iter().any(|(port, _)| *port == 80));
-        assert!(tcp_services.iter().any(|(port, _)| *port == 443));
-
-        let udp_services = lookup.services_by_protocol(Protocol::UDP);
-        assert!(udp_services.iter().any(|(port, _)| *port == 53));
     }
 }
