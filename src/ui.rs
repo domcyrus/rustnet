@@ -206,7 +206,7 @@ fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect) {
                 .title("RustNet Monitor"),
         )
         .select(ui_state.selected_tab)
-        .style(Style::default().fg(Color::White))
+        .style(Style::default())
         .highlight_style(
             Style::default()
                 .add_modifier(Modifier::BOLD)
@@ -446,7 +446,7 @@ fn draw_stats_panel(
 
     let conn_stats = Paragraph::new(conn_stats_text)
         .block(Block::default().borders(Borders::ALL).title("Statistics"))
-        .style(Style::default().fg(Color::White));
+        .style(Style::default());
     f.render_widget(conn_stats, chunks[0]);
 
     // Traffic statistics
@@ -471,7 +471,7 @@ fn draw_stats_panel(
 
     let traffic_stats = Paragraph::new(traffic_stats_text)
         .block(Block::default().borders(Borders::ALL).title("Traffic"))
-        .style(Style::default().fg(Color::White));
+        .style(Style::default());
     f.render_widget(traffic_stats, chunks[1]);
 
     Ok(())
@@ -610,7 +610,7 @@ fn draw_connection_details(
                 .borders(Borders::ALL)
                 .title("Connection Information"),
         )
-        .style(Style::default().fg(Color::White))
+        .style(Style::default())
         .wrap(Wrap { trim: true });
 
     f.render_widget(details, chunks[0]);
@@ -654,7 +654,7 @@ fn draw_connection_details(
                 .borders(Borders::ALL)
                 .title("Traffic Statistics"),
         )
-        .style(Style::default().fg(Color::White))
+        .style(Style::default())
         .wrap(Wrap { trim: true });
 
     f.render_widget(traffic, chunks[1]);
@@ -716,7 +716,7 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
 
     let help = Paragraph::new(help_text)
         .block(Block::default().borders(Borders::ALL).title("Help"))
-        .style(Style::default().fg(Color::White))
+        .style(Style::default())
         .wrap(Wrap { trim: true })
         .alignment(ratatui::layout::Alignment::Left);
 
@@ -785,10 +785,7 @@ fn draw_loading_screen(f: &mut Frame) {
         Line::from(""),
         Line::from(vec![
             Span::styled("⣾ ", Style::default().fg(Color::Yellow)),
-            Span::styled(
-                "Loading network connections...",
-                Style::default().fg(Color::White),
-            ),
+            Span::styled("Loading network connections...", Style::default()),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
