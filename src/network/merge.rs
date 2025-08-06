@@ -3,7 +3,9 @@ use log::{debug, warn};
 // network/merge.rs - Connection merging and update utilities
 use crate::network::dpi::DpiResult;
 use crate::network::parser::{ParsedPacket, TcpFlags};
-use crate::network::types::{Connection, DpiInfo, ProtocolState, RateInfo, TcpState};
+use crate::network::types::{
+    ApplicationProtocol, Connection, DpiInfo, ProtocolState, RateInfo, TcpState,
+};
 use std::time::{Instant, SystemTime};
 
 /// Update TCP connection state based on observed flags and current state
@@ -148,9 +150,9 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
     conn
 }
 
-/// Merge DPI results into connection
+/// Merge DPI information into an existing connection
 fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
-    match &conn.dpi_info {
+    match &mut conn.dpi_info {
         None => {
             // No existing DPI info, use the new one
             conn.dpi_info = Some(DpiInfo {
@@ -159,8 +161,37 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                 last_update_time: Instant::now(),
             });
         }
-        // If we already have DPI info we don't want to overwrite it
-        _ => {}
+        Some(dpi_info) => {
+            // Update the last update time
+            dpi_info.last_update_time = Instant::now();
+
+            // Match on both the existing and new application protocols
+            match (&mut dpi_info.application, &dpi_result.application) {
+                (ApplicationProtocol::Http(_), ApplicationProtocol::Http(new_info)) => {
+                    // Replace the entire HTTP info
+                    dpi_info.application = ApplicationProtocol::Http(new_info.clone());
+                }
+                (ApplicationProtocol::Quic(old_info), ApplicationProtocol::Quic(new_info)) => {
+                    // Update only specific fields for QUIC
+                    old_info.connection_state = new_info.connection_state.clone();
+                    if old_info.connection_id_hex.is_none() {
+                        old_info.connection_id_hex = new_info.connection_id_hex.clone();
+                    }
+                    if old_info.version_string.is_none() {
+                        old_info.version_string = new_info.version_string.clone();
+                    }
+                }
+                (_, ApplicationProtocol::Quic(_)) => {
+                    warn!("QUIC DPI info not found in existing connection");
+                }
+                _ => {
+                    warn!(
+                        "Unhandled application protocol in DPI merge: {:?}",
+                        dpi_result.application
+                    );
+                }
+            }
+        }
     }
 }
 

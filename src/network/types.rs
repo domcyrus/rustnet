@@ -46,7 +46,18 @@ impl std::fmt::Display for ApplicationProtocol {
                 }
             }
             ApplicationProtocol::Ssh => write!(f, "SSH"),
-            ApplicationProtocol::Quic => write!(f, "QUIC"),
+            ApplicationProtocol::Quic(info) => {
+                let mut parts = vec!["QUIC"];
+                if let Some(version) = &info.version_string {
+                    parts.push(&version);
+                }
+                let packet_type = info.packet_type.to_string();
+                parts.push(&packet_type);
+                if let Some(connection_id) = &info.connection_id_hex {
+                    parts.push(&connection_id);
+                }
+                write!(f, "{}", parts.join(" "))
+            }
         }
     }
 }
@@ -98,7 +109,7 @@ pub enum ApplicationProtocol {
     Https(TlsInfo),
     Dns(DnsInfo),
     Ssh,
-    Quic,
+    Quic(QuicInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -223,6 +234,97 @@ pub enum DnsQueryType {
     TA,         // 32768
     DLV,        // 32769
     Other(u16), // For any other type
+}
+
+// QUIC-specific types
+#[derive(Debug, Clone)]
+pub struct QuicInfo {
+    pub version_string: Option<String>,
+    pub packet_type: QuicPacketType,
+    pub connection_id: Vec<u8>,
+    pub connection_id_hex: Option<String>,
+    pub connection_state: QuicConnectionState,
+}
+
+impl QuicInfo {
+    pub fn new(version: u32) -> Self {
+        Self {
+            version_string: quic_version_to_string(version),
+            connection_id_hex: None,
+            packet_type: QuicPacketType::Unknown,
+            connection_id: Vec::new(),
+            connection_state: QuicConnectionState::Unknown,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuicPacketType {
+    Initial,
+    ZeroRtt,
+    Handshake,
+    Retry,
+    VersionNegotiation,
+    OneRtt, // Short header
+    Unknown,
+}
+
+impl fmt::Display for QuicPacketType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QuicPacketType::Initial => write!(f, "Initial"),
+            QuicPacketType::ZeroRtt => write!(f, "0-RTT"),
+            QuicPacketType::Handshake => write!(f, "Handshake"),
+            QuicPacketType::Retry => write!(f, "Retry"),
+            QuicPacketType::VersionNegotiation => write!(f, "Version Negotiation"),
+            QuicPacketType::OneRtt => write!(f, "1-RTT"),
+            QuicPacketType::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuicConnectionState {
+    Initial,
+    Handshaking,
+    Connected,
+    Draining,
+    Closed,
+    Unknown,
+}
+
+impl fmt::Display for QuicConnectionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QuicConnectionState::Initial => write!(f, "Initial"),
+            QuicConnectionState::Handshaking => write!(f, "Handshaking"),
+            QuicConnectionState::Connected => write!(f, "Connected"),
+            QuicConnectionState::Draining => write!(f, "Draining"),
+            QuicConnectionState::Closed => write!(f, "Closed"),
+            QuicConnectionState::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+fn quic_version_to_string(version: u32) -> Option<String> {
+    match version {
+        0x00000001 => Some("v1".to_string()),
+        0x6b3343cf => Some("v2".to_string()),
+        0xff00001d => Some("draft-29".to_string()),
+        0xff00001c => Some("draft-28".to_string()),
+        0xff00001b => Some("draft-27".to_string()),
+        0x51303530 => Some("Q050".to_string()),
+        0x54303530 => Some("T050".to_string()),
+        v if (v >> 8) == 0xff0000 => Some(format!("draft-{}", v & 0xff)),
+        _ => None,
+    }
+}
+
+fn quick_connection_id_to_hex(id: &[u8]) -> String {
+    id.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<Vec<String>>()
+        .join(":")
 }
 
 #[derive(Debug, Clone)]
@@ -395,6 +497,26 @@ impl Connection {
             // Update backward compatibility fields
             self.current_incoming_rate_bps = self.current_rate_bps.incoming_bps;
             self.current_outgoing_rate_bps = self.current_rate_bps.outgoing_bps;
+        }
+    }
+
+    /// Check if this connection might be QUIC based on port and protocol
+    pub fn is_potential_quic(&self) -> bool {
+        self.protocol == Protocol::UDP
+            && (self.local_addr.port() == 443 || self.remote_addr.port() == 443)
+    }
+
+    /// Get a display string for the application protocol
+    pub fn application_display(&self) -> String {
+        if let Some(dpi) = &self.dpi_info {
+            dpi.application.to_string()
+        } else if self.is_potential_quic() {
+            "QUIC?".to_string()
+        } else {
+            match self.service_name.as_deref() {
+                Some(name) => name.to_uppercase(),
+                None => "Unknown".to_string(),
+            }
         }
     }
 }

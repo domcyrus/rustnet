@@ -1,4 +1,5 @@
-use crate::network::types::ApplicationProtocol;
+use crate::network::types::{ApplicationProtocol, QuicInfo};
+use log::{debug, warn};
 
 mod dns;
 mod http;
@@ -74,9 +75,20 @@ pub fn analyze_udp_packet(
 
     // 2. QUIC/HTTP3 (port 443)
     if (local_port == 443 || remote_port == 443) && quic::is_quic_packet(payload) {
-        return Some(DpiResult {
-            application: ApplicationProtocol::Quic,
-        });
+        let quic_info = quic::parse_quic_packet(payload);
+        if let Some(quic_info) = quic_info {
+            debug!("QUIC packet detected: {:?}", quic_info);
+            return Some(DpiResult {
+                application: ApplicationProtocol::Quic(quic_info),
+            });
+        } else {
+            warn!("Failed to parse QUIC packet");
+            let empty_quic_info = QuicInfo::new(0);
+
+            return Some(DpiResult {
+                application: ApplicationProtocol::Quic(empty_quic_info),
+            });
+        }
     }
 
     None

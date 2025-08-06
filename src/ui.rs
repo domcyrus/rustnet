@@ -310,48 +310,7 @@ fn draw_connections_list(
 
             // DPI/Application protocol display (enhanced for hostnames)
             let dpi_display = match &conn.dpi_info {
-                Some(dpi) => {
-                    match &dpi.application {
-                        crate::network::types::ApplicationProtocol::Http(info) => {
-                            if let Some(host) = &info.host {
-                                // Limit hostname to 28 chars to fit in 30-char column
-                                if host.len() > 28 {
-                                    format!("HTTP {:.25}...", host)
-                                } else {
-                                    format!("HTTP {}", host)
-                                }
-                            } else {
-                                "HTTP".to_string()
-                            }
-                        }
-                        crate::network::types::ApplicationProtocol::Https(info) => {
-                            if let Some(sni) = &info.sni {
-                                // Limit SNI to 26 chars to fit "HTTPS " prefix
-                                if sni.len() > 24 {
-                                    format!("HTTPS {:.21}...", sni)
-                                } else {
-                                    format!("HTTPS {}", sni)
-                                }
-                            } else {
-                                "HTTPS".to_string()
-                            }
-                        }
-                        crate::network::types::ApplicationProtocol::Dns(info) => {
-                            if let Some(query) = &info.query_name {
-                                // Limit query to 26 chars to fit "DNS " prefix
-                                if query.len() > 26 {
-                                    format!("DNS {:.23}...", query)
-                                } else {
-                                    format!("DNS {}", query)
-                                }
-                            } else {
-                                "DNS".to_string()
-                            }
-                        }
-                        crate::network::types::ApplicationProtocol::Ssh => "SSH".to_string(),
-                        crate::network::types::ApplicationProtocol::Quic => "QUIC".to_string(),
-                    }
-                }
+                Some(dpi) => dpi.application.to_string(),
                 None => "-".to_string(),
             };
 
