@@ -47,16 +47,15 @@ impl std::fmt::Display for ApplicationProtocol {
             }
             ApplicationProtocol::Ssh => write!(f, "SSH"),
             ApplicationProtocol::Quic(info) => {
-                let mut parts = vec!["QUIC"];
-                if let Some(version) = &info.version_string {
-                    parts.push(&version);
+                if let Some(tls_info) = &info.tls_info {
+                    if let Some(sni) = &tls_info.sni {
+                        write!(f, "QUIC ({})", sni)
+                    } else {
+                        write!(f, "QUIC")
+                    }
+                } else {
+                    write!(f, "QUIC")
                 }
-                let connection_state = info.connection_state.to_string();
-                parts.push(&connection_state);
-                if let Some(connection_id) = &info.connection_id_hex {
-                    parts.push(&connection_id);
-                }
-                write!(f, "{}", parts.join(" "))
             }
         }
     }
@@ -239,6 +238,10 @@ pub struct QuicInfo {
     pub connection_id: Vec<u8>,
     pub connection_id_hex: Option<String>,
     pub connection_state: QuicConnectionState,
+
+    // New fields for enhanced information
+    pub tls_info: Option<TlsInfo>, // Extracted TLS handshake info
+    pub has_crypto_frame: bool,    // Whether packet contains CRYPTO frame
 }
 
 impl QuicInfo {
@@ -249,6 +252,8 @@ impl QuicInfo {
             packet_type: QuicPacketType::Unknown,
             connection_id: Vec::new(),
             connection_state: QuicConnectionState::Unknown,
+            tls_info: None,
+            has_crypto_frame: false,
         }
     }
 }
@@ -313,13 +318,6 @@ fn quic_version_to_string(version: u32) -> Option<String> {
         v if (v >> 8) == 0xff0000 => Some(format!("draft-{}", v & 0xff)),
         _ => None,
     }
-}
-
-fn quick_connection_id_to_hex(id: &[u8]) -> String {
-    id.iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<Vec<String>>()
-        .join(":")
 }
 
 #[derive(Debug, Clone)]

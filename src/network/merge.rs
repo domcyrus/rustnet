@@ -181,6 +181,9 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     if old_info.version_string.is_none() {
                         old_info.version_string = new_info.version_string.clone();
                     }
+                    if new_info.tls_info.is_some() {
+                        old_info.tls_info = new_info.tls_info.clone();
+                    }
                 }
                 (_, ApplicationProtocol::Quic(_)) => {
                     warn!("QUIC DPI info not found in existing connection");

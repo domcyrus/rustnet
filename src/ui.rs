@@ -577,6 +577,18 @@ fn draw_connection_details(
                     }
                 }
                 crate::network::types::ApplicationProtocol::Quic(info) => {
+                    if let Some(tls_info) = &info.tls_info {
+                        let sni = tls_info.sni.clone().unwrap_or_else(|| "-".to_string());
+                        details_text.push(Line::from(vec![
+                            Span::styled("  QUIC SNI: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(sni),
+                        ]));
+                        let alpn = tls_info.alpn.join(", ");
+                        details_text.push(Line::from(vec![
+                            Span::styled("  QUIC ALPN: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(alpn),
+                        ]));
+                    }
                     if let Some(version) = info.version_string.as_ref() {
                         details_text.push(Line::from(vec![
                             Span::styled("  QUIC Version: ", Style::default().fg(Color::Cyan)),
