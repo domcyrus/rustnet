@@ -44,7 +44,7 @@ impl Default for Config {
             refresh_interval: 1000,
             enable_dpi: true,
             process_lookup_interval: 2,
-            connection_timeout: 60,
+            connection_timeout: 120,
             bpf_filter: None, // No filter by default to see all packets
         }
     }
