@@ -543,6 +543,24 @@ fn draw_connection_details(
                             Span::raw(format!("{:?}", version)),
                         ]));
                     }
+                    if let Some(sni) = &info.sni {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  SNI: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(sni.clone()),
+                        ]));
+                    }
+                    if !info.alpn.is_empty() {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  ALPN: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(info.alpn.join(", ")),
+                        ]));
+                    }
+                    if let Some(cipher) = info.cipher_suite {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Cipher Suite: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(format!("0x{:04X}", cipher)),
+                        ]));
+                    }
                 }
                 crate::network::types::ApplicationProtocol::Dns(info) => {
                     if let Some(query_type) = &info.query_type {
@@ -551,6 +569,37 @@ fn draw_connection_details(
                             Span::raw(format!("{:?}", query_type)),
                         ]));
                     }
+                    if !info.response_ips.is_empty() {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  DNS Response IPs: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(format!("{:?}", info.response_ips)),
+                        ]));
+                    }
+                }
+                crate::network::types::ApplicationProtocol::Quic(info) => {
+                    if let Some(version) = info.version_string.as_ref() {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  QUIC Version: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(version.clone()),
+                        ]));
+                    }
+                    if let Some(connection_id) = &info.connection_id_hex {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Connection ID: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(connection_id.clone()),
+                        ]));
+                    }
+
+                    let packet_type = info.packet_type.to_string();
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Packet Type: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(packet_type),
+                    ]));
+                    let connection_state = info.connection_state.to_string();
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Connection State: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(connection_state),
+                    ]));
                 }
                 _ => {}
             }

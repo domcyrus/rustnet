@@ -51,8 +51,8 @@ impl std::fmt::Display for ApplicationProtocol {
                 if let Some(version) = &info.version_string {
                     parts.push(&version);
                 }
-                let packet_type = info.packet_type.to_string();
-                parts.push(&packet_type);
+                let connection_state = info.connection_state.to_string();
+                parts.push(&connection_state);
                 if let Some(connection_id) = &info.connection_id_hex {
                     parts.push(&connection_id);
                 }
@@ -134,10 +134,7 @@ pub struct TlsInfo {
     pub version: Option<TlsVersion>,
     pub sni: Option<String>,
     pub alpn: Vec<String>,
-    #[allow(dead_code)]
     pub cipher_suite: Option<u16>,
-    pub certificate_cn: Option<String>,
-    pub certificate_san: Vec<String>,
 }
 
 impl TlsInfo {
@@ -147,8 +144,6 @@ impl TlsInfo {
             sni: None,
             alpn: Vec::new(),
             cipher_suite: None,
-            certificate_cn: None,
-            certificate_san: Vec::new(),
         }
     }
 }

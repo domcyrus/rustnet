@@ -24,10 +24,10 @@ impl Default for CaptureConfig {
         Self {
             interface: None,
             promiscuous: true,
-            snaplen: 200, // Limit packet size to keep more in buffer (like Sniffnet)
-            buffer_size: 2_000_000, // 2MB buffer (same as Sniffnet)
-            timeout_ms: 150, // 150ms timeout for UI responsiveness (like Sniffnet)
-            filter: None, // Start without filter to ensure we see packets
+            snaplen: 1514,           // Limit packet size to keep more in buffer
+            buffer_size: 20_000_000, // 20MB buffer
+            timeout_ms: 150,         // 150ms timeout for UI responsiveness
+            filter: None,            // Start without filter to ensure we see packets
         }
     }
 }
@@ -149,7 +149,7 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
         .snaplen(config.snaplen)
         .buffer_size(config.buffer_size)
         .timeout(config.timeout_ms)
-        .immediate_mode(true); // Parse packets ASAP (like Sniffnet)
+        .immediate_mode(true); // Parse packets ASAP
 
     // Open the capture
     let mut cap = cap.open()?;

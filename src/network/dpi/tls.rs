@@ -1,7 +1,8 @@
 use crate::network::types::{TlsInfo, TlsVersion};
+use log::debug;
 
 pub fn is_tls_handshake(payload: &[u8]) -> bool {
-    if payload.len() < 6 {
+    if payload.len() < 5 {
         return false;
     }
 
@@ -15,57 +16,87 @@ pub fn is_tls_handshake(payload: &[u8]) -> bool {
 }
 
 pub fn analyze_tls(payload: &[u8]) -> Option<TlsInfo> {
-    if !is_tls_handshake(payload) || payload.len() < 9 {
+    // Need at least 5 bytes for the TLS record header
+    if payload.len() < 5 {
         return None;
     }
 
     let mut info = TlsInfo::new();
 
-    // Record layer version (may be legacy for TLS 1.3)
+    // Check content type
+    let content_type = payload[0];
+
+    if content_type != 0x16 {
+        // Not a handshake record - still extract version
+        let record_version = version_from_bytes(payload[1], payload[2]);
+        info.version = record_version;
+        return Some(info);
+    }
+
+    // Record layer version
     let record_version = version_from_bytes(payload[1], payload[2]);
+    info.version = record_version;
 
     // Get record length
     let record_length = u16::from_be_bytes([payload[3], payload[4]]) as usize;
 
-    // Validate record length
-    if payload.len() < 5 + record_length {
-        return None;
-    }
-
-    // Skip TLS record header (5 bytes)
-    let handshake_data = &payload[5..5 + record_length];
-
-    if handshake_data.len() < 4 {
+    // Sanity check
+    if record_length > 16384 + 2048 {
         return Some(info);
     }
 
+    // Calculate available data (handle fragmentation gracefully)
+    let available_data = (payload.len() - 5).min(record_length);
+
+    if available_data < 4 {
+        return Some(info);
+    }
+
+    // Skip TLS record header (5 bytes)
+    let handshake_data = &payload[5..5 + available_data];
+
     let handshake_type = handshake_data[0];
+
+    // Quick validation
+    if !matches!(handshake_type, 0x00..=0x18 | 0xfe) {
+        return Some(info);
+    }
+
     let handshake_length =
         u32::from_be_bytes([0, handshake_data[1], handshake_data[2], handshake_data[3]]) as usize;
 
-    // Validate handshake length
-    if handshake_data.len() < 4 + handshake_length {
+    // Sanity check
+    if handshake_length > 16384 {
+        return Some(info);
+    }
+
+    // Calculate how much handshake data we actually have
+    let handshake_available = (handshake_data.len() - 4).min(handshake_length);
+
+    if handshake_available == 0 {
         return Some(info);
     }
 
     match handshake_type {
         0x01 => {
-            // Client Hello
+            // Client Hello - this is where SNI and ALPN are
             parse_client_hello(
-                &handshake_data[4..4 + handshake_length],
+                &handshake_data[4..4 + handshake_available],
                 &mut info,
                 record_version,
             );
         }
         0x02 => {
             // Server Hello
-            parse_server_hello(&handshake_data[4..4 + handshake_length], &mut info);
+            parse_server_hello(&handshake_data[4..4 + handshake_available], &mut info);
         }
-        0x0b => {
-            // Certificate
-            parse_certificate(&handshake_data[4..4 + handshake_length], &mut info);
+        _ => {
+            // Other handshake types we don't parse
         }
-        _ => {}
+    }
+
+    if info.sni.is_some() || !info.alpn.is_empty() {
+        debug!("TLS: Found SNI={:?}, ALPN={:?}", info.sni, info.alpn);
     }
 
     Some(info)
@@ -81,72 +112,84 @@ fn version_from_bytes(major: u8, minor: u8) -> Option<TlsVersion> {
     }
 }
 
-fn parse_client_hello(
-    data: &[u8],
-    info: &mut TlsInfo,
-    record_version: Option<TlsVersion>,
-) -> Option<()> {
-    if data.len() < 34 {
-        return None;
+fn parse_client_hello(data: &[u8], info: &mut TlsInfo, record_version: Option<TlsVersion>) {
+    // Need at least 2 bytes for version
+    if data.len() < 2 {
+        return;
     }
 
-    // Client version (legacy, real version might be in supported_versions extension)
+    // Client version
     let client_version = version_from_bytes(data[0], data[1]);
     info.version = client_version.or(record_version);
+
+    // Need at least 34 bytes for version + random
+    if data.len() < 34 {
+        return;
+    }
 
     // Skip random (32 bytes)
     let mut offset = 34;
 
-    // Session ID
+    // Session ID - be lenient with bounds
     if offset >= data.len() {
-        return None;
+        return;
     }
     let session_id_len = data[offset] as usize;
     offset += 1 + session_id_len;
 
+    if offset >= data.len() {
+        return;
+    }
+
     // Cipher suites
     if offset + 2 > data.len() {
-        return None;
+        return;
     }
     let cipher_suites_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
     offset += 2 + cipher_suites_len;
 
+    if offset >= data.len() {
+        return;
+    }
+
     // Compression methods
     if offset >= data.len() {
-        return None;
+        return;
     }
     let compression_len = data[offset] as usize;
     offset += 1 + compression_len;
 
-    // Extensions
+    if offset >= data.len() {
+        return;
+    }
+
+    // Extensions - this is what we really want
     if offset + 2 > data.len() {
-        return Some(());
+        return;
     }
     let extensions_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
     offset += 2;
 
-    if offset + extensions_len > data.len() {
-        return Some(());
+    // Parse whatever extension data we have
+    if offset < data.len() {
+        let available_ext_data = &data[offset..data.len().min(offset + extensions_len)];
+        if !available_ext_data.is_empty() {
+            parse_extensions(available_ext_data, info, true);
+        }
     }
-
-    parse_extensions(&data[offset..offset + extensions_len], info, true);
-    Some(())
 }
 
-fn parse_server_hello(data: &[u8], info: &mut TlsInfo) -> Option<()> {
-    if data.len() < 35 {
-        return None;
+fn parse_server_hello(data: &[u8], info: &mut TlsInfo) {
+    if data.len() < 2 {
+        return;
     }
 
     // Server version
     let server_version = version_from_bytes(data[0], data[1]);
+    info.version = server_version;
 
-    // For TLS 1.3, check if this is really TLS 1.2 (0x0303) which means we need to look at extensions
-    if let Some(TlsVersion::Tls12) = server_version {
-        // Will be updated by supported_versions extension if present
-        info.version = server_version;
-    } else {
-        info.version = server_version;
+    if data.len() < 34 {
+        return;
     }
 
     // Skip random (32 bytes)
@@ -154,148 +197,214 @@ fn parse_server_hello(data: &[u8], info: &mut TlsInfo) -> Option<()> {
 
     // Session ID length
     if offset >= data.len() {
-        return None;
+        return;
     }
     let session_id_len = data[offset] as usize;
     offset += 1 + session_id_len;
 
+    if offset >= data.len() {
+        return;
+    }
+
     // Cipher suite (2 bytes)
     if offset + 2 > data.len() {
-        return None;
+        return;
     }
-    info.cipher_suite = Some(u16::from_be_bytes([data[offset], data[offset + 1]]));
+    let cipher = u16::from_be_bytes([data[offset], data[offset + 1]]);
+    info.cipher_suite = Some(cipher);
     offset += 2;
 
     // Compression method (1 byte)
+    if offset >= data.len() {
+        return;
+    }
     offset += 1;
 
-    // Extensions (if present)
-    if offset + 2 <= data.len() {
-        let extensions_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
-        offset += 2;
-
-        if offset + extensions_len <= data.len() {
-            parse_extensions(&data[offset..offset + extensions_len], info, false);
-        }
+    // Extensions (optional)
+    if offset + 2 > data.len() {
+        return;
     }
 
-    Some(())
+    let extensions_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
+    offset += 2;
+
+    // Parse whatever extension data we have
+    if offset < data.len() {
+        let available_ext_data = &data[offset..data.len().min(offset + extensions_len)];
+        if !available_ext_data.is_empty() {
+            parse_extensions(available_ext_data, info, false);
+        }
+    }
 }
 
-fn parse_extensions(data: &[u8], info: &mut TlsInfo, is_client_hello: bool) -> Option<()> {
+fn parse_extensions(data: &[u8], info: &mut TlsInfo, is_client_hello: bool) {
     let mut offset = 0;
 
     while offset + 4 <= data.len() {
         let ext_type = u16::from_be_bytes([data[offset], data[offset + 1]]);
         let ext_len = u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
 
-        if offset + 4 + ext_len > data.len() {
+        // Calculate how much extension data we actually have
+        let available_ext_len = data.len().saturating_sub(offset + 4);
+        let ext_data_len = ext_len.min(available_ext_len);
+
+        if ext_data_len > 0 {
+            let ext_data = &data[offset + 4..offset + 4 + ext_data_len];
+
+            match ext_type {
+                0x0000 if is_client_hello => {
+                    // SNI (Server Name Indication)
+                    if let Some(sni) = parse_sni_extension_resilient(ext_data) {
+                        info.sni = Some(sni);
+                    }
+                }
+                0x0010 => {
+                    // ALPN (Application-Layer Protocol Negotiation)
+                    if let Some(alpn) = parse_alpn_extension_resilient(ext_data) {
+                        if !alpn.is_empty() {
+                            info.alpn = alpn;
+                        }
+                    }
+                }
+                0x002b => {
+                    // Supported Versions
+                    if let Some(version) =
+                        parse_supported_versions_resilient(ext_data, is_client_hello)
+                    {
+                        info.version = Some(version);
+                    }
+                }
+                _ => {
+                    // Skip unknown extensions
+                }
+            }
+        }
+
+        // Move to next extension (use declared length, not actual)
+        offset += 4 + ext_len;
+
+        // But stop if we've gone past available data
+        if offset > data.len() {
             break;
         }
-
-        let ext_data = &data[offset + 4..offset + 4 + ext_len];
-
-        match ext_type {
-            0x0000 => {
-                // SNI (Server Name Indication)
-                if is_client_hello {
-                    info.sni = parse_sni_extension(ext_data);
-                }
-            }
-            0x0010 => {
-                // ALPN (Application-Layer Protocol Negotiation)
-                info.alpn = parse_alpn_extension(ext_data);
-            }
-            0x002b => {
-                // Supported Versions
-                if let Some(version) = parse_supported_versions_extension(ext_data, is_client_hello)
-                {
-                    info.version = Some(version);
-                }
-            }
-            _ => {}
-        }
-
-        offset += 4 + ext_len;
     }
-
-    Some(())
 }
 
-fn parse_sni_extension(data: &[u8]) -> Option<String> {
+fn parse_sni_extension_resilient(data: &[u8]) -> Option<String> {
     if data.len() < 5 {
         return None;
     }
 
     // Server name list length (2 bytes)
-    let list_len = u16::from_be_bytes([data[0], data[1]]) as usize;
-    if data.len() < 2 + list_len {
+    let _list_len = u16::from_be_bytes([data[0], data[1]]) as usize;
+
+    // Check name type (should be 0x00 for hostname)
+    if data[2] != 0x00 {
         return None;
     }
 
-    let mut offset = 2;
+    // Name length
+    let name_len = u16::from_be_bytes([data[3], data[4]]) as usize;
 
-    while offset + 3 <= data.len() {
-        let name_type = data[offset];
-        let name_len = u16::from_be_bytes([data[offset + 1], data[offset + 2]]) as usize;
+    // Extract whatever hostname data we have
+    let available_len = data.len().saturating_sub(5);
+    let actual_len = name_len.min(available_len);
 
-        if name_type == 0x00 {
-            // host_name
-            if offset + 3 + name_len <= data.len() {
-                let hostname_bytes = &data[offset + 3..offset + 3 + name_len];
-                if let Ok(hostname) = std::str::from_utf8(hostname_bytes) {
-                    return Some(hostname.to_string());
-                }
+    if actual_len > 0 {
+        let hostname_bytes = &data[5..5 + actual_len];
+
+        // Try to parse as UTF-8
+        if let Ok(hostname) = std::str::from_utf8(hostname_bytes) {
+            // Basic validation - at least check it looks like a hostname
+            if hostname.chars().all(|c| c.is_ascii_graphic() || c == '.') {
+                let result = if actual_len < name_len {
+                    format!("{}[PARTIAL]", hostname)
+                } else {
+                    hostname.to_string()
+                };
+                return Some(result);
             }
         }
-
-        offset += 3 + name_len;
     }
 
     None
 }
 
-fn parse_alpn_extension(data: &[u8]) -> Vec<String> {
+fn parse_alpn_extension_resilient(data: &[u8]) -> Option<Vec<String>> {
+    if data.len() < 2 {
+        return None;
+    }
+
     let mut protocols = Vec::new();
 
-    if data.len() < 2 {
-        return protocols;
-    }
-
-    // ALPN extension length
+    // ALPN list length
     let alpn_len = u16::from_be_bytes([data[0], data[1]]) as usize;
-    if data.len() < 2 + alpn_len {
-        return protocols;
-    }
 
     let mut offset = 2;
+    let list_end = 2 + alpn_len.min(data.len() - 2);
 
-    while offset < data.len() {
+    while offset < list_end && offset < data.len() {
         let proto_len = data[offset] as usize;
-        if offset + 1 + proto_len <= data.len() {
-            if let Ok(proto) = std::str::from_utf8(&data[offset + 1..offset + 1 + proto_len]) {
-                protocols.push(proto.to_string());
+        offset += 1;
+
+        let available_len = list_end
+            .saturating_sub(offset)
+            .min(data.len().saturating_sub(offset));
+        let actual_len = proto_len.min(available_len);
+
+        if actual_len > 0 {
+            if let Ok(proto) = std::str::from_utf8(&data[offset..offset + actual_len]) {
+                if actual_len < proto_len {
+                    protocols.push(format!("{}[PARTIAL]", proto));
+                } else {
+                    protocols.push(proto.to_string());
+                }
             }
         }
-        offset += 1 + proto_len;
+
+        offset += proto_len;
+
+        if offset >= data.len() {
+            break;
+        }
     }
 
-    protocols
+    if protocols.is_empty() {
+        None
+    } else {
+        Some(protocols)
+    }
 }
 
-fn parse_supported_versions_extension(data: &[u8], is_client_hello: bool) -> Option<TlsVersion> {
+fn parse_supported_versions_resilient(data: &[u8], is_client_hello: bool) -> Option<TlsVersion> {
     if is_client_hello {
         // Client sends a list of supported versions
-        if data.len() < 1 {
-            return None;
-        }
-        let list_len = data[0] as usize;
-        if data.len() < 1 + list_len || list_len < 2 {
+        if data.is_empty() {
             return None;
         }
 
-        // Return the first (highest priority) version
-        version_from_bytes(data[1], data[2])
+        let list_len = data[0] as usize;
+        let mut offset = 1;
+        let mut best_version: Option<TlsVersion> = None;
+
+        while offset + 1 < data.len() && offset < 1 + list_len {
+            if let Some(version) = version_from_bytes(data[offset], data[offset + 1]) {
+                best_version = match (best_version, version) {
+                    (None, v) => Some(v),
+                    (Some(v1), v2) => {
+                        // Simple comparison - return the higher version
+                        if version_to_priority(v2) > version_to_priority(v1) {
+                            Some(v2)
+                        } else {
+                            Some(v1)
+                        }
+                    }
+                };
+            }
+            offset += 2;
+        }
+
+        best_version
     } else {
         // Server sends a single selected version
         if data.len() < 2 {
@@ -305,65 +414,13 @@ fn parse_supported_versions_extension(data: &[u8], is_client_hello: bool) -> Opt
     }
 }
 
-fn parse_certificate(data: &[u8], info: &mut TlsInfo) -> Option<()> {
-    if data.len() < 3 {
-        return None;
-    }
-
-    // Certificate list length (3 bytes)
-    let cert_list_len = u32::from_be_bytes([0, data[0], data[1], data[2]]) as usize;
-    if data.len() < 3 + cert_list_len {
-        return None;
-    }
-
-    let mut offset = 3;
-
-    // Parse only the first certificate (server's certificate)
-    if offset + 3 <= data.len() {
-        let cert_len =
-            u32::from_be_bytes([0, data[offset], data[offset + 1], data[offset + 2]]) as usize;
-        offset += 3;
-
-        if offset + cert_len <= data.len() {
-            let cert_data = &data[offset..offset + cert_len];
-            parse_x509_certificate(cert_data, info);
-        }
-    }
-
-    Some(())
-}
-
-fn parse_x509_certificate(cert_data: &[u8], info: &mut TlsInfo) {
-    // This is a simplified X.509 parser that looks for CN and SAN
-    // In production, you'd want to use a proper X.509 parsing library like x509-parser
-
-    // Look for common patterns in certificates
-    // CN is typically preceded by the OID 2.5.4.3 (0x55, 0x04, 0x03)
-    // SAN extension has OID 2.5.29.17 (0x55, 0x1D, 0x11)
-
-    // Search for Common Name
-    let cn_oid = [0x55, 0x04, 0x03];
-    if let Some(pos) = cert_data.windows(3).position(|w| w == cn_oid) {
-        if pos + 5 < cert_data.len() {
-            // Skip OID and tag
-            let len = cert_data[pos + 4] as usize;
-            if pos + 5 + len <= cert_data.len() {
-                if let Ok(cn) = std::str::from_utf8(&cert_data[pos + 5..pos + 5 + len]) {
-                    info.certificate_cn = Some(cn.to_string());
-                }
-            }
-        }
-    }
-
-    // Search for Subject Alternative Names
-    // This is a simplified approach - real implementation would need proper ASN.1 parsing
-    let san_oid = [0x55, 0x1D, 0x11];
-    if let Some(pos) = cert_data.windows(3).position(|w| w == san_oid) {
-        // SAN parsing is complex due to ASN.1 encoding
-        // In production, use a proper X.509 library
-        // This is just a placeholder
-        info.certificate_san
-            .push("Use x509-parser for proper SAN extraction".to_string());
+fn version_to_priority(version: TlsVersion) -> u8 {
+    match version {
+        TlsVersion::Ssl3 => 0,
+        TlsVersion::Tls10 => 1,
+        TlsVersion::Tls11 => 2,
+        TlsVersion::Tls12 => 3,
+        TlsVersion::Tls13 => 4,
     }
 }
 
@@ -372,23 +429,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tls_version_parsing() {
-        assert_eq!(version_from_bytes(0x03, 0x01), Some(TlsVersion::Tls10));
-        assert_eq!(version_from_bytes(0x03, 0x02), Some(TlsVersion::Tls11));
-        assert_eq!(version_from_bytes(0x03, 0x03), Some(TlsVersion::Tls12));
-        assert_eq!(version_from_bytes(0x03, 0x04), Some(TlsVersion::Tls13));
-        assert_eq!(version_from_bytes(0x02, 0x00), None);
+    fn test_partial_sni_extraction() {
+        // Simulate a truncated SNI extension
+        let partial_sni = vec![
+            0x00, 0x10, // List length: 16
+            0x00, // Name type: host_name
+            0x00, 0x0d, // Name length: 13
+            b'e', b'x', b'a', b'm', b'p', // Only 5 bytes of "example.com"
+        ];
+
+        let result = parse_sni_extension_resilient(&partial_sni);
+        assert!(result.is_some());
+        let sni = result.unwrap();
+        assert!(sni.starts_with("examp"));
+        assert!(sni.contains("PARTIAL"));
     }
 
     #[test]
-    fn test_is_tls_handshake() {
-        let valid_handshake = [0x16, 0x03, 0x03, 0x00, 0x50, 0x01];
-        assert!(is_tls_handshake(&valid_handshake));
+    fn test_partial_alpn_extraction() {
+        // Simulate a truncated ALPN extension
+        let partial_alpn = vec![
+            0x00, 0x0e, // List length: 14
+            0x08, b'h', b't', b't', b'p', // Only partial "http/1.1"
+        ];
 
-        let invalid_type = [0x17, 0x03, 0x03, 0x00, 0x50, 0x01];
-        assert!(!is_tls_handshake(&invalid_type));
-
-        let too_short = [0x16, 0x03];
-        assert!(!is_tls_handshake(&too_short));
+        let result = parse_alpn_extension_resilient(&partial_alpn);
+        assert!(result.is_some());
+        let protocols = result.unwrap();
+        assert!(!protocols.is_empty());
+        assert!(protocols[0].contains("PARTIAL"));
     }
 }

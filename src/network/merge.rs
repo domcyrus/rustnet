@@ -174,6 +174,7 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                 (ApplicationProtocol::Quic(old_info), ApplicationProtocol::Quic(new_info)) => {
                     // Update only specific fields for QUIC
                     old_info.connection_state = new_info.connection_state.clone();
+                    old_info.packet_type = new_info.packet_type.clone();
                     if old_info.connection_id_hex.is_none() {
                         old_info.connection_id_hex = new_info.connection_id_hex.clone();
                     }
@@ -183,6 +184,35 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                 }
                 (_, ApplicationProtocol::Quic(_)) => {
                     warn!("QUIC DPI info not found in existing connection");
+                }
+                (ApplicationProtocol::Dns(old_info), ApplicationProtocol::Dns(new_info)) => {
+                    // Merge DNS info
+                    if new_info.query_name.is_some() {
+                        old_info.query_name = new_info.query_name.clone();
+                    }
+                    if new_info.query_type.is_some() {
+                        old_info.query_type = new_info.query_type.clone();
+                    }
+                    old_info.response_ips.extend(new_info.response_ips.clone());
+                    old_info.is_response = new_info.is_response;
+                }
+                (ApplicationProtocol::Https(old_info), ApplicationProtocol::Https(new_info)) => {
+                    // Replace the entire HTTPS info
+                    if new_info.version.is_some() {
+                        old_info.version = new_info.version.clone();
+                    }
+                    if new_info.sni.is_some() {
+                        old_info.sni = new_info.sni.clone();
+                    }
+                    if !new_info.alpn.is_empty() {
+                        old_info.alpn = new_info.alpn.clone();
+                    }
+                    if new_info.cipher_suite.is_some() {
+                        old_info.cipher_suite = new_info.cipher_suite;
+                    }
+                }
+                (ApplicationProtocol::Ssh, ApplicationProtocol::Ssh) => {
+                    // No additional info to merge for SSH
                 }
                 _ => {
                     warn!(
