@@ -1,4 +1,4 @@
-use crate::network::types::{TlsInfo, TlsVersion};
+use crate::network::types::{HttpsInfo, TlsInfo, TlsVersion};
 use log::debug;
 
 pub fn is_tls_handshake(payload: &[u8]) -> bool {
@@ -15,7 +15,7 @@ pub fn is_tls_handshake(payload: &[u8]) -> bool {
         (payload[2] >= 0x01 && payload[2] <= 0x04) // Minor version 1-4
 }
 
-pub fn analyze_tls(payload: &[u8]) -> Option<TlsInfo> {
+pub fn analyze_https(payload: &[u8]) -> Option<HttpsInfo> {
     // Need at least 5 bytes for the TLS record header
     if payload.len() < 5 {
         return None;
@@ -30,7 +30,9 @@ pub fn analyze_tls(payload: &[u8]) -> Option<TlsInfo> {
         // Not a handshake record - still extract version
         let record_version = version_from_bytes(payload[1], payload[2]);
         info.version = record_version;
-        return Some(info);
+        return Some(HttpsInfo {
+            tls_info: Some(info),
+        });
     }
 
     // Record layer version
@@ -42,14 +44,18 @@ pub fn analyze_tls(payload: &[u8]) -> Option<TlsInfo> {
 
     // Sanity check
     if record_length > 16384 + 2048 {
-        return Some(info);
+        return Some(HttpsInfo {
+            tls_info: Some(info),
+        });
     }
 
     // Calculate available data (handle fragmentation gracefully)
     let available_data = (payload.len() - 5).min(record_length);
 
     if available_data < 4 {
-        return Some(info);
+        return Some(HttpsInfo {
+            tls_info: Some(info),
+        });
     }
 
     // Skip TLS record header (5 bytes)
@@ -59,7 +65,9 @@ pub fn analyze_tls(payload: &[u8]) -> Option<TlsInfo> {
 
     // Quick validation
     if !matches!(handshake_type, 0x00..=0x18 | 0xfe) {
-        return Some(info);
+        return Some(HttpsInfo {
+            tls_info: Some(info),
+        });
     }
 
     let handshake_length =
@@ -67,14 +75,18 @@ pub fn analyze_tls(payload: &[u8]) -> Option<TlsInfo> {
 
     // Sanity check
     if handshake_length > 16384 {
-        return Some(info);
+        return Some(HttpsInfo {
+            tls_info: Some(info),
+        });
     }
 
     // Calculate how much handshake data we actually have
     let handshake_available = (handshake_data.len() - 4).min(handshake_length);
 
     if handshake_available == 0 {
-        return Some(info);
+        return Some(HttpsInfo {
+            tls_info: Some(info),
+        });
     }
 
     match handshake_type {
@@ -98,8 +110,9 @@ pub fn analyze_tls(payload: &[u8]) -> Option<TlsInfo> {
     if info.sni.is_some() || !info.alpn.is_empty() {
         debug!("TLS: Found SNI={:?}, ALPN={:?}", info.sni, info.alpn);
     }
-
-    Some(info)
+    Some(HttpsInfo {
+        tls_info: Some(info),
+    })
 }
 
 fn version_from_bytes(major: u8, minor: u8) -> Option<TlsVersion> {

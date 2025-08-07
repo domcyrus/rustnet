@@ -3,8 +3,8 @@ use log::{debug, warn};
 
 mod dns;
 mod http;
+mod https;
 mod quic;
-mod tls;
 
 /// Result of DPI analysis
 #[derive(Debug, Clone)]
@@ -33,8 +33,8 @@ pub fn analyze_tcp_packet(
     }
 
     // 2. Check for TLS/HTTPS (port 443 or TLS handshake)
-    if local_port == 443 || remote_port == 443 || tls::is_tls_handshake(payload) {
-        if let Some(tls_result) = tls::analyze_tls(payload) {
+    if local_port == 443 || remote_port == 443 || https::is_tls_handshake(payload) {
+        if let Some(tls_result) = https::analyze_https(payload) {
             return Some(DpiResult {
                 application: ApplicationProtocol::Https(tls_result),
             });

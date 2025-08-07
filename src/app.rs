@@ -14,8 +14,15 @@ use crate::network::{
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
     services::ServiceLookup,
-    types::Connection,
+    types::{ApplicationProtocol, Connection, Protocol},
 };
+
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
+/// Global QUIC connection ID to connection key mapping
+/// This allows tracking QUIC connections across connection ID changes
+static QUIC_CONNECTION_MAPPING: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Application configuration
 #[derive(Debug, Clone)]
@@ -485,7 +492,10 @@ impl App {
                 let now = SystemTime::now();
                 let mut removed = 0;
 
-                connections.retain(|_, conn| {
+                // Collect keys of connections to be removed
+                let mut removed_keys = Vec::new();
+                
+                connections.retain(|key, conn| {
                     let should_keep = now
                         .duration_since(conn.last_activity)
                         .unwrap_or(Duration::from_secs(0))
@@ -493,13 +503,22 @@ impl App {
 
                     if !should_keep {
                         removed += 1;
+                        removed_keys.push(key.clone());
                     }
 
                     should_keep
                 });
 
+                // Clean up QUIC connection ID mappings for removed connections
+                if !removed_keys.is_empty() {
+                    if let Ok(mut mapping) = QUIC_CONNECTION_MAPPING.lock() {
+                        mapping.retain(|_, conn_key| !removed_keys.contains(conn_key));
+                        debug!("Cleaned up QUIC mappings for {} removed connections", removed_keys.len());
+                    }
+                }
+
                 if removed > 0 {
-                    debug!("Removed {} inactive connections", removed);
+                    debug!("Removed {} inactive connections and cleaned up QUIC mappings", removed);
                 }
 
                 thread::sleep(Duration::from_secs(10));
@@ -549,8 +568,29 @@ fn update_connection(
     parsed: ParsedPacket,
     _stats: &AppStats,
 ) {
-    let key = parsed.connection_key.clone();
+    let mut key = parsed.connection_key.clone();
     let now = SystemTime::now();
+
+    // For QUIC packets, check if we have a connection ID mapping
+    if parsed.protocol == Protocol::UDP {
+        if let Some(dpi_result) = &parsed.dpi_result {
+            if let ApplicationProtocol::Quic(quic_info) = &dpi_result.application {
+                if let Some(conn_id_hex) = &quic_info.connection_id_hex {
+                    // Check if we already have a mapping for this connection ID
+                    if let Ok(mut mapping) = QUIC_CONNECTION_MAPPING.lock() {
+                        if let Some(existing_key) = mapping.get(conn_id_hex) {
+                            key = existing_key.clone();
+                            debug!("QUIC: Using existing connection key {} for Connection ID {}", key, conn_id_hex);
+                        } else {
+                            // New QUIC connection ID, create mapping
+                            mapping.insert(conn_id_hex.clone(), key.clone());
+                            debug!("QUIC: Created new mapping {} -> {} for Connection ID {}", conn_id_hex, key, conn_id_hex);
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     connections
         .entry(key.clone())

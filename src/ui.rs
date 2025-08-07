@@ -537,29 +537,31 @@ fn draw_connection_details(
                     }
                 }
                 crate::network::types::ApplicationProtocol::Https(info) => {
-                    if let Some(version) = &info.version {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  TLS Version: ", Style::default().fg(Color::Cyan)),
-                            Span::raw(format!("{:?}", version)),
-                        ]));
-                    }
-                    if let Some(sni) = &info.sni {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  SNI: ", Style::default().fg(Color::Cyan)),
-                            Span::raw(sni.clone()),
-                        ]));
-                    }
-                    if !info.alpn.is_empty() {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  ALPN: ", Style::default().fg(Color::Cyan)),
-                            Span::raw(info.alpn.join(", ")),
-                        ]));
-                    }
-                    if let Some(cipher) = info.cipher_suite {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Cipher Suite: ", Style::default().fg(Color::Cyan)),
-                            Span::raw(format!("0x{:04X}", cipher)),
-                        ]));
+                    if let Some(tls_info) = &info.tls_info {
+                        if let Some(sni) = &tls_info.sni {
+                            details_text.push(Line::from(vec![
+                                Span::styled("  SNI: ", Style::default().fg(Color::Cyan)),
+                                Span::raw(sni.clone()),
+                            ]));
+                        }
+                        if !tls_info.alpn.is_empty() {
+                            details_text.push(Line::from(vec![
+                                Span::styled("  ALPN: ", Style::default().fg(Color::Cyan)),
+                                Span::raw(tls_info.alpn.join(", ")),
+                            ]));
+                        }
+                        if let Some(version) = &tls_info.version {
+                            details_text.push(Line::from(vec![
+                                Span::styled("  TLS Version: ", Style::default().fg(Color::Cyan)),
+                                Span::raw(version.to_string()),
+                            ]));
+                        }
+                        if let Some(cipher) = tls_info.cipher_suite {
+                            details_text.push(Line::from(vec![
+                                Span::styled("  Cipher Suite: ", Style::default().fg(Color::Cyan)),
+                                Span::raw(format!("0x{:04X}", cipher)),
+                            ]));
+                        }
                     }
                 }
                 crate::network::types::ApplicationProtocol::Dns(info) => {
