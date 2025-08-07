@@ -13,7 +13,7 @@ A high-performance, cross-platform network monitoring tool built with Rust. Rust
   - QUIC protocol
 - **Process Identification**: Associate network connections with running processes
 - **Service Name Resolution**: Identify well-known services using port numbers
-- **Cross-platform Support**: Works on Linux, Windows, and macOS
+- **Cross-platform Support**: Works on Linux, macOS and potentially on Windows and BSD systems
 - **Terminal User Interface**: Clean, responsive TUI built with ratatui
 - **Performance Optimized**: Multi-threaded packet processing with minimal overhead
 - **Configurable Logging**: Detailed logging with configurable log levels
@@ -84,11 +84,16 @@ rustnet --help
 
 ### Command-line Options
 
-- `-i, --interface <INTERFACE>`: Network interface to monitor
-- `--no-localhost`: Filter out localhost connections
-- `-r, --refresh-interval <MS>`: UI refresh interval in milliseconds (default: 1000)
-- `--no-dpi`: Disable deep packet inspection
-- `-l, --log-level <LEVEL>`: Set the log level (default: info)
+Usage: rustnet [OPTIONS]
+
+Options:
+  -i, --interface <INTERFACE>            Network interface to monitor
+      --no-localhost                     Filter out localhost connections
+  -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 1000]
+      --no-dpi                           Disable deep packet inspection
+  -l, --log-level <LEVEL>                Set the log level [default: info]
+  -h, --help                             Print help
+  -V, --version                          Print version
 
 ### Keyboard Controls
 
@@ -106,9 +111,10 @@ rustnet --help
 
 ## Logging
 
-RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`. 
+RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`.
 
 Log files contain:
+
 - Application startup and shutdown events
 - Network interface information
 - Packet capture statistics
@@ -161,15 +167,23 @@ RustNet employs a multi-threaded architecture for high-performance packet proces
 
 RustNet is built with the following key dependencies:
 
-- **ratatui**: Terminal user interface framework
+- **ratatui**: Terminal user interface framework with full widget support
 - **crossterm**: Cross-platform terminal manipulation
 - **pcap**: Packet capture library bindings
 - **pnet_datalink**: Network interface enumeration
 - **dashmap**: High-performance concurrent hashmap
-- **crossbeam**: Multi-threading utilities
-- **dns-lookup**: DNS resolution
-- **clap**: Command-line argument parsing
+- **crossbeam**: Multi-threading utilities and channels
+- **dns-lookup**: DNS resolution capabilities
+- **clap**: Command-line argument parsing with derive features
 - **simplelog**: Flexible logging framework
+- **anyhow**: Error handling and context
+- **arboard**: Clipboard access for copying addresses
+- **log**: Logging facade
+- **num_cpus**: CPU core detection for threading
+- **simple-logging**: Additional logging utilities
+- **chrono**: Date and time handling
+- **ring**: Cryptographic operations
+- **aes**: AES encryption support
 - **procfs** (Linux): Process information from /proc filesystem
 
 ## Platform-Specific Implementation
@@ -179,7 +193,7 @@ RustNet is built with the following key dependencies:
 RustNet uses platform-specific APIs to associate network connections with processes:
 
 - **Linux**: Parses `/proc/net/tcp`, `/proc/net/udp`, and `/proc/<pid>/fd/` to find socket inodes
-- **Windows**: Uses Windows API calls to enumerate processes and their network connections
+- **Windows**: Uses nothing so far :)
 - **macOS**: Uses system commands like `lsof` to query process-socket associations
 
 ### Network Interfaces
@@ -200,7 +214,7 @@ The tool automatically detects and lists available network interfaces using plat
 
 1. **Permission Denied**: Packet capture requires elevated privileges. Run with `sudo` or set capabilities.
 
-2. **No Connections Shown**: 
+2. **No Connections Shown**:
    - Check if the correct network interface is selected
    - Verify packet capture permissions
    - Try disabling localhost filtering with `--no-localhost`
@@ -244,18 +258,25 @@ Contributions are welcome! Please:
 ## TODO
 
 ### Platform Support
+
 - **macOS Support**: Basic features need testing and fixes for macOS compatibility
 - **Windows Support**: Core functionality requires implementation and testing on Windows
 - **BSD Support**: Add support for FreeBSD, OpenBSD, and NetBSD
 
 ### Features
+
+- **DPI Enhancements**: Improve deep packet inspection capabilities:
+  - Support more protocols (e.g., FTP, SMTP, etc.)
+  - More accurate SNI detection for QUIC/HTTPS
+  - More information about SSH connections (e.g., key exchange algorithms)
 - **DNS Reverse Lookup**: Add optional hostname resolution (toggle between IP and hostname display)
-- **IPv6 Support**: Full IPv6 connection tracking and display
+- **IPv6 Support**: Full IPv6 connection tracking and display, including DNS resolution, didn't test yet
 - **Search/Filter**: Add real-time search and filtering capabilities:
   - Filter by process name
   - Filter by protocol
   - Filter by port range
   - Filter by IP/hostname
+  - Filter by SNI (Server Name Indication)
   - Regular expression support
 - **Internationalization (i18n)**: Support for multiple languages in the UI
 - **Connection History**: Store and display historical connection data
@@ -263,13 +284,12 @@ Contributions are welcome! Please:
 - **Export Functionality**: Export connections to CSV/JSON formats
 - **Configuration File**: Support for persistent configuration (filters, UI preferences)
 - **Connection Alerts**: Notifications for new connections or suspicious activity
-- **GeoIP Integration**: Show geographical location of remote IPs
+- **GeoIP Integration**: Maybe add geographical location of remote IPs
 - **Protocol Statistics**: Summary view of protocol distribution
 - **Rate Limiting Detection**: Identify connections with unusual traffic patterns
-- **TLS Certificate Info**: Display certificate details for HTTPS connections
-- **Custom Themes**: Support for customizable color schemes
 
 ### UI Improvements
+
 - **Resizable Columns**: Dynamic column width adjustment
 - **Connection Grouping**: Group connections by process/service
 - **Sortable Columns**: Click to sort by any column
@@ -279,11 +299,12 @@ Contributions are welcome! Please:
 - **Split Pane View**: Show multiple views simultaneously
 
 ### Development
+
 - **Unit Tests**: Comprehensive test coverage for all modules
 - **Integration Tests**: End-to-end testing for different platforms
 - **CI/CD Pipeline**: Automated builds and releases for all platforms
 - **Documentation**: API documentation and developer guide
-- **Benchmarks**: Performance benchmarking suite
+- **Packaging/Distribution**: Create packages for easy installation on Linux, macOS, and Windows
 
 ## License
 
@@ -293,5 +314,5 @@ This project is licensed under the Apache License, Version 2.0 - see the [LICENS
 
 - Built with [ratatui](https://github.com/ratatui-org/ratatui) for the terminal UI
 - Packet capture powered by [libpcap](https://www.tcpdump.org/)
-- Inspired by tools like `sniffnet`, `netstat`, `ss`, and `iftop`
+- Inspired by tools like `tshark/wireshark/tcpdump`, `sniffnet`, `netstat`, `ss`, and `iftop`
 - Some code is vibe coded (OMG) / may the LLM gods be with you
