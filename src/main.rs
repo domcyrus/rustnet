@@ -54,19 +54,15 @@ fn main() -> Result<()> {
                 .short('l')
                 .long("log-level")
                 .value_name("LEVEL")
-                .help("Set the log level")
+                .help("Set the log level (if not provided, no logging will be enabled)")
                 .value_parser(clap::value_parser!(LevelFilter))
-                .default_value("info")
                 .required(false),
         )
         .get_matches();
-    // Set up logging
-    setup_logging(
-        matches
-            .get_one::<LevelFilter>("log-level")
-            .cloned()
-            .unwrap_or(LevelFilter::Info),
-    )?;
+    // Set up logging only if log-level was provided
+    if let Some(log_level) = matches.get_one::<LevelFilter>("log-level") {
+        setup_logging(*log_level)?;
+    }
 
     info!("Starting RustNet Monitor");
 

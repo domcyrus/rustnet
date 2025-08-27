@@ -16,7 +16,7 @@ A high-performance, cross-platform network monitoring tool built with Rust. Rust
 - **Cross-platform Support**: Works on Linux, macOS and potentially on Windows and BSD systems
 - **Terminal User Interface**: Clean, responsive TUI built with ratatui
 - **Performance Optimized**: Multi-threaded packet processing with minimal overhead
-- **Configurable Logging**: Detailed logging with configurable log levels
+- **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
 
 ## Installation
 
@@ -74,9 +74,9 @@ rustnet --refresh-interval 2000
 # Disable deep packet inspection
 rustnet --no-dpi
 
-# Set log level (options: error, warn, info, debug, trace)
+# Enable logging with specific level (options: error, warn, info, debug, trace)
 rustnet -l debug
-rustnet --log-level trace
+rustnet --log-level info
 
 # View help and all options
 rustnet --help
@@ -91,7 +91,7 @@ Options:
       --no-localhost                     Filter out localhost connections
   -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 1000]
       --no-dpi                           Disable deep packet inspection
-  -l, --log-level <LEVEL>                Set the log level [default: info]
+  -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
   -h, --help                             Print help
   -V, --version                          Print version
 
@@ -111,7 +111,7 @@ Options:
 
 ## Logging
 
-RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`.
+Logging is **disabled by default** for better performance. When enabled with the `--log-level` option, RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`.
 
 Log files contain:
 
@@ -121,7 +121,17 @@ Log files contain:
 - Connection state changes
 - Error diagnostics
 
-Use the `--log-level` option to control verbosity. The `scripts/clear_old_logs.sh` script is provided for log cleanup.
+**To enable logging**, use the `--log-level` option:
+
+```bash
+# Enable info-level logging
+sudo rustnet --log-level info
+
+# Enable debug-level logging for troubleshooting
+sudo rustnet --log-level debug
+```
+
+The `scripts/clear_old_logs.sh` script is provided for log cleanup.
 
 ## Architecture
 
@@ -233,10 +243,10 @@ The tool automatically detects and lists available network interfaces using plat
 Enable debug logging to troubleshoot issues:
 
 ```bash
-rustnet --log-level debug
+sudo rustnet --log-level debug
 ```
 
-Check the generated log file in the `logs/` directory for detailed diagnostics.
+Check the generated log file in the `logs/` directory for detailed diagnostics. Note that logging is disabled by default, so you must explicitly enable it with the `--log-level` option.
 
 ## Security Considerations
 
