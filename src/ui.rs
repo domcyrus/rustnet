@@ -282,9 +282,34 @@ fn draw_connections_list(
                 .map(|p| p.to_string())
                 .unwrap_or_else(|| "-".to_string());
 
-            let process_str = conn.process_name.clone().unwrap_or_else(|| "-".to_string());
+            // Debug: Log the raw process data to understand what's changing
+            if let Some(ref raw_process_name) = conn.process_name {
+                if raw_process_name.contains("firefox") {
+                    log::debug!("🔍 Raw process name for {}: '{:?}' (len:{}, bytes: {:?})", 
+                              conn.key(), raw_process_name, raw_process_name.len(), raw_process_name.as_bytes());
+                    log::debug!("🔍 PID: {:?}", conn.pid);
+                    
+                    // Check for non-standard whitespace characters
+                    let has_non_ascii_space = raw_process_name.chars().any(|c| c.is_whitespace() && c != ' ' && c != '\t' && c != '\n');
+                    if has_non_ascii_space {
+                        log::warn!("🚨 Process name contains non-standard whitespace: {:?}", 
+                                 raw_process_name.chars().collect::<Vec<char>>());
+                    }
+                }
+            }
+
+            // Process names are now pre-normalized at the source (PKTAP/lsof), so we can use them directly
+            let process_str = conn.process_name.clone()
+                .unwrap_or_else(|| "-".to_string());
+                
             let process_display = if conn.pid.is_some() {
+                // Ensure exactly one space between process name and PID: "PROCESS_NAME (PID)"
                 let full_display = format!("{} ({})", process_str, pid_str);
+                
+                // Debug: Log the final formatted display
+                if process_str.contains("firefox") {
+                    log::debug!("🎨 Final display for {}: '{}'", conn.key(), full_display);
+                }
                 // Truncate process display to fit in column (roughly 20+ chars available)
                 if full_display.len() > 25 {
                     format!("{}...", &full_display[..22])

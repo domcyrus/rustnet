@@ -203,8 +203,8 @@ RustNet is built with the following key dependencies:
 RustNet uses platform-specific APIs to associate network connections with processes:
 
 - **Linux**: Parses `/proc/net/tcp`, `/proc/net/udp`, and `/proc/<pid>/fd/` to find socket inodes
+- **macOS**: Uses **PKTAP (Packet Tap)** headers when available for direct process identification from packet metadata, with fallback to `lsof` system commands for process-socket associations. PKTAP provides more accurate and efficient process identification by extracting process information directly from the kernel packet headers.
 - **Windows**: Uses nothing so far :)
-- **macOS**: Uses system commands like `lsof` to query process-socket associations
 
 ### Network Interfaces
 
@@ -474,6 +474,7 @@ Contributions are welcome! Please:
 - **macOS Support**: Basic features need testing and fixes for macOS compatibility
 - **Windows Support**: Core functionality requires implementation and testing on Windows
 - **BSD Support**: Add support for FreeBSD, OpenBSD, and NetBSD
+- **Linux Process Identification Enhancement**: Investigate using **eBPF** (Extended Berkeley Packet Filter) for direct kernel-level process identification similar to macOS PKTAP. This would provide more accurate and efficient process-to-connection mapping than the current `/proc` filesystem approach, especially for high-throughput scenarios.
 
 ### Features
 

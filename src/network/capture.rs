@@ -131,8 +131,57 @@ fn find_best_device() -> Result<Device> {
 }
 
 /// Setup packet capture with the given configuration
-pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, String)> {
-    // Find the capture device
+pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, String, i32)> {
+    // Try PKTAP first on macOS for process metadata
+    #[cfg(target_os = "macos")]
+    {
+        log::info!("Attempting to use PKTAP for process metadata on macOS");
+        
+        match Capture::from_device("pktap") {
+            Ok(pktap_builder) => {
+                let pktap_cap = pktap_builder
+                    .promisc(false) // PKTAP doesn't use promiscuous mode
+                    .snaplen(config.snaplen)
+                    .buffer_size(config.buffer_size)
+                    .timeout(config.timeout_ms)
+                    .immediate_mode(true)
+                    .want_pktap(true)
+                    .open();
+                
+                match pktap_cap {
+                    Ok(mut cap) => {
+                        // Try to set direction for better performance (optional)
+                        if let Err(e) = cap.direction(pcap::Direction::InOut) {
+                            log::debug!("Could not set PKTAP direction: {}", e);
+                        }
+                        
+                        let linktype = cap.get_datalink();
+                        log::info!("✓ PKTAP enabled successfully, linktype: {} ({})", 
+                                 linktype.0, 
+                                 if linktype.0 == 149 { "Apple PKTAP" } else { "Unknown" });
+                        
+                        // Apply BPF filter if specified
+                        if let Some(filter) = &config.filter {
+                            log::info!("Applying BPF filter to PKTAP: {}", filter);
+                            cap.filter(filter, true)?;
+                        }
+                        
+                        log::info!("PKTAP capture ready - process metadata will be available");
+                        return Ok((cap, "pktap".to_string(), linktype.0));
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to open PKTAP capture: {}, falling back to regular capture", e);
+                    }
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to create PKTAP device: {}, falling back to regular capture", e);
+            }
+        }
+    }
+    
+    // Fallback to regular capture (original code)
+    log::info!("Setting up regular packet capture");
     let device = find_capture_device(&config.interface)?;
 
     log::info!(
@@ -161,8 +210,9 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     }
 
     // Note: We're not setting non-blocking mode as we're using timeout instead
+    let linktype = cap.get_datalink();
 
-    Ok((cap, device_name))
+    Ok((cap, device_name, linktype.0))
 }
 
 /// Find a capture device by name or return the default
@@ -315,7 +365,7 @@ mod tests {
     fn test_default_config() {
         let config = CaptureConfig::default();
         assert!(config.promiscuous);
-        assert_eq!(config.snaplen, 200);
+        assert_eq!(config.snaplen, 1514);
         assert!(config.filter.is_none()); // Default starts without filter
     }
 }

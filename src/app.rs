@@ -12,7 +12,7 @@ use crate::network::{
     capture::{CaptureConfig, PacketReader, setup_packet_capture},
     merge::{create_connection_from_packet, merge_packet_into_connection},
     parser::{PacketParser, ParsedPacket, ParserConfig},
-    platform::create_process_lookup,
+    platform::create_process_lookup_with_pktap_status,
     services::ServiceLookup,
     types::{ApplicationProtocol, Connection, Protocol},
 };
@@ -99,6 +99,12 @@ pub struct App {
 
     /// Current network interface name
     current_interface: Arc<RwLock<Option<String>>>,
+
+    /// Data link type for packet parsing (needed for PKTAP detection)
+    linktype: Arc<RwLock<Option<i32>>>,
+
+    /// Whether PKTAP is active (macOS only) - used to disable process enrichment
+    pktap_active: Arc<AtomicBool>,
 }
 
 impl App {
@@ -118,6 +124,8 @@ impl App {
             stats: Arc::new(AppStats::default()),
             is_loading: Arc::new(AtomicBool::new(true)),
             current_interface: Arc::new(RwLock::new(None)),
+            linktype: Arc::new(RwLock::new(None)),
+            pktap_active: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -131,8 +139,8 @@ impl App {
         // Start packet capture pipeline
         self.start_packet_capture_pipeline(connections.clone())?;
 
-        // Start process enrichment thread
-        self.start_process_enrichment(connections.clone())?;
+        // Start process enrichment thread (but delay for PKTAP detection on macOS)
+        self.start_process_enrichment_conditional(connections.clone())?;
 
         // Start snapshot provider for UI
         self.start_snapshot_provider(connections.clone())?;
@@ -185,15 +193,29 @@ impl App {
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let current_interface = Arc::clone(&self.current_interface);
+        let linktype_storage = Arc::clone(&self.linktype);
+        let pktap_active = Arc::clone(&self.pktap_active);
 
         thread::spawn(move || {
             match setup_packet_capture(capture_config) {
-                Ok((capture, device_name)) => {
-                    // Store the actual interface name being used
+                Ok((capture, device_name, linktype)) => {
+                    // Store the actual interface name and linktype being used
                     *current_interface.write().unwrap() = Some(device_name.clone());
+                    *linktype_storage.write().unwrap() = Some(linktype);
+                    
+                    // Check if PKTAP is active (linktype 149 or 258)
+                    #[cfg(target_os = "macos")]
+                    {
+                        use crate::network::pktap;
+                        if pktap::is_pktap_linktype(linktype) {
+                            pktap_active.store(true, Ordering::Relaxed);
+                            info!("✓ PKTAP is active - process metadata will be provided directly");
+                        }
+                    }
+                    
                     info!(
-                        "Packet capture started successfully on interface: {}",
-                        device_name
+                        "Packet capture started successfully on interface: {} (linktype: {})",
+                        device_name, linktype
                     );
                     let mut reader = PacketReader::new(capture);
                     let mut packets_read = 0u64;
@@ -279,6 +301,7 @@ impl App {
     ) {
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
+        let linktype_storage = Arc::clone(&self.linktype);
         let parser_config = ParserConfig {
             enable_dpi: self.config.enable_dpi,
             ..Default::default()
@@ -286,7 +309,14 @@ impl App {
 
         thread::spawn(move || {
             info!("Packet processor {} started", id);
-            let parser = PacketParser::with_config(parser_config);
+            
+            // Wait for linktype to be available
+            let parser = loop {
+                if let Some(linktype) = *linktype_storage.read().unwrap() {
+                    break PacketParser::with_config(parser_config.clone()).with_linktype(linktype);
+                }
+                thread::sleep(Duration::from_millis(10));
+            };
             let mut batch = Vec::new();
             let mut total_processed = 0u64;
             let mut last_log = Instant::now();
@@ -341,53 +371,127 @@ impl App {
         });
     }
 
-    /// Start process enrichment thread
-    fn start_process_enrichment(
+    /// Start process enrichment thread conditionally based on PKTAP status
+    fn start_process_enrichment_conditional(
         &self,
         connections: Arc<DashMap<String, Connection>>,
     ) -> Result<()> {
-        let process_lookup = create_process_lookup()?;
+        let pktap_active = Arc::clone(&self.pktap_active);
         let should_stop = Arc::clone(&self.should_stop);
-        let interval = Duration::from_secs(self.config.process_lookup_interval);
-
+        
         thread::spawn(move || {
-            info!("Process enrichment thread started");
-            let mut last_refresh = Instant::now();
-
-            loop {
-                if should_stop.load(Ordering::Relaxed) {
-                    info!("Process enrichment thread stopping");
-                    break;
-                }
-
-                // Refresh process lookup periodically
-                if last_refresh.elapsed() > Duration::from_secs(5) {
-                    if let Err(e) = process_lookup.refresh() {
-                        debug!("Process lookup refresh failed: {}", e);
+            // On macOS, wait for PKTAP detection to avoid unnecessary lsof calls
+            #[cfg(target_os = "macos")]
+            {
+                // Wait up to 5 seconds for PKTAP detection with shorter polling intervals
+                let wait_start = Instant::now();
+                while wait_start.elapsed() < Duration::from_secs(5) && !should_stop.load(Ordering::Relaxed) {
+                    if pktap_active.load(Ordering::Relaxed) {
+                        info!("🚫 Skipping process enrichment thread - PKTAP is active and provides process metadata");
+                        return;
                     }
-                    last_refresh = Instant::now();
+                    // Check more frequently for faster detection
+                    thread::sleep(Duration::from_millis(50));
                 }
-
-                // Enrich connections without process info
-                let mut enriched = 0;
-                for mut entry in connections.iter_mut() {
-                    if entry.process_name.is_none() {
-                        if let Some((pid, name)) = process_lookup.get_process_for_connection(&entry)
-                        {
-                            entry.pid = Some(pid);
-                            entry.process_name = Some(name);
-                            enriched += 1;
-                        }
-                    }
+                
+                // Final check after timeout
+                if pktap_active.load(Ordering::Relaxed) {
+                    info!("🚫 Skipping process enrichment thread - PKTAP became active during startup");
+                    return;
+                } else {
+                    info!("⚠️  PKTAP not detected after 5 seconds, starting process enrichment thread with lsof");
+                    info!("    This may cause process name formatting differences with PKTAP if it activates later");
                 }
-
-                if enriched > 0 {
-                    debug!("Enriched {} connections with process info", enriched);
-                }
-
-                thread::sleep(interval);
+            }
+            
+            // Start the actual process enrichment
+            if let Err(e) = Self::run_process_enrichment(connections, should_stop, pktap_active) {
+                error!("Process enrichment thread failed: {}", e);
             }
         });
+        
+        Ok(())
+    }
+
+    /// Run the actual process enrichment logic
+    fn run_process_enrichment(
+        connections: Arc<DashMap<String, Connection>>,
+        should_stop: Arc<AtomicBool>,
+        pktap_active: Arc<AtomicBool>,
+    ) -> Result<()> {
+        let process_lookup = create_process_lookup_with_pktap_status(pktap_active.load(Ordering::Relaxed))?;
+        let interval = Duration::from_secs(2); // Use default interval
+
+        info!("Process enrichment thread started");
+        let mut last_refresh = Instant::now();
+
+        loop {
+            if should_stop.load(Ordering::Relaxed) {
+                info!("Process enrichment thread stopping");
+                break;
+            }
+
+            // Check if PKTAP became active (abort immediately to prevent conflicts)
+            #[cfg(target_os = "macos")]
+            if pktap_active.load(Ordering::Relaxed) {
+                info!("🚫 PKTAP became active, stopping process enrichment thread to prevent conflicts");
+                break;
+            }
+
+            // Refresh process lookup periodically
+            if last_refresh.elapsed() > Duration::from_secs(5) {
+                if let Err(e) = process_lookup.refresh() {
+                    debug!("Process lookup refresh failed: {}", e);
+                }
+                last_refresh = Instant::now();
+            }
+
+            // Enrich connections without process info
+            let mut enriched = 0;
+            for mut entry in connections.iter_mut() {
+                // Allow partial enrichment - fill in missing pieces without overwriting existing data
+                if let Some((pid, name)) = process_lookup.get_process_for_connection(&entry) {
+                    let mut did_enrich = false;
+                    
+                    // Only set process name if it's missing
+                    if entry.process_name.is_none() {
+                        entry.process_name = Some(name.clone());
+                        did_enrich = true;
+                        debug!("✓ Set process name for connection {}: {}", entry.key(), name);
+                    } else {
+                        // Check if the existing name differs significantly (for debugging)
+                        let existing_name = entry.process_name.as_ref().unwrap();
+                        let existing_normalized = existing_name.split_whitespace().collect::<Vec<&str>>().join(" ");
+                        let new_normalized = name.split_whitespace().collect::<Vec<&str>>().join(" ");
+                        
+                        if existing_normalized != new_normalized {
+                            debug!("⚠️  Process name differs: existing='{}' vs lsof='{}'", existing_name, name);
+                        }
+                    }
+                    
+                    // Only set PID if it's missing
+                    if entry.pid.is_none() {
+                        entry.pid = Some(pid);
+                        did_enrich = true;
+                        debug!("✓ Set PID for connection {}: {}", entry.key(), pid);
+                    } else if entry.pid != Some(pid) {
+                        // PID differs - log for debugging
+                        debug!("⚠️  PID differs for {}: existing={:?} vs lsof={}", 
+                              entry.key(), entry.pid, pid);
+                    }
+                    
+                    if did_enrich {
+                        enriched += 1;
+                    }
+                }
+            }
+
+            if enriched > 0 {
+                debug!("Enriched {} connections with process info", enriched);
+            }
+
+            thread::sleep(interval);
+        }
 
         Ok(())
     }

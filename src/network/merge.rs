@@ -1,6 +1,6 @@
 // src/network/merge.rs - Connection merging and update utilities
 
-use log::{debug, warn};
+use log::{debug, info, warn};
 use std::time::{Instant, SystemTime};
 
 use crate::network::dpi::DpiResult;
@@ -109,6 +109,52 @@ pub fn merge_packet_into_connection(
         merge_dpi_info(&mut conn, dpi_result);
     }
 
+    // Update PKTAP process metadata if available
+    // Once set, process info should be immutable to prevent conflicts between sources
+    if let Some(new_process_name) = &parsed.process_name {
+        match &conn.process_name {
+            None => {
+                // First time setting process name - this becomes immutable
+                conn.process_name = Some(new_process_name.clone());
+                info!("🔒 Set IMMUTABLE process name for connection {} from PKTAP: '{}' (len:{})", 
+                      conn.key(), new_process_name, new_process_name.len());
+            }
+            Some(existing_name) => {
+                // Process name is already set - it's now IMMUTABLE
+                // Log the attempt but NEVER change it
+                if existing_name != new_process_name {
+                    warn!("🚫 IMMUTABILITY VIOLATION: Attempt to change process name for {} from '{}' to '{}' - REJECTED", 
+                          conn.key(), existing_name, new_process_name);
+                    debug!("🔒 Existing: '{}' (len:{}, bytes:{:?})", 
+                          existing_name, existing_name.len(), existing_name.as_bytes());
+                    debug!("🚫 Rejected: '{}' (len:{}, bytes:{:?})", 
+                          new_process_name, new_process_name.len(), new_process_name.as_bytes());
+                } else {
+                    debug!("✅ Process name confirmed unchanged for {}: '{}'", conn.key(), existing_name);
+                }
+                // NEVER update - process name is immutable once set
+            }
+        }
+    }
+    
+    if let Some(new_pid) = parsed.process_id {
+        match conn.pid {
+            None => {
+                // First time setting PID - this becomes immutable
+                conn.pid = Some(new_pid);
+                info!("🔒 Set IMMUTABLE process ID for connection {} from PKTAP: {}", conn.key(), new_pid);
+            }
+            Some(existing_pid) if existing_pid != new_pid => {
+                warn!("🚫 IMMUTABILITY VIOLATION: Attempt to change PID for {} from {} to {} - REJECTED", 
+                      conn.key(), existing_pid, new_pid);
+                // NEVER update - PID is immutable once set
+            }
+            Some(existing_pid) => {
+                debug!("✅ Process ID confirmed unchanged for {}: {}", conn.key(), existing_pid);
+            }
+        }
+    }
+
     // Update rate calculations
     update_connection_rates(&mut conn);
 
@@ -169,6 +215,16 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
             conn.key(),
             dpi_result.application
         );
+    }
+
+    // Apply PKTAP process metadata if available
+    if let Some(process_name) = &parsed.process_name {
+        conn.process_name = Some(process_name.clone());
+        debug!("✓ New connection {} with process name: {}", conn.key(), process_name);
+    }
+    if let Some(process_id) = parsed.process_id {
+        conn.pid = Some(process_id);
+        debug!("✓ New connection {} with process ID: {}", conn.key(), process_id);
     }
 
     conn.created_at = now;
@@ -514,6 +570,8 @@ mod tests {
             is_outgoing,
             packet_len: 100,
             dpi_result: None,
+            process_name: None,
+            process_id: None,
         }
     }
 

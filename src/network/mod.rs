@@ -3,5 +3,7 @@ pub mod dpi;
 pub mod merge;
 pub mod parser;
 pub mod platform;
+#[cfg(target_os = "macos")]
+pub mod pktap;
 pub mod services;
 pub mod types;

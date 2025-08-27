@@ -64,7 +64,7 @@ impl MacOSProcessLookup {
                 continue;
             }
 
-            let process_name = decode_lsof_string(parts[0]);
+            let process_name = normalize_process_name_robust(&decode_lsof_string(parts[0]));
             let pid = match parts[1].parse::<u32>() {
                 Ok(p) => p,
                 Err(e) => {
@@ -239,6 +239,35 @@ fn parse_socket_addr(addr_str: &str) -> Option<SocketAddr> {
         debug!("      Regular parse result: {:?}", result);
         result
     }
+}
+
+/// Robust normalization of process names to match PKTAP normalization
+/// Handles all types of whitespace and control characters consistently
+fn normalize_process_name_robust(name: &str) -> String {
+    let normalized = name
+        .chars()
+        .map(|c| {
+            if c.is_whitespace() {
+                ' ' // Convert all whitespace to regular space
+            } else if c.is_control() {
+                ' ' // Convert control characters to space too
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .split_whitespace() // Split on any whitespace
+        .collect::<Vec<&str>>()
+        .join(" "); // Join with single spaces
+    
+    debug!("📝 Normalized lsof process name: '{}' -> '{}'", name, normalized);
+    normalized
+}
+
+/// Normalize process name by collapsing consecutive whitespace to single spaces
+/// This ensures consistent formatting between PKTAP and lsof sources
+fn normalize_process_name(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<&str>>().join(" ")
 }
 
 /// Decode lsof escape sequences like \x20 back to regular characters
