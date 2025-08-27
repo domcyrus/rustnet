@@ -32,7 +32,7 @@ A high-performance, cross-platform network monitoring tool built with Rust. Rust
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/rustnet.git
+git clone https://github.com/domcyrus/rustnet.git
 cd rustnet
 
 # Build in release mode
@@ -262,6 +262,7 @@ RustNet requires elevated privileges to capture network packets because accessin
 ### Why Permissions Are Required
 
 Network packet capture requires access to:
+
 - **Raw sockets** for low-level network access
 - **Network interfaces** in promiscuous mode
 - **BPF (Berkeley Packet Filter) devices** on macOS/BSD systems
@@ -286,6 +287,7 @@ sudo ./target/release/rustnet
 Add your user to the `access_bpf` group for passwordless packet capture:
 
 **Using Wireshark's ChmodBPF (Easiest):**
+
 ```bash
 # Install Wireshark's BPF permission helper
 brew install --cask wireshark-chmodbpf
@@ -296,6 +298,7 @@ rustnet
 ```
 
 **Manual BPF Group Setup:**
+
 ```bash
 # Create the access_bpf group (if it doesn't exist)
 sudo dseditgroup -o create access_bpf
@@ -348,6 +351,7 @@ sudo setcap cap_net_raw,cap_net_admin=eip ./target/release/rustnet
 ```
 
 **For system-wide installation:**
+
 ```bash
 # If installed via package manager or copied to /usr/local/bin
 sudo setcap cap_net_raw,cap_net_admin=eip /usr/local/bin/rustnet
@@ -380,6 +384,7 @@ Windows support is currently limited, but when available:
 To verify that permissions are set up correctly:
 
 #### macOS
+
 ```bash
 # Check BPF device permissions
 ls -la /dev/bpf*
@@ -392,6 +397,7 @@ rustnet --help
 ```
 
 #### Linux
+
 ```bash
 # Check capabilities on the binary
 getcap ./target/release/rustnet
@@ -406,12 +412,14 @@ rustnet --help
 #### "Permission denied" errors
 
 **On macOS:**
+
 - Ensure you're in the `access_bpf` group: `groups | grep access_bpf`
 - Check BPF device permissions: `ls -la /dev/bpf0`
 - Try running with sudo to confirm it's a permission issue
 - Log out and back in after group changes
 
 **On Linux:**
+
 - Check if capabilities are set: `getcap $(which rustnet)`
 - Verify libpcap is installed: `ldconfig -p | grep pcap`
 - Try running with sudo to confirm it's a permission issue
@@ -439,10 +447,11 @@ rustnet --help
 4. **Consider network segmentation** if running on production systems
 5. **Monitor log files** for unauthorized usage
 6. **Remove capabilities** when RustNet is no longer needed:
+
    ```bash
    # Linux: Remove capabilities
    sudo setcap -r /path/to/rustnet
-   
+
    # macOS: Remove from group
    sudo dseditgroup -o edit -d $USER -t user access_bpf
    ```
@@ -450,6 +459,7 @@ rustnet --help
 ### Integration with System Monitoring
 
 For production environments, consider:
+
 - **Audit logging** of packet capture access
 - **Network monitoring policies** and compliance requirements
 - **User access reviews** for privileged network access
@@ -506,7 +516,7 @@ git push origin v0.2.0
 
 #### 3. Create GitHub Release
 
-1. Go to the [GitHub repository releases page](https://github.com/yourusername/rustnet/releases)
+1. Go to the [GitHub repository releases page](https://github.com/domcyrus/rustnet/releases)
 2. Click "Create a new release"
 3. Select the tag you just pushed (v0.2.0)
 4. Set the release title (e.g., "RustNet v0.2.0")
@@ -533,7 +543,7 @@ After creating the GitHub release, update the Homebrew formula:
 
 ```bash
 # Calculate SHA256 of the source tarball
-curl -L "https://github.com/yourusername/rustnet/archive/v0.2.0.tar.gz" | shasum -a 256
+curl -L "https://github.com/domcyrus/rustnet/archive/v0.2.0.tar.gz" | shasum -a 256
 
 # The output will be something like:
 # a1b2c3d4e5f6... (64-character hash)
@@ -544,8 +554,8 @@ Update the Homebrew formula file (`rustnet.rb` in your tap repository):
 ```ruby
 class Rustnet < Formula
   desc "High-performance network monitoring tool with TUI"
-  homepage "https://github.com/yourusername/rustnet"
-  url "https://github.com/yourusername/rustnet/archive/v0.2.0.tar.gz"
+  homepage "https://github.com/domcyrus/homebrew-rustnet"
+  url "https://github.com/domcyrus/rustnet/archive/v0.2.0.tar.gz"
   sha256 "a1b2c3d4e5f6..." # Replace with actual SHA256 from above
   license "Apache-2.0"
 
@@ -565,7 +575,7 @@ end
 
 ```bash
 # Clone or update your homebrew tap repository
-git clone https://github.com/yourusername/homebrew-rustnet.git
+git clone https://github.com/domcyrus/homebrew-rustnet.git
 cd homebrew-rustnet
 
 # Update the formula file with new version and SHA256
@@ -644,6 +654,7 @@ RustNet follows [Semantic Versioning (SemVer)](https://semver.org/):
 - **PATCH** version for backward-compatible bug fixes
 
 Examples:
+
 - `v0.1.0` → `v0.1.1` (bug fixes)
 - `v0.1.1` → `v0.2.0` (new features)
 - `v0.2.0` → `v1.0.0` (major changes, API stability)
