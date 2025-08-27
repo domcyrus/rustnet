@@ -255,6 +255,208 @@ Check the generated log file in the `logs/` directory for detailed diagnostics. 
 - Log files may contain sensitive connection information
 - No data is transmitted outside your system
 
+## Permissions
+
+RustNet requires elevated privileges to capture network packets because accessing network interfaces for packet capture is a privileged operation on all modern operating systems. This section explains how to properly grant these permissions on different platforms.
+
+### Why Permissions Are Required
+
+Network packet capture requires access to:
+- **Raw sockets** for low-level network access
+- **Network interfaces** in promiscuous mode
+- **BPF (Berkeley Packet Filter) devices** on macOS/BSD systems
+- **Network namespaces** on some Linux configurations
+
+These capabilities are restricted to prevent malicious software from intercepting network traffic.
+
+### macOS Permission Setup
+
+On macOS, packet capture requires access to BPF (Berkeley Packet Filter) devices located at `/dev/bpf*`.
+
+#### Option 1: Run with sudo (Simplest)
+
+```bash
+# Build and run with sudo
+cargo build --release
+sudo ./target/release/rustnet
+```
+
+#### Option 2: BPF Group Access (Recommended)
+
+Add your user to the `access_bpf` group for passwordless packet capture:
+
+**Using Wireshark's ChmodBPF (Easiest):**
+```bash
+# Install Wireshark's BPF permission helper
+brew install --cask wireshark-chmodbpf
+
+# Log out and back in for group changes to take effect
+# Then run rustnet without sudo:
+rustnet
+```
+
+**Manual BPF Group Setup:**
+```bash
+# Create the access_bpf group (if it doesn't exist)
+sudo dseditgroup -o create access_bpf
+
+# Add your user to the group
+sudo dseditgroup -o edit -a $USER -t user access_bpf
+
+# Set permissions on BPF devices (this needs to be done after each reboot)
+sudo chmod g+rw /dev/bpf*
+sudo chgrp access_bpf /dev/bpf*
+
+# Log out and back in for group membership to take effect
+```
+
+#### Option 3: Homebrew Installation
+
+If installed via Homebrew, the formula will provide detailed setup instructions:
+
+```bash
+brew tap domcyrus/rustnet
+brew install rustnet
+# Follow the caveats displayed after installation
+```
+
+### Linux Permission Setup
+
+On Linux, packet capture requires `CAP_NET_RAW` and `CAP_NET_ADMIN` capabilities.
+
+#### Option 1: Run with sudo (Simplest)
+
+```bash
+# Build and run with sudo
+cargo build --release
+sudo ./target/release/rustnet
+```
+
+#### Option 2: Grant Capabilities (Recommended)
+
+Grant specific network capabilities to the binary without full root privileges:
+
+```bash
+# Build the binary first
+cargo build --release
+
+# Grant network capabilities to the binary
+sudo setcap cap_net_raw,cap_net_admin=eip ./target/release/rustnet
+
+# Now run without sudo
+./target/release/rustnet
+```
+
+**For system-wide installation:**
+```bash
+# If installed via package manager or copied to /usr/local/bin
+sudo setcap cap_net_raw,cap_net_admin=eip /usr/local/bin/rustnet
+rustnet
+```
+
+#### Option 3: Homebrew on Linux
+
+```bash
+# Install via Homebrew
+brew install domcyrus/rustnet/rustnet
+
+# Grant capabilities to the Homebrew-installed binary
+sudo setcap cap_net_raw,cap_net_admin=eip $(brew --prefix)/bin/rustnet
+
+# Run without sudo
+rustnet
+```
+
+### Windows Permission Setup
+
+Windows support is currently limited, but when available:
+
+- RustNet will require **Administrator privileges**
+- Must install **WinPcap** or **Npcap** for packet capture
+- Run Command Prompt or PowerShell "As Administrator"
+
+### Verifying Permissions
+
+To verify that permissions are set up correctly:
+
+#### macOS
+```bash
+# Check BPF device permissions
+ls -la /dev/bpf*
+
+# Check group membership
+groups | grep access_bpf
+
+# Test without sudo
+rustnet --help
+```
+
+#### Linux
+```bash
+# Check capabilities on the binary
+getcap ./target/release/rustnet
+# Should show: cap_net_raw,cap_net_admin=eip
+
+# Test without sudo
+rustnet --help
+```
+
+### Troubleshooting Permission Issues
+
+#### "Permission denied" errors
+
+**On macOS:**
+- Ensure you're in the `access_bpf` group: `groups | grep access_bpf`
+- Check BPF device permissions: `ls -la /dev/bpf0`
+- Try running with sudo to confirm it's a permission issue
+- Log out and back in after group changes
+
+**On Linux:**
+- Check if capabilities are set: `getcap $(which rustnet)`
+- Verify libpcap is installed: `ldconfig -p | grep pcap`
+- Try running with sudo to confirm it's a permission issue
+- Some systems require `CAP_NET_BIND_SERVICE` as well
+
+#### "No suitable capture interfaces found"
+
+- Check available interfaces: `ip link show` (Linux) or `ifconfig` (macOS)
+- Try specifying an interface explicitly: `rustnet -i eth0`
+- Ensure the interface is up and has an IP address
+- Some virtual interfaces may not support packet capture
+
+#### "Operation not permitted" with capabilities set
+
+- Capabilities may have been removed by system updates
+- Re-apply capabilities: `sudo setcap cap_net_raw,cap_net_admin=eip $(which rustnet)`
+- Some filesystems don't support extended attributes (capabilities)
+- Try copying the binary to a different filesystem (e.g., from NFS to local disk)
+
+### Security Best Practices
+
+1. **Use capabilities instead of sudo** when possible (Linux)
+2. **Use group-based access** instead of running as root (macOS)
+3. **Regularly audit** which users have packet capture privileges
+4. **Consider network segmentation** if running on production systems
+5. **Monitor log files** for unauthorized usage
+6. **Remove capabilities** when RustNet is no longer needed:
+   ```bash
+   # Linux: Remove capabilities
+   sudo setcap -r /path/to/rustnet
+   
+   # macOS: Remove from group
+   sudo dseditgroup -o edit -d $USER -t user access_bpf
+   ```
+
+### Integration with System Monitoring
+
+For production environments, consider:
+- **Audit logging** of packet capture access
+- **Network monitoring policies** and compliance requirements
+- **User access reviews** for privileged network access
+- **Automated capability management** in configuration management systems
+
+This permissions setup ensures RustNet can capture packets while maintaining security best practices and principle of least privilege.
+
 ## Contributing
 
 Contributions are welcome! Please:
