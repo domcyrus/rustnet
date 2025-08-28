@@ -581,10 +581,15 @@ fn draw_connection_details(
                                 Span::raw(version.to_string()),
                             ]));
                         }
-                        if let Some(cipher) = tls_info.cipher_suite {
+                        if let Some(formatted_cipher) = tls_info.format_cipher_suite() {
+                            let cipher_color = if tls_info.is_cipher_suite_secure().unwrap_or(false) {
+                                Color::Green
+                            } else {
+                                Color::Yellow
+                            };
                             details_text.push(Line::from(vec![
                                 Span::styled("  Cipher Suite: ", Style::default().fg(Color::Cyan)),
-                                Span::raw(format!("0x{:04X}", cipher)),
+                                Span::styled(formatted_cipher, Style::default().fg(cipher_color)),
                             ]));
                         }
                     }

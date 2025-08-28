@@ -1,10 +1,13 @@
 use crate::network::types::{ApplicationProtocol, QuicInfo};
 use log::{debug, warn};
 
+mod cipher_suites;
 mod dns;
 mod http;
 mod https;
 mod quic;
+
+pub use cipher_suites::{format_cipher_suite, get_cipher_suite_name, is_secure_cipher_suite};
 
 /// Result of DPI analysis
 #[derive(Debug, Clone)]

@@ -157,6 +157,21 @@ impl TlsInfo {
             cipher_suite: None,
         }
     }
+    
+    /// Get the human-readable cipher suite name
+    pub fn cipher_suite_name(&self) -> Option<&'static str> {
+        self.cipher_suite.and_then(crate::network::dpi::get_cipher_suite_name)
+    }
+    
+    /// Format the cipher suite with name and hex code
+    pub fn format_cipher_suite(&self) -> Option<String> {
+        self.cipher_suite.map(crate::network::dpi::format_cipher_suite)
+    }
+    
+    /// Check if the cipher suite is considered secure
+    pub fn is_cipher_suite_secure(&self) -> Option<bool> {
+        self.cipher_suite.map(crate::network::dpi::is_secure_cipher_suite)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
