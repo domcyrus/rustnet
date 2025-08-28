@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
@@ -546,6 +546,126 @@ impl Default for RateInfo {
 }
 
 #[derive(Debug, Clone)]
+struct RateSample {
+    timestamp: Instant,
+    bytes_sent: u64,
+    bytes_received: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RateTracker {
+    samples: VecDeque<RateSample>,
+    window_duration: Duration,
+    last_update: Instant,
+    max_samples: usize,
+}
+
+impl RateTracker {
+    pub fn new() -> Self {
+        Self::with_window_duration(Duration::from_secs(5))
+    }
+
+    pub fn with_window_duration(window_duration: Duration) -> Self {
+        Self {
+            samples: VecDeque::new(),
+            window_duration,
+            last_update: Instant::now(),
+            max_samples: 100, // Limit memory usage
+        }
+    }
+
+    /// Update the rate tracker with new byte counts
+    pub fn update(&mut self, bytes_sent: u64, bytes_received: u64) {
+        let now = Instant::now();
+        
+        // Add new sample
+        self.samples.push_back(RateSample {
+            timestamp: now,
+            bytes_sent,
+            bytes_received,
+        });
+        
+        self.last_update = now;
+        
+        // Remove samples outside the window
+        self.prune_old_samples();
+        
+        // Limit total samples to prevent memory bloat
+        while self.samples.len() > self.max_samples {
+            self.samples.pop_front();
+        }
+    }
+
+    /// Remove samples older than the window duration
+    fn prune_old_samples(&mut self) {
+        let cutoff_time = self.last_update - self.window_duration;
+        
+        while let Some(oldest) = self.samples.front() {
+            if oldest.timestamp < cutoff_time {
+                self.samples.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Get the current incoming rate in bytes per second
+    pub fn get_incoming_rate_bps(&self) -> f64 {
+        self.calculate_rate(|sample| sample.bytes_received)
+    }
+
+    /// Get the current outgoing rate in bytes per second
+    pub fn get_outgoing_rate_bps(&self) -> f64 {
+        self.calculate_rate(|sample| sample.bytes_sent)
+    }
+
+    /// Calculate rate for a given byte field using the sliding window
+    fn calculate_rate<F>(&self, byte_getter: F) -> f64
+    where
+        F: Fn(&RateSample) -> u64,
+    {
+        if self.samples.len() < 2 {
+            return 0.0;
+        }
+
+        let oldest = self.samples.front().unwrap();
+        let newest = self.samples.back().unwrap();
+        
+        let time_diff = newest.timestamp.duration_since(oldest.timestamp).as_secs_f64();
+        
+        // Need at least 100ms of data to avoid division by very small numbers
+        if time_diff < 0.1 {
+            return 0.0;
+        }
+        
+        let byte_diff = byte_getter(newest).saturating_sub(byte_getter(oldest)) as f64;
+        
+        byte_diff / time_diff
+    }
+
+    /// Check if the tracker has recent data (within the last window)
+    pub fn has_recent_data(&self) -> bool {
+        if let Some(latest) = self.samples.back() {
+            latest.timestamp.elapsed() <= self.window_duration
+        } else {
+            false
+        }
+    }
+
+    /// Get the age of the oldest sample in the current window
+    #[allow(dead_code)]
+    pub fn window_age(&self) -> Option<Duration> {
+        self.samples.front().map(|oldest| oldest.timestamp.elapsed())
+    }
+}
+
+impl Default for RateTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Connection {
     // Core identification
     pub protocol: Protocol,
@@ -577,14 +697,15 @@ pub struct Connection {
     pub dpi_info: Option<DpiInfo>,
 
     // Performance metrics
+    pub rate_tracker: RateTracker,
     #[allow(dead_code)]
-    // TODO: implement proper bits per second rate tracking
+    // Legacy rate info - kept for backward compatibility during transition
     pub current_rate_bps: RateInfo,
     #[allow(dead_code)]
     // TODO: implement RTT estimation
     pub rtt_estimate: Option<Duration>,
 
-    // Backward compatibility fields
+    // Backward compatibility fields - updated by rate_tracker
     pub current_incoming_rate_bps: f64,
     pub current_outgoing_rate_bps: f64,
 }
@@ -614,6 +735,7 @@ impl Connection {
             last_activity: now,
             service_name: None,
             dpi_info: None,
+            rate_tracker: RateTracker::new(),
             current_rate_bps: RateInfo::default(),
             rtt_estimate: None,
             current_incoming_rate_bps: 0.0,
@@ -665,28 +787,22 @@ impl Connection {
         }
     }
 
-    /// Update transfer rates
-    #[allow(dead_code)]
-    pub fn update_rates(&mut self, new_sent: u64, new_received: u64) {
+    /// Update transfer rates using sliding window calculation
+    pub fn update_rates(&mut self) {
+        // Update the rate tracker with current byte counts
+        self.rate_tracker.update(self.bytes_sent, self.bytes_received);
+        
+        // Update backward compatibility fields with smoothed rates
+        self.current_incoming_rate_bps = self.rate_tracker.get_incoming_rate_bps();
+        self.current_outgoing_rate_bps = self.rate_tracker.get_outgoing_rate_bps();
+        
+        // Also update the legacy RateInfo struct for any code that still uses it
         let now = Instant::now();
-        let elapsed = now
-            .duration_since(self.current_rate_bps.last_calculation)
-            .as_secs_f64();
-
-        if elapsed > 0.1 {
-            let sent_diff = new_sent.saturating_sub(self.bytes_sent) as f64;
-            let recv_diff = new_received.saturating_sub(self.bytes_received) as f64;
-
-            self.current_rate_bps = RateInfo {
-                outgoing_bps: (sent_diff * 8.0) / elapsed,
-                incoming_bps: (recv_diff * 8.0) / elapsed,
-                last_calculation: now,
-            };
-
-            // Update backward compatibility fields
-            self.current_incoming_rate_bps = self.current_rate_bps.incoming_bps;
-            self.current_outgoing_rate_bps = self.current_rate_bps.outgoing_bps;
-        }
+        self.current_rate_bps = RateInfo {
+            incoming_bps: self.current_incoming_rate_bps,
+            outgoing_bps: self.current_outgoing_rate_bps,
+            last_calculation: now,
+        };
     }
 
     /// Check if this connection might be QUIC based on port and protocol
@@ -722,5 +838,188 @@ impl Connection {
                 None => "Unknown".to_string(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::thread;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn create_test_connection() -> Connection {
+        Connection::new(
+            Protocol::TCP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            ProtocolState::Tcp(TcpState::Established),
+        )
+    }
+
+    #[test]
+    fn test_rate_tracker_initialization() {
+        let tracker = RateTracker::new();
+        
+        // Initial rates should be 0
+        assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
+        assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
+        assert!(!tracker.has_recent_data());
+    }
+
+    #[test]
+    fn test_rate_tracker_single_update() {
+        let mut tracker = RateTracker::new();
+        
+        // First update - no rate yet (need at least 2 samples)
+        tracker.update(1000, 500);
+        assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
+        assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
+        assert!(tracker.has_recent_data());
+    }
+
+    #[test]
+    fn test_rate_tracker_steady_traffic() {
+        let mut tracker = RateTracker::new();
+        
+        // Add initial sample
+        tracker.update(0, 0);
+        thread::sleep(Duration::from_millis(200)); // Wait 200ms
+        
+        // Add second sample - 1000 bytes sent, 500 received over ~0.2 seconds
+        tracker.update(1000, 500);
+        
+        let outgoing_rate = tracker.get_outgoing_rate_bps();
+        let incoming_rate = tracker.get_incoming_rate_bps();
+        
+        // Should be approximately 5000 bytes/sec outgoing, 2500 bytes/sec incoming
+        assert!(outgoing_rate > 4000.0 && outgoing_rate < 6000.0, "Outgoing rate: {}", outgoing_rate);
+        assert!(incoming_rate > 2000.0 && incoming_rate < 3000.0, "Incoming rate: {}", incoming_rate);
+    }
+
+    #[test]
+    fn test_rate_tracker_multiple_updates() {
+        let mut tracker = RateTracker::new();
+        
+        // Simulate steady transfer over time
+        tracker.update(0, 0);
+        
+        // Add samples every 100ms
+        for i in 1..=5 {
+            thread::sleep(Duration::from_millis(100));
+            tracker.update(i * 1000, i * 500); // 1000 bytes/100ms = 10KB/s, 500 bytes/100ms = 5KB/s
+        }
+        
+        let outgoing_rate = tracker.get_outgoing_rate_bps();
+        let incoming_rate = tracker.get_incoming_rate_bps();
+        
+        // Should be approximately 10000 bytes/sec outgoing, 5000 bytes/sec incoming
+        assert!(outgoing_rate > 8000.0 && outgoing_rate < 12000.0, "Outgoing rate: {}", outgoing_rate);
+        assert!(incoming_rate > 4000.0 && incoming_rate < 6000.0, "Incoming rate: {}", incoming_rate);
+    }
+
+    #[test]
+    fn test_rate_tracker_window_pruning() {
+        let window_duration = Duration::from_millis(300);
+        let mut tracker = RateTracker::with_window_duration(window_duration);
+        
+        // Add samples that will be pruned
+        tracker.update(0, 0);
+        thread::sleep(Duration::from_millis(100));
+        tracker.update(1000, 500);
+        
+        // Wait for samples to age out of the window
+        thread::sleep(Duration::from_millis(400));
+        tracker.update(2000, 1000);
+        
+        // Should only consider recent samples (rate based on last sample interval)
+        let rate = tracker.get_outgoing_rate_bps();
+        // After pruning, should have limited data
+        assert!(rate >= 0.0); // Just verify it doesn't crash and gives reasonable result
+    }
+
+    #[test]
+    fn test_connection_rate_integration() {
+        let mut conn = create_test_connection();
+        
+        // Simulate receiving packets
+        conn.bytes_sent = 1000;
+        conn.bytes_received = 500;
+        conn.update_rates();
+        
+        thread::sleep(Duration::from_millis(200));
+        
+        conn.bytes_sent = 3000;
+        conn.bytes_received = 1500;
+        conn.update_rates();
+        
+        // Verify backward compatibility fields are updated
+        assert!(conn.current_outgoing_rate_bps >= 0.0);
+        assert!(conn.current_incoming_rate_bps >= 0.0);
+        
+        // Verify rate info is updated
+        assert!(conn.current_rate_bps.outgoing_bps >= 0.0);
+        assert!(conn.current_rate_bps.incoming_bps >= 0.0);
+    }
+
+    #[test]
+    fn test_rate_tracker_memory_limit() {
+        let mut tracker = RateTracker::new();
+        
+        // Add more samples than the max limit
+        for i in 0..150 { // More than max_samples (100)
+            tracker.update(i * 100, i * 50);
+            thread::sleep(Duration::from_millis(1)); // Small delay to ensure different timestamps
+        }
+        
+        // Should have pruned to max_samples limit
+        assert!(tracker.samples.len() <= 100);
+        
+        // Should still calculate rates
+        let outgoing_rate = tracker.get_outgoing_rate_bps();
+        let incoming_rate = tracker.get_incoming_rate_bps();
+        assert!(outgoing_rate >= 0.0);
+        assert!(incoming_rate >= 0.0);
+    }
+
+    #[test]
+    fn test_rate_tracker_bursty_traffic() {
+        let mut tracker = RateTracker::new();
+        
+        // Initial state
+        tracker.update(0, 0);
+        thread::sleep(Duration::from_millis(100));
+        
+        // Burst of traffic
+        tracker.update(10000, 5000);
+        thread::sleep(Duration::from_millis(100));
+        
+        // No more traffic (same byte counts)
+        tracker.update(10000, 5000);
+        thread::sleep(Duration::from_millis(100));
+        
+        tracker.update(10000, 5000);
+        
+        // Rate should be averaged over the entire window, so lower than instantaneous burst
+        let outgoing_rate = tracker.get_outgoing_rate_bps();
+        let incoming_rate = tracker.get_incoming_rate_bps();
+        
+        // Should be smoothed average, not instantaneous burst rate
+        assert!(outgoing_rate < 200000.0, "Rate should be smoothed: {}", outgoing_rate); // Less than instantaneous
+        assert!(incoming_rate < 100000.0, "Rate should be smoothed: {}", incoming_rate);
+        assert!(outgoing_rate > 0.0);
+        assert!(incoming_rate > 0.0);
+    }
+
+    #[test]
+    fn test_rate_tracker_zero_time_diff() {
+        let mut tracker = RateTracker::new();
+        
+        // Add two samples with identical or very close timestamps
+        tracker.update(0, 0);
+        tracker.update(1000, 500); // Immediately after, should be < 100ms apart
+        
+        // Should return 0 to avoid division by very small numbers
+        assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
+        assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
     }
 }

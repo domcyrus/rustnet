@@ -7,7 +7,7 @@ use crate::network::dpi::DpiResult;
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
     ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, ProtocolState,
-    QuicInfo, RateInfo, TcpState,
+    QuicInfo, TcpState,
 };
 
 /// Update TCP connection state based on observed flags and current state
@@ -469,32 +469,10 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
     }
 }
 
-/// Update connection rate calculations
+/// Update connection rate calculations using sliding window
 fn update_connection_rates(conn: &mut Connection) {
-    let now = Instant::now();
-    let elapsed = now
-        .duration_since(conn.current_rate_bps.last_calculation)
-        .as_secs_f64();
-
-    // Only update rates if enough time has passed (100ms)
-    if elapsed > 0.1 {
-        // Calculate rate based on the difference since last calculation
-        // Note: This is a simplified calculation - a real implementation might
-        // use a sliding window or exponential moving average
-
-        // For now, we'll just store the instantaneous values
-        // A more sophisticated implementation would track bytes over time windows
-
-        conn.current_rate_bps = RateInfo {
-            outgoing_bps: 0.0, // Would need historical data to calculate properly
-            incoming_bps: 0.0, // Would need historical data to calculate properly
-            last_calculation: now,
-        };
-
-        // Update backward compatibility fields
-        conn.current_incoming_rate_bps = conn.current_rate_bps.incoming_bps;
-        conn.current_outgoing_rate_bps = conn.current_rate_bps.outgoing_bps;
-    }
+    // Use the new rate tracker with sliding window calculation
+    conn.update_rates();
 }
 
 /// Clean up stale connections and their reassembly buffers
