@@ -225,7 +225,7 @@ The tool automatically detects and lists available network interfaces using plat
 - **Lock-free Data Structures**: Uses DashMap for concurrent access without traditional locking
 - **Batch Processing**: Packets are processed in batches to improve cache efficiency
 - **Selective DPI**: Deep packet inspection can be disabled with `--no-dpi` for lower overhead
-- **Configurable Intervals**: Adjust refresh rates and timeouts based on your needs
+- **Configurable Intervals**: Adjust refresh rates based on your needs
 
 ## Troubleshooting
 
