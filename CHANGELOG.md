@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2024-12-28
+
+### Added
+- Created `RELEASE.md` and `ROADMAP.md` for better project organization
+- Enhanced memory efficiency through enum variant boxing
+
+### Fixed
+- Major clippy warning cleanup (97% reduction from 38 to 1 warnings)
+- Refactored functions using `TransportParams` struct to reduce complexity
+- Fixed collapsible if patterns and improved code readability
+- Eliminated needless borrows and manual implementations
+
+### Changed
+- Moved release documentation to dedicated files
+- Streamlined README to focus on user information
+- Improved code organization and Rust best practices
+
 ## [0.2.0] - 2024-12-19
 
 ### Added
@@ -54,6 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/domcyrus/rustnet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/domcyrus/rustnet/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/domcyrus/rustnet/releases/tag/v0.1.0
