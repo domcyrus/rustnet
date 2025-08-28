@@ -38,19 +38,16 @@ impl ProcessLookup for NoOpProcessLookup {
     fn get_process_for_connection(&self, _conn: &Connection) -> Option<(u32, String)> {
         None // PKTAP provides this information directly
     }
-    
+
     fn refresh(&self) -> Result<()> {
         Ok(()) // Nothing to refresh
     }
 }
 
-/// Create a platform-specific process lookup
-pub fn create_process_lookup() -> Result<Box<dyn ProcessLookup>> {
-    create_process_lookup_with_pktap_status(false)
-}
-
 /// Create a platform-specific process lookup with PKTAP status awareness
-pub fn create_process_lookup_with_pktap_status(pktap_active: bool) -> Result<Box<dyn ProcessLookup>> {
+pub fn create_process_lookup_with_pktap_status(
+    pktap_active: bool,
+) -> Result<Box<dyn ProcessLookup>> {
     #[cfg(target_os = "macos")]
     if pktap_active {
         log::info!("Using no-op process lookup - PKTAP provides process metadata");

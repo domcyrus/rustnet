@@ -61,7 +61,7 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
     } else {
         get_long_packet_type(first_byte, version)
     };
-    quic_info.packet_type = packet_type.clone();
+    quic_info.packet_type = packet_type;
 
     // Parse connection IDs
     let mut offset = 5;
@@ -115,7 +115,7 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
         );
         return None;
     }
-    offset += scid_len;
+    // offset += scid_len; // No longer needed as we don't parse further
 
     // Set connection state based on packet type
     quic_info.connection_state = match packet_type {
@@ -237,7 +237,7 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
 
 /// Parse a QUIC short header packet
 fn parse_short_header_packet(payload: &[u8]) -> Option<QuicInfo> {
-    if payload.len() < 1 {
+    if payload.is_empty() {
         return None;
     }
 
@@ -408,7 +408,7 @@ fn try_decrypt_initial_with_secret(packet: &[u8], secret: &[u8], version: u32) -
     let aead_key = LessSafeKey::new(UnboundKey::new(&aead::AES_128_GCM, &key).ok()?);
 
     // Calculate nonce
-    let mut nonce_bytes = iv.clone();
+    let mut nonce_bytes = iv;
     for i in 0..8 {
         nonce_bytes[11 - i] ^= ((packet_number >> (i * 8)) & 0xff) as u8;
     }
@@ -552,10 +552,9 @@ pub fn process_crypto_frames_in_packet(
                 if available > 0 {
                     let crypto_data = payload[offset..offset + available].to_vec();
 
-                    if let Some(reassembler) = &mut quic_info.crypto_reassembler {
-                        if let Err(e) = reassembler.add_fragment(crypto_offset, crypto_data) {
-                            warn!("QUIC: Failed to add CRYPTO fragment: {}", e);
-                        }
+                    if let Some(reassembler) = &mut quic_info.crypto_reassembler
+                        && let Err(e) = reassembler.add_fragment(crypto_offset, crypto_data) {
+                        warn!("QUIC: Failed to add CRYPTO fragment: {}", e);
                     }
                 }
 
@@ -646,13 +645,14 @@ pub fn process_crypto_frames_in_packet(
                 // Extract reason phrase if present
                 let (reason_length, bytes_read) = parse_variable_length_int(&payload[offset..])?;
                 offset += bytes_read;
-                
-                let reason = if reason_length > 0 && offset + reason_length as usize <= payload.len() {
-                    let reason_bytes = &payload[offset..offset + reason_length as usize];
-                    String::from_utf8(reason_bytes.to_vec()).ok()
-                } else {
-                    None
-                };
+
+                let reason =
+                    if reason_length > 0 && offset + reason_length as usize <= payload.len() {
+                        let reason_bytes = &payload[offset..offset + reason_length as usize];
+                        String::from_utf8(reason_bytes.to_vec()).ok()
+                    } else {
+                        None
+                    };
                 offset += reason_length as usize;
 
                 // Store CONNECTION_CLOSE information in quic_info
@@ -698,18 +698,15 @@ pub fn process_crypto_frames_in_packet(
         }
     }
 
-    if found_crypto_frames {
-        // Try to extract TLS info from reassembler
-        if let Some(reassembler) = &mut quic_info.crypto_reassembler {
-            if let Some(tls_info) = try_extract_tls_from_reassembler(reassembler) {
-                debug!(
-                    "QUIC: Successfully extracted TLS info: SNI={:?}",
-                    tls_info.sni
-                );
-                quic_info.tls_info = Some(tls_info.clone());
-                return Some(tls_info);
-            }
-        }
+    if found_crypto_frames
+        && let Some(reassembler) = &mut quic_info.crypto_reassembler
+        && let Some(tls_info) = try_extract_tls_from_reassembler(reassembler) {
+        debug!(
+            "QUIC: Successfully extracted TLS info: SNI={:?}",
+            tls_info.sni
+        );
+        quic_info.tls_info = Some(tls_info.clone());
+        return Some(tls_info);
     }
 
     None
@@ -764,32 +761,27 @@ pub fn try_extract_tls_from_reassembler(
 
         // Only try to parse fragments that look like they contain complete TLS structures
         // Check if fragment starts with TLS handshake header (0x01 for ClientHello)
-        if fragment_data.len() >= 4 && fragment_data[0] == 0x01 {
-            if let Some(tls_info) = parse_partial_tls_handshake(fragment_data) {
-                if tls_info.sni.is_some() || !tls_info.alpn.is_empty() {
-                    debug!(
-                        "QUIC: Found TLS info from individual fragment at offset {}",
-                        offset
-                    );
-                    reassembler.set_complete_tls_info(tls_info.clone());
-                    return Some(tls_info);
-                }
-            }
+        if fragment_data.len() >= 4 && fragment_data[0] == 0x01
+            && let Some(tls_info) = parse_partial_tls_handshake(fragment_data)
+            && (tls_info.sni.is_some() || !tls_info.alpn.is_empty()) {
+            debug!(
+                "QUIC: Found TLS info from individual fragment at offset {}",
+                offset
+            );
+            reassembler.set_complete_tls_info(tls_info.clone());
+            return Some(tls_info);
         }
 
         // Also try direct TLS pattern matching, but only for fragments that look like TLS records
-        if fragment_data.len() >= 6 && fragment_data[0] == 0x16 {
-            // TLS record header
-            if let Some(tls_info) = try_parse_unencrypted_crypto_frames(fragment_data) {
-                if tls_info.sni.is_some() || !tls_info.alpn.is_empty() {
-                    debug!(
-                        "QUIC: Found TLS info from pattern matching in fragment at offset {}",
-                        offset
-                    );
-                    reassembler.set_complete_tls_info(tls_info.clone());
-                    return Some(tls_info);
-                }
-            }
+        if fragment_data.len() >= 6 && fragment_data[0] == 0x16
+            && let Some(tls_info) = try_parse_unencrypted_crypto_frames(fragment_data)
+            && (tls_info.sni.is_some() || !tls_info.alpn.is_empty()) {
+            debug!(
+                "QUIC: Found TLS info from pattern matching in fragment at offset {}",
+                offset
+            );
+            reassembler.set_complete_tls_info(tls_info.clone());
+            return Some(tls_info);
         } else {
             debug!(
                 "QUIC: Skipping fragment at offset {} - doesn't start with TLS header",
@@ -1215,10 +1207,9 @@ fn parse_alpn_extension(data: &[u8]) -> Option<Vec<String>> {
         let proto_len = data[offset] as usize;
         offset += 1;
 
-        if offset + proto_len <= data.len() {
-            if let Ok(proto) = std::str::from_utf8(&data[offset..offset + proto_len]) {
-                protocols.push(proto.to_string());
-            }
+        if offset + proto_len <= data.len()
+            && let Ok(proto) = std::str::from_utf8(&data[offset..offset + proto_len]) {
+            protocols.push(proto.to_string());
         }
 
         offset += proto_len;
@@ -1247,10 +1238,8 @@ fn parse_supported_versions(data: &[u8], is_client: bool) -> Option<TlsVersion> 
             }
             offset += 2;
         }
-    } else {
-        if data.len() >= 2 && data[0] == 0x03 && data[1] == 0x04 {
-            return Some(TlsVersion::Tls13);
-        }
+    } else if data.len() >= 2 && data[0] == 0x03 && data[1] == 0x04 {
+        return Some(TlsVersion::Tls13);
     }
 
     // QUIC always uses TLS 1.3
@@ -1286,19 +1275,16 @@ fn parse_variable_length_int(data: &[u8]) -> Option<(u64, usize)> {
             let val = u32::from_be_bytes([data[0] & 0x3f, data[1], data[2], data[3]]);
             val as u64
         }
-        8 => {
-            let val = u64::from_be_bytes([
-                data[0] & 0x3f,
-                data[1],
-                data[2],
-                data[3],
-                data[4],
-                data[5],
-                data[6],
-                data[7],
-            ]);
-            val
-        }
+        8 => u64::from_be_bytes([
+            data[0] & 0x3f,
+            data[1],
+            data[2],
+            data[3],
+            data[4],
+            data[5],
+            data[6],
+            data[7],
+        ]),
         _ => return None,
     };
 
@@ -1491,7 +1477,7 @@ fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsInfo> {
             let tls_version_minor = payload[offset + 2];
 
             // Check for reasonable TLS version (3.1 = TLS 1.0, 3.2 = TLS 1.1, 3.3 = TLS 1.2, 3.4 = TLS 1.3)
-            if tls_version_major == 0x03 && tls_version_minor >= 0x01 && tls_version_minor <= 0x04 {
+            if tls_version_major == 0x03 && (0x01..=0x04).contains(&tls_version_minor) {
                 let record_length =
                     u16::from_be_bytes([payload[offset + 3], payload[offset + 4]]) as usize;
 
@@ -1557,7 +1543,7 @@ fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsInfo> {
             let ext_len = u16::from_be_bytes([payload[offset + 2], payload[offset + 3]]) as usize;
 
             // Strict validation: reasonable extension length
-            if ext_len >= 5 && ext_len <= 300 && offset + 4 + ext_len <= payload.len() {
+            if (5..=300).contains(&ext_len) && offset + 4 + ext_len <= payload.len() {
                 let ext_data = &payload[offset + 4..offset + 4 + ext_len];
 
                 // Pre-validate SNI structure before parsing
@@ -1570,16 +1556,13 @@ fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsInfo> {
                     if sni_type == 0x00
                         && name_len > 0
                         && name_len <= 253
-                        && list_len >= 3
-                        && list_len <= 256
+                        && (3..=256).contains(&list_len)
                         && list_len == name_len + 3
-                    {
-                        if let Some(sni) = parse_sni_extension(ext_data) {
-                            debug!("QUIC: Found SNI directly in packet: {}", sni);
-                            let mut tls_info = TlsInfo::new();
-                            tls_info.sni = Some(sni);
-                            return Some(tls_info);
-                        }
+                        && let Some(sni) = parse_sni_extension(ext_data) {
+                        debug!("QUIC: Found SNI directly in packet: {}", sni);
+                        let mut tls_info = TlsInfo::new();
+                        tls_info.sni = Some(sni);
+                        return Some(tls_info);
                     }
                 }
             }
@@ -1655,7 +1638,7 @@ fn try_reconstruct_sni_from_fragments(reassembler: &CryptoFrameReassembler) -> O
 
                     // Add more strict validation to reduce false positives
                     // SNI extension length should be reasonable (5-300 bytes typically)
-                    if ext_len >= 5 && ext_len <= 300 && i + 4 + ext_len <= data.len() {
+                    if (5..=300).contains(&ext_len) && i + 4 + ext_len <= data.len() {
                         let sni_data = &data[i + 4..i + 4 + ext_len];
 
                         // Additional validation: check if this looks like a real SNI extension
@@ -1669,8 +1652,7 @@ fn try_reconstruct_sni_from_fragments(reassembler: &CryptoFrameReassembler) -> O
                             if sni_type == 0x00
                                 && name_len > 0
                                 && name_len <= 253
-                                && list_len >= 3
-                                && list_len <= 256
+                                && (3..=256).contains(&list_len)
                                 && list_len == name_len + 3
                             {
                                 // list_len should equal name_len + 3 (type + name_len)
@@ -1779,7 +1761,7 @@ fn try_reconstruct_sni_from_fragments(reassembler: &CryptoFrameReassembler) -> O
                     "QUIC: Accepting long candidate '{}' despite gaps",
                     candidate
                 );
-                if is_valid_hostname(&candidate) {
+                if is_valid_hostname(candidate) {
                     processed_candidates.push(candidate.clone());
                 }
             } else {
@@ -1818,7 +1800,7 @@ fn try_reconstruct_sni_from_fragments(reassembler: &CryptoFrameReassembler) -> O
         }
     });
 
-    for candidate in &processed_candidates {
+    if let Some(candidate) = processed_candidates.first() {
         debug!("QUIC: Found hostname candidate: {}", candidate);
         return Some(candidate.clone());
     }
@@ -1907,7 +1889,7 @@ fn find_hostname_candidates(data: &[u8]) -> Vec<String> {
 
 /// Check if a character is an ASCII letter or digit
 fn is_ascii_letter_or_digit(b: u8) -> bool {
-    (b >= b'a' && b <= b'z') || (b >= b'A' && b <= b'Z') || (b >= b'0' && b <= b'9')
+    b.is_ascii_lowercase() || b.is_ascii_uppercase() || b.is_ascii_digit()
 }
 
 /// Detect if a hostname candidate appears to be truncated and mark it with ...
@@ -2006,13 +1988,7 @@ fn find_substring(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         return None;
     }
 
-    for i in 0..=(haystack.len() - needle.len()) {
-        if &haystack[i..i + needle.len()] == needle {
-            return Some(i);
-        }
-    }
-
-    None
+    (0..=(haystack.len() - needle.len())).find(|&i| &haystack[i..i + needle.len()] == needle)
 }
 
 /// Validate if a string looks like a valid hostname

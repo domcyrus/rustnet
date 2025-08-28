@@ -1,9 +1,19 @@
 // network/parser.rs - Updated with DPI integration and PKTAP support
 use crate::network::dpi::{self, DpiResult};
-use crate::network::types::*;
 #[cfg(target_os = "macos")]
 use crate::network::pktap;
+use crate::network::types::*;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+/// Common parameters for transport layer parsing
+struct TransportParams {
+    src_ip: IpAddr,
+    dst_ip: IpAddr,
+    is_outgoing: bool,
+    packet_len: usize,
+    process_name: Option<String>,
+    process_id: Option<u32>,
+}
 
 // Define TCP flags as bit masks
 const TCP_FIN: u8 = 0x01;
@@ -14,6 +24,7 @@ const TCP_ACK: u8 = 0x10;
 const TCP_URG: u8 = 0x20;
 
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)] // PSH and URG flags are legitimate TCP flags, kept for completeness
 pub struct TcpFlags {
     pub fin: bool,
     pub syn: bool,
@@ -47,7 +58,7 @@ pub struct ParsedPacket {
     pub packet_len: usize,
     pub dpi_result: Option<DpiResult>, // DPI results if available
     pub process_name: Option<String>,  // Process name from PKTAP metadata
-    pub process_id: Option<u32>,      // Process ID from PKTAP metadata
+    pub process_id: Option<u32>,       // Process ID from PKTAP metadata
 }
 
 #[derive(Clone)]
@@ -96,10 +107,10 @@ impl PacketParser {
                 local_ips.insert(ip_network.ip());
             }
         }
-        Self { 
-            local_ips, 
-            config, 
-            linktype: None 
+        Self {
+            local_ips,
+            config,
+            linktype: None,
         }
     }
 
@@ -113,12 +124,11 @@ impl PacketParser {
     pub fn parse_packet(&self, data: &[u8]) -> Option<ParsedPacket> {
         // Check if this is PKTAP data
         #[cfg(target_os = "macos")]
-        if let Some(linktype) = self.linktype {
-            if pktap::is_pktap_linktype(linktype) {
-                return self.parse_pktap_packet(data);
-            }
+        if let Some(linktype) = self.linktype
+            && pktap::is_pktap_linktype(linktype) {
+            return self.parse_pktap_packet(data);
         }
-        
+
         // Regular Ethernet parsing
         if data.len() < 14 {
             return None;
@@ -138,7 +148,7 @@ impl PacketParser {
     fn parse_pktap_packet(&self, data: &[u8]) -> Option<ParsedPacket> {
         let (pktap_header, payload) = pktap::parse_pktap_packet(data)?;
         let (process_name, process_id) = pktap_header.get_process_info();
-        
+
         log::debug!(
             "PKTAP packet: interface={}, process={:?}, pid={:?}, payload_len={}",
             pktap_header.get_interface(),
@@ -181,7 +191,12 @@ impl PacketParser {
         }
     }
 
-    fn parse_ipv4_packet_inner(&self, data: &[u8], process_name: Option<String>, process_id: Option<u32>) -> Option<ParsedPacket> {
+    fn parse_ipv4_packet_inner(
+        &self,
+        data: &[u8],
+        process_name: Option<String>,
+        process_id: Option<u32>,
+    ) -> Option<ParsedPacket> {
         let ip_data = &data[14..];
         if ip_data.len() < 20 {
             return None;
@@ -217,14 +232,49 @@ impl PacketParser {
         let is_outgoing = self.local_ips.contains(&src_ip);
 
         match protocol_num {
-            1 => self.parse_icmp(transport_data, src_ip, dst_ip, is_outgoing, data.len(), process_name, process_id),
-            6 => self.parse_tcp(transport_data, src_ip, dst_ip, is_outgoing, data.len(), process_name, process_id),
-            17 => self.parse_udp(transport_data, src_ip, dst_ip, is_outgoing, data.len(), process_name, process_id),
+            1 => self.parse_icmp(
+                transport_data,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
+            ),
+            6 => self.parse_tcp(
+                transport_data,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
+            ),
+            17 => self.parse_udp(
+                transport_data,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
+            ),
             _ => None,
         }
     }
 
-    fn parse_ipv6_packet_inner(&self, data: &[u8], process_name: Option<String>, process_id: Option<u32>) -> Option<ParsedPacket> {
+    fn parse_ipv6_packet_inner(
+        &self,
+        data: &[u8],
+        process_name: Option<String>,
+        process_id: Option<u32>,
+    ) -> Option<ParsedPacket> {
         let ip_data = &data[14..];
         if ip_data.len() < 40 {
             return None;
@@ -271,30 +321,36 @@ impl PacketParser {
         match final_next_header {
             58 => self.parse_icmpv6(
                 final_transport_data,
-                src_ip,
-                dst_ip,
-                is_outgoing,
-                data.len(),
-                process_name,
-                process_id,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
             ),
             6 => self.parse_tcp(
                 final_transport_data,
-                src_ip,
-                dst_ip,
-                is_outgoing,
-                data.len(),
-                process_name,
-                process_id,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
             ),
             17 => self.parse_udp(
                 final_transport_data,
-                src_ip,
-                dst_ip,
-                is_outgoing,
-                data.len(),
-                process_name,
-                process_id,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
             ),
             _ => None,
         }
@@ -303,12 +359,7 @@ impl PacketParser {
     fn parse_tcp(
         &self,
         transport_data: &[u8],
-        src_ip: IpAddr,
-        dst_ip: IpAddr,
-        is_outgoing: bool,
-        packet_len: usize,
-        process_name: Option<String>,
-        process_id: Option<u32>,
+        params: TransportParams,
     ) -> Option<ParsedPacket> {
         if transport_data.len() < 20 {
             return None;
@@ -320,15 +371,15 @@ impl PacketParser {
 
         let tcp_flags = parse_tcp_flags(flags);
 
-        let (local_addr, remote_addr) = if is_outgoing {
+        let (local_addr, remote_addr) = if params.is_outgoing {
             (
-                SocketAddr::new(src_ip, src_port),
-                SocketAddr::new(dst_ip, dst_port),
+                SocketAddr::new(params.src_ip, src_port),
+                SocketAddr::new(params.dst_ip, dst_port),
             )
         } else {
             (
-                SocketAddr::new(dst_ip, dst_port),
-                SocketAddr::new(src_ip, src_port),
+                SocketAddr::new(params.dst_ip, dst_port),
+                SocketAddr::new(params.src_ip, src_port),
             )
         };
 
@@ -337,7 +388,7 @@ impl PacketParser {
             let tcp_header_len = ((transport_data[12] >> 4) as usize) * 4;
             if transport_data.len() > tcp_header_len {
                 let payload = &transport_data[tcp_header_len..];
-                dpi::analyze_tcp_packet(payload, local_addr.port(), remote_addr.port(), is_outgoing)
+                dpi::analyze_tcp_packet(payload, local_addr.port(), remote_addr.port(), params.is_outgoing)
             } else {
                 None
             }
@@ -352,23 +403,18 @@ impl PacketParser {
             remote_addr,
             tcp_flags: Some(tcp_flags),
             protocol_state: ProtocolState::Tcp(TcpState::Unknown),
-            is_outgoing,
-            packet_len,
+            is_outgoing: params.is_outgoing,
+            packet_len: params.packet_len,
             dpi_result,
-            process_name,
-            process_id,
+            process_name: params.process_name,
+            process_id: params.process_id,
         })
     }
 
     fn parse_udp(
         &self,
         transport_data: &[u8],
-        src_ip: IpAddr,
-        dst_ip: IpAddr,
-        is_outgoing: bool,
-        packet_len: usize,
-        process_name: Option<String>,
-        process_id: Option<u32>,
+        params: TransportParams,
     ) -> Option<ParsedPacket> {
         if transport_data.len() < 8 {
             return None;
@@ -377,22 +423,22 @@ impl PacketParser {
         let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
         let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
 
-        let (local_addr, remote_addr) = if is_outgoing {
+        let (local_addr, remote_addr) = if params.is_outgoing {
             (
-                SocketAddr::new(src_ip, src_port),
-                SocketAddr::new(dst_ip, dst_port),
+                SocketAddr::new(params.src_ip, src_port),
+                SocketAddr::new(params.dst_ip, dst_port),
             )
         } else {
             (
-                SocketAddr::new(dst_ip, dst_port),
-                SocketAddr::new(src_ip, src_port),
+                SocketAddr::new(params.dst_ip, dst_port),
+                SocketAddr::new(params.src_ip, src_port),
             )
         };
 
         // Perform DPI if enabled and there's payload
         let dpi_result = if self.config.enable_dpi && transport_data.len() > 8 {
             let payload = &transport_data[8..];
-            dpi::analyze_udp_packet(payload, local_addr.port(), remote_addr.port(), is_outgoing)
+            dpi::analyze_udp_packet(payload, local_addr.port(), remote_addr.port(), params.is_outgoing)
         } else {
             None
         };
@@ -404,23 +450,18 @@ impl PacketParser {
             remote_addr,
             tcp_flags: None,
             protocol_state: ProtocolState::Udp,
-            is_outgoing,
-            packet_len,
+            is_outgoing: params.is_outgoing,
+            packet_len: params.packet_len,
             dpi_result,
-            process_name,
-            process_id,
+            process_name: params.process_name,
+            process_id: params.process_id,
         })
     }
 
     fn parse_icmp(
         &self,
         transport_data: &[u8],
-        src_ip: IpAddr,
-        dst_ip: IpAddr,
-        is_outgoing: bool,
-        packet_len: usize,
-        process_name: Option<String>,
-        process_id: Option<u32>,
+        params: TransportParams,
     ) -> Option<ParsedPacket> {
         if transport_data.is_empty() {
             return None;
@@ -433,10 +474,10 @@ impl PacketParser {
             0
         };
 
-        let (local_addr, remote_addr) = if is_outgoing {
-            (SocketAddr::new(src_ip, 0), SocketAddr::new(dst_ip, 0))
+        let (local_addr, remote_addr) = if params.is_outgoing {
+            (SocketAddr::new(params.src_ip, 0), SocketAddr::new(params.dst_ip, 0))
         } else {
-            (SocketAddr::new(dst_ip, 0), SocketAddr::new(src_ip, 0))
+            (SocketAddr::new(params.dst_ip, 0), SocketAddr::new(params.src_ip, 0))
         };
 
         Some(ParsedPacket {
@@ -449,23 +490,18 @@ impl PacketParser {
                 icmp_type,
                 icmp_code,
             },
-            is_outgoing,
-            packet_len,
+            is_outgoing: params.is_outgoing,
+            packet_len: params.packet_len,
             dpi_result: None,
-            process_name,
-            process_id,
+            process_name: params.process_name,
+            process_id: params.process_id,
         })
     }
 
     fn parse_icmpv6(
         &self,
         transport_data: &[u8],
-        src_ip: IpAddr,
-        dst_ip: IpAddr,
-        is_outgoing: bool,
-        packet_len: usize,
-        process_name: Option<String>,
-        process_id: Option<u32>,
+        params: TransportParams,
     ) -> Option<ParsedPacket> {
         if transport_data.is_empty() {
             return None;
@@ -478,10 +514,10 @@ impl PacketParser {
             0
         };
 
-        let (local_addr, remote_addr) = if is_outgoing {
-            (SocketAddr::new(src_ip, 0), SocketAddr::new(dst_ip, 0))
+        let (local_addr, remote_addr) = if params.is_outgoing {
+            (SocketAddr::new(params.src_ip, 0), SocketAddr::new(params.dst_ip, 0))
         } else {
-            (SocketAddr::new(dst_ip, 0), SocketAddr::new(src_ip, 0))
+            (SocketAddr::new(params.dst_ip, 0), SocketAddr::new(params.src_ip, 0))
         };
 
         Some(ParsedPacket {
@@ -494,15 +530,20 @@ impl PacketParser {
                 icmp_type,
                 icmp_code,
             },
-            is_outgoing,
-            packet_len,
+            is_outgoing: params.is_outgoing,
+            packet_len: params.packet_len,
             dpi_result: None, // No DPI for ICMPv6
-            process_name,
-            process_id,
+            process_name: params.process_name,
+            process_id: params.process_id,
         })
     }
 
-    fn parse_arp_packet_inner(&self, data: &[u8], process_name: Option<String>, process_id: Option<u32>) -> Option<ParsedPacket> {
+    fn parse_arp_packet_inner(
+        &self,
+        data: &[u8],
+        process_name: Option<String>,
+        process_id: Option<u32>,
+    ) -> Option<ParsedPacket> {
         let arp_data = &data[14..];
         if arp_data.len() < 28 {
             return None;
@@ -548,7 +589,12 @@ impl PacketParser {
     }
 
     // Raw IP packet parsing for PKTAP DLT_RAW
-    fn parse_raw_ipv4_packet(&self, data: &[u8], process_name: Option<String>, process_id: Option<u32>) -> Option<ParsedPacket> {
+    fn parse_raw_ipv4_packet(
+        &self,
+        data: &[u8],
+        process_name: Option<String>,
+        process_id: Option<u32>,
+    ) -> Option<ParsedPacket> {
         if data.len() < 20 {
             return None;
         }
@@ -573,14 +619,49 @@ impl PacketParser {
         let is_outgoing = self.local_ips.contains(&src_ip);
 
         match protocol_num {
-            1 => self.parse_icmp(transport_data, src_ip, dst_ip, is_outgoing, data.len(), process_name, process_id),
-            6 => self.parse_tcp(transport_data, src_ip, dst_ip, is_outgoing, data.len(), process_name, process_id),
-            17 => self.parse_udp(transport_data, src_ip, dst_ip, is_outgoing, data.len(), process_name, process_id),
+            1 => self.parse_icmp(
+                transport_data,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
+            ),
+            6 => self.parse_tcp(
+                transport_data,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
+            ),
+            17 => self.parse_udp(
+                transport_data,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
+            ),
             _ => None,
         }
     }
 
-    fn parse_raw_ipv6_packet(&self, data: &[u8], process_name: Option<String>, process_id: Option<u32>) -> Option<ParsedPacket> {
+    fn parse_raw_ipv6_packet(
+        &self,
+        data: &[u8],
+        process_name: Option<String>,
+        process_id: Option<u32>,
+    ) -> Option<ParsedPacket> {
         if data.len() < 40 {
             return None;
         }
@@ -619,13 +700,44 @@ impl PacketParser {
         let is_outgoing = self.local_ips.contains(&src_ip);
 
         // Handle extension headers if needed
-        let (final_next_header, transport_offset) = self.parse_ipv6_extension_headers(next_header, transport_data);
+        let (final_next_header, transport_offset) =
+            self.parse_ipv6_extension_headers(next_header, transport_data);
         let final_transport_data = &transport_data[transport_offset..];
 
         match final_next_header {
-            58 => self.parse_icmpv6(final_transport_data, src_ip, dst_ip, is_outgoing, data.len(), process_name, process_id),
-            6 => self.parse_tcp(final_transport_data, src_ip, dst_ip, is_outgoing, data.len(), process_name, process_id),
-            17 => self.parse_udp(final_transport_data, src_ip, dst_ip, is_outgoing, data.len(), process_name, process_id),
+            58 => self.parse_icmpv6(
+                final_transport_data,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
+            ),
+            6 => self.parse_tcp(
+                final_transport_data,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
+            ),
+            17 => self.parse_udp(
+                final_transport_data,
+                TransportParams {
+                    src_ip,
+                    dst_ip,
+                    is_outgoing,
+                    packet_len: data.len(),
+                    process_name,
+                    process_id,
+                },
+            ),
             _ => None,
         }
     }

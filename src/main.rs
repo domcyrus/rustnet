@@ -167,15 +167,14 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
         }
 
         // Clear clipboard message after timeout
-        if let Some((_, time)) = &ui_state.clipboard_message {
-            if time.elapsed().as_secs() >= 3 {
-                ui_state.clipboard_message = None;
-            }
+        if let Some((_, time)) = &ui_state.clipboard_message
+            && time.elapsed().as_secs() >= 3 {
+            ui_state.clipboard_message = None;
         }
 
         // Handle input events
-        if crossterm::event::poll(timeout)? {
-            if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
+        if crossterm::event::poll(timeout)?
+            && let crossterm::event::Event::Key(key) = crossterm::event::read()? {
                 use crossterm::event::{KeyCode, KeyModifiers};
 
                 match (key.code, key.modifiers) {
@@ -248,32 +247,31 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Copy remote address to clipboard
                     (KeyCode::Char('c'), _) => {
                         ui_state.quit_confirmation = false;
-                        if let Some(selected_idx) = ui_state.get_selected_index(&connections) {
-                            if let Some(conn) = connections.get(selected_idx) {
-                                let remote_addr = conn.remote_addr.to_string();
-                                match Clipboard::new() {
-                                    Ok(mut clipboard) => {
-                                        if let Err(e) = clipboard.set_text(&remote_addr) {
-                                            error!("Failed to copy to clipboard: {}", e);
-                                            ui_state.clipboard_message = Some((
-                                                format!("Failed to copy: {}", e),
-                                                std::time::Instant::now(),
-                                            ));
-                                        } else {
-                                            info!("Copied {} to clipboard", remote_addr);
-                                            ui_state.clipboard_message = Some((
-                                                format!("Copied {} to clipboard", remote_addr),
-                                                std::time::Instant::now(),
-                                            ));
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to access clipboard: {}", e);
+                        if let Some(selected_idx) = ui_state.get_selected_index(&connections)
+                            && let Some(conn) = connections.get(selected_idx) {
+                            let remote_addr = conn.remote_addr.to_string();
+                            match Clipboard::new() {
+                                Ok(mut clipboard) => {
+                                    if let Err(e) = clipboard.set_text(&remote_addr) {
+                                        error!("Failed to copy to clipboard: {}", e);
                                         ui_state.clipboard_message = Some((
-                                            format!("Clipboard error: {}", e),
+                                            format!("Failed to copy: {}", e),
+                                            std::time::Instant::now(),
+                                        ));
+                                    } else {
+                                        info!("Copied {} to clipboard", remote_addr);
+                                        ui_state.clipboard_message = Some((
+                                            format!("Copied {} to clipboard", remote_addr),
                                             std::time::Instant::now(),
                                         ));
                                     }
+                                }
+                                Err(e) => {
+                                    error!("Failed to access clipboard: {}", e);
+                                    ui_state.clipboard_message = Some((
+                                        format!("Clipboard error: {}", e),
+                                        std::time::Instant::now(),
+                                    ));
                                 }
                             }
                         }
@@ -294,7 +292,6 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         ui_state.quit_confirmation = false;
                     }
                 }
-            }
         }
     }
 

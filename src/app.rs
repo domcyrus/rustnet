@@ -22,7 +22,8 @@ use std::sync::{LazyLock, Mutex};
 
 /// Global QUIC connection ID to connection key mapping
 /// This allows tracking QUIC connections across connection ID changes
-static QUIC_CONNECTION_MAPPING: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static QUIC_CONNECTION_MAPPING: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Application configuration
 #[derive(Debug, Clone)]
@@ -35,10 +36,6 @@ pub struct Config {
     pub refresh_interval: u64,
     /// Enable deep packet inspection
     pub enable_dpi: bool,
-    /// Process lookup interval in seconds
-    pub process_lookup_interval: u64,
-    /// Connection timeout in seconds (remove inactive connections)
-    pub connection_timeout: u64,
     /// BPF filter for packet capture
     pub bpf_filter: Option<String>,
 }
@@ -50,8 +47,6 @@ impl Default for Config {
             filter_localhost: true,
             refresh_interval: 1000,
             enable_dpi: true,
-            process_lookup_interval: 2,
-            connection_timeout: 120,
             bpf_filter: None, // No filter by default to see all packets
         }
     }
@@ -202,7 +197,7 @@ impl App {
                     // Store the actual interface name and linktype being used
                     *current_interface.write().unwrap() = Some(device_name.clone());
                     *linktype_storage.write().unwrap() = Some(linktype);
-                    
+
                     // Check if PKTAP is active (linktype 149 or 258)
                     #[cfg(target_os = "macos")]
                     {
@@ -212,7 +207,7 @@ impl App {
                             info!("✓ PKTAP is active - process metadata will be provided directly");
                         }
                     }
-                    
+
                     info!(
                         "Packet capture started successfully on interface: {} (linktype: {})",
                         device_name, linktype
@@ -309,7 +304,7 @@ impl App {
 
         thread::spawn(move || {
             info!("Packet processor {} started", id);
-            
+
             // Wait for linktype to be available
             let parser = loop {
                 if let Some(linktype) = *linktype_storage.read().unwrap() {
@@ -378,38 +373,48 @@ impl App {
     ) -> Result<()> {
         let pktap_active = Arc::clone(&self.pktap_active);
         let should_stop = Arc::clone(&self.should_stop);
-        
+
         thread::spawn(move || {
             // On macOS, wait for PKTAP detection to avoid unnecessary lsof calls
             #[cfg(target_os = "macos")]
             {
                 // Wait up to 5 seconds for PKTAP detection with shorter polling intervals
                 let wait_start = Instant::now();
-                while wait_start.elapsed() < Duration::from_secs(5) && !should_stop.load(Ordering::Relaxed) {
+                while wait_start.elapsed() < Duration::from_secs(5)
+                    && !should_stop.load(Ordering::Relaxed)
+                {
                     if pktap_active.load(Ordering::Relaxed) {
-                        info!("🚫 Skipping process enrichment thread - PKTAP is active and provides process metadata");
+                        info!(
+                            "🚫 Skipping process enrichment thread - PKTAP is active and provides process metadata"
+                        );
                         return;
                     }
                     // Check more frequently for faster detection
                     thread::sleep(Duration::from_millis(50));
                 }
-                
+
                 // Final check after timeout
                 if pktap_active.load(Ordering::Relaxed) {
-                    info!("🚫 Skipping process enrichment thread - PKTAP became active during startup");
+                    info!(
+                        "🚫 Skipping process enrichment thread - PKTAP became active during startup"
+                    );
                     return;
                 } else {
-                    info!("⚠️  PKTAP not detected after 5 seconds, starting process enrichment thread with lsof");
-                    info!("    This may cause process name formatting differences with PKTAP if it activates later");
+                    info!(
+                        "⚠️  PKTAP not detected after 5 seconds, starting process enrichment thread with lsof"
+                    );
+                    info!(
+                        "    This may cause process name formatting differences with PKTAP if it activates later"
+                    );
                 }
             }
-            
+
             // Start the actual process enrichment
             if let Err(e) = Self::run_process_enrichment(connections, should_stop, pktap_active) {
                 error!("Process enrichment thread failed: {}", e);
             }
         });
-        
+
         Ok(())
     }
 
@@ -419,7 +424,8 @@ impl App {
         should_stop: Arc<AtomicBool>,
         pktap_active: Arc<AtomicBool>,
     ) -> Result<()> {
-        let process_lookup = create_process_lookup_with_pktap_status(pktap_active.load(Ordering::Relaxed))?;
+        let process_lookup =
+            create_process_lookup_with_pktap_status(pktap_active.load(Ordering::Relaxed))?;
         let interval = Duration::from_secs(2); // Use default interval
 
         info!("Process enrichment thread started");
@@ -434,7 +440,9 @@ impl App {
             // Check if PKTAP became active (abort immediately to prevent conflicts)
             #[cfg(target_os = "macos")]
             if pktap_active.load(Ordering::Relaxed) {
-                info!("🚫 PKTAP became active, stopping process enrichment thread to prevent conflicts");
+                info!(
+                    "🚫 PKTAP became active, stopping process enrichment thread to prevent conflicts"
+                );
                 break;
             }
 
@@ -452,23 +460,34 @@ impl App {
                 // Allow partial enrichment - fill in missing pieces without overwriting existing data
                 if let Some((pid, name)) = process_lookup.get_process_for_connection(&entry) {
                     let mut did_enrich = false;
-                    
+
                     // Only set process name if it's missing
                     if entry.process_name.is_none() {
                         entry.process_name = Some(name.clone());
                         did_enrich = true;
-                        debug!("✓ Set process name for connection {}: {}", entry.key(), name);
+                        debug!(
+                            "✓ Set process name for connection {}: {}",
+                            entry.key(),
+                            name
+                        );
                     } else {
                         // Check if the existing name differs significantly (for debugging)
                         let existing_name = entry.process_name.as_ref().unwrap();
-                        let existing_normalized = existing_name.split_whitespace().collect::<Vec<&str>>().join(" ");
-                        let new_normalized = name.split_whitespace().collect::<Vec<&str>>().join(" ");
-                        
+                        let existing_normalized = existing_name
+                            .split_whitespace()
+                            .collect::<Vec<&str>>()
+                            .join(" ");
+                        let new_normalized =
+                            name.split_whitespace().collect::<Vec<&str>>().join(" ");
+
                         if existing_normalized != new_normalized {
-                            debug!("⚠️  Process name differs: existing='{}' vs lsof='{}'", existing_name, name);
+                            debug!(
+                                "⚠️  Process name differs: existing='{}' vs lsof='{}'",
+                                existing_name, name
+                            );
                         }
                     }
-                    
+
                     // Only set PID if it's missing
                     if entry.pid.is_none() {
                         entry.pid = Some(pid);
@@ -476,10 +495,14 @@ impl App {
                         debug!("✓ Set PID for connection {}: {}", entry.key(), pid);
                     } else if entry.pid != Some(pid) {
                         // PID differs - log for debugging
-                        debug!("⚠️  PID differs for {}: existing={:?} vs lsof={}", 
-                              entry.key(), entry.pid, pid);
+                        debug!(
+                            "⚠️  PID differs for {}: existing={:?} vs lsof={}",
+                            entry.key(),
+                            entry.pid,
+                            pid
+                        );
                     }
-                    
+
                     if did_enrich {
                         enriched += 1;
                     }
@@ -597,7 +620,7 @@ impl App {
 
                 // Collect keys of connections to be removed
                 let mut removed_keys = Vec::new();
-                
+
                 connections.retain(|key, conn| {
                     // Use dynamic timeout based on connection type and state
                     let should_keep = !conn.should_cleanup(now);
@@ -605,7 +628,6 @@ impl App {
                     if !should_keep {
                         removed += 1;
                         removed_keys.push(key.clone());
-                        
                         // Log cleanup reason for debugging
                         let conn_timeout = conn.get_timeout();
                         let idle_time = now.duration_since(conn.last_activity).unwrap_or_default();
@@ -623,15 +645,21 @@ impl App {
                 });
 
                 // Clean up QUIC connection ID mappings for removed connections
-                if !removed_keys.is_empty() {
-                    if let Ok(mut mapping) = QUIC_CONNECTION_MAPPING.lock() {
-                        mapping.retain(|_, conn_key| !removed_keys.contains(conn_key));
-                        debug!("Cleaned up QUIC mappings for {} removed connections", removed_keys.len());
-                    }
+                if !removed_keys.is_empty()
+                    && let Ok(mut mapping) = QUIC_CONNECTION_MAPPING.lock()
+                {
+                    mapping.retain(|_, conn_key| !removed_keys.contains(conn_key));
+                    debug!(
+                        "Cleaned up QUIC mappings for {} removed connections",
+                        removed_keys.len()
+                    );
                 }
 
                 if removed > 0 {
-                    debug!("Removed {} inactive connections and cleaned up QUIC mappings", removed);
+                    debug!(
+                        "Removed {} inactive connections and cleaned up QUIC mappings",
+                        removed
+                    );
                 }
 
                 thread::sleep(Duration::from_secs(10));
@@ -685,23 +713,25 @@ fn update_connection(
     let now = SystemTime::now();
 
     // For QUIC packets, check if we have a connection ID mapping
-    if parsed.protocol == Protocol::UDP {
-        if let Some(dpi_result) = &parsed.dpi_result {
-            if let ApplicationProtocol::Quic(quic_info) = &dpi_result.application {
-                if let Some(conn_id_hex) = &quic_info.connection_id_hex {
-                    // Check if we already have a mapping for this connection ID
-                    if let Ok(mut mapping) = QUIC_CONNECTION_MAPPING.lock() {
-                        if let Some(existing_key) = mapping.get(conn_id_hex) {
-                            key = existing_key.clone();
-                            debug!("QUIC: Using existing connection key {} for Connection ID {}", key, conn_id_hex);
-                        } else {
-                            // New QUIC connection ID, create mapping
-                            mapping.insert(conn_id_hex.clone(), key.clone());
-                            debug!("QUIC: Created new mapping {} -> {} for Connection ID {}", conn_id_hex, key, conn_id_hex);
-                        }
-                    }
-                }
-            }
+    if parsed.protocol == Protocol::UDP
+        && let Some(dpi_result) = &parsed.dpi_result
+        && let ApplicationProtocol::Quic(quic_info) = &dpi_result.application
+        && let Some(conn_id_hex) = &quic_info.connection_id_hex
+        && let Ok(mut mapping) = QUIC_CONNECTION_MAPPING.lock()
+    {
+        if let Some(existing_key) = mapping.get(conn_id_hex) {
+            key = existing_key.clone();
+            debug!(
+                "QUIC: Using existing connection key {} for Connection ID {}",
+                key, conn_id_hex
+            );
+        } else {
+            // New QUIC connection ID, create mapping
+            mapping.insert(conn_id_hex.clone(), key.clone());
+            debug!(
+                "QUIC: Created new mapping {} -> {} for Connection ID {}",
+                conn_id_hex, key, conn_id_hex
+            );
         }
     }
 

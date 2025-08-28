@@ -99,7 +99,7 @@ pub fn merge_packet_into_connection(
             }
             _ => {
                 // Use the state from the packet for non-TCP protocols
-                conn.protocol_state = parsed.protocol_state.clone();
+                conn.protocol_state = parsed.protocol_state;
             }
         }
     }
@@ -199,7 +199,7 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
         parsed.protocol,
         parsed.local_addr,
         parsed.remote_addr,
-        parsed.protocol_state.clone(),
+        parsed.protocol_state,
     );
 
     // Set initial TCP state based on flags if TCP
@@ -218,7 +218,7 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
         }
     } else {
         // For non-TCP protocols, use the provided state directly
-        conn.protocol_state = parsed.protocol_state.clone();
+        conn.protocol_state = parsed.protocol_state;
     }
 
     // Set initial stats based on packet direction
@@ -308,7 +308,7 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
 
                 // QUIC merging - this is where the reassembly happens
                 (ApplicationProtocol::Quic(old_info), ApplicationProtocol::Quic(new_info)) => {
-                    merge_quic_info(old_info, new_info);
+                    merge_quic_info(old_info.as_mut(), new_info.as_ref());
                 }
 
                 // DNS merging
@@ -365,7 +365,7 @@ fn merge_https_info(old_info: &mut HttpsInfo, new_info: &HttpsInfo) {
     } else if let (Some(old_tls), Some(new_tls)) = (&mut old_info.tls_info, &new_info.tls_info) {
         // Merge TLS info - prefer more complete info
         if old_tls.version.is_none() && new_tls.version.is_some() {
-            old_tls.version = new_tls.version.clone();
+            old_tls.version = new_tls.version;
         }
         if old_tls.sni.is_none() && new_tls.sni.is_some() {
             old_tls.sni = new_tls.sni.clone();
@@ -383,18 +383,18 @@ fn merge_https_info(old_info: &mut HttpsInfo, new_info: &HttpsInfo) {
 fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
     // Update connection state if it progressed
     match (&old_info.connection_state, &new_info.connection_state) {
-        (old_state, new_state) if !matches!(old_state, new_state) => {
+        (old_state, _new_state) if !matches!(old_state, _new_state) => {
             debug!(
                 "QUIC connection state changed: {:?} -> {:?}",
-                old_state, new_state
+                old_state, _new_state
             );
-            old_info.connection_state = new_info.connection_state.clone();
+            old_info.connection_state = new_info.connection_state;
         }
         _ => {}
     }
 
     // Update packet type
-    old_info.packet_type = new_info.packet_type.clone();
+    old_info.packet_type = new_info.packet_type;
 
     // Update connection ID if we didn't have it
     if old_info.connection_id.is_empty() && !new_info.connection_id.is_empty() {
@@ -468,7 +468,7 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
             }
 
             if old_tls.version.is_none() && new_tls.version.is_some() {
-                merged_tls.version = new_tls.version.clone();
+                merged_tls.version = new_tls.version;
                 updated = true;
             }
 
@@ -494,7 +494,7 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
     if let Some(new_close) = &new_info.connection_close {
         // CONNECTION_CLOSE is final - always update
         old_info.connection_close = Some(new_close.clone());
-        
+
         // Update connection state based on close frame
         old_info.connection_state = match new_close.frame_type {
             0x1c if new_close.error_code == 0 => {
@@ -504,21 +504,30 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
             }
             0x1c => {
                 // Transport error - connection is closed
-                debug!("QUIC: Connection closed due to transport error: {}", new_close.error_code);
+                debug!(
+                    "QUIC: Connection closed due to transport error: {}",
+                    new_close.error_code
+                );
                 QuicConnectionState::Closed
             }
             0x1d => {
                 // Application close - connection is closed
-                debug!("QUIC: Connection closed by application: {}", new_close.error_code);
+                debug!(
+                    "QUIC: Connection closed by application: {}",
+                    new_close.error_code
+                );
                 QuicConnectionState::Closed
             }
             _ => {
                 // Unknown close type - assume closed
-                debug!("QUIC: Connection closed (unknown frame type: 0x{:02x})", new_close.frame_type);
+                debug!(
+                    "QUIC: Connection closed (unknown frame type: 0x{:02x})",
+                    new_close.frame_type
+                );
                 QuicConnectionState::Closed
             }
         };
-        
+
         debug!(
             "QUIC: Updated connection state to {:?} due to CONNECTION_CLOSE frame",
             old_info.connection_state
@@ -540,13 +549,13 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
 
     // Update query type if not set
     if old_info.query_type.is_none() && new_info.query_type.is_some() {
-        old_info.query_type = new_info.query_type.clone();
+        old_info.query_type = new_info.query_type;
     }
 
     // Merge response IPs (keep unique)
     for ip in &new_info.response_ips {
         if !old_info.response_ips.contains(ip) {
-            old_info.response_ips.push(ip.clone());
+            old_info.response_ips.push(*ip);
         }
     }
 

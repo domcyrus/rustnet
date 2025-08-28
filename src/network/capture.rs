@@ -136,7 +136,7 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     #[cfg(target_os = "macos")]
     {
         log::info!("Attempting to use PKTAP for process metadata on macOS");
-        
+
         match Capture::from_device("pktap") {
             Ok(pktap_builder) => {
                 let pktap_cap = pktap_builder
@@ -147,39 +147,51 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                     .immediate_mode(true)
                     .want_pktap(true)
                     .open();
-                
+
                 match pktap_cap {
                     Ok(mut cap) => {
                         // Try to set direction for better performance (optional)
                         if let Err(e) = cap.direction(pcap::Direction::InOut) {
                             log::debug!("Could not set PKTAP direction: {}", e);
                         }
-                        
+
                         let linktype = cap.get_datalink();
-                        log::info!("✓ PKTAP enabled successfully, linktype: {} ({})", 
-                                 linktype.0, 
-                                 if linktype.0 == 149 { "Apple PKTAP" } else { "Unknown" });
-                        
+                        log::info!(
+                            "✓ PKTAP enabled successfully, linktype: {} ({})",
+                            linktype.0,
+                            if linktype.0 == 149 {
+                                "Apple PKTAP"
+                            } else {
+                                "Unknown"
+                            }
+                        );
+
                         // Apply BPF filter if specified
                         if let Some(filter) = &config.filter {
                             log::info!("Applying BPF filter to PKTAP: {}", filter);
                             cap.filter(filter, true)?;
                         }
-                        
+
                         log::info!("PKTAP capture ready - process metadata will be available");
                         return Ok((cap, "pktap".to_string(), linktype.0));
                     }
                     Err(e) => {
-                        log::warn!("Failed to open PKTAP capture: {}, falling back to regular capture", e);
+                        log::warn!(
+                            "Failed to open PKTAP capture: {}, falling back to regular capture",
+                            e
+                        );
                     }
                 }
             }
             Err(e) => {
-                log::warn!("Failed to create PKTAP device: {}, falling back to regular capture", e);
+                log::warn!(
+                    "Failed to create PKTAP device: {}, falling back to regular capture",
+                    e
+                );
             }
         }
     }
-    
+
     // Fallback to regular capture (original code)
     log::info!("Setting up regular packet capture");
     let device = find_capture_device(&config.interface)?;

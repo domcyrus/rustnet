@@ -39,6 +39,7 @@ pub fn restore_terminal<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>
 }
 
 /// UI state for managing the interface
+#[derive(Default)]
 pub struct UIState {
     pub selected_tab: usize,
     pub selected_connection_key: Option<String>,
@@ -142,17 +143,6 @@ impl UIState {
     }
 }
 
-impl Default for UIState {
-    fn default() -> Self {
-        Self {
-            selected_tab: 0,
-            selected_connection_key: None,
-            show_help: false,
-            quit_confirmation: false,
-            clipboard_message: None,
-        }
-    }
-}
 
 /// Draw the UI
 pub fn draw(
@@ -283,29 +273,36 @@ fn draw_connections_list(
                 .unwrap_or_else(|| "-".to_string());
 
             // Debug: Log the raw process data to understand what's changing
-            if let Some(ref raw_process_name) = conn.process_name {
-                if raw_process_name.contains("firefox") {
-                    log::debug!("🔍 Raw process name for {}: '{:?}' (len:{}, bytes: {:?})", 
-                              conn.key(), raw_process_name, raw_process_name.len(), raw_process_name.as_bytes());
-                    log::debug!("🔍 PID: {:?}", conn.pid);
-                    
-                    // Check for non-standard whitespace characters
-                    let has_non_ascii_space = raw_process_name.chars().any(|c| c.is_whitespace() && c != ' ' && c != '\t' && c != '\n');
-                    if has_non_ascii_space {
-                        log::warn!("🚨 Process name contains non-standard whitespace: {:?}", 
-                                 raw_process_name.chars().collect::<Vec<char>>());
-                    }
+            if let Some(ref raw_process_name) = conn.process_name
+                && raw_process_name.contains("firefox") {
+                log::debug!(
+                    "🔍 Raw process name for {}: '{:?}' (len:{}, bytes: {:?})",
+                    conn.key(),
+                    raw_process_name,
+                    raw_process_name.len(),
+                    raw_process_name.as_bytes()
+                );
+                log::debug!("🔍 PID: {:?}", conn.pid);
+
+                // Check for non-standard whitespace characters
+                let has_non_ascii_space = raw_process_name
+                    .chars()
+                    .any(|c| c.is_whitespace() && c != ' ' && c != '\t' && c != '\n');
+                if has_non_ascii_space {
+                    log::warn!(
+                        "🚨 Process name contains non-standard whitespace: {:?}",
+                        raw_process_name.chars().collect::<Vec<char>>()
+                    );
                 }
             }
 
             // Process names are now pre-normalized at the source (PKTAP/lsof), so we can use them directly
-            let process_str = conn.process_name.clone()
-                .unwrap_or_else(|| "-".to_string());
-                
+            let process_str = conn.process_name.clone().unwrap_or_else(|| "-".to_string());
+
             let process_display = if conn.pid.is_some() {
                 // Ensure exactly one space between process name and PID: "PROCESS_NAME (PID)"
                 let full_display = format!("{} ({})", process_str, pid_str);
-                
+
                 // Debug: Log the final formatted display
                 if process_str.contains("firefox") {
                     log::debug!("🎨 Final display for {}: '{}'", conn.key(), full_display);
@@ -582,7 +579,8 @@ fn draw_connection_details(
                             ]));
                         }
                         if let Some(formatted_cipher) = tls_info.format_cipher_suite() {
-                            let cipher_color = if tls_info.is_cipher_suite_secure().unwrap_or(false) {
+                            let cipher_color = if tls_info.is_cipher_suite_secure().unwrap_or(false)
+                            {
                                 Color::Green
                             } else {
                                 Color::Yellow
@@ -668,37 +666,32 @@ fn draw_connection_details(
     f.render_widget(details, chunks[0]);
 
     // Traffic details
-    let mut traffic_text: Vec<Line> = Vec::new();
-
-    traffic_text.push(Line::from(vec![
-        Span::styled("Bytes Sent: ", Style::default().fg(Color::Yellow)),
-        Span::raw(format_bytes(conn.bytes_sent)),
-    ]));
-
-    traffic_text.push(Line::from(vec![
-        Span::styled("Bytes Received: ", Style::default().fg(Color::Yellow)),
-        Span::raw(format_bytes(conn.bytes_received)),
-    ]));
-
-    traffic_text.push(Line::from(vec![
-        Span::styled("Packets Sent: ", Style::default().fg(Color::Yellow)),
-        Span::raw(conn.packets_sent.to_string()),
-    ]));
-
-    traffic_text.push(Line::from(vec![
-        Span::styled("Packets Received: ", Style::default().fg(Color::Yellow)),
-        Span::raw(conn.packets_received.to_string()),
-    ]));
-
-    traffic_text.push(Line::from(vec![
-        Span::styled("Current Rate (In): ", Style::default().fg(Color::Yellow)),
-        Span::raw(format_rate(conn.current_incoming_rate_bps)),
-    ]));
-
-    traffic_text.push(Line::from(vec![
-        Span::styled("Current Rate (Out): ", Style::default().fg(Color::Yellow)),
-        Span::raw(format_rate(conn.current_outgoing_rate_bps)),
-    ]));
+    let traffic_text: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("Bytes Sent: ", Style::default().fg(Color::Yellow)),
+            Span::raw(format_bytes(conn.bytes_sent)),
+        ]),
+        Line::from(vec![
+            Span::styled("Bytes Received: ", Style::default().fg(Color::Yellow)),
+            Span::raw(format_bytes(conn.bytes_received)),
+        ]),
+        Line::from(vec![
+            Span::styled("Packets Sent: ", Style::default().fg(Color::Yellow)),
+            Span::raw(conn.packets_sent.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Packets Received: ", Style::default().fg(Color::Yellow)),
+            Span::raw(conn.packets_received.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Current Rate (In): ", Style::default().fg(Color::Yellow)),
+            Span::raw(format_rate(conn.current_incoming_rate_bps)),
+        ]),
+        Line::from(vec![
+            Span::styled("Current Rate (Out): ", Style::default().fg(Color::Yellow)),
+            Span::raw(format_rate(conn.current_outgoing_rate_bps)),
+        ]),
+    ];
 
     let traffic = Paragraph::new(traffic_text)
         .block(

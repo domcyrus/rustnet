@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(clippy::upper_case_acronyms)] // Protocol names are standardized
 pub enum Protocol {
     TCP,
     UDP,
@@ -115,7 +116,7 @@ pub enum ApplicationProtocol {
     Https(HttpsInfo),
     Dns(DnsInfo),
     Ssh,
-    Quic(QuicInfo),
+    Quic(Box<QuicInfo>),
 }
 
 #[derive(Debug, Clone)]
@@ -157,20 +158,17 @@ impl TlsInfo {
             cipher_suite: None,
         }
     }
-    
-    /// Get the human-readable cipher suite name
-    pub fn cipher_suite_name(&self) -> Option<&'static str> {
-        self.cipher_suite.and_then(crate::network::dpi::get_cipher_suite_name)
-    }
-    
+
     /// Format the cipher suite with name and hex code
     pub fn format_cipher_suite(&self) -> Option<String> {
-        self.cipher_suite.map(crate::network::dpi::format_cipher_suite)
+        self.cipher_suite
+            .map(crate::network::dpi::format_cipher_suite)
     }
-    
+
     /// Check if the cipher suite is considered secure
     pub fn is_cipher_suite_secure(&self) -> Option<bool> {
-        self.cipher_suite.map(crate::network::dpi::is_secure_cipher_suite)
+        self.cipher_suite
+            .map(crate::network::dpi::is_secure_cipher_suite)
     }
 }
 
@@ -206,6 +204,7 @@ pub struct DnsInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::upper_case_acronyms)] // DNS record types are standardized protocol names
 pub enum DnsQueryType {
     A,          // 1
     NS,         // 2
@@ -259,11 +258,12 @@ pub enum DnsQueryType {
 
 // QUIC-specific types
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Legitimate protocol fields, kept for completeness
 pub struct QuicCloseInfo {
-    pub frame_type: u8,      // 0x1c (transport) or 0x1d (application)  
-    pub error_code: u64,     // Error code from the CONNECTION_CLOSE frame
-    pub reason: Option<String>,  // Optional reason phrase
-    pub detected_at: Instant,    // When the frame was detected
+    pub frame_type: u8,         // 0x1c (transport) or 0x1d (application)
+    pub error_code: u64,        // Error code from the CONNECTION_CLOSE frame
+    pub reason: Option<String>, // Optional reason phrase
+    pub detected_at: Instant,   // When the frame was detected
 }
 
 #[derive(Debug, Clone)]
@@ -277,7 +277,7 @@ pub struct QuicInfo {
     pub has_crypto_frame: bool,    // Whether packet contains CRYPTO frame
     pub crypto_reassembler: Option<CryptoFrameReassembler>,
     pub connection_close: Option<QuicCloseInfo>, // CONNECTION_CLOSE frame info
-    pub idle_timeout: Option<Duration>, // Idle timeout from transport params if detected
+    pub idle_timeout: Option<Duration>,          // Idle timeout from transport params if detected
 }
 
 impl QuicInfo {
@@ -495,17 +495,6 @@ impl CryptoFrameReassembler {
         }
     }
 
-    /// Check if fragments are stale (no updates for > 30 seconds)
-    pub fn is_stale(&self) -> bool {
-        self.last_update.elapsed().as_secs() > 30
-    }
-
-    /// Clear all fragments (useful after successful extraction or timeout)
-    pub fn clear_fragments(&mut self) {
-        self.fragments.clear();
-        self.current_buffer_size = 0;
-    }
-
     /// Mark as having complete TLS info
     pub fn set_complete_tls_info(&mut self, tls_info: TlsInfo) {
         self.has_complete_tls_info = true;
@@ -589,19 +578,19 @@ impl RateTracker {
     /// Update the rate tracker with new byte counts
     pub fn update(&mut self, bytes_sent: u64, bytes_received: u64) {
         let now = Instant::now();
-        
+
         // Add new sample
         self.samples.push_back(RateSample {
             timestamp: now,
             bytes_sent,
             bytes_received,
         });
-        
+
         self.last_update = now;
-        
+
         // Remove samples outside the window
         self.prune_old_samples();
-        
+
         // Limit total samples to prevent memory bloat
         while self.samples.len() > self.max_samples {
             self.samples.pop_front();
@@ -611,7 +600,7 @@ impl RateTracker {
     /// Remove samples older than the window duration
     fn prune_old_samples(&mut self) {
         let cutoff_time = self.last_update - self.window_duration;
-        
+
         while let Some(oldest) = self.samples.front() {
             if oldest.timestamp < cutoff_time {
                 self.samples.pop_front();
@@ -642,32 +631,28 @@ impl RateTracker {
 
         let oldest = self.samples.front().unwrap();
         let newest = self.samples.back().unwrap();
-        
-        let time_diff = newest.timestamp.duration_since(oldest.timestamp).as_secs_f64();
-        
+
+        let time_diff = newest
+            .timestamp
+            .duration_since(oldest.timestamp)
+            .as_secs_f64();
+
         // Need at least 100ms of data to avoid division by very small numbers
         if time_diff < 0.1 {
             return 0.0;
         }
-        
-        let byte_diff = byte_getter(newest).saturating_sub(byte_getter(oldest)) as f64;
-        
-        byte_diff / time_diff
-    }
 
-    /// Check if the tracker has recent data (within the last window)
-    pub fn has_recent_data(&self) -> bool {
-        if let Some(latest) = self.samples.back() {
-            latest.timestamp.elapsed() <= self.window_duration
-        } else {
-            false
-        }
+        let byte_diff = byte_getter(newest).saturating_sub(byte_getter(oldest)) as f64;
+
+        byte_diff / time_diff
     }
 
     /// Get the age of the oldest sample in the current window
     #[allow(dead_code)]
     pub fn window_age(&self) -> Option<Duration> {
-        self.samples.front().map(|oldest| oldest.timestamp.elapsed())
+        self.samples
+            .front()
+            .map(|oldest| oldest.timestamp.elapsed())
     }
 }
 
@@ -683,7 +668,6 @@ pub struct Connection {
     pub protocol: Protocol,
     pub local_addr: SocketAddr,
     pub remote_addr: SocketAddr,
-    pub remote_host: Option<String>,
 
     // Protocol state
     pub protocol_state: ProtocolState,
@@ -735,7 +719,6 @@ impl Connection {
             protocol,
             local_addr,
             remote_addr,
-            remote_host: None,
             protocol_state: state,
             pid: None,
             process_name: None,
@@ -798,8 +781,9 @@ impl Connection {
                     TcpState::Closed => "CLOSED",
                     TcpState::Listen => "LISTEN",
                     TcpState::Unknown => "TCP_UNKNOWN",
-                }.to_string()
-            },
+                }
+                .to_string()
+            }
             ProtocolState::Udp => {
                 // Check if it's a DPI-identified protocol
                 if let Some(dpi_info) = &self.dpi_info {
@@ -817,12 +801,14 @@ impl Connection {
                                     match quic.packet_type {
                                         QuicPacketType::ZeroRtt => "QUIC_0RTT".to_string(),
                                         QuicPacketType::Retry => "QUIC_RETRY".to_string(),
-                                        QuicPacketType::VersionNegotiation => "QUIC_VERSION_NEG".to_string(),
+                                        QuicPacketType::VersionNegotiation => {
+                                            "QUIC_VERSION_NEG".to_string()
+                                        }
                                         _ => "QUIC_UNKNOWN".to_string(),
                                     }
                                 }
                             }
-                        },
+                        }
                         ApplicationProtocol::Dns(dns) => {
                             // DNS-specific states
                             if dns.is_response {
@@ -830,7 +816,7 @@ impl Connection {
                             } else {
                                 "DNS_QUERY".to_string()
                             }
-                        },
+                        }
                         ApplicationProtocol::Http(_) => "HTTP_UDP".to_string(),
                         ApplicationProtocol::Https(_) => "HTTPS_UDP".to_string(),
                         ApplicationProtocol::Ssh => "SSH_UDP".to_string(),
@@ -847,7 +833,7 @@ impl Connection {
                         "UDP_ACTIVE".to_string()
                     }
                 }
-            },
+            }
             ProtocolState::Icmp { icmp_type, .. } => match icmp_type {
                 8 => "ECHO_REQUEST".to_string(),
                 0 => "ECHO_REPLY".to_string(),
@@ -865,12 +851,13 @@ impl Connection {
     /// Update transfer rates using sliding window calculation
     pub fn update_rates(&mut self) {
         // Update the rate tracker with current byte counts
-        self.rate_tracker.update(self.bytes_sent, self.bytes_received);
-        
+        self.rate_tracker
+            .update(self.bytes_sent, self.bytes_received);
+
         // Update backward compatibility fields with smoothed rates
         self.current_incoming_rate_bps = self.rate_tracker.get_incoming_rate_bps();
         self.current_outgoing_rate_bps = self.rate_tracker.get_outgoing_rate_bps();
-        
+
         // Also update the legacy RateInfo struct for any code that still uses it
         let now = Instant::now();
         self.current_rate_bps = RateInfo {
@@ -897,7 +884,7 @@ impl Connection {
                     // Regular UDP without DPI classification
                     Duration::from_secs(60)
                 }
-            },
+            }
             ProtocolState::Icmp { .. } => Duration::from_secs(10),
             ProtocolState::Arp { .. } => Duration::from_secs(30),
         }
@@ -913,7 +900,7 @@ impl Connection {
                 } else {
                     Duration::from_secs(180) // 3 minutes for idle established
                 }
-            },
+            }
             TcpState::TimeWait => Duration::from_secs(30), // Standard TCP TIME_WAIT
             TcpState::Closed => Duration::from_secs(5),    // Quick cleanup for closed
             TcpState::FinWait1 | TcpState::FinWait2 => Duration::from_secs(60), // Allow for proper close sequence
@@ -938,7 +925,7 @@ impl Connection {
 
         // Use state-based timeout if no close frame
         match quic.connection_state {
-            QuicConnectionState::Initial => Duration::from_secs(60),     // Allow handshake time
+            QuicConnectionState::Initial => Duration::from_secs(60), // Allow handshake time
             QuicConnectionState::Handshaking => Duration::from_secs(60), // Crypto negotiation
             QuicConnectionState::Connected => {
                 // Use idle timeout from transport params if available, otherwise default
@@ -952,7 +939,7 @@ impl Connection {
                         Duration::from_secs(180) // Idle QUIC connections
                     }
                 }
-            },
+            }
             QuicConnectionState::Draining => Duration::from_secs(10), // RFC 9000: ~3 * PTO
             QuicConnectionState::Closed => Duration::from_secs(1),    // Immediate cleanup
             QuicConnectionState::Unknown => Duration::from_secs(120), // Conservative default
@@ -962,51 +949,15 @@ impl Connection {
     /// Check if this connection should be cleaned up based on its timeout
     pub fn should_cleanup(&self, now: SystemTime) -> bool {
         let timeout = self.get_timeout();
-        now.duration_since(self.last_activity)
-            .unwrap_or_default() > timeout
-    }
-
-    /// Check if this connection might be QUIC based on port and protocol
-    pub fn is_potential_quic(&self) -> bool {
-        self.protocol == Protocol::UDP
-            && (self.local_addr.port() == 443 || self.remote_addr.port() == 443)
-    }
-
-    /// Generate a QUIC-aware connection key that can handle Connection ID changes
-    pub fn quic_key(&self, connection_id_hex: Option<&String>) -> String {
-        if self.protocol == Protocol::UDP {
-            if let Some(conn_id) = connection_id_hex {
-                return format!(
-                    "QUIC:{}:{}-{}",
-                    conn_id, self.local_addr, self.remote_addr
-                );
-            }
-        }
-        
-        // Fallback to regular key
-        self.key()
-    }
-
-    /// Get a display string for the application protocol
-    pub fn application_display(&self) -> String {
-        if let Some(dpi) = &self.dpi_info {
-            dpi.application.to_string()
-        } else if self.is_potential_quic() {
-            "QUIC?".to_string()
-        } else {
-            match self.service_name.as_deref() {
-                Some(name) => name.to_uppercase(),
-                None => "Unknown".to_string(),
-            }
-        }
+        now.duration_since(self.last_activity).unwrap_or_default() > timeout
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
     use std::net::{IpAddr, Ipv4Addr};
+    use std::thread;
 
     fn create_test_connection() -> Connection {
         Connection::new(
@@ -1020,78 +971,94 @@ mod tests {
     #[test]
     fn test_rate_tracker_initialization() {
         let tracker = RateTracker::new();
-        
+
         // Initial rates should be 0
         assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
         assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
-        assert!(!tracker.has_recent_data());
+        // Test basic initialization
     }
 
     #[test]
     fn test_rate_tracker_single_update() {
         let mut tracker = RateTracker::new();
-        
+
         // First update - no rate yet (need at least 2 samples)
         tracker.update(1000, 500);
         assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
         assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
-        assert!(tracker.has_recent_data());
+        // Test single update
     }
 
     #[test]
     fn test_rate_tracker_steady_traffic() {
         let mut tracker = RateTracker::new();
-        
+
         // Add initial sample
         tracker.update(0, 0);
         thread::sleep(Duration::from_millis(200)); // Wait 200ms
-        
+
         // Add second sample - 1000 bytes sent, 500 received over ~0.2 seconds
         tracker.update(1000, 500);
-        
+
         let outgoing_rate = tracker.get_outgoing_rate_bps();
         let incoming_rate = tracker.get_incoming_rate_bps();
-        
+
         // Should be approximately 5000 bytes/sec outgoing, 2500 bytes/sec incoming
-        assert!(outgoing_rate > 4000.0 && outgoing_rate < 6000.0, "Outgoing rate: {}", outgoing_rate);
-        assert!(incoming_rate > 2000.0 && incoming_rate < 3000.0, "Incoming rate: {}", incoming_rate);
+        assert!(
+            outgoing_rate > 4000.0 && outgoing_rate < 6000.0,
+            "Outgoing rate: {}",
+            outgoing_rate
+        );
+        assert!(
+            incoming_rate > 2000.0 && incoming_rate < 3000.0,
+            "Incoming rate: {}",
+            incoming_rate
+        );
     }
 
     #[test]
     fn test_rate_tracker_multiple_updates() {
         let mut tracker = RateTracker::new();
-        
+
         // Simulate steady transfer over time
         tracker.update(0, 0);
-        
+
         // Add samples every 100ms
         for i in 1..=5 {
             thread::sleep(Duration::from_millis(100));
             tracker.update(i * 1000, i * 500); // 1000 bytes/100ms = 10KB/s, 500 bytes/100ms = 5KB/s
         }
-        
+
         let outgoing_rate = tracker.get_outgoing_rate_bps();
         let incoming_rate = tracker.get_incoming_rate_bps();
-        
+
         // Should be approximately 10000 bytes/sec outgoing, 5000 bytes/sec incoming
-        assert!(outgoing_rate > 8000.0 && outgoing_rate < 12000.0, "Outgoing rate: {}", outgoing_rate);
-        assert!(incoming_rate > 4000.0 && incoming_rate < 6000.0, "Incoming rate: {}", incoming_rate);
+        assert!(
+            outgoing_rate > 8000.0 && outgoing_rate < 12000.0,
+            "Outgoing rate: {}",
+            outgoing_rate
+        );
+        assert!(
+            incoming_rate > 4000.0 && incoming_rate < 6000.0,
+            "Incoming rate: {}",
+            incoming_rate
+        );
     }
 
     #[test]
     fn test_rate_tracker_window_pruning() {
         let window_duration = Duration::from_millis(300);
         let mut tracker = RateTracker::with_window_duration(window_duration);
-        
+
         // Add samples that will be pruned
         tracker.update(0, 0);
         thread::sleep(Duration::from_millis(100));
         tracker.update(1000, 500);
-        
+
         // Wait for samples to age out of the window
         thread::sleep(Duration::from_millis(400));
         tracker.update(2000, 1000);
-        
+
         // Should only consider recent samples (rate based on last sample interval)
         let rate = tracker.get_outgoing_rate_bps();
         // After pruning, should have limited data
@@ -1101,22 +1068,22 @@ mod tests {
     #[test]
     fn test_connection_rate_integration() {
         let mut conn = create_test_connection();
-        
+
         // Simulate receiving packets
         conn.bytes_sent = 1000;
         conn.bytes_received = 500;
         conn.update_rates();
-        
+
         thread::sleep(Duration::from_millis(200));
-        
+
         conn.bytes_sent = 3000;
         conn.bytes_received = 1500;
         conn.update_rates();
-        
+
         // Verify backward compatibility fields are updated
         assert!(conn.current_outgoing_rate_bps >= 0.0);
         assert!(conn.current_incoming_rate_bps >= 0.0);
-        
+
         // Verify rate info is updated
         assert!(conn.current_rate_bps.outgoing_bps >= 0.0);
         assert!(conn.current_rate_bps.incoming_bps >= 0.0);
@@ -1125,16 +1092,17 @@ mod tests {
     #[test]
     fn test_rate_tracker_memory_limit() {
         let mut tracker = RateTracker::new();
-        
+
         // Add more samples than the max limit
-        for i in 0..150 { // More than max_samples (100)
+        for i in 0..150 {
+            // More than max_samples (100)
             tracker.update(i * 100, i * 50);
             thread::sleep(Duration::from_millis(1)); // Small delay to ensure different timestamps
         }
-        
+
         // Should have pruned to max_samples limit
         assert!(tracker.samples.len() <= 100);
-        
+
         // Should still calculate rates
         let outgoing_rate = tracker.get_outgoing_rate_bps();
         let incoming_rate = tracker.get_incoming_rate_bps();
@@ -1145,28 +1113,36 @@ mod tests {
     #[test]
     fn test_rate_tracker_bursty_traffic() {
         let mut tracker = RateTracker::new();
-        
+
         // Initial state
         tracker.update(0, 0);
         thread::sleep(Duration::from_millis(100));
-        
+
         // Burst of traffic
         tracker.update(10000, 5000);
         thread::sleep(Duration::from_millis(100));
-        
+
         // No more traffic (same byte counts)
         tracker.update(10000, 5000);
         thread::sleep(Duration::from_millis(100));
-        
+
         tracker.update(10000, 5000);
-        
+
         // Rate should be averaged over the entire window, so lower than instantaneous burst
         let outgoing_rate = tracker.get_outgoing_rate_bps();
         let incoming_rate = tracker.get_incoming_rate_bps();
-        
+
         // Should be smoothed average, not instantaneous burst rate
-        assert!(outgoing_rate < 200000.0, "Rate should be smoothed: {}", outgoing_rate); // Less than instantaneous
-        assert!(incoming_rate < 100000.0, "Rate should be smoothed: {}", incoming_rate);
+        assert!(
+            outgoing_rate < 200000.0,
+            "Rate should be smoothed: {}",
+            outgoing_rate
+        ); // Less than instantaneous
+        assert!(
+            incoming_rate < 100000.0,
+            "Rate should be smoothed: {}",
+            incoming_rate
+        );
         assert!(outgoing_rate > 0.0);
         assert!(incoming_rate > 0.0);
     }
@@ -1174,11 +1150,11 @@ mod tests {
     #[test]
     fn test_rate_tracker_zero_time_diff() {
         let mut tracker = RateTracker::new();
-        
+
         // Add two samples with identical or very close timestamps
         tracker.update(0, 0);
         tracker.update(1000, 500); // Immediately after, should be < 100ms apart
-        
+
         // Should return 0 to avoid division by very small numbers
         assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
         assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
@@ -1187,18 +1163,18 @@ mod tests {
     #[test]
     fn test_enhanced_state_display_tcp() {
         let mut conn = create_test_connection();
-        
+
         // Test established TCP state
         conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
         assert_eq!(conn.state(), "ESTABLISHED");
-        
+
         // Test other TCP states
         conn.protocol_state = ProtocolState::Tcp(TcpState::SynSent);
         assert_eq!(conn.state(), "SYN_SENT");
-        
+
         conn.protocol_state = ProtocolState::Tcp(TcpState::TimeWait);
         assert_eq!(conn.state(), "TIME_WAIT");
-        
+
         conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
         assert_eq!(conn.state(), "CLOSED");
     }
@@ -1215,31 +1191,31 @@ mod tests {
         // Test QUIC with different states
         let mut quic_info = QuicInfo::new(0x00000001);
         quic_info.connection_state = QuicConnectionState::Initial;
-        
+
         let dpi_info = DpiInfo {
-            application: ApplicationProtocol::Quic(quic_info.clone()),
+            application: ApplicationProtocol::Quic(Box::new(quic_info.clone())),
             first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         };
         conn.dpi_info = Some(dpi_info);
-        
+
         assert_eq!(conn.state(), "QUIC_INITIAL");
-        
+
         // Test connected state
         let mut quic_connected = quic_info.clone();
         quic_connected.connection_state = QuicConnectionState::Connected;
         conn.dpi_info = Some(DpiInfo {
-            application: ApplicationProtocol::Quic(quic_connected),
+            application: ApplicationProtocol::Quic(Box::new(quic_connected)),
             first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
         assert_eq!(conn.state(), "QUIC_CONNECTED");
-        
+
         // Test draining state
         let mut quic_draining = quic_info.clone();
         quic_draining.connection_state = QuicConnectionState::Draining;
         conn.dpi_info = Some(DpiInfo {
-            application: ApplicationProtocol::Quic(quic_draining),
+            application: ApplicationProtocol::Quic(Box::new(quic_draining)),
             first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
@@ -1262,14 +1238,14 @@ mod tests {
             response_ips: vec![],
             is_response: false,
         };
-        
+
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_query),
             first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
         assert_eq!(conn.state(), "DNS_QUERY");
-        
+
         // Test DNS response
         let dns_response = DnsInfo {
             query_name: Some("example.com".to_string()),
@@ -1277,7 +1253,7 @@ mod tests {
             response_ips: vec!["93.184.216.34".parse().unwrap()],
             is_response: true,
         };
-        
+
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_response),
             first_packet_time: Instant::now(),
@@ -1297,11 +1273,11 @@ mod tests {
 
         // No DPI info - should show activity-based state
         assert_eq!(conn.state(), "UDP_ACTIVE"); // Fresh connection
-        
-        // Simulate aging the connection 
+
+        // Simulate aging the connection
         conn.last_activity = SystemTime::now() - Duration::from_secs(45);
         assert_eq!(conn.state(), "UDP_IDLE"); // Idle but not stale
-        
+
         conn.last_activity = SystemTime::now() - Duration::from_secs(90);
         assert_eq!(conn.state(), "UDP_STALE"); // Stale connection
     }
@@ -1309,19 +1285,19 @@ mod tests {
     #[test]
     fn test_dynamic_timeout_tcp() {
         let mut conn = create_test_connection();
-        
+
         // Test established connection timeout
         conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
         assert_eq!(conn.get_timeout(), Duration::from_secs(300)); // Active established
-        
+
         // Test idle established connection
         conn.last_activity = SystemTime::now() - Duration::from_secs(120);
         assert_eq!(conn.get_timeout(), Duration::from_secs(180)); // Idle established
-        
+
         // Test TIME_WAIT
         conn.protocol_state = ProtocolState::Tcp(TcpState::TimeWait);
         assert_eq!(conn.get_timeout(), Duration::from_secs(30));
-        
+
         // Test closed connections
         conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
         assert_eq!(conn.get_timeout(), Duration::from_secs(5));
@@ -1340,19 +1316,19 @@ mod tests {
         let mut quic_info = QuicInfo::new(0x00000001);
         quic_info.connection_close = Some(QuicCloseInfo {
             frame_type: 0x1c, // Transport close
-            error_code: 0,     // NO_ERROR
+            error_code: 0,    // NO_ERROR
             reason: None,
             detected_at: Instant::now(),
         });
-        
+
         conn.dpi_info = Some(DpiInfo {
-            application: ApplicationProtocol::Quic(quic_info),
+            application: ApplicationProtocol::Quic(Box::new(quic_info)),
             first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
-        
+
         assert_eq!(conn.get_timeout(), Duration::from_secs(10)); // Draining period
-        
+
         // Test application close
         let mut quic_app_close = QuicInfo::new(0x00000001);
         quic_app_close.connection_close = Some(QuicCloseInfo {
@@ -1361,13 +1337,13 @@ mod tests {
             reason: Some("user_cancelled".to_string()),
             detected_at: Instant::now(),
         });
-        
+
         conn.dpi_info = Some(DpiInfo {
-            application: ApplicationProtocol::Quic(quic_app_close),
+            application: ApplicationProtocol::Quic(Box::new(quic_app_close)),
             first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
-        
+
         assert_eq!(conn.get_timeout(), Duration::from_secs(1)); // Immediate cleanup
     }
 
@@ -1386,13 +1362,13 @@ mod tests {
             response_ips: vec![],
             is_response: false,
         };
-        
+
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_info),
             first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
-        
+
         assert_eq!(conn.get_timeout(), Duration::from_secs(30)); // Short timeout for DNS
     }
 
@@ -1400,20 +1376,20 @@ mod tests {
     fn test_should_cleanup() {
         let mut conn = create_test_connection();
         let now = SystemTime::now();
-        
+
         // Fresh connection should not be cleaned up
         assert!(!conn.should_cleanup(now));
-        
+
         // Test TCP closed connection cleanup
         conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
         conn.last_activity = now - Duration::from_secs(10); // Beyond 5s timeout for closed
         assert!(conn.should_cleanup(now));
-        
+
         // Test established connection within timeout
         conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
         conn.last_activity = now - Duration::from_secs(100); // Within 300s timeout
         assert!(!conn.should_cleanup(now));
-        
+
         // Test established connection beyond timeout
         conn.last_activity = now - Duration::from_secs(400); // Beyond timeout
         assert!(conn.should_cleanup(now));
@@ -1426,15 +1402,20 @@ mod tests {
             Protocol::ICMP,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
-            ProtocolState::Icmp { icmp_type: 8, icmp_code: 0 },
+            ProtocolState::Icmp {
+                icmp_type: 8,
+                icmp_code: 0,
+            },
         );
-        
+
         assert_eq!(conn.state(), "ECHO_REQUEST");
         assert_eq!(conn.get_timeout(), Duration::from_secs(10));
-        
+
         // Test ARP states
         conn.protocol = Protocol::ARP;
-        conn.protocol_state = ProtocolState::Arp { operation: ArpOperation::Request };
+        conn.protocol_state = ProtocolState::Arp {
+            operation: ArpOperation::Request,
+        };
         assert_eq!(conn.state(), "ARP_REQUEST");
         assert_eq!(conn.get_timeout(), Duration::from_secs(30));
     }

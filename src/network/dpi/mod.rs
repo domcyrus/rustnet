@@ -7,7 +7,7 @@ mod http;
 mod https;
 mod quic;
 
-pub use cipher_suites::{format_cipher_suite, get_cipher_suite_name, is_secure_cipher_suite};
+pub use cipher_suites::{format_cipher_suite, is_secure_cipher_suite};
 
 /// Result of DPI analysis
 #[derive(Debug, Clone)]
@@ -36,12 +36,11 @@ pub fn analyze_tcp_packet(
     }
 
     // 2. Check for TLS/HTTPS (port 443 or TLS handshake)
-    if local_port == 443 || remote_port == 443 || https::is_tls_handshake(payload) {
-        if let Some(tls_result) = https::analyze_https(payload) {
-            return Some(DpiResult {
-                application: ApplicationProtocol::Https(tls_result),
-            });
-        }
+    if (local_port == 443 || remote_port == 443 || https::is_tls_handshake(payload))
+        && let Some(tls_result) = https::analyze_https(payload) {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Https(tls_result),
+        });
     }
 
     // 3. Check for SSH (port 22 or SSH banner)
@@ -68,12 +67,11 @@ pub fn analyze_udp_packet(
     }
 
     // 1. DNS (port 53)
-    if local_port == 53 || remote_port == 53 {
-        if let Some(dns_result) = dns::analyze_dns(payload) {
-            return Some(DpiResult {
-                application: ApplicationProtocol::Dns(dns_result),
-            });
-        }
+    if (local_port == 53 || remote_port == 53)
+        && let Some(dns_result) = dns::analyze_dns(payload) {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Dns(dns_result),
+        });
     }
 
     // 2. QUIC/HTTP3 (port 443)
@@ -82,14 +80,14 @@ pub fn analyze_udp_packet(
         if let Some(quic_info) = quic_info {
             debug!("QUIC packet detected: {:?}", quic_info);
             return Some(DpiResult {
-                application: ApplicationProtocol::Quic(quic_info),
+                application: ApplicationProtocol::Quic(Box::new(quic_info)),
             });
         } else {
             warn!("Failed to parse QUIC packet");
             let empty_quic_info = QuicInfo::new(0);
 
             return Some(DpiResult {
-                application: ApplicationProtocol::Quic(empty_quic_info),
+                application: ApplicationProtocol::Quic(Box::new(empty_quic_info)),
             });
         }
     }
