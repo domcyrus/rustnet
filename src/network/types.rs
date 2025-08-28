@@ -259,6 +259,14 @@ pub enum DnsQueryType {
 
 // QUIC-specific types
 #[derive(Debug, Clone)]
+pub struct QuicCloseInfo {
+    pub frame_type: u8,      // 0x1c (transport) or 0x1d (application)  
+    pub error_code: u64,     // Error code from the CONNECTION_CLOSE frame
+    pub reason: Option<String>,  // Optional reason phrase
+    pub detected_at: Instant,    // When the frame was detected
+}
+
+#[derive(Debug, Clone)]
 pub struct QuicInfo {
     pub version_string: Option<String>,
     pub packet_type: QuicPacketType,
@@ -268,6 +276,8 @@ pub struct QuicInfo {
     pub tls_info: Option<TlsInfo>, // Extracted TLS handshake info
     pub has_crypto_frame: bool,    // Whether packet contains CRYPTO frame
     pub crypto_reassembler: Option<CryptoFrameReassembler>,
+    pub connection_close: Option<QuicCloseInfo>, // CONNECTION_CLOSE frame info
+    pub idle_timeout: Option<Duration>, // Idle timeout from transport params if detected
 }
 
 impl QuicInfo {
@@ -281,6 +291,8 @@ impl QuicInfo {
             tls_info: None,
             has_crypto_frame: false,
             crypto_reassembler: None,
+            connection_close: None,
+            idle_timeout: None,
         }
     }
     /// Initialize reassembler if needed
@@ -768,17 +780,80 @@ impl Connection {
         self.last_activity.elapsed().unwrap_or_default()
     }
 
-    /// Get display state
+    /// Get display state with enhanced UDP/QUIC visibility
     pub fn state(&self) -> String {
         match &self.protocol_state {
-            ProtocolState::Tcp(tcp_state) => format!("{:?}", tcp_state),
-            ProtocolState::Udp => "ACTIVE".to_string(),
+            ProtocolState::Tcp(tcp_state) => {
+                // Format TCP states consistently in uppercase with underscores
+                match tcp_state {
+                    TcpState::Established => "ESTABLISHED",
+                    TcpState::SynSent => "SYN_SENT",
+                    TcpState::SynReceived => "SYN_RECV",
+                    TcpState::FinWait1 => "FIN_WAIT1",
+                    TcpState::FinWait2 => "FIN_WAIT2",
+                    TcpState::TimeWait => "TIME_WAIT",
+                    TcpState::CloseWait => "CLOSE_WAIT",
+                    TcpState::LastAck => "LAST_ACK",
+                    TcpState::Closing => "CLOSING",
+                    TcpState::Closed => "CLOSED",
+                    TcpState::Listen => "LISTEN",
+                    TcpState::Unknown => "TCP_UNKNOWN",
+                }.to_string()
+            },
+            ProtocolState::Udp => {
+                // Check if it's a DPI-identified protocol
+                if let Some(dpi_info) = &self.dpi_info {
+                    match &dpi_info.application {
+                        ApplicationProtocol::Quic(quic) => {
+                            // Enhanced QUIC state display
+                            match quic.connection_state {
+                                QuicConnectionState::Initial => "QUIC_INITIAL".to_string(),
+                                QuicConnectionState::Handshaking => "QUIC_HANDSHAKE".to_string(),
+                                QuicConnectionState::Connected => "QUIC_CONNECTED".to_string(),
+                                QuicConnectionState::Draining => "QUIC_DRAINING".to_string(),
+                                QuicConnectionState::Closed => "QUIC_CLOSED".to_string(),
+                                QuicConnectionState::Unknown => {
+                                    // Use packet type for more granular unknown states
+                                    match quic.packet_type {
+                                        QuicPacketType::ZeroRtt => "QUIC_0RTT".to_string(),
+                                        QuicPacketType::Retry => "QUIC_RETRY".to_string(),
+                                        QuicPacketType::VersionNegotiation => "QUIC_VERSION_NEG".to_string(),
+                                        _ => "QUIC_UNKNOWN".to_string(),
+                                    }
+                                }
+                            }
+                        },
+                        ApplicationProtocol::Dns(dns) => {
+                            // DNS-specific states
+                            if dns.is_response {
+                                "DNS_RESPONSE".to_string()
+                            } else {
+                                "DNS_QUERY".to_string()
+                            }
+                        },
+                        ApplicationProtocol::Http(_) => "HTTP_UDP".to_string(),
+                        ApplicationProtocol::Https(_) => "HTTPS_UDP".to_string(),
+                        ApplicationProtocol::Ssh => "SSH_UDP".to_string(),
+                    }
+                } else {
+                    // Regular UDP without DPI classification
+                    // Check activity level to provide more meaningful states
+                    let idle_time = self.idle_time();
+                    if idle_time > Duration::from_secs(60) {
+                        "UDP_STALE".to_string()
+                    } else if idle_time > Duration::from_secs(30) {
+                        "UDP_IDLE".to_string()
+                    } else {
+                        "UDP_ACTIVE".to_string()
+                    }
+                }
+            },
             ProtocolState::Icmp { icmp_type, .. } => match icmp_type {
                 8 => "ECHO_REQUEST".to_string(),
                 0 => "ECHO_REPLY".to_string(),
                 3 => "DEST_UNREACH".to_string(),
                 11 => "TIME_EXCEEDED".to_string(),
-                _ => "UNKNOWN".to_string(),
+                _ => "ICMP_OTHER".to_string(),
             },
             ProtocolState::Arp { operation } => match operation {
                 ArpOperation::Request => "ARP_REQUEST".to_string(),
@@ -803,6 +878,92 @@ impl Connection {
             outgoing_bps: self.current_outgoing_rate_bps,
             last_calculation: now,
         };
+    }
+
+    /// Get dynamic timeout for this connection based on protocol and state
+    pub fn get_timeout(&self) -> Duration {
+        match &self.protocol_state {
+            ProtocolState::Tcp(tcp_state) => self.get_tcp_timeout(tcp_state),
+            ProtocolState::Udp => {
+                if let Some(dpi_info) = &self.dpi_info {
+                    match &dpi_info.application {
+                        ApplicationProtocol::Quic(quic) => self.get_quic_timeout(quic),
+                        ApplicationProtocol::Dns(_) => Duration::from_secs(30),
+                        ApplicationProtocol::Http(_) => Duration::from_secs(180),
+                        ApplicationProtocol::Https(_) => Duration::from_secs(180),
+                        ApplicationProtocol::Ssh => Duration::from_secs(1800), // SSH can be very long-lived
+                    }
+                } else {
+                    // Regular UDP without DPI classification
+                    Duration::from_secs(60)
+                }
+            },
+            ProtocolState::Icmp { .. } => Duration::from_secs(10),
+            ProtocolState::Arp { .. } => Duration::from_secs(30),
+        }
+    }
+
+    /// Get TCP-specific timeout based on connection state
+    fn get_tcp_timeout(&self, tcp_state: &TcpState) -> Duration {
+        match tcp_state {
+            TcpState::Established => {
+                // Give established connections longer timeout, especially if they're active
+                if self.idle_time() < Duration::from_secs(60) {
+                    Duration::from_secs(300) // 5 minutes for active connections
+                } else {
+                    Duration::from_secs(180) // 3 minutes for idle established
+                }
+            },
+            TcpState::TimeWait => Duration::from_secs(30), // Standard TCP TIME_WAIT
+            TcpState::Closed => Duration::from_secs(5),    // Quick cleanup for closed
+            TcpState::FinWait1 | TcpState::FinWait2 => Duration::from_secs(60), // Allow for proper close sequence
+            TcpState::CloseWait | TcpState::LastAck => Duration::from_secs(60),
+            TcpState::SynSent | TcpState::SynReceived => Duration::from_secs(60), // Connection establishment
+            TcpState::Closing => Duration::from_secs(30),
+            TcpState::Listen => Duration::from_secs(300), // Listening sockets persist
+            TcpState::Unknown => Duration::from_secs(120),
+        }
+    }
+
+    /// Get QUIC-specific timeout based on connection state and close frames
+    fn get_quic_timeout(&self, quic: &QuicInfo) -> Duration {
+        // First check if we've detected a CONNECTION_CLOSE frame
+        if let Some(close_info) = &quic.connection_close {
+            return match close_info.frame_type {
+                0x1c => Duration::from_secs(10), // Transport close - allow draining period
+                0x1d => Duration::from_secs(1),  // Application close - immediate cleanup
+                _ => Duration::from_secs(5),     // Unknown close type
+            };
+        }
+
+        // Use state-based timeout if no close frame
+        match quic.connection_state {
+            QuicConnectionState::Initial => Duration::from_secs(60),     // Allow handshake time
+            QuicConnectionState::Handshaking => Duration::from_secs(60), // Crypto negotiation
+            QuicConnectionState::Connected => {
+                // Use idle timeout from transport params if available, otherwise default
+                if let Some(idle_timeout) = quic.idle_timeout {
+                    idle_timeout
+                } else {
+                    // Default timeout, but consider activity
+                    if self.idle_time() < Duration::from_secs(60) {
+                        Duration::from_secs(300) // Active QUIC connections
+                    } else {
+                        Duration::from_secs(180) // Idle QUIC connections
+                    }
+                }
+            },
+            QuicConnectionState::Draining => Duration::from_secs(10), // RFC 9000: ~3 * PTO
+            QuicConnectionState::Closed => Duration::from_secs(1),    // Immediate cleanup
+            QuicConnectionState::Unknown => Duration::from_secs(120), // Conservative default
+        }
+    }
+
+    /// Check if this connection should be cleaned up based on its timeout
+    pub fn should_cleanup(&self, now: SystemTime) -> bool {
+        let timeout = self.get_timeout();
+        now.duration_since(self.last_activity)
+            .unwrap_or_default() > timeout
     }
 
     /// Check if this connection might be QUIC based on port and protocol
@@ -1021,5 +1182,260 @@ mod tests {
         // Should return 0 to avoid division by very small numbers
         assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
         assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
+    }
+
+    #[test]
+    fn test_enhanced_state_display_tcp() {
+        let mut conn = create_test_connection();
+        
+        // Test established TCP state
+        conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
+        assert_eq!(conn.state(), "ESTABLISHED");
+        
+        // Test other TCP states
+        conn.protocol_state = ProtocolState::Tcp(TcpState::SynSent);
+        assert_eq!(conn.state(), "SYN_SENT");
+        
+        conn.protocol_state = ProtocolState::Tcp(TcpState::TimeWait);
+        assert_eq!(conn.state(), "TIME_WAIT");
+        
+        conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
+        assert_eq!(conn.state(), "CLOSED");
+    }
+
+    #[test]
+    fn test_enhanced_state_display_quic() {
+        let mut conn = Connection::new(
+            Protocol::UDP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),
+            ProtocolState::Udp,
+        );
+
+        // Test QUIC with different states
+        let mut quic_info = QuicInfo::new(0x00000001);
+        quic_info.connection_state = QuicConnectionState::Initial;
+        
+        let dpi_info = DpiInfo {
+            application: ApplicationProtocol::Quic(quic_info.clone()),
+            first_packet_time: Instant::now(),
+            last_update_time: Instant::now(),
+        };
+        conn.dpi_info = Some(dpi_info);
+        
+        assert_eq!(conn.state(), "QUIC_INITIAL");
+        
+        // Test connected state
+        let mut quic_connected = quic_info.clone();
+        quic_connected.connection_state = QuicConnectionState::Connected;
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Quic(quic_connected),
+            first_packet_time: Instant::now(),
+            last_update_time: Instant::now(),
+        });
+        assert_eq!(conn.state(), "QUIC_CONNECTED");
+        
+        // Test draining state
+        let mut quic_draining = quic_info.clone();
+        quic_draining.connection_state = QuicConnectionState::Draining;
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Quic(quic_draining),
+            first_packet_time: Instant::now(),
+            last_update_time: Instant::now(),
+        });
+        assert_eq!(conn.state(), "QUIC_DRAINING");
+    }
+
+    #[test]
+    fn test_enhanced_state_display_dns() {
+        let mut conn = Connection::new(
+            Protocol::UDP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
+            ProtocolState::Udp,
+        );
+
+        // Test DNS query
+        let dns_query = DnsInfo {
+            query_name: Some("example.com".to_string()),
+            query_type: Some(DnsQueryType::A),
+            response_ips: vec![],
+            is_response: false,
+        };
+        
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Dns(dns_query),
+            first_packet_time: Instant::now(),
+            last_update_time: Instant::now(),
+        });
+        assert_eq!(conn.state(), "DNS_QUERY");
+        
+        // Test DNS response
+        let dns_response = DnsInfo {
+            query_name: Some("example.com".to_string()),
+            query_type: Some(DnsQueryType::A),
+            response_ips: vec!["93.184.216.34".parse().unwrap()],
+            is_response: true,
+        };
+        
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Dns(dns_response),
+            first_packet_time: Instant::now(),
+            last_update_time: Instant::now(),
+        });
+        assert_eq!(conn.state(), "DNS_RESPONSE");
+    }
+
+    #[test]
+    fn test_enhanced_state_display_regular_udp() {
+        let mut conn = Connection::new(
+            Protocol::UDP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080),
+            ProtocolState::Udp,
+        );
+
+        // No DPI info - should show activity-based state
+        assert_eq!(conn.state(), "UDP_ACTIVE"); // Fresh connection
+        
+        // Simulate aging the connection 
+        conn.last_activity = SystemTime::now() - Duration::from_secs(45);
+        assert_eq!(conn.state(), "UDP_IDLE"); // Idle but not stale
+        
+        conn.last_activity = SystemTime::now() - Duration::from_secs(90);
+        assert_eq!(conn.state(), "UDP_STALE"); // Stale connection
+    }
+
+    #[test]
+    fn test_dynamic_timeout_tcp() {
+        let mut conn = create_test_connection();
+        
+        // Test established connection timeout
+        conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
+        assert_eq!(conn.get_timeout(), Duration::from_secs(300)); // Active established
+        
+        // Test idle established connection
+        conn.last_activity = SystemTime::now() - Duration::from_secs(120);
+        assert_eq!(conn.get_timeout(), Duration::from_secs(180)); // Idle established
+        
+        // Test TIME_WAIT
+        conn.protocol_state = ProtocolState::Tcp(TcpState::TimeWait);
+        assert_eq!(conn.get_timeout(), Duration::from_secs(30));
+        
+        // Test closed connections
+        conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
+        assert_eq!(conn.get_timeout(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_dynamic_timeout_quic() {
+        let mut conn = Connection::new(
+            Protocol::UDP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),
+            ProtocolState::Udp,
+        );
+
+        // Test QUIC with CONNECTION_CLOSE frame
+        let mut quic_info = QuicInfo::new(0x00000001);
+        quic_info.connection_close = Some(QuicCloseInfo {
+            frame_type: 0x1c, // Transport close
+            error_code: 0,     // NO_ERROR
+            reason: None,
+            detected_at: Instant::now(),
+        });
+        
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Quic(quic_info),
+            first_packet_time: Instant::now(),
+            last_update_time: Instant::now(),
+        });
+        
+        assert_eq!(conn.get_timeout(), Duration::from_secs(10)); // Draining period
+        
+        // Test application close
+        let mut quic_app_close = QuicInfo::new(0x00000001);
+        quic_app_close.connection_close = Some(QuicCloseInfo {
+            frame_type: 0x1d, // Application close
+            error_code: 1,
+            reason: Some("user_cancelled".to_string()),
+            detected_at: Instant::now(),
+        });
+        
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Quic(quic_app_close),
+            first_packet_time: Instant::now(),
+            last_update_time: Instant::now(),
+        });
+        
+        assert_eq!(conn.get_timeout(), Duration::from_secs(1)); // Immediate cleanup
+    }
+
+    #[test]
+    fn test_dynamic_timeout_dns() {
+        let mut conn = Connection::new(
+            Protocol::UDP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
+            ProtocolState::Udp,
+        );
+
+        let dns_info = DnsInfo {
+            query_name: Some("example.com".to_string()),
+            query_type: Some(DnsQueryType::A),
+            response_ips: vec![],
+            is_response: false,
+        };
+        
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Dns(dns_info),
+            first_packet_time: Instant::now(),
+            last_update_time: Instant::now(),
+        });
+        
+        assert_eq!(conn.get_timeout(), Duration::from_secs(30)); // Short timeout for DNS
+    }
+
+    #[test]
+    fn test_should_cleanup() {
+        let mut conn = create_test_connection();
+        let now = SystemTime::now();
+        
+        // Fresh connection should not be cleaned up
+        assert!(!conn.should_cleanup(now));
+        
+        // Test TCP closed connection cleanup
+        conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
+        conn.last_activity = now - Duration::from_secs(10); // Beyond 5s timeout for closed
+        assert!(conn.should_cleanup(now));
+        
+        // Test established connection within timeout
+        conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
+        conn.last_activity = now - Duration::from_secs(100); // Within 300s timeout
+        assert!(!conn.should_cleanup(now));
+        
+        // Test established connection beyond timeout
+        conn.last_activity = now - Duration::from_secs(400); // Beyond timeout
+        assert!(conn.should_cleanup(now));
+    }
+
+    #[test]
+    fn test_icmp_and_arp_states() {
+        // Test ICMP states
+        let mut conn = Connection::new(
+            Protocol::ICMP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+            ProtocolState::Icmp { icmp_type: 8, icmp_code: 0 },
+        );
+        
+        assert_eq!(conn.state(), "ECHO_REQUEST");
+        assert_eq!(conn.get_timeout(), Duration::from_secs(10));
+        
+        // Test ARP states
+        conn.protocol = Protocol::ARP;
+        conn.protocol_state = ProtocolState::Arp { operation: ArpOperation::Request };
+        assert_eq!(conn.state(), "ARP_REQUEST");
+        assert_eq!(conn.get_timeout(), Duration::from_secs(30));
     }
 }

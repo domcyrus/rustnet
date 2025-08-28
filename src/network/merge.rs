@@ -7,7 +7,7 @@ use crate::network::dpi::DpiResult;
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
     ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, ProtocolState,
-    QuicInfo, TcpState,
+    QuicConnectionState, QuicInfo, TcpState,
 };
 
 /// Update TCP connection state based on observed flags and current state
@@ -116,41 +116,73 @@ pub fn merge_packet_into_connection(
             None => {
                 // First time setting process name - this becomes immutable
                 conn.process_name = Some(new_process_name.clone());
-                info!("🔒 Set IMMUTABLE process name for connection {} from PKTAP: '{}' (len:{})", 
-                      conn.key(), new_process_name, new_process_name.len());
+                info!(
+                    "🔒 Set IMMUTABLE process name for connection {} from PKTAP: '{}' (len:{})",
+                    conn.key(),
+                    new_process_name,
+                    new_process_name.len()
+                );
             }
             Some(existing_name) => {
                 // Process name is already set - it's now IMMUTABLE
                 // Log the attempt but NEVER change it
                 if existing_name != new_process_name {
-                    warn!("🚫 IMMUTABILITY VIOLATION: Attempt to change process name for {} from '{}' to '{}' - REJECTED", 
-                          conn.key(), existing_name, new_process_name);
-                    debug!("🔒 Existing: '{}' (len:{}, bytes:{:?})", 
-                          existing_name, existing_name.len(), existing_name.as_bytes());
-                    debug!("🚫 Rejected: '{}' (len:{}, bytes:{:?})", 
-                          new_process_name, new_process_name.len(), new_process_name.as_bytes());
+                    warn!(
+                        "🚫 IMMUTABILITY VIOLATION: Attempt to change process name for {} from '{}' to '{}' - REJECTED",
+                        conn.key(),
+                        existing_name,
+                        new_process_name
+                    );
+                    debug!(
+                        "🔒 Existing: '{}' (len:{}, bytes:{:?})",
+                        existing_name,
+                        existing_name.len(),
+                        existing_name.as_bytes()
+                    );
+                    debug!(
+                        "🚫 Rejected: '{}' (len:{}, bytes:{:?})",
+                        new_process_name,
+                        new_process_name.len(),
+                        new_process_name.as_bytes()
+                    );
                 } else {
-                    debug!("✅ Process name confirmed unchanged for {}: '{}'", conn.key(), existing_name);
+                    debug!(
+                        "✅ Process name confirmed unchanged for {}: '{}'",
+                        conn.key(),
+                        existing_name
+                    );
                 }
                 // NEVER update - process name is immutable once set
             }
         }
     }
-    
+
     if let Some(new_pid) = parsed.process_id {
         match conn.pid {
             None => {
                 // First time setting PID - this becomes immutable
                 conn.pid = Some(new_pid);
-                info!("🔒 Set IMMUTABLE process ID for connection {} from PKTAP: {}", conn.key(), new_pid);
+                info!(
+                    "🔒 Set IMMUTABLE process ID for connection {} from PKTAP: {}",
+                    conn.key(),
+                    new_pid
+                );
             }
             Some(existing_pid) if existing_pid != new_pid => {
-                warn!("🚫 IMMUTABILITY VIOLATION: Attempt to change PID for {} from {} to {} - REJECTED", 
-                      conn.key(), existing_pid, new_pid);
+                warn!(
+                    "🚫 IMMUTABILITY VIOLATION: Attempt to change PID for {} from {} to {} - REJECTED",
+                    conn.key(),
+                    existing_pid,
+                    new_pid
+                );
                 // NEVER update - PID is immutable once set
             }
             Some(existing_pid) => {
-                debug!("✅ Process ID confirmed unchanged for {}: {}", conn.key(), existing_pid);
+                debug!(
+                    "✅ Process ID confirmed unchanged for {}: {}",
+                    conn.key(),
+                    existing_pid
+                );
             }
         }
     }
@@ -220,11 +252,19 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
     // Apply PKTAP process metadata if available
     if let Some(process_name) = &parsed.process_name {
         conn.process_name = Some(process_name.clone());
-        debug!("✓ New connection {} with process name: {}", conn.key(), process_name);
+        debug!(
+            "✓ New connection {} with process name: {}",
+            conn.key(),
+            process_name
+        );
     }
     if let Some(process_id) = parsed.process_id {
         conn.pid = Some(process_id);
-        debug!("✓ New connection {} with process ID: {}", conn.key(), process_id);
+        debug!(
+            "✓ New connection {} with process ID: {}",
+            conn.key(),
+            process_id
+        );
     }
 
     conn.created_at = now;
@@ -373,16 +413,21 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
         if old_info.crypto_reassembler.is_none() {
             // First time seeing crypto frames, initialize the connection-level reassembler
             old_info.crypto_reassembler = Some(new_reassembler.clone());
-            debug!("QUIC: Initialized crypto reassembler for connection with Connection ID: {:?}", 
-                   old_info.connection_id_hex);
+            debug!(
+                "QUIC: Initialized crypto reassembler for connection with Connection ID: {:?}",
+                old_info.connection_id_hex
+            );
         } else if let Some(old_reassembler) = &mut old_info.crypto_reassembler {
             // Merge fragments from new reassembler into connection-level reassembler
             // This handles out-of-order CRYPTO frames across packets
             for (&offset, data) in new_reassembler.get_fragments() {
                 match old_reassembler.add_fragment(offset, data.clone()) {
                     Ok(_) => {
-                        debug!("QUIC: Merged CRYPTO fragment at offset {} for connection {}", 
-                               offset, old_info.connection_id_hex.as_deref().unwrap_or("unknown"));
+                        debug!(
+                            "QUIC: Merged CRYPTO fragment at offset {} for connection {}",
+                            offset,
+                            old_info.connection_id_hex.as_deref().unwrap_or("unknown")
+                        );
                     }
                     Err(e) => {
                         warn!("QUIC: Failed to merge CRYPTO fragment: {}", e);
@@ -393,8 +438,10 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
             // Update cached TLS info if new reassembler has it
             if let Some(tls_info) = new_reassembler.get_cached_tls_info() {
                 old_info.tls_info = Some(tls_info.clone());
-                debug!("QUIC: Updated TLS info from reassembler - SNI: {:?}, ALPN: {:?}",
-                       tls_info.sni, tls_info.alpn);
+                debug!(
+                    "QUIC: Updated TLS info from reassembler - SNI: {:?}, ALPN: {:?}",
+                    tls_info.sni, tls_info.alpn
+                );
             }
         }
     }
@@ -442,6 +489,46 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
     if new_info.has_crypto_frame {
         old_info.has_crypto_frame = true;
     }
+
+    // Handle CONNECTION_CLOSE frame detection
+    if let Some(new_close) = &new_info.connection_close {
+        // CONNECTION_CLOSE is final - always update
+        old_info.connection_close = Some(new_close.clone());
+        
+        // Update connection state based on close frame
+        old_info.connection_state = match new_close.frame_type {
+            0x1c if new_close.error_code == 0 => {
+                // NO_ERROR transport close - enter draining state
+                debug!("QUIC: Connection entering draining state (NO_ERROR transport close)");
+                QuicConnectionState::Draining
+            }
+            0x1c => {
+                // Transport error - connection is closed
+                debug!("QUIC: Connection closed due to transport error: {}", new_close.error_code);
+                QuicConnectionState::Closed
+            }
+            0x1d => {
+                // Application close - connection is closed
+                debug!("QUIC: Connection closed by application: {}", new_close.error_code);
+                QuicConnectionState::Closed
+            }
+            _ => {
+                // Unknown close type - assume closed
+                debug!("QUIC: Connection closed (unknown frame type: 0x{:02x})", new_close.frame_type);
+                QuicConnectionState::Closed
+            }
+        };
+        
+        debug!(
+            "QUIC: Updated connection state to {:?} due to CONNECTION_CLOSE frame",
+            old_info.connection_state
+        );
+    }
+
+    // Update idle timeout if provided
+    if new_info.idle_timeout.is_some() {
+        old_info.idle_timeout = new_info.idle_timeout;
+    }
 }
 
 /// Merge DNS information
@@ -473,46 +560,6 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
 fn update_connection_rates(conn: &mut Connection) {
     // Use the new rate tracker with sliding window calculation
     conn.update_rates();
-}
-
-/// Clean up stale connections and their reassembly buffers
-pub fn cleanup_stale_connections(connections: &mut std::collections::HashMap<String, Connection>) {
-    let now = SystemTime::now();
-    let stale_threshold = std::time::Duration::from_secs(300); // 5 minutes
-
-    // Collect keys of stale connections
-    let stale_keys: Vec<String> = connections
-        .iter()
-        .filter_map(|(key, conn)| {
-            if let Ok(elapsed) = now.duration_since(conn.last_activity) {
-                if elapsed > stale_threshold {
-                    return Some(key.clone());
-                }
-            }
-            None
-        })
-        .collect();
-
-    // Remove stale connections
-    for key in stale_keys {
-        debug!("Removing stale connection: {}", key);
-        connections.remove(&key);
-    }
-
-    // Clean up QUIC reassembly buffers in active connections
-    for (conn_key, conn) in connections.iter_mut() {
-        if let Some(dpi_info) = &mut conn.dpi_info {
-            if let ApplicationProtocol::Quic(quic_info) = &mut dpi_info.application {
-                if let Some(reassembler) = &mut quic_info.crypto_reassembler {
-                    if reassembler.is_stale() {
-                        // FIX: Store the connection key before the mutable borrow
-                        debug!("Cleaning up stale QUIC reassembly buffer for {}", conn_key);
-                        reassembler.clear_fragments();
-                    }
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]

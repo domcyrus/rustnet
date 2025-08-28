@@ -1,20 +1,29 @@
 # RustNet
 
-A high-performance, cross-platform network monitoring tool built with Rust. RustNet provides real-time visibility into network connections with deep packet inspection capabilities and a responsive terminal user interface.
+A high-performance, cross-platform network monitoring tool built with Rust. RustNet provides real-time visibility into network connections with enhanced state display, intelligent connection lifecycle management, deep packet inspection capabilities, and a responsive terminal user interface.
 
 ## Features
 
-- **Real-time Network Monitoring**: Monitor active TCP, UDP, ICMP, and ARP connections
+- **Real-time Network Monitoring**: Monitor active TCP, UDP, ICMP, and ARP connections with **enhanced state visibility**
+- **Intelligent Connection States**: Rich state display showing exactly what each connection is doing:
+  - **TCP States**: `ESTABLISHED`, `SYN_SENT`, `TIME_WAIT`, `CLOSED`, etc.
+  - **QUIC States**: `QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`, `QUIC_DRAINING`
+  - **DNS States**: `DNS_QUERY`, `DNS_RESPONSE`
+  - **Activity States**: `UDP_ACTIVE`, `UDP_IDLE`, `UDP_STALE` based on connection activity
 - **Deep Packet Inspection (DPI)**: Automatically detect application protocols:
   - HTTP with host information
   - HTTPS/TLS with SNI (Server Name Indication)
   - DNS queries and responses
   - SSH connections
-  - QUIC protocol
+  - **QUIC protocol with CONNECTION_CLOSE frame detection** and proper RFC 9000 compliance
+- **Smart Connection Lifecycle Management**:
+  - **Dynamic timeouts** based on protocol, state, and activity (TCP closed: 5s, QUIC draining: 10s, SSH: 30min)
+  - **Protocol-aware cleanup** (DNS: 30s, established TCP: 5min, QUIC with close frames: 1-10s)
+  - **Activity-based timeout scaling** for long-lived vs idle connections
 - **Process Identification**: Associate network connections with running processes
 - **Service Name Resolution**: Identify well-known services using port numbers
 - **Cross-platform Support**: Works on Linux, macOS and potentially on Windows and BSD systems
-- **Terminal User Interface**: Clean, responsive TUI built with ratatui
+- **Terminal User Interface**: Clean, responsive TUI built with ratatui with **optimized column widths** for state visibility
 - **Performance Optimized**: Multi-threaded packet processing with minimal overhead
 - **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
 
@@ -170,7 +179,7 @@ RustNet employs a multi-threaded architecture for high-performance packet proces
 2. **Packet Processors**: Multiple worker threads parse packets and perform DPI analysis
 3. **Process Enrichment**: Platform-specific APIs to associate connections with processes
 4. **Snapshot Provider**: Creates consistent snapshots for the UI at regular intervals
-5. **Cleanup Thread**: Removes stale connections based on timeout settings
+5. **Smart Cleanup Thread**: Removes connections using dynamic timeouts based on protocol, state, and activity
 6. **DashMap**: Lock-free concurrent hashmap for storing connection state
 
 ## Dependencies
@@ -685,7 +694,6 @@ Examples:
   - Regular expression support
 - **Internationalization (i18n)**: Support for multiple languages in the UI
 - **Connection History**: Store and display historical connection data
-- **Bandwidth Graphs**: Fix broken bandwidth visualization (currently not functional)
 - **Export Functionality**: Export connections to CSV/JSON formats
 - **Configuration File**: Support for persistent configuration (filters, UI preferences)
 - **Connection Alerts**: Notifications for new connections or suspicious activity

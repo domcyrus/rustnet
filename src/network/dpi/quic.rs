@@ -633,17 +633,49 @@ pub fn process_crypto_frames_in_packet(
             }
 
             0x1c | 0x1d => {
-                // CONNECTION_CLOSE frame
-                let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
+                // CONNECTION_CLOSE frame - extract detailed information
+                let (error_code, bytes_read) = parse_variable_length_int(&payload[offset..])?;
                 offset += bytes_read;
 
+                // 0x1c has an additional frame type field, 0x1d does not
                 if frame_type_byte == 0x1c {
                     let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
                     offset += bytes_read;
                 }
 
+                // Extract reason phrase if present
                 let (reason_length, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read + reason_length as usize;
+                offset += bytes_read;
+                
+                let reason = if reason_length > 0 && offset + reason_length as usize <= payload.len() {
+                    let reason_bytes = &payload[offset..offset + reason_length as usize];
+                    String::from_utf8(reason_bytes.to_vec()).ok()
+                } else {
+                    None
+                };
+                offset += reason_length as usize;
+
+                // Store CONNECTION_CLOSE information in quic_info
+                quic_info.connection_close = Some(crate::network::types::QuicCloseInfo {
+                    frame_type: frame_type_byte,
+                    error_code,
+                    reason: reason.clone(),
+                    detected_at: std::time::Instant::now(),
+                });
+
+                // Update connection state based on close frame
+                quic_info.connection_state = if error_code == 0 {
+                    // NO_ERROR - graceful close, enter draining
+                    crate::network::types::QuicConnectionState::Draining
+                } else {
+                    // Error close - connection is closed
+                    crate::network::types::QuicConnectionState::Closed
+                };
+
+                debug!(
+                    "QUIC: Detected CONNECTION_CLOSE frame type 0x{:02x}, error_code: {}, reason: {:?}",
+                    frame_type_byte, error_code, reason
+                );
             }
 
             0x1e => {

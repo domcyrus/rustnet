@@ -245,13 +245,13 @@ fn draw_connections_list(
 ) {
     let widths = [
         Constraint::Length(4),  // Protocol (TCP/UDP fits in 4)
-        Constraint::Length(18), // Local Address (slightly reduced)
-        Constraint::Length(22), // Remote Address (slightly reduced)
-        Constraint::Length(8),  // State (EST/LIS/etc fit in 8)
+        Constraint::Length(17), // Local Address (slightly reduced for state)
+        Constraint::Length(21), // Remote Address (slightly reduced for state)
+        Constraint::Length(16), // State (increased for QUIC_HANDSHAKE, etc)
         Constraint::Length(8),  // Service (port names fit in 8)
-        Constraint::Length(25), // DPI/Application (slightly reduced)
-        Constraint::Length(12), // Bandwidth (slightly reduced)
-        Constraint::Min(20),    // Process (much more space!)
+        Constraint::Length(24), // DPI/Application (slightly reduced)
+        Constraint::Length(12), // Bandwidth
+        Constraint::Min(20),    // Process (flexible remaining space)
     ];
 
     let header_cells = [

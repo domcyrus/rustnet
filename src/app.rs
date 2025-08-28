@@ -581,7 +581,6 @@ impl App {
     /// Start cleanup thread to remove old connections
     fn start_cleanup_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
-        let timeout = Duration::from_secs(self.config.connection_timeout);
 
         thread::spawn(move || {
             info!("Cleanup thread started");
@@ -600,14 +599,24 @@ impl App {
                 let mut removed_keys = Vec::new();
                 
                 connections.retain(|key, conn| {
-                    let should_keep = now
-                        .duration_since(conn.last_activity)
-                        .unwrap_or(Duration::from_secs(0))
-                        < timeout;
+                    // Use dynamic timeout based on connection type and state
+                    let should_keep = !conn.should_cleanup(now);
 
                     if !should_keep {
                         removed += 1;
                         removed_keys.push(key.clone());
+                        
+                        // Log cleanup reason for debugging
+                        let conn_timeout = conn.get_timeout();
+                        let idle_time = now.duration_since(conn.last_activity).unwrap_or_default();
+                        debug!(
+                            "Cleanup: Removing {} connection {} (idle: {:?}, timeout: {:?}, state: {})",
+                            conn.protocol,
+                            key,
+                            idle_time,
+                            conn_timeout,
+                            conn.state()
+                        );
                     }
 
                     should_keep
