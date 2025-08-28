@@ -16,7 +16,7 @@ mod ui;
 fn main() -> Result<()> {
     // Parse command line arguments
     let matches = Command::new("rustnet")
-        .version("0.1.0")
+        .version(env!("CARGO_PKG_VERSION"))
         .author("Network Monitor")
         .about("Cross-platform network monitoring tool")
         .arg(
