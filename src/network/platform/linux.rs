@@ -72,8 +72,8 @@ impl LinuxProcessLookup {
             let entry = entry?;
             let path = entry.path();
 
-            if let Some(pid_str) = path.file_name().and_then(|s| s.to_str()) {
-                if let Ok(pid) = pid_str.parse::<u32>() {
+            if let Some(pid_str) = path.file_name().and_then(|s| s.to_str())
+                && let Ok(pid) = pid_str.parse::<u32>() {
                     if pid == 0 {
                         continue;
                     }
@@ -89,16 +89,13 @@ impl LinuxProcessLookup {
                     let fd_dir = path.join("fd");
                     if let Ok(fd_entries) = fs::read_dir(&fd_dir) {
                         for fd_entry in fd_entries.flatten() {
-                            if let Ok(link) = fs::read_link(fd_entry.path()) {
-                                if let Some(link_str) = link.to_str() {
-                                    if let Some(inode) = Self::extract_socket_inode(link_str) {
+                            if let Ok(link) = fs::read_link(fd_entry.path())
+                                && let Some(link_str) = link.to_str()
+                                && let Some(inode) = Self::extract_socket_inode(link_str) {
                                         inode_map.insert(inode, (pid, process_name.clone()));
-                                    }
-                                }
                             }
                         }
                     }
-                }
             }
         }
 
@@ -139,15 +136,14 @@ impl LinuxProcessLookup {
             };
 
             // Get inode
-            if let Ok(inode) = parts[9].parse::<u64>() {
-                if let Some((pid, name)) = inode_map.get(&inode) {
+            if let Ok(inode) = parts[9].parse::<u64>()
+                && let Some((pid, name)) = inode_map.get(&inode) {
                     let key = ConnectionKey {
                         protocol,
                         local_addr,
                         remote_addr,
                     };
                     result.insert(key, (*pid, name.clone()));
-                }
             }
         }
 
@@ -200,10 +196,9 @@ impl ProcessLookup for LinuxProcessLookup {
         // Try cache first
         {
             let cache = self.cache.read().unwrap();
-            if cache.last_refresh.elapsed() < Duration::from_secs(2) {
-                if let Some(process_info) = cache.lookup.get(&key) {
+            if cache.last_refresh.elapsed() < Duration::from_secs(2)
+                && let Some(process_info) = cache.lookup.get(&key) {
                     return Some(process_info.clone());
-                }
             }
         }
 

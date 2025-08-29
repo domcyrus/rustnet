@@ -487,46 +487,40 @@ fn draw_connection_details(
         .split(area);
 
     // Connection details
-    let mut details_text: Vec<Line> = Vec::new();
-
-    details_text.push(Line::from(vec![
-        Span::styled("Protocol: ", Style::default().fg(Color::Yellow)),
-        Span::raw(conn.protocol.to_string()),
-    ]));
-
-    details_text.push(Line::from(vec![
-        Span::styled("Local Address: ", Style::default().fg(Color::Yellow)),
-        Span::raw(conn.local_addr.to_string()),
-    ]));
-
-    details_text.push(Line::from(vec![
-        Span::styled("Remote Address: ", Style::default().fg(Color::Yellow)),
-        Span::raw(conn.remote_addr.to_string()),
-    ]));
-
-    details_text.push(Line::from(vec![
-        Span::styled("State: ", Style::default().fg(Color::Yellow)),
-        Span::raw(conn.state()),
-    ]));
-
-    details_text.push(Line::from(vec![
-        Span::styled("Process: ", Style::default().fg(Color::Yellow)),
-        Span::raw(conn.process_name.clone().unwrap_or_else(|| "-".to_string())),
-    ]));
-
-    details_text.push(Line::from(vec![
-        Span::styled("PID: ", Style::default().fg(Color::Yellow)),
-        Span::raw(
-            conn.pid
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| "-".to_string()),
-        ),
-    ]));
-
-    details_text.push(Line::from(vec![
-        Span::styled("Service: ", Style::default().fg(Color::Yellow)),
-        Span::raw(conn.service_name.clone().unwrap_or_else(|| "-".to_string())),
-    ]));
+    let mut details_text: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("Protocol: ", Style::default().fg(Color::Yellow)),
+            Span::raw(conn.protocol.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Local Address: ", Style::default().fg(Color::Yellow)),
+            Span::raw(conn.local_addr.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Remote Address: ", Style::default().fg(Color::Yellow)),
+            Span::raw(conn.remote_addr.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("State: ", Style::default().fg(Color::Yellow)),
+            Span::raw(conn.state()),
+        ]),
+        Line::from(vec![
+            Span::styled("Process: ", Style::default().fg(Color::Yellow)),
+            Span::raw(conn.process_name.clone().unwrap_or_else(|| "-".to_string())),
+        ]),
+        Line::from(vec![
+            Span::styled("PID: ", Style::default().fg(Color::Yellow)),
+            Span::raw(
+                conn.pid
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| "-".to_string()),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Service: ", Style::default().fg(Color::Yellow)),
+            Span::raw(conn.service_name.clone().unwrap_or_else(|| "-".to_string())),
+        ]),
+    ];
 
     // Add DPI information
     match &conn.dpi_info {

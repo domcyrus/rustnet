@@ -6,13 +6,13 @@ This document is for maintainers releasing new versions of RustNet.
 
 ### 1. Prepare the Release
 
+Update version in Cargo.toml if needed!
+Update CHANGELOG.md with release notes
+
 ```bash
 # Ensure you're on the main branch with latest changes
 git checkout main
 git pull origin main
-
-# Update version in Cargo.toml if needed
-# Update CHANGELOG.md with release notes
 
 # Test the build
 cargo build --release

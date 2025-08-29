@@ -189,7 +189,7 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let current_interface = Arc::clone(&self.current_interface);
         let linktype_storage = Arc::clone(&self.linktype);
-        let pktap_active = Arc::clone(&self.pktap_active);
+        let _pktap_active = Arc::clone(&self.pktap_active);
 
         thread::spawn(move || {
             match setup_packet_capture(capture_config) {
@@ -203,7 +203,7 @@ impl App {
                     {
                         use crate::network::pktap;
                         if pktap::is_pktap_linktype(linktype) {
-                            pktap_active.store(true, Ordering::Relaxed);
+                            _pktap_active.store(true, Ordering::Relaxed);
                             info!("✓ PKTAP is active - process metadata will be provided directly");
                         }
                     }

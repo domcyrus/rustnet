@@ -32,8 +32,10 @@ pub trait ProcessLookup: Send + Sync {
 }
 
 /// No-op process lookup for when PKTAP is providing process metadata
+#[cfg(target_os = "macos")]
 pub struct NoOpProcessLookup;
 
+#[cfg(target_os = "macos")]
 impl ProcessLookup for NoOpProcessLookup {
     fn get_process_for_connection(&self, _conn: &Connection) -> Option<(u32, String)> {
         None // PKTAP provides this information directly
@@ -46,10 +48,10 @@ impl ProcessLookup for NoOpProcessLookup {
 
 /// Create a platform-specific process lookup with PKTAP status awareness
 pub fn create_process_lookup_with_pktap_status(
-    pktap_active: bool,
+    _pktap_active: bool,
 ) -> Result<Box<dyn ProcessLookup>> {
     #[cfg(target_os = "macos")]
-    if pktap_active {
+    if _pktap_active {
         log::info!("Using no-op process lookup - PKTAP provides process metadata");
         return Ok(Box::new(NoOpProcessLookup));
     }

@@ -589,6 +589,7 @@ impl PacketParser {
     }
 
     // Raw IP packet parsing for PKTAP DLT_RAW
+    #[cfg(target_os = "macos")]
     fn parse_raw_ipv4_packet(
         &self,
         data: &[u8],
@@ -656,6 +657,7 @@ impl PacketParser {
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn parse_raw_ipv6_packet(
         &self,
         data: &[u8],
