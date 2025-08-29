@@ -141,7 +141,10 @@ impl App {
         self.start_snapshot_provider(connections.clone())?;
 
         // Start cleanup thread
-        self.start_cleanup_thread(connections)?;
+        self.start_cleanup_thread(connections.clone())?;
+
+        // Start rate refresh thread
+        self.start_rate_refresh_thread(connections)?;
 
         // Mark loading as complete after a short delay
         let is_loading = Arc::clone(&self.is_loading);
@@ -595,6 +598,33 @@ impl App {
                 );
 
                 thread::sleep(refresh_interval);
+            }
+        });
+
+        Ok(())
+    }
+
+    /// Start rate refresh thread to update rates for idle connections
+    fn start_rate_refresh_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
+        let should_stop = Arc::clone(&self.should_stop);
+
+        thread::spawn(move || {
+            info!("Rate refresh thread started");
+
+            loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    info!("Rate refresh thread stopping");
+                    break;
+                }
+
+                // Refresh rates for all connections
+                // This ensures rates decay to zero for idle connections
+                for mut entry in connections.iter_mut() {
+                    entry.value_mut().refresh_rates();
+                }
+
+                // Run every 1 second to balance responsiveness with performance
+                thread::sleep(Duration::from_secs(1));
             }
         });
 
