@@ -1,32 +1,32 @@
 # RustNet
 
-A high-performance, cross-platform network monitoring tool built with Rust. RustNet provides real-time visibility into network connections with enhanced state display, intelligent connection lifecycle management, deep packet inspection capabilities, and a responsive terminal user interface.
+A cross-platform network monitoring tool built with Rust. RustNet provides real-time visibility into network connections with detailed state information, connection lifecycle management, deep packet inspection, and a terminal user interface.
 
 [![asciicast](https://asciinema.org/a/H4BPFrYd9NPhRLVoaddlURs1J.svg)](https://asciinema.org/a/H4BPFrYd9NPhRLVoaddlURs1J)
 
 ## Features
 
-- **Real-time Network Monitoring**: Monitor active TCP, UDP, ICMP, and ARP connections with **enhanced state visibility**
-- **Intelligent Connection States**: Rich state display showing exactly what each connection is doing:
+- **Real-time Network Monitoring**: Monitor active TCP, UDP, ICMP, and ARP connections with detailed state information
+- **Connection States**: State display showing connection status:
   - **TCP States**: `ESTABLISHED`, `SYN_SENT`, `TIME_WAIT`, `CLOSED`, etc.
   - **QUIC States**: `QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`, `QUIC_DRAINING`
   - **DNS States**: `DNS_QUERY`, `DNS_RESPONSE`
   - **Activity States**: `UDP_ACTIVE`, `UDP_IDLE`, `UDP_STALE` based on connection activity
-- **Deep Packet Inspection (DPI)**: Automatically detect application protocols:
+- **Deep Packet Inspection (DPI)**: Detect application protocols:
   - HTTP with host information
   - HTTPS/TLS with SNI (Server Name Indication)
   - DNS queries and responses
   - TODO: SSH connections
-  - **QUIC protocol with CONNECTION_CLOSE frame detection** and proper RFC 9000 compliance
-- **Smart Connection Lifecycle Management**:
-  - **Dynamic timeouts** based on protocol, state, and activity (TCP closed: 5s, QUIC draining: 10s, SSH: 30min)
-  - **Protocol-aware cleanup** (DNS: 30s, established TCP: 5min, QUIC with close frames: 1-10s)
-  - **Activity-based timeout scaling** for long-lived vs idle connections
+  - **QUIC protocol with CONNECTION_CLOSE frame detection** and RFC 9000 compliance
+- **Connection Lifecycle Management**:
+  - Configurable timeouts based on protocol, state, and activity (TCP closed: 5s, QUIC draining: 10s, SSH: 30min)
+  - Protocol-specific cleanup (DNS: 30s, established TCP: 5min, QUIC with close frames: 1-10s)
+  - Activity-based timeout adjustment for long-lived vs idle connections
 - **Process Identification**: Associate network connections with running processes
 - **Service Name Resolution**: Identify well-known services using port numbers
 - **Cross-platform Support**: Works on Linux, macOS and potentially on Windows and BSD systems
-- **Terminal User Interface**: Clean, responsive TUI built with ratatui with **optimized column widths** for state visibility
-- **Performance Optimized**: Multi-threaded packet processing with minimal overhead
+- **Terminal User Interface**: TUI built with ratatui with adjustable column widths for state visibility
+- **Multi-threaded Processing**: Concurrent packet processing across multiple threads
 - **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
 
 ## Installation
@@ -122,7 +122,7 @@ Options:
 
 ## Logging
 
-Logging is **disabled by default** for better performance. When enabled with the `--log-level` option, RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`.
+Logging is disabled by default. When enabled with the `--log-level` option, RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`.
 
 Log files contain:
 
@@ -146,7 +146,7 @@ The `scripts/clear_old_logs.sh` script is provided for log cleanup.
 
 ## Architecture
 
-RustNet employs a multi-threaded architecture for high-performance packet processing:
+RustNet uses a multi-threaded architecture for packet processing:
 
 ```
 ┌─────────────────┐
@@ -181,8 +181,8 @@ RustNet employs a multi-threaded architecture for high-performance packet proces
 2. **Packet Processors**: Multiple worker threads parse packets and perform DPI analysis
 3. **Process Enrichment**: Platform-specific APIs to associate connections with processes
 4. **Snapshot Provider**: Creates consistent snapshots for the UI at regular intervals
-5. **Smart Cleanup Thread**: Removes connections using dynamic timeouts based on protocol, state, and activity
-6. **DashMap**: Lock-free concurrent hashmap for storing connection state
+5. **Cleanup Thread**: Removes connections using configurable timeouts based on protocol, state, and activity
+6. **DashMap**: Concurrent hashmap for storing connection state
 
 ## Dependencies
 
@@ -192,7 +192,7 @@ RustNet is built with the following key dependencies:
 - **crossterm**: Cross-platform terminal manipulation
 - **pcap**: Packet capture library bindings
 - **pnet_datalink**: Network interface enumeration
-- **dashmap**: High-performance concurrent hashmap
+- **dashmap**: Concurrent hashmap
 - **crossbeam**: Multi-threading utilities and channels
 - **dns-lookup**: DNS resolution capabilities
 - **clap**: Command-line argument parsing with derive features
@@ -214,7 +214,7 @@ RustNet is built with the following key dependencies:
 RustNet uses platform-specific APIs to associate network connections with processes:
 
 - **Linux**: Parses `/proc/net/tcp`, `/proc/net/udp`, and `/proc/<pid>/fd/` to find socket inodes
-- **macOS**: Uses **PKTAP (Packet Tap)** headers when available for direct process identification from packet metadata, with fallback to `lsof` system commands for process-socket associations. PKTAP provides more accurate and efficient process identification by extracting process information directly from the kernel packet headers.
+- **macOS**: Uses PKTAP (Packet Tap) headers when available for process identification from packet metadata, with fallback to `lsof` system commands for process-socket associations. PKTAP extracts process information directly from kernel packet headers when supported.
 - **Windows**: Uses nothing so far :)
 
 ### Network Interfaces
@@ -224,7 +224,7 @@ The tool automatically detects and lists available network interfaces using plat
 ## Performance Considerations
 
 - **Multi-threaded Processing**: Packet processing is distributed across multiple threads (up to 4 by default)
-- **Lock-free Data Structures**: Uses DashMap for concurrent access without traditional locking
+- **Concurrent Data Structures**: Uses DashMap for concurrent access with fine-grained locking
 - **Batch Processing**: Packets are processed in batches to improve cache efficiency
 - **Selective DPI**: Deep packet inspection can be disabled with `--no-dpi` for lower overhead
 - **Configurable Intervals**: Adjust refresh rates based on your needs
