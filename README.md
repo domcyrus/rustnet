@@ -2,7 +2,7 @@
 
 A cross-platform network monitoring tool built with Rust. RustNet provides real-time visibility into network connections with detailed state information, connection lifecycle management, deep packet inspection, and a terminal user interface.
 
-[![asciicast](https://asciinema.org/a/H4BPFrYd9NPhRLVoaddlURs1J.svg)](https://asciinema.org/a/H4BPFrYd9NPhRLVoaddlURs1J)
+[RustNet Demo](./assets/rustnet.gif)
 
 ## Features
 
