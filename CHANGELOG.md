@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2025-01-09
+
+### Added
+- **Connection Filtering System**: New comprehensive filtering capability allowing users to filter connections by:
+  - Protocol type (TCP, UDP, ICMP)
+  - Local and remote IP addresses
+  - Local and remote ports
+  - Process names
+  - Service names
+  - Customizable filter expressions with intuitive UI
+- **Enhanced Documentation**: Added asciinema demo recording for better user onboarding
+- **Visual Demonstrations**: Added animated GIF showcasing RustNet functionality
+
+### Fixed
+- **README Improvements**: Fixed image syntax and formatting issues for better GitHub display
+
+### Changed
+- **User Interface**: Enhanced TUI to support dynamic filtering with keyboard shortcuts
+- **Documentation**: Improved project presentation with visual aids and demonstrations
+
 ## [0.4.0] - 2025-01-29
 
 ### Improved
@@ -78,7 +98,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/domcyrus/rustnet/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/domcyrus/rustnet/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/domcyrus/rustnet/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/domcyrus/rustnet/compare/v0.1.0...v0.2.0
