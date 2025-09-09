@@ -125,7 +125,8 @@ impl PacketParser {
         // Check if this is PKTAP data
         #[cfg(target_os = "macos")]
         if let Some(linktype) = self.linktype
-            && pktap::is_pktap_linktype(linktype) {
+            && pktap::is_pktap_linktype(linktype)
+        {
             return self.parse_pktap_packet(data);
         }
 
@@ -356,11 +357,7 @@ impl PacketParser {
         }
     }
 
-    fn parse_tcp(
-        &self,
-        transport_data: &[u8],
-        params: TransportParams,
-    ) -> Option<ParsedPacket> {
+    fn parse_tcp(&self, transport_data: &[u8], params: TransportParams) -> Option<ParsedPacket> {
         if transport_data.len() < 20 {
             return None;
         }
@@ -388,7 +385,12 @@ impl PacketParser {
             let tcp_header_len = ((transport_data[12] >> 4) as usize) * 4;
             if transport_data.len() > tcp_header_len {
                 let payload = &transport_data[tcp_header_len..];
-                dpi::analyze_tcp_packet(payload, local_addr.port(), remote_addr.port(), params.is_outgoing)
+                dpi::analyze_tcp_packet(
+                    payload,
+                    local_addr.port(),
+                    remote_addr.port(),
+                    params.is_outgoing,
+                )
             } else {
                 None
             }
@@ -411,11 +413,7 @@ impl PacketParser {
         })
     }
 
-    fn parse_udp(
-        &self,
-        transport_data: &[u8],
-        params: TransportParams,
-    ) -> Option<ParsedPacket> {
+    fn parse_udp(&self, transport_data: &[u8], params: TransportParams) -> Option<ParsedPacket> {
         if transport_data.len() < 8 {
             return None;
         }
@@ -438,7 +436,12 @@ impl PacketParser {
         // Perform DPI if enabled and there's payload
         let dpi_result = if self.config.enable_dpi && transport_data.len() > 8 {
             let payload = &transport_data[8..];
-            dpi::analyze_udp_packet(payload, local_addr.port(), remote_addr.port(), params.is_outgoing)
+            dpi::analyze_udp_packet(
+                payload,
+                local_addr.port(),
+                remote_addr.port(),
+                params.is_outgoing,
+            )
         } else {
             None
         };
@@ -458,11 +461,7 @@ impl PacketParser {
         })
     }
 
-    fn parse_icmp(
-        &self,
-        transport_data: &[u8],
-        params: TransportParams,
-    ) -> Option<ParsedPacket> {
+    fn parse_icmp(&self, transport_data: &[u8], params: TransportParams) -> Option<ParsedPacket> {
         if transport_data.is_empty() {
             return None;
         }
@@ -475,9 +474,15 @@ impl PacketParser {
         };
 
         let (local_addr, remote_addr) = if params.is_outgoing {
-            (SocketAddr::new(params.src_ip, 0), SocketAddr::new(params.dst_ip, 0))
+            (
+                SocketAddr::new(params.src_ip, 0),
+                SocketAddr::new(params.dst_ip, 0),
+            )
         } else {
-            (SocketAddr::new(params.dst_ip, 0), SocketAddr::new(params.src_ip, 0))
+            (
+                SocketAddr::new(params.dst_ip, 0),
+                SocketAddr::new(params.src_ip, 0),
+            )
         };
 
         Some(ParsedPacket {
@@ -498,11 +503,7 @@ impl PacketParser {
         })
     }
 
-    fn parse_icmpv6(
-        &self,
-        transport_data: &[u8],
-        params: TransportParams,
-    ) -> Option<ParsedPacket> {
+    fn parse_icmpv6(&self, transport_data: &[u8], params: TransportParams) -> Option<ParsedPacket> {
         if transport_data.is_empty() {
             return None;
         }
@@ -515,9 +516,15 @@ impl PacketParser {
         };
 
         let (local_addr, remote_addr) = if params.is_outgoing {
-            (SocketAddr::new(params.src_ip, 0), SocketAddr::new(params.dst_ip, 0))
+            (
+                SocketAddr::new(params.src_ip, 0),
+                SocketAddr::new(params.dst_ip, 0),
+            )
         } else {
-            (SocketAddr::new(params.dst_ip, 0), SocketAddr::new(params.src_ip, 0))
+            (
+                SocketAddr::new(params.dst_ip, 0),
+                SocketAddr::new(params.src_ip, 0),
+            )
         };
 
         Some(ParsedPacket {

@@ -312,7 +312,8 @@ fn decode_lsof_string(input: &str) -> String {
             let hex_digits: String = chars.by_ref().take(2).collect();
             if hex_digits.len() == 2
                 && let Ok(byte_val) = u8::from_str_radix(&hex_digits, 16)
-                && let Some(decoded_char) = std::char::from_u32(byte_val as u32) {
+                && let Some(decoded_char) = std::char::from_u32(byte_val as u32)
+            {
                 result.push(decoded_char);
                 continue;
             }

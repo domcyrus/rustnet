@@ -80,15 +80,22 @@ impl UIState {
         }
 
         let current_index = self.get_selected_index(connections).unwrap_or(0);
-        log::debug!("move_selection_up: current_index={}, total_connections={}", current_index, connections.len());
-        
+        log::debug!(
+            "move_selection_up: current_index={}, total_connections={}",
+            current_index,
+            connections.len()
+        );
+
         if current_index > 0 {
             self.set_selected_by_index(connections, current_index - 1);
             log::debug!("move_selection_up: moved to index {}", current_index - 1);
         } else {
             // Wrap around to the bottom
             self.set_selected_by_index(connections, connections.len() - 1);
-            log::debug!("move_selection_up: wrapped to bottom index {}", connections.len() - 1);
+            log::debug!(
+                "move_selection_up: wrapped to bottom index {}",
+                connections.len() - 1
+            );
         }
     }
 
@@ -100,8 +107,12 @@ impl UIState {
         }
 
         let current_index = self.get_selected_index(connections).unwrap_or(0);
-        log::debug!("move_selection_down: current_index={}, total_connections={}", current_index, connections.len());
-        
+        log::debug!(
+            "move_selection_down: current_index={}, total_connections={}",
+            current_index,
+            connections.len()
+        );
+
         if current_index < connections.len().saturating_sub(1) {
             self.set_selected_by_index(connections, current_index + 1);
             log::debug!("move_selection_down: moved to index {}", current_index + 1);
@@ -150,8 +161,12 @@ impl UIState {
         }
 
         let current_index = self.get_selected_index(connections);
-        log::debug!("ensure_valid_selection: current_index={:?}, total_connections={}", current_index, connections.len());
-        
+        log::debug!(
+            "ensure_valid_selection: current_index={:?}, total_connections={}",
+            current_index,
+            connections.len()
+        );
+
         // If no selection or selection is no longer valid, select first connection
         if self.selected_connection_key.is_none() || current_index.is_none() {
             log::debug!("ensure_valid_selection: selecting first connection (index 0)");
@@ -205,7 +220,6 @@ impl UIState {
         }
     }
 }
-
 
 /// Draw the UI
 pub fn draw(
@@ -360,7 +374,8 @@ fn draw_connections_list(
 
             // Debug: Log the raw process data to understand what's changing
             if let Some(ref raw_process_name) = conn.process_name
-                && raw_process_name.contains("firefox") {
+                && raw_process_name.contains("firefox")
+            {
                 log::debug!(
                     "🔍 Raw process name for {}: '{:?}' (len:{}, bytes: {:?})",
                     conn.key(),
@@ -841,14 +856,12 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Enter filter mode (navigate while typing!)"),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "Filter Examples:",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        Line::from(vec![Span::styled(
+            "Filter Examples:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![
             Span::styled("  /google ", Style::default().fg(Color::Green)),
             Span::raw("Search for 'google' in all fields"),
@@ -913,11 +926,7 @@ fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
     };
 
     let filter_input = Paragraph::new(input_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-        )
+        .block(Block::default().borders(Borders::ALL).title(title))
         .style(style)
         .wrap(Wrap { trim: false });
 

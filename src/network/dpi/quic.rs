@@ -553,7 +553,8 @@ pub fn process_crypto_frames_in_packet(
                     let crypto_data = payload[offset..offset + available].to_vec();
 
                     if let Some(reassembler) = &mut quic_info.crypto_reassembler
-                        && let Err(e) = reassembler.add_fragment(crypto_offset, crypto_data) {
+                        && let Err(e) = reassembler.add_fragment(crypto_offset, crypto_data)
+                    {
                         warn!("QUIC: Failed to add CRYPTO fragment: {}", e);
                     }
                 }
@@ -700,7 +701,8 @@ pub fn process_crypto_frames_in_packet(
 
     if found_crypto_frames
         && let Some(reassembler) = &mut quic_info.crypto_reassembler
-        && let Some(tls_info) = try_extract_tls_from_reassembler(reassembler) {
+        && let Some(tls_info) = try_extract_tls_from_reassembler(reassembler)
+    {
         debug!(
             "QUIC: Successfully extracted TLS info: SNI={:?}",
             tls_info.sni
@@ -761,9 +763,11 @@ pub fn try_extract_tls_from_reassembler(
 
         // Only try to parse fragments that look like they contain complete TLS structures
         // Check if fragment starts with TLS handshake header (0x01 for ClientHello)
-        if fragment_data.len() >= 4 && fragment_data[0] == 0x01
+        if fragment_data.len() >= 4
+            && fragment_data[0] == 0x01
             && let Some(tls_info) = parse_partial_tls_handshake(fragment_data)
-            && (tls_info.sni.is_some() || !tls_info.alpn.is_empty()) {
+            && (tls_info.sni.is_some() || !tls_info.alpn.is_empty())
+        {
             debug!(
                 "QUIC: Found TLS info from individual fragment at offset {}",
                 offset
@@ -773,9 +777,11 @@ pub fn try_extract_tls_from_reassembler(
         }
 
         // Also try direct TLS pattern matching, but only for fragments that look like TLS records
-        if fragment_data.len() >= 6 && fragment_data[0] == 0x16
+        if fragment_data.len() >= 6
+            && fragment_data[0] == 0x16
             && let Some(tls_info) = try_parse_unencrypted_crypto_frames(fragment_data)
-            && (tls_info.sni.is_some() || !tls_info.alpn.is_empty()) {
+            && (tls_info.sni.is_some() || !tls_info.alpn.is_empty())
+        {
             debug!(
                 "QUIC: Found TLS info from pattern matching in fragment at offset {}",
                 offset
@@ -1208,7 +1214,8 @@ fn parse_alpn_extension(data: &[u8]) -> Option<Vec<String>> {
         offset += 1;
 
         if offset + proto_len <= data.len()
-            && let Ok(proto) = std::str::from_utf8(&data[offset..offset + proto_len]) {
+            && let Ok(proto) = std::str::from_utf8(&data[offset..offset + proto_len])
+        {
             protocols.push(proto.to_string());
         }
 
@@ -1558,7 +1565,8 @@ fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsInfo> {
                         && name_len <= 253
                         && (3..=256).contains(&list_len)
                         && list_len == name_len + 3
-                        && let Some(sni) = parse_sni_extension(ext_data) {
+                        && let Some(sni) = parse_sni_extension(ext_data)
+                    {
                         debug!("QUIC: Found SNI directly in packet: {}", sni);
                         let mut tls_info = TlsInfo::new();
                         tls_info.sni = Some(sni);

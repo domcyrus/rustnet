@@ -34,14 +34,14 @@ impl ConnectionFilter {
     /// Parse filter query string into filter criteria
     pub fn parse(query: &str) -> Self {
         let mut criteria = Vec::new();
-        
+
         if query.trim().is_empty() {
             return Self { criteria };
         }
 
         // Split by whitespace and process each part
         let parts: Vec<&str> = query.split_whitespace().collect();
-        
+
         for part in parts {
             if let Some((keyword, value)) = part.split_once(':') {
                 // Handle keyword-based filters
@@ -100,75 +100,102 @@ impl ConnectionFilter {
         }
 
         // All criteria must match (AND operation)
-        self.criteria.iter().all(|criterion| {
-            match criterion {
-                FilterCriteria::General(text) => self.matches_general(connection, text),
-                FilterCriteria::Port(port_text) => {
-                    connection.local_addr.port().to_string().contains(port_text)
-                        || connection.remote_addr.port().to_string().contains(port_text)
-                }
-                FilterCriteria::SourcePort(port_text) => {
-                    connection.local_addr.port().to_string().contains(port_text)
-                }
-                FilterCriteria::DestinationPort(port_text) => {
-                    connection.remote_addr.port().to_string().contains(port_text)
-                }
-                FilterCriteria::SourceIp(ip_text) => {
-                    connection.local_addr.ip().to_string().to_lowercase().contains(ip_text)
-                }
-                FilterCriteria::DestinationIp(ip_text) => {
-                    connection.remote_addr.ip().to_string().to_lowercase().contains(ip_text)
-                }
-                FilterCriteria::Protocol(proto_text) => {
-                    connection.protocol.to_string().to_lowercase().contains(proto_text)
-                }
-                FilterCriteria::Process(process_text) => {
-                    if let Some(ref process_name) = connection.process_name {
-                        process_name.to_lowercase().contains(process_text)
-                    } else {
-                        false
-                    }
-                }
-                FilterCriteria::Service(service_text) => {
-                    if let Some(ref service_name) = connection.service_name {
-                        service_name.to_lowercase().contains(service_text)
-                    } else {
-                        false
-                    }
-                }
-                FilterCriteria::Sni(sni_text) => self.matches_sni(connection, sni_text),
-                FilterCriteria::Application(app_text) => self.matches_application(connection, app_text),
+        self.criteria.iter().all(|criterion| match criterion {
+            FilterCriteria::General(text) => self.matches_general(connection, text),
+            FilterCriteria::Port(port_text) => {
+                connection.local_addr.port().to_string().contains(port_text)
+                    || connection
+                        .remote_addr
+                        .port()
+                        .to_string()
+                        .contains(port_text)
             }
+            FilterCriteria::SourcePort(port_text) => {
+                connection.local_addr.port().to_string().contains(port_text)
+            }
+            FilterCriteria::DestinationPort(port_text) => connection
+                .remote_addr
+                .port()
+                .to_string()
+                .contains(port_text),
+            FilterCriteria::SourceIp(ip_text) => connection
+                .local_addr
+                .ip()
+                .to_string()
+                .to_lowercase()
+                .contains(ip_text),
+            FilterCriteria::DestinationIp(ip_text) => connection
+                .remote_addr
+                .ip()
+                .to_string()
+                .to_lowercase()
+                .contains(ip_text),
+            FilterCriteria::Protocol(proto_text) => connection
+                .protocol
+                .to_string()
+                .to_lowercase()
+                .contains(proto_text),
+            FilterCriteria::Process(process_text) => {
+                if let Some(ref process_name) = connection.process_name {
+                    process_name.to_lowercase().contains(process_text)
+                } else {
+                    false
+                }
+            }
+            FilterCriteria::Service(service_text) => {
+                if let Some(ref service_name) = connection.service_name {
+                    service_name.to_lowercase().contains(service_text)
+                } else {
+                    false
+                }
+            }
+            FilterCriteria::Sni(sni_text) => self.matches_sni(connection, sni_text),
+            FilterCriteria::Application(app_text) => self.matches_application(connection, app_text),
         })
     }
 
     /// Check if connection matches general text search across all fields
     fn matches_general(&self, connection: &Connection, text: &str) -> bool {
         // Check basic connection info
-        if connection.protocol.to_string().to_lowercase().contains(text)
-            || connection.local_addr.to_string().to_lowercase().contains(text)
-            || connection.remote_addr.to_string().to_lowercase().contains(text)
+        if connection
+            .protocol
+            .to_string()
+            .to_lowercase()
+            .contains(text)
+            || connection
+                .local_addr
+                .to_string()
+                .to_lowercase()
+                .contains(text)
+            || connection
+                .remote_addr
+                .to_string()
+                .to_lowercase()
+                .contains(text)
         {
             return true;
         }
 
         // Check process info
         if let Some(ref process_name) = connection.process_name
-            && process_name.to_lowercase().contains(text) {
-                return true;
-            }
+            && process_name.to_lowercase().contains(text)
+        {
+            return true;
+        }
 
         // Check service info
         if let Some(ref service_name) = connection.service_name
-            && service_name.to_lowercase().contains(text) {
-                return true;
-            }
+            && service_name.to_lowercase().contains(text)
+        {
+            return true;
+        }
 
         // Check DPI info
         if let Some(ref dpi_info) = connection.dpi_info
-            && self.matches_dpi_general(&dpi_info.application, text) {
-                return true;
-            }
+            && self.matches_dpi_general(&dpi_info.application, text)
+        {
+            return true;
+        }
 
         false
     }
@@ -179,15 +206,17 @@ impl ConnectionFilter {
             match &dpi_info.application {
                 ApplicationProtocol::Https(info) => {
                     if let Some(ref tls_info) = info.tls_info
-                        && let Some(ref sni) = tls_info.sni {
-                            return sni.to_lowercase().contains(sni_text);
-                        }
+                        && let Some(ref sni) = tls_info.sni
+                    {
+                        return sni.to_lowercase().contains(sni_text);
+                    }
                 }
                 ApplicationProtocol::Quic(info) => {
                     if let Some(ref tls_info) = info.tls_info
-                        && let Some(ref sni) = tls_info.sni {
-                            return sni.to_lowercase().contains(sni_text);
-                        }
+                        && let Some(ref sni) = tls_info.sni
+                    {
+                        return sni.to_lowercase().contains(sni_text);
+                    }
                 }
                 ApplicationProtocol::Http(info) => {
                     if let Some(ref host) = info.host {
@@ -203,7 +232,11 @@ impl ConnectionFilter {
     /// Check if application protocol matches the search text
     fn matches_application(&self, connection: &Connection, app_text: &str) -> bool {
         if let Some(ref dpi_info) = connection.dpi_info {
-            dpi_info.application.to_string().to_lowercase().contains(app_text)
+            dpi_info
+                .application
+                .to_string()
+                .to_lowercase()
+                .contains(app_text)
         } else {
             false
         }
@@ -220,24 +253,28 @@ impl ConnectionFilter {
         match application {
             ApplicationProtocol::Http(info) => {
                 if let Some(ref host) = info.host
-                    && host.to_lowercase().contains(text) {
-                        return true;
-                    }
+                    && host.to_lowercase().contains(text)
+                {
+                    return true;
+                }
                 if let Some(ref path) = info.path
-                    && path.to_lowercase().contains(text) {
-                        return true;
-                    }
+                    && path.to_lowercase().contains(text)
+                {
+                    return true;
+                }
                 if let Some(ref method) = info.method
-                    && method.to_lowercase().contains(text) {
-                        return true;
-                    }
+                    && method.to_lowercase().contains(text)
+                {
+                    return true;
+                }
             }
             ApplicationProtocol::Https(info) => {
                 if let Some(ref tls_info) = info.tls_info {
                     if let Some(ref sni) = tls_info.sni
-                        && sni.to_lowercase().contains(text) {
-                            return true;
-                        }
+                        && sni.to_lowercase().contains(text)
+                    {
+                        return true;
+                    }
                     // Check ALPN protocols
                     for alpn in &tls_info.alpn {
                         if alpn.to_lowercase().contains(text) {
@@ -248,16 +285,18 @@ impl ConnectionFilter {
             }
             ApplicationProtocol::Dns(info) => {
                 if let Some(ref query_name) = info.query_name
-                    && query_name.to_lowercase().contains(text) {
-                        return true;
-                    }
+                    && query_name.to_lowercase().contains(text)
+                {
+                    return true;
+                }
             }
             ApplicationProtocol::Quic(info) => {
                 if let Some(ref tls_info) = info.tls_info {
                     if let Some(ref sni) = tls_info.sni
-                        && sni.to_lowercase().contains(text) {
-                            return true;
-                        }
+                        && sni.to_lowercase().contains(text)
+                    {
+                        return true;
+                    }
                     // Check ALPN protocols
                     for alpn in &tls_info.alpn {
                         if alpn.to_lowercase().contains(text) {
@@ -320,13 +359,13 @@ mod tests {
     fn test_parse_sport_dport_filters() {
         let filter = ConnectionFilter::parse("sport:80 dport:443");
         assert_eq!(filter.criteria.len(), 2);
-        
+
         // Check source port filter
         match &filter.criteria[0] {
             FilterCriteria::SourcePort(text) => assert_eq!(text, "80"),
             _ => panic!("Expected SourcePort filter"),
         }
-        
+
         // Check destination port filter
         match &filter.criteria[1] {
             FilterCriteria::DestinationPort(text) => assert_eq!(text, "443"),

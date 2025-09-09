@@ -607,7 +607,10 @@ impl App {
     }
 
     /// Start rate refresh thread to update rates for idle connections
-    fn start_rate_refresh_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
+    fn start_rate_refresh_thread(
+        &self,
+        connections: Arc<DashMap<String, Connection>>,
+    ) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
 
         thread::spawn(move || {
@@ -709,7 +712,7 @@ impl App {
     /// Get filtered connections for UI display
     pub fn get_filtered_connections(&self, filter_query: &str) -> Vec<Connection> {
         let connections = self.connections_snapshot.read().unwrap().clone();
-        
+
         if filter_query.trim().is_empty() {
             return connections;
         }

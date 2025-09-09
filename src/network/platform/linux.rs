@@ -73,29 +73,31 @@ impl LinuxProcessLookup {
             let path = entry.path();
 
             if let Some(pid_str) = path.file_name().and_then(|s| s.to_str())
-                && let Ok(pid) = pid_str.parse::<u32>() {
-                    if pid == 0 {
-                        continue;
-                    }
+                && let Ok(pid) = pid_str.parse::<u32>()
+            {
+                if pid == 0 {
+                    continue;
+                }
 
-                    // Get process name
-                    let comm_path = path.join("comm");
-                    let process_name = fs::read_to_string(&comm_path)
-                        .unwrap_or_else(|_| "unknown".to_string())
-                        .trim()
-                        .to_string();
+                // Get process name
+                let comm_path = path.join("comm");
+                let process_name = fs::read_to_string(&comm_path)
+                    .unwrap_or_else(|_| "unknown".to_string())
+                    .trim()
+                    .to_string();
 
-                    // Check file descriptors
-                    let fd_dir = path.join("fd");
-                    if let Ok(fd_entries) = fs::read_dir(&fd_dir) {
-                        for fd_entry in fd_entries.flatten() {
-                            if let Ok(link) = fs::read_link(fd_entry.path())
-                                && let Some(link_str) = link.to_str()
-                                && let Some(inode) = Self::extract_socket_inode(link_str) {
-                                        inode_map.insert(inode, (pid, process_name.clone()));
-                            }
+                // Check file descriptors
+                let fd_dir = path.join("fd");
+                if let Ok(fd_entries) = fs::read_dir(&fd_dir) {
+                    for fd_entry in fd_entries.flatten() {
+                        if let Ok(link) = fs::read_link(fd_entry.path())
+                            && let Some(link_str) = link.to_str()
+                            && let Some(inode) = Self::extract_socket_inode(link_str)
+                        {
+                            inode_map.insert(inode, (pid, process_name.clone()));
                         }
                     }
+                }
             }
         }
 
@@ -137,13 +139,14 @@ impl LinuxProcessLookup {
 
             // Get inode
             if let Ok(inode) = parts[9].parse::<u64>()
-                && let Some((pid, name)) = inode_map.get(&inode) {
-                    let key = ConnectionKey {
-                        protocol,
-                        local_addr,
-                        remote_addr,
-                    };
-                    result.insert(key, (*pid, name.clone()));
+                && let Some((pid, name)) = inode_map.get(&inode)
+            {
+                let key = ConnectionKey {
+                    protocol,
+                    local_addr,
+                    remote_addr,
+                };
+                result.insert(key, (*pid, name.clone()));
             }
         }
 
@@ -197,8 +200,9 @@ impl ProcessLookup for LinuxProcessLookup {
         {
             let cache = self.cache.read().unwrap();
             if cache.last_refresh.elapsed() < Duration::from_secs(2)
-                && let Some(process_info) = cache.lookup.get(&key) {
-                    return Some(process_info.clone());
+                && let Some(process_info) = cache.lookup.get(&key)
+            {
+                return Some(process_info.clone());
             }
         }
 

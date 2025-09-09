@@ -656,7 +656,7 @@ impl RateTracker {
 
         let oldest = self.samples.front().unwrap();
         let newest = self.samples.back().unwrap();
-        
+
         // Calculate the time span of our samples
         let time_span = newest
             .timestamp
@@ -669,19 +669,20 @@ impl RateTracker {
         }
 
         // Sum all deltas in the window (skip the first sample as it might have incomplete delta)
-        let total_bytes: u64 = self.samples
+        let total_bytes: u64 = self
+            .samples
             .iter()
-            .skip(1)  // Skip first sample which might have delta from before window
+            .skip(1) // Skip first sample which might have delta from before window
             .map(delta_getter)
             .sum();
 
         // Calculate base rate
         let base_rate = total_bytes as f64 / time_span;
-        
+
         // Apply time-based decay more gently, similar to iftop's approach
         let now = Instant::now();
         let time_since_last_sample = now.duration_since(newest.timestamp).as_secs_f64();
-        
+
         // More gentle decay - start decay after 3 seconds, fully decay by 10 seconds
         if time_since_last_sample > 10.0 {
             // After 10 seconds of no traffic, rate should be very close to zero
@@ -1237,24 +1238,24 @@ mod tests {
         // with cumulative byte counts
         tracker.update(1_000_000, 500_000); // 1MB sent, 500KB received total
         thread::sleep(Duration::from_millis(100));
-        
+
         tracker.update(1_100_000, 550_000); // 100KB more sent, 50KB more received
         thread::sleep(Duration::from_millis(100));
-        
+
         tracker.update(1_200_000, 600_000); // 100KB more sent, 50KB more received
-        
+
         // The rate should be based on the deltas, not the cumulative values
         // We sent 200KB in ~200ms = ~1MB/s, received 100KB in ~200ms = ~500KB/s
         let outgoing_rate = tracker.get_outgoing_rate_bps();
         let incoming_rate = tracker.get_incoming_rate_bps();
-        
+
         // Should be approximately 1MB/s outgoing (1_000_000 bytes/sec)
         assert!(
             outgoing_rate > 800_000.0 && outgoing_rate < 1_200_000.0,
             "Outgoing rate should be ~1MB/s, got: {}",
             outgoing_rate
         );
-        
+
         // Should be approximately 500KB/s incoming (500_000 bytes/sec)
         assert!(
             incoming_rate > 400_000.0 && incoming_rate < 600_000.0,
@@ -1273,22 +1274,22 @@ mod tests {
         tracker.update(0, 0);
         thread::sleep(Duration::from_millis(100));
         tracker.update(100_000, 50_000); // 100KB sent, 50KB received
-        
+
         thread::sleep(Duration::from_millis(100));
         tracker.update(200_000, 100_000); // Another 100KB sent, 50KB received
-        
+
         // Wait for window to slide past first samples
         thread::sleep(Duration::from_millis(600));
-        
+
         // Add new samples with same rate
         tracker.update(300_000, 150_000); // Another 100KB sent, 50KB received
         thread::sleep(Duration::from_millis(100));
         tracker.update(400_000, 200_000); // Another 100KB sent, 50KB received
-        
+
         // Rate should still be consistent despite window sliding
         let outgoing_rate = tracker.get_outgoing_rate_bps();
         let incoming_rate = tracker.get_incoming_rate_bps();
-        
+
         // We're sending at ~1MB/s and receiving at ~500KB/s consistently
         assert!(
             outgoing_rate > 800_000.0 && outgoing_rate < 1_200_000.0,
@@ -1306,81 +1307,111 @@ mod tests {
     fn test_rate_decay_for_idle_connections() {
         // Test that rates decay to zero when connections become idle
         let mut tracker = RateTracker::new();
-        
+
         // Simulate active traffic
         tracker.update(0, 0);
         thread::sleep(Duration::from_millis(100));
         tracker.update(100_000, 50_000); // 100KB sent, 50KB received
-        
+
         // Should have non-zero rate immediately after traffic
         let initial_out = tracker.get_outgoing_rate_bps();
         let initial_in = tracker.get_incoming_rate_bps();
         assert!(initial_out > 0.0, "Should have outgoing traffic");
         assert!(initial_in > 0.0, "Should have incoming traffic");
-        
+
         // Wait 2 seconds (should still show full rate - no decay yet)
         thread::sleep(Duration::from_millis(2000));
-        
+
         let still_active_out = tracker.get_outgoing_rate_bps();
         let still_active_in = tracker.get_incoming_rate_bps();
-        
+
         // Rates should still be the same (no decay for first 3 seconds)
-        assert_eq!(still_active_out, initial_out, "Should not decay within 3 seconds");
-        assert_eq!(still_active_in, initial_in, "Should not decay within 3 seconds");
-        
+        assert_eq!(
+            still_active_out, initial_out,
+            "Should not decay within 3 seconds"
+        );
+        assert_eq!(
+            still_active_in, initial_in,
+            "Should not decay within 3 seconds"
+        );
+
         // Wait until decay starts (total 4 seconds - should start decay)
         thread::sleep(Duration::from_millis(2000));
-        
+
         let decayed_out = tracker.get_outgoing_rate_bps();
         let decayed_in = tracker.get_incoming_rate_bps();
-        
+
         // Rates should be lower due to decay
-        assert!(decayed_out < initial_out, "Outgoing rate should start decaying after 3s");
-        assert!(decayed_in < initial_in, "Incoming rate should start decaying after 3s");
+        assert!(
+            decayed_out < initial_out,
+            "Outgoing rate should start decaying after 3s"
+        );
+        assert!(
+            decayed_in < initial_in,
+            "Incoming rate should start decaying after 3s"
+        );
         assert!(decayed_out > 0.0, "Should still have some rate at 4s");
-        
+
         // Wait for full decay (total 11 seconds - should be zero)
         thread::sleep(Duration::from_millis(7000));
-        
+
         let final_out = tracker.get_outgoing_rate_bps();
         let final_in = tracker.get_incoming_rate_bps();
-        
+
         // After 10+ seconds of idle, rates should be zero
-        assert_eq!(final_out, 0.0, "Outgoing rate should be zero after 10+ seconds idle");
-        assert_eq!(final_in, 0.0, "Incoming rate should be zero after 10+ seconds idle");
+        assert_eq!(
+            final_out, 0.0,
+            "Outgoing rate should be zero after 10+ seconds idle"
+        );
+        assert_eq!(
+            final_in, 0.0,
+            "Incoming rate should be zero after 10+ seconds idle"
+        );
     }
 
     #[test]
     fn test_connection_refresh_rates() {
         // Test that refresh_rates() properly updates cached rate values
         let mut conn = create_test_connection();
-        
+
         // Initialize the rate tracker properly
         conn.rate_tracker.initialize_with_counts(0, 0);
-        
+
         // Simulate first packet
         conn.bytes_sent = 50_000;
         conn.bytes_received = 25_000;
         conn.update_rates();
-        
+
         thread::sleep(Duration::from_millis(100));
-        
+
         // Simulate more traffic
         conn.bytes_sent = 100_000;
         conn.bytes_received = 50_000;
         conn.update_rates();
-        
+
         // Should have non-zero rates after recent traffic
-        assert!(conn.current_outgoing_rate_bps > 0.0, "Should have outgoing rate");
-        assert!(conn.current_incoming_rate_bps > 0.0, "Should have incoming rate");
-        
+        assert!(
+            conn.current_outgoing_rate_bps > 0.0,
+            "Should have outgoing rate"
+        );
+        assert!(
+            conn.current_incoming_rate_bps > 0.0,
+            "Should have incoming rate"
+        );
+
         // Now simulate longer idle time and refresh (need >10s for zero)
         thread::sleep(Duration::from_millis(11000));
         conn.refresh_rates();
-        
+
         // Rates should be zero after refresh with long idle connection
-        assert_eq!(conn.current_outgoing_rate_bps, 0.0, "Should be zero after 10+ seconds idle refresh");
-        assert_eq!(conn.current_incoming_rate_bps, 0.0, "Should be zero after 10+ seconds idle refresh");
+        assert_eq!(
+            conn.current_outgoing_rate_bps, 0.0,
+            "Should be zero after 10+ seconds idle refresh"
+        );
+        assert_eq!(
+            conn.current_incoming_rate_bps, 0.0,
+            "Should be zero after 10+ seconds idle refresh"
+        );
     }
 
     #[test]

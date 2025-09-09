@@ -272,7 +272,8 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
 
     // Initialize the rate tracker with the initial byte counts
     // This prevents incorrect delta calculation on the first update
-    conn.rate_tracker.initialize_with_counts(conn.bytes_sent, conn.bytes_received);
+    conn.rate_tracker
+        .initialize_with_counts(conn.bytes_sent, conn.bytes_received);
 
     conn
 }
@@ -640,22 +641,22 @@ mod tests {
         // Test that the rate tracker is properly initialized for new connections
         let packet = create_test_packet(true, false);
         let conn = create_connection_from_packet(&packet, SystemTime::now());
-        
+
         // The connection should have initial bytes
         assert_eq!(conn.bytes_sent, 100);
         assert_eq!(conn.bytes_received, 0);
-        
+
         // Now simulate merging another packet
         let packet2 = create_test_packet(true, false);
         let mut updated_conn = merge_packet_into_connection(conn, &packet2, SystemTime::now());
-        
+
         // Bytes should have increased
         assert_eq!(updated_conn.bytes_sent, 200);
         assert_eq!(updated_conn.bytes_received, 0);
-        
+
         // Update rates - this should not cause a huge spike
         updated_conn.update_rates();
-        
+
         // The rate should be reasonable (not include the initial 100 bytes as a spike)
         // Since we just added 100 bytes, the rate should be based on that delta
         // not on the full 200 bytes

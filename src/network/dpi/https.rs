@@ -274,9 +274,10 @@ fn parse_extensions(data: &[u8], info: &mut TlsInfo, is_client_hello: bool) {
                 0x0010 => {
                     // ALPN (Application-Layer Protocol Negotiation)
                     if let Some(alpn) = parse_alpn_extension_resilient(ext_data)
-                        && !alpn.is_empty() {
-                            info.alpn = alpn;
-                        }
+                        && !alpn.is_empty()
+                    {
+                        info.alpn = alpn;
+                    }
                 }
                 0x002b => {
                     // Supported Versions
@@ -365,7 +366,8 @@ fn parse_alpn_extension_resilient(data: &[u8]) -> Option<Vec<String>> {
         let actual_len = proto_len.min(available_len);
 
         if actual_len > 0
-            && let Ok(proto) = std::str::from_utf8(&data[offset..offset + actual_len]) {
+            && let Ok(proto) = std::str::from_utf8(&data[offset..offset + actual_len])
+        {
             if actual_len < proto_len {
                 protocols.push(format!("{}[PARTIAL]", proto));
             } else {

@@ -37,7 +37,8 @@ pub fn analyze_tcp_packet(
 
     // 2. Check for TLS/HTTPS (port 443 or TLS handshake)
     if (local_port == 443 || remote_port == 443 || https::is_tls_handshake(payload))
-        && let Some(tls_result) = https::analyze_https(payload) {
+        && let Some(tls_result) = https::analyze_https(payload)
+    {
         return Some(DpiResult {
             application: ApplicationProtocol::Https(tls_result),
         });
@@ -68,7 +69,8 @@ pub fn analyze_udp_packet(
 
     // 1. DNS (port 53)
     if (local_port == 53 || remote_port == 53)
-        && let Some(dns_result) = dns::analyze_dns(payload) {
+        && let Some(dns_result) = dns::analyze_dns(payload)
+    {
         return Some(DpiResult {
             application: ApplicationProtocol::Dns(dns_result),
         });
