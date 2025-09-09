@@ -11,11 +11,11 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
-
     steps:
     - uses: actions/checkout@v4
+    - name: Install libpcap
+      run: sudo apt-get update && sudo apt-get install -y libpcap-dev
     - name: Build
       run: cargo build --verbose
     - name: Run tests
