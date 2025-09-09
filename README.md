@@ -25,6 +25,10 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 - **Process Identification**: Associate network connections with running processes
 - **Service Name Resolution**: Identify well-known services using port numbers
 - **Cross-platform Support**: Works on Linux, macOS and potentially on Windows and BSD systems
+- **Advanced Filtering**: Real-time vim/fzf-style filtering with keyword support:
+  - Navigate while typing filters
+  - Fuzzy search across all connection fields including DPI data
+  - Keyword filters: `port:44`, `src:192.168`, `dst:google.com`, `sni:github.com`, `process:firefox`
 - **Terminal User Interface**: TUI built with ratatui with adjustable column widths for state visibility
 - **Multi-threaded Processing**: Concurrent packet processing across multiple threads
 - **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
@@ -116,9 +120,36 @@ Options:
 - `PageUp`: Move up by 10 items
 - `PageDown`: Move down by 10 items
 - `Enter`: View detailed information about selected connection
-- `Esc`: Go back to previous view
+- `Esc`: Go back to previous view or clear active filter
 - `c`: Copy remote address to clipboard
 - `h`: Toggle help screen
+- `/`: Enter filter mode (vim-style search with real-time results)
+
+## Filtering
+
+Press `/` to enter filter mode. Type to filter connections in real-time, navigate with arrow keys while typing.
+
+**Basic search:**
+
+- `/google` - Find connections containing "google"
+- `/firefox` - Find Firefox connections
+
+**Keyword filters:**
+
+- `port:44` - Ports containing "44" (443, 8080, etc.)
+- `sport:80` - Source ports containing "80"
+- `dport:443` - Destination ports containing "443"
+- `src:192.168` - Source IPs containing "192.168"
+- `dst:github.com` - Destinations containing "github.com"
+- `process:ssh` - Process names containing "ssh"
+- `sni:api` - SNI hostnames containing "api"
+
+**Examples:**
+
+- `sport:80 process:nginx` - Nginx connections from port 80
+- `dport:443 sni:google.com` - HTTPS connections to Google
+
+Press `Esc` to clear filter.
 
 ## Logging
 

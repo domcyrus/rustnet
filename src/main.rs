@@ -1,7 +1,7 @@
 use anyhow::Result;
 use arboard::Clipboard;
 use clap::{Arg, Command};
-use log::{LevelFilter, error, info};
+use log::{LevelFilter, debug, error, info};
 use ratatui::prelude::CrosstermBackend;
 use simplelog::{Config as LogConfig, WriteLogger};
 use std::fs::{self, File};
@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::Duration;
 
 mod app;
+mod filter;
 mod network;
 mod ui;
 
@@ -143,7 +144,11 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
 
     loop {
         // Get current connections and stats
-        let connections = app.get_connections();
+        let connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
+            app.get_connections()
+        } else {
+            app.get_filtered_connections(&ui_state.filter_query)
+        };
         let stats = app.get_stats();
 
         // Ensure we have a valid selection (handles connection removals)
@@ -177,119 +182,245 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
             && let crossterm::event::Event::Key(key) = crossterm::event::read()? {
                 use crossterm::event::{KeyCode, KeyModifiers};
 
-                match (key.code, key.modifiers) {
-                    // Quit with confirmation
-                    (KeyCode::Char('q'), _) => {
-                        if ui_state.quit_confirmation {
-                            info!("User confirmed application exit");
-                            break;
-                        } else {
-                            info!("User requested quit - showing confirmation");
-                            ui_state.quit_confirmation = true;
+                if ui_state.filter_mode {
+                    // Handle input in filter mode
+                    match key.code {
+                        KeyCode::Enter => {
+                            // Apply filter and exit input mode (now optional)
+                            debug!("Exiting filter mode. Filter: '{}'", ui_state.filter_query);
+                            ui_state.exit_filter_mode();
+                            debug!("Filter mode now: {}", ui_state.filter_mode);
                         }
-                    }
-
-                    // Ctrl+C always quits immediately
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                        info!("User requested immediate exit with Ctrl+C");
-                        break;
-                    }
-
-                    // Tab navigation
-                    (KeyCode::Tab, _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.selected_tab = (ui_state.selected_tab + 1) % 3;
-                    }
-
-                    // Help toggle
-                    (KeyCode::Char('h'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.show_help = !ui_state.show_help;
-                        if ui_state.show_help {
-                            ui_state.selected_tab = 2; // Switch to help tab
-                        } else {
-                            ui_state.selected_tab = 0; // Back to overview
+                        KeyCode::Esc => {
+                            // Clear filter and exit filter mode
+                            ui_state.clear_filter();
                         }
-                    }
-
-                    // Navigation in connection list
-                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.move_selection_up(&connections);
-                    }
-
-                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.move_selection_down(&connections);
-                    }
-
-                    // Page Up/Down navigation
-                    (KeyCode::PageUp, _) => {
-                        ui_state.quit_confirmation = false;
-                        // Move up by roughly 10 items (or adjust based on terminal height)
-                        ui_state.move_selection_page_up(&connections, 10);
-                    }
-
-                    (KeyCode::PageDown, _) => {
-                        ui_state.quit_confirmation = false;
-                        // Move down by roughly 10 items (or adjust based on terminal height)
-                        ui_state.move_selection_page_down(&connections, 10);
-                    }
-
-                    // Enter to view details
-                    (KeyCode::Enter, _) => {
-                        ui_state.quit_confirmation = false;
-                        if ui_state.selected_tab == 0 && !connections.is_empty() {
-                            ui_state.selected_tab = 1; // Switch to details view
+                        KeyCode::Backspace => {
+                            ui_state.filter_backspace();
                         }
-                    }
-
-                    // Copy remote address to clipboard
-                    (KeyCode::Char('c'), _) => {
-                        ui_state.quit_confirmation = false;
-                        if let Some(selected_idx) = ui_state.get_selected_index(&connections)
-                            && let Some(conn) = connections.get(selected_idx) {
-                            let remote_addr = conn.remote_addr.to_string();
-                            match Clipboard::new() {
-                                Ok(mut clipboard) => {
-                                    if let Err(e) = clipboard.set_text(&remote_addr) {
-                                        error!("Failed to copy to clipboard: {}", e);
-                                        ui_state.clipboard_message = Some((
-                                            format!("Failed to copy: {}", e),
-                                            std::time::Instant::now(),
-                                        ));
+                        KeyCode::Delete => {
+                            // Handle delete key (remove character after cursor)
+                            if ui_state.filter_cursor_position < ui_state.filter_query.len() {
+                                ui_state.filter_query.remove(ui_state.filter_cursor_position);
+                            }
+                        }
+                        KeyCode::Left => {
+                            ui_state.filter_cursor_left();
+                        }
+                        KeyCode::Right => {
+                            ui_state.filter_cursor_right();
+                        }
+                        KeyCode::Home => {
+                            ui_state.filter_cursor_position = 0;
+                        }
+                        KeyCode::End => {
+                            ui_state.filter_cursor_position = ui_state.filter_query.len();
+                        }
+                        // Allow navigation while in filter mode!
+                        KeyCode::Up => {
+                            // Navigate filtered connections while typing
+                            let nav_connections = if ui_state.filter_query.is_empty() {
+                                app.get_connections()
+                            } else {
+                                app.get_filtered_connections(&ui_state.filter_query)
+                            };
+                            debug!("Filter mode navigation UP: {} connections available", nav_connections.len());
+                            ui_state.move_selection_up(&nav_connections);
+                        }
+                        KeyCode::Down => {
+                            // Navigate filtered connections while typing
+                            let nav_connections = if ui_state.filter_query.is_empty() {
+                                app.get_connections()
+                            } else {
+                                app.get_filtered_connections(&ui_state.filter_query)
+                            };
+                            debug!("Filter mode navigation DOWN: {} connections available", nav_connections.len());
+                            ui_state.move_selection_down(&nav_connections);
+                        }
+                        KeyCode::Char(c) => {
+                            // Handle navigation keys (j/k) and text input
+                            match c {
+                                'k' => {
+                                    // Vim-style up navigation while filtering
+                                    let nav_connections = if ui_state.filter_query.is_empty() {
+                                        app.get_connections()
                                     } else {
-                                        info!("Copied {} to clipboard", remote_addr);
+                                        app.get_filtered_connections(&ui_state.filter_query)
+                                    };
+                                    debug!("Filter mode navigation UP (k): {} connections available", nav_connections.len());
+                                    ui_state.move_selection_up(&nav_connections);
+                                }
+                                'j' => {
+                                    // Vim-style down navigation while filtering
+                                    let nav_connections = if ui_state.filter_query.is_empty() {
+                                        app.get_connections()
+                                    } else {
+                                        app.get_filtered_connections(&ui_state.filter_query)
+                                    };
+                                    debug!("Filter mode navigation DOWN (j): {} connections available", nav_connections.len());
+                                    ui_state.move_selection_down(&nav_connections);
+                                }
+                                _ => {
+                                    // Regular character input for filter
+                                    ui_state.filter_add_char(c);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                } else {
+                    // Handle input in normal mode
+                    match (key.code, key.modifiers) {
+                        // Enter filter mode with '/'
+                        (KeyCode::Char('/'), _) => {
+                            ui_state.quit_confirmation = false;
+                            debug!("Entering filter mode");
+                            ui_state.enter_filter_mode();
+                            debug!("Filter mode now: {}", ui_state.filter_mode);
+                        }
+
+                        // Quit with confirmation
+                        (KeyCode::Char('q'), _) => {
+                            if ui_state.quit_confirmation {
+                                info!("User confirmed application exit");
+                                break;
+                            } else {
+                                info!("User requested quit - showing confirmation");
+                                ui_state.quit_confirmation = true;
+                            }
+                        }
+
+                        // Ctrl+C always quits immediately
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                            info!("User requested immediate exit with Ctrl+C");
+                            break;
+                        }
+
+                        // Tab navigation
+                        (KeyCode::Tab, _) => {
+                            ui_state.quit_confirmation = false;
+                            ui_state.selected_tab = (ui_state.selected_tab + 1) % 3;
+                        }
+
+                        // Help toggle
+                        (KeyCode::Char('h'), _) => {
+                            ui_state.quit_confirmation = false;
+                            ui_state.show_help = !ui_state.show_help;
+                            if ui_state.show_help {
+                                ui_state.selected_tab = 2; // Switch to help tab
+                            } else {
+                                ui_state.selected_tab = 0; // Back to overview
+                            }
+                        }
+
+                        // Navigation in connection list
+                        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                            ui_state.quit_confirmation = false;
+                            // Refresh connections for navigation to ensure we have current filtered list
+                            let nav_connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
+                                app.get_connections()
+                            } else {
+                                app.get_filtered_connections(&ui_state.filter_query)
+                            };
+                            debug!("Navigation UP: {} connections available", nav_connections.len());
+                            ui_state.move_selection_up(&nav_connections);
+                        }
+
+                        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                            ui_state.quit_confirmation = false;
+                            // Refresh connections for navigation to ensure we have current filtered list
+                            let nav_connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
+                                app.get_connections()
+                            } else {
+                                app.get_filtered_connections(&ui_state.filter_query)
+                            };
+                            debug!("Navigation DOWN: {} connections available", nav_connections.len());
+                            ui_state.move_selection_down(&nav_connections);
+                        }
+
+                        // Page Up/Down navigation
+                        (KeyCode::PageUp, _) => {
+                            ui_state.quit_confirmation = false;
+                            // Refresh connections for navigation
+                            let nav_connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
+                                app.get_connections()
+                            } else {
+                                app.get_filtered_connections(&ui_state.filter_query)
+                            };
+                            // Move up by roughly 10 items (or adjust based on terminal height)
+                            ui_state.move_selection_page_up(&nav_connections, 10);
+                        }
+
+                        (KeyCode::PageDown, _) => {
+                            ui_state.quit_confirmation = false;
+                            // Refresh connections for navigation
+                            let nav_connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
+                                app.get_connections()
+                            } else {
+                                app.get_filtered_connections(&ui_state.filter_query)
+                            };
+                            // Move down by roughly 10 items (or adjust based on terminal height)
+                            ui_state.move_selection_page_down(&nav_connections, 10);
+                        }
+
+                        // Enter to view details
+                        (KeyCode::Enter, _) => {
+                            ui_state.quit_confirmation = false;
+                            if ui_state.selected_tab == 0 && !connections.is_empty() {
+                                ui_state.selected_tab = 1; // Switch to details view
+                            }
+                        }
+
+                        // Copy remote address to clipboard
+                        (KeyCode::Char('c'), _) => {
+                            ui_state.quit_confirmation = false;
+                            if let Some(selected_idx) = ui_state.get_selected_index(&connections)
+                                && let Some(conn) = connections.get(selected_idx) {
+                                let remote_addr = conn.remote_addr.to_string();
+                                match Clipboard::new() {
+                                    Ok(mut clipboard) => {
+                                        if let Err(e) = clipboard.set_text(&remote_addr) {
+                                            error!("Failed to copy to clipboard: {}", e);
+                                            ui_state.clipboard_message = Some((
+                                                format!("Failed to copy: {}", e),
+                                                std::time::Instant::now(),
+                                            ));
+                                        } else {
+                                            info!("Copied {} to clipboard", remote_addr);
+                                            ui_state.clipboard_message = Some((
+                                                format!("Copied {} to clipboard", remote_addr),
+                                                std::time::Instant::now(),
+                                            ));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to access clipboard: {}", e);
                                         ui_state.clipboard_message = Some((
-                                            format!("Copied {} to clipboard", remote_addr),
+                                            format!("Clipboard error: {}", e),
                                             std::time::Instant::now(),
                                         ));
                                     }
                                 }
-                                Err(e) => {
-                                    error!("Failed to access clipboard: {}", e);
-                                    ui_state.clipboard_message = Some((
-                                        format!("Clipboard error: {}", e),
-                                        std::time::Instant::now(),
-                                    ));
-                                }
                             }
                         }
-                    }
 
-                    // Escape to go back
-                    (KeyCode::Esc, _) => {
-                        ui_state.quit_confirmation = false;
-                        if ui_state.selected_tab == 1 {
-                            ui_state.selected_tab = 0; // Back to overview
-                        } else if ui_state.selected_tab == 2 {
-                            ui_state.selected_tab = 0; // Back to overview from help
+                        // Escape to go back or clear filter
+                        (KeyCode::Esc, _) => {
+                            ui_state.quit_confirmation = false;
+                            if !ui_state.filter_query.is_empty() {
+                                // Clear filter if one is active
+                                ui_state.clear_filter();
+                            } else if ui_state.selected_tab == 1 {
+                                ui_state.selected_tab = 0; // Back to overview
+                            } else if ui_state.selected_tab == 2 {
+                                ui_state.selected_tab = 0; // Back to overview from help
+                            }
                         }
-                    }
 
-                    // Any other key resets quit confirmation
-                    _ => {
-                        ui_state.quit_confirmation = false;
+                        // Any other key resets quit confirmation
+                        _ => {
+                            ui_state.quit_confirmation = false;
+                        }
                     }
                 }
         }

@@ -17,13 +17,15 @@ This document outlines the planned features and improvements for RustNet.
   - More information about SSH connections (e.g., key exchange algorithms)
 - **DNS Reverse Lookup**: Add optional hostname resolution (toggle between IP and hostname display)
 - **IPv6 Support**: Full IPv6 connection tracking and display, including DNS resolution, didn't test yet
-- **Search/Filter**: Add real-time search and filtering capabilities:
-  - Filter by process name
-  - Filter by protocol
-  - Filter by port range
-  - Filter by IP/hostname
-  - Filter by SNI (Server Name Indication)
-  - Regular expression support
+- **Search/Filter** ✅: Real-time vim/fzf-style search and filtering:
+  - ✅ Filter by process name (`process:firefox`)
+  - ✅ Filter by protocol (`proto:tcp`)
+  - ✅ Filter by port (`port:44`, `sport:80`, `dport:443`)
+  - ✅ Filter by IP/hostname (`src:192.168`, `dst:github.com`)
+  - ✅ Filter by SNI (`sni:api.github.com`)
+  - ✅ Navigate while typing filters
+  - ✅ Fuzzy search across all connection fields
+  - 🔄 Regular expression support (future enhancement)
 - **Internationalization (i18n)**: Support for multiple languages in the UI
 - **Connection History**: Store and display historical connection data
 - **Export Functionality**: Export connections to CSV/JSON formats

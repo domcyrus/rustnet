@@ -46,6 +46,9 @@ pub struct UIState {
     pub show_help: bool,
     pub quit_confirmation: bool,
     pub clipboard_message: Option<(String, std::time::Instant)>,
+    pub filter_mode: bool,
+    pub filter_query: String,
+    pub filter_cursor_position: usize,
 }
 
 impl UIState {
@@ -72,30 +75,40 @@ impl UIState {
     /// Move selection up by one position
     pub fn move_selection_up(&mut self, connections: &[Connection]) {
         if connections.is_empty() {
+            log::debug!("move_selection_up: connections list is empty");
             return;
         }
 
         let current_index = self.get_selected_index(connections).unwrap_or(0);
+        log::debug!("move_selection_up: current_index={}, total_connections={}", current_index, connections.len());
+        
         if current_index > 0 {
             self.set_selected_by_index(connections, current_index - 1);
+            log::debug!("move_selection_up: moved to index {}", current_index - 1);
         } else {
             // Wrap around to the bottom
             self.set_selected_by_index(connections, connections.len() - 1);
+            log::debug!("move_selection_up: wrapped to bottom index {}", connections.len() - 1);
         }
     }
 
     /// Move selection down by one position
     pub fn move_selection_down(&mut self, connections: &[Connection]) {
         if connections.is_empty() {
+            log::debug!("move_selection_down: connections list is empty");
             return;
         }
 
         let current_index = self.get_selected_index(connections).unwrap_or(0);
+        log::debug!("move_selection_down: current_index={}, total_connections={}", current_index, connections.len());
+        
         if current_index < connections.len().saturating_sub(1) {
             self.set_selected_by_index(connections, current_index + 1);
+            log::debug!("move_selection_down: moved to index {}", current_index + 1);
         } else {
             // Wrap around to the top
             self.set_selected_by_index(connections, 0);
+            log::debug!("move_selection_down: wrapped to top index 0");
         }
     }
 
@@ -131,14 +144,64 @@ impl UIState {
     /// Ensure we have a valid selection when connections list changes
     pub fn ensure_valid_selection(&mut self, connections: &[Connection]) {
         if connections.is_empty() {
+            log::debug!("ensure_valid_selection: connections list is empty, clearing selection");
             self.selected_connection_key = None;
             return;
         }
 
+        let current_index = self.get_selected_index(connections);
+        log::debug!("ensure_valid_selection: current_index={:?}, total_connections={}", current_index, connections.len());
+        
         // If no selection or selection is no longer valid, select first connection
-        if self.selected_connection_key.is_none() || self.get_selected_index(connections).is_none()
-        {
+        if self.selected_connection_key.is_none() || current_index.is_none() {
+            log::debug!("ensure_valid_selection: selecting first connection (index 0)");
             self.set_selected_by_index(connections, 0);
+        }
+    }
+
+    /// Enter filter mode
+    pub fn enter_filter_mode(&mut self) {
+        self.filter_mode = true;
+        self.filter_cursor_position = self.filter_query.len();
+    }
+
+    /// Exit filter mode
+    pub fn exit_filter_mode(&mut self) {
+        self.filter_mode = false;
+        self.filter_cursor_position = 0;
+    }
+
+    /// Clear filter and exit filter mode
+    pub fn clear_filter(&mut self) {
+        self.filter_query.clear();
+        self.exit_filter_mode();
+    }
+
+    /// Add character to filter query at cursor position
+    pub fn filter_add_char(&mut self, c: char) {
+        self.filter_query.insert(self.filter_cursor_position, c);
+        self.filter_cursor_position += 1;
+    }
+
+    /// Remove character before cursor position in filter query
+    pub fn filter_backspace(&mut self) {
+        if self.filter_cursor_position > 0 {
+            self.filter_cursor_position -= 1;
+            self.filter_query.remove(self.filter_cursor_position);
+        }
+    }
+
+    /// Move cursor left in filter query
+    pub fn filter_cursor_left(&mut self) {
+        if self.filter_cursor_position > 0 {
+            self.filter_cursor_position -= 1;
+        }
+    }
+
+    /// Move cursor right in filter query
+    pub fn filter_cursor_right(&mut self) {
+        if self.filter_cursor_position < self.filter_query.len() {
+            self.filter_cursor_position += 1;
         }
     }
 }
@@ -158,25 +221,48 @@ pub fn draw(
         return Ok(());
     }
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Tabs
-            Constraint::Min(0),    // Content
-            Constraint::Length(1), // Status bar
-        ])
-        .split(f.area());
+    let chunks = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Tabs
+                Constraint::Min(0),    // Content
+                Constraint::Length(3), // Filter input area
+                Constraint::Length(1), // Status bar
+            ])
+            .split(f.area())
+    } else {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Tabs
+                Constraint::Min(0),    // Content
+                Constraint::Length(1), // Status bar
+            ])
+            .split(f.area())
+    };
 
     draw_tabs(f, ui_state, chunks[0]);
 
+    let content_area = chunks[1];
+    let (filter_area, status_area) = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
+        (Some(chunks[2]), chunks[3])
+    } else {
+        (None, chunks[2])
+    };
+
     match ui_state.selected_tab {
-        0 => draw_overview(f, ui_state, connections, stats, app, chunks[1])?,
-        1 => draw_connection_details(f, ui_state, connections, chunks[1])?,
-        2 => draw_help(f, chunks[1])?,
+        0 => draw_overview(f, ui_state, connections, stats, app, content_area)?,
+        1 => draw_connection_details(f, ui_state, connections, content_area)?,
+        2 => draw_help(f, content_area)?,
         _ => {}
     }
 
-    draw_status_bar(f, ui_state, connections.len(), chunks[2]);
+    if let Some(filter_area) = filter_area {
+        draw_filter_input(f, ui_state, filter_area);
+    }
+
+    draw_status_bar(f, ui_state, connections.len(), status_area);
 
     Ok(())
 }
@@ -750,6 +836,43 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::styled("h ", Style::default().fg(Color::Yellow)),
             Span::raw("Toggle this help screen"),
         ]),
+        Line::from(vec![
+            Span::styled("/ ", Style::default().fg(Color::Yellow)),
+            Span::raw("Enter filter mode (navigate while typing!)"),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "Filter Examples:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("  /google ", Style::default().fg(Color::Green)),
+            Span::raw("Search for 'google' in all fields"),
+        ]),
+        Line::from(vec![
+            Span::styled("  /port:44 ", Style::default().fg(Color::Green)),
+            Span::raw("Filter ports containing '44' (443, 8080, etc.)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  /src:192.168 ", Style::default().fg(Color::Green)),
+            Span::raw("Filter by source IP prefix"),
+        ]),
+        Line::from(vec![
+            Span::styled("  /dst:github.com ", Style::default().fg(Color::Green)),
+            Span::raw("Filter by destination"),
+        ]),
+        Line::from(vec![
+            Span::styled("  /sni:example.com ", Style::default().fg(Color::Green)),
+            Span::raw("Filter by SNI hostname"),
+        ]),
+        Line::from(vec![
+            Span::styled("  /process:firefox ", Style::default().fg(Color::Green)),
+            Span::raw("Filter by process name"),
+        ]),
         Line::from(""),
     ];
 
@@ -762,6 +885,43 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
     f.render_widget(help, area);
 
     Ok(())
+}
+
+/// Draw filter input area
+fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
+    let title = if ui_state.filter_mode {
+        "Filter (↑↓/jk to navigate, Enter to confirm, Esc to cancel)"
+    } else {
+        "Active Filter (Press Esc to clear)"
+    };
+
+    let input_text = if ui_state.filter_mode {
+        // Show cursor when in filter mode
+        let mut display_query = ui_state.filter_query.clone();
+        if ui_state.filter_cursor_position <= display_query.len() {
+            display_query.insert(ui_state.filter_cursor_position, '|');
+        }
+        display_query
+    } else {
+        ui_state.filter_query.clone()
+    };
+
+    let style = if ui_state.filter_mode {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::Green)
+    };
+
+    let filter_input = Paragraph::new(input_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+        )
+        .style(style)
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(filter_input, area);
 }
 
 /// Draw status bar
@@ -778,9 +938,14 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
                 connection_count
             )
         }
+    } else if !ui_state.filter_query.is_empty() {
+        format!(
+            " Press 'h' for help | '/' to filter | Showing {} filtered connections (Esc to clear filter) ",
+            connection_count
+        )
     } else {
         format!(
-            " Press 'h' for help | 'c' to copy address | Connections: {} ",
+            " Press 'h' for help | '/' to filter & navigate | 'c' to copy address | Connections: {} ",
             connection_count
         )
     };

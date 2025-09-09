@@ -8,6 +8,8 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::filter::ConnectionFilter;
+
 use crate::network::{
     capture::{CaptureConfig, PacketReader, setup_packet_capture},
     merge::{create_connection_from_packet, merge_packet_into_connection},
@@ -702,6 +704,21 @@ impl App {
     /// Get current connections for UI display
     pub fn get_connections(&self) -> Vec<Connection> {
         self.connections_snapshot.read().unwrap().clone()
+    }
+
+    /// Get filtered connections for UI display
+    pub fn get_filtered_connections(&self, filter_query: &str) -> Vec<Connection> {
+        let connections = self.connections_snapshot.read().unwrap().clone();
+        
+        if filter_query.trim().is_empty() {
+            return connections;
+        }
+
+        let filter = ConnectionFilter::parse(filter_query);
+        connections
+            .into_iter()
+            .filter(|conn| filter.matches(conn))
+            .collect()
     }
 
     /// Get application statistics
