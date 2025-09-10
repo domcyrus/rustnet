@@ -1,5 +1,5 @@
 # Multi-stage Docker build for RustNet
-FROM rust:1.82-slim AS builder
+FROM rust:1.89-slim AS builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
