@@ -1,6 +1,5 @@
 # Build artifacts
 /target/
-Cargo.lock
 
 # Git
 .git/
