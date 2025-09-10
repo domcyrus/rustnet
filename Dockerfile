@@ -1,0 +1,67 @@
+# Multi-stage Docker build for RustNet
+FROM rust:1.82-slim AS builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    libpcap-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy Cargo files first for better caching
+COPY Cargo.toml Cargo.lock ./
+
+# Copy source code
+COPY src ./src
+COPY assets/services ./assets/services
+
+# Build the application in release mode
+RUN cargo build --release
+
+# Runtime stage - use debian-slim for smaller size and better compatibility
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libpcap0.8 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root user for general security practices
+# Note: While this follows Docker security best practices, RustNet requires elevated
+# privileges for packet capture (NET_RAW/NET_ADMIN capabilities or root access).
+# The container will need to be run with --cap-add=NET_RAW --cap-add=NET_ADMIN
+# or --privileged flag to function properly for network monitoring.
+RUN useradd -r -s /bin/false rustnet
+
+# Set working directory
+WORKDIR /app
+
+# Copy the binary from builder stage
+COPY --from=builder /app/target/release/rustnet /usr/local/bin/rustnet
+
+# Copy assets/services only
+COPY --from=builder /app/assets/services ./assets/services
+
+# Create logs directory
+RUN mkdir -p /app/logs && chown rustnet:rustnet /app/logs
+
+# Set executable permissions
+RUN chmod +x /usr/local/bin/rustnet
+
+# Expose no ports by default (rustnet is for monitoring, not serving)
+# Network access is handled via host networking or packet capture capabilities
+
+# Add labels for better image metadata
+LABEL org.opencontainers.image.title="RustNet"
+LABEL org.opencontainers.image.description="A cross-platform network monitoring tool with deep packet inspection"
+LABEL org.opencontainers.image.source="https://github.com/domcyrus/rustnet"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Important: RustNet requires elevated privileges for packet capture functionality
+# Run with: docker run --cap-add=NET_RAW --cap-add=NET_ADMIN rustnet
+# Or with:  docker run --privileged rustnet
+ENTRYPOINT ["rustnet"]
+CMD ["--help"]

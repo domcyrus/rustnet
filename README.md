@@ -56,6 +56,32 @@ cargo build --release
 # The executable will be in target/release/rustnet
 ```
 
+### Using Docker
+
+RustNet is available as a Docker container from GitHub Container Registry:
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/domcyrus/rustnet:latest
+
+# Run with required network capabilities
+docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
+  ghcr.io/domcyrus/rustnet:latest
+
+# Run with specific interface
+docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
+  ghcr.io/domcyrus/rustnet:latest -i eth0
+
+# Alternative: Run with privileged mode (less secure but simpler)
+docker run --rm -it --privileged --net=host \
+  ghcr.io/domcyrus/rustnet:latest
+
+# View available options
+docker run --rm ghcr.io/domcyrus/rustnet:latest --help
+```
+
+**Note:** The container requires network capabilities (`NET_RAW` and `NET_ADMIN`) or privileged mode for packet capture. Host networking (`--net=host`) is recommended for monitoring all network interfaces.
+
 ### Running RustNet
 
 On Unix-like systems (Linux/macOS), packet capture typically requires elevated privileges:

@@ -1,0 +1,39 @@
+# Build artifacts
+/target/
+Cargo.lock
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Documentation and non-essential files
+README.md
+CHANGELOG.md
+ROADMAP.md
+LICENSE
+reddit_rust_post.md
+RELEASE.md
+rustnet-0.1.0.tar.gz
+
+# Assets we don't need in container
+assets/rustnet.gif
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Scripts (not needed in container)
+scripts/
+
+# CI/CD (already in repo context)
+.github/
