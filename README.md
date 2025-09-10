@@ -143,11 +143,35 @@ Press `/` to enter filter mode. Type to filter connections in real-time, navigat
 - `dst:github.com` - Destinations containing "github.com"
 - `process:ssh` - Process names containing "ssh"
 - `sni:api` - SNI hostnames containing "api"
+- `state:established` - Filter connections by protocol state
+
+**State filtering:**
+
+Filter connections by their current protocol state (case-insensitive):
+
+⚠️ **Note:** State tracking accuracy varies by protocol. TCP states are most reliable, while UDP, QUIC, and other protocol states are derived from packet inspection and internal lifecycle management, which may not always reflect the true connection state.
+
+- `state:syn_recv` - Show half-open connections (useful for detecting SYN floods)
+- `state:established` - Show only established connections
+- `state:fin_wait` - Show connections in closing states
+- `state:quic_handshake` - Show QUIC connections during handshake
+- `state:dns_query` - Show DNS query connections
+- `state:udp_active` - Show active UDP connections
+
+**Available states:**
+- **TCP**: `SYN_SENT`, `SYN_RECV`, `ESTABLISHED`, `FIN_WAIT1`, `FIN_WAIT2`, `TIME_WAIT`, `CLOSE_WAIT`, `LAST_ACK`, `CLOSING`, `CLOSED`
+- **QUIC**: `QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`, `QUIC_DRAINING`, `QUIC_CLOSED` ⚠️ *Note: QUIC state tracking may be incomplete due to encrypted handshake packets and reassembly challenges*
+- **UDP**: `UDP_ACTIVE`, `UDP_IDLE`, `UDP_STALE`  
+- **DNS**: `DNS_QUERY`, `DNS_RESPONSE`
+- **Other**: `ECHO_REQUEST`, `ECHO_REPLY`, `ARP_REQUEST`, `ARP_REPLY`
 
 **Examples:**
 
 - `sport:80 process:nginx` - Nginx connections from port 80
 - `dport:443 sni:google.com` - HTTPS connections to Google
+- `sport:443 state:syn_recv` - Half-open connections to port 443 (SYN flood detection)
+- `proto:tcp state:established` - All established TCP connections
+- `process:firefox state:quic_connected` - Active QUIC connections from Firefox
 
 Press `Esc` to clear filter.
 

@@ -24,6 +24,8 @@ pub enum FilterCriteria {
     Sni(String),
     /// Match DPI application protocol
     Application(String),
+    /// Match connection state (e.g., ESTABLISHED, SYN_RECV)
+    State(String),
 }
 
 pub struct ConnectionFilter {
@@ -78,6 +80,9 @@ impl ConnectionFilter {
                     }
                     "app" | "application" => {
                         criteria.push(FilterCriteria::Application(value));
+                    }
+                    "state" => {
+                        criteria.push(FilterCriteria::State(value));
                     }
                     _ => {
                         // Unknown keyword, treat as general search
@@ -151,6 +156,9 @@ impl ConnectionFilter {
             }
             FilterCriteria::Sni(sni_text) => self.matches_sni(connection, sni_text),
             FilterCriteria::Application(app_text) => self.matches_application(connection, app_text),
+            FilterCriteria::State(state_text) => {
+                connection.state().to_lowercase().contains(state_text)
+            }
         })
     }
 
@@ -370,6 +378,125 @@ mod tests {
         match &filter.criteria[1] {
             FilterCriteria::DestinationPort(text) => assert_eq!(text, "443"),
             _ => panic!("Expected DestinationPort filter"),
+        }
+    }
+
+    #[test]
+    fn test_parse_state_filter() {
+        let filter = ConnectionFilter::parse("state:established");
+        assert_eq!(filter.criteria.len(), 1);
+        match &filter.criteria[0] {
+            FilterCriteria::State(text) => assert_eq!(text, "established"),
+            _ => panic!("Expected State filter"),
+        }
+    }
+
+    #[test]
+    fn test_state_filter_tcp_states() {
+        use crate::network::types::*;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        // Create a test connection in ESTABLISHED state
+        let mut conn = Connection::new(
+            Protocol::TCP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+
+        // Test matching established state
+        let established_filter = ConnectionFilter::parse("state:established");
+        assert!(established_filter.matches(&conn));
+
+        // Test partial matching
+        let est_filter = ConnectionFilter::parse("state:est");
+        assert!(est_filter.matches(&conn));
+
+        // Test case insensitive matching
+        let upper_filter = ConnectionFilter::parse("state:ESTABLISHED");
+        assert!(upper_filter.matches(&conn));
+
+        // Test non-matching state
+        let syn_filter = ConnectionFilter::parse("state:syn_recv");
+        assert!(!syn_filter.matches(&conn));
+
+        // Change connection to SYN_RECV state
+        conn.protocol_state = ProtocolState::Tcp(TcpState::SynReceived);
+        assert!(syn_filter.matches(&conn));
+        assert!(!established_filter.matches(&conn));
+    }
+
+    #[test]
+    fn test_state_filter_udp_states() {
+        use crate::network::types::*;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        // Create a fresh UDP connection (should show as UDP_ACTIVE)
+        let conn = Connection::new(
+            Protocol::UDP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
+            ProtocolState::Udp,
+        );
+
+        let active_filter = ConnectionFilter::parse("state:udp_active");
+        assert!(active_filter.matches(&conn));
+
+        let udp_filter = ConnectionFilter::parse("state:udp");
+        assert!(udp_filter.matches(&conn));
+    }
+
+    #[test]
+    fn test_combined_state_and_port_filter() {
+        use crate::network::types::*;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let conn = Connection::new(
+            Protocol::TCP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 443),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321),
+            ProtocolState::Tcp(TcpState::SynReceived),
+        );
+
+        // Test combined filter: source port 443 AND SYN_RECV state
+        let combined_filter = ConnectionFilter::parse("sport:443 state:syn_recv");
+        assert!(combined_filter.matches(&conn));
+
+        // Test that both conditions must match
+        let wrong_port_filter = ConnectionFilter::parse("sport:80 state:syn_recv");
+        assert!(!wrong_port_filter.matches(&conn));
+
+        let wrong_state_filter = ConnectionFilter::parse("sport:443 state:established");
+        assert!(!wrong_state_filter.matches(&conn));
+    }
+
+    #[test]
+    fn test_state_filter_case_insensitive() {
+        use crate::network::types::*;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let conn = Connection::new(
+            Protocol::TCP,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+
+        // Test various case combinations
+        let filters = vec![
+            "state:established",
+            "state:ESTABLISHED",
+            "state:Established",
+            "state:EstAbLiShEd",
+        ];
+
+        for filter_str in filters {
+            let filter = ConnectionFilter::parse(filter_str);
+            assert!(
+                filter.matches(&conn),
+                "Filter '{}' should match ESTABLISHED state",
+                filter_str
+            );
         }
     }
 }
