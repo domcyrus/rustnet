@@ -19,7 +19,20 @@ cargo build --release
 cargo test
 ```
 
-### 2. Create and Push Git Tag
+### 2. Commit Release Changes
+
+```bash
+# Stage and commit the version and changelog changes
+git add Cargo.toml CHANGELOG.md
+git commit -m "Release v0.2.0
+
+- Fixed process display stability issues on macOS
+- Improved PKTAP header processing  
+- Enhanced process name normalization
+- Added comprehensive debug logging"
+```
+
+### 3. Create and Push Git Tag
 
 ```bash
 # Create an annotated tag with release notes
@@ -35,7 +48,7 @@ git tag -a v0.2.0 -m "Release v0.2.0
 git push origin v0.2.0
 ```
 
-### 3. Create GitHub Release
+### 4. Create GitHub Release
 
 1. Go to the [GitHub repository releases page](https://github.com/domcyrus/rustnet/releases)
 2. Click "Create a new release"
@@ -58,7 +71,7 @@ gh release create v0.2.0 \
   --target main
 ```
 
-### 4. Update Homebrew Formula
+### 5. Update Homebrew Formula
 
 After creating the GitHub release, update the Homebrew formula:
 
@@ -92,7 +105,7 @@ class Rustnet < Formula
 end
 ```
 
-### 5. Test and Submit Homebrew Update
+### 6. Test and Submit Homebrew Update
 
 ```bash
 # Clone or update your homebrew tap repository
@@ -113,7 +126,7 @@ git commit -m "Update rustnet to v0.2.0"
 git push origin main
 ```
 
-### 6. Verify the Release
+### 7. Verify the Release
 
 ```bash
 # Test installation from Homebrew
