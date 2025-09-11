@@ -738,7 +738,42 @@ fn draw_connection_details(
                         Span::raw(connection_state),
                     ]));
                 }
-                _ => {}
+                crate::network::types::ApplicationProtocol::Ssh(info) => {
+                    if let Some(version) = &info.version {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  SSH Version: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(format!("{:?}", version)),
+                        ]));
+                    }
+                    if let Some(server_software) = &info.server_software {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Server Software: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(server_software.clone()),
+                        ]));
+                    }
+                    if let Some(client_software) = &info.client_software {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Client Software: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(client_software.clone()),
+                        ]));
+                    }
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Connection State: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(format!("{:?}", info.connection_state)),
+                    ]));
+                    if !info.algorithms.is_empty() {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Algorithms: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(info.algorithms.join(", ")),
+                        ]));
+                    }
+                    if let Some(auth_method) = &info.auth_method {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Auth Method: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(auth_method.clone()),
+                        ]));
+                    }
+                }
             }
         }
         None => {

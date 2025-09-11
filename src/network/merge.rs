@@ -7,7 +7,7 @@ use crate::network::dpi::DpiResult;
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
     ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, ProtocolState,
-    QuicConnectionState, QuicInfo, TcpState,
+    QuicConnectionState, QuicInfo, SshInfo, TcpState,
 };
 
 /// Update TCP connection state based on observed flags and current state
@@ -321,9 +321,9 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     merge_dns_info(old_info, new_info);
                 }
 
-                // SSH - no additional merging needed
-                (ApplicationProtocol::Ssh, ApplicationProtocol::Ssh) => {
-                    // SSH doesn't have additional info to merge
+                // SSH - merge SSH info
+                (ApplicationProtocol::Ssh(old_info), ApplicationProtocol::Ssh(new_info)) => {
+                    merge_ssh_info(old_info, new_info);
                 }
 
                 _ => {
@@ -567,6 +567,71 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
     // Update response flag
     if new_info.is_response {
         old_info.is_response = true;
+    }
+}
+
+/// Merge SSH information
+fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
+    // Update version if not set
+    if old_info.version.is_none() && new_info.version.is_some() {
+        old_info.version = new_info.version.clone();
+    }
+
+    // Update client software if not set
+    if old_info.client_software.is_none() && new_info.client_software.is_some() {
+        old_info.client_software = new_info.client_software.clone();
+    }
+
+    // Update server software if not set
+    if old_info.server_software.is_none() && new_info.server_software.is_some() {
+        old_info.server_software = new_info.server_software.clone();
+    }
+
+    // Update connection state to the more advanced state
+    use crate::network::types::SshConnectionState;
+    match (&old_info.connection_state, &new_info.connection_state) {
+        (SshConnectionState::Banner, _) => {
+            old_info.connection_state = new_info.connection_state.clone()
+        }
+        (SshConnectionState::KeyExchange, SshConnectionState::Authentication) => {
+            old_info.connection_state = new_info.connection_state.clone()
+        }
+        (SshConnectionState::KeyExchange, SshConnectionState::Established) => {
+            old_info.connection_state = new_info.connection_state.clone()
+        }
+        (SshConnectionState::Authentication, SshConnectionState::Established) => {
+            old_info.connection_state = new_info.connection_state.clone()
+        }
+        _ => {} // Keep existing state if it's more advanced
+    }
+
+    // Merge algorithms - prioritize final negotiated algorithms over initial offers
+    match (&old_info.connection_state, &new_info.connection_state) {
+        // If we're moving to Established state and new info has algorithms, use those (final negotiated)
+        (_, SshConnectionState::Established) if !new_info.algorithms.is_empty() => {
+            old_info.algorithms = new_info.algorithms.clone();
+        }
+        // If both are in Established state, merge unique algorithms
+        (SshConnectionState::Established, SshConnectionState::Established) => {
+            for algo in &new_info.algorithms {
+                if !old_info.algorithms.contains(algo) {
+                    old_info.algorithms.push(algo.clone());
+                }
+            }
+        }
+        // For earlier states, accumulate all seen algorithms
+        _ => {
+            for algo in &new_info.algorithms {
+                if !old_info.algorithms.contains(algo) {
+                    old_info.algorithms.push(algo.clone());
+                }
+            }
+        }
+    }
+
+    // Update auth method if not set
+    if old_info.auth_method.is_none() && new_info.auth_method.is_some() {
+        old_info.auth_method = new_info.auth_method.clone();
     }
 }
 

@@ -53,7 +53,19 @@ impl std::fmt::Display for ApplicationProtocol {
                     write!(f, "DNS")
                 }
             }
-            ApplicationProtocol::Ssh => write!(f, "SSH"),
+            ApplicationProtocol::Ssh(info) => {
+                if let Some(software) = info
+                    .server_software
+                    .as_ref()
+                    .or(info.client_software.as_ref())
+                {
+                    // Extract just the software name without version details
+                    let software_name = software.split('_').next().unwrap_or(software);
+                    write!(f, "SSH ({})", software_name)
+                } else {
+                    write!(f, "SSH")
+                }
+            }
             ApplicationProtocol::Quic(info) => {
                 if let Some(tls_info) = &info.tls_info {
                     if let Some(sni) = &tls_info.sni {
@@ -110,12 +122,36 @@ pub enum ArpOperation {
     Reply,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SshConnectionState {
+    Banner,
+    KeyExchange,
+    Authentication,
+    Established,
+}
+
+#[derive(Debug, Clone)]
+pub struct SshInfo {
+    pub version: Option<SshVersion>,
+    pub client_software: Option<String>,
+    pub server_software: Option<String>,
+    pub connection_state: SshConnectionState,
+    pub algorithms: Vec<String>,
+    pub auth_method: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SshVersion {
+    V1,
+    V2,
+}
+
 #[derive(Debug, Clone)]
 pub enum ApplicationProtocol {
     Http(HttpInfo),
     Https(HttpsInfo),
     Dns(DnsInfo),
-    Ssh,
+    Ssh(SshInfo),
     Quic(Box<QuicInfo>),
 }
 
@@ -871,7 +907,7 @@ impl Connection {
                         }
                         ApplicationProtocol::Http(_) => "HTTP_UDP".to_string(),
                         ApplicationProtocol::Https(_) => "HTTPS_UDP".to_string(),
-                        ApplicationProtocol::Ssh => "SSH_UDP".to_string(),
+                        ApplicationProtocol::Ssh(_) => "SSH_UDP".to_string(),
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -947,7 +983,7 @@ impl Connection {
                         ApplicationProtocol::Dns(_) => Duration::from_secs(30),
                         ApplicationProtocol::Http(_) => Duration::from_secs(180),
                         ApplicationProtocol::Https(_) => Duration::from_secs(180),
-                        ApplicationProtocol::Ssh => Duration::from_secs(1800), // SSH can be very long-lived
+                        ApplicationProtocol::Ssh(_) => Duration::from_secs(1800), // SSH can be very long-lived
                     }
                 } else {
                     // Regular UDP without DPI classification

@@ -11,12 +11,13 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
   - **TCP States**: `ESTABLISHED`, `SYN_SENT`, `TIME_WAIT`, `CLOSED`, etc.
   - **QUIC States**: `QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`, `QUIC_DRAINING`
   - **DNS States**: `DNS_QUERY`, `DNS_RESPONSE`
+  - **SSH States**: `BANNER`, `KEYEXCHANGE`, `AUTHENTICATION`, `ESTABLISHED` (for SSH protocol)
   - **Activity States**: `UDP_ACTIVE`, `UDP_IDLE`, `UDP_STALE` based on connection activity
 - **Deep Packet Inspection (DPI)**: Detect application protocols:
   - HTTP with host information
   - HTTPS/TLS with SNI (Server Name Indication)
   - DNS queries and responses
-  - TODO: SSH connections
+  - **SSH connections** with version detection, software identification, and connection state tracking
   - **QUIC protocol with CONNECTION_CLOSE frame detection** and RFC 9000 compliance
 - **Connection Lifecycle Management**:
   - Configurable timeouts based on protocol, state, and activity (TCP closed: 5s, QUIC draining: 10s, SSH: 30min)
@@ -64,9 +65,16 @@ RustNet is available as a Docker container from GitHub Container Registry:
 # Pull the latest image
 docker pull ghcr.io/domcyrus/rustnet:latest
 
-# Run with required network capabilities
+# Or pull a specific version
+docker pull ghcr.io/domcyrus/rustnet:0.7.0
+
+# Run with required network capabilities (latest)
 docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
   ghcr.io/domcyrus/rustnet:latest
+
+# Run with specific version
+docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
+  ghcr.io/domcyrus/rustnet:0.7.0
 
 # Run with specific interface
 docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
@@ -78,6 +86,9 @@ docker run --rm -it --privileged --net=host \
 
 # View available options
 docker run --rm ghcr.io/domcyrus/rustnet:latest --help
+
+# Or with specific version
+docker run --rm ghcr.io/domcyrus/rustnet:0.7.0 --help
 ```
 
 **Note:** The container requires network capabilities (`NET_RAW` and `NET_ADMIN`) or privileged mode for packet capture. Host networking (`--net=host`) is recommended for monitoring all network interfaces.
@@ -169,6 +180,7 @@ Press `/` to enter filter mode. Type to filter connections in real-time, navigat
 - `dst:github.com` - Destinations containing "github.com"
 - `process:ssh` - Process names containing "ssh"
 - `sni:api` - SNI hostnames containing "api"
+- `ssh:openssh` - SSH connections using OpenSSH
 - `state:established` - Filter connections by protocol state
 
 **State filtering:**
@@ -189,6 +201,7 @@ Filter connections by their current protocol state (case-insensitive):
 - **QUIC**: `QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`, `QUIC_DRAINING`, `QUIC_CLOSED` ⚠️ *Note: QUIC state tracking may be incomplete due to encrypted handshake packets and reassembly challenges*
 - **UDP**: `UDP_ACTIVE`, `UDP_IDLE`, `UDP_STALE`  
 - **DNS**: `DNS_QUERY`, `DNS_RESPONSE`
+- **SSH**: `BANNER`, `KEYEXCHANGE`, `AUTHENTICATION`, `ESTABLISHED` ⚠️ *Note: SSH state tracking is based on packet inspection and may not always reflect the true connection state*
 - **Other**: `ECHO_REQUEST`, `ECHO_REPLY`, `ARP_REQUEST`, `ARP_REPLY`
 
 **Examples:**
@@ -198,6 +211,8 @@ Filter connections by their current protocol state (case-insensitive):
 - `sport:443 state:syn_recv` - Half-open connections to port 443 (SYN flood detection)
 - `proto:tcp state:established` - All established TCP connections
 - `process:firefox state:quic_connected` - Active QUIC connections from Firefox
+- `dport:22 ssh:openssh` - SSH connections using OpenSSH
+- `state:established ssh:openssh` - Established SSH connections using OpenSSH
 
 Press `Esc` to clear filter.
 

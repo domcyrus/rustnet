@@ -313,9 +313,34 @@ impl ConnectionFilter {
                     }
                 }
             }
-            ApplicationProtocol::Ssh => {
+            ApplicationProtocol::Ssh(info) => {
                 if "ssh".contains(text) {
                     return true;
+                }
+
+                // Check software names
+                if let Some(ref software) = info.server_software
+                    && software.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+                if let Some(ref software) = info.client_software
+                    && software.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+
+                // Check connection state
+                let state_str = format!("{:?}", info.connection_state).to_lowercase();
+                if state_str.contains(text) {
+                    return true;
+                }
+
+                // Check algorithms
+                for algo in &info.algorithms {
+                    if algo.to_lowercase().contains(text) {
+                        return true;
+                    }
                 }
             }
         }

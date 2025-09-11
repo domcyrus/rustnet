@@ -6,6 +6,7 @@ mod dns;
 mod http;
 mod https;
 mod quic;
+mod ssh;
 
 pub use cipher_suites::{format_cipher_suite, is_secure_cipher_suite};
 
@@ -45,9 +46,11 @@ pub fn analyze_tcp_packet(
     }
 
     // 3. Check for SSH (port 22 or SSH banner)
-    if local_port == 22 || remote_port == 22 || payload.starts_with(b"SSH-") {
+    if (local_port == 22 || remote_port == 22 || ssh::is_likely_ssh(payload))
+        && let Some(ssh_result) = ssh::analyze_ssh(payload, _is_outgoing)
+    {
         return Some(DpiResult {
-            application: ApplicationProtocol::Ssh,
+            application: ApplicationProtocol::Ssh(ssh_result),
         });
     }
 
