@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2025-09-11
+
+### Added
+- **SSH Deep Packet Inspection (DPI)**: Comprehensive SSH protocol analysis including:
+  - SSH version detection (SSH-1.x, SSH-2.0)
+  - Client and server software identification (OpenSSH, PuTTY, libssh, etc.)
+  - Connection state tracking: Banner, KeyExchange, Authentication, Established
+  - Algorithm detection and negotiation monitoring
+  - SSH-specific filtering with `ssh:` prefix in connection filters
+- **Enhanced Filtering**: SSH connections now support detailed filtering by software name and connection state
+
+### Improved
+- **CI/CD**: Enhanced GitHub Actions with path-based triggers for more efficient workflows
+- **Documentation**: Updated README with SSH DPI examples and state descriptions
+
 ## [0.7.0] - 2025-09-11
 
 ### Fixed
@@ -108,7 +123,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/domcyrus/rustnet/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/domcyrus/rustnet/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/domcyrus/rustnet/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/domcyrus/rustnet/compare/v0.4.0...v0.5.0
