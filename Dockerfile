@@ -64,4 +64,3 @@ LABEL org.opencontainers.image.licenses="Apache License, Version 2.0"
 # Run with: docker run --cap-add=NET_RAW --cap-add=NET_ADMIN rustnet
 # Or with:  docker run --privileged rustnet
 ENTRYPOINT ["rustnet"]
-CMD ["--help"]
