@@ -248,6 +248,12 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         ui_state.move_selection_down(&nav_connections);
                     }
                     KeyCode::Char(c) => {
+                        // Handle Ctrl+H as backspace for SecureCRT compatibility
+                        if c == 'h' && key.modifiers.contains(KeyModifiers::CONTROL) {
+                            ui_state.filter_backspace();
+                            return Ok(());
+                        }
+
                         // Handle navigation keys (j/k) and text input
                         match c {
                             'k' => {
