@@ -20,8 +20,8 @@ COPY assets/services ./assets/services
 # Build the application in release mode
 RUN cargo build --release
 
-# Runtime stage - use debian-slim for smaller size and better compatibility
-FROM debian:bookworm-slim
+# Runtime stage - use trixie-slim to match GLIBC version from builder
+FROM debian:trixie-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
