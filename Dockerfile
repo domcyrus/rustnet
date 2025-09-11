@@ -58,7 +58,7 @@ RUN chmod +x /usr/local/bin/rustnet
 LABEL org.opencontainers.image.title="RustNet"
 LABEL org.opencontainers.image.description="A cross-platform network monitoring tool with deep packet inspection"
 LABEL org.opencontainers.image.source="https://github.com/domcyrus/rustnet"
-LABEL org.opencontainers.image.licenses="MIT"
+LABEL org.opencontainers.image.licenses="Apache License, Version 2.0"
 
 # Important: RustNet requires elevated privileges for packet capture functionality
 # Run with: docker run --cap-add=NET_RAW --cap-add=NET_ADMIN rustnet
