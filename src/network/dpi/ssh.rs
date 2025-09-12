@@ -36,7 +36,7 @@ pub fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
                     info.version = Some(banner_info.version);
                 }
             } else {
-                // Incoming packet: server to client, so this banner is from server  
+                // Incoming packet: server to client, so this banner is from server
                 if info.server_software.is_none() {
                     info.server_software = Some(banner_info.software);
                     info.version = Some(banner_info.version);

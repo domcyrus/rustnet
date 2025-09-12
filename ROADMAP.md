@@ -5,7 +5,7 @@ This document outlines the planned features and improvements for RustNet.
 ## Platform Support
 
 - **macOS Support**: Basic features need testing and fixes for macOS compatibility
-- **Windows Support**: Core functionality requires implementation and testing on Windows
+- **Windows Support**: ✅ Basic functionality working with Npcap SDK and runtime. Process identification not yet implemented for Windows
 - **BSD Support**: Add support for FreeBSD, OpenBSD, and NetBSD
 - **Linux Process Identification Enhancement**: Investigate using **eBPF** (Extended Berkeley Packet Filter) for direct kernel-level process identification similar to macOS PKTAP. This would provide more accurate and efficient process-to-connection mapping than the current `/proc` filesystem approach, especially for high-throughput scenarios.
 

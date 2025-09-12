@@ -42,7 +42,47 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 - libpcap or similar packet capture library:
   - **Linux**: `sudo apt-get install libpcap-dev` (Debian/Ubuntu) or `sudo yum install libpcap-devel` (RedHat/CentOS)
   - **macOS**: Included by default
-  - **Windows**: Install WinPcap or Npcap
+  - **Windows**: Install Npcap and Npcap SDK (see [Windows Build Setup](#windows-build-setup) below)
+
+### Windows Build Setup
+
+Building RustNet on Windows requires the Npcap SDK and proper environment configuration:
+
+#### Build Requirements
+
+1. **Download and Install Npcap SDK**:
+   - Download the Npcap SDK from https://npcap.com/dist/
+   - Extract the SDK to a directory (e.g., `C:\npcap-sdk`)
+
+2. **Set Environment Variables**:
+   - Set the `LIB` environment variable to include the SDK's library path:
+     ```cmd
+     set LIB=%LIB%;C:\npcap-sdk\Lib\x64
+     ```
+   - For PowerShell:
+     ```powershell
+     $env:LIB = "$env:LIB;C:\npcap-sdk\Lib\x64"
+     ```
+   - For permanent setup, add this to your system environment variables
+
+3. **Build RustNet**:
+   ```cmd
+   cargo build --release
+   ```
+
+#### Runtime Requirements
+
+1. **Install Npcap Runtime**:
+   - Download the Npcap installer from https://npcap.com/dist/
+   - Run the installer and **select "WinPcap API compatible mode"** during installation
+   - This ensures compatibility with the packet capture library
+
+2. **Run RustNet**:
+   ```cmd
+   rustnet.exe
+   ```
+
+**Note**: Depending on your Npcap installation settings, you may or may not need Administrator privileges. If you didn't select the option to restrict packet capture to administrators during Npcap installation, RustNet can run with normal user privileges.
 
 ### Install via Cargo (Recommended)
 

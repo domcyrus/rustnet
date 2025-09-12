@@ -1,5 +1,5 @@
 use super::{ConnectionKey, ProcessLookup};
-use crate::network::types::{Connection, Protocol};
+use crate::network::types::Connection;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -18,7 +18,7 @@ impl WindowsProcessLookup {
 
     fn refresh_tcp_processes(
         &self,
-        cache: &mut HashMap<ConnectionKey, (u32, String)>,
+        _cache: &mut HashMap<ConnectionKey, (u32, String)>,
     ) -> Result<()> {
         // Use GetExtendedTcpTable to get TCP connections with PIDs
         // This is pseudo-code - actual implementation would use winapi
@@ -34,7 +34,7 @@ impl WindowsProcessLookup {
 
     fn refresh_udp_processes(
         &self,
-        cache: &mut HashMap<ConnectionKey, (u32, String)>,
+        _cache: &mut HashMap<ConnectionKey, (u32, String)>,
     ) -> Result<()> {
         // Similar to TCP using GetExtendedUdpTable
         Ok(())
