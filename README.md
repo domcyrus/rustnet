@@ -44,6 +44,16 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
   - **macOS**: Included by default
   - **Windows**: Install WinPcap or Npcap
 
+### Install via Cargo (Recommended)
+
+```bash
+# Install directly from crates.io
+cargo install rustnet-monitor
+
+# The binary will be installed to ~/.cargo/bin/rustnet
+# Make sure ~/.cargo/bin is in your PATH
+```
+
 ### Building from source
 
 ```bash
@@ -97,6 +107,8 @@ docker run --rm ghcr.io/domcyrus/rustnet:0.7.0 --help
 
 On Unix-like systems (Linux/macOS), packet capture typically requires elevated privileges:
 
+#### When built from source:
+
 ```bash
 # Run with sudo
 sudo ./target/release/rustnet
@@ -104,6 +116,25 @@ sudo ./target/release/rustnet
 # Or set capabilities on Linux (to avoid needing sudo)
 sudo setcap cap_net_raw,cap_net_admin=eip ./target/release/rustnet
 ./target/release/rustnet
+```
+
+#### When installed via cargo:
+
+```bash
+# Option 1: Use full path with sudo
+sudo $(which rustnet)
+
+# Option 2: Set capabilities on the cargo-installed binary (Linux only)
+sudo setcap cap_net_raw,cap_net_admin=eip ~/.cargo/bin/rustnet
+rustnet  # Can now run without sudo
+
+# Option 3: Create system-wide symlink
+sudo ln -s ~/.cargo/bin/rustnet /usr/local/bin/rustnet
+sudo rustnet  # Works from anywhere
+
+# Option 4: Install globally with cargo (requires sudo)
+sudo cargo install --root /usr/local rustnet-monitor
+sudo rustnet  # Binary installed to /usr/local/bin/rustnet
 ```
 
 ## Usage
@@ -446,6 +477,8 @@ sudo ./target/release/rustnet
 
 Grant specific network capabilities to the binary without full root privileges:
 
+**For source builds:**
+
 ```bash
 # Build the binary first
 cargo build --release
@@ -455,6 +488,16 @@ sudo setcap cap_net_raw,cap_net_admin=eip ./target/release/rustnet
 
 # Now run without sudo
 ./target/release/rustnet
+```
+
+**For cargo-installed binaries:**
+
+```bash
+# If installed via cargo install rustnet-monitor
+sudo setcap cap_net_raw,cap_net_admin=eip ~/.cargo/bin/rustnet
+
+# Now run without sudo
+rustnet
 ```
 
 **For system-wide installation:**
@@ -507,7 +550,15 @@ rustnet --help
 
 ```bash
 # Check capabilities on the binary
+# For source builds:
 getcap ./target/release/rustnet
+
+# For cargo-installed binaries:
+getcap ~/.cargo/bin/rustnet
+
+# For system-wide installations:
+getcap $(which rustnet)
+
 # Should show: cap_net_raw,cap_net_admin=eip
 
 # Test without sudo
@@ -527,9 +578,9 @@ rustnet --help
 
 **On Linux:**
 
-- Check if capabilities are set: `getcap $(which rustnet)`
+- Check if capabilities are set: `getcap $(which rustnet)` or `getcap ~/.cargo/bin/rustnet`
 - Verify libpcap is installed: `ldconfig -p | grep pcap`
-- Try running with sudo to confirm it's a permission issue
+- Try running with sudo to confirm it's a permission issue: `sudo $(which rustnet)`
 - Some systems require `CAP_NET_BIND_SERVICE` as well
 
 #### "No suitable capture interfaces found"
