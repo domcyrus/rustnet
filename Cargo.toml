@@ -1,7 +1,28 @@
 [package]
-name = "rustnet"
+name = "rustnet-monitor"
 version = "0.8.0"
+authors = ["domcyrus"]
 edition = "2024"
+description = "A high-performance, cross-platform network monitoring terminal UI tool built with Rust"
+repository = "https://github.com/domcyrus/rustnet"
+homepage = "https://github.com/domcyrus/rustnet"
+documentation = "https://docs.rs/rustnet-monitor"
+readme = "README.md"
+license = "Apache-2.0"
+keywords = ["network", "monitoring", "tui", "terminal", "packet-capture"]
+categories = ["command-line-utilities", "network-programming", "visualization"]
+exclude = [
+    ".github/",
+    "scripts/",
+    "tests/",
+    "*.log",
+    "target/",
+    ".gitignore",
+]
+
+[[bin]]
+name = "rustnet"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
