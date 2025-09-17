@@ -54,10 +54,16 @@ impl EbpfLoader {
 
         // Heap allocate the object to avoid lifetime issues
         let mut open_object = Box::new(std::mem::MaybeUninit::uninit());
-        let open_skel = skel_builder.open(&mut open_object)?;
+        let open_skel = skel_builder.open(&mut open_object).map_err(|e| {
+            warn!("eBPF: Failed to open skeleton: {}", e);
+            e
+        })?;
 
         debug!("eBPF: Loading program into kernel");
-        let mut skel = open_skel.load()?;
+        let mut skel = open_skel.load().map_err(|e| {
+            warn!("eBPF: Failed to load program into kernel: {}", e);
+            e
+        })?;
 
         debug!("eBPF: Attaching all programs");
         match skel.attach() {

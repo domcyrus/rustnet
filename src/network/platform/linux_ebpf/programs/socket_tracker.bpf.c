@@ -62,8 +62,9 @@ static __always_inline void get_process_info(struct conn_info *info)
 SEC("kprobe/tcp_connect")
 int trace_tcp_connect(struct pt_regs *ctx)
 {
-    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
-    if (!sk) {
+    struct sock *sk = (struct sock *)PT_REGS_PARM1_CORE(ctx);
+    if (!sk)
+    {
         return 0;
     }
 
@@ -83,7 +84,8 @@ int trace_tcp_connect(struct pt_regs *ctx)
     get_process_info(&info);
 
     int ret = bpf_map_update_elem(&socket_map, &key, &info, BPF_ANY);
-    if (ret != 0) {
+    if (ret != 0)
+    {
         bpf_printk("tcp_connect: map update failed ret=%d", ret);
     }
     return 0;
@@ -94,7 +96,8 @@ SEC("kprobe/inet_csk_accept")
 int trace_tcp_accept(struct pt_regs *ctx)
 {
     struct sock *sk = (struct sock *)PT_REGS_PARM1_CORE(ctx);
-    if (!sk) {
+    if (!sk)
+    {
         return 0;
     }
 
@@ -113,7 +116,8 @@ int trace_tcp_accept(struct pt_regs *ctx)
     get_process_info(&info);
 
     int ret = bpf_map_update_elem(&socket_map, &key, &info, BPF_ANY);
-    if (ret != 0) {
+    if (ret != 0)
+    {
         bpf_printk("inet_csk_accept: map update failed ret=%d", ret);
     }
     return 0;
@@ -123,10 +127,11 @@ int trace_tcp_accept(struct pt_regs *ctx)
 SEC("kprobe/udp_sendmsg")
 int trace_udp_sendmsg(struct pt_regs *ctx)
 {
-    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
-    struct msghdr *msg = (struct msghdr *)PT_REGS_PARM2(ctx);
+    struct sock *sk = (struct sock *)PT_REGS_PARM1_CORE(ctx);
+    struct msghdr *msg = (struct msghdr *)PT_REGS_PARM2_CORE(ctx);
 
-    if (!sk || !msg) {
+    if (!sk || !msg)
+    {
         return 0;
     }
 
@@ -136,22 +141,26 @@ int trace_udp_sendmsg(struct pt_regs *ctx)
     // Get source address from socket
     key.saddr[0] = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
     key.sport = BPF_CORE_READ(sk, __sk_common.skc_num);
-    
+
     // Try to get destination from msghdr->msg_name (sockaddr_in)
     struct sockaddr_in *dest_addr = NULL;
     bpf_probe_read_kernel(&dest_addr, sizeof(dest_addr), &msg->msg_name);
-    
-    if (dest_addr) {
+
+    if (dest_addr)
+    {
         bpf_probe_read_kernel(&key.daddr[0], sizeof(__u32), &dest_addr->sin_addr.s_addr);
         bpf_probe_read_kernel(&key.dport, sizeof(__u16), &dest_addr->sin_port);
-    } else {
+    }
+    else
+    {
         // Fallback to socket fields (might be zero for unconnected UDP)
         key.daddr[0] = BPF_CORE_READ(sk, __sk_common.skc_daddr);
         key.dport = BPF_CORE_READ(sk, __sk_common.skc_dport);
     }
 
     // Only skip if destination is zero (source might be unbound for UDP)
-    if (key.daddr[0] == 0) {
+    if (key.daddr[0] == 0)
+    {
         return 0;
     }
 
@@ -162,7 +171,8 @@ int trace_udp_sendmsg(struct pt_regs *ctx)
     get_process_info(&info);
 
     int ret = bpf_map_update_elem(&socket_map, &key, &info, BPF_ANY);
-    if (ret != 0) {
+    if (ret != 0)
+    {
         bpf_printk("udp_sendmsg: map update failed ret=%d", ret);
     }
     return 0;
@@ -172,7 +182,7 @@ int trace_udp_sendmsg(struct pt_regs *ctx)
 SEC("kprobe/tcp_v6_connect")
 int trace_tcp_v6_connect(struct pt_regs *ctx)
 {
-    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+    struct sock *sk = (struct sock *)PT_REGS_PARM1_CORE(ctx);
     if (!sk)
         return 0;
 
@@ -205,7 +215,7 @@ int trace_tcp_v6_connect(struct pt_regs *ctx)
 SEC("kprobe/udpv6_sendmsg")
 int trace_udp_v6_sendmsg(struct pt_regs *ctx)
 {
-    struct sock *sk = (struct sock *)PT_REGS_PARM1(ctx);
+    struct sock *sk = (struct sock *)PT_REGS_PARM1_CORE(ctx);
     if (!sk)
         return 0;
 
@@ -232,6 +242,5 @@ int trace_udp_v6_sendmsg(struct pt_regs *ctx)
     bpf_map_update_elem(&socket_map, &key, &info, BPF_ANY);
     return 0;
 }
-
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
