@@ -1,0 +1,436 @@
+//! Enhanced Linux process lookup combining eBPF and procfs approaches
+
+use super::{ConnectionKey, ProcessLookup};
+
+use super::linux::LinuxProcessLookup;
+use crate::network::types::{Connection, Protocol};
+use anyhow::Result;
+use log::debug;
+#[cfg(feature = "ebpf")]
+use log::{info, warn};
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::sync::RwLock;
+use std::time::{Duration, Instant};
+
+#[cfg(feature = "ebpf")]
+use super::linux_ebpf::EbpfSocketTracker;
+
+/// Enhanced process lookup that combines eBPF (fast path) with procfs (fallback)
+pub struct EnhancedLinuxProcessLookup {
+    #[cfg(feature = "ebpf")]
+    ebpf_tracker: RwLock<Option<Box<EbpfSocketTracker>>>,
+    procfs_lookup: LinuxProcessLookup,
+    unified_cache: RwLock<ProcessCache>,
+    stats: RwLock<LookupStats>,
+    #[cfg(feature = "ebpf")]
+    cleanup_config: CleanupConfig,
+    #[cfg(feature = "ebpf")]
+    last_cleanup: RwLock<Instant>,
+}
+
+struct ProcessCache {
+    lookup: HashMap<ConnectionKey, (u32, String)>,
+    last_refresh: Instant,
+}
+
+#[cfg(feature = "ebpf")]
+#[derive(Debug, Clone)]
+pub struct CleanupConfig {
+    pub cleanup_interval_secs: u64,
+    pub stale_threshold_secs: u64,
+}
+
+#[cfg(feature = "ebpf")]
+impl Default for CleanupConfig {
+    fn default() -> Self {
+        Self {
+            cleanup_interval_secs: 30,
+            stale_threshold_secs: 60,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct LookupStats {
+    ebpf_hits: u64,
+    procfs_hits: u64,
+    cache_hits: u64,
+    total_lookups: u64,
+    ipv4_lookups: u64,
+    ipv6_lookups: u64,
+    tcp_lookups: u64,
+    udp_lookups: u64,
+    cache_entries: u64,
+    failed_lookups: u64,
+    ebpf_available: bool,
+}
+
+impl EnhancedLinuxProcessLookup {
+    pub fn new() -> Result<Self> {
+        #[cfg(feature = "ebpf")]
+        {
+            Self::new_with_config(CleanupConfig::default())
+        }
+        #[cfg(not(feature = "ebpf"))]
+        {
+            Self::new_with_config()
+        }
+    }
+
+    #[cfg(feature = "ebpf")]
+    pub fn new_with_config(cleanup_config: CleanupConfig) -> Result<Self> {
+        Self::new_internal(cleanup_config)
+    }
+
+    #[cfg(not(feature = "ebpf"))]
+    pub fn new_with_config() -> Result<Self> {
+        Self::new_internal()
+    }
+
+    #[cfg(feature = "ebpf")]
+    fn new_internal(cleanup_config: CleanupConfig) -> Result<Self> {
+        let procfs_lookup = LinuxProcessLookup::new()?;
+
+        #[cfg(feature = "ebpf")]
+        let ebpf_tracker = match EbpfSocketTracker::new() {
+            Ok(tracker) => {
+                if tracker.is_some() {
+                    info!("eBPF socket tracker initialized successfully");
+                } else {
+                    info!("eBPF not available, using procfs only");
+                }
+                tracker.map(Box::new)
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to initialize eBPF tracker: {}, falling back to procfs",
+                    e
+                );
+                None
+            }
+        };
+
+        Ok(Self {
+            #[cfg(feature = "ebpf")]
+            ebpf_tracker: RwLock::new(ebpf_tracker),
+            procfs_lookup,
+            unified_cache: RwLock::new(ProcessCache {
+                lookup: HashMap::new(),
+                last_refresh: Instant::now() - Duration::from_secs(3600),
+            }),
+            stats: RwLock::new(LookupStats::default()),
+            #[cfg(feature = "ebpf")]
+            cleanup_config,
+            #[cfg(feature = "ebpf")]
+            last_cleanup: RwLock::new(Instant::now() - Duration::from_secs(3600)),
+        })
+    }
+
+    #[cfg(not(feature = "ebpf"))]
+    fn new_internal() -> Result<Self> {
+        let procfs_lookup = LinuxProcessLookup::new()?;
+
+        Ok(Self {
+            procfs_lookup,
+            unified_cache: RwLock::new(ProcessCache {
+                lookup: HashMap::new(),
+                last_refresh: Instant::now() - Duration::from_secs(3600),
+            }),
+            stats: RwLock::new(LookupStats::default()),
+        })
+    }
+
+    /// Try eBPF lookup first, fall back to procfs
+    fn lookup_process_enhanced(&self, conn: &Connection) -> Option<(u32, String)> {
+        // Try eBPF first for TCP/UDP connections
+        if matches!(conn.protocol, Protocol::TCP | Protocol::UDP) {
+            debug!(
+                "Enhanced lookup: Trying eBPF for {}:{} -> {}:{} ({})",
+                conn.local_addr.ip(),
+                conn.local_addr.port(),
+                conn.remote_addr.ip(),
+                conn.remote_addr.port(),
+                match conn.protocol {
+                    Protocol::TCP => "TCP",
+                    Protocol::UDP => "UDP",
+                    _ => "Unknown",
+                }
+            );
+
+            if let Some(result) = self.try_ebpf_lookup(conn) {
+                let mut stats = self.stats.write().unwrap();
+                stats.ebpf_hits += 1;
+                debug!(
+                    "Enhanced lookup: eBPF hit for PID {} ({})",
+                    result.0, result.1
+                );
+                return Some(result);
+            } else {
+                debug!("Enhanced lookup: eBPF miss, falling back to procfs");
+            }
+        }
+
+        // Fall back to procfs approach
+        if let Some(result) = self.procfs_lookup.get_process_for_connection(conn) {
+            let mut stats = self.stats.write().unwrap();
+            stats.procfs_hits += 1;
+            return Some(result);
+        }
+
+        None
+    }
+
+    #[cfg(feature = "ebpf")]
+    fn try_ebpf_lookup(&self, conn: &Connection) -> Option<(u32, String)> {
+        let mut tracker_guard = self.ebpf_tracker.write().unwrap();
+        let tracker = match tracker_guard.as_mut() {
+            Some(t) => {
+                debug!("eBPF lookup: Tracker available, performing lookup");
+                t
+            }
+            None => {
+                debug!("eBPF lookup: No tracker available");
+                return None;
+            }
+        };
+
+        // Extract IPv4 addresses for eBPF lookup
+        let (src_ipv4, dst_ipv4) = match (conn.local_addr.ip(), conn.remote_addr.ip()) {
+            (IpAddr::V4(src), IpAddr::V4(dst)) => (src, dst),
+            _ => {
+                debug!("eBPF lookup skipped for non-IPv4 connection");
+                return None;
+            }
+        };
+
+        let is_tcp = matches!(conn.protocol, Protocol::TCP);
+
+        match tracker.lookup_v4(
+            src_ipv4,
+            dst_ipv4,
+            conn.local_addr.port(),
+            conn.remote_addr.port(),
+            is_tcp,
+        ) {
+            Some(process_info) => {
+                debug!(
+                    "eBPF lookup successful for {}:{} -> {}:{}",
+                    src_ipv4,
+                    conn.local_addr.port(),
+                    dst_ipv4,
+                    conn.remote_addr.port()
+                );
+                Some((process_info.pid, process_info.comm))
+            }
+            None => {
+                debug!(
+                    "eBPF lookup missed for {}:{} -> {}:{}",
+                    src_ipv4,
+                    conn.local_addr.port(),
+                    dst_ipv4,
+                    conn.remote_addr.port()
+                );
+                None
+            }
+        }
+    }
+
+    #[cfg(not(feature = "ebpf"))]
+    fn try_ebpf_lookup(&self, _conn: &Connection) -> Option<(u32, String)> {
+        None
+    }
+
+    /// Get diagnostic statistics about lookup performance
+    #[allow(dead_code)]
+    pub fn get_stats(&self) -> LookupStats {
+        self.stats.read().unwrap().clone()
+    }
+
+    /// Check if eBPF is available and functioning
+    #[cfg(feature = "ebpf")]
+    pub fn is_ebpf_available(&self) -> bool {
+        self.ebpf_tracker
+            .read()
+            .unwrap()
+            .as_ref()
+            .map(|t| t.is_healthy())
+            .unwrap_or(false)
+    }
+
+    /// Perform periodic cleanup of stale eBPF map entries
+    #[cfg(feature = "ebpf")]
+    fn maybe_cleanup_ebpf_map(&self) {
+        let now = Instant::now();
+        let mut last_cleanup = self.last_cleanup.write().unwrap();
+
+        if now.duration_since(*last_cleanup).as_secs() >= self.cleanup_config.cleanup_interval_secs
+        {
+            *last_cleanup = now;
+            drop(last_cleanup);
+
+            // Perform cleanup
+            if let Some(tracker) = self.ebpf_tracker.write().unwrap().as_mut() {
+                let cleaned =
+                    tracker.cleanup_stale_entries(self.cleanup_config.stale_threshold_secs);
+                if cleaned > 0 {
+                    debug!("eBPF map cleanup: removed {} stale entries", cleaned);
+                }
+            }
+        }
+    }
+
+    #[cfg(not(feature = "ebpf"))]
+    fn maybe_cleanup_ebpf_map(&self) {
+        // No-op when eBPF is not enabled
+    }
+}
+
+impl ProcessLookup for EnhancedLinuxProcessLookup {
+    fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
+        // Perform periodic cleanup of stale eBPF entries
+        self.maybe_cleanup_ebpf_map();
+
+        let key = ConnectionKey::from_connection(conn);
+
+        // Update protocol statistics
+        {
+            let mut stats = self.stats.write().unwrap();
+            stats.total_lookups += 1;
+
+            // Track IP version
+            match conn.local_addr.ip() {
+                IpAddr::V4(_) => stats.ipv4_lookups += 1,
+                IpAddr::V6(_) => stats.ipv6_lookups += 1,
+            }
+
+            // Track protocol type
+            match conn.protocol {
+                Protocol::TCP => stats.tcp_lookups += 1,
+                Protocol::UDP => stats.udp_lookups += 1,
+                _ => {}
+            }
+
+            // Update eBPF availability status
+            #[cfg(feature = "ebpf")]
+            {
+                stats.ebpf_available = self.is_ebpf_available();
+            }
+            #[cfg(not(feature = "ebpf"))]
+            {
+                stats.ebpf_available = false;
+            }
+        }
+
+        // Try cache first
+        {
+            let cache = self.unified_cache.read().unwrap();
+            if cache.last_refresh.elapsed() < Duration::from_secs(2)
+                && let Some(process_info) = cache.lookup.get(&key)
+            {
+                let mut stats = self.stats.write().unwrap();
+                stats.cache_hits += 1;
+                return Some(process_info.clone());
+            }
+        }
+
+        // Cache miss or stale - do enhanced lookup
+        if let Some(result) = self.lookup_process_enhanced(conn) {
+            // Update cache with the result
+            {
+                let mut cache = self.unified_cache.write().unwrap();
+                cache.lookup.insert(key, result.clone());
+
+                let mut stats = self.stats.write().unwrap();
+                stats.cache_entries = cache.lookup.len() as u64;
+            }
+            Some(result)
+        } else {
+            // Track failed lookups
+            let mut stats = self.stats.write().unwrap();
+            stats.failed_lookups += 1;
+            None
+        }
+    }
+
+    fn refresh(&self) -> Result<()> {
+        // Refresh the procfs lookup
+        self.procfs_lookup.refresh()?;
+
+        // Update our cache timestamp
+        {
+            let mut cache = self.unified_cache.write().unwrap();
+            cache.last_refresh = Instant::now();
+            // Optionally clear cache to force fresh lookups
+            cache.lookup.clear();
+        }
+
+        debug!("Enhanced process lookup refreshed");
+        Ok(())
+    }
+}
+
+impl Clone for LookupStats {
+    fn clone(&self) -> Self {
+        Self {
+            ebpf_hits: self.ebpf_hits,
+            procfs_hits: self.procfs_hits,
+            cache_hits: self.cache_hits,
+            total_lookups: self.total_lookups,
+            ipv4_lookups: self.ipv4_lookups,
+            ipv6_lookups: self.ipv6_lookups,
+            tcp_lookups: self.tcp_lookups,
+            udp_lookups: self.udp_lookups,
+            cache_entries: self.cache_entries,
+            failed_lookups: self.failed_lookups,
+            ebpf_available: self.ebpf_available,
+        }
+    }
+}
+
+impl std::fmt::Display for LookupStats {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.total_lookups == 0 {
+            write!(f, "No lookups performed yet")
+        } else {
+            let cache_hit_rate = (self.cache_hits as f64 / self.total_lookups as f64) * 100.0;
+            let ebpf_rate = (self.ebpf_hits as f64 / self.total_lookups as f64) * 100.0;
+            let procfs_rate = (self.procfs_hits as f64 / self.total_lookups as f64) * 100.0;
+            let success_rate = ((self.total_lookups - self.failed_lookups) as f64
+                / self.total_lookups as f64)
+                * 100.0;
+
+            writeln!(f, "Process Lookup Statistics:")?;
+            writeln!(
+                f,
+                "  Total lookups: {} (success: {:.1}%)",
+                self.total_lookups, success_rate
+            )?;
+            writeln!(
+                f,
+                "  Cache: {} hits ({:.1}%)",
+                self.cache_hits, cache_hit_rate
+            )?;
+            writeln!(
+                f,
+                "  eBPF: {} lookups ({:.1}%) | Available: {}",
+                self.ebpf_hits, ebpf_rate, self.ebpf_available
+            )?;
+            writeln!(
+                f,
+                "  procfs: {} lookups ({:.1}%)",
+                self.procfs_hits, procfs_rate
+            )?;
+            writeln!(
+                f,
+                "  Protocols - IPv4: {} | IPv6: {}",
+                self.ipv4_lookups, self.ipv6_lookups
+            )?;
+            write!(
+                f,
+                "  Types - TCP: {} | UDP: {} | Cache entries: {}",
+                self.tcp_lookups, self.udp_lookups, self.cache_entries
+            )
+        }
+    }
+}

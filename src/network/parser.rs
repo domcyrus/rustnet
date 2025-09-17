@@ -84,6 +84,12 @@ pub struct PacketParser {
     linktype: Option<i32>, // DLT linktype - 149 means PKTAP on macOS
 }
 
+impl Default for PacketParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PacketParser {
     #[allow(dead_code)]
     pub fn new() -> Self {

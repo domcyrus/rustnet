@@ -6,6 +6,10 @@ use std::net::SocketAddr;
 // Platform-specific modules
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+mod linux_ebpf;
+#[cfg(target_os = "linux")]
+mod linux_enhanced;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
@@ -14,6 +18,8 @@ mod windows;
 // Re-export the appropriate implementation
 #[cfg(target_os = "linux")]
 pub use linux::LinuxProcessLookup;
+#[cfg(target_os = "linux")]
+// pub use linux_enhanced::EnhancedLinuxProcessLookup;
 #[cfg(target_os = "macos")]
 pub use macos::MacOSProcessLookup;
 #[cfg(target_os = "windows")]
@@ -57,7 +63,20 @@ pub fn create_process_lookup_with_pktap_status(
     }
     #[cfg(target_os = "linux")]
     {
-        Ok(Box::new(LinuxProcessLookup::new()?))
+        // Try enhanced lookup first (with eBPF if available), fall back to basic
+        match linux_enhanced::EnhancedLinuxProcessLookup::new() {
+            Ok(enhanced) => {
+                log::info!("Using enhanced Linux process lookup (eBPF + procfs)");
+                Ok(Box::new(enhanced))
+            }
+            Err(e) => {
+                log::warn!(
+                    "Enhanced lookup failed, falling back to basic procfs: {}",
+                    e
+                );
+                Ok(Box::new(LinuxProcessLookup::new()?))
+            }
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -74,6 +93,13 @@ pub fn create_process_lookup_with_pktap_status(
     {
         Err(anyhow::anyhow!("Unsupported platform"))
     }
+}
+
+/// Create a basic process lookup (procfs only on Linux) - for testing or fallback
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn create_basic_process_lookup() -> Result<Box<dyn ProcessLookup>> {
+    Ok(Box::new(LinuxProcessLookup::new()?))
 }
 
 /// Connection identifier for lookups

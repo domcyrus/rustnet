@@ -108,8 +108,11 @@ cargo install rustnet-monitor
 git clone https://github.com/domcyrus/rustnet.git
 cd rustnet
 
-# Build in release mode
+# Build in release mode (basic functionality)
 cargo build --release
+
+# Build with eBPF support for enhanced Linux performance (Linux only)
+cargo build --release --features ebpf
 
 # The executable will be in target/release/rustnet
 ```
@@ -546,6 +549,33 @@ sudo setcap cap_net_raw,cap_net_admin=eip ~/.cargo/bin/rustnet
 # Now run without sudo
 rustnet
 ```
+
+**For eBPF-enabled builds (enhanced Linux performance):**
+
+eBPF requires additional capabilities for kernel program loading and performance monitoring:
+
+```bash
+# Build with eBPF support
+cargo build --release --features ebpf
+
+# Grant full capability set for eBPF (modern kernels with CAP_BPF support)
+sudo setcap 'cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
+
+# OR for older kernels (fallback to CAP_SYS_ADMIN)
+sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin+eip' ./target/release/rustnet
+
+# Run without sudo - eBPF programs will load automatically if capabilities are sufficient
+./target/release/rustnet
+```
+
+**Capability requirements for eBPF:**
+- `CAP_NET_RAW` - Raw socket access for packet capture
+- `CAP_NET_ADMIN` - Network administration 
+- `CAP_BPF` - BPF program loading (Linux 5.8+, preferred)
+- `CAP_PERFMON` - Performance monitoring (Linux 5.8+, preferred)  
+- `CAP_SYS_ADMIN` - System administration (fallback for older kernels)
+
+The application will automatically detect available capabilities and fall back to procfs-only mode if eBPF cannot be loaded.
 
 **For system-wide installation:**
 
