@@ -2,11 +2,16 @@ use anyhow::Result;
 use arboard::Clipboard;
 use log::{LevelFilter, debug, error, info};
 use ratatui::prelude::CrosstermBackend;
+use serde_json::{json, Value};
 use simplelog::{Config as LogConfig, WriteLogger};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io;
+use std::io::Write;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use syslog_rs::{formatters::{FormatRfc3146}};
+use syslog_rs::{LogFacility, LogStat, Priority, SyslogApi, SyncSyslog, SyslogLocal};
 
 mod app;
 mod cli;
@@ -86,6 +91,10 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+// File path used for logging & syslog handle
+pub static SIEM_FILE_LOGGER: OnceLock<Mutex<std::fs::File>> = OnceLock::new();
+pub static SYNC_SYSLOG: OnceLock<SyncSyslog<FormatRfc3146, SyslogLocal>> = OnceLock::new();
+
 fn setup_logging(level: LevelFilter) -> Result<()> {
     // Create logs directory if it doesn't exist
     let log_dir = Path::new("logs");
@@ -95,12 +104,49 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
 
     // Create timestamped log file name
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-    let log_file_path = log_dir.join(format!("rustnet_{}.log", timestamp));
+    let log_file_path = log_dir.join(format!("rustnet_{}.log", timestamp)); 
+    let siem_log_path = log_dir.join(format!("rustnet_siem_{}.log", timestamp)); 
+
+    // Store the SIEM log path for access later
+    let siem_log_file = OpenOptions::new().create(true).append(true).open(siem_log_path)?;
+    SIEM_FILE_LOGGER.set(Mutex::new(siem_log_file))
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::Other, "SIEM logger already initialized"))?;
 
     // Initialize the logger
     WriteLogger::init(level, LogConfig::default(), File::create(log_file_path)?)?;
 
+    // Setup the syslog 
+    let syslog =
+        SyncSyslog
+            ::<_, _>
+            ::openlog_with(
+                Some("rustnet"),
+                LogStat::LOG_CONS | LogStat::LOG_NDELAY | LogStat::LOG_PID,
+                LogFacility::LOG_DAEMON,
+                SyslogLocal::new()
+            ).unwrap();
+
+    SYNC_SYSLOG.get_or_init(|| syslog);
+
     Ok(())
+}
+
+// Setup logging for JSON/SIEM output
+#[macro_export]
+macro_rules! siem_log {
+
+    ($val:expr, json) => {{
+
+        // Only log JSON to the SIEM file for now
+        if let Some(file_lock) = SIEM_FILE_LOGGER.get() {
+            let mut file = file_lock.lock().unwrap();
+            let _ = writeln!(file, "[SIEM] {}", $val);
+        }
+    }};
+
+   ($($arg:tt)+) => {{
+       $crate::app::SYNC_SYSLOG.get().unwrap().syslog(Priority::LOG_DEBUG, format!($($arg)+).into());
+   }}
 }
 
 /// Sort connections based on the specified column and direction
@@ -173,7 +219,6 @@ fn sort_connections(
             ordering.reverse()
         }
     });
-}
 
 fn run_ui_loop<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,

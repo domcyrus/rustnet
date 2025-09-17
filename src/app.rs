@@ -19,6 +19,14 @@ use crate::network::{
     types::{ApplicationProtocol, Connection, Protocol},
 };
 
+// For log testing
+use crate::siem_log;
+use crate::SYNC_SYSLOG;
+use crate::SIEM_FILE_LOGGER;
+use serde_json::{json, Value};
+use std::io::Write;
+use syslog_rs::{Priority, SyslogApi};
+
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
@@ -794,6 +802,9 @@ fn update_connection(
         })
         .or_insert_with(|| {
             debug!("New connection detected: {}", key);
+
+            siem_log!(json!({"connection":key, "json": true}),json);
+            siem_log!("Testing normal logging to syslog");
             create_connection_from_packet(&parsed, now)
         });
 }
