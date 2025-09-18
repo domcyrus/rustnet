@@ -1,12 +1,8 @@
 //! eBPF map interaction utilities for libbpf-rs
 
-#[cfg(feature = "ebpf")]
 use super::ProcessInfo;
-#[cfg(feature = "ebpf")]
 use anyhow::Result;
-#[cfg(feature = "ebpf")]
 use libbpf_rs::MapCore;
-#[cfg(feature = "ebpf")]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Connection key matching the eBPF program structure (supports IPv4 and IPv6)
@@ -98,8 +94,7 @@ impl ConnKey {
         )
     }
 
-    #[allow(dead_code)]
-    pub fn new_v6(
+    pub(crate) fn new_v6(
         src_ip: Ipv6Addr,
         dst_ip: Ipv6Addr,
         src_port: u16,
@@ -136,10 +131,8 @@ impl From<ConnInfo> for ProcessInfo {
     }
 }
 
-#[cfg(feature = "ebpf")]
 pub struct MapReader;
 
-#[cfg(feature = "ebpf")]
 impl MapReader {
     /// Query the socket map for connection information using libbpf-rs
     pub fn lookup_connection(map: &libbpf_rs::Map, key: ConnKey) -> Result<Option<ProcessInfo>> {
@@ -167,7 +160,6 @@ impl MapReader {
         }
     }
 
-
     /// Clean up stale entries from the map based on timestamp
     pub fn cleanup_stale_entries(map: &libbpf_rs::Map, stale_threshold_ns: u64) -> Result<u32> {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -184,7 +176,8 @@ impl MapReader {
         for key in map.keys() {
             // We have a key, check if its value is stale
             if let Ok(Some(value_bytes)) = map.lookup(&key, libbpf_rs::MapFlags::empty())
-                && value_bytes.len() >= 32 {
+                && value_bytes.len() >= 32
+            {
                 // Extract timestamp from last 8 bytes
                 let timestamp_bytes = &value_bytes[24..32];
                 let timestamp = u64::from_ne_bytes([
@@ -278,22 +271,5 @@ impl MapReader {
 
         log::info!("=== End Lookup Debug ===");
         Ok(())
-    }
-}
-
-#[cfg(not(feature = "ebpf"))]
-#[derive(Debug, Clone, Copy)]
-pub struct ConnKey;
-
-#[cfg(not(feature = "ebpf"))]
-pub struct MapReader;
-
-#[cfg(not(feature = "ebpf"))]
-impl MapReader {
-    pub fn lookup_connection(
-        _map: (),
-        _key: ConnKey,
-    ) -> anyhow::Result<Option<super::ProcessInfo>> {
-        Ok(None)
     }
 }

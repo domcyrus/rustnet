@@ -1,27 +1,20 @@
 //! eBPF program loader with comprehensive error handling
 
-#[cfg(feature = "ebpf")]
 use anyhow::Result;
-#[cfg(feature = "ebpf")]
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
-#[cfg(feature = "ebpf")]
 use log::{debug, info, warn};
 
-#[cfg(feature = "ebpf")]
 mod socket_tracker {
     include!(concat!(env!("OUT_DIR"), "/socket_tracker.skel.rs"));
 }
 
-#[cfg(feature = "ebpf")]
 use socket_tracker::*;
 
-#[cfg(feature = "ebpf")]
 pub struct EbpfLoader {
     skel: Box<SocketTrackerSkel<'static>>,
     _open_object: Box<std::mem::MaybeUninit<libbpf_rs::OpenObject>>,
 }
 
-#[cfg(feature = "ebpf")]
 impl EbpfLoader {
     /// Attempt to load eBPF programs with graceful error handling
     pub fn try_load() -> Result<Option<Self>> {
@@ -187,15 +180,5 @@ impl EbpfLoader {
     /// Get the socket map for lookups
     pub fn socket_map(&self) -> &libbpf_rs::Map<'_> {
         &self.skel.maps.socket_map
-    }
-}
-
-#[cfg(not(feature = "ebpf"))]
-pub struct EbpfLoader;
-
-#[cfg(not(feature = "ebpf"))]
-impl EbpfLoader {
-    pub fn try_load() -> anyhow::Result<Option<Self>> {
-        Ok(None)
     }
 }
