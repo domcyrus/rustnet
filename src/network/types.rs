@@ -185,6 +185,12 @@ pub struct TlsInfo {
     pub cipher_suite: Option<u16>,
 }
 
+impl Default for TlsInfo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TlsInfo {
     pub fn new() -> Self {
         Self {

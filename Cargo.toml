@@ -11,14 +11,11 @@ readme = "README.md"
 license = "Apache-2.0"
 keywords = ["network", "monitoring", "tui", "terminal", "packet-capture"]
 categories = ["command-line-utilities", "network-programming", "visualization"]
-exclude = [
-    ".github/",
-    "scripts/",
-    "tests/",
-    "*.log",
-    "target/",
-    ".gitignore",
-]
+exclude = [".github/", "scripts/", "tests/", "*.log", "target/", ".gitignore"]
+
+[lib]
+name = "rustnet_monitor"
+path = "src/lib.rs"
 
 [[bin]]
 name = "rustnet"
@@ -45,3 +42,14 @@ aes = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.16"
+libbpf-rs = { version = "0.25", optional = true }
+libbpf-sys = { version = "1.4", optional = true }
+bytes = { version = "1.5", optional = true }
+libc = { version = "0.2", optional = true }
+
+[target.'cfg(target_os = "linux")'.build-dependencies]
+libbpf-cargo = "0.25"
+
+[features]
+default = []
+ebpf = ["libbpf-rs", "libbpf-sys", "bytes", "libc"]
