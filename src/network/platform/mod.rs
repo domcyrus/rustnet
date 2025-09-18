@@ -54,13 +54,13 @@ impl ProcessLookup for NoOpProcessLookup {
 
 /// Create a platform-specific process lookup with PKTAP status awareness
 pub fn create_process_lookup_with_pktap_status(
-    pktap_active: bool,
+    _pktap_active: bool,
 ) -> Result<Box<dyn ProcessLookup>> {
     #[cfg(target_os = "macos")]
     {
         use crate::network::platform::macos::MacOSProcessLookup;
 
-        if pktap_active {
+        if _pktap_active {
             log::info!("Using no-op process lookup - PKTAP provides process metadata");
             Ok(Box::new(NoOpProcessLookup))
         } else {
