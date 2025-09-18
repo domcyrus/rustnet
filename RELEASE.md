@@ -23,7 +23,7 @@ cargo test
 
 ```bash
 # Stage and commit the version and changelog changes
-git add Cargo.toml CHANGELOG.md
+git add Cargo.toml Cargo.lock CHANGELOG.md
 git commit -m "Release v0.2.0
 
 - Fixed process display stability issues on macOS
