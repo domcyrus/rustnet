@@ -4,13 +4,25 @@ This document explains how to work with eBPF kernel headers in this project.
 
 ## Current Setup
 
-We use a **minimal vmlinux header** (`vmlinux_min.h`) instead of the full kernel headers. This provides several benefits:
+We use a **minimal vmlinux header** (`vmlinux_min.h`) instead of the full kernel headers. This approach has trade-offs that should be considered:
+
+**Benefits of minimal vmlinux_min.h:**
 
 - **Small size**: 5.5KB (203 lines) vs 3.4MB (100K+ lines) full vmlinux.h
-- **Maintainable**: Easy to review and understand dependencies
+- **Git-friendly**: Small file size, manageable diffs, easier to review
 - **Portable**: Works across kernel versions with CO-RE/BTF
-- **Clear**: Shows exactly which kernel structures we depend on
-- **Fast compilation**: Significantly faster eBPF compilation times
+- **Clear dependencies**: Shows exactly which kernel structures we depend on
+
+**Drawbacks of minimal vmlinux_min.h:**
+
+- **Manual maintenance**: Need to update when adding new eBPF features that access different kernel structures
+- **Potential for missing definitions**: Easy to forget required types when extending functionality
+- **Development overhead**: Requires understanding of kernel internals to extract correct definitions
+
+**Alternative approach (full vmlinux.h):**
+
+- **Pros**: Complete kernel definitions, auto-generated, no manual maintenance, never missing types
+- **Cons**: Very large file (3.4MB), but can be gitignored and generated during build process
 
 ## How to Generate Full vmlinux.h (if needed)
 

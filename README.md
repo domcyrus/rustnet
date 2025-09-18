@@ -31,6 +31,7 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
   - Protocol-specific cleanup (DNS: 30s, established TCP: 5min, QUIC with close frames: 1-10s)
   - Activity-based timeout adjustment for long-lived vs idle connections
 - **Process Identification**: Associate network connections with running processes
+  - **Note**: With experimental eBPF support, process names are limited to 16 characters from the kernel's `comm` field and may show thread names instead of full executable names
 - **Service Name Resolution**: Identify well-known services using port numbers
 - **Cross-platform Support**: Works on Linux, macOS, Windows and potentially BSD systems
 - **Advanced Filtering**: Real-time vim/fzf-style filtering with keyword support:
@@ -41,6 +42,25 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 - **Multi-threaded Processing**: Concurrent packet processing across multiple threads
 - **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
 
+### eBPF Enhanced Process Identification (Experimental)
+
+When built with the `ebpf` feature on Linux, RustNet uses kernel eBPF programs for enhanced performance and lower overhead process identification. However, this comes with important limitations:
+
+**Process Name Limitations:**
+- eBPF uses the kernel's `comm` field, which is limited to 16 characters
+- Shows the task/thread command name, not the full executable path
+- Multi-threaded applications often show thread names instead of the main process name
+
+**Real-world Examples:**
+- **Firefox**: May appear as "Socket Thread", "Web Content", "Isolated Web Co", or "MainThread"
+- **Chrome**: May appear as "ThreadPoolForeg", "Chrome_IOThread", "BrokerProcess", or "SandboxHelper"
+- **Electron apps**: Often show as "electron", "node", or internal thread names
+- **System processes**: Show truncated names like "systemd-resolve" → "systemd-resolve"
+
+**Fallback Behavior:**
+- When eBPF fails to load or lacks sufficient permissions, RustNet automatically falls back to standard procfs-based process identification
+- Standard mode provides full process names but with higher CPU overhead
+
 ## Installation
 
 ### Prerequisites
@@ -50,6 +70,10 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
   - **Linux**: `sudo apt-get install libpcap-dev` (Debian/Ubuntu) or `sudo yum install libpcap-devel` (RedHat/CentOS)
   - **macOS**: Included by default
   - **Windows**: Install Npcap and Npcap SDK (see [Windows Build Setup](#windows-build-setup) below)
+- **For eBPF support (optional, experimental - Linux only)**:
+  - `sudo apt-get install libelf-dev clang llvm` (Debian/Ubuntu)
+  - `sudo yum install elfutils-libelf-devel clang llvm` (RedHat/CentOS)
+  - Linux kernel 4.19+ with BTF support recommended
 
 ### Windows Build Setup
 
@@ -111,7 +135,7 @@ cd rustnet
 # Build in release mode (basic functionality)
 cargo build --release
 
-# Build with eBPF support for enhanced Linux performance (Linux only)
+# Build with experimental eBPF support for enhanced Linux performance (Linux only)
 cargo build --release --features ebpf
 
 # The executable will be in target/release/rustnet
@@ -550,9 +574,9 @@ sudo setcap cap_net_raw,cap_net_admin=eip ~/.cargo/bin/rustnet
 rustnet
 ```
 
-**For eBPF-enabled builds (enhanced Linux performance):**
+**For experimental eBPF-enabled builds (enhanced Linux performance):**
 
-eBPF requires additional capabilities for kernel program loading and performance monitoring:
+eBPF is an experimental feature that requires additional capabilities for kernel program loading and performance monitoring:
 
 ```bash
 # Build with eBPF support
@@ -576,6 +600,8 @@ sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin+eip' ./target/release/rustn
 - `CAP_SYS_ADMIN` - System administration (fallback for older kernels)
 
 The application will automatically detect available capabilities and fall back to procfs-only mode if eBPF cannot be loaded.
+
+**Note:** eBPF support is experimental and may have limitations with process name display (see [eBPF Enhanced Process Identification](#ebpf-enhanced-process-identification-experimental)).
 
 **For system-wide installation:**
 

@@ -11,14 +11,7 @@ readme = "README.md"
 license = "Apache-2.0"
 keywords = ["network", "monitoring", "tui", "terminal", "packet-capture"]
 categories = ["command-line-utilities", "network-programming", "visualization"]
-exclude = [
-    ".github/",
-    "scripts/",
-    "tests/",
-    "*.log",
-    "target/",
-    ".gitignore",
-]
+exclude = [".github/", "scripts/", "tests/", "*.log", "target/", ".gitignore"]
 
 [lib]
 name = "rustnet_monitor"
