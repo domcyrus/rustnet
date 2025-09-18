@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2025-09-18
+
+### Added
+- **Experimental eBPF Support for Linux**: Enhanced socket tracking with optional eBPF backend
+  - eBPF-based socket tracker with CO-RE (Compile Once - Run Everywhere) support
+  - Minimal vmlinux header (5.5KB instead of full 3.4MB file)
+  - Graceful fallback mechanism to procfs when eBPF unavailable
+  - Support for both IPv4 and IPv6 socket tracking
+  - Optional feature disabled by default (enable with `--features=ebpf`)
+  - Comprehensive capability checking for required permissions
+- **Windows Platform Support**: Network monitoring capability on Windows (without process identification)
+
 ## [0.8.0] - 2025-09-11
 
 ### Added
@@ -123,7 +135,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/domcyrus/rustnet/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/domcyrus/rustnet/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/domcyrus/rustnet/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/domcyrus/rustnet/compare/v0.5.0...v0.6.0
