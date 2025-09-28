@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2025-09-28
+
+### Added
+- **Rust Version Requirements**: Added minimum Rust version requirement (1.88.0+) for let-chains support
+
+### Changed
+- **Build Requirements**: Now requires Rust 1.88.0 or later for advanced language features
+
 ## [0.9.0] - 2025-09-18
 
 ### Added
@@ -135,7 +143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/domcyrus/rustnet/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/domcyrus/rustnet/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/domcyrus/rustnet/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/domcyrus/rustnet/compare/v0.6.0...v0.7.0
