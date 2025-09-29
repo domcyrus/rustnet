@@ -63,6 +63,7 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
+          components: rustfmt
 
       - name: Install cross
         if: matrix.cargo == 'cross'
@@ -170,6 +171,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,armv7-unknown-linux-gnueabihf
+          components: rustfmt
 
       - name: Install packaging tools
         run: |
@@ -320,6 +322,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+          components: rustfmt
 
       - name: Install packaging tools
         run: cargo install cargo-wix
