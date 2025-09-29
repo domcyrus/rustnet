@@ -1,49 +1,21 @@
-[build.env]
-passthrough = [
-    "CARGO_INCREMENTAL",
-    "CARGO_NET_RETRY",
-    "CARGO_NET_TIMEOUT",
-]
-
-# Install eBPF dependencies for cross-compilation targets
 [target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:edge"
 pre-build = [
-    "echo 'Installing dependencies for aarch64-unknown-linux-gnu'",
-    "dpkg --add-architecture arm64",
-    "apt-get update",
-    "apt-get install -y libelf-dev:arm64 zlib1g-dev:arm64 pkg-config linux-libc-dev:arm64",
-    "echo 'Dependencies installed successfully'",
-]
-
-[target.aarch64-unknown-linux-musl]
-pre-build = [
-    "echo 'Installing dependencies for aarch64-unknown-linux-musl'",
-    "apt-get update",
-    "apt-get install -y libelf-dev zlib1g-dev pkg-config linux-libc-dev",
-    "echo 'Dependencies installed successfully'",
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update -y",
+    "apt-get install -y libelf-dev:arm64 zlib1g-dev:arm64 libpcap-dev:arm64 gcc-aarch64-linux-gnu protobuf-compiler libseccomp-dev:arm64 libbpf-dev clang llvm"
 ]
 
 [target.armv7-unknown-linux-gnueabihf]
+image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:edge"
 pre-build = [
-    "echo 'Installing dependencies for armv7-unknown-linux-gnueabihf'",
-    "dpkg --add-architecture armhf",
-    "apt-get update",
-    "apt-get install -y libelf-dev:armhf zlib1g-dev:armhf pkg-config linux-libc-dev:armhf",
-    "echo 'Dependencies installed successfully'",
-]
-
-[target.armv7-unknown-linux-musleabihf]
-pre-build = [
-    "echo 'Installing dependencies for armv7-unknown-linux-musleabihf'",
-    "apt-get update",
-    "apt-get install -y libelf-dev zlib1g-dev pkg-config linux-libc-dev",
-    "echo 'Dependencies installed successfully'",
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update -y",
+    "apt-get install -y libelf-dev:armhf zlib1g-dev:armhf libpcap-dev:armhf gcc-arm-linux-gnueabihf protobuf-compiler libseccomp-dev:armhf libbpf-dev clang llvm"
 ]
 
 [target.x86_64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:edge"
 pre-build = [
-    "echo 'Installing dependencies for x86_64-unknown-linux-musl'",
-    "apt-get update",
-    "apt-get install -y libelf-dev zlib1g-dev pkg-config linux-libc-dev",
-    "echo 'Dependencies installed successfully'",
+    "apk add --no-cache libelf-dev zlib-dev libpcap-dev protobuf-dev libseccomp-dev libbpf-dev clang llvm",
 ]

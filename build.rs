@@ -5,7 +5,10 @@ fn main() -> Result<()> {
     // Generate shell completions and manpage
     generate_assets()?;
 
-    // Only compile eBPF programs on Linux when the feature is enabled
+    // Add library search paths for cross-compilation
+    setup_cross_compilation_libs();
+
+    // Compile eBPF programs on Linux when the feature is enabled
     if cfg!(target_os = "linux") && env::var("CARGO_FEATURE_EBPF").is_ok() {
         compile_ebpf_programs();
     }
@@ -20,6 +23,26 @@ fn main() -> Result<()> {
 }
 
 include!("src/cli.rs");
+
+fn setup_cross_compilation_libs() {
+    let target = env::var("TARGET").unwrap_or_default();
+
+    match target.as_str() {
+        "aarch64-unknown-linux-gnu" => {
+            println!("cargo:rustc-link-search=native=/usr/lib/aarch64-linux-gnu");
+            println!("cargo:rustc-link-lib=elf");
+            println!("cargo:rustc-link-lib=z");
+        }
+        "armv7-unknown-linux-gnueabihf" => {
+            println!("cargo:rustc-link-search=native=/usr/lib/arm-linux-gnueabihf");
+            println!("cargo:rustc-link-lib=elf");
+            println!("cargo:rustc-link-lib=z");
+        }
+        _ => {
+            // For other targets, including native builds, let pkg-config handle it
+        }
+    }
+}
 
 fn generate_assets() -> Result<()> {
     use clap::ValueEnum;
@@ -128,6 +151,7 @@ fn download_windows_npcap_sdk() -> Result<()> {
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
 fn compile_ebpf_programs() {
     use libbpf_cargo::SkeletonBuilder;
+    use std::ffi::OsStr;
     use std::path::PathBuf;
 
     let mut out = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -137,46 +161,27 @@ fn compile_ebpf_programs() {
 
     println!("cargo:warning=Building eBPF program using libbpf-cargo");
 
-    match SkeletonBuilder::new()
+    // Get target architecture for cross-compilation
+    let arch = env::var("CARGO_CFG_TARGET_ARCH")
+        .expect("CARGO_CFG_TARGET_ARCH must be set in build script");
+
+    // Map Rust arch names to eBPF target arch defines
+    let target_arch_define = match arch.as_str() {
+        "x86_64" => "-D__TARGET_ARCH_x86",
+        "aarch64" => "-D__TARGET_ARCH_arm64",
+        "arm" => "-D__TARGET_ARCH_arm",
+        _ => "-D__TARGET_ARCH_x86", // fallback
+    };
+
+    SkeletonBuilder::new()
         .source(src)
         .clang_args([
-            "-I/usr/include",
-            "-I/usr/include/linux",
-            "-I/usr/include/x86_64-linux-gnu",
-            "-D__TARGET_ARCH_x86",
+            OsStr::new("-I"),
+            vmlinux::include_path_root().join(&arch).as_os_str(),
+            OsStr::new(target_arch_define),
         ])
         .build_and_generate(&out)
-    {
-        Ok(_) => {
-            println!("cargo:warning=eBPF skeleton generated successfully");
-        }
-        Err(e) => {
-            println!("cargo:warning=Failed to build eBPF program: {}", e);
-
-            // Create a placeholder skeleton file that compiles but returns None
-            let placeholder_skeleton = r#"
-// Placeholder skeleton for failed compilation
-#[allow(dead_code)]
-pub mod socket_tracker {
-    use anyhow::Result;
-    
-    pub struct SocketTrackerSkel;
-    
-    impl SocketTrackerSkel {
-        pub fn open() -> Result<Self> {
-            Err(anyhow::anyhow!("eBPF compilation failed"))
-        }
-    }
-}
-"#;
-            std::fs::write(&out, placeholder_skeleton).unwrap_or_else(|e| {
-                println!(
-                    "cargo:warning=Failed to create placeholder skeleton file: {}",
-                    e
-                );
-            });
-        }
-    }
+        .unwrap();
 
     println!("cargo:rerun-if-changed={}", src);
 }
@@ -185,3 +190,4 @@ pub mod socket_tracker {
 fn compile_ebpf_programs() {
     // No-op when not on Linux or eBPF feature is not enabled
 }
+
