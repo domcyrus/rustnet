@@ -13,13 +13,19 @@
             Keywords='Installer'
             Description='Rustnet Network Monitor Installer'
             Manufacturer='domcyrus'
-            InstallerVersion='100'
+            InstallerVersion='500'
             Languages='1033'
             Compressed='yes'
             SummaryCodepage='1252'
+            Platform='$(var.Platform)'
             />
 
-        <Media Id='1' Cabinet='Sample.cab' EmbedCab='yes' DiskPrompt="CD-ROM #1" />
+        <MajorUpgrade
+            DowngradeErrorMessage="A newer version of [ProductName] is already installed."
+            Schedule="afterInstallInitialize"
+            AllowSameVersionUpgrades="yes" />
+
+        <Media Id='1' Cabinet='rustnet.cab' EmbedCab='yes' DiskPrompt="CD-ROM #1" />
         <Property Id='DiskPrompt' Value="Rustnet Installation [1]" />
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
@@ -31,12 +37,21 @@
                             DiskId='1'
                             Source='$(var.CargoTargetBinDir)\rustnet.exe'
                             KeyPath='yes'/>
+                        <Environment Id='PATH' Name='PATH' Value='[APPLICATIONROOTDIRECTORY]'
+                            Permanent='no' Part='last' Action='set' System='yes' />
                     </Component>
                     <Component Id='AppIcon' Guid='*'>
                         <File Id='RustnetIco'
                             Name='rustnet.ico'
                             DiskId='1'
                             Source='resources\packaging\windows\graphics\rustnet.ico'/>
+                    </Component>
+                    <Component Id='AssetsDir' Guid='*'>
+                        <File Id='ServicesFile'
+                            Name='services'
+                            DiskId='1'
+                            Source='assets\services'
+                            KeyPath='yes'/>
                     </Component>
                 </Directory>
             </Directory>
@@ -51,7 +66,7 @@
                             WorkingDirectory="APPLICATIONROOTDIRECTORY"
                             Icon="rustnet.ico"/>
                         <RemoveFolder Id="ApplicationProgramsFolder" On="uninstall"/>
-                        <RegistryValue Root="HKCU" Key="Software\Microsoft\Rustnet" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
+                        <RegistryValue Root="HKCU" Key="Software\domcyrus\Rustnet" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
                     </Component>
                 </Directory>
             </Directory>
@@ -61,9 +76,13 @@
 
         <Feature
             Id='Complete'
-            Level='1'>
+            Title='Rustnet'
+            Description='Complete installation of Rustnet Network Monitor'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONROOTDIRECTORY'>
             <ComponentRef Id='MainExecutable' />
             <ComponentRef Id='AppIcon' />
+            <ComponentRef Id='AssetsDir' />
             <ComponentRef Id='ApplicationShortcut' />
         </Feature>
 
