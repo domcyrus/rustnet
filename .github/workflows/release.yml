@@ -1,0 +1,357 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+
+env:
+  RUST_BACKTRACE: 1
+  RUSTNET_ASSET_DIR: assets
+
+jobs:
+  build-release:
+    name: build-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        build:
+          - linux-aarch64-gnu
+          - linux-aarch64-musl
+          - linux-armv7-gnueabihf
+          - linux-armv7-musleabihf
+          - linux-x64-gnu
+          - linux-x64-musl
+          - macos-aarch64
+          - macos-x64
+          - windows-x64-msvc
+          - windows-x86-msvc
+        include:
+          - os: ubuntu-latest # default
+          - cargo: cargo # default; overwrite with `cross` if necessary
+          - build: linux-aarch64-gnu
+            target: aarch64-unknown-linux-gnu
+            cargo: cross
+          - build: linux-aarch64-musl
+            target: aarch64-unknown-linux-musl
+            cargo: cross
+          - build: linux-armv7-gnueabihf
+            target: armv7-unknown-linux-gnueabihf
+            cargo: cross
+          - build: linux-armv7-musleabihf
+            target: armv7-unknown-linux-musleabihf
+            cargo: cross
+          - build: linux-x64-gnu
+            target: x86_64-unknown-linux-gnu
+          - build: linux-x64-musl
+            target: x86_64-unknown-linux-musl
+          - build: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+          - build: macos-x64
+            os: macos-14
+            target: x86_64-apple-darwin
+          - build: windows-x64-msvc
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - build: windows-x86-msvc
+            os: windows-latest
+            target: i686-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libpcap-dev libelf-dev clang llvm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cargo == 'cross'
+        uses: taiki-e/cache-cargo-install-action@v2
+        with:
+          tool: cross
+          git: https://github.com/cross-rs/cross.git
+          rev: 085092c
+
+      - name: Build release binary
+        shell: bash
+        env:
+          RUSTFLAGS: "-C strip=symbols"
+        run: |
+          mkdir -p "$RUSTNET_ASSET_DIR"
+          # build.rs will handle Npcap SDK download on Windows
+          ${{ matrix.cargo }} build --verbose --release --target ${{ matrix.target }}
+
+      - name: Create release archive
+        shell: bash
+        env:
+          RUSTNET_BIN: ${{ contains(matrix.os, 'windows') && 'rustnet.exe' || 'rustnet' }}
+        run: |
+          staging="rustnet-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "$staging"
+
+          # Copy binary
+          cp "target/${{ matrix.target }}/release/$RUSTNET_BIN" "$staging/"
+
+          # Copy assets if they exist
+          if [ -d "$RUSTNET_ASSET_DIR" ]; then
+            cp -r "$RUSTNET_ASSET_DIR" "$staging/"
+          fi
+
+          # Copy documentation
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+
+          # Create archive
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a "$staging.zip" "$staging"
+            echo "ASSET=$staging.zip" >> $GITHUB_ENV
+          else
+            tar czf "$staging.tar.gz" "$staging"
+            echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  create-release:
+    name: create-release
+    runs-on: ubuntu-latest
+    needs: build-release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release
+          gh release create ${{ github.ref_name }} \
+            --title "Release ${{ github.ref_name }}" \
+            --draft \
+            --generate-notes
+
+          # Upload all build artifacts
+          for artifact in artifacts/build-*/rustnet-*; do
+            gh release upload ${{ github.ref_name }} "$artifact"
+          done
+
+  package-installers:
+    name: package-installers
+    runs-on: ubuntu-latest
+    needs: create-release
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libpcap-dev libelf-dev clang llvm
+
+      - name: Install Rust and tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,armv7-unknown-linux-gnueabihf
+
+      - name: Install packaging tools
+        run: |
+          cargo install cargo-deb cargo-generate-rpm
+
+      - name: Package Debian packages
+        run: |
+          mkdir -p installers
+          for arch in amd64 arm64 armhf; do
+            case $arch in
+              amd64) target="x86_64-unknown-linux-gnu" ;;
+              arm64) target="aarch64-unknown-linux-gnu" ;;
+              armhf) target="armv7-unknown-linux-gnueabihf" ;;
+            esac
+
+            # Extract binary from artifact
+            tar -xzf "artifacts/build-$target/rustnet-${{ github.ref_name }}-$target.tar.gz"
+            mkdir -p "target/$target/release"
+            cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
+
+            # Create deb package
+            cargo deb --no-build --no-strip --target $target
+            mv "target/$target/debian"/*.deb "installers/Rustnet_LinuxDEB_$arch.deb"
+
+            # Clean up for next iteration
+            rm -rf "rustnet-${{ github.ref_name }}-$target" "target/$target"
+          done
+
+      - name: Package RPM packages
+        run: |
+          for arch in x86_64 aarch64; do
+            target="$arch-unknown-linux-gnu"
+
+            # Extract binary from artifact
+            tar -xzf "artifacts/build-$target/rustnet-${{ github.ref_name }}-$target.tar.gz"
+            mkdir -p "target/$target/release"
+            cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
+
+            # Fix library linking if needed
+            patchelf --replace-needed libpcap.so.0.8 libpcap.so.1 "target/$target/release/rustnet" 2>/dev/null || true
+
+            # Create rpm package
+            cargo generate-rpm --target $target
+            mv "target/$target/generate-rpm"/*.rpm "installers/Rustnet_LinuxRPM_$arch.rpm"
+
+            # Clean up for next iteration
+            rm -rf "rustnet-${{ github.ref_name }}-$target" "target/$target"
+          done
+
+      - name: Upload installer packages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Upload all installer packages
+          for installer in installers/*; do
+            gh release upload ${{ github.ref_name }} "$installer"
+          done
+
+  package-macos:
+    name: package-macos
+    runs-on: macos-latest
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - arch: Intel
+            target: x86_64-apple-darwin
+          - arch: AppleSilicon
+            target: aarch64-apple-darwin
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: |
+          cargo install toml-cli
+          brew install create-dmg
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ matrix.target }}
+          path: artifacts
+
+      - name: Package for macOS
+        run: |
+          # Extract binary
+          tar -xzf "artifacts/rustnet-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+
+          # Get version and update plist
+          VERSION=$(toml get Cargo.toml package.version --raw)
+          sed -i'.bak' -e "s/0\.0\.0/${VERSION}/g" -e "s/fffffff/${GITHUB_SHA:0:7}/g" resources/packaging/macos/Info.plist
+
+          # Create app bundle
+          mkdir -p "Rustnet.app/Contents/"{MacOS,Resources}
+          cp resources/packaging/macos/Info.plist "Rustnet.app/Contents/"
+          cp resources/packaging/macos/graphics/rustnet.icns "Rustnet.app/Contents/Resources/"
+          cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/rustnet" "Rustnet.app/Contents/MacOS/"
+          cp resources/packaging/macos/wrapper.sh "Rustnet.app/Contents/MacOS/"
+          chmod +x "Rustnet.app/Contents/MacOS/"{rustnet,wrapper.sh}
+
+          # Create DMG
+          create-dmg \
+            --volname "Rustnet Installer" \
+            --background "resources/packaging/macos/graphics/dmg_bg.png" \
+            --window-pos 200 120 \
+            --window-size 900 450 \
+            --icon-size 100 \
+            --app-drop-link 620 240 \
+            --icon "Rustnet.app" 300 240 \
+            --hide-extension "Rustnet.app" \
+            "Rustnet_macOS_${{ matrix.arch }}.dmg" \
+            "Rustnet.app"
+
+      - name: Upload macOS package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} "Rustnet_macOS_${{ matrix.arch }}.dmg"
+
+  package-windows:
+    name: package-windows
+    runs-on: windows-latest
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          - arch: 32-bit
+            target: i686-pc-windows-msvc
+          - arch: 64-bit
+            target: x86_64-pc-windows-msvc
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          Write-Host "::group::WiX Toolset"
+          Invoke-WebRequest `
+            -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip" `
+            -OutFile "$env:TEMP\wix-binaries.zip" -Verbose
+          Expand-Archive -LiteralPath "$env:TEMP\wix-binaries.zip" -DestinationPath "$env:TEMP\wix" -Verbose
+          Set-Item -Path env:Path -Value "$env:Path;$env:TEMP\wix"
+          Write-Host "::endgroup::"
+
+      - name: Install Rust and tools
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install packaging tools
+        run: cargo install cargo-wix
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ matrix.target }}
+          path: artifacts
+
+      - name: Package for Windows
+        shell: powershell
+        run: |
+          # Extract binary
+          Expand-Archive -LiteralPath "artifacts\rustnet-${{ github.ref_name }}-${{ matrix.target }}.zip" -DestinationPath .
+          New-Item -ItemType Directory -Path "target\${{ matrix.target }}\release" -Force
+          Move-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\"
+
+          # Create MSI package
+          cargo wix --no-build --nocapture --target ${{ matrix.target }}
+          Move-Item -Path "target\wix\rustnet-monitor*.msi" -Destination "Rustnet_Windows_${{ matrix.arch }}.msi"
+
+      - name: Upload Windows package
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} "Rustnet_Windows_${{ matrix.arch }}.msi"

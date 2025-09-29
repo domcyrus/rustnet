@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Rustnet
+Comment=Real-Time network monitoring tool
+Exec=rustnet
+Icon=rustnet
+Terminal=true
+Categories=Network;Monitor;System;
+Keywords=network;monitoring;packet;capture;terminal;
+StartupNotify=false

@@ -3,8 +3,8 @@ name = "rustnet-monitor"
 version = "0.10.0"
 authors = ["domcyrus"]
 edition = "2024"
-rust-version = "1.88.0"  # Let-chains require Rust 1.88.0+
-description = "A high-performance, cross-platform network monitoring terminal UI tool built with Rust"
+rust-version = "1.88.0"                                                              # Let-chains require Rust 1.88.0+
+description = "A cross-platform network monitoring terminal UI tool built with Rust"
 repository = "https://github.com/domcyrus/rustnet"
 homepage = "https://github.com/domcyrus/rustnet"
 documentation = "https://docs.rs/rustnet-monitor"
@@ -48,9 +48,79 @@ libbpf-sys = { version = "1.4", optional = true }
 bytes = { version = "1.5", optional = true }
 libc = { version = "0.2", optional = true }
 
+[build-dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+clap_mangen = "0.2"
+
+[target.'cfg(windows)'.build-dependencies]
+http_req = "0.11"
+zip = "2.1"
+
 [target.'cfg(target_os = "linux")'.build-dependencies]
 libbpf-cargo = "0.25"
 
 [features]
 default = []
 ebpf = ["libbpf-rs", "libbpf-sys", "bytes", "libc"]
+
+[package.metadata.deb]
+maintainer = "domcyrus <domcyrus@example.com>"
+copyright = "2024, domcyrus <domcyrus@example.com>"
+license-file = ["LICENSE", "4"]
+extended-description = """\
+A real-time network monitoring terminal UI tool built with Rust.
+
+Features:
+- Real-time network monitoring with detailed state information
+- Deep packet inspection for HTTP/HTTPS, DNS, SSH, and QUIC
+- Connection lifecycle management with configurable timeouts
+- Process identification and service name resolution
+- Advanced filtering with vim/fzf-style search
+- Multi-threaded processing for optimal performance
+- Optional eBPF support for enhanced Linux performance
+"""
+depends = "libpcap0.8, libelf1, clang, llvm"
+section = "net"
+priority = "optional"
+assets = [
+    [
+        "target/release/rustnet",
+        "usr/bin/",
+        "755",
+    ],
+    [
+        "README.md",
+        "usr/share/doc/rustnet-monitor/",
+        "644",
+    ],
+    [
+        "assets/services",
+        "usr/share/rustnet-monitor/",
+        "644",
+    ],
+    [
+        "resources/packaging/linux/graphics/rustnet.png",
+        "usr/share/icons/hicolor/256x256/apps/",
+        "644",
+    ],
+    [
+        "resources/packaging/linux/rustnet.desktop",
+        "usr/share/applications/",
+        "644",
+    ],
+]
+conf-files = []
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/rustnet", dest = "/usr/bin/rustnet", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/rustnet-monitor/README.md", mode = "644" },
+    { source = "assets/services", dest = "/usr/share/rustnet-monitor/services", mode = "644" },
+]
+[package.metadata.generate-rpm.requires]
+libpcap = "*"
+libelf = "*"
+clang = "*"
+llvm = "*"

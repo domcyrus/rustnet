@@ -1,0 +1,19 @@
+app: rustnet
+binpatch: true
+
+ingredients:
+  dist: bookworm
+  sources:
+    - deb http://deb.debian.org/debian/ bookworm main
+  packages:
+    - libpcap0.8
+    - libelf1
+  debs:
+    - REPLACE_TAG
+
+script:
+  - echo "Creating AppImage for rustnet..."
+  - cp resources/packaging/linux/graphics/rustnet.png usr/share/icons/hicolor/256x256/apps/rustnet.png
+  - cp resources/packaging/linux/rustnet.desktop usr/share/applications/rustnet.desktop
+
+desktopintegration: rustnet

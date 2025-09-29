@@ -87,7 +87,7 @@ Update the Homebrew formula file (`rustnet.rb` in your tap repository):
 
 ```ruby
 class Rustnet < Formula
-  desc "High-performance network monitoring tool with TUI"
+  desc "Real-Time network monitoring tool with TUI"
   homepage "https://github.com/domcyrus/homebrew-rustnet"
   url "https://github.com/domcyrus/rustnet/archive/v0.2.0.tar.gz"
   sha256 "a1b2c3d4e5f6..." # Replace with actual SHA256 from above

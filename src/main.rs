@@ -1,6 +1,5 @@
 use anyhow::Result;
 use arboard::Clipboard;
-use clap::{Arg, Command};
 use log::{LevelFilter, debug, error, info};
 use ratatui::prelude::CrosstermBackend;
 use simplelog::{Config as LogConfig, WriteLogger};
@@ -10,59 +9,20 @@ use std::path::Path;
 use std::time::Duration;
 
 mod app;
+mod cli;
 mod filter;
 mod network;
 mod ui;
 
 fn main() -> Result<()> {
     // Parse command line arguments
-    let matches = Command::new("rustnet")
-        .version(env!("CARGO_PKG_VERSION"))
-        .author("Network Monitor")
-        .about("Cross-platform network monitoring tool")
-        .arg(
-            Arg::new("interface")
-                .short('i')
-                .long("interface")
-                .value_name("INTERFACE")
-                .help("Network interface to monitor")
-                .required(false),
-        )
-        .arg(
-            Arg::new("no-localhost")
-                .long("no-localhost")
-                .help("Filter out localhost connections")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("refresh-interval")
-                .short('r')
-                .long("refresh-interval")
-                .value_name("MILLISECONDS")
-                .help("UI refresh interval in milliseconds")
-                .value_parser(clap::value_parser!(u64))
-                .default_value("1000")
-                .required(false),
-        )
-        .arg(
-            Arg::new("no-dpi")
-                .long("no-dpi")
-                .help("Disable deep packet inspection")
-                .action(clap::ArgAction::SetTrue),
-        )
-        .arg(
-            Arg::new("log-level")
-                .short('l')
-                .long("log-level")
-                .value_name("LEVEL")
-                .help("Set the log level (if not provided, no logging will be enabled)")
-                .value_parser(clap::value_parser!(LevelFilter))
-                .required(false),
-        )
-        .get_matches();
+    let matches = cli::build_cli().get_matches();
     // Set up logging only if log-level was provided
-    if let Some(log_level) = matches.get_one::<LevelFilter>("log-level") {
-        setup_logging(*log_level)?;
+    if let Some(log_level_str) = matches.get_one::<String>("log-level") {
+        let log_level = log_level_str
+            .parse::<LevelFilter>()
+            .map_err(|_| anyhow::anyhow!("Invalid log level: {}", log_level_str))?;
+        setup_logging(log_level)?;
     }
 
     info!("Starting RustNet Monitor");
