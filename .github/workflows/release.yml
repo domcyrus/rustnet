@@ -366,6 +366,12 @@ jobs:
             New-Item -ItemType Directory -Path "assets" -Force
           }
 
+          # Setup WiX configuration (cargo-wix expects main.wxs in wix/ directory)
+          Write-Host "Setting up WiX configuration..."
+          New-Item -ItemType Directory -Path "wix" -Force
+          Copy-Item -Path "resources\packaging\windows\wix\main.wxs" -Destination "wix\main.wxs" -Force
+          Write-Host "WiX configuration copied"
+
           # Verify candle.exe and light.exe are in PATH
           Write-Host "Checking WiX tools..."
           Get-Command candle.exe -ErrorAction SilentlyContinue | Select-Object Source
