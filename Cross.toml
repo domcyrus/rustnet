@@ -14,8 +14,3 @@ pre-build = [
     "apt-get install -y libelf-dev:armhf zlib1g-dev:armhf libpcap-dev:armhf gcc-arm-linux-gnueabihf protobuf-compiler libseccomp-dev:armhf libbpf-dev clang llvm"
 ]
 
-[target.x86_64-unknown-linux-musl]
-image = "ghcr.io/cross-rs/x86_64-unknown-linux-musl:edge"
-pre-build = [
-    "apk add --no-cache libelf-dev zlib-dev libpcap-dev protobuf-dev libseccomp-dev libbpf-dev clang llvm",
-]
