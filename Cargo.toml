@@ -63,6 +63,7 @@ libbpf-cargo = "0.25"
 
 [features]
 default = []
+linux-default = ["ebpf"]
 ebpf = ["libbpf-rs", "libbpf-sys", "bytes", "libc"]
 
 # Minimal cross configuration to override dependency conflicts

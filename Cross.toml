@@ -5,35 +5,45 @@ passthrough = [
     "CARGO_NET_TIMEOUT",
 ]
 
-# Install eBPF dependencies for ARM targets
+# Install eBPF dependencies for cross-compilation targets
 [target.aarch64-unknown-linux-gnu]
 pre-build = [
+    "echo 'Installing dependencies for aarch64-unknown-linux-gnu'",
     "dpkg --add-architecture arm64",
     "apt-get update",
     "apt-get install -y libelf-dev:arm64 zlib1g-dev:arm64 pkg-config linux-libc-dev:arm64",
+    "echo 'Dependencies installed successfully'",
 ]
 
 [target.aarch64-unknown-linux-musl]
 pre-build = [
+    "echo 'Installing dependencies for aarch64-unknown-linux-musl'",
     "apt-get update",
     "apt-get install -y libelf-dev zlib1g-dev pkg-config linux-libc-dev",
+    "echo 'Dependencies installed successfully'",
 ]
 
 [target.armv7-unknown-linux-gnueabihf]
 pre-build = [
+    "echo 'Installing dependencies for armv7-unknown-linux-gnueabihf'",
     "dpkg --add-architecture armhf",
     "apt-get update",
     "apt-get install -y libelf-dev:armhf zlib1g-dev:armhf pkg-config linux-libc-dev:armhf",
+    "echo 'Dependencies installed successfully'",
 ]
 
 [target.armv7-unknown-linux-musleabihf]
 pre-build = [
+    "echo 'Installing dependencies for armv7-unknown-linux-musleabihf'",
     "apt-get update",
     "apt-get install -y libelf-dev zlib1g-dev pkg-config linux-libc-dev",
+    "echo 'Dependencies installed successfully'",
 ]
 
 [target.x86_64-unknown-linux-musl]
 pre-build = [
+    "echo 'Installing dependencies for x86_64-unknown-linux-musl'",
     "apt-get update",
     "apt-get install -y libelf-dev zlib1g-dev pkg-config linux-libc-dev",
+    "echo 'Dependencies installed successfully'",
 ]
