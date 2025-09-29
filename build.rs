@@ -86,15 +86,16 @@ fn download_windows_npcap_sdk() -> Result<()> {
         }
     };
 
-    // extract libraries
-    let (packet_lib_path, wpcap_lib_path) = if cfg!(target_arch = "aarch64") {
+    // extract libraries based on target architecture
+    let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
+    let (packet_lib_path, wpcap_lib_path) = if target.contains("aarch64") {
         ("Lib/ARM64/Packet.lib", "Lib/ARM64/wpcap.lib")
-    } else if cfg!(target_arch = "x86_64") {
+    } else if target.contains("x86_64") {
         ("Lib/x64/Packet.lib", "Lib/x64/wpcap.lib")
-    } else if cfg!(target_arch = "x86") {
+    } else if target.contains("i686") || target.contains("i586") {
         ("Lib/Packet.lib", "Lib/wpcap.lib")
     } else {
-        panic!("Unsupported target!")
+        panic!("Unsupported target: {}", target)
     };
 
     let mut archive = zip::ZipArchive::new(io::Cursor::new(npcap_zip))?;
