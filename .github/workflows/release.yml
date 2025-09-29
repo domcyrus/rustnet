@@ -138,15 +138,17 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Create the release
-          gh release create ${{ github.ref_name }} \
-            --title "Release ${{ github.ref_name }}" \
-            --draft \
-            --generate-notes
+          # Create the release if it doesn't exist
+          if ! gh release view ${{ github.ref_name }} 2>/dev/null; then
+            gh release create ${{ github.ref_name }} \
+              --title "Release ${{ github.ref_name }}" \
+              --draft \
+              --generate-notes
+          fi
 
           # Upload all build artifacts
           for artifact in artifacts/build-*/rustnet-*; do
-            gh release upload ${{ github.ref_name }} "$artifact"
+            gh release upload ${{ github.ref_name }} "$artifact" --clobber
           done
 
   package-installers:
@@ -227,7 +229,7 @@ jobs:
         run: |
           # Upload all installer packages
           for installer in installers/*; do
-            gh release upload ${{ github.ref_name }} "$installer"
+            gh release upload ${{ github.ref_name }} "$installer" --clobber
           done
 
   package-macos:
@@ -290,7 +292,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ github.ref_name }} "Rustnet_macOS_${{ matrix.arch }}.dmg"
+          gh release upload ${{ github.ref_name }} "Rustnet_macOS_${{ matrix.arch }}.dmg" --clobber
 
   package-windows:
     name: package-windows
@@ -353,4 +355,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ github.ref_name }} "Rustnet_Windows_${{ matrix.arch }}.msi"
+          gh release upload ${{ github.ref_name }} "Rustnet_Windows_${{ matrix.arch }}.msi" --clobber
