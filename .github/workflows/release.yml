@@ -321,7 +321,13 @@ jobs:
             -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip" `
             -OutFile "$env:TEMP\wix-binaries.zip" -Verbose
           Expand-Archive -LiteralPath "$env:TEMP\wix-binaries.zip" -DestinationPath "$env:TEMP\wix" -Verbose
-          Set-Item -Path env:Path -Value "$env:Path;$env:TEMP\wix"
+
+          # Add WiX to PATH for subsequent steps
+          "$env:TEMP\wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          # Verify WiX installation
+          Write-Host "Verifying WiX installation..."
+          Get-ChildItem "$env:TEMP\wix" | Select-Object -First 5
           Write-Host "::endgroup::"
 
       - name: Install Rust and tools
@@ -330,7 +336,11 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install packaging tools
-        run: cargo install cargo-wix
+        shell: bash
+        run: |
+          cargo install cargo-wix
+          echo "cargo-wix installed successfully"
+          cargo wix --version || echo "Warning: cargo-wix version check failed"
 
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -341,14 +351,43 @@ jobs:
       - name: Package for Windows
         shell: powershell
         run: |
-          # Extract binary
+          # Extract binary and assets
           Expand-Archive -LiteralPath "artifacts\rustnet-${{ github.ref_name }}-${{ matrix.target }}.zip" -DestinationPath .
+
+          # Create target directory structure
           New-Item -ItemType Directory -Path "target\${{ matrix.target }}\release" -Force
-          Move-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\"
+
+          # Copy binary
+          Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\" -Force
+
+          # Copy assets if they exist
+          if (Test-Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets") {
+            Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets" -Destination "." -Recurse -Force
+            Write-Host "Assets copied successfully"
+          } else {
+            Write-Host "Warning: No assets directory found in artifact"
+            # Create empty assets directory to prevent cargo-wix from failing
+            New-Item -ItemType Directory -Path "assets" -Force
+          }
+
+          # Verify directory structure
+          Write-Host "Directory structure:"
+          Get-ChildItem -Path "target\${{ matrix.target }}\release" -Recurse | Select-Object FullName
 
           # Create MSI package
+          Write-Host "Creating MSI package..."
           cargo wix --no-build --nocapture --target ${{ matrix.target }}
-          Move-Item -Path "target\wix\rustnet-monitor*.msi" -Destination "Rustnet_Windows_${{ matrix.arch }}.msi"
+
+          # Find and rename the MSI file
+          $msiFile = Get-ChildItem -Path "target\wix" -Filter "*.msi" | Select-Object -First 1
+          if ($msiFile) {
+            Move-Item -Path $msiFile.FullName -Destination "Rustnet_Windows_${{ matrix.arch }}.msi" -Force
+            Write-Host "MSI package created: Rustnet_Windows_${{ matrix.arch }}.msi"
+          } else {
+            Write-Error "MSI file not found in target\wix directory"
+            Get-ChildItem -Path "target" -Recurse | Select-Object FullName
+            exit 1
+          }
 
       - name: Upload Windows package
         env:
