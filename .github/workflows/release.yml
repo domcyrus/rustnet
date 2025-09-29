@@ -341,6 +341,10 @@ jobs:
           New-Item -ItemType Directory -Path "target\${{ matrix.target }}\release" -Force
           Move-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\"
 
+          # Setup WiX configuration
+          New-Item -ItemType Directory -Path "wix" -Force
+          Copy-Item -Path "resources\packaging\windows\wix\main.wxs" -Destination "wix\main.wxs"
+
           # Create MSI package
           cargo wix --no-build --nocapture --target ${{ matrix.target }}
           Move-Item -Path "target\wix\rustnet-monitor*.msi" -Destination "Rustnet_Windows_${{ matrix.arch }}.msi"

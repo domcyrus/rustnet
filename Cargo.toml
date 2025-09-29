@@ -133,3 +133,9 @@ libpcap = "*"
 libelf = "*"
 clang = "*"
 llvm = "*"
+
+[package.metadata.wix]
+upgrade-guid = "455c823b-9665-43e0-baa4-bd0fcb762463"
+path-guid = "d3a2452e-f04f-4d4f-becf-c3580f49f8fc"
+license = false
+eula = false
