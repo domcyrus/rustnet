@@ -317,17 +317,25 @@ jobs:
             -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip" `
             -OutFile "$env:TEMP\wix-binaries.zip" -Verbose
           Expand-Archive -LiteralPath "$env:TEMP\wix-binaries.zip" -DestinationPath "$env:TEMP\wix" -Verbose
-          Set-Item -Path env:Path -Value "$env:Path;$env:TEMP\wix"
+
+          # Add WiX to PATH for all subsequent steps
+          "$env:TEMP\wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          # Verify WiX installation
+          Write-Host "WiX tools installed:"
+          Get-ChildItem "$env:TEMP\wix\*.exe" | Select-Object Name
           Write-Host "::endgroup::"
 
       - name: Install Rust and tools
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-          components: rustfmt
 
       - name: Install packaging tools
-        run: cargo install cargo-wix
+        shell: bash
+        run: |
+          cargo install cargo-wix
+          cargo wix --version
 
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -338,18 +346,47 @@ jobs:
       - name: Package for Windows
         shell: powershell
         run: |
-          # Extract binary
-          Expand-Archive -LiteralPath "artifacts\rustnet-${{ github.ref_name }}-${{ matrix.target }}.zip" -DestinationPath .
-          New-Item -ItemType Directory -Path "target\${{ matrix.target }}\release" -Force
-          Move-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\"
+          # Extract binary and assets
+          Write-Host "Extracting artifact..."
+          Expand-Archive -LiteralPath "artifacts\rustnet-${{ github.ref_name }}-${{ matrix.target }}.zip" -DestinationPath . -Force
 
-          # Setup WiX configuration
-          New-Item -ItemType Directory -Path "wix" -Force
-          Copy-Item -Path "resources\packaging\windows\wix\main.wxs" -Destination "wix\main.wxs"
+          # Create target directory structure
+          New-Item -ItemType Directory -Path "target\${{ matrix.target }}\release" -Force
+
+          # Copy binary
+          Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\" -Force
+          Write-Host "Binary copied to target directory"
+
+          # Copy assets if they exist
+          if (Test-Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets") {
+            Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets" -Destination "." -Recurse -Force
+            Write-Host "Assets copied successfully"
+          } else {
+            Write-Host "Warning: No assets directory found, creating empty one"
+            New-Item -ItemType Directory -Path "assets" -Force
+          }
+
+          # Verify candle.exe and light.exe are in PATH
+          Write-Host "Checking WiX tools..."
+          Get-Command candle.exe -ErrorAction SilentlyContinue | Select-Object Source
+          Get-Command light.exe -ErrorAction SilentlyContinue | Select-Object Source
 
           # Create MSI package
+          Write-Host "Creating MSI package..."
           cargo wix --no-build --nocapture --target ${{ matrix.target }}
-          Move-Item -Path "target\wix\rustnet-monitor*.msi" -Destination "Rustnet_Windows_${{ matrix.arch }}.msi"
+
+          # Find and rename the MSI file
+          $msiFiles = Get-ChildItem -Path "target\wix" -Filter "*.msi" -ErrorAction SilentlyContinue
+          if ($msiFiles) {
+            $msiFile = $msiFiles | Select-Object -First 1
+            Move-Item -Path $msiFile.FullName -Destination "Rustnet_Windows_${{ matrix.arch }}.msi" -Force
+            Write-Host "MSI package created: Rustnet_Windows_${{ matrix.arch }}.msi"
+          } else {
+            Write-Error "No MSI file found in target\wix\"
+            Write-Host "Contents of target directory:"
+            Get-ChildItem -Path "target" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
+            exit 1
+          }
 
       - name: Upload Windows package
         env:
