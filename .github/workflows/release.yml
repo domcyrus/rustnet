@@ -80,9 +80,7 @@ jobs:
         if: matrix.cargo == 'cross'
         uses: taiki-e/cache-cargo-install-action@v2
         with:
-          tool: cross
-          git: https://github.com/cross-rs/cross.git
-          rev: 085092c
+          tool: cross@0.2.5
 
       - name: Build release binary
         shell: bash
