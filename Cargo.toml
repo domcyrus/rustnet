@@ -65,6 +65,7 @@ libbpf-cargo = "0.25"
 default = []
 ebpf = ["libbpf-rs", "libbpf-sys", "bytes", "libc"]
 
+# Minimal cross configuration to override dependency conflicts
 [workspace.metadata.cross.build.env]
 passthrough = [
     "CARGO_INCREMENTAL",
