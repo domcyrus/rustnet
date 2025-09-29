@@ -1,0 +1,12 @@
+[build.env]
+passthrough = [
+    "CARGO_INCREMENTAL",
+    "CARGO_NET_RETRY",
+    "CARGO_NET_TIMEOUT",
+]
+
+[target.aarch64-unknown-linux-gnu]
+[target.aarch64-unknown-linux-musl]
+[target.armv7-unknown-linux-gnueabihf]
+[target.armv7-unknown-linux-musleabihf]
+[target.x86_64-unknown-linux-musl]

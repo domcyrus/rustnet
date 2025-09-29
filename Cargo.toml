@@ -65,6 +65,13 @@ libbpf-cargo = "0.25"
 default = []
 ebpf = ["libbpf-rs", "libbpf-sys", "bytes", "libc"]
 
+[workspace.metadata.cross.build.env]
+passthrough = [
+    "CARGO_INCREMENTAL",
+    "CARGO_NET_RETRY",
+    "CARGO_NET_TIMEOUT",
+]
+
 [package.metadata.deb]
 maintainer = "domcyrus <domcyrus@example.com>"
 copyright = "2024, domcyrus <domcyrus@example.com>"
