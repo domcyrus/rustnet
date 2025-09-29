@@ -86,25 +86,33 @@ fn download_windows_npcap_sdk() -> Result<()> {
         }
     };
 
-    // extract DLL
-    let lib_path = if cfg!(target_arch = "aarch64") {
-        "Lib/ARM64/Packet.lib"
+    // extract libraries
+    let (packet_lib_path, wpcap_lib_path) = if cfg!(target_arch = "aarch64") {
+        ("Lib/ARM64/Packet.lib", "Lib/ARM64/wpcap.lib")
     } else if cfg!(target_arch = "x86_64") {
-        "Lib/x64/Packet.lib"
+        ("Lib/x64/Packet.lib", "Lib/x64/wpcap.lib")
     } else if cfg!(target_arch = "x86") {
-        "Lib/Packet.lib"
+        ("Lib/Packet.lib", "Lib/wpcap.lib")
     } else {
         panic!("Unsupported target!")
     };
-    let mut archive = zip::ZipArchive::new(io::Cursor::new(npcap_zip))?;
-    let mut npcap_lib = archive.by_name(lib_path)?;
 
-    // write DLL
+    let mut archive = zip::ZipArchive::new(io::Cursor::new(npcap_zip))?;
+
+    // Extract Packet.lib
+    let mut packet_lib = archive.by_name(packet_lib_path)?;
     let lib_dir = PathBuf::from(env::var("OUT_DIR")?).join("npcap_sdk");
-    let lib_path = lib_dir.join("Packet.lib");
     fs::create_dir_all(&lib_dir)?;
-    let mut lib_file = fs::File::create(lib_path)?;
-    io::copy(&mut npcap_lib, &mut lib_file)?;
+    let packet_lib_dest = lib_dir.join("Packet.lib");
+    let mut packet_file = fs::File::create(packet_lib_dest)?;
+    io::copy(&mut packet_lib, &mut packet_file)?;
+    drop(packet_lib);
+
+    // Extract wpcap.lib
+    let mut wpcap_lib = archive.by_name(wpcap_lib_path)?;
+    let wpcap_lib_dest = lib_dir.join("wpcap.lib");
+    let mut wpcap_file = fs::File::create(wpcap_lib_dest)?;
+    io::copy(&mut wpcap_lib, &mut wpcap_file)?;
 
     println!(
         "cargo:rustc-link-search=native={}",
