@@ -68,7 +68,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y libpcap-dev libelf-dev clang llvm
+          sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -171,7 +171,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y libpcap-dev libelf-dev clang llvm
+          sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
 
       - name: Install Rust and tools
         uses: dtolnay/rust-toolchain@stable
