@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **Docker Support with eBPF**: Docker images now include eBPF support for enhanced performance
-  - Multi-architecture Docker builds (amd64, arm64, armv7)
+  - Multi-architecture Docker builds (amd64, arm64)
   - eBPF-enabled images for advanced socket tracking on Linux
   - Optimized container builds with proper dependency management
 - **Cross-Platform Packaging and Release Automation**: Comprehensive automated release workflow
