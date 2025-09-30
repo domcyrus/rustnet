@@ -6,15 +6,17 @@ This document is for maintainers releasing new versions of RustNet.
 
 ### 1. Prepare the Release
 
-Update version in Cargo.toml if needed!
-Update CHANGELOG.md with release notes
+Update version in `Cargo.toml` and update `CHANGELOG.md` with release notes:
 
 ```bash
 # Ensure you're on the main branch with latest changes
 git checkout main
 git pull origin main
 
-# Test the build
+# Update Cargo.toml version (e.g., version = "0.3.0")
+# Update CHANGELOG.md with new version section
+
+# Update Cargo.lock and test the build
 cargo build --release
 cargo test
 ```
@@ -24,160 +26,90 @@ cargo test
 ```bash
 # Stage and commit the version and changelog changes
 git add Cargo.toml Cargo.lock CHANGELOG.md
-git commit -m "Release v0.2.0
+git commit -m "Release v0.3.0
 
-- Fixed process display stability issues on macOS
-- Improved PKTAP header processing  
-- Enhanced process name normalization
-- Added comprehensive debug logging"
+- Feature or fix summary here
+- Another change here
+- And more changes"
 ```
 
 ### 3. Create and Push Git Tag
 
 ```bash
-# Create an annotated tag with release notes
-git tag -a v0.2.0 -m "Release v0.2.0
+# Create an annotated tag matching the version in Cargo.toml
+git tag -a v0.3.0 -m "Release v0.3.0
 
-- Fixed process display stability issues on macOS
-- Improved PKTAP header processing
-- Enhanced process name normalization
-- Added comprehensive debug logging
-"
+- Feature or fix summary here
+- Another change here
+- And more changes"
 
-# Push the tag to trigger GitHub release
-git push origin v0.2.0
+# Push both the commit and the tag
+git push origin main
+git push origin v0.3.0
 ```
 
-### 4. Create GitHub Release
+**That's it!** The GitHub Actions workflow will automatically:
+- Build binaries for all platforms (Linux, macOS, Windows - multiple architectures)
+- Create installer packages (DEB, RPM, DMG, MSI)
+- Extract release notes from CHANGELOG.md
+- Create a draft GitHub release with all artifacts attached
+- Upload all binaries and installers to the release
+
+### 4. Finalize the Release
+
+Once the GitHub Actions workflow completes (~15-20 minutes):
 
 1. Go to the [GitHub repository releases page](https://github.com/domcyrus/rustnet/releases)
-2. Click "Create a new release"
-3. Select the tag you just pushed (v0.2.0)
-4. Set the release title (e.g., "RustNet v0.2.0")
-5. Add release notes describing changes, fixes, and new features
-6. Attach pre-built binaries if available
-7. Click "Publish release"
-
-Alternatively, use GitHub CLI:
-
-```bash
-# Install GitHub CLI if not already installed
-# brew install gh
-
-# Create release from tag
-gh release create v0.2.0 \
-  --title "RustNet v0.2.0" \
-  --notes-file CHANGELOG.md \
-  --target main
-```
-
-### 5. Update Homebrew Formula
-
-After creating the GitHub release, update the Homebrew formula:
-
-```bash
-# Calculate SHA256 of the source tarball
-curl -L "https://github.com/domcyrus/rustnet/archive/v0.2.0.tar.gz" | shasum -a 256
-
-# The output will be something like:
-# a1b2c3d4e5f6... (64-character hash)
-```
-
-Update the Homebrew formula file (`rustnet.rb` in your tap repository):
-
-```ruby
-class Rustnet < Formula
-  desc "Real-Time network monitoring tool with TUI"
-  homepage "https://github.com/domcyrus/homebrew-rustnet"
-  url "https://github.com/domcyrus/rustnet/archive/v0.2.0.tar.gz"
-  sha256 "a1b2c3d4e5f6..." # Replace with actual SHA256 from above
-  license "Apache-2.0"
-
-  depends_on "rust" => :build
-
-  def install
-    system "cargo", "install", *std_cargo_args
-  end
-
-  test do
-    system "#{bin}/rustnet", "--version"
-  end
-end
-```
-
-### 6. Test and Submit Homebrew Update
-
-```bash
-# Clone or update your homebrew tap repository
-git clone https://github.com/domcyrus/homebrew-rustnet.git
-cd homebrew-rustnet
-
-# Update the formula file with new version and SHA256
-# Edit rustnet.rb with the values from step 4
-
-# Test the formula locally
-brew install --build-from-source ./rustnet.rb
-brew test rustnet
-brew audit --strict rustnet.rb
-
-# Commit and push the updated formula
-git add rustnet.rb
-git commit -m "Update rustnet to v0.2.0"
-git push origin main
-```
-
-### 7. Verify the Release
-
-```bash
-# Test installation from Homebrew
-brew uninstall rustnet
-brew update
-brew install domcyrus/rustnet/rustnet
-
-# Verify the new version
-rustnet --version
-```
+2. Find the draft release for your tag (e.g., `v0.3.0`)
+3. Review the automatically extracted release notes
+4. Publish the release (it will be created as a draft)
 
 ## Automated Release Workflow
 
-For future releases, consider setting up GitHub Actions to automate parts of this process:
+The release process is fully automated via [`.github/workflows/release.yml`](.github/workflows/release.yml):
 
-```yaml
-# .github/workflows/release.yml
-name: Release
-on:
-  push:
-    tags:
-      - 'v*'
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build and Release
-        run: |
-          cargo build --release
-          # Add steps to create release artifacts
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: target/release/rustnet
-          generate_release_notes: true
-```
+**Triggers:**
+- Pushing a tag matching `v[0-9]+.[0-9]+.[0-9]+` (e.g., `v0.3.0`, `v1.2.3`)
+- Manual workflow dispatch
+
+**What it does:**
+1. **Builds cross-platform binaries:**
+   - Linux: x64, ARM64, ARMv7 (with eBPF support)
+   - macOS: Intel (x64) and Apple Silicon (ARM64)
+   - Windows: 64-bit and 32-bit
+
+2. **Creates installer packages:**
+   - **Linux:** DEB packages (amd64, arm64, armhf) and RPM packages (x86_64, aarch64)
+   - **macOS:** DMG installers with app bundles (supports code signing/notarization if secrets configured)
+   - **Windows:** MSI installers (64-bit and 32-bit)
+
+3. **Extracts release notes:**
+   - Automatically parses `CHANGELOG.md` to extract the version-specific section
+   - Falls back to auto-generated notes if no changelog entry is found
+
+4. **Creates GitHub release:**
+   - Creates a draft release with the tag name as title
+   - Attaches all binaries and installer packages
+   - Uses extracted changelog content as release notes
 
 ## Release Checklist
 
-Before each release, ensure:
+Before pushing the tag, ensure:
 
 - [ ] Version number updated in `Cargo.toml`
-- [ ] `CHANGELOG.md` updated with release notes
+- [ ] `Cargo.lock` updated (via `cargo build`)
+- [ ] `CHANGELOG.md` updated with release notes in format `## [x.y.z] - YYYY-MM-DD`
 - [ ] All tests pass (`cargo test`)
-- [ ] Documentation is up to date
+- [ ] Changes committed to main branch
 - [ ] Git tag created and pushed
-- [ ] GitHub release created
-- [ ] Homebrew formula updated with correct SHA256
-- [ ] Formula tested locally
-- [ ] Release announced (if applicable)
+
+After GitHub Actions completes:
+
+- [ ] Verify all platform binaries built successfully
+- [ ] Verify all installer packages created (DEB, RPM, DMG, MSI)
+- [ ] Review automatically extracted release notes
+- [ ] Publish the draft release on GitHub
+- [ ] Announce release (if applicable)
 
 ## Versioning
 

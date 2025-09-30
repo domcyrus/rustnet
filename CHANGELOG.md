@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2025-09-30
+
+### Added
+- **Docker Support with eBPF**: Docker images now include eBPF support for enhanced performance
+  - Multi-architecture Docker builds (amd64, arm64, armv7)
+  - eBPF-enabled images for advanced socket tracking on Linux
+  - Optimized container builds with proper dependency management
+- **Cross-Platform Packaging and Release Automation**: Comprehensive automated release workflow
+  - Automated DEB, RPM, DMG, and MSI package generation
+  - Cross-platform CI/CD improvements
+
+### Fixed
+- **RPM Package Dependencies**: Corrected libelf dependency specification in RPM packages
+- **Windows MSI Packaging**: Fixed MSI installer generation issues
+- **Release Workflow**: Resolved various release automation issues
+
 ## [0.10.0] - 2025-09-28
 
 ### Added
@@ -143,7 +159,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/domcyrus/rustnet/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/domcyrus/rustnet/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/domcyrus/rustnet/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/domcyrus/rustnet/compare/v0.7.0...v0.8.0
