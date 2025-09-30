@@ -63,6 +63,104 @@ When built with the `ebpf` feature on Linux, RustNet uses kernel eBPF programs f
 
 ## Installation
 
+### Installing from Release Packages
+
+Pre-built packages are available for each release on the [GitHub Releases](https://github.com/domcyrus/rustnet/releases) page.
+
+#### macOS DMG Installation
+
+1. **Download** the appropriate DMG for your architecture:
+   - `Rustnet_macOS_AppleSilicon.dmg` for Apple Silicon Macs (M1/M2/M3)
+   - `Rustnet_macOS_Intel.dmg` for Intel-based Macs
+
+2. **Open the DMG** and drag Rustnet.app to your Applications folder
+
+3. **Bypass Gatekeeper** (for unsigned builds):
+   - When you first try to open Rustnet, macOS will block it because the app is not signed
+   - Go to **System Settings → Privacy & Security**
+   - Scroll down to find the message about Rustnet being blocked
+   - Click **"Open Anyway"** to allow the application to run
+   - You may need to confirm this choice when launching the app again
+
+4. **Run Rustnet**:
+   - Double-click Rustnet.app to launch it in a Terminal window with sudo
+   - Or run from command line: `sudo /Applications/Rustnet.app/Contents/MacOS/rustnet`
+
+5. **Optional: Create a symlink for shell access**:
+   ```bash
+   # Create a symlink so you can run 'rustnet' from anywhere
+   sudo ln -s /Applications/Rustnet.app/Contents/MacOS/rustnet /usr/local/bin/rustnet
+
+   # Now you can run from any terminal:
+   sudo rustnet
+   ```
+
+6. **Optional: Setup BPF permissions** (to avoid needing sudo):
+   - Install Wireshark's BPF permission helper: `brew install --cask wireshark-chmodbpf`
+   - Log out and back in for group changes to take effect
+   - See the [Permissions](#permissions) section for detailed setup instructions
+
+#### Windows MSI Installation
+
+1. **Install Npcap Runtime** (required for packet capture):
+   - Download from https://npcap.com/dist/
+   - Run the installer and select **"WinPcap API compatible mode"**
+
+2. **Download and install** the appropriate MSI package:
+   - `Rustnet_Windows_64-bit.msi` for 64-bit Windows
+   - `Rustnet_Windows_32-bit.msi` for 32-bit Windows
+
+3. **Run the installer** and follow the installation wizard
+
+4. **Run Rustnet**:
+   - Open Command Prompt or PowerShell
+   - Run: `rustnet.exe`
+   - Note: Depending on your Npcap installation settings, you may or may not need Administrator privileges
+
+#### Linux Package Installation
+
+**Debian/Ubuntu (.deb packages):**
+
+```bash
+# Download the appropriate package for your architecture:
+# - Rustnet_LinuxDEB_amd64.deb (x86_64)
+# - Rustnet_LinuxDEB_arm64.deb (ARM64)
+# - Rustnet_LinuxDEB_armhf.deb (ARMv7)
+
+# Install the package
+sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
+
+# Install dependencies if needed
+sudo apt-get install -f
+
+# Run with sudo
+sudo rustnet
+
+# Optional: Grant capabilities to run without sudo
+sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
+rustnet
+```
+
+**RedHat/Fedora/CentOS (.rpm packages):**
+
+```bash
+# Download the appropriate package for your architecture:
+# - Rustnet_LinuxRPM_x86_64.rpm
+# - Rustnet_LinuxRPM_aarch64.rpm
+
+# Install the package
+sudo rpm -i Rustnet_LinuxRPM_x86_64.rpm
+# Or with dnf/yum:
+sudo dnf install Rustnet_LinuxRPM_x86_64.rpm
+
+# Run with sudo
+sudo rustnet
+
+# Optional: Grant capabilities to run without sudo
+sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
+rustnet
+```
+
 ### Prerequisites
 
 - Rust 2024 edition or later (install from [rustup.rs](https://rustup.rs/))
