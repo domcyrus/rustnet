@@ -90,7 +90,7 @@ Features:
 - Multi-threaded processing for optimal performance
 - Optional eBPF support for enhanced Linux performance
 """
-depends = "libpcap0.8, libelf1, clang, llvm"
+depends = "libpcap0.8, libelf1"
 section = "net"
 priority = "optional"
 assets = [
@@ -131,8 +131,6 @@ assets = [
 [package.metadata.generate-rpm.requires]
 libpcap = "*"
 elfutils-libelf = "*"
-clang = "*"
-llvm = "*"
 
 [package.metadata.wix]
 upgrade-guid = "455c823b-9665-43e0-baa4-bd0fcb762463"
