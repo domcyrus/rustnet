@@ -464,7 +464,6 @@ jobs:
 
           # Create MSI package
           Write-Host "Creating MSI package..."
-          Write-Host "Creating MSI package..."
           cargo wix --no-build --nocapture --target ${{ matrix.target }}
 
           # Find and rename the MSI file
