@@ -96,9 +96,10 @@ jobs:
           # Copy binary
           cp "target/${{ matrix.target }}/release/$RUSTNET_BIN" "$staging/"
 
-          # Copy assets if they exist
-          if [ -d "$RUSTNET_ASSET_DIR" ]; then
-            cp -r "$RUSTNET_ASSET_DIR" "$staging/"
+          # Copy services file if it exists
+          if [ -f "$RUSTNET_ASSET_DIR/services" ]; then
+            mkdir -p "$staging/assets"
+            cp "$RUSTNET_ASSET_DIR/services" "$staging/assets/"
           fi
 
           # Copy documentation
@@ -189,10 +190,16 @@ jobs:
               armhf) target="armv7-unknown-linux-gnueabihf" ;;
             esac
 
-            # Extract binary from artifact
+            # Extract binary and assets from artifact
             tar -xzf "artifacts/build-$target/rustnet-${{ github.ref_name }}-$target.tar.gz"
             mkdir -p "target/$target/release"
             cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
+
+            # Ensure services file exists for packaging
+            mkdir -p assets
+            if [ -f "rustnet-${{ github.ref_name }}-$target/assets/services" ]; then
+              cp "rustnet-${{ github.ref_name }}-$target/assets/services" assets/
+            fi
 
             # Create deb package
             cargo deb --no-build --no-strip --target $target
@@ -207,10 +214,16 @@ jobs:
           for arch in x86_64 aarch64; do
             target="$arch-unknown-linux-gnu"
 
-            # Extract binary from artifact
+            # Extract binary and assets from artifact
             tar -xzf "artifacts/build-$target/rustnet-${{ github.ref_name }}-$target.tar.gz"
             mkdir -p "target/$target/release"
             cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
+
+            # Ensure services file exists for packaging
+            mkdir -p assets
+            if [ -f "rustnet-${{ github.ref_name }}-$target/assets/services" ]; then
+              cp "rustnet-${{ github.ref_name }}-$target/assets/services" assets/
+            fi
 
             # Fix library linking if needed
             patchelf --replace-needed libpcap.so.0.8 libpcap.so.1 "target/$target/release/rustnet" 2>/dev/null || true
@@ -268,11 +281,12 @@ jobs:
           sed -i'.bak' -e "s/0\.0\.0/${VERSION}/g" -e "s/fffffff/${GITHUB_SHA:0:7}/g" resources/packaging/macos/Info.plist
 
           # Create app bundle
-          mkdir -p "Rustnet.app/Contents/"{MacOS,Resources}
+          mkdir -p "Rustnet.app/Contents/"{MacOS,Resources/assets}
           cp resources/packaging/macos/Info.plist "Rustnet.app/Contents/"
           cp resources/packaging/macos/graphics/rustnet.icns "Rustnet.app/Contents/Resources/"
           cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/rustnet" "Rustnet.app/Contents/MacOS/"
           cp resources/packaging/macos/wrapper.sh "Rustnet.app/Contents/MacOS/"
+          cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/assets/services" "Rustnet.app/Contents/Resources/assets/"
           chmod +x "Rustnet.app/Contents/MacOS/"{rustnet,wrapper.sh}
 
           # Create DMG
@@ -357,13 +371,13 @@ jobs:
           Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\" -Force
           Write-Host "Binary copied to target directory"
 
-          # Copy assets if they exist
-          if (Test-Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets") {
-            Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets" -Destination "." -Recurse -Force
-            Write-Host "Assets copied successfully"
+          # Copy services file if it exists
+          New-Item -ItemType Directory -Path "assets" -Force
+          if (Test-Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets\services") {
+            Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets\services" -Destination "assets\" -Force
+            Write-Host "Services file copied successfully"
           } else {
-            Write-Host "Warning: No assets directory found, creating empty one"
-            New-Item -ItemType Directory -Path "assets" -Force
+            Write-Host "Warning: No services file found"
           }
 
           # Setup WiX configuration (cargo-wix expects main.wxs in wix/ directory)
