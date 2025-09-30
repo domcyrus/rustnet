@@ -1,9 +1,17 @@
 # Multi-stage Docker build for RustNet
 FROM rust:1.89-slim AS builder
 
+# Install rustfmt component (required for eBPF compilation)
+RUN rustup component add rustfmt
+
 # Install build dependencies
 RUN apt-get update && apt-get install -y \
     libpcap-dev \
+    libelf-dev \
+    zlib1g-dev \
+    clang \
+    llvm \
+    make \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
@@ -13,12 +21,15 @@ WORKDIR /app
 # Copy Cargo files first for better caching
 COPY Cargo.toml Cargo.lock ./
 
+# Copy build script for eBPF compilation
+COPY build.rs ./
+
 # Copy source code
 COPY src ./src
 COPY assets/services ./assets/services
 
-# Build the application in release mode
-RUN cargo build --release
+# Build the application in release mode with eBPF support
+RUN cargo build --release --features "linux-default"
 
 # Runtime stage - use trixie-slim to match GLIBC version from builder
 FROM debian:trixie-slim
@@ -26,6 +37,8 @@ FROM debian:trixie-slim
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     libpcap0.8 \
+    libelf1 \
+    zlib1g \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
