@@ -29,9 +29,9 @@
         <Property Id='DiskPrompt' Value="Rustnet Installation [1]" />
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
-            <Directory Id='ProgramFilesFolder'>
+            <Directory Id='ProgramFiles64Folder'>
                 <Directory Id='APPLICATIONROOTDIRECTORY' Name='Rustnet'>
-                    <Component Id='MainExecutable' Guid='*'>
+                    <Component Id='MainExecutable' Guid='*' Win64='yes'>
                         <File Id='RustnetExe'
                             Name='rustnet.exe'
                             DiskId='1'
@@ -40,13 +40,13 @@
                         <Environment Id='PATH' Name='PATH' Value='[APPLICATIONROOTDIRECTORY]'
                             Permanent='no' Part='last' Action='set' System='yes' />
                     </Component>
-                    <Component Id='AppIcon' Guid='*'>
+                    <Component Id='AppIcon' Guid='*' Win64='yes'>
                         <File Id='RustnetIco'
                             Name='rustnet.ico'
                             DiskId='1'
                             Source='resources\packaging\windows\graphics\rustnet.ico'/>
                     </Component>
-                    <Component Id='AssetsDir' Guid='*'>
+                    <Component Id='AssetsDir' Guid='*' Win64='yes'>
                         <File Id='ServicesFile'
                             Name='services'
                             DiskId='1'
@@ -58,7 +58,7 @@
 
             <Directory Id="ProgramMenuFolder">
                 <Directory Id="ApplicationProgramsFolder" Name="Rustnet">
-                    <Component Id="ApplicationShortcut" Guid="*">
+                    <Component Id="ApplicationShortcut" Guid="*" Win64="yes">
                         <Shortcut Id="ApplicationStartMenuShortcut"
                             Name="Rustnet"
                             Description="Cross-platform network monitoring tool"
