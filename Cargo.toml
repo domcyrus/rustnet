@@ -130,7 +130,7 @@ assets = [
 ]
 [package.metadata.generate-rpm.requires]
 libpcap = "*"
-libelf = "*"
+elfutils-libelf = "*"
 clang = "*"
 llvm = "*"
 
