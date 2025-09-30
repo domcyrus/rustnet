@@ -154,16 +154,54 @@ jobs:
         with:
           path: artifacts
 
+      - name: Extract changelog for release
+        run: |
+          # Extract the version-specific section from CHANGELOG.md
+          VERSION="${{ github.ref_name }}"
+
+          # Remove 'v' prefix if present for matching changelog headers
+          VERSION_NUMBER="${VERSION#v}"
+
+          # Extract content between version headers
+          awk -v version="$VERSION_NUMBER" '
+            /^## \[/ {
+              if (found) exit
+              if ($0 ~ "\\[" version "\\]") {
+                found=1
+                next
+              }
+            }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+
+          # Check if we extracted any content
+          if [ ! -s release_notes.md ]; then
+            echo "⚠️  No changelog entry found for $VERSION, will use auto-generated notes"
+            echo "USE_GENERATED_NOTES=true" >> $GITHUB_ENV
+          else
+            echo "✅ Extracted changelog content for $VERSION"
+            cat release_notes.md
+          fi
+
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Create the release if it doesn't exist
           if ! gh release view ${{ github.ref_name }} 2>/dev/null; then
-            gh release create ${{ github.ref_name }} \
-              --title "Release ${{ github.ref_name }}" \
-              --draft \
-              --generate-notes
+            if [ "$USE_GENERATED_NOTES" = "true" ]; then
+              # Fallback to auto-generated notes if changelog extraction failed
+              gh release create ${{ github.ref_name }} \
+                --title "Release ${{ github.ref_name }}" \
+                --draft \
+                --generate-notes
+            else
+              # Use extracted changelog content
+              gh release create ${{ github.ref_name }} \
+                --title "Release ${{ github.ref_name }}" \
+                --draft \
+                --notes-file release_notes.md
+            fi
           fi
 
           # Upload all build artifacts
