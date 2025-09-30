@@ -1,5 +1,24 @@
 name: Release
 
+# This workflow builds and packages Rustnet for multiple platforms.
+#
+# For macOS code signing and notarization, configure these GitHub repository secrets:
+# - APPLE_DEVELOPER_CERTIFICATE_P12: Base64-encoded .p12 certificate file
+#   (Export from Keychain: Developer ID Application certificate → Export as .p12 → base64 encode)
+# - APPLE_DEVELOPER_CERTIFICATE_PASSWORD: Password for the .p12 file
+# - APPLE_ID_ISSUER_ID: App Store Connect API issuer ID (from App Store Connect → Users and Access → Keys)
+# - APPLE_ID_KEY_ID: App Store Connect API key ID
+# - APPLE_ID_KEY: App Store Connect API key content (.p8 file contents)
+#
+# Without these secrets, the DMG will be unsigned and users must use "Open Anyway" in
+# System Settings → Privacy & Security to bypass Gatekeeper protection.
+#
+# To obtain Apple Developer credentials:
+# 1. Join the Apple Developer Program ($99/year): https://developer.apple.com/programs/
+# 2. Create a Developer ID Application certificate in your Apple Developer account
+# 3. Create an App Store Connect API key with "Developer" role
+# 4. Export certificate as .p12, encode with: base64 -i certificate.p12 | pbcopy
+
 on:
   push:
     tags:
@@ -18,11 +37,8 @@ jobs:
       matrix:
         build:
           - linux-aarch64-gnu
-          - linux-aarch64-musl
           - linux-armv7-gnueabihf
-          - linux-armv7-musleabihf
           - linux-x64-gnu
-          - linux-x64-musl
           - macos-aarch64
           - macos-x64
           - windows-x64-msvc
@@ -33,19 +49,11 @@ jobs:
           - build: linux-aarch64-gnu
             target: aarch64-unknown-linux-gnu
             cargo: cross
-          - build: linux-aarch64-musl
-            target: aarch64-unknown-linux-musl
-            cargo: cross
           - build: linux-armv7-gnueabihf
             target: armv7-unknown-linux-gnueabihf
             cargo: cross
-          - build: linux-armv7-musleabihf
-            target: armv7-unknown-linux-musleabihf
-            cargo: cross
           - build: linux-x64-gnu
             target: x86_64-unknown-linux-gnu
-          - build: linux-x64-musl
-            target: x86_64-unknown-linux-musl
           - build: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
@@ -67,21 +75,20 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y libpcap-dev libelf-dev clang llvm
+          sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
+          components: rustfmt
 
       - name: Install cross
         if: matrix.cargo == 'cross'
         uses: taiki-e/cache-cargo-install-action@v2
         with:
-          tool: cross
-          git: https://github.com/cross-rs/cross.git
-          rev: 085092c
+          tool: cross@0.2.5
 
       - name: Build release binary
         shell: bash
@@ -90,7 +97,12 @@ jobs:
         run: |
           mkdir -p "$RUSTNET_ASSET_DIR"
           # build.rs will handle Npcap SDK download on Windows
-          ${{ matrix.cargo }} build --verbose --release --target ${{ matrix.target }}
+          # Use linux-default feature for all Linux targets to enable eBPF
+          if [[ "${{ matrix.target }}" == *"linux"* ]]; then
+            ${{ matrix.cargo }} build --verbose --release --target ${{ matrix.target }} --features "linux-default"
+          else
+            ${{ matrix.cargo }} build --verbose --release --target ${{ matrix.target }}
+          fi
 
       - name: Create release archive
         shell: bash
@@ -103,9 +115,10 @@ jobs:
           # Copy binary
           cp "target/${{ matrix.target }}/release/$RUSTNET_BIN" "$staging/"
 
-          # Copy assets if they exist
-          if [ -d "$RUSTNET_ASSET_DIR" ]; then
-            cp -r "$RUSTNET_ASSET_DIR" "$staging/"
+          # Copy services file if it exists
+          if [ -f "$RUSTNET_ASSET_DIR/services" ]; then
+            mkdir -p "$staging/assets"
+            cp "$RUSTNET_ASSET_DIR/services" "$staging/assets/"
           fi
 
           # Copy documentation
@@ -141,19 +154,59 @@ jobs:
         with:
           path: artifacts
 
+      - name: Extract changelog for release
+        run: |
+          # Extract the version-specific section from CHANGELOG.md
+          VERSION="${{ github.ref_name }}"
+
+          # Remove 'v' prefix if present for matching changelog headers
+          VERSION_NUMBER="${VERSION#v}"
+
+          # Extract content between version headers
+          awk -v version="$VERSION_NUMBER" '
+            /^## \[/ {
+              if (found) exit
+              if ($0 ~ "\\[" version "\\]") {
+                found=1
+                next
+              }
+            }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+
+          # Check if we extracted any content
+          if [ ! -s release_notes.md ]; then
+            echo "⚠️  No changelog entry found for $VERSION, will use auto-generated notes"
+            echo "USE_GENERATED_NOTES=true" >> $GITHUB_ENV
+          else
+            echo "✅ Extracted changelog content for $VERSION"
+            cat release_notes.md
+          fi
+
       - name: Create Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Create the release
-          gh release create ${{ github.ref_name }} \
-            --title "Release ${{ github.ref_name }}" \
-            --draft \
-            --generate-notes
+          # Create the release if it doesn't exist
+          if ! gh release view ${{ github.ref_name }} 2>/dev/null; then
+            if [ "$USE_GENERATED_NOTES" = "true" ]; then
+              # Fallback to auto-generated notes if changelog extraction failed
+              gh release create ${{ github.ref_name }} \
+                --title "Release ${{ github.ref_name }}" \
+                --draft \
+                --generate-notes
+            else
+              # Use extracted changelog content
+              gh release create ${{ github.ref_name }} \
+                --title "Release ${{ github.ref_name }}" \
+                --draft \
+                --notes-file release_notes.md
+            fi
+          fi
 
           # Upload all build artifacts
           for artifact in artifacts/build-*/rustnet-*; do
-            gh release upload ${{ github.ref_name }} "$artifact"
+            gh release upload ${{ github.ref_name }} "$artifact" --clobber
           done
 
   package-installers:
@@ -172,12 +225,13 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y libpcap-dev libelf-dev clang llvm
+          sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
 
       - name: Install Rust and tools
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,armv7-unknown-linux-gnueabihf
+          components: rustfmt
 
       - name: Install packaging tools
         run: |
@@ -193,10 +247,16 @@ jobs:
               armhf) target="armv7-unknown-linux-gnueabihf" ;;
             esac
 
-            # Extract binary from artifact
+            # Extract binary and assets from artifact
             tar -xzf "artifacts/build-$target/rustnet-${{ github.ref_name }}-$target.tar.gz"
             mkdir -p "target/$target/release"
             cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
+
+            # Ensure services file exists for packaging
+            mkdir -p assets
+            if [ -f "rustnet-${{ github.ref_name }}-$target/assets/services" ]; then
+              cp "rustnet-${{ github.ref_name }}-$target/assets/services" assets/
+            fi
 
             # Create deb package
             cargo deb --no-build --no-strip --target $target
@@ -211,10 +271,16 @@ jobs:
           for arch in x86_64 aarch64; do
             target="$arch-unknown-linux-gnu"
 
-            # Extract binary from artifact
+            # Extract binary and assets from artifact
             tar -xzf "artifacts/build-$target/rustnet-${{ github.ref_name }}-$target.tar.gz"
             mkdir -p "target/$target/release"
             cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
+
+            # Ensure services file exists for packaging
+            mkdir -p assets
+            if [ -f "rustnet-${{ github.ref_name }}-$target/assets/services" ]; then
+              cp "rustnet-${{ github.ref_name }}-$target/assets/services" assets/
+            fi
 
             # Fix library linking if needed
             patchelf --replace-needed libpcap.so.0.8 libpcap.so.1 "target/$target/release/rustnet" 2>/dev/null || true
@@ -233,7 +299,7 @@ jobs:
         run: |
           # Upload all installer packages
           for installer in installers/*; do
-            gh release upload ${{ github.ref_name }} "$installer"
+            gh release upload ${{ github.ref_name }} "$installer" --clobber
           done
 
   package-macos:
@@ -254,6 +320,7 @@ jobs:
       - name: Install packaging tools
         run: |
           cargo install toml-cli
+          cargo install apple-codesign
           brew install create-dmg
 
       - name: Download build artifact
@@ -272,14 +339,66 @@ jobs:
           sed -i'.bak' -e "s/0\.0\.0/${VERSION}/g" -e "s/fffffff/${GITHUB_SHA:0:7}/g" resources/packaging/macos/Info.plist
 
           # Create app bundle
-          mkdir -p "Rustnet.app/Contents/"{MacOS,Resources}
+          mkdir -p "Rustnet.app/Contents/"{MacOS,Resources/assets}
           cp resources/packaging/macos/Info.plist "Rustnet.app/Contents/"
           cp resources/packaging/macos/graphics/rustnet.icns "Rustnet.app/Contents/Resources/"
           cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/rustnet" "Rustnet.app/Contents/MacOS/"
           cp resources/packaging/macos/wrapper.sh "Rustnet.app/Contents/MacOS/"
+          cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/assets/services" "Rustnet.app/Contents/Resources/assets/"
           chmod +x "Rustnet.app/Contents/MacOS/"{rustnet,wrapper.sh}
 
-          # Create DMG
+      - name: Code sign and notarize app bundle
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DEVELOPER_CERTIFICATE_PASSWORD }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_ID_ISSUER_ID }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_ID_KEY_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_ID_KEY }}
+        run: |
+          # Skip signing if secrets are not configured
+          if [ -z "$APPLE_CERTIFICATE_P12" ]; then
+            echo "⚠️  Code signing secrets not configured. DMG will be unsigned."
+            echo "⚠️  Users will need to use 'Open Anyway' in System Settings > Privacy & Security"
+            echo "SKIP_SIGNING=true" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # Decode certificate and save to file
+          echo "$APPLE_CERTIFICATE_P12" | base64 --decode > certificate.p12
+
+          # Create temporary JSON for API credentials
+          cat > api-key.json <<EOF
+          {
+            "issuer": "$APPLE_API_ISSUER",
+            "key_id": "$APPLE_API_KEY_ID",
+            "private_key": "$APPLE_API_KEY"
+          }
+          EOF
+
+          # Sign the app bundle with hardened runtime
+          rcodesign sign \
+            --p12-file certificate.p12 \
+            --p12-password "$APPLE_CERTIFICATE_PASSWORD" \
+            --code-signature-flags runtime \
+            Rustnet.app
+
+          # Create zip for notarization (required format)
+          ditto -c -k --keepParent Rustnet.app Rustnet.zip
+
+          # Submit for notarization and wait for result
+          rcodesign notary-submit \
+            --api-key-path api-key.json \
+            --wait \
+            Rustnet.zip
+
+          # Staple the notarization ticket to the app
+          rcodesign staple Rustnet.app
+
+          # Cleanup sensitive files
+          rm -f certificate.p12 api-key.json Rustnet.zip
+
+      - name: Create DMG
+        run: |
           create-dmg \
             --volname "Rustnet Installer" \
             --background "resources/packaging/macos/graphics/dmg_bg.png" \
@@ -296,7 +415,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ github.ref_name }} "Rustnet_macOS_${{ matrix.arch }}.dmg"
+          gh release upload ${{ github.ref_name }} "Rustnet_macOS_${{ matrix.arch }}.dmg" --clobber
 
   package-windows:
     name: package-windows
@@ -322,12 +441,12 @@ jobs:
             -OutFile "$env:TEMP\wix-binaries.zip" -Verbose
           Expand-Archive -LiteralPath "$env:TEMP\wix-binaries.zip" -DestinationPath "$env:TEMP\wix" -Verbose
 
-          # Add WiX to PATH for subsequent steps
+          # Add WiX to PATH for all subsequent steps
           "$env:TEMP\wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
           # Verify WiX installation
-          Write-Host "Verifying WiX installation..."
-          Get-ChildItem "$env:TEMP\wix" | Select-Object -First 5
+          Write-Host "WiX tools installed:"
+          Get-ChildItem "$env:TEMP\wix\*.exe" | Select-Object Name
           Write-Host "::endgroup::"
 
       - name: Install Rust and tools
@@ -339,8 +458,7 @@ jobs:
         shell: bash
         run: |
           cargo install cargo-wix
-          echo "cargo-wix installed successfully"
-          cargo wix --version || echo "Warning: cargo-wix version check failed"
+          cargo wix --version
 
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -352,40 +470,50 @@ jobs:
         shell: powershell
         run: |
           # Extract binary and assets
-          Expand-Archive -LiteralPath "artifacts\rustnet-${{ github.ref_name }}-${{ matrix.target }}.zip" -DestinationPath .
+          Write-Host "Extracting artifact..."
+          Expand-Archive -LiteralPath "artifacts\rustnet-${{ github.ref_name }}-${{ matrix.target }}.zip" -DestinationPath . -Force
 
           # Create target directory structure
           New-Item -ItemType Directory -Path "target\${{ matrix.target }}\release" -Force
 
           # Copy binary
           Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\" -Force
+          Write-Host "Binary copied to target directory"
 
-          # Copy assets if they exist
-          if (Test-Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets") {
-            Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets" -Destination "." -Recurse -Force
-            Write-Host "Assets copied successfully"
+          # Copy services file if it exists
+          New-Item -ItemType Directory -Path "assets" -Force
+          if (Test-Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets\services") {
+            Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets\services" -Destination "assets\" -Force
+            Write-Host "Services file copied successfully"
           } else {
-            Write-Host "Warning: No assets directory found in artifact"
-            # Create empty assets directory to prevent cargo-wix from failing
-            New-Item -ItemType Directory -Path "assets" -Force
+            Write-Host "Warning: No services file found"
           }
 
-          # Verify directory structure
-          Write-Host "Directory structure:"
-          Get-ChildItem -Path "target\${{ matrix.target }}\release" -Recurse | Select-Object FullName
+          # Setup WiX configuration (cargo-wix expects main.wxs in wix/ directory)
+          Write-Host "Setting up WiX configuration..."
+          New-Item -ItemType Directory -Path "wix" -Force
+          Copy-Item -Path "resources\packaging\windows\wix\main.wxs" -Destination "wix\main.wxs" -Force
+          Write-Host "WiX configuration copied"
+
+          # Verify candle.exe and light.exe are in PATH
+          Write-Host "Checking WiX tools..."
+          Get-Command candle.exe -ErrorAction SilentlyContinue | Select-Object Source
+          Get-Command light.exe -ErrorAction SilentlyContinue | Select-Object Source
 
           # Create MSI package
           Write-Host "Creating MSI package..."
           cargo wix --no-build --nocapture --target ${{ matrix.target }}
 
           # Find and rename the MSI file
-          $msiFile = Get-ChildItem -Path "target\wix" -Filter "*.msi" | Select-Object -First 1
-          if ($msiFile) {
+          $msiFiles = Get-ChildItem -Path "target\wix" -Filter "*.msi" -ErrorAction SilentlyContinue
+          if ($msiFiles) {
+            $msiFile = $msiFiles | Select-Object -First 1
             Move-Item -Path $msiFile.FullName -Destination "Rustnet_Windows_${{ matrix.arch }}.msi" -Force
             Write-Host "MSI package created: Rustnet_Windows_${{ matrix.arch }}.msi"
           } else {
-            Write-Error "MSI file not found in target\wix directory"
-            Get-ChildItem -Path "target" -Recurse | Select-Object FullName
+            Write-Error "No MSI file found in target\wix\"
+            Write-Host "Contents of target directory:"
+            Get-ChildItem -Path "target" -Recurse -ErrorAction SilentlyContinue | Select-Object FullName
             exit 1
           }
 
@@ -393,4 +521,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ github.ref_name }} "Rustnet_Windows_${{ matrix.arch }}.msi"
+          gh release upload ${{ github.ref_name }} "Rustnet_Windows_${{ matrix.arch }}.msi" --clobber

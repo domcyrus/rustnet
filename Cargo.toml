@@ -44,7 +44,6 @@ aes = "0.8"
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.16"
 libbpf-rs = { version = "0.25", optional = true }
-libbpf-sys = { version = "1.4", optional = true }
 bytes = { version = "1.5", optional = true }
 libc = { version = "0.2", optional = true }
 
@@ -60,10 +59,20 @@ zip = "2.1"
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
 libbpf-cargo = "0.25"
+vmlinux = { version = "0.0", git = "https://github.com/libbpf/vmlinux.h.git", rev = "83a228cf37fc65f2d14e4896a04922b5ee531a94" }
 
 [features]
 default = []
-ebpf = ["libbpf-rs", "libbpf-sys", "bytes", "libc"]
+linux-default = ["ebpf"]
+ebpf = ["libbpf-rs", "bytes", "libc"]
+
+# Minimal cross configuration to override dependency conflicts
+[workspace.metadata.cross.build.env]
+passthrough = [
+    "CARGO_INCREMENTAL",
+    "CARGO_NET_RETRY",
+    "CARGO_NET_TIMEOUT",
+]
 
 [package.metadata.deb]
 maintainer = "domcyrus <domcyrus@example.com>"
@@ -124,3 +133,9 @@ libpcap = "*"
 libelf = "*"
 clang = "*"
 llvm = "*"
+
+[package.metadata.wix]
+upgrade-guid = "455c823b-9665-43e0-baa4-bd0fcb762463"
+path-guid = "d3a2452e-f04f-4d4f-becf-c3580f49f8fc"
+license = false
+eula = false

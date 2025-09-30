@@ -5,7 +5,10 @@ fn main() -> Result<()> {
     // Generate shell completions and manpage
     generate_assets()?;
 
-    // Only compile eBPF programs on Linux when the feature is enabled
+    // Add library search paths for cross-compilation
+    setup_cross_compilation_libs();
+
+    // Compile eBPF programs on Linux when the feature is enabled
     if cfg!(target_os = "linux") && env::var("CARGO_FEATURE_EBPF").is_ok() {
         compile_ebpf_programs();
     }
@@ -20,6 +23,26 @@ fn main() -> Result<()> {
 }
 
 include!("src/cli.rs");
+
+fn setup_cross_compilation_libs() {
+    let target = env::var("TARGET").unwrap_or_default();
+
+    match target.as_str() {
+        "aarch64-unknown-linux-gnu" => {
+            println!("cargo:rustc-link-search=native=/usr/lib/aarch64-linux-gnu");
+            println!("cargo:rustc-link-lib=elf");
+            println!("cargo:rustc-link-lib=z");
+        }
+        "armv7-unknown-linux-gnueabihf" => {
+            println!("cargo:rustc-link-search=native=/usr/lib/arm-linux-gnueabihf");
+            println!("cargo:rustc-link-lib=elf");
+            println!("cargo:rustc-link-lib=z");
+        }
+        _ => {
+            // For other targets, including native builds, let pkg-config handle it
+        }
+    }
+}
 
 fn generate_assets() -> Result<()> {
     use clap::ValueEnum;
@@ -86,25 +109,34 @@ fn download_windows_npcap_sdk() -> Result<()> {
         }
     };
 
-    // extract DLL
-    let lib_path = if cfg!(target_arch = "aarch64") {
-        "Lib/ARM64/Packet.lib"
-    } else if cfg!(target_arch = "x86_64") {
-        "Lib/x64/Packet.lib"
-    } else if cfg!(target_arch = "x86") {
-        "Lib/Packet.lib"
+    // extract libraries based on target architecture
+    let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
+    let (packet_lib_path, wpcap_lib_path) = if target.contains("aarch64") {
+        ("Lib/ARM64/Packet.lib", "Lib/ARM64/wpcap.lib")
+    } else if target.contains("x86_64") {
+        ("Lib/x64/Packet.lib", "Lib/x64/wpcap.lib")
+    } else if target.contains("i686") || target.contains("i586") {
+        ("Lib/Packet.lib", "Lib/wpcap.lib")
     } else {
-        panic!("Unsupported target!")
+        panic!("Unsupported target: {}", target)
     };
-    let mut archive = zip::ZipArchive::new(io::Cursor::new(npcap_zip))?;
-    let mut npcap_lib = archive.by_name(lib_path)?;
 
-    // write DLL
+    let mut archive = zip::ZipArchive::new(io::Cursor::new(npcap_zip))?;
+
+    // Extract Packet.lib
+    let mut packet_lib = archive.by_name(packet_lib_path)?;
     let lib_dir = PathBuf::from(env::var("OUT_DIR")?).join("npcap_sdk");
-    let lib_path = lib_dir.join("Packet.lib");
     fs::create_dir_all(&lib_dir)?;
-    let mut lib_file = fs::File::create(lib_path)?;
-    io::copy(&mut npcap_lib, &mut lib_file)?;
+    let packet_lib_dest = lib_dir.join("Packet.lib");
+    let mut packet_file = fs::File::create(packet_lib_dest)?;
+    io::copy(&mut packet_lib, &mut packet_file)?;
+    drop(packet_lib);
+
+    // Extract wpcap.lib
+    let mut wpcap_lib = archive.by_name(wpcap_lib_path)?;
+    let wpcap_lib_dest = lib_dir.join("wpcap.lib");
+    let mut wpcap_file = fs::File::create(wpcap_lib_dest)?;
+    io::copy(&mut wpcap_lib, &mut wpcap_file)?;
 
     println!(
         "cargo:rustc-link-search=native={}",
@@ -119,6 +151,7 @@ fn download_windows_npcap_sdk() -> Result<()> {
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
 fn compile_ebpf_programs() {
     use libbpf_cargo::SkeletonBuilder;
+    use std::ffi::OsStr;
     use std::path::PathBuf;
 
     let mut out = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -128,46 +161,27 @@ fn compile_ebpf_programs() {
 
     println!("cargo:warning=Building eBPF program using libbpf-cargo");
 
-    match SkeletonBuilder::new()
+    // Get target architecture for cross-compilation
+    let arch = env::var("CARGO_CFG_TARGET_ARCH")
+        .expect("CARGO_CFG_TARGET_ARCH must be set in build script");
+
+    // Map Rust arch names to eBPF target arch defines
+    let target_arch_define = match arch.as_str() {
+        "x86_64" => "-D__TARGET_ARCH_x86",
+        "aarch64" => "-D__TARGET_ARCH_arm64",
+        "arm" => "-D__TARGET_ARCH_arm",
+        _ => "-D__TARGET_ARCH_x86", // fallback
+    };
+
+    SkeletonBuilder::new()
         .source(src)
         .clang_args([
-            "-I/usr/include",
-            "-I/usr/include/linux",
-            "-I/usr/include/x86_64-linux-gnu",
-            "-D__TARGET_ARCH_x86",
+            OsStr::new("-I"),
+            vmlinux::include_path_root().join(&arch).as_os_str(),
+            OsStr::new(target_arch_define),
         ])
         .build_and_generate(&out)
-    {
-        Ok(_) => {
-            println!("cargo:warning=eBPF skeleton generated successfully");
-        }
-        Err(e) => {
-            println!("cargo:warning=Failed to build eBPF program: {}", e);
-
-            // Create a placeholder skeleton file that compiles but returns None
-            let placeholder_skeleton = r#"
-// Placeholder skeleton for failed compilation
-#[allow(dead_code)]
-pub mod socket_tracker {
-    use anyhow::Result;
-    
-    pub struct SocketTrackerSkel;
-    
-    impl SocketTrackerSkel {
-        pub fn open() -> Result<Self> {
-            Err(anyhow::anyhow!("eBPF compilation failed"))
-        }
-    }
-}
-"#;
-            std::fs::write(&out, placeholder_skeleton).unwrap_or_else(|e| {
-                println!(
-                    "cargo:warning=Failed to create placeholder skeleton file: {}",
-                    e
-                );
-            });
-        }
-    }
+        .unwrap();
 
     println!("cargo:rerun-if-changed={}", src);
 }
@@ -176,3 +190,4 @@ pub mod socket_tracker {
 fn compile_ebpf_programs() {
     // No-op when not on Linux or eBPF feature is not enabled
 }
+
