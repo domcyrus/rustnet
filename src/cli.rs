@@ -20,6 +20,12 @@ pub fn build_cli() -> Command {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("show-localhost")
+                .long("show-localhost")
+                .help("Show localhost connections (overrides default filtering)")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
             Arg::new("refresh-interval")
                 .short('r')
                 .long("refresh-interval")

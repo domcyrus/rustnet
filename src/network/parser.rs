@@ -136,6 +136,23 @@ impl PacketParser {
             return self.parse_pktap_packet(data);
         }
 
+        // Check if this is Linux Cooked Capture (used by "any" interface on Linux)
+        if let Some(linktype) = self.linktype {
+            match linktype {
+                113 => {
+                    log::debug!("Parsing as Linux SLL (linktype 113)");
+                    return self.parse_linux_sll_packet(data);
+                }
+                276 => {
+                    log::debug!("Parsing as Linux SLL2 (linktype 276)");
+                    return self.parse_linux_sll2_packet(data);
+                }
+                _ => {
+                    log::debug!("Using regular Ethernet parsing (linktype {})", linktype);
+                }
+            }
+        }
+
         // Regular Ethernet parsing
         if data.len() < 14 {
             return None;
@@ -147,6 +164,71 @@ impl PacketParser {
             0x0800 => self.parse_ipv4_packet_inner(data, None, None),
             0x86dd => self.parse_ipv6_packet_inner(data, None, None),
             0x0806 => self.parse_arp_packet_inner(data, None, None),
+            _ => {
+                log::debug!("Unknown ethertype: 0x{:04x}", ethertype);
+                None
+            }
+        }
+    }
+
+    /// Parse Linux Cooked Capture v1 packet (DLT_LINUX_SLL)
+    /// Header format (16 bytes):
+    /// - Packet type (2 bytes)
+    /// - ARPHRD type (2 bytes)
+    /// - Link-layer address length (2 bytes)
+    /// - Link-layer address (8 bytes)
+    /// - Protocol type (2 bytes) - ethertype
+    fn parse_linux_sll_packet(&self, data: &[u8]) -> Option<ParsedPacket> {
+        if data.len() < 16 {
+            return None;
+        }
+
+        // Protocol type is at bytes 14-15
+        let protocol = u16::from_be_bytes([data[14], data[15]]);
+
+        match protocol {
+            0x0800 => {
+                // IPv4 - payload starts at byte 16
+                let ip_data = &data[16..];
+                self.parse_raw_ipv4_packet(ip_data, None, None)
+            }
+            0x86dd => {
+                // IPv6 - payload starts at byte 16
+                let ip_data = &data[16..];
+                self.parse_raw_ipv6_packet(ip_data, None, None)
+            }
+            _ => None,
+        }
+    }
+
+    /// Parse Linux Cooked Capture v2 packet (DLT_LINUX_SLL2)
+    /// Header format (20 bytes):
+    /// - Protocol type (2 bytes) - ethertype
+    /// - Reserved (2 bytes)
+    /// - Interface index (4 bytes)
+    /// - ARPHRD type (2 bytes)
+    /// - Packet type (1 byte)
+    /// - Link-layer address length (1 byte)
+    /// - Link-layer address (8 bytes)
+    fn parse_linux_sll2_packet(&self, data: &[u8]) -> Option<ParsedPacket> {
+        if data.len() < 20 {
+            return None;
+        }
+
+        // Protocol type is at bytes 0-1
+        let protocol = u16::from_be_bytes([data[0], data[1]]);
+
+        match protocol {
+            0x0800 => {
+                // IPv4 - payload starts at byte 20
+                let ip_data = &data[20..];
+                self.parse_raw_ipv4_packet(ip_data, None, None)
+            }
+            0x86dd => {
+                // IPv6 - payload starts at byte 20
+                let ip_data = &data[20..];
+                self.parse_raw_ipv6_packet(ip_data, None, None)
+            }
             _ => None,
         }
     }
@@ -601,8 +683,7 @@ impl PacketParser {
         })
     }
 
-    // Raw IP packet parsing for PKTAP DLT_RAW
-    #[cfg(target_os = "macos")]
+    // Raw IP packet parsing for PKTAP DLT_RAW and Linux Cooked Capture
     fn parse_raw_ipv4_packet(
         &self,
         data: &[u8],
@@ -670,7 +751,6 @@ impl PacketParser {
         }
     }
 
-    #[cfg(target_os = "macos")]
     fn parse_raw_ipv6_packet(
         &self,
         data: &[u8],

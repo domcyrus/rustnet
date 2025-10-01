@@ -325,8 +325,11 @@ rustnet
 rustnet -i eth0
 rustnet --interface wlan0
 
-# Filter out localhost connections
+# Filter out localhost connections (already filtered by default)
 rustnet --no-localhost
+
+# Show localhost connections (override default filtering)
+rustnet --show-localhost
 
 # Set UI refresh interval (in milliseconds)
 rustnet -r 500
@@ -349,7 +352,8 @@ Usage: rustnet [OPTIONS]
 
 Options:
   -i, --interface <INTERFACE>            Network interface to monitor
-      --no-localhost                     Filter out localhost connections
+      --no-localhost                     Filter out localhost connections (default: filtered)
+      --show-localhost                   Show localhost connections (overrides default filtering)
   -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 1000]
       --no-dpi                           Disable deep packet inspection
   -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
@@ -756,7 +760,7 @@ The tool automatically detects and lists available network interfaces using plat
 2. **No Connections Shown**:
    - Check if the correct network interface is selected
    - Verify packet capture permissions
-   - Try disabling localhost filtering with `--no-localhost`
+   - Try showing localhost connections with `--show-localhost` (filtered by default)
 
 3. **High CPU Usage**:
    - Increase the refresh interval: `--refresh-interval 2000`

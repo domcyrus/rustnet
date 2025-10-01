@@ -208,9 +208,18 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
 
     let device_name = device.name.clone();
 
+    // Disable promiscuous mode for "any" interface on Linux
+    // The "any" device doesn't support promiscuous mode
+    let use_promisc = if device_name == "any" {
+        log::info!("Disabling promiscuous mode for 'any' interface (not supported)");
+        false
+    } else {
+        config.promiscuous
+    };
+
     // Create capture handle
     let cap = Capture::from_device(device)?
-        .promisc(config.promiscuous)
+        .promisc(use_promisc)
         .snaplen(config.snaplen)
         .buffer_size(config.buffer_size)
         .timeout(config.timeout_ms)
