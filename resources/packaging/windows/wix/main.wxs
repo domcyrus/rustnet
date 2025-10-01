@@ -38,6 +38,15 @@
         <Media Id='1' Cabinet='rustnet.cab' EmbedCab='yes' DiskPrompt="CD-ROM #1" />
         <Property Id='DiskPrompt' Value="Rustnet Installation [1]" />
 
+        <!-- Check for Visual C++ Redistributable -->
+        <Property Id="VCREDIST_X64_INSTALLED">
+            <RegistrySearch Id="VCRedist_x64_Check"
+                Root="HKLM"
+                Key="SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+                Name="Installed"
+                Type="raw" />
+        </Property>
+
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='$(var.PlatformProgramFilesFolder)'>
                 <Directory Id='APPLICATIONROOTDIRECTORY' Name='Rustnet'>
@@ -95,6 +104,28 @@
             <ComponentRef Id='AssetsDir' />
             <ComponentRef Id='ApplicationShortcut' />
         </Feature>
+
+        <!-- Embed VC++ Redistributable and install if missing -->
+        <Binary Id="VCRedist_x64" SourceFile="resources\packaging\windows\vc_redist.x64.exe" />
+
+        <CustomAction Id="InstallVCRedist"
+            BinaryKey="VCRedist_x64"
+            ExeCommand="/install /quiet /norestart"
+            Execute="deferred"
+            Return="check"
+            Impersonate="no" />
+
+        <InstallExecuteSequence>
+            <!-- Install VC++ Redistributable if not already installed -->
+            <Custom Action="InstallVCRedist" After="InstallFiles">
+                NOT Installed AND NOT VCREDIST_X64_INSTALLED
+            </Custom>
+        </InstallExecuteSequence>
+
+        <!-- UI to inform users about VC++ Redistributable -->
+        <UI>
+            <ProgressText Action="InstallVCRedist">Installing Visual C++ Redistributable (required)...</ProgressText>
+        </UI>
 
     </Product>
 </Wix>

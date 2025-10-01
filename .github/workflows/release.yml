@@ -466,6 +466,16 @@ jobs:
           name: build-${{ matrix.target }}
           path: artifacts
 
+      - name: Download VC++ Redistributable
+        shell: powershell
+        run: |
+          Write-Host "Downloading Visual C++ Redistributable..."
+          New-Item -ItemType Directory -Path "resources\packaging\windows" -Force
+          Invoke-WebRequest `
+            -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" `
+            -OutFile "resources\packaging\windows\vc_redist.x64.exe" -Verbose
+          Write-Host "VC++ Redistributable downloaded successfully"
+
       - name: Package for Windows
         shell: powershell
         run: |
