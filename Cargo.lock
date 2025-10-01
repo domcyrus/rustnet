@@ -1732,6 +1732,7 @@ dependencies = [
  "simple-logging",
  "simplelog",
  "vmlinux",
+ "winapi",
  "zip",
 ]
 
