@@ -40,6 +40,11 @@ fn main() -> Result<()> {
         info!("Filtering localhost connections");
     }
 
+    if matches.get_flag("show-localhost") {
+        config.filter_localhost = false;
+        info!("Showing localhost connections");
+    }
+
     if let Some(interval) = matches.get_one::<u64>("refresh-interval") {
         config.refresh_interval = *interval;
         info!("Using refresh interval: {}ms", interval);
