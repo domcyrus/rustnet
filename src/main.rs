@@ -363,6 +363,20 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         }
                     }
 
+                    // Toggle port number display
+                    (KeyCode::Char('p'), _) => {
+                        ui_state.quit_confirmation = false;
+                        ui_state.show_port_numbers = !ui_state.show_port_numbers;
+                        info!(
+                            "Toggled port display: {}",
+                            if ui_state.show_port_numbers {
+                                "showing port numbers"
+                            } else {
+                                "showing service names"
+                            }
+                        );
+                    }
+
                     // Copy remote address to clipboard
                     (KeyCode::Char('c'), _) => {
                         ui_state.quit_confirmation = false;

@@ -364,6 +364,7 @@ Options:
 - `Enter`: View detailed information about selected connection
 - `Esc`: Go back to previous view or clear active filter
 - `c`: Copy remote address to clipboard
+- `p`: Toggle between service names and port numbers
 - `h`: Toggle help screen
 - `/`: Enter filter mode (vim-style search with real-time results)
 

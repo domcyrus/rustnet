@@ -49,6 +49,7 @@ pub struct UIState {
     pub filter_mode: bool,
     pub filter_query: String,
     pub filter_cursor_position: usize,
+    pub show_port_numbers: bool,
 }
 
 impl UIState {
@@ -423,12 +424,17 @@ fn draw_connections_list(
                 }
             };
 
-            // Truncate service name to fit in 8 chars
-            let service_display = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
-            let service_display = if service_display.len() > 8 {
-                format!("{:.5}...", service_display)
+            // Display port number or service name based on toggle
+            let service_display = if ui_state.show_port_numbers {
+                conn.remote_addr.port().to_string()
             } else {
-                service_display
+                let service_name = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
+                // Truncate service name to fit in 8 chars
+                if service_name.len() > 8 {
+                    format!("{:.5}...", service_name)
+                } else {
+                    service_name
+                }
             };
 
             // DPI/Application protocol display (enhanced for hostnames)
@@ -875,6 +881,10 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Copy remote address to clipboard"),
         ]),
         Line::from(vec![
+            Span::styled("p ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle between service names and port numbers"),
+        ]),
+        Line::from(vec![
             Span::styled("Enter ", Style::default().fg(Color::Yellow)),
             Span::raw("View connection details"),
         ]),
@@ -1105,5 +1115,30 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.2} KB", bytes as f64 / KB as f64)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_port_toggle_default_state() {
+        let ui_state = UIState::default();
+        assert!(!ui_state.show_port_numbers, "Port numbers should be hidden by default");
+    }
+
+    #[test]
+    fn test_port_toggle_state_change() {
+        let mut ui_state = UIState::default();
+        assert!(!ui_state.show_port_numbers);
+
+        // Toggle to show port numbers
+        ui_state.show_port_numbers = !ui_state.show_port_numbers;
+        assert!(ui_state.show_port_numbers, "Port numbers should be visible after toggle");
+
+        // Toggle back to show service names
+        ui_state.show_port_numbers = !ui_state.show_port_numbers;
+        assert!(!ui_state.show_port_numbers, "Service names should be visible after second toggle");
     }
 }
