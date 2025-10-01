@@ -149,6 +149,46 @@ fn download_windows_npcap_sdk() -> Result<()> {
 }
 
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
+fn download_vmlinux_header(arch: &str) -> Result<PathBuf> {
+    use std::fs;
+    use std::io::Write;
+
+    // Cache directory in OUT_DIR
+    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
+    let cache_dir = out_dir.join("vmlinux_headers").join(arch);
+    let vmlinux_file = cache_dir.join("vmlinux.h");
+
+    // Return cached version if it exists
+    if vmlinux_file.exists() {
+        println!("cargo:warning=Using cached vmlinux.h for {}", arch);
+        return Ok(cache_dir);
+    }
+
+    // Download from libbpf/vmlinux.h repository
+    let url = format!(
+        "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/{}/vmlinux.h",
+        arch
+    );
+
+    println!("cargo:warning=Downloading vmlinux.h for {} from {}", arch, url);
+
+    // Create cache directory
+    fs::create_dir_all(&cache_dir)?;
+
+    // Download the file using http_req
+    let mut content = Vec::new();
+    let _res = http_req::request::get(url, &mut content)?;
+
+    // Write to cache
+    let mut file = fs::File::create(&vmlinux_file)?;
+    file.write_all(&content)?;
+
+    println!("cargo:warning=Downloaded and cached vmlinux.h for {}", arch);
+
+    Ok(cache_dir)
+}
+
+#[cfg(all(target_os = "linux", feature = "ebpf"))]
 fn compile_ebpf_programs() {
     use libbpf_cargo::SkeletonBuilder;
     use std::ffi::OsStr;
@@ -165,17 +205,17 @@ fn compile_ebpf_programs() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH")
         .expect("CARGO_CFG_TARGET_ARCH must be set in build script");
 
-    // Map Rust arch names to eBPF target arch defines
-    let target_arch_define = match arch.as_str() {
-        "x86_64" => "-D__TARGET_ARCH_x86",
-        "aarch64" => "-D__TARGET_ARCH_arm64",
-        "arm" => "-D__TARGET_ARCH_arm",
-        _ => "-D__TARGET_ARCH_x86", // fallback
+    // Map Rust arch names to eBPF target arch defines and vmlinux.h arch names
+    let (target_arch_define, vmlinux_arch) = match arch.as_str() {
+        "x86_64" => ("-D__TARGET_ARCH_x86", "x86"),
+        "aarch64" => ("-D__TARGET_ARCH_arm64", "aarch64"),
+        "arm" => ("-D__TARGET_ARCH_arm", "arm"),
+        _ => ("-D__TARGET_ARCH_x86", "x86"), // fallback
     };
 
-    // Use local vmlinux_min.h instead of external vmlinux crate
-    let vmlinux_include_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-        .join("src/network/platform/linux_ebpf/programs");
+    // Download architecture-specific vmlinux.h if not cached
+    let vmlinux_include_path = download_vmlinux_header(vmlinux_arch)
+        .expect("Failed to download vmlinux.h");
 
     SkeletonBuilder::new()
         .source(src)
