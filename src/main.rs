@@ -401,6 +401,19 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         ui_state.move_selection_page_down(&connections, 10);
                     }
 
+                    // Vim-style jump to first/last (g/G)
+                    (KeyCode::Char('g'), KeyModifiers::NONE) => {
+                        ui_state.quit_confirmation = false;
+                        // Jump to first connection (vim-style 'g')
+                        ui_state.move_selection_to_first(&connections);
+                    }
+
+                    (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
+                        ui_state.quit_confirmation = false;
+                        // Jump to last connection (vim-style 'G')
+                        ui_state.move_selection_to_last(&connections);
+                    }
+
                     // Enter to view details
                     (KeyCode::Enter, _) => {
                         ui_state.quit_confirmation = false;

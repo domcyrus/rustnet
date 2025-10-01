@@ -270,6 +270,22 @@ impl UIState {
         }
     }
 
+    /// Move selection to the first connection (vim-style 'g')
+    pub fn move_selection_to_first(&mut self, connections: &[Connection]) {
+        if connections.is_empty() {
+            return;
+        }
+        self.set_selected_by_index(connections, 0);
+    }
+
+    /// Move selection to the last connection (vim-style 'G')
+    pub fn move_selection_to_last(&mut self, connections: &[Connection]) {
+        if connections.is_empty() {
+            return;
+        }
+        self.set_selected_by_index(connections, connections.len() - 1);
+    }
+
     /// Ensure we have a valid selection when connections list changes
     pub fn ensure_valid_selection(&mut self, connections: &[Connection]) {
         if connections.is_empty() {
@@ -1078,6 +1094,10 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         Line::from(vec![
             Span::styled("↑/k, ↓/j ", Style::default().fg(Color::Yellow)),
             Span::raw("Navigate connections (wraps around)"),
+        ]),
+        Line::from(vec![
+            Span::styled("g, G ", Style::default().fg(Color::Yellow)),
+            Span::raw("Jump to first/last connection (vim-style)"),
         ]),
         Line::from(vec![
             Span::styled("Page Up/Down ", Style::default().fg(Color::Yellow)),

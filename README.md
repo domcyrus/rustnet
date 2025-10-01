@@ -367,6 +367,8 @@ Options:
 - `Tab`: Switch between tabs (Overview, Details, Help)
 - `↑/k`: Navigate up in connection list
 - `↓/j`: Navigate down in connection list
+- `g`: Jump to first connection (vim-style)
+- `G` (Shift+g): Jump to last connection (vim-style)
 - `PageUp`: Move up by 10 items
 - `PageDown`: Move down by 10 items
 - `Enter`: View detailed information about selected connection
