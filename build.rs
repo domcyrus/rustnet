@@ -151,7 +151,7 @@ fn download_windows_npcap_sdk() -> Result<()> {
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
 fn download_vmlinux_header(arch: &str) -> Result<PathBuf> {
     use std::fs;
-    use std::io::Write;
+    use std::io::{Read, Write};
 
     // Cache directory in OUT_DIR
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
@@ -175,9 +175,15 @@ fn download_vmlinux_header(arch: &str) -> Result<PathBuf> {
     // Create cache directory
     fs::create_dir_all(&cache_dir)?;
 
-    // Download the file using http_req
+    // Download the file using ureq (with rustls, no OpenSSL dependency)
+    let response = ureq::get(&url)
+        .call()
+        .map_err(|e| anyhow::anyhow!("Failed to download vmlinux.h: {}", e))?;
+
     let mut content = Vec::new();
-    let _res = http_req::request::get(url, &mut content)?;
+    response.into_reader()
+        .read_to_end(&mut content)
+        .map_err(|e| anyhow::anyhow!("Failed to read response: {}", e))?;
 
     // Write to cache
     let mut file = fs::File::create(&vmlinux_file)?;
