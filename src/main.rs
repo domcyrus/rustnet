@@ -94,6 +94,78 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     Ok(())
 }
 
+/// Sort connections based on the specified column and direction
+fn sort_connections(
+    connections: &mut [network::types::Connection],
+    sort_column: ui::SortColumn,
+    ascending: bool,
+) {
+    use ui::SortColumn;
+
+    connections.sort_by(|a, b| {
+        let ordering = match sort_column {
+            SortColumn::CreatedAt => a.created_at.cmp(&b.created_at),
+
+            SortColumn::BandwidthDown => {
+                // Compare as f64, handle NaN cases
+                a.current_incoming_rate_bps
+                    .partial_cmp(&b.current_incoming_rate_bps)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }
+
+            SortColumn::BandwidthUp => {
+                a.current_outgoing_rate_bps
+                    .partial_cmp(&b.current_outgoing_rate_bps)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            }
+
+            SortColumn::Process => {
+                let a_process = a.process_name.as_deref().unwrap_or("");
+                let b_process = b.process_name.as_deref().unwrap_or("");
+                a_process.cmp(b_process)
+            }
+
+            SortColumn::LocalAddress => {
+                a.local_addr.to_string().cmp(&b.local_addr.to_string())
+            }
+
+            SortColumn::RemoteAddress => {
+                a.remote_addr.to_string().cmp(&b.remote_addr.to_string())
+            }
+
+            SortColumn::Application => {
+                let a_app = a.dpi_info.as_ref()
+                    .map(|dpi| dpi.application.to_string())
+                    .unwrap_or_default();
+                let b_app = b.dpi_info.as_ref()
+                    .map(|dpi| dpi.application.to_string())
+                    .unwrap_or_default();
+                a_app.cmp(&b_app)
+            }
+
+            SortColumn::Service => {
+                let a_service = a.service_name.as_deref().unwrap_or("");
+                let b_service = b.service_name.as_deref().unwrap_or("");
+                a_service.cmp(b_service)
+            }
+
+            SortColumn::State => {
+                a.state().cmp(&b.state())
+            }
+
+            SortColumn::Protocol => {
+                a.protocol.to_string().cmp(&b.protocol.to_string())
+            }
+        };
+
+        if ascending {
+            ordering
+        } else {
+            ordering.reverse()
+        }
+    });
+}
+
 fn run_ui_loop<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,
     app: &app::App,
@@ -104,11 +176,15 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
 
     loop {
         // Get current connections and stats
-        let connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
+        let mut connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
             app.get_connections()
         } else {
             app.get_filtered_connections(&ui_state.filter_query)
         };
+
+        // Apply sorting (after filtering)
+        sort_connections(&mut connections, ui_state.sort_column, ui_state.sort_ascending);
+
         let stats = app.get_stats();
 
         // Ensure we have a valid selection (handles connection removals)
@@ -374,6 +450,28 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                             } else {
                                 "showing service names"
                             }
+                        );
+                    }
+
+                    // Cycle sort column with 's'
+                    (KeyCode::Char('s'), KeyModifiers::NONE) => {
+                        ui_state.quit_confirmation = false;
+                        ui_state.cycle_sort_column();
+                        info!(
+                            "Sort column: {} ({})",
+                            ui_state.sort_column.display_name(),
+                            if ui_state.sort_ascending { "ascending" } else { "descending" }
+                        );
+                    }
+
+                    // Toggle sort direction with 'S' (Shift+s)
+                    (KeyCode::Char('S'), _) => {
+                        ui_state.quit_confirmation = false;
+                        ui_state.toggle_sort_direction();
+                        info!(
+                            "Sort direction: {} ({})",
+                            if ui_state.sort_ascending { "ascending" } else { "descending" },
+                            ui_state.sort_column.display_name()
                         );
                     }
 
