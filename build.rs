@@ -165,20 +165,41 @@ fn download_vmlinux_header(arch: &str) -> Result<PathBuf> {
     }
 
     // Download from libbpf/vmlinux.h repository
-    let url = format!(
+    // Note: vmlinux.h is a symlink, so we first download it to get the target filename
+    let symlink_url = format!(
         "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/{}/vmlinux.h",
         arch
     );
 
-    println!("cargo:warning=Downloading vmlinux.h for {} from {}", arch, url);
+    println!("cargo:warning=Downloading vmlinux.h for {} from {}", arch, symlink_url);
 
     // Create cache directory
     fs::create_dir_all(&cache_dir)?;
 
-    // Download the file using ureq (with rustls, no OpenSSL dependency)
-    let response = ureq::get(&url)
+    // Download the symlink to get the actual filename
+    let response = ureq::get(&symlink_url)
         .call()
-        .map_err(|e| anyhow::anyhow!("Failed to download vmlinux.h: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to download vmlinux.h symlink: {}", e))?;
+
+    let mut symlink_content = String::new();
+    response.into_reader()
+        .read_to_string(&mut symlink_content)
+        .map_err(|e| anyhow::anyhow!("Failed to read symlink: {}", e))?;
+
+    // The symlink content is just the target filename, e.g. "vmlinux_6.14.h"
+    let target_filename = symlink_content.trim();
+
+    // Download the actual vmlinux header file
+    let actual_url = format!(
+        "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/{}/{}",
+        arch, target_filename
+    );
+
+    println!("cargo:warning=Following symlink to {}", target_filename);
+
+    let response = ureq::get(&actual_url)
+        .call()
+        .map_err(|e| anyhow::anyhow!("Failed to download {}: {}", target_filename, e))?;
 
     let mut content = Vec::new();
     response.into_reader()
