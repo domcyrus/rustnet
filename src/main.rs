@@ -565,7 +565,6 @@ fn check_windows_dependencies() -> Result<()> {
 #[cfg(target_os = "windows")]
 fn check_dll_available(dll_name: &str) -> bool {
     use std::ffi::CString;
-    use std::ptr;
 
     // Try to load the DLL
     let dll_cstring = match CString::new(dll_name) {
@@ -575,7 +574,7 @@ fn check_dll_available(dll_name: &str) -> bool {
 
     unsafe {
         // Use LoadLibraryA to check if the DLL can be loaded
-        let handle = winapi::um::libloaderapi::LoadLibraryA(dll_cstring.as_ptr() as *const i8);
+        let handle = winapi::um::libloaderapi::LoadLibraryA(dll_cstring.as_ptr());
 
         if handle.is_null() {
             false
