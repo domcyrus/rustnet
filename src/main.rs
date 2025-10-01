@@ -15,6 +15,10 @@ mod network;
 mod ui;
 
 fn main() -> Result<()> {
+    // Check for required dependencies on Windows
+    #[cfg(target_os = "windows")]
+    check_windows_dependencies()?;
+
     // Parse command line arguments
     let matches = cli::build_cli().get_matches();
     // Set up logging only if log-level was provided
@@ -515,4 +519,69 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn check_windows_dependencies() -> Result<()> {
+    use anyhow::anyhow;
+
+    // Check if Npcap/WinPcap DLLs are available
+    // Try to load the DLLs to see if they're in the system path
+    let wpcap_available = check_dll_available("wpcap.dll");
+    let packet_available = check_dll_available("Packet.dll");
+
+    if !wpcap_available || !packet_available {
+        eprintln!("\n╔═══════════════════════════════════════════════════════════════════════════╗");
+        eprintln!("║                          MISSING DEPENDENCY                               ║");
+        eprintln!("╚═══════════════════════════════════════════════════════════════════════════╝");
+        eprintln!();
+        eprintln!("RustNet requires Npcap for packet capture on Windows.");
+        eprintln!();
+
+        if !wpcap_available {
+            eprintln!("  ✗ wpcap.dll not found");
+        }
+        if !packet_available {
+            eprintln!("  ✗ Packet.dll not found");
+        }
+
+        eprintln!();
+        eprintln!("To fix this:");
+        eprintln!();
+        eprintln!("  1. Download Npcap from: https://npcap.com/dist/");
+        eprintln!("  2. Run the installer");
+        eprintln!("  3. IMPORTANT: Check \"Install Npcap in WinPcap API-compatible Mode\"");
+        eprintln!("  4. Complete the installation");
+        eprintln!();
+        eprintln!("After installation, restart your terminal and try again.");
+        eprintln!();
+
+        return Err(anyhow!("Npcap is not installed or not in WinPcap compatible mode"));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn check_dll_available(dll_name: &str) -> bool {
+    use std::ffi::CString;
+
+    // Try to load the DLL
+    let dll_cstring = match CString::new(dll_name) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+
+    unsafe {
+        // Use LoadLibraryA to check if the DLL can be loaded
+        let handle = winapi::um::libloaderapi::LoadLibraryA(dll_cstring.as_ptr());
+
+        if handle.is_null() {
+            false
+        } else {
+            // Free the library if it was loaded
+            winapi::um::libloaderapi::FreeLibrary(handle);
+            true
+        }
+    }
 }

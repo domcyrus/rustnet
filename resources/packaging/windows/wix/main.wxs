@@ -38,6 +38,15 @@
         <Media Id='1' Cabinet='rustnet.cab' EmbedCab='yes' DiskPrompt="CD-ROM #1" />
         <Property Id='DiskPrompt' Value="Rustnet Installation [1]" />
 
+        <!-- Check for Visual C++ Redistributable -->
+        <Property Id="VCREDIST_X64_INSTALLED">
+            <RegistrySearch Id="VCRedist_x64_Check"
+                Root="HKLM"
+                Key="SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
+                Name="Installed"
+                Type="raw" />
+        </Property>
+
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='$(var.PlatformProgramFilesFolder)'>
                 <Directory Id='APPLICATIONROOTDIRECTORY' Name='Rustnet'>
@@ -95,6 +104,19 @@
             <ComponentRef Id='AssetsDir' />
             <ComponentRef Id='ApplicationShortcut' />
         </Feature>
+
+        <!-- Note: VC++ Redistributable bundling via WiX Binary + CustomAction doesn't work -->
+        <!-- reliably with cargo-wix. The installer now includes runtime dependency checking -->
+        <!-- in rustnet.exe itself which provides clear error messages if dependencies are missing. -->
+        <!--
+        Alternative approach would be to:
+        1. Use WiX Burn bootstrapper (separate .exe wrapper)
+        2. Or include vc_redist.x64.exe as a Component and document manual installation
+        3. Or use a post-install script
+
+        For now, rustnet.exe will detect missing dependencies at runtime and show
+        installation instructions to users.
+        -->
 
     </Product>
 </Wix>
