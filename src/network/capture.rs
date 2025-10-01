@@ -71,6 +71,8 @@ fn find_best_device() -> Result<Device> {
         // First priority: up, running, and has a valid IP address
         .find(|d| {
             !d.name.starts_with("lo")
+                // Note: 'any' is excluded here because it's not a real interface
+                // Users can still specify '-i any' explicitly on Linux
                 && d.name != "any"
                 && d.flags.is_up()
                 && d.flags.is_running()
@@ -101,6 +103,8 @@ fn find_best_device() -> Result<Device> {
                 !d.name.starts_with("bridge") && // Skip bridges
                 !d.name.starts_with("utun") &&   // Skip tunnels
                 !d.name.starts_with("vmnet") &&  // Skip VM interfaces
+                // Note: 'any' is excluded here because it's not a real interface
+                // Users can still specify '-i any' explicitly on Linux
                 d.name != "any" &&
                 d.flags.is_up() &&
                 !d.addresses.is_empty()
@@ -233,6 +237,23 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
         Some(name) => {
             log::info!("Looking for interface: {}", name);
 
+            // Special handling for 'any' interface
+            if name == "any" {
+                #[cfg(not(target_os = "linux"))]
+                {
+                    return Err(anyhow!(
+                        "The 'any' interface is only supported on Linux.\n\
+                        On your platform, please specify a specific interface with -i <interface>.\n\
+                        Run without -i to auto-detect the default interface."
+                    ));
+                }
+
+                #[cfg(target_os = "linux")]
+                {
+                    log::info!("Using 'any' pseudo-interface to capture on all interfaces");
+                }
+            }
+
             // List all devices
             let devices = Device::list()?;
 
@@ -288,13 +309,14 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                     });
 
                     // Check if it's a problematic interface type
+                    // Note: 'any' is excluded on non-Linux platforms where it doesn't work
                     let is_problematic = device.name.starts_with("ap")
                         || device.name.starts_with("awdl")
                         || device.name.starts_with("llw")
                         || device.name.starts_with("bridge")
                         || device.name.starts_with("utun")
                         || device.name.starts_with("vmnet")
-                        || device.name == "any"
+                        || (device.name == "any" && !cfg!(target_os = "linux"))
                         || device.flags.is_loopback();
 
                     if device.flags.is_up()
