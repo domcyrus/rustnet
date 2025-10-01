@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2025-10-01
+
+### Added
+- **Vim-style Navigation**: Jump to beginning of connection list with `g` and end with `G` (Shift+g)
+- **Table Sorting**: Comprehensive sorting functionality for all connection table columns
+  - Press `s` to cycle through sortable columns (Protocol, Local Address, Remote Address, State, Service, Application, Bandwidth ↓, Bandwidth ↑, Process)
+  - Press `S` (Shift+s) to toggle sort direction (ascending/descending)
+  - Visual indicators with arrows and cyan highlighting on active sort column
+  - Sort by download/upload bandwidth to find bandwidth hogs
+  - Alphabetical sorting for text columns
+- **Port Display Toggle**: Press `p` to switch between service names and port numbers display
+- **Connection Navigation Improvements**: Enhanced navigation with better visual cleanup indication
+- **Localhost Filtering Control**: New `--show-localhost` command-line flag to override default localhost filtering
+
+### Fixed
+- **Windows Double Key Issue**: Fixed duplicate key event handling on Windows platforms
+- **Windows MSI Runtime Dependencies**: Added startup check for missing Npcap/WinPcap DLLs
+  - Displays helpful error message with installation instructions when DLLs are missing
+  - Added winapi dependency for Windows DLL detection
+  - Updated README with runtime dependency information
+- **Linux Interface Selection**: Fixed "any" interface selection on Linux
+  - Improved interface detection and validation
+  - Better error handling for interface configuration
+- **Package Dependencies**: Removed unnecessary runtime dependencies (clang, llvm) from RPM and DEB packages
+  - Reduces installation footprint and dependency conflicts
+- **Docker Build**: Removed armv7 architecture from Docker builds for improved stability
+
+### Changed
+- **Documentation**: Updated roadmap and README with new features and keyboard shortcuts
+
 ## [0.11.0] - 2025-09-30
 
 ### Added
@@ -159,7 +189,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/domcyrus/rustnet/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/domcyrus/rustnet/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/domcyrus/rustnet/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/domcyrus/rustnet/compare/v0.8.0...v0.9.0
