@@ -173,11 +173,15 @@ fn compile_ebpf_programs() {
         _ => "-D__TARGET_ARCH_x86", // fallback
     };
 
+    // Use local vmlinux_min.h instead of external vmlinux crate
+    let vmlinux_include_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
+        .join("src/network/platform/linux_ebpf/programs");
+
     SkeletonBuilder::new()
         .source(src)
         .clang_args([
             OsStr::new("-I"),
-            vmlinux::include_path_root().join(&arch).as_os_str(),
+            vmlinux_include_path.as_os_str(),
             OsStr::new(target_arch_define),
         ])
         .build_and_generate(&out)

@@ -1,7 +1,7 @@
 // Socket tracker eBPF program
 // CO-RE (Compile Once - Run Everywhere) version using BTF
 
-#include "vmlinux.h"
+#include "vmlinux_min.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>

@@ -62,7 +62,6 @@ zip = "2.1"
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
 libbpf-cargo = "0.25"
-vmlinux = { version = "0.0", git = "https://github.com/libbpf/vmlinux.h.git", rev = "83a228cf37fc65f2d14e4896a04922b5ee531a94" }
 
 [features]
 default = []
