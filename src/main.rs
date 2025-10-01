@@ -230,7 +230,14 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
         if crossterm::event::poll(timeout)?
             && let crossterm::event::Event::Key(key) = crossterm::event::read()?
         {
-            use crossterm::event::{KeyCode, KeyModifiers};
+            use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+
+            // On Windows, crossterm reports both Press and Release events
+            // On Linux/macOS, only Press events are reported
+            // Filter to only handle Press events for consistent cross-platform behavior
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
 
             if ui_state.filter_mode {
                 // Handle input in filter mode
