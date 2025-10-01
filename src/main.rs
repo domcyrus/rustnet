@@ -176,6 +176,8 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
 
     loop {
         // Get current connections and stats
+        // IMPORTANT: Fetch connections ONCE per iteration to ensure consistency
+        // between display, navigation, and selection operations
         let mut connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
             app.get_connections()
         } else {
@@ -183,6 +185,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
         };
 
         // Apply sorting (after filtering)
+        // This sorted list MUST be used for all operations (display + navigation)
         sort_connections(&mut connections, ui_state.sort_column, ui_state.sort_ascending);
 
         let stats = app.get_stats();
@@ -258,30 +261,22 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     }
                     // Allow navigation while in filter mode!
                     KeyCode::Up => {
-                        // Navigate filtered connections while typing
-                        let nav_connections = if ui_state.filter_query.is_empty() {
-                            app.get_connections()
-                        } else {
-                            app.get_filtered_connections(&ui_state.filter_query)
-                        };
+                        // Use the SAME sorted connections list from the main loop
+                        // to ensure index consistency with the displayed table
                         debug!(
                             "Filter mode navigation UP: {} connections available",
-                            nav_connections.len()
+                            connections.len()
                         );
-                        ui_state.move_selection_up(&nav_connections);
+                        ui_state.move_selection_up(&connections);
                     }
                     KeyCode::Down => {
-                        // Navigate filtered connections while typing
-                        let nav_connections = if ui_state.filter_query.is_empty() {
-                            app.get_connections()
-                        } else {
-                            app.get_filtered_connections(&ui_state.filter_query)
-                        };
+                        // Use the SAME sorted connections list from the main loop
+                        // to ensure index consistency with the displayed table
                         debug!(
                             "Filter mode navigation DOWN: {} connections available",
-                            nav_connections.len()
+                            connections.len()
                         );
-                        ui_state.move_selection_down(&nav_connections);
+                        ui_state.move_selection_down(&connections);
                     }
                     KeyCode::Char(c) => {
                         // Handle Ctrl+H as backspace for SecureCRT compatibility
@@ -294,29 +289,21 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         match c {
                             'k' => {
                                 // Vim-style up navigation while filtering
-                                let nav_connections = if ui_state.filter_query.is_empty() {
-                                    app.get_connections()
-                                } else {
-                                    app.get_filtered_connections(&ui_state.filter_query)
-                                };
+                                // Use the SAME sorted connections list from the main loop
                                 debug!(
                                     "Filter mode navigation UP (k): {} connections available",
-                                    nav_connections.len()
+                                    connections.len()
                                 );
-                                ui_state.move_selection_up(&nav_connections);
+                                ui_state.move_selection_up(&connections);
                             }
                             'j' => {
                                 // Vim-style down navigation while filtering
-                                let nav_connections = if ui_state.filter_query.is_empty() {
-                                    app.get_connections()
-                                } else {
-                                    app.get_filtered_connections(&ui_state.filter_query)
-                                };
+                                // Use the SAME sorted connections list from the main loop
                                 debug!(
                                     "Filter mode navigation DOWN (j): {} connections available",
-                                    nav_connections.len()
+                                    connections.len()
                                 );
-                                ui_state.move_selection_down(&nav_connections);
+                                ui_state.move_selection_down(&connections);
                             }
                             _ => {
                                 // Regular character input for filter
@@ -374,61 +361,39 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Navigation in connection list
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                         ui_state.quit_confirmation = false;
-                        // Refresh connections for navigation to ensure we have current filtered list
-                        let nav_connections =
-                            if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
-                                app.get_connections()
-                            } else {
-                                app.get_filtered_connections(&ui_state.filter_query)
-                            };
+                        // Use the SAME sorted connections list from the main loop
+                        // to ensure index consistency with the displayed table
                         debug!(
                             "Navigation UP: {} connections available",
-                            nav_connections.len()
+                            connections.len()
                         );
-                        ui_state.move_selection_up(&nav_connections);
+                        ui_state.move_selection_up(&connections);
                     }
 
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
                         ui_state.quit_confirmation = false;
-                        // Refresh connections for navigation to ensure we have current filtered list
-                        let nav_connections =
-                            if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
-                                app.get_connections()
-                            } else {
-                                app.get_filtered_connections(&ui_state.filter_query)
-                            };
+                        // Use the SAME sorted connections list from the main loop
+                        // to ensure index consistency with the displayed table
                         debug!(
                             "Navigation DOWN: {} connections available",
-                            nav_connections.len()
+                            connections.len()
                         );
-                        ui_state.move_selection_down(&nav_connections);
+                        ui_state.move_selection_down(&connections);
                     }
 
                     // Page Up/Down navigation
                     (KeyCode::PageUp, _) => {
                         ui_state.quit_confirmation = false;
-                        // Refresh connections for navigation
-                        let nav_connections =
-                            if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
-                                app.get_connections()
-                            } else {
-                                app.get_filtered_connections(&ui_state.filter_query)
-                            };
+                        // Use the SAME sorted connections list from the main loop
                         // Move up by roughly 10 items (or adjust based on terminal height)
-                        ui_state.move_selection_page_up(&nav_connections, 10);
+                        ui_state.move_selection_page_up(&connections, 10);
                     }
 
                     (KeyCode::PageDown, _) => {
                         ui_state.quit_confirmation = false;
-                        // Refresh connections for navigation
-                        let nav_connections =
-                            if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
-                                app.get_connections()
-                            } else {
-                                app.get_filtered_connections(&ui_state.filter_query)
-                            };
+                        // Use the SAME sorted connections list from the main loop
                         // Move down by roughly 10 items (or adjust based on terminal height)
-                        ui_state.move_selection_page_down(&nav_connections, 10);
+                        ui_state.move_selection_page_down(&connections, 10);
                     }
 
                     // Enter to view details

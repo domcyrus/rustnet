@@ -987,9 +987,10 @@ impl Connection {
                     match &dpi_info.application {
                         ApplicationProtocol::Quic(quic) => self.get_quic_timeout(quic),
                         ApplicationProtocol::Dns(_) => Duration::from_secs(30),
-                        ApplicationProtocol::Http(_) => Duration::from_secs(180),
-                        ApplicationProtocol::Https(_) => Duration::from_secs(180),
-                        ApplicationProtocol::Ssh(_) => Duration::from_secs(1800), // SSH can be very long-lived
+                        // HTTP/3 connections need longer timeouts for connection reuse
+                        ApplicationProtocol::Http(_) => Duration::from_secs(600), // 10 minutes (was 3 min)
+                        ApplicationProtocol::Https(_) => Duration::from_secs(600), // 10 minutes (was 3 min)
+                        ApplicationProtocol::Ssh(_) => Duration::from_secs(1800), // SSH can be very long-lived (30 min)
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -1001,15 +1002,29 @@ impl Connection {
         }
     }
 
-    /// Get TCP-specific timeout based on connection state
+    /// Get TCP-specific timeout based on connection state and application protocol
     fn get_tcp_timeout(&self, tcp_state: &TcpState) -> Duration {
         match tcp_state {
             TcpState::Established => {
-                // Give established connections longer timeout, especially if they're active
+                // Check if we have DPI info for protocol-specific timeouts
+                if let Some(dpi_info) = &self.dpi_info {
+                    match &dpi_info.application {
+                        // SSH connections need very long timeouts for interactive sessions
+                        ApplicationProtocol::Ssh(_) => return Duration::from_secs(1800), // 30 minutes
+                        // HTTP/HTTPS keep-alive connections
+                        ApplicationProtocol::Http(_) | ApplicationProtocol::Https(_) => {
+                            return Duration::from_secs(600); // 10 minutes
+                        }
+                        // Other protocols use default logic below
+                        _ => {}
+                    }
+                }
+
+                // Default established connection timeouts (increased from 300s/180s)
                 if self.idle_time() < Duration::from_secs(60) {
-                    Duration::from_secs(300) // 5 minutes for active connections
+                    Duration::from_secs(600) // 10 minutes for active connections (was 5 min)
                 } else {
-                    Duration::from_secs(180) // 3 minutes for idle established
+                    Duration::from_secs(300) // 5 minutes for idle established (was 3 min)
                 }
             }
             TcpState::TimeWait => Duration::from_secs(30), // Standard TCP TIME_WAIT
@@ -1043,11 +1058,11 @@ impl Connection {
                 if let Some(idle_timeout) = quic.idle_timeout {
                     idle_timeout
                 } else {
-                    // Default timeout, but consider activity
+                    // Default timeout, but consider activity (increased for HTTP/3 connection reuse)
                     if self.idle_time() < Duration::from_secs(60) {
-                        Duration::from_secs(300) // Active QUIC connections
+                        Duration::from_secs(600) // 10 minutes for active QUIC (was 5 min)
                     } else {
-                        Duration::from_secs(180) // Idle QUIC connections
+                        Duration::from_secs(300) // 5 minutes for idle QUIC (was 3 min)
                     }
                 }
             }
@@ -1061,6 +1076,19 @@ impl Connection {
     pub fn should_cleanup(&self, now: SystemTime) -> bool {
         let timeout = self.get_timeout();
         now.duration_since(self.last_activity).unwrap_or_default() > timeout
+    }
+
+    /// Get the staleness level as a percentage (0.0 to 1.0+)
+    /// Returns how close the connection is to being cleaned up
+    /// - 0.0 = just created
+    /// - 0.75 = at warning threshold
+    /// - 1.0 = will be cleaned up
+    /// - >1.0 = should have been cleaned up already
+    pub fn staleness_ratio(&self) -> f32 {
+        let timeout = self.get_timeout();
+        let idle = self.idle_time();
+
+        idle.as_secs_f32() / timeout.as_secs_f32()
     }
 }
 
@@ -1582,13 +1610,13 @@ mod tests {
     fn test_dynamic_timeout_tcp() {
         let mut conn = create_test_connection();
 
-        // Test established connection timeout
+        // Test established connection timeout (updated from 300s to 600s)
         conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
-        assert_eq!(conn.get_timeout(), Duration::from_secs(300)); // Active established
+        assert_eq!(conn.get_timeout(), Duration::from_secs(600)); // Active established (was 300)
 
-        // Test idle established connection
+        // Test idle established connection (updated from 180s to 300s)
         conn.last_activity = SystemTime::now() - Duration::from_secs(120);
-        assert_eq!(conn.get_timeout(), Duration::from_secs(180)); // Idle established
+        assert_eq!(conn.get_timeout(), Duration::from_secs(300)); // Idle established (was 180)
 
         // Test TIME_WAIT
         conn.protocol_state = ProtocolState::Tcp(TcpState::TimeWait);
@@ -1681,14 +1709,80 @@ mod tests {
         conn.last_activity = now - Duration::from_secs(10); // Beyond 5s timeout for closed
         assert!(conn.should_cleanup(now));
 
-        // Test established connection within timeout
+        // Test established connection within timeout (updated timeout from 300s to 600s)
         conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
-        conn.last_activity = now - Duration::from_secs(100); // Within 300s timeout
+        conn.last_activity = now - Duration::from_secs(100); // Within 600s timeout
         assert!(!conn.should_cleanup(now));
 
-        // Test established connection beyond timeout
-        conn.last_activity = now - Duration::from_secs(400); // Beyond timeout
+        // Test established connection beyond timeout (updated timeout to 600s)
+        conn.last_activity = now - Duration::from_secs(700); // Beyond 600s timeout
         assert!(conn.should_cleanup(now));
+    }
+
+    #[test]
+    fn test_staleness_ratio() {
+        let mut conn = create_test_connection();
+        conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
+
+        // Fresh connection - staleness ratio near 0
+        let ratio = conn.staleness_ratio();
+        assert!(ratio < 0.05, "Fresh connection should have low staleness ratio");
+
+        // At 50% of timeout (300s total for idle, 150s elapsed)
+        conn.last_activity = SystemTime::now() - Duration::from_secs(150);
+        let ratio = conn.staleness_ratio();
+        assert!(
+            (ratio - 0.5).abs() < 0.1,
+            "Staleness ratio should be around 0.5, got {}",
+            ratio
+        );
+
+        // At 75% of timeout (warning threshold) - 225s
+        conn.last_activity = SystemTime::now() - Duration::from_secs(225);
+        let ratio = conn.staleness_ratio();
+        assert!(
+            ratio >= 0.75,
+            "Staleness ratio should be >= 0.75 at warning threshold, got {}",
+            ratio
+        );
+
+        // At 90% of timeout (critical threshold) - 270s
+        conn.last_activity = SystemTime::now() - Duration::from_secs(270);
+        let ratio = conn.staleness_ratio();
+        assert!(
+            ratio >= 0.90,
+            "Staleness ratio should be >= 0.90 at critical threshold, got {}",
+            ratio
+        );
+
+        // Beyond timeout - 350s (beyond 300s timeout)
+        conn.last_activity = SystemTime::now() - Duration::from_secs(350);
+        let ratio = conn.staleness_ratio();
+        assert!(
+            ratio > 1.0,
+            "Staleness ratio should exceed 1.0 beyond timeout, got {}",
+            ratio
+        );
+    }
+
+    #[test]
+    fn test_staleness_with_different_timeouts() {
+        // Test TIME_WAIT (30s timeout)
+        let mut conn = create_test_connection();
+        conn.protocol_state = ProtocolState::Tcp(TcpState::TimeWait);
+
+        // At 75% of 30s = 22.5s
+        conn.last_activity = SystemTime::now() - Duration::from_secs(23);
+        let ratio = conn.staleness_ratio();
+        assert!(ratio >= 0.75, "TIME_WAIT connection should be stale at 23s, ratio: {}", ratio);
+
+        // Test CLOSED (5s timeout)
+        conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
+
+        // At 75% of 5s = 3.75s
+        conn.last_activity = SystemTime::now() - Duration::from_secs(4);
+        let ratio = conn.staleness_ratio();
+        assert!(ratio >= 0.75, "CLOSED connection should be stale at 4s, ratio: {}", ratio);
     }
 
     #[test]

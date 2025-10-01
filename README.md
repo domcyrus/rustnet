@@ -27,9 +27,13 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
   - **SSH connections** with version detection, software identification, and connection state tracking
   - **QUIC protocol with CONNECTION_CLOSE frame detection** and RFC 9000 compliance
 - **Connection Lifecycle Management**:
-  - Configurable timeouts based on protocol, state, and activity (TCP closed: 5s, QUIC draining: 10s, SSH: 30min)
-  - Protocol-specific cleanup (DNS: 30s, established TCP: 5min, QUIC with close frames: 1-10s)
-  - Activity-based timeout adjustment for long-lived vs idle connections
+  - **Smart protocol-aware timeouts** based on protocol, state, and activity level
+  - **TCP connections**: 5-10 minutes for established (activity-based), with DPI-aware extensions
+  - **HTTP/HTTPS keep-alive**: 10 minutes (both TCP and UDP/HTTP3)
+  - **SSH sessions**: 30 minutes (both TCP and UDP)
+  - **QUIC connections**: 5-10 minutes (activity-based)
+  - **Fast cleanup**: DNS (30s), TCP closed (5s), QUIC draining (10s)
+  - **Visual staleness indicators**: Connections turn yellow (75% timeout) then red (90% timeout) before cleanup
 - **Process Identification**: Associate network connections with running processes
   - **Note**: With experimental eBPF support, process names are limited to 16 characters from the kernel's `comm` field and may show thread names instead of full executable names
 - **Service Name Resolution**: Identify well-known services using port numbers
@@ -370,6 +374,72 @@ Options:
 - `h`: Toggle help screen
 - `/`: Enter filter mode (vim-style search with real-time results)
 
+## Connection Lifecycle & Visual Indicators
+
+RustNet uses intelligent timeout management to automatically clean up inactive connections while providing visual warnings before removal.
+
+### Visual Staleness Indicators
+
+Connections change color based on how close they are to being cleaned up:
+
+| Color | Meaning | Staleness |
+|-------|---------|-----------|
+| **White** (default) | Active connection | < 75% of timeout |
+| **Yellow** | Stale - approaching timeout | 75-90% of timeout |
+| **Red** | Critical - will be removed soon | > 90% of timeout |
+
+**Example**: An HTTP connection with a 10-minute timeout will:
+- Stay **white** for the first 7.5 minutes
+- Turn **yellow** from 7.5 to 9 minutes (warning)
+- Turn **red** after 9 minutes (critical)
+- Be removed at 10 minutes
+
+This gives you advance warning when a connection is about to disappear from the list.
+
+### Smart Protocol-Aware Timeouts
+
+RustNet adjusts connection timeouts based on the protocol and detected application:
+
+#### TCP Connections
+- **HTTP/HTTPS** (detected via DPI): **10 minutes** - supports HTTP keep-alive
+- **SSH** (detected via DPI): **30 minutes** - accommodates long interactive sessions
+- **Active established** (< 1 min idle): **10 minutes**
+- **Idle established** (> 1 min idle): **5 minutes**
+- **TIME_WAIT**: 30 seconds - standard TCP timeout
+- **CLOSED**: 5 seconds - rapid cleanup
+- **SYN_SENT, FIN_WAIT, etc.**: 30-60 seconds
+
+#### UDP Connections
+- **HTTP/3 (QUIC with HTTP)**: **10 minutes** - connection reuse
+- **HTTPS/3 (QUIC with HTTPS)**: **10 minutes** - connection reuse
+- **SSH over UDP**: **30 minutes** - long-lived sessions
+- **DNS**: **30 seconds** - short-lived queries
+- **Regular UDP**: **60 seconds** - standard timeout
+
+#### QUIC Connections (Detected State)
+- **Connected (active)** (< 1 min idle): **10 minutes**
+- **Connected (idle)** (> 1 min idle): **5 minutes**
+- **With CONNECTION_CLOSE frame**: 1-10 seconds (based on close type)
+- **Initial/Handshaking**: 60 seconds - allow connection establishment
+- **Draining**: 10 seconds - RFC 9000 draining period
+
+### Activity-Based Adjustment
+
+Connections showing recent packet activity get longer timeouts:
+- **Last packet < 60 seconds ago**: Uses "active" timeout (longer)
+- **Last packet > 60 seconds ago**: Uses "idle" timeout (shorter)
+
+This ensures active connections stay visible while idle connections are cleaned up more quickly.
+
+### Why Connections Disappear
+
+A connection is removed when:
+1. **No packets received** for the duration of its timeout period
+2. The connection enters a **closed state** (TCP CLOSED, QUIC CLOSED)
+3. **Explicit close frames** detected (QUIC CONNECTION_CLOSE)
+
+**Note**: Rate indicators (bandwidth display) show *decaying* traffic based on recent activity. A connection may show declining bandwidth (yellow bars) but remain in the list until it exceeds its idle timeout. This is intentional - the visual decay gives you time to see the connection winding down before it's removed.
+
 ## Sorting
 
 RustNet provides powerful table sorting to help you analyze network connections. Press `s` to cycle through sortable columns in left-to-right visual order, and press `S` (Shift+s) to toggle between ascending and descending order.
@@ -622,8 +692,15 @@ RustNet uses a multi-threaded architecture for packet processing:
 2. **Packet Processors**: Multiple worker threads parse packets and perform DPI analysis
 3. **Process Enrichment**: Platform-specific APIs to associate connections with processes
 4. **Snapshot Provider**: Creates consistent snapshots for the UI at regular intervals
-5. **Cleanup Thread**: Removes connections using configurable timeouts based on protocol, state, and activity
-6. **DashMap**: Concurrent hashmap for storing connection state
+5. **Cleanup Thread**: Removes inactive connections using smart, protocol-aware timeouts:
+   - **TCP Established**: 10 minutes (active) / 5 minutes (idle)
+   - **HTTP/HTTPS**: 10 minutes (supports keep-alive)
+   - **SSH**: 30 minutes (long-lived sessions)
+   - **QUIC**: 10 minutes (active) / 5 minutes (idle)
+   - **DNS**: 30 seconds (short-lived queries)
+   - **TCP Closed**: 5 seconds (rapid cleanup)
+6. **Rate Refresh Thread**: Updates bandwidth calculations every second with gentle decay
+7. **DashMap**: Concurrent hashmap for storing connection state
 
 ## Dependencies
 

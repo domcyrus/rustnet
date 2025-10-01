@@ -174,21 +174,32 @@ impl UIState {
         }
 
         let current_index = self.get_selected_index(connections).unwrap_or(0);
+        let old_key = self.selected_connection_key.clone();
         log::debug!(
-            "move_selection_up: current_index={}, total_connections={}",
+            "move_selection_up: current_index={}, total_connections={}, current_key={:?}",
             current_index,
-            connections.len()
+            connections.len(),
+            old_key
         );
 
         if current_index > 0 {
             self.set_selected_by_index(connections, current_index - 1);
-            log::debug!("move_selection_up: moved to index {}", current_index - 1);
+            log::debug!(
+                "move_selection_up: moved from index {} to {} (key: {:?} -> {:?})",
+                current_index,
+                current_index - 1,
+                old_key,
+                self.selected_connection_key
+            );
         } else {
             // Wrap around to the bottom
             self.set_selected_by_index(connections, connections.len() - 1);
             log::debug!(
-                "move_selection_up: wrapped to bottom index {}",
-                connections.len() - 1
+                "move_selection_up: wrapped from index {} to bottom index {} (key: {:?} -> {:?})",
+                current_index,
+                connections.len() - 1,
+                old_key,
+                self.selected_connection_key
             );
         }
     }
@@ -201,19 +212,32 @@ impl UIState {
         }
 
         let current_index = self.get_selected_index(connections).unwrap_or(0);
+        let old_key = self.selected_connection_key.clone();
         log::debug!(
-            "move_selection_down: current_index={}, total_connections={}",
+            "move_selection_down: current_index={}, total_connections={}, current_key={:?}",
             current_index,
-            connections.len()
+            connections.len(),
+            old_key
         );
 
         if current_index < connections.len().saturating_sub(1) {
             self.set_selected_by_index(connections, current_index + 1);
-            log::debug!("move_selection_down: moved to index {}", current_index + 1);
+            log::debug!(
+                "move_selection_down: moved from index {} to {} (key: {:?} -> {:?})",
+                current_index,
+                current_index + 1,
+                old_key,
+                self.selected_connection_key
+            );
         } else {
             // Wrap around to the top
             self.set_selected_by_index(connections, 0);
-            log::debug!("move_selection_down: wrapped to top index 0");
+            log::debug!(
+                "move_selection_down: wrapped from index {} to top index 0 (key: {:?} -> {:?})",
+                current_index,
+                old_key,
+                self.selected_connection_key
+            );
         }
     }
 
@@ -603,6 +627,22 @@ fn draw_connections_list(
             let outgoing_rate = format_rate_compact(conn.current_outgoing_rate_bps);
             let bandwidth_display = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
 
+            // Determine row color based on staleness
+            // - Normal (white/default): fresh connections (< 75% of timeout)
+            // - Yellow: approaching timeout (75-90% of timeout)
+            // - Red: very close to timeout (> 90% of timeout)
+            let staleness = conn.staleness_ratio();
+            let row_style = if staleness >= 0.90 {
+                // Critical: > 90% of timeout - will be cleaned up very soon
+                Style::default().fg(Color::Red)
+            } else if staleness >= 0.75 {
+                // Warning: 75-90% of timeout - approaching cleanup
+                Style::default().fg(Color::Yellow)
+            } else {
+                // Normal: < 75% of timeout
+                Style::default()
+            };
+
             let cells = [
                 Cell::from(conn.protocol.to_string()),
                 Cell::from(conn.local_addr.to_string()),
@@ -613,7 +653,7 @@ fn draw_connections_list(
                 Cell::from(bandwidth_display),
                 Cell::from(process_display),
             ];
-            Row::new(cells)
+            Row::new(cells).style(row_style)
         })
         .collect();
 
@@ -1077,6 +1117,25 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
+            "Connection Colors:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled("  White ", Style::default()),
+            Span::raw("Active connection (< 75% of timeout)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Yellow ", Style::default().fg(Color::Yellow)),
+            Span::raw("Stale connection (75-90% of timeout)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Red ", Style::default().fg(Color::Red)),
+            Span::raw("Critical - will be removed soon (> 90% of timeout)"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
             "Filter Examples:",
             Style::default()
                 .fg(Color::Cyan)
@@ -1464,5 +1523,70 @@ mod tests {
         ui_state.toggle_sort_direction();
         assert_eq!(ui_state.sort_column, SortColumn::BandwidthUp);
         assert!(!ui_state.sort_ascending, "After second toggle, BandwidthUp should be descending again");
+    }
+
+    #[test]
+    fn test_navigation_consistency_with_sorted_list() {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        use crate::network::types::{Protocol, ProtocolState};
+
+        // Create test connections with different process names for sorting
+        let mut connections = vec![
+            Connection::new(
+                Protocol::TCP,
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 443),
+                ProtocolState::Tcp(crate::network::types::TcpState::Established),
+            ),
+            Connection::new(
+                Protocol::TCP,
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8081),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 443),
+                ProtocolState::Tcp(crate::network::types::TcpState::Established),
+            ),
+            Connection::new(
+                Protocol::TCP,
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8082),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 3)), 443),
+                ProtocolState::Tcp(crate::network::types::TcpState::Established),
+            ),
+        ];
+
+        // Set different process names for sorting (alphabetically: alpha, beta, charlie)
+        connections[0].process_name = Some("charlie".to_string());
+        connections[1].process_name = Some("alpha".to_string());
+        connections[2].process_name = Some("beta".to_string());
+
+        // Create UI state
+        let mut ui_state = UIState::default();
+
+        // Initial state: select first connection (charlie)
+        ui_state.set_selected_by_index(&connections, 0);
+        assert_eq!(ui_state.selected_connection_key, Some(connections[0].key()));
+
+        // Sort by process name (ascending): alpha, beta, charlie
+        connections.sort_by(|a, b| {
+            a.process_name.as_deref().unwrap_or("").cmp(b.process_name.as_deref().unwrap_or(""))
+        });
+
+        // After sorting, "charlie" is now at index 2
+        // Selection should still point to "charlie" by key
+        let current_index = ui_state.get_selected_index(&connections);
+        assert_eq!(current_index, Some(2), "Selected connection should now be at index 2 after sorting");
+
+        // Navigate down: should move from charlie (2) to wrap to alpha (0)
+        ui_state.move_selection_down(&connections);
+        assert_eq!(ui_state.get_selected_index(&connections), Some(0), "Should wrap to index 0");
+        assert_eq!(ui_state.selected_connection_key, Some(connections[0].key()));
+
+        // Navigate down: should move from alpha (0) to beta (1)
+        ui_state.move_selection_down(&connections);
+        assert_eq!(ui_state.get_selected_index(&connections), Some(1), "Should move to index 1");
+        assert_eq!(ui_state.selected_connection_key, Some(connections[1].key()));
+
+        // Navigate up: should move from beta (1) to alpha (0)
+        ui_state.move_selection_up(&connections);
+        assert_eq!(ui_state.get_selected_index(&connections), Some(0), "Should move to index 0");
+        assert_eq!(ui_state.selected_connection_key, Some(connections[0].key()));
     }
 }
