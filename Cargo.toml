@@ -47,6 +47,9 @@ libbpf-rs = { version = "0.25", optional = true }
 bytes = { version = "1.5", optional = true }
 libc = { version = "0.2", optional = true }
 
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["libloaderapi"] }
+
 [build-dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }

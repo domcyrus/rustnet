@@ -121,6 +121,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 4. **Run Rustnet**:
    - Open Command Prompt or PowerShell
    - Run: `rustnet.exe`
+   - If Npcap is not installed or not in WinPcap compatible mode, RustNet will display a helpful error message with installation instructions
    - Note: Depending on your Npcap installation settings, you may or may not need Administrator privileges
 
 #### Linux Package Installation
