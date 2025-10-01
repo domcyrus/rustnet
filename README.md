@@ -365,8 +365,147 @@ Options:
 - `Esc`: Go back to previous view or clear active filter
 - `c`: Copy remote address to clipboard
 - `p`: Toggle between service names and port numbers
+- `s`: Cycle through sort columns (left-to-right order)
+- `S` (Shift+s): Toggle sort direction (ascending/descending)
 - `h`: Toggle help screen
 - `/`: Enter filter mode (vim-style search with real-time results)
+
+## Sorting
+
+RustNet provides powerful table sorting to help you analyze network connections. Press `s` to cycle through sortable columns in left-to-right visual order, and press `S` (Shift+s) to toggle between ascending and descending order.
+
+### Quick Start
+
+**Find bandwidth hogs:**
+```
+Press 's' repeatedly until you see: Down↓/Up
+The connections with highest download bandwidth appear at the top
+```
+
+**Find top uploaders:**
+```
+Press 's' repeatedly until you see: Down/Up↓
+The connections with highest upload bandwidth appear at the top
+```
+
+**Sort by process name:**
+```
+Press 's' repeatedly until you see: Process ↑
+Connections are sorted alphabetically by process name
+```
+
+### Sortable Columns
+
+Press `s` to cycle through columns in left-to-right order:
+
+| Column | Default Direction | Description |
+|--------|-------------------|-------------|
+| **Protocol** | ↑ Ascending | Sort by protocol type (TCP, UDP, ICMP, etc.) |
+| **Local Address** | ↑ Ascending | Sort by local IP:port (useful for multi-interface systems) |
+| **Remote Address** | ↑ Ascending | Sort by remote IP:port |
+| **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
+| **Service** | ↑ Ascending | Sort by service name or port number |
+| **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.) |
+| **Bandwidth ↓** | ↓ Descending | Sort by **download** bandwidth (highest first by default) |
+| **Bandwidth ↑** | ↓ Descending | Sort by **upload** bandwidth (highest first by default) |
+| **Process** | ↑ Ascending | Sort by process name alphabetically |
+
+### Sort Indicators
+
+The active sort column is highlighted with:
+- **Cyan color** and **underline** styling
+- **Arrow symbol** (↑ or ↓) showing sort direction
+- **Table title** showing current sort state
+
+**Visual indicators:**
+```
+Active column header appears in cyan with underline:
+Pro │ Local Address │ Remote Address ↑│ State │ ...
+                      ^^^^^^^^^^^^^^^^
+                      (cyan, underlined, with arrow)
+
+Table title shows current sort:
+┌─ Active Connections (Sort: Remote Addr ↑) ──┐
+```
+
+### Bandwidth Column Special Behavior
+
+The bandwidth column shows **both download and upload** metrics. The arrow attaches to the specific metric being sorted:
+
+| Display | Sorting By | Direction | Meaning |
+|---------|------------|-----------|---------|
+| `Down↓/Up` | Download | Descending (↓) | **Highest downloads first** (bandwidth hogs) |
+| `Down↑/Up` | Download | Ascending (↑) | Lowest downloads first |
+| `Down/Up↓` | Upload | Descending (↓) | **Highest uploads first** (top uploaders) |
+| `Down/Up↑` | Upload | Ascending (↑) | Lowest uploads first |
+
+**Key points:**
+- The arrow (↑/↓) indicates **sort direction**, not bandwidth direction
+- `↓` = Descending = Highest values at top (10MB → 5MB → 1MB)
+- `↑` = Ascending = Lowest values at top (1MB → 5MB → 10MB)
+- Press `s` once on bandwidth to sort by downloads, press `s` again for uploads
+- Press `S` (Shift+s) to flip between high-to-low and low-to-high
+
+### Sort Behavior
+
+**Press `s` (lowercase) - Cycle Columns:**
+- Moves to the next column in left-to-right visual order
+- **Resets to default direction** for that column
+- Bandwidth columns default to descending (↓) to show highest values first
+- Text columns default to ascending (↑) for alphabetical order
+
+**Press `S` (Shift+s) - Toggle Direction:**
+- **Stays on current column**
+- Flips between ascending (↑) and descending (↓)
+- Useful for reversing sort order (e.g., finding smallest bandwidth users)
+
+**Press `s` multiple times to return to default:**
+- Cycling through all columns returns to the default chronological sort (by connection creation time)
+- No sort indicator is shown when in default mode
+
+### Sorting with Filtering
+
+Sorting works seamlessly with filtering:
+1. **Filter first**: Press `/` and enter your filter criteria
+2. **Then sort**: Press `s` to sort the filtered results
+3. **The sort persists**: Changing the filter keeps your sort order active
+
+Example workflow:
+```
+1. Press '/' and type 'firefox' to filter Firefox connections
+2. Press 's' until you see "Down↓/Up"
+3. Now viewing Firefox connections sorted by download bandwidth
+```
+
+### Examples
+
+**Find which process is downloading the most:**
+```
+1. Press 's' until "Down↓/Up" appears
+2. Top connection shows the highest download rate
+3. Look at the "Process" column to see which application
+```
+
+**Sort connections by remote destination:**
+```
+1. Press 's' until "Remote Address ↑" appears
+2. Connections are grouped by remote IP address
+3. Press 'S' to reverse order if needed
+```
+
+**Find idle connections (lowest bandwidth):**
+```
+1. Press 's' to cycle to "Down↓/Up"
+2. Press 'S' to toggle to "Down↑/Up" (ascending)
+3. Connections with lowest download bandwidth appear first
+```
+
+**Sort by application protocol:**
+```
+1. Press 's' until "Application / Host ↑" appears
+2. All HTTPS connections group together, DNS queries together, etc.
+3. Useful for finding all connections of a specific type
+```
 
 ## Filtering
 

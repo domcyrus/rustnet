@@ -33,7 +33,14 @@ The experimental eBPF support provides efficient process identification but has 
 
 ## Features
 
-- **Sorting**: Sort by name, bandwidth utilization, etc.
+- **✅ Sorting** (Completed): Comprehensive table sorting with:
+  - Sort by all columns: Protocol, Local/Remote Address, State, Service, Application, Bandwidth (Down/Up), Process
+  - Intuitive left-to-right column cycling with `s` key
+  - Direction toggle with `S` (Shift+s) for ascending/descending
+  - Visual indicators: cyan/underlined active column, arrows showing direction
+  - Smart defaults: bandwidth descending (show hogs), text ascending (alphabetical)
+  - Special bandwidth handling: arrows attach to specific metric (Down↓/Up or Down/Up↓)
+  - Seamless integration with filtering
 - **DPI Enhancements**: Improve deep packet inspection capabilities:
   - Support more protocols (e.g. FTP, SMTP, etc.)
   - More accurate SNI detection for QUIC/HTTPS
@@ -52,9 +59,9 @@ The experimental eBPF support provides efficient process identification but has 
 
 ## UI Improvements
 
+- **✅ Sortable Columns** (Completed): Keyboard-based sorting by all table columns
 - **Resizable Columns**: Dynamic column width adjustment
 - **Connection Grouping**: Group connections by process/service
-- **Sortable Columns**: Click to sort by any column
 - **Connection Details Popup**: Modal dialog for detailed connection info
 - **ASCII Graphs**: Terminal-based graphs for bandwidth/packet visualization
 - **Mouse Support**: Click to select connections

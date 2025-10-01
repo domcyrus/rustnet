@@ -12,6 +12,80 @@ use crate::network::types::{Connection, Protocol};
 
 pub type Terminal<B> = RatatuiTerminal<B>;
 
+/// Sort column options for the connections table
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortColumn {
+    CreatedAt,        // Default: creation time (oldest first)
+    BandwidthDown,
+    BandwidthUp,
+    Process,
+    LocalAddress,
+    RemoteAddress,
+    Application,
+    Service,
+    State,
+    Protocol,
+}
+
+impl Default for SortColumn {
+    fn default() -> Self {
+        Self::CreatedAt
+    }
+}
+
+impl SortColumn {
+    /// Get the next sort column in the cycle (follows left-to-right visual order)
+    pub fn next(self) -> Self {
+        match self {
+            Self::CreatedAt => Self::Protocol,           // Column 1: Pro
+            Self::Protocol => Self::LocalAddress,        // Column 2: Local Address
+            Self::LocalAddress => Self::RemoteAddress,   // Column 3: Remote Address
+            Self::RemoteAddress => Self::State,          // Column 4: State
+            Self::State => Self::Service,                // Column 5: Service
+            Self::Service => Self::Application,          // Column 6: Application / Host
+            Self::Application => Self::BandwidthDown,    // Column 7: Down/Up (Down first)
+            Self::BandwidthDown => Self::BandwidthUp,    // Column 7: Down/Up (Up second)
+            Self::BandwidthUp => Self::Process,          // Column 8: Process
+            Self::Process => Self::CreatedAt,            // Back to default
+        }
+    }
+
+    /// Get the default sort direction for this column (true = ascending, false = descending)
+    pub fn default_direction(self) -> bool {
+        match self {
+            // Descending by default - show biggest/most active first
+            Self::BandwidthDown => false,
+            Self::BandwidthUp => false,
+
+            // Ascending by default - alphabetical or chronological
+            Self::Process => true,
+            Self::LocalAddress => true,
+            Self::RemoteAddress => true,
+            Self::Application => true,
+            Self::Service => true,
+            Self::State => true,
+            Self::Protocol => true,
+            Self::CreatedAt => true, // Oldest first (current default behavior)
+        }
+    }
+
+    /// Get the display name for the sort column
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::CreatedAt => "Time",
+            Self::BandwidthDown => "Bandwidth ↓",
+            Self::BandwidthUp => "Bandwidth ↑",
+            Self::Process => "Process",
+            Self::LocalAddress => "Local Addr",
+            Self::RemoteAddress => "Remote Addr",
+            Self::Application => "Application",
+            Self::Service => "Service",
+            Self::State => "State",
+            Self::Protocol => "Protocol",
+        }
+    }
+}
+
 /// Set up the terminal for the TUI application
 pub fn setup_terminal<B: ratatui::backend::Backend>(backend: B) -> Result<Terminal<B>> {
     let mut terminal = RatatuiTerminal::new(backend)?;
@@ -39,7 +113,6 @@ pub fn restore_terminal<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>
 }
 
 /// UI state for managing the interface
-#[derive(Default)]
 pub struct UIState {
     pub selected_tab: usize,
     pub selected_connection_key: Option<String>,
@@ -50,6 +123,26 @@ pub struct UIState {
     pub filter_query: String,
     pub filter_cursor_position: usize,
     pub show_port_numbers: bool,
+    pub sort_column: SortColumn,
+    pub sort_ascending: bool,
+}
+
+impl Default for UIState {
+    fn default() -> Self {
+        Self {
+            selected_tab: 0,
+            selected_connection_key: None,
+            show_help: false,
+            quit_confirmation: false,
+            clipboard_message: None,
+            filter_mode: false,
+            filter_query: String::new(),
+            filter_cursor_position: 0,
+            show_port_numbers: false,
+            sort_column: SortColumn::default(),
+            sort_ascending: true, // Default to ascending
+        }
+    }
 }
 
 impl UIState {
@@ -220,6 +313,18 @@ impl UIState {
             self.filter_cursor_position += 1;
         }
     }
+
+    /// Cycle to the next sort column
+    pub fn cycle_sort_column(&mut self) {
+        self.sort_column = self.sort_column.next();
+        // Reset to the default direction for the new column
+        self.sort_ascending = self.sort_column.default_direction();
+    }
+
+    /// Toggle the sort direction for the current column
+    pub fn toggle_sort_direction(&mut self) {
+        self.sort_ascending = !self.sort_ascending;
+    }
 }
 
 /// Draw the UI
@@ -335,34 +440,84 @@ fn draw_connections_list(
     area: Rect,
 ) {
     let widths = [
-        Constraint::Length(4),  // Protocol (TCP/UDP fits in 4)
-        Constraint::Length(17), // Local Address (slightly reduced for state)
-        Constraint::Length(21), // Remote Address (slightly reduced for state)
-        Constraint::Length(16), // State (increased for QUIC_HANDSHAKE, etc)
-        Constraint::Length(8),  // Service (port names fit in 8)
-        Constraint::Length(24), // DPI/Application (slightly reduced)
-        Constraint::Length(12), // Bandwidth
+        Constraint::Length(6),  // Protocol (TCP/UDP + arrow = "Pro ↑" = 5 chars, give 6 for padding)
+        Constraint::Length(17), // Local Address (13 + arrow = 15, fits in 17)
+        Constraint::Length(21), // Remote Address (14 + arrow = 16, fits in 21)
+        Constraint::Length(16), // State (5 + arrow = 7, fits in 16)
+        Constraint::Length(10), // Service (7 + arrow = 9, need at least 10 for padding)
+        Constraint::Length(24), // DPI/Application (18 + arrow = 20, fits in 24)
+        Constraint::Length(12), // Bandwidth (7 + arrow = 9, fits in 12)
         Constraint::Min(20),    // Process (flexible remaining space)
     ];
 
-    let header_cells = [
-        "Pro", // Shortened
-        "Local Address",
-        "Remote Address",
-        "State",
-        "Service",
-        "Application / Host", // More descriptive for DPI
-        "Down/Up",            // Compressed
-        "Process",
-    ]
-    .iter()
-    .map(|h| {
-        Cell::from(*h).style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-    });
+    // Helper function to add sort indicator to column headers
+    let add_sort_indicator = |label: &str, columns: &[SortColumn]| -> String {
+        if columns.contains(&ui_state.sort_column)
+            && ui_state.sort_column != SortColumn::CreatedAt
+        {
+            let arrow = if ui_state.sort_ascending { "↑" } else { "↓" };
+            format!("{} {}", label, arrow)
+        } else {
+            label.to_string()
+        }
+    };
+
+    // Special handler for bandwidth column - attaches arrow to specific metric
+    let bandwidth_label = match ui_state.sort_column {
+        SortColumn::BandwidthDown => {
+            let arrow = if ui_state.sort_ascending { "↑" } else { "↓" };
+            format!("Down{}/Up", arrow)  // "Down↓/Up" or "Down↑/Up"
+        }
+        SortColumn::BandwidthUp => {
+            let arrow = if ui_state.sort_ascending { "↑" } else { "↓" };
+            format!("Down/Up{}", arrow)  // "Down/Up↓" or "Down/Up↑"
+        }
+        _ => "Down/Up".to_string()  // No bandwidth sort active
+    };
+
+    let header_labels = [
+        add_sort_indicator("Pro", &[SortColumn::Protocol]),
+        add_sort_indicator("Local Address", &[SortColumn::LocalAddress]),
+        add_sort_indicator("Remote Address", &[SortColumn::RemoteAddress]),
+        add_sort_indicator("State", &[SortColumn::State]),
+        add_sort_indicator("Service", &[SortColumn::Service]),
+        add_sort_indicator("Application / Host", &[SortColumn::Application]),
+        bandwidth_label,  // Use custom bandwidth label instead of generic indicator
+        add_sort_indicator("Process", &[SortColumn::Process]),
+    ];
+
+    let header_cells = header_labels
+        .iter()
+        .enumerate()
+        .map(|(idx, h)| {
+            // Determine if this is the active sort column
+            let is_active = match idx {
+                0 => ui_state.sort_column == SortColumn::Protocol,
+                1 => ui_state.sort_column == SortColumn::LocalAddress,
+                2 => ui_state.sort_column == SortColumn::RemoteAddress,
+                3 => ui_state.sort_column == SortColumn::State,
+                4 => ui_state.sort_column == SortColumn::Service,
+                5 => ui_state.sort_column == SortColumn::Application,
+                6 => ui_state.sort_column == SortColumn::BandwidthDown
+                     || ui_state.sort_column == SortColumn::BandwidthUp,
+                7 => ui_state.sort_column == SortColumn::Process,
+                _ => false,
+            } && ui_state.sort_column != SortColumn::CreatedAt;
+
+            let style = if is_active {
+                // Active sort column: Cyan + Bold + Underlined
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                // Inactive columns: Yellow + Bold (normal)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            };
+
+            Cell::from(h.as_str()).style(style)
+        });
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
     let rows: Vec<Row> = connections
@@ -468,12 +623,24 @@ fn draw_connections_list(
         state.select(Some(selected_index));
     }
 
+    // Build dynamic title with sort information
+    let table_title = if ui_state.sort_column != SortColumn::CreatedAt {
+        let direction = if ui_state.sort_ascending { "↑" } else { "↓" };
+        format!(
+            "Active Connections (Sort: {} {})",
+            ui_state.sort_column.display_name(),
+            direction
+        )
+    } else {
+        "Active Connections".to_string()
+    };
+
     let connections_table = Table::new(rows, &widths)
         .header(header)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Active Connections"),
+                .title(table_title),
         )
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
@@ -885,6 +1052,14 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Toggle between service names and port numbers"),
         ]),
         Line::from(vec![
+            Span::styled("s ", Style::default().fg(Color::Yellow)),
+            Span::raw("Cycle through sort columns (Bandwidth, Process, etc.)"),
+        ]),
+        Line::from(vec![
+            Span::styled("S ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle sort direction (ascending/descending)"),
+        ]),
+        Line::from(vec![
             Span::styled("Enter ", Style::default().fg(Color::Yellow)),
             Span::raw("View connection details"),
         ]),
@@ -1140,5 +1315,154 @@ mod tests {
         // Toggle back to show service names
         ui_state.show_port_numbers = !ui_state.show_port_numbers;
         assert!(!ui_state.show_port_numbers, "Service names should be visible after second toggle");
+    }
+
+    #[test]
+    fn test_sort_column_cycle() {
+        use SortColumn::*;
+
+        // Test the complete cycle (follows left-to-right visual order)
+        assert_eq!(CreatedAt.next(), Protocol);
+        assert_eq!(Protocol.next(), LocalAddress);
+        assert_eq!(LocalAddress.next(), RemoteAddress);
+        assert_eq!(RemoteAddress.next(), State);
+        assert_eq!(State.next(), Service);
+        assert_eq!(Service.next(), Application);
+        assert_eq!(Application.next(), BandwidthDown);
+        assert_eq!(BandwidthDown.next(), BandwidthUp);
+        assert_eq!(BandwidthUp.next(), Process);
+        assert_eq!(Process.next(), CreatedAt); // Cycles back
+    }
+
+    #[test]
+    fn test_sort_column_default_directions() {
+        use SortColumn::*;
+
+        // Bandwidth should default to descending (false)
+        assert!(!BandwidthDown.default_direction());
+        assert!(!BandwidthUp.default_direction());
+
+        // Everything else should default to ascending (true)
+        assert!(Process.default_direction());
+        assert!(LocalAddress.default_direction());
+        assert!(RemoteAddress.default_direction());
+        assert!(Application.default_direction());
+        assert!(Service.default_direction());
+        assert!(State.default_direction());
+        assert!(Protocol.default_direction());
+        assert!(CreatedAt.default_direction());
+    }
+
+    #[test]
+    fn test_ui_state_cycle_sort_column() {
+        let mut ui_state = UIState::default();
+
+        // Default state
+        assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
+        assert!(ui_state.sort_ascending);
+
+        // Cycle to Protocol - should reset to ascending
+        ui_state.cycle_sort_column();
+        assert_eq!(ui_state.sort_column, SortColumn::Protocol);
+        assert!(ui_state.sort_ascending); // Protocol defaults to ascending
+
+        // Cycle to LocalAddress - should reset to ascending
+        ui_state.cycle_sort_column();
+        assert_eq!(ui_state.sort_column, SortColumn::LocalAddress);
+        assert!(ui_state.sort_ascending);
+
+        // Cycle to RemoteAddress - should reset to ascending
+        ui_state.cycle_sort_column();
+        assert_eq!(ui_state.sort_column, SortColumn::RemoteAddress);
+        assert!(ui_state.sort_ascending);
+
+        // Skip ahead to Application
+        ui_state.cycle_sort_column(); // State
+        ui_state.cycle_sort_column(); // Service
+        ui_state.cycle_sort_column(); // Application
+        assert_eq!(ui_state.sort_column, SortColumn::Application);
+        assert!(ui_state.sort_ascending);
+
+        // Cycle to BandwidthDown - should reset to descending
+        ui_state.cycle_sort_column();
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthDown);
+        assert!(!ui_state.sort_ascending); // Bandwidth defaults to descending
+    }
+
+    #[test]
+    fn test_ui_state_toggle_sort_direction() {
+        let mut ui_state = UIState {
+            sort_column: SortColumn::BandwidthDown,
+            sort_ascending: false,
+            ..Default::default()
+        };
+
+        // Toggle direction
+        ui_state.toggle_sort_direction();
+        assert!(ui_state.sort_ascending);
+
+        // Toggle back
+        ui_state.toggle_sort_direction();
+        assert!(!ui_state.sort_ascending);
+    }
+
+    #[test]
+    fn test_sort_column_display_names() {
+        use SortColumn::*;
+
+        assert_eq!(CreatedAt.display_name(), "Time");
+        assert_eq!(BandwidthDown.display_name(), "Bandwidth ↓");
+        assert_eq!(BandwidthUp.display_name(), "Bandwidth ↑");
+        assert_eq!(Process.display_name(), "Process");
+        assert_eq!(LocalAddress.display_name(), "Local Addr");
+        assert_eq!(RemoteAddress.display_name(), "Remote Addr");
+        assert_eq!(Application.display_name(), "Application");
+        assert_eq!(Service.display_name(), "Service");
+        assert_eq!(State.display_name(), "State");
+        assert_eq!(Protocol.display_name(), "Protocol");
+    }
+
+    #[test]
+    fn test_bandwidth_sort_states() {
+        let mut ui_state = UIState::default();
+
+        // Start from default
+        assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
+        assert!(ui_state.sort_ascending);
+
+        // Cycle through columns to reach BandwidthDown
+        // CreatedAt -> Protocol -> LocalAddress -> RemoteAddress -> State -> Service -> Application -> BandwidthDown
+        for _ in 0..7 {
+            ui_state.cycle_sort_column();
+        }
+
+        // Should be at BandwidthDown with default descending (false)
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthDown);
+        assert!(!ui_state.sort_ascending, "BandwidthDown should default to descending");
+
+        // Toggle direction with Shift+S
+        ui_state.toggle_sort_direction();
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthDown);
+        assert!(ui_state.sort_ascending, "After toggle, BandwidthDown should be ascending");
+
+        // Toggle back
+        ui_state.toggle_sort_direction();
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthDown);
+        assert!(!ui_state.sort_ascending, "After second toggle, BandwidthDown should be descending again");
+
+        // Cycle to BandwidthUp
+        ui_state.cycle_sort_column();
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthUp);
+        assert!(!ui_state.sort_ascending, "BandwidthUp should default to descending");
+
+        // Toggle direction for BandwidthUp
+        ui_state.toggle_sort_direction();
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthUp);
+        assert!(ui_state.sort_ascending, "After toggle, BandwidthUp should be ascending");
+
+        // Toggle back
+        ui_state.toggle_sort_direction();
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthUp);
+        assert!(!ui_state.sort_ascending, "After second toggle, BandwidthUp should be descending again");
     }
 }
