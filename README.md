@@ -48,7 +48,7 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 
 ### eBPF Enhanced Process Identification (Experimental)
 
-When built with the `ebpf` feature on Linux, RustNet uses kernel eBPF programs for enhanced performance and lower overhead process identification. However, this comes with important limitations:
+On Linux, RustNet uses kernel eBPF programs by default for enhanced performance and lower overhead process identification. However, this comes with important limitations:
 
 **Process Name Limitations:**
 - eBPF uses the kernel's `comm` field, which is limited to 16 characters
@@ -73,7 +73,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 
 #### macOS DMG Installation
 
-> **💡 Prefer Homebrew?** If you have Homebrew installed, using `brew install` is easier and avoids Gatekeeper bypass steps. See [Homebrew Installation](#option-3-homebrew-installation) for instructions.
+> **Prefer Homebrew** If you have Homebrew installed, using `brew install` is easier and avoids Gatekeeper bypass steps. See [Homebrew Installation](#option-3-homebrew-installation) for instructions.
 
 1. **Download** the appropriate DMG for your architecture:
    - `Rustnet_macOS_AppleSilicon.dmg` for Apple Silicon Macs (M1/M2/M3)
@@ -175,7 +175,7 @@ rustnet
   - **Linux**: `sudo apt-get install libpcap-dev` (Debian/Ubuntu) or `sudo yum install libpcap-devel` (RedHat/CentOS)
   - **macOS**: Included by default
   - **Windows**: Install Npcap and Npcap SDK (see [Windows Build Setup](#windows-build-setup) below)
-- **For eBPF support (optional, experimental - Linux only)**:
+- **For eBPF support (enabled by default on Linux, experimental)**:
   - `sudo apt-get install libelf-dev clang llvm` (Debian/Ubuntu)
   - `sudo yum install elfutils-libelf-devel clang llvm` (RedHat/CentOS)
   - Linux kernel 4.19+ with BTF support recommended
@@ -237,11 +237,11 @@ cargo install rustnet-monitor
 git clone https://github.com/domcyrus/rustnet.git
 cd rustnet
 
-# Build in release mode (basic functionality)
+# Build in release mode (eBPF enabled by default on Linux)
 cargo build --release
 
-# Build with experimental eBPF support for enhanced Linux performance (Linux only)
-cargo build --release --features ebpf
+# Build without eBPF on Linux (if needed)
+cargo build --release --no-default-features --features [other features if needed]
 
 # The executable will be in target/release/rustnet
 ```
@@ -269,6 +269,36 @@ docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
 docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
   ghcr.io/domcyrus/rustnet:latest -i eth0
 
+# Run with process identification support (requires host /proc access)
+# Note: Process identification in containers requires access to the host's /proc filesystem
+# This allows RustNet to map network connections to host processes
+docker run --rm -it \
+  --cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_PTRACE \
+  --net=host \
+  --pid=host \
+  -v /proc:/host/proc:ro \
+  ghcr.io/domcyrus/rustnet:latest
+
+# Run with full eBPF support (requires additional kernel capabilities)
+# Note: eBPF is enabled by default but requires kernel access to load BPF programs
+# For modern kernels (5.8+):
+docker run --rm -it \
+  --cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=BPF --cap-add=PERFMON --cap-add=SYS_PTRACE \
+  --net=host \
+  --pid=host \
+  -v /proc:/host/proc:ro \
+  -v /sys/kernel/debug:/sys/kernel/debug:ro \
+  ghcr.io/domcyrus/rustnet:latest
+
+# For older kernels (fallback to SYS_ADMIN):
+docker run --rm -it \
+  --cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=SYS_ADMIN --cap-add=SYS_PTRACE \
+  --net=host \
+  --pid=host \
+  -v /proc:/host/proc:ro \
+  -v /sys/kernel/debug:/sys/kernel/debug:ro \
+  ghcr.io/domcyrus/rustnet:latest
+
 # Alternative: Run with privileged mode (less secure but simpler)
 docker run --rm -it --privileged --net=host \
   ghcr.io/domcyrus/rustnet:latest
@@ -280,7 +310,20 @@ docker run --rm ghcr.io/domcyrus/rustnet:latest --help
 docker run --rm ghcr.io/domcyrus/rustnet:0.7.0 --help
 ```
 
-**Note:** The container requires network capabilities (`NET_RAW` and `NET_ADMIN`) or privileged mode for packet capture. Host networking (`--net=host`) is recommended for monitoring all network interfaces.
+**Notes:**
+- The container requires network capabilities (`NET_RAW` and `NET_ADMIN`) or privileged mode for packet capture
+- Host networking (`--net=host`) is recommended for monitoring all network interfaces
+- **Process identification in containers**: By default, Docker containers cannot see host processes. To enable process identification:
+  - Use `--pid=host` to share the host's PID namespace
+  - Mount host's `/proc` filesystem with `-v /proc:/host/proc:ro`
+  - Add `--cap-add=SYS_PTRACE` capability for process inspection
+  - Without these, RustNet will show network connections but cannot identify which host processes own them
+- **eBPF support in containers**: eBPF is enabled by default on Linux but requires additional capabilities to load kernel programs:
+  - **Modern kernels (5.8+)**: Add `--cap-add=BPF` and `--cap-add=PERFMON` capabilities
+  - **Older kernels**: Use `--cap-add=SYS_ADMIN` as fallback (broader permissions)
+  - Mount `/sys/kernel/debug` for BPF debugging information (optional but recommended)
+  - Without eBPF capabilities, RustNet automatically falls back to procfs-only mode
+  - To disable eBPF and use procfs-only mode explicitly, rebuild the container with `--no-default-features`
 
 ### Running RustNet
 
@@ -898,13 +941,13 @@ sudo setcap cap_net_raw,cap_net_admin=eip ~/.cargo/bin/rustnet
 rustnet
 ```
 
-**For experimental eBPF-enabled builds (enhanced Linux performance):**
+**For eBPF-enabled builds (default on Linux, experimental):**
 
-eBPF is an experimental feature that requires additional capabilities for kernel program loading and performance monitoring:
+eBPF is enabled by default on Linux and requires additional capabilities for kernel program loading and performance monitoring:
 
 ```bash
-# Build with eBPF support
-cargo build --release --features ebpf
+# Build (eBPF is enabled by default on Linux)
+cargo build --release
 
 # Grant full capability set for eBPF (modern kernels with CAP_BPF support)
 sudo setcap 'cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
@@ -916,6 +959,11 @@ sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin+eip' ./target/release/rustn
 ./target/release/rustnet
 ```
 
+To disable eBPF and use procfs-only mode:
+```bash
+cargo build --release --no-default-features
+```
+
 **Capability requirements for eBPF:**
 - `CAP_NET_RAW` - Raw socket access for packet capture
 - `CAP_NET_ADMIN` - Network administration 
@@ -925,7 +973,7 @@ sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin+eip' ./target/release/rustn
 
 The application will automatically detect available capabilities and fall back to procfs-only mode if eBPF cannot be loaded.
 
-**Note:** eBPF support is experimental and may have limitations with process name display (see [eBPF Enhanced Process Identification](#ebpf-enhanced-process-identification-experimental)).
+**Note:** eBPF support is enabled by default on Linux but is experimental and may have limitations with process name display (see [eBPF Enhanced Process Identification](#ebpf-enhanced-process-identification-experimental)).
 
 **For system-wide installation:**
 
