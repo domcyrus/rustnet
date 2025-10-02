@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2025-10-02
+
+### Changed
+- **Build Configuration**: Improved crate metadata for crates.io publishing
+  - No functional changes to the binary or runtime behavior
+  - Enhanced package configuration for better crate ecosystem integration
+
 ## [0.12.0] - 2025-10-01
 
 ### Added
@@ -189,7 +196,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/domcyrus/rustnet/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/domcyrus/rustnet/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/domcyrus/rustnet/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/domcyrus/rustnet/compare/v0.9.0...v0.10.0

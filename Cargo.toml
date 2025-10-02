@@ -1,6 +1,6 @@
 [package]
 name = "rustnet-monitor"
-version = "0.12.0"
+version = "0.12.1"
 authors = ["domcyrus"]
 edition = "2024"
 rust-version = "1.88.0"                                                              # Let-chains require Rust 1.88.0+
