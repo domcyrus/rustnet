@@ -86,9 +86,7 @@ jobs:
 
       - name: Install cross
         if: matrix.cargo == 'cross'
-        uses: taiki-e/cache-cargo-install-action@v2
-        with:
-          tool: cross@0.2.5
+        run: cargo install cross@0.2.5
 
       - name: Build release binary
         shell: bash

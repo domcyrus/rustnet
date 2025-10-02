@@ -1,27 +1,8 @@
 name: Docker Build and Publish
-
 on:
   push:
-    branches: [ "main" ]
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'assets/services'
-      - 'Dockerfile'
-      - 'build.rs'
-      - '.github/workflows/docker.yml'
-    tags: [ "v*.*.*" ]
-  pull_request:
-    branches: [ "main" ]
-    paths:
-      - 'src/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'assets/services'
-      - 'Dockerfile'
-      - 'build.rs'
-      - '.github/workflows/docker.yml'
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
 
 env:
