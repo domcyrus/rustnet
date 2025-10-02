@@ -79,8 +79,8 @@ windows = { version = "0.61", features = [
 libbpf-cargo = "0.25"
 
 [features]
-default = []
-linux-default = ["ebpf"]
+# eBPF is enabled by default on Linux (users can disable with --no-default-features)
+default = ["ebpf"]
 ebpf = ["libbpf-rs", "bytes", "libc"]
 
 # Minimal cross configuration to override dependency conflicts
