@@ -34,7 +34,8 @@ impl Default for CaptureConfig {
 
 /// Find the best active network device
 fn find_best_device() -> Result<Device> {
-    let devices = Device::list()?;
+    let devices = Device::list()
+        .map_err(|e| anyhow!("Failed to list network devices: {}. This may indicate insufficient privileges.", e))?;
 
     log::info!(
         "Scanning {} devices for best active interface...",

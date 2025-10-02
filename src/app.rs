@@ -280,10 +280,22 @@ impl App {
                     );
                 }
                 Err(e) => {
-                    error!("Failed to start packet capture: {}", e);
-                    error!(
-                        "Make sure you have permission to capture packets (try running with sudo)"
-                    );
+                    let error_msg = format!("{}", e);
+
+                    // Check if this is a privilege error
+                    if error_msg.contains("Insufficient privileges") {
+                        error!("Failed to start packet capture due to insufficient privileges:");
+                        // The error message already contains detailed instructions
+                        for line in error_msg.lines() {
+                            error!("{}", line);
+                        }
+                    } else {
+                        error!("Failed to start packet capture: {}", e);
+                        error!(
+                            "Make sure you have permission to capture packets (try running with sudo)"
+                        );
+                    }
+
                     warn!("Application will run in process-only mode");
                 }
             }
