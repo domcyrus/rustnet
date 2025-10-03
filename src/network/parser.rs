@@ -296,6 +296,11 @@ impl PacketParser {
             return None;
         }
 
+        // Extract actual packet length from IP header (bytes 2-3: Total Length field)
+        let ip_total_length = u16::from_be_bytes([ip_data[2], ip_data[3]]) as usize;
+        // Actual packet size = Ethernet header (14 bytes) + IP total length
+        let actual_packet_len = 14 + ip_total_length;
+
         let protocol_num = ip_data[9];
         let src_ip = IpAddr::V4(Ipv4Addr::new(
             ip_data[12],
@@ -327,7 +332,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -338,7 +343,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -349,7 +354,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -373,6 +378,11 @@ impl PacketParser {
         if version != 6 {
             return None;
         }
+
+        // Extract actual packet length from IPv6 header (bytes 4-5: Payload Length field)
+        let ipv6_payload_length = u16::from_be_bytes([ip_data[4], ip_data[5]]) as usize;
+        // Actual packet size = Ethernet header (14 bytes) + IPv6 header (40 bytes) + payload length
+        let actual_packet_len = 14 + 40 + ipv6_payload_length;
 
         let next_header = ip_data[6];
 
@@ -414,7 +424,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -425,7 +435,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -436,7 +446,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -699,6 +709,10 @@ impl PacketParser {
             return None;
         }
 
+        // Extract actual packet length from IP header (bytes 2-3: Total Length field)
+        // For raw IP packets, there's no Ethernet header
+        let actual_packet_len = u16::from_be_bytes([data[2], data[3]]) as usize;
+
         let protocol_num = data[9];
         let src_ip = IpAddr::V4(Ipv4Addr::new(data[12], data[13], data[14], data[15]));
         let dst_ip = IpAddr::V4(Ipv4Addr::new(data[16], data[17], data[18], data[19]));
@@ -720,7 +734,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -731,7 +745,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -742,7 +756,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -765,6 +779,11 @@ impl PacketParser {
         if version != 6 {
             return None;
         }
+
+        // Extract actual packet length from IPv6 header (bytes 4-5: Payload Length field)
+        // For raw IP packets, actual size = IPv6 header (40 bytes) + payload length
+        let ipv6_payload_length = u16::from_be_bytes([data[4], data[5]]) as usize;
+        let actual_packet_len = 40 + ipv6_payload_length;
 
         let next_header = data[6];
 
@@ -806,7 +825,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -817,7 +836,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
@@ -828,7 +847,7 @@ impl PacketParser {
                     src_ip,
                     dst_ip,
                     is_outgoing,
-                    packet_len: data.len(),
+                    packet_len: actual_packet_len,
                     process_name,
                     process_id,
                 },
