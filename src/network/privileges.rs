@@ -4,7 +4,13 @@
 //! network packets on different platforms (Linux, macOS, Windows).
 
 use anyhow::{anyhow, Result};
-use log::{debug, info, warn};
+use log::{debug, info};
+#[cfg(any(
+    not(any(target_os = "linux", target_os = "macos", target_os = "windows")),
+    target_os = "windows",
+    target_os = "linux"
+))]
+use log::warn;
 
 /// Privilege check result with detailed information
 #[derive(Debug, Clone)]
@@ -235,7 +241,7 @@ fn check_macos_privileges() -> Result<PrivilegeStatus> {
 
     let mut can_access_bpf = false;
     for bpf_device in &bpf_devices {
-        if let Ok(metadata) = fs::metadata(bpf_device) {
+        if fs::metadata(bpf_device).is_ok() {
             debug!("Checking BPF device: {}", bpf_device);
 
             // Try to actually open it (this is the real test)
