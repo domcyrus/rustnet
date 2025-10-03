@@ -15,11 +15,11 @@ This document outlines the planned features and improvements for RustNet.
   - MSI installation packages for 64-bit and 32-bit
   - Process identification not yet implemented for Windows
 - **[ ] BSD Support**: Add support for FreeBSD, OpenBSD, and NetBSD
-- **[x] Linux Process Identification**: **Experimental eBPF Support Implemented** - Basic eBPF-based process identification now available with `--features ebpf`. Provides efficient kernel-level process-to-connection mapping with lower overhead than procfs. Currently has limitations (see eBPF Improvements section below).
+- **[x] Linux Process Identification**: **eBPF Support Enabled by Default** - eBPF-based process identification is now enabled by default on Linux builds. Provides efficient kernel-level process-to-connection mapping with lower overhead than procfs. Can be disabled with `--no-default-features`. Currently has limitations (see eBPF Improvements section below).
 
 ## eBPF Improvements (Linux)
 
-The experimental eBPF support provides efficient process identification but has several areas for improvement:
+eBPF support is now enabled by default on Linux. While it provides efficient process identification, there are several areas for improvement:
 
 ### Current Limitations
 - **Process Names Limited to 16 Characters**: Uses kernel `comm` field, causing truncation (e.g., "Firefox" → "Socket Thread")
@@ -60,7 +60,7 @@ The experimental eBPF support provides efficient process identification but has 
   - Support more protocols (e.g. FTP, SMTP, IMAP, etc.)
   - More accurate SNI detection for QUIC/HTTPS
 - **[x] Connection Lifecycle Management**: Smart protocol-aware timeouts with visual staleness indicators (yellow at 75%, red at 90%)
-- **[x] Process Identification**: Associate network connections with running processes (with experimental eBPF support on Linux)
+- **[x] Process Identification**: Associate network connections with running processes (eBPF enabled by default on Linux)
 - **[x] Service Name Resolution**: Identify well-known services using port numbers
 - **[x] Cross-platform Support**: Works on Linux, macOS, Windows
 - **[ ] DNS Reverse Lookup**: Add optional hostname resolution (toggle between IP and hostname display)
@@ -100,7 +100,7 @@ The experimental eBPF support provides efficient process identification but has 
   - **[x] Linux DEB packages**: amd64, arm64, armhf (via cargo-deb)
   - **[x] Linux RPM packages**: x86_64, aarch64 (via cargo-generate-rpm)
   - **[x] Cargo crates.io**: Published as `rustnet-monitor` (version 0.10.0+)
-  - **[x] Docker images**: Available on GitHub Container Registry with eBPF support
+  - **[x] Docker images**: Available on GitHub Container Registry (eBPF enabled by default on Linux)
   - **[x] Homebrew formula**: Available in separate tap repository (domcyrus/rustnet)
 
 ### Future Enhancements

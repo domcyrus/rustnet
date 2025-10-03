@@ -4,43 +4,60 @@ This document explains how to work with eBPF kernel headers in this project.
 
 ## Current Setup
 
-We use a **minimal vmlinux header** (`vmlinux_min.h`) instead of the full kernel headers. This approach has trade-offs that should be considered:
+We use the **full vmlinux.h header** that is automatically downloaded at build time. The build process downloads architecture-specific kernel headers from the [libbpf/vmlinux.h](https://github.com/libbpf/vmlinux.h) repository.
 
-**Benefits of minimal vmlinux_min.h:**
+**Benefits of this approach:**
 
-- **Small size**: 5.5KB (203 lines) vs 3.4MB (100K+ lines) full vmlinux.h
-- **Git-friendly**: Small file size, manageable diffs, easier to review
-- **Portable**: Works across kernel versions with CO-RE/BTF
-- **Clear dependencies**: Shows exactly which kernel structures we depend on
+- **Zero maintenance**: No manual header updates needed when adding new eBPF features
+- **Complete definitions**: All kernel structures and types are available
+- **Architecture-aware**: Downloads the correct header for your target architecture (x86, aarch64, arm)
+- **Build-time download**: Headers are cached in `OUT_DIR`, reused between builds
+- **Git-friendly**: Headers are not committed to the repository (gitignored)
+- **Cross-compilation support**: Works seamlessly when cross-compiling for different architectures
+- **crates.io compatible**: No git dependencies required
 
-**Drawbacks of minimal vmlinux_min.h:**
+**How it works:**
 
-- **Manual maintenance**: Need to update when adding new eBPF features that access different kernel structures
-- **Potential for missing definitions**: Easy to forget required types when extending functionality
-- **Development overhead**: Requires understanding of kernel internals to extract correct definitions
+1. During `cargo build`, the `build.rs` script detects the target architecture
+2. It downloads the appropriate `vmlinux.h` from `https://github.com/libbpf/vmlinux.h`
+3. The header is cached in the build output directory (`target/<profile>/build/<pkg>/out/vmlinux_headers/<arch>/`)
+4. Subsequent builds reuse the cached header (no re-download needed)
+5. The eBPF program is compiled with `-I` pointing to the cached header directory
 
-**Alternative approach (full vmlinux.h):**
+## Automatic vmlinux.h Download
 
-- **Pros**: Complete kernel definitions, auto-generated, no manual maintenance, never missing types
-- **Cons**: Very large file (3.4MB), but can be gitignored and generated during build process
+The build process automatically handles downloading the correct header. No manual steps required!
 
-## How to Generate Full vmlinux.h (if needed)
+**Download process details:**
 
-If you need to generate a complete vmlinux.h file for your kernel:
+```rust
+// In build.rs (simplified)
+fn download_vmlinux_header(arch: &str) -> Result<PathBuf> {
+    // 1. Check cache first
+    let cache_dir = out_dir.join("vmlinux_headers").join(arch);
+    if vmlinux_file.exists() {
+        return Ok(cache_dir); // Use cached version
+    }
+
+    // 2. Download symlink to get versioned filename
+    let symlink_url = format!(
+        "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/{}/vmlinux.h",
+        arch
+    );
+
+    // 3. Follow symlink to actual file (e.g., vmlinux_6.14.h)
+    // 4. Download and cache the full header
+    // 5. Return path for clang include
+}
+```
+
+**Manual generation (alternative for local kernel):**
+
+If you want to generate a vmlinux.h from your running kernel instead:
 
 ```bash
-# Method 1: Using bpftool (requires root/CAP_BPF)
+# Using bpftool (requires root/CAP_BPF)
 sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
-
-# Method 2: Using pahole (if available)
-pahole -J /boot/vmlinux-$(uname -r)
-pahole --btf_encode_detached vmlinux.btf /boot/vmlinux-$(uname -r)
-bpftool btf dump file vmlinux.btf format c > vmlinux.h
-
-# Method 3: From kernel source
-cd /path/to/kernel/source
-make scripts_gdb
-bpftool btf dump file vmlinux format c > vmlinux.h
 ```
 
 ## How to Create Minimal Headers from Full vmlinux.h
@@ -178,28 +195,27 @@ EOF
 echo "Minimal vmlinux header created: $OUTPUT"
 ```
 
-## Testing Your Minimal Header
+## Testing eBPF Compilation
 
-After creating your minimal header:
+To build and test eBPF programs:
 
 ```bash
-# Test compilation
+# Build with eBPF support (downloads vmlinux.h if not cached)
 cargo build --features ebpf
 
-# If compilation fails, check for missing definitions
-# and add them to your minimal header
-
-# Verify eBPF program loads (requires root)
+# Verify eBPF program loads and runs (requires root)
 sudo cargo run --features ebpf
+
+# Cross-compile for different architecture
+cargo build --target aarch64-unknown-linux-gnu --features ebpf
 ```
 
 ## Best Practices
 
-1. **Start minimal**: Only include structures and fields you actually access
-2. **Use CO-RE**: Always include the preserve_access_index pragma for portability
-3. **Document sources**: Note which kernel version/source your definitions came from
-4. **Test across kernels**: Verify your program works on different kernel versions
-5. **Keep synchronized**: Update minimal headers when your eBPF program changes
+1. **Use CO-RE**: The full vmlinux.h works with CO-RE (Compile Once, Run Everywhere) for kernel portability
+2. **Test across kernels**: Verify your program works on different kernel versions
+3. **Trust the cache**: The downloaded headers are cached - you won't re-download on every build
+4. **Cross-compilation**: The build process automatically downloads the correct arch-specific header
 
 ## Troubleshooting
 
@@ -219,13 +235,23 @@ sudo cargo run --features ebpf
 - **Wrong offset**: Make sure struct layout matches target kernel
 - **Missing CO-RE relocations**: Verify preserve_access_index pragma is present
 
-## Why Not Use Full vmlinux.h?
+## Why Use Full vmlinux.h?
 
-While using the full vmlinux.h works, it has downsides:
+We chose the full vmlinux.h approach (downloaded at build time) because:
 
-- **Huge file size** (3+ MB): Slows down compilation and git operations
-- **Unclear dependencies**: Hard to see what your program actually needs
-- **Kernel-specific**: Generated for one specific kernel version
-- **Review complexity**: Impossible to review 100K+ lines in PRs
+**Advantages:**
+- **Architecture-specific**: Automatically downloads the correct header for x86, ARM64, ARM
+- **Zero maintenance**: No need to manually update headers when adding eBPF features
+- **Always complete**: Never missing kernel structure definitions
+- **No git bloat**: The ~3-4MB header is cached in `target/` (gitignored), not committed
+- **Fast builds**: Cached headers are reused across builds
+- **crates.io ready**: No git dependencies blocking publication
 
-The minimal approach gives you the benefits of vmlinux.h (CO-RE support, exact field layouts) without the downsides.
+**Why not minimal headers?**
+
+The previous approach used a hand-crafted `vmlinux_min.h` (6.7KB). While smaller, it had a critical flaw:
+- **Not architecture-specific**: Broke ARM64 builds due to architecture-dependent struct layouts
+- Kernel structures have different layouts and sizes on different architectures
+- A single minimal header can't work across x86_64, aarch64, and arm
+
+By downloading architecture-specific full headers at build time, we ensure correct builds for all target platforms without git repository bloat.
