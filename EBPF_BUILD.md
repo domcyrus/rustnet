@@ -4,138 +4,254 @@ This document explains how to work with eBPF kernel headers in this project.
 
 ## Current Setup
 
-The project bundles **architecture-specific vmlinux.h files** from the [libbpf/vmlinux.h](https://github.com/libbpf/vmlinux.h) repository. This eliminates network dependencies during builds and ensures reproducible builds.
+We use the **full vmlinux.h header** that is automatically downloaded at build time. The build process downloads architecture-specific kernel headers from the [libbpf/vmlinux.h](https://github.com/libbpf/vmlinux.h) repository.
 
-### Bundled vmlinux.h Files
+**Benefits of this approach:**
 
-Pre-downloaded vmlinux.h files (based on Linux kernel 6.14) are included in the repository at:
-- `resources/ebpf/vmlinux/x86/vmlinux.h` (for x86_64, ~1.1MB)
-- `resources/ebpf/vmlinux/aarch64/vmlinux.h` (for aarch64, ~1.0MB)
-- `resources/ebpf/vmlinux/arm/vmlinux.h` (for armv7, ~981KB)
+- **Zero maintenance**: No manual header updates needed when adding new eBPF features
+- **Complete definitions**: All kernel structures and types are available
+- **Architecture-aware**: Downloads the correct header for your target architecture (x86, aarch64, arm)
+- **Build-time download**: Headers are cached in `OUT_DIR`, reused between builds
+- **Git-friendly**: Headers are not committed to the repository (gitignored)
+- **Cross-compilation support**: Works seamlessly when cross-compiling for different architectures
+- **crates.io compatible**: No git dependencies required
 
-These files are automatically used during the build process based on the target architecture. **No network access is required** during compilation.
+**How it works:**
 
-**Benefits:**
-- **Zero network dependency**: Works in restricted build environments (COPR, Fedora build systems, etc.)
-- **Reproducible builds**: Same headers every time, no external dependencies
-- **Complete kernel definitions**: All kernel structures available, no missing types
-- **No manual maintenance**: Auto-generated from kernel BTF
-- **Cross-kernel compatibility**: CO-RE/BTF ensures portability across kernel versions
+1. During `cargo build`, the `build.rs` script detects the target architecture
+2. It downloads the appropriate `vmlinux.h` from `https://github.com/libbpf/vmlinux.h`
+3. The header is cached in the build output directory (`target/<profile>/build/<pkg>/out/vmlinux_headers/<arch>/`)
+4. Subsequent builds reuse the cached header (no re-download needed)
+5. The eBPF program is compiled with `-I` pointing to the cached header directory
 
-**Trade-offs:**
-- Repository size: ~3MB total for all architectures (acceptable for modern git)
-- Not immediately clear which kernel structures are actually used by the code
+## Automatic vmlinux.h Download
 
-## Updating Bundled vmlinux.h Files
+The build process automatically handles downloading the correct header. No manual steps required!
 
-The bundled vmlinux.h files are based on kernel 6.14 from the libbpf repository. To update them to a newer kernel version:
+**Download process details:**
+
+```rust
+// In build.rs (simplified)
+fn download_vmlinux_header(arch: &str) -> Result<PathBuf> {
+    // 1. Check cache first
+    let cache_dir = out_dir.join("vmlinux_headers").join(arch);
+    if vmlinux_file.exists() {
+        return Ok(cache_dir); // Use cached version
+    }
+
+    // 2. Download symlink to get versioned filename
+    let symlink_url = format!(
+        "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/{}/vmlinux.h",
+        arch
+    );
+
+    // 3. Follow symlink to actual file (e.g., vmlinux_6.14.h)
+    // 4. Download and cache the full header
+    // 5. Return path for clang include
+}
+```
+
+**Manual generation (alternative for local kernel):**
+
+If you want to generate a vmlinux.h from your running kernel instead:
 
 ```bash
-# Update all architectures at once
-for arch in x86 aarch64 arm; do
-  # Get the symlink target (e.g., vmlinux_6.14.h)
-  target=$(curl -sL "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/${arch}/vmlinux.h")
+# Using bpftool (requires root/CAP_BPF)
+sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+```
 
-  # Download the actual file
-  curl -sL "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/${arch}/${target}" \
-    -o "resources/ebpf/vmlinux/${arch}/vmlinux.h"
+## How to Create Minimal Headers from Full vmlinux.h
 
-  echo "Updated ${arch} to ${target}"
+### 1. Identify Required Structures
+
+First, analyze your eBPF program to find which kernel structures you access:
+
+```bash
+# Find all struct references in your eBPF code
+grep -E "struct [a-zA-Z_]+" socket_tracker.bpf.c
+
+# Find BPF_CORE_READ usage to see field accesses
+grep -E "BPF_CORE_READ.*\\..*" socket_tracker.bpf.c
+
+# Common structures for socket tracking:
+# - struct sock (contains __sk_common)
+# - struct sock_common (network fields)
+# - struct msghdr (for sendmsg calls)
+# - struct sockaddr_in (IPv4 addresses)
+# - struct pt_regs (kprobe context)
+```
+
+### 2. Extract Definitions from Full vmlinux.h
+
+Use these commands to extract specific structures:
+
+```bash
+# Extract a specific struct (e.g., sock_common)
+awk '/^struct sock_common {/,/^}/' vmlinux.h
+
+# Extract type definitions
+grep "typedef.*__u[0-9]*\|typedef.*__be[0-9]*" vmlinux.h
+
+# Extract multiple related structures
+grep -A 50 "struct sock_common {" vmlinux.h
+grep -A 20 "struct sock {" vmlinux.h
+grep -A 10 "struct msghdr {" vmlinux.h
+```
+
+### 3. Create Minimal Header
+
+Create a new header file with:
+
+1. **Header guards and CO-RE pragma**:
+   ```c
+   #ifndef __VMLINUX_MIN_H__
+   #define __VMLINUX_MIN_H__
+
+   #ifndef BPF_NO_PRESERVE_ACCESS_INDEX
+   #pragma clang attribute push (__attribute__((preserve_access_index)), apply_to = record)
+   #endif
+   ```
+
+2. **Basic types** (only what you need):
+   ```c
+   typedef unsigned char __u8;
+   typedef unsigned int __u32;
+   typedef __u32 __be32;
+   // etc.
+   ```
+
+3. **Required structures** with **only the fields you access**:
+   ```c
+   struct sock_common {
+       // Only include fields accessed by BPF_CORE_READ
+       __be32 skc_daddr;
+       __be32 skc_rcv_saddr;
+       __be16 skc_dport;
+       __u16 skc_num;
+       // ... other fields you actually use
+   };
+   ```
+
+4. **Footer**:
+   ```c
+   #ifndef BPF_NO_PRESERVE_ACCESS_INDEX
+   #pragma clang attribute pop
+   #endif
+   #endif
+   ```
+
+### 4. Automated Extraction Script
+
+For complex projects, you can create a script to automate extraction:
+
+```bash
+#!/bin/bash
+# extract_minimal_vmlinux.sh
+
+FULL_VMLINUX="vmlinux.h"
+OUTPUT="vmlinux_min.h"
+BPF_SOURCE="socket_tracker.bpf.c"
+
+# Find structs used in BPF program
+STRUCTS=$(grep -oE "struct [a-zA-Z_]+" "$BPF_SOURCE" | sort -u | cut -d' ' -f2)
+
+echo "Extracting structures: $STRUCTS"
+
+# Start minimal header
+cat > "$OUTPUT" << 'EOF'
+#ifndef __VMLINUX_MIN_H__
+#define __VMLINUX_MIN_H__
+
+#ifndef BPF_NO_PRESERVE_ACCESS_INDEX
+#pragma clang attribute push (__attribute__((preserve_access_index)), apply_to = record)
+#endif
+
+/* Basic types */
+EOF
+
+# Extract basic types
+grep "typedef.*__u[0-9]*\|typedef.*__be[0-9]*\|typedef.*__kernel" "$FULL_VMLINUX" | head -20 >> "$OUTPUT"
+
+echo "" >> "$OUTPUT"
+echo "/* Network structures */" >> "$OUTPUT"
+
+# Extract each required struct
+for struct in $STRUCTS; do
+    echo "Extracting struct $struct..."
+    awk "/^struct $struct \{/,/^}/" "$FULL_VMLINUX" >> "$OUTPUT"
+    echo "" >> "$OUTPUT"
 done
+
+# Close header
+cat >> "$OUTPUT" << 'EOF'
+
+#ifndef BPF_NO_PRESERVE_ACCESS_INDEX
+#pragma clang attribute pop
+#endif
+
+#endif /* __VMLINUX_MIN_H__ */
+EOF
+
+echo "Minimal vmlinux header created: $OUTPUT"
 ```
 
-Or update a single architecture:
+## Testing eBPF Compilation
+
+To build and test eBPF programs:
 
 ```bash
-# Example: Update x86 only
-arch="x86"
-target=$(curl -sL "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/${arch}/vmlinux.h")
-curl -sL "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/${arch}/${target}" \
-  -o "resources/ebpf/vmlinux/${arch}/vmlinux.h"
-```
+# Build with eBPF support (downloads vmlinux.h if not cached)
+cargo build --features ebpf
 
-After updating, commit the changes to the repository.
-
-## Building with eBPF Support
-
-To build rustnet with eBPF support on Linux:
-
-```bash
-# Install build dependencies
-sudo apt-get install libelf-dev clang llvm  # Debian/Ubuntu
-sudo yum install elfutils-libelf-devel clang llvm  # RedHat/CentOS/Fedora
-
-# Build with eBPF feature
-cargo build --release --features ebpf
-
-# The bundled vmlinux.h files will be used automatically
-# No network access required!
-```
-
-## Testing eBPF Functionality
-
-After building with eBPF support, test that it works correctly:
-
-```bash
-# Option 1: Run with sudo (always works)
+# Verify eBPF program loads and runs (requires root)
 sudo cargo run --features ebpf
 
-# Option 2: Set capabilities (Linux only, see INSTALL.md Permissions section)
-sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
-./target/release/rustnet
-
-# Check the TUI Statistics panel to verify it shows "Process Detection: eBPF + procfs"
+# Cross-compile for different architecture
+cargo build --target aarch64-unknown-linux-gnu --features ebpf
 ```
 
-**Note**: eBPF kprobe programs require specific Linux capabilities. See [INSTALL.md - Permissions Setup](INSTALL.md#permissions-setup) for detailed capability requirements. The required capabilities may vary by kernel version.
+## Best Practices
 
-## Generating vmlinux.h from Your Local Kernel (Optional)
-
-If you need to generate a vmlinux.h file for your specific kernel (e.g., for debugging or custom kernel builds):
-
-```bash
-# Method 1: Using bpftool (requires root/CAP_BPF)
-sudo bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
-
-# Method 2: Using pahole (if available)
-pahole -J /boot/vmlinux-$(uname -r)
-pahole --btf_encode_detached vmlinux.btf /boot/vmlinux-$(uname -r)
-bpftool btf dump file vmlinux.btf format c > vmlinux.h
-
-# Method 3: From kernel source
-cd /path/to/kernel/source
-make scripts_gdb
-bpftool btf dump file vmlinux format c > vmlinux.h
-```
-
-This is typically not needed since the bundled headers work across kernel versions thanks to CO-RE/BTF.
+1. **Use CO-RE**: The full vmlinux.h works with CO-RE (Compile Once, Run Everywhere) for kernel portability
+2. **Test across kernels**: Verify your program works on different kernel versions
+3. **Trust the cache**: The downloaded headers are cached - you won't re-download on every build
+4. **Cross-compilation**: The build process automatically downloads the correct arch-specific header
 
 ## Troubleshooting
 
 ### Compilation Errors
 
-**"Bundled vmlinux.h not found"**:
-- Ensure the `resources/ebpf/vmlinux/` directory exists
-- Verify you've cloned the full repository (not a partial checkout)
-- Check that the vmlinux.h file exists for your target architecture
-
-**Missing build dependencies**:
-- Install clang, llvm, and libelf-dev
-- Ensure rustfmt is installed: `rustup component add rustfmt`
+- **Missing struct definition**: Add the struct to your minimal header
+- **Missing field**: Include the specific field in your struct definition
+- **Type errors**: Ensure all referenced types are defined
 
 ### Runtime Errors
 
-**"BTF verification failed"**:
-- Your kernel may not have BTF support enabled
-- Linux kernel 4.19+ with BTF support is recommended
-- Check if BTF is available: `ls /sys/kernel/btf/vmlinux`
+- **BTF verification failed**: Check that field names match kernel structures
+- **Access violations**: Ensure you're accessing fields that exist in target kernel
 
-**"Permission denied" when loading eBPF**:
-- See [INSTALL.md - Permissions Setup](INSTALL.md#permissions-setup) for capability setup
-- Required capabilities: `CAP_NET_RAW`, `CAP_NET_ADMIN`, `CAP_BPF`, `CAP_PERFMON`
-- Some kernels may also require `CAP_SYS_ADMIN`
+### Field Access Issues
 
-**eBPF fails to load, falls back to procfs**:
-- This is expected behavior when eBPF can't load
-- Check the TUI Statistics panel to see which detection method is active
-- Common reasons: insufficient capabilities, incompatible kernel, BTF not available
+- **Wrong offset**: Make sure struct layout matches target kernel
+- **Missing CO-RE relocations**: Verify preserve_access_index pragma is present
+
+## Why Use Full vmlinux.h?
+
+We chose the full vmlinux.h approach (downloaded at build time) because:
+
+**Advantages:**
+- **Architecture-specific**: Automatically downloads the correct header for x86, ARM64, ARM
+- **Zero maintenance**: No need to manually update headers when adding eBPF features
+- **Always complete**: Never missing kernel structure definitions
+- **No git bloat**: The ~3-4MB header is cached in `target/` (gitignored), not committed
+- **Fast builds**: Cached headers are reused across builds
+- **crates.io ready**: No git dependencies blocking publication
+
+**Why not minimal headers?**
+
+The previous approach used a hand-crafted `vmlinux_min.h` (6.7KB). While smaller, it had a critical flaw:
+- **Not architecture-specific**: Broke ARM64 builds due to architecture-dependent struct layouts
+- Kernel structures have different layouts and sizes on different architectures
+- A single minimal header can't work across x86_64, aarch64, and arm
+
+By downloading architecture-specific full headers at build time, we ensure correct builds for all target platforms without git repository bloat.
