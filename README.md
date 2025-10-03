@@ -168,6 +168,20 @@ sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
 rustnet
 ```
 
+**Arch Linux (AUR)**
+Two AUR packages are available:
+- [`rustnet`](https://aur.archlinux.org/packages/rustnet) - Build from source (maintained by [@DeepChirp](https://github.com/DeepChirp))
+- [`rustnet-bin`](https://aur.archlinux.org/packages/rustnet-bin) - Pre-compiled binary for faster installation
+
+Install with your preferred AUR helper:
+```bash
+# Source build (optimized for your system)
+yay -S rustnet
+
+# OR pre-compiled binary (faster installation)
+yay -S rustnet-bin
+```
+
 ### Prerequisites
 
 - Rust 2024 edition or later (install from [rustup.rs](https://rustup.rs/))
