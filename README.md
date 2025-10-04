@@ -143,7 +143,7 @@ sudo apt-get install -f
 # Run with sudo
 sudo rustnet
 
-# Optional: Grant capabilities to run without sudo
+# Optional: Grant capabilities to run without sudo (see Permissions section)
 sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
 rustnet
 ```
@@ -163,7 +163,7 @@ sudo dnf install Rustnet_LinuxRPM_x86_64.rpm
 # Run with sudo
 sudo rustnet
 
-# Optional: Grant capabilities to run without sudo
+# Optional: Grant capabilities to run without sudo (see Permissions section)
 sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
 rustnet
 ```
@@ -284,36 +284,18 @@ docker run --rm ghcr.io/domcyrus/rustnet:0.7.0 --help
 
 ### Running RustNet
 
-On Unix-like systems (Linux/macOS), packet capture typically requires elevated privileges:
+Packet capture requires elevated privileges on most systems. See the [Permissions](#permissions) section below for detailed setup instructions for each platform.
 
-#### When built from source:
-
-```bash
-# Run with sudo
-sudo ./target/release/rustnet
-
-# Or set capabilities on Linux (to avoid needing sudo)
-sudo setcap cap_net_raw,cap_net_admin=eip ./target/release/rustnet
-./target/release/rustnet
-```
-
-#### When installed via cargo:
+**Quick start:**
 
 ```bash
-# Option 1: Use full path with sudo
-sudo $(which rustnet)
+# Run with sudo (works on all platforms)
+sudo rustnet
 
-# Option 2: Set capabilities on the cargo-installed binary (Linux only)
-sudo setcap cap_net_raw,cap_net_admin=eip ~/.cargo/bin/rustnet
-rustnet  # Can now run without sudo
-
-# Option 3: Create system-wide symlink
-sudo ln -s ~/.cargo/bin/rustnet /usr/local/bin/rustnet
-sudo rustnet  # Works from anywhere
-
-# Option 4: Install globally with cargo (requires sudo)
-sudo cargo install --root /usr/local rustnet-monitor
-sudo rustnet  # Binary installed to /usr/local/bin/rustnet
+# Or grant capabilities to run without sudo (see Permissions section for details)
+# Linux example:
+sudo setcap cap_net_raw,cap_net_admin=eip /path/to/rustnet
+rustnet
 ```
 
 ## Usage
@@ -908,30 +890,38 @@ rustnet
 
 **For experimental eBPF-enabled builds (enhanced Linux performance):**
 
-eBPF is an experimental feature that requires additional capabilities for kernel program loading and performance monitoring:
+eBPF is an experimental feature that provides lower-overhead process identification using kernel probes:
 
 ```bash
 # Build with eBPF support
 cargo build --release --features ebpf
 
-# Grant full capability set for eBPF (modern kernels with CAP_BPF support)
+# Try modern capabilities first (Linux 5.8+)
 sudo setcap 'cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
-
-# OR for older kernels (fallback to CAP_SYS_ADMIN)
-sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin+eip' ./target/release/rustnet
-
-# Run without sudo - eBPF programs will load automatically if capabilities are sufficient
 ./target/release/rustnet
+
+# If eBPF fails to load, add CAP_SYS_ADMIN (may be required depending on kernel version)
+sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
+./target/release/rustnet
+# Check TUI Statistics panel - should show "Process Detection: eBPF + procfs"
 ```
 
 **Capability requirements for eBPF:**
-- `CAP_NET_RAW` - Raw socket access for packet capture
-- `CAP_NET_ADMIN` - Network administration 
-- `CAP_BPF` - BPF program loading (Linux 5.8+, preferred)
-- `CAP_PERFMON` - Performance monitoring (Linux 5.8+, preferred)  
-- `CAP_SYS_ADMIN` - System administration (fallback for older kernels)
 
-The application will automatically detect available capabilities and fall back to procfs-only mode if eBPF cannot be loaded.
+Base capabilities (always required):
+- `CAP_NET_RAW` - Raw socket access for packet capture
+- `CAP_NET_ADMIN` - Network administration
+
+eBPF-specific capabilities (Linux 5.8+):
+- `CAP_BPF` - BPF program loading and map operations
+- `CAP_PERFMON` - Performance monitoring and tracing operations
+
+Additional capability (may be required):
+- `CAP_SYS_ADMIN` - Some kernel versions or configurations may still require this for kprobe attachment, even with CAP_BPF and CAP_PERFMON available. Requirements vary by kernel version and configuration.
+
+**Fallback behavior**: If eBPF cannot load (e.g., insufficient capabilities, incompatible kernel), the application automatically uses procfs-only mode. The TUI Statistics panel displays which detection method is active:
+- `Process Detection: eBPF + procfs` - eBPF successfully loaded
+- `Process Detection: procfs` - Using procfs fallback
 
 **Note:** eBPF support is experimental and may have limitations with process name display (see [eBPF Enhanced Process Identification](#ebpf-enhanced-process-identification-experimental)).
 
