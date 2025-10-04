@@ -3,12 +3,14 @@
 //! This module checks if the application has sufficient privileges to capture
 //! network packets on different platforms (Linux, macOS, Windows).
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use anyhow::anyhow;
 use log::{debug, info};
 #[cfg(any(
     not(any(target_os = "linux", target_os = "macos", target_os = "windows")),
-    target_os = "windows",
-    target_os = "linux"
+    target_os = "linux",
+    target_os = "windows"
 ))]
 use log::warn;
 
@@ -34,6 +36,7 @@ impl PrivilegeStatus {
     }
 
     /// Create a status indicating insufficient privileges
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
     pub fn insufficient(missing: Vec<String>, instructions: Vec<String>) -> Self {
         Self {
             has_privileges: false,
@@ -304,58 +307,40 @@ fn is_root_user() -> Result<bool> {
 
 #[cfg(target_os = "windows")]
 fn check_windows_privileges() -> Result<PrivilegeStatus> {
-    // On Windows, packet capture typically requires administrator privileges
-    // We check if running as administrator
+    use pcap::Device;
 
-    use std::ptr;
+    debug!("Checking Windows privileges by attempting to list network interfaces");
 
-    debug!("Checking Windows administrator status");
-
-    // Check if process is elevated
-    let is_admin = unsafe {
-        let mut token_handle: winapi::um::winnt::HANDLE = ptr::null_mut();
-
-        // Open process token
-        if winapi::um::processthreadsapi::OpenProcessToken(
-            winapi::um::processthreadsapi::GetCurrentProcess(),
-            winapi::um::winnt::TOKEN_QUERY,
-            &mut token_handle,
-        ) == 0
-        {
-            warn!("Failed to open process token");
-            return false;
+    // Try to list network devices - this will fail if we don't have sufficient privileges
+    match Device::list() {
+        Ok(devices) => {
+            info!(
+                "Successfully listed {} network devices - privileges sufficient",
+                devices.len()
+            );
+            Ok(PrivilegeStatus::sufficient())
         }
+        Err(e) => {
+            debug!("Failed to list network devices: {}", e);
 
-        // Check token elevation
-        let mut elevation = winapi::um::winnt::TOKEN_ELEVATION { TokenIsElevated: 0 };
-        let mut return_length = 0u32;
+            // Check if the error indicates a permissions issue
+            let error_str = e.to_string().to_lowercase();
+            if error_str.contains("access") || error_str.contains("denied") || error_str.contains("permission") {
+                let missing = vec!["Administrator privileges".to_string()];
 
-        let result = winapi::um::securitybaseapi::GetTokenInformation(
-            token_handle,
-            winapi::um::winnt::TokenElevation,
-            &mut elevation as *mut _ as *mut _,
-            std::mem::size_of::<winapi::um::winnt::TOKEN_ELEVATION>() as u32,
-            &mut return_length,
-        );
+                let instructions = vec![
+                    "Run as Administrator: Right-click the terminal and select 'Run as Administrator'".to_string(),
+                    "If using Npcap: Ensure it was installed with 'WinPcap API-compatible Mode' enabled".to_string(),
+                ];
 
-        winapi::um::handleapi::CloseHandle(token_handle);
-
-        result != 0 && elevation.TokenIsElevated != 0
-    };
-
-    if is_admin {
-        info!("Running as administrator - privileges available");
-        return Ok(PrivilegeStatus::sufficient());
+                Ok(PrivilegeStatus::insufficient(missing, instructions))
+            } else {
+                // Some other error - assume it's not a privilege issue
+                warn!("Network device enumeration failed but error doesn't indicate privilege issue: {}", e);
+                Ok(PrivilegeStatus::sufficient())
+            }
+        }
     }
-
-    let missing = vec!["Administrator privileges".to_string()];
-
-    let instructions = vec![
-        "Right-click rustnet.exe and select 'Run as administrator'".to_string(),
-        "Or run from an elevated command prompt/PowerShell".to_string(),
-    ];
-
-    Ok(PrivilegeStatus::insufficient(missing, instructions))
 }
 
 #[cfg(test)]
