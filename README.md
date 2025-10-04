@@ -739,7 +739,7 @@ RustNet uses platform-specific APIs to associate network connections with proces
   - **Important**: PKTAP requires `sudo` even with `wireshark-chmodbpf` installed, as it accesses a privileged kernel interface
   - Without `sudo`: Falls back to `lsof` for process detection (slower but functional)
   - The TUI displays which detection method is in use in the Statistics panel
-- **Windows**: Uses nothing so far :)
+- **Windows**: Uses Windows IP Helper API (`GetExtendedTcpTable` and `GetExtendedUdpTable`) to retrieve TCP/UDP connection tables with process IDs, then resolves process names using `OpenProcess` and `QueryFullProcessImageNameW`. Supports both IPv4 and IPv6 connections.
 
 ### Network Interfaces
 
