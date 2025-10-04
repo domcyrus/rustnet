@@ -182,6 +182,12 @@ yay -S rustnet
 yay -S rustnet-bin
 ```
 
+**Fedora/RHEL/CentOS**
+```bash
+sudo dnf copr enable domcyrus/rustnet
+sudo dnf install rustnet
+```
+
 ### Prerequisites
 
 - Rust 2024 edition or later (install from [rustup.rs](https://rustup.rs/))
