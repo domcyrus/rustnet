@@ -224,4 +224,8 @@ impl ProcessLookup for LinuxProcessLookup {
 
         Ok(())
     }
+
+    fn get_detection_method(&self) -> &str {
+        "procfs"
+    }
 }

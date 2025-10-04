@@ -306,6 +306,14 @@ mod ebpf_enhanced {
             debug!("Enhanced process lookup refreshed");
             Ok(())
         }
+
+        fn get_detection_method(&self) -> &str {
+            if self.is_ebpf_available() {
+                "eBPF + procfs"
+            } else {
+                "procfs"
+            }
+        }
     }
 
     impl Clone for LookupStats {
@@ -519,6 +527,14 @@ mod procfs_only {
 
             debug!("Enhanced process lookup refreshed");
             Ok(())
+        }
+
+        fn get_detection_method(&self) -> &str {
+            if self.is_ebpf_available() {
+                "eBPF + procfs"
+            } else {
+                "procfs"
+            }
         }
     }
 

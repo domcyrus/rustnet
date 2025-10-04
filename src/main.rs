@@ -21,6 +21,9 @@ fn main() -> Result<()> {
 
     // Parse command line arguments
     let matches = cli::build_cli().get_matches();
+
+    // Check privileges BEFORE initializing TUI (so error messages are visible)
+    check_privileges_early()?;
     // Set up logging only if log-level was provided
     if let Some(log_level_str) = matches.get_one::<String>("log-level") {
         let log_level = log_level_str
@@ -522,6 +525,32 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     }
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+/// Check if we have privileges for packet capture before starting the TUI
+fn check_privileges_early() -> Result<()> {
+    match network::privileges::check_packet_capture_privileges() {
+        Ok(status) if !status.has_privileges => {
+            // Print error to stderr before TUI starts
+            eprintln!("\n╔═══════════════════════════════════════════════════════════════════════════╗");
+            eprintln!("║                   INSUFFICIENT PRIVILEGES                                 ║");
+            eprintln!("╚═══════════════════════════════════════════════════════════════════════════╝");
+            eprintln!();
+            eprintln!("{}", status.error_message());
+
+            return Err(anyhow::anyhow!("Insufficient privileges for packet capture"));
+        }
+        Err(e) => {
+            // Privilege check failed - warn but continue
+            eprintln!("Warning: Failed to check privileges: {}", e);
+            eprintln!("Continuing anyway, but packet capture may fail...\n");
+        }
+        _ => {
+            // Privileges OK
         }
     }
 

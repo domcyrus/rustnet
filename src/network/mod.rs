@@ -5,5 +5,6 @@ pub mod parser;
 #[cfg(target_os = "macos")]
 pub mod pktap;
 pub mod platform;
+pub mod privileges;
 pub mod services;
 pub mod types;

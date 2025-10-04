@@ -189,9 +189,18 @@ cargo build --features ebpf
 # If compilation fails, check for missing definitions
 # and add them to your minimal header
 
-# Verify eBPF program loads (requires root)
+# Verify eBPF program loads
+# Option 1: Run with sudo (always works)
 sudo cargo run --features ebpf
+
+# Option 2: Set capabilities (Linux only, see README.md Permissions section)
+sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' ./target/debug/rustnet
+cargo run --features ebpf
+
+# Check the TUI Statistics panel to verify it shows "Process Detection: eBPF + procfs"
 ```
+
+**Note**: eBPF kprobe programs require specific Linux capabilities. See the main [README.md Permissions section](README.md#permissions) for detailed capability requirements. The required capabilities may vary by kernel version.
 
 ## Best Practices
 
