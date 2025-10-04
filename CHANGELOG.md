@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2025-10-04
+
+### Added
+- **Windows Process Identification**: Implemented full process lookup using Windows IP Helper API
+  - Uses GetExtendedTcpTable and GetExtendedUdpTable for connection-to-process mapping
+  - Resolves process names via OpenProcess and QueryFullProcessImageNameW
+  - Supports both TCP/UDP and IPv4/IPv6 connections
+  - Implements time-based caching with 2-second TTL for performance
+  - Migrated from winapi to windows crate (v0.59) for better maintainability
+- **Privilege Detection**: Pre-flight privilege checking before network interface access
+  - Detects insufficient privileges on Linux, macOS, and Windows
+  - Provides platform-specific instructions (sudo, setcap, Docker flags)
+  - Shows errors before TUI initialization for better visibility
+  - Detects container environments with Docker-specific guidance
+
+### Fixed
+- **Packet Length Calculation**: Use actual packet length from IP headers instead of captured length
+  - Extracts Total Length field from IP headers for accurate byte counting
+  - Fixes severe undercounting for large packets (NFS, jumbo frames)
+  - Resolves issues with snaplen-limited capture buffers
+
+### Changed
+- **Documentation**: Updated ROADMAP.md and README.md with Windows process identification status and Arch Linux installation instructions
+
 ## [0.12.1] - 2025-10-02
 
 ### Changed
@@ -196,7 +220,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/domcyrus/rustnet/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/domcyrus/rustnet/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/domcyrus/rustnet/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/domcyrus/rustnet/compare/v0.10.0...v0.11.0
