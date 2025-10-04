@@ -601,6 +601,9 @@ fn check_windows_dependencies() -> Result<()> {
 #[cfg(target_os = "windows")]
 fn check_dll_available(dll_name: &str) -> bool {
     use std::ffi::CString;
+    use windows::Win32::Foundation::{FreeLibrary, HMODULE};
+    use windows::Win32::System::LibraryLoader::LoadLibraryA;
+    use windows::core::PCSTR;
 
     // Try to load the DLL
     let dll_cstring = match CString::new(dll_name) {
@@ -610,14 +613,14 @@ fn check_dll_available(dll_name: &str) -> bool {
 
     unsafe {
         // Use LoadLibraryA to check if the DLL can be loaded
-        let handle = winapi::um::libloaderapi::LoadLibraryA(dll_cstring.as_ptr());
+        let handle = LoadLibraryA(PCSTR(dll_cstring.as_ptr() as *const u8));
 
-        if handle.is_null() {
-            false
-        } else {
+        if let Ok(h) = handle && h != HMODULE(std::ptr::null_mut()) {
             // Free the library if it was loaded
-            winapi::um::libloaderapi::FreeLibrary(handle);
+            let _ = FreeLibrary(h);
             true
+        } else {
+            false
         }
     }
 }

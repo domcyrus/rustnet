@@ -10,10 +10,10 @@ This document outlines the planned features and improvements for RustNet.
   - Fallback to `lsof` system commands for process-socket associations
   - DMG installation packages for Apple Silicon and Intel
   - Homebrew installation support
-- [x] **Windows Support**: Basic functionality working with:
+- [x] **Windows Support**: Full functionality working with:
   - Npcap SDK and runtime integration
   - MSI installation packages for 64-bit and 32-bit
-  - Process identification not yet implemented for Windows
+  - Process identification via Windows IP Helper API (GetExtendedTcpTable/GetExtendedUdpTable)
 - [ ] **BSD Support**: Add support for FreeBSD, OpenBSD, and NetBSD
 - [x] **Linux Process Identification**: **Experimental eBPF Support Implemented** - Basic eBPF-based process identification now available with `--features ebpf`. Provides efficient kernel-level process-to-connection mapping with lower overhead than procfs. Currently has limitations (see eBPF Improvements section below).
 

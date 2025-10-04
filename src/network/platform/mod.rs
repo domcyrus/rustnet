@@ -94,11 +94,13 @@ pub fn create_process_lookup_with_pktap_status(
             }
         }
         // Use basic procfs lookup (either as fallback or when eBPF is not enabled)
+        log::info!("Using Linux process lookup (procfs)");
         Ok(Box::new(LinuxProcessLookup::new()?))
     }
 
     #[cfg(target_os = "windows")]
     {
+        log::info!("Using Windows process lookup (IP Helper API)");
         Ok(Box::new(WindowsProcessLookup::new()?))
     }
 
