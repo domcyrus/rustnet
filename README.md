@@ -738,8 +738,11 @@ RustNet is built with the following key dependencies:
 
 RustNet uses platform-specific APIs to associate network connections with processes:
 
-- **Linux**: Parses `/proc/net/tcp`, `/proc/net/udp`, and `/proc/<pid>/fd/` to find socket inodes
+- **Linux**: Parses `/proc/net/tcp`, `/proc/net/udp`, and `/proc/<pid>/fd/` to find socket inodes. With eBPF enabled, uses kernel probes for enhanced performance.
 - **macOS**: Uses PKTAP (Packet Tap) headers when available for process identification from packet metadata, with fallback to `lsof` system commands for process-socket associations. PKTAP extracts process information directly from kernel packet headers when supported.
+  - **Important**: PKTAP requires `sudo` even with `wireshark-chmodbpf` installed, as it accesses a privileged kernel interface
+  - Without `sudo`: Falls back to `lsof` for process detection (slower but functional)
+  - The TUI displays which detection method is in use in the Statistics panel
 - **Windows**: Uses nothing so far :)
 
 ### Network Interfaces
@@ -822,7 +825,7 @@ sudo ./target/release/rustnet
 
 Add your user to the `access_bpf` group for passwordless packet capture:
 
-**Using Wireshark's ChmodBPF (Easiest):**
+**Using Wireshark's ChmodBPF (For basic packet capture):**
 
 ```bash
 # Install Wireshark's BPF permission helper
@@ -830,8 +833,13 @@ brew install --cask wireshark-chmodbpf
 
 # Log out and back in for group changes to take effect
 # Then run rustnet without sudo:
-rustnet
+rustnet  # Uses lsof for process detection (slower)
+
+# For PKTAP support with process metadata from packet headers, use sudo:
+sudo rustnet  # Uses PKTAP for faster process detection
 ```
+
+**Note**: `wireshark-chmodbpf` grants access to `/dev/bpf*` for packet capture, but **PKTAP** is a separate privileged kernel interface that requires root privileges regardless of BPF permissions. The TUI will display which detection method is active ("pktap" with sudo, or "lsof" without).
 
 **Manual BPF Group Setup:**
 

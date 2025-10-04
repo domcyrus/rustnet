@@ -35,6 +35,9 @@ pub trait ProcessLookup: Send + Sync {
     fn refresh(&self) -> Result<()> {
         Ok(()) // Default no-op
     }
+
+    /// Get the detection method name for display purposes
+    fn get_detection_method(&self) -> &str;
 }
 
 /// No-op process lookup for when PKTAP is providing process metadata
@@ -49,6 +52,10 @@ impl ProcessLookup for NoOpProcessLookup {
 
     fn refresh(&self) -> Result<()> {
         Ok(()) // Nothing to refresh
+    }
+
+    fn get_detection_method(&self) -> &str {
+        "pktap"
     }
 }
 

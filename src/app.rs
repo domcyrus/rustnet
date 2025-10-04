@@ -102,6 +102,9 @@ pub struct App {
 
     /// Whether PKTAP is active (macOS only) - used to disable process enrichment
     pktap_active: Arc<AtomicBool>,
+
+    /// Current process detection method (e.g., "eBPF + procfs", "pktap", "lsof", "N/A")
+    process_detection_method: Arc<RwLock<String>>,
 }
 
 impl App {
@@ -123,6 +126,7 @@ impl App {
             current_interface: Arc::new(RwLock::new(None)),
             linktype: Arc::new(RwLock::new(None)),
             pktap_active: Arc::new(AtomicBool::new(false)),
+            process_detection_method: Arc::new(RwLock::new(String::from("initializing..."))),
         })
     }
 
@@ -392,6 +396,7 @@ impl App {
     ) -> Result<()> {
         let pktap_active = Arc::clone(&self.pktap_active);
         let should_stop = Arc::clone(&self.should_stop);
+        let process_detection_method = Arc::clone(&self.process_detection_method);
 
         thread::spawn(move || {
             // On macOS, wait for PKTAP detection to avoid unnecessary lsof calls
@@ -406,6 +411,9 @@ impl App {
                         info!(
                             "🚫 Skipping process enrichment thread - PKTAP is active and provides process metadata"
                         );
+                        if let Ok(mut method) = process_detection_method.write() {
+                            *method = String::from("pktap");
+                        }
                         return;
                     }
                     // Check more frequently for faster detection
@@ -417,6 +425,9 @@ impl App {
                     info!(
                         "🚫 Skipping process enrichment thread - PKTAP became active during startup"
                     );
+                    if let Ok(mut method) = process_detection_method.write() {
+                        *method = String::from("pktap");
+                    }
                     return;
                 } else {
                     info!(
@@ -429,7 +440,7 @@ impl App {
             }
 
             // Start the actual process enrichment
-            if let Err(e) = Self::run_process_enrichment(connections, should_stop, pktap_active) {
+            if let Err(e) = Self::run_process_enrichment(connections, should_stop, pktap_active, process_detection_method) {
                 error!("Process enrichment thread failed: {}", e);
             }
         });
@@ -442,12 +453,24 @@ impl App {
         connections: Arc<DashMap<String, Connection>>,
         should_stop: Arc<AtomicBool>,
         pktap_active: Arc<AtomicBool>,
+        process_detection_method: Arc<RwLock<String>>,
     ) -> Result<()> {
-        let process_lookup =
-            create_process_lookup_with_pktap_status(pktap_active.load(Ordering::Relaxed))?;
+        // Check PKTAP status before creating process lookup
+        let is_pktap = pktap_active.load(Ordering::Relaxed);
+
+        let process_lookup = create_process_lookup_with_pktap_status(is_pktap)?;
         let interval = Duration::from_secs(2); // Use default interval
 
-        info!("Process enrichment thread started");
+        // Get and set the detection method from the process lookup implementation
+        // Only set if not already detected as pktap (to handle race conditions)
+        if let Ok(mut method) = process_detection_method.write()
+            && method.as_str() != "pktap"
+        {
+            *method = process_lookup.get_detection_method().to_string();
+        }
+
+        info!("Process enrichment thread started with detection method: {}",
+              process_lookup.get_detection_method());
         let mut last_refresh = Instant::now();
 
         loop {
@@ -758,6 +781,14 @@ impl App {
     /// Get the current network interface name
     pub fn get_current_interface(&self) -> Option<String> {
         self.current_interface.read().unwrap().clone()
+    }
+
+    /// Get the current process detection method
+    pub fn get_process_detection_method(&self) -> String {
+        self.process_detection_method
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_else(|_| String::from("unknown"))
     }
 
     /// Stop all threads gracefully

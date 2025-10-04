@@ -56,4 +56,8 @@ impl ProcessLookup for WindowsProcessLookup {
         *self.cache.write().unwrap() = new_cache;
         Ok(())
     }
+
+    fn get_detection_method(&self) -> &str {
+        "N/A"
+    }
 }

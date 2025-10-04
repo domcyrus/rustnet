@@ -184,6 +184,10 @@ impl ProcessLookup for MacOSProcessLookup {
         info!("Process lookup cache refreshed with {} entries", cache_size);
         Ok(())
     }
+
+    fn get_detection_method(&self) -> &str {
+        "lsof"
+    }
 }
 
 fn parse_lsof_connection_with_hint(

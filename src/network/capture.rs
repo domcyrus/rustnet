@@ -181,18 +181,16 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                         return Ok((cap, "pktap".to_string(), linktype.0));
                     }
                     Err(e) => {
-                        log::warn!(
-                            "Failed to open PKTAP capture: {}, falling back to regular capture",
-                            e
-                        );
+                        log::warn!("Failed to open PKTAP capture: {}", e);
+                        log::info!("PKTAP requires root privileges - run with 'sudo' for process metadata support");
+                        log::info!("Falling back to regular capture (process detection will use lsof)");
                     }
                 }
             }
             Err(e) => {
-                log::warn!(
-                    "Failed to create PKTAP device: {}, falling back to regular capture",
-                    e
-                );
+                log::warn!("Failed to create PKTAP device: {}", e);
+                log::info!("PKTAP requires root privileges - run with 'sudo' for process metadata support");
+                log::info!("Falling back to regular capture (process detection will use lsof)");
             }
         }
     }
