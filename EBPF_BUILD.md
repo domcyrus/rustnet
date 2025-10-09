@@ -16,11 +16,11 @@ Pre-downloaded vmlinux.h files (based on Linux kernel 6.14) are included in the 
 These files are automatically used during the build process based on the target architecture. **No network access is required** during compilation.
 
 **Benefits:**
-- ✅ **Zero network dependency**: Works in restricted build environments (COPR, Fedora build systems, etc.)
-- ✅ **Reproducible builds**: Same headers every time, no external dependencies
-- ✅ **Complete kernel definitions**: All kernel structures available, no missing types
-- ✅ **No manual maintenance**: Auto-generated from kernel BTF
-- ✅ **Cross-kernel compatibility**: CO-RE/BTF ensures portability across kernel versions
+- **Zero network dependency**: Works in restricted build environments (COPR, Fedora build systems, etc.)
+- **Reproducible builds**: Same headers every time, no external dependencies
+- **Complete kernel definitions**: All kernel structures available, no missing types
+- **No manual maintenance**: Auto-generated from kernel BTF
+- **Cross-kernel compatibility**: CO-RE/BTF ensures portability across kernel versions
 
 **Trade-offs:**
 - Repository size: ~3MB total for all architectures (acceptable for modern git)
