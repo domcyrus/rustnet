@@ -42,13 +42,13 @@ ring = "0.17"
 aes = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-procfs = "0.16"
+procfs = "0.18"
 libbpf-rs = { version = "0.25", optional = true }
 bytes = { version = "1.5", optional = true }
 libc = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.59", features = [
+windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
@@ -63,9 +63,9 @@ clap_complete = "4.5"
 clap_mangen = "0.2"
 
 [target.'cfg(windows)'.build-dependencies]
-http_req = "0.11"
-zip = "2.1"
-windows = { version = "0.59", features = [
+http_req = "0.14"
+zip = "5.1"
+windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
