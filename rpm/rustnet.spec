@@ -45,12 +45,16 @@ cargo build --release --features "linux-default"
 install -Dpm 0755 target/release/rustnet -t %{buildroot}%{_bindir}/
 install -Dpm 0644 assets/services -t %{buildroot}%{_datadir}/%{name}/
 install -Dpm 0644 README.md -t %{buildroot}%{_docdir}/%{name}/
+install -Dpm 0644 resources/packaging/linux/graphics/rustnet.png -t %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/
+install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_datadir}/applications/
 
 %files
 %license LICENSE
 %doc %{_docdir}/%{name}/README.md
 %{_bindir}/rustnet
 %{_datadir}/%{name}/services
+%{_datadir}/icons/hicolor/256x256/apps/rustnet.png
+%{_datadir}/applications/rustnet.desktop
 
 %post
 # Set capabilities for packet capture and eBPF support without requiring root/sudo
