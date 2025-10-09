@@ -44,7 +44,7 @@ jobs:
           - windows-x64-msvc
           - windows-x86-msvc
         include:
-          - os: ubuntu-latest # default
+          - os: ubuntu-22.04 # default - pinned for GLIBC 2.35 compatibility
           - cargo: cargo # default; overwrite with `cross` if necessary
           - build: linux-aarch64-gnu
             target: aarch64-unknown-linux-gnu
@@ -72,7 +72,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get update -y
           sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
@@ -209,7 +209,7 @@ jobs:
 
   package-installers:
     name: package-installers
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     needs: create-release
     steps:
       - name: Checkout repository
