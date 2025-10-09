@@ -21,7 +21,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 
 ### macOS DMG Installation
 
-> **💡 Prefer Homebrew?** If you have Homebrew installed, using `brew install` is easier and avoids Gatekeeper bypass steps. See [Homebrew Installation](#homebrew-installation) for instructions.
+> ** Prefer Homebrew?** If you have Homebrew installed, using `brew install` is easier and avoids Gatekeeper bypass steps. See [Homebrew Installation](#homebrew-installation) for instructions.
 
 1. **Download** the appropriate DMG for your architecture:
    - `Rustnet_macOS_AppleSilicon.dmg` for Apple Silicon Macs (M1/M2/M3)
