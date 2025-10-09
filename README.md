@@ -14,39 +14,19 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 ## Features
 
 - **Real-time Network Monitoring**: Monitor active TCP, UDP, ICMP, and ARP connections with detailed state information
-- **Connection States**: State display showing connection status:
-  - **TCP States**: `ESTABLISHED`, `SYN_SENT`, `TIME_WAIT`, `CLOSED`, etc.
-  - **QUIC States**: `QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`, `QUIC_DRAINING`
-  - **DNS States**: `DNS_QUERY`, `DNS_RESPONSE`
-  - **SSH States**: `BANNER`, `KEYEXCHANGE`, `AUTHENTICATION`, `ESTABLISHED` (for SSH protocol)
-  - **Activity States**: `UDP_ACTIVE`, `UDP_IDLE`, `UDP_STALE` based on connection activity
-- **Deep Packet Inspection (DPI)**: Detect application protocols:
-  - HTTP with host information
-  - HTTPS/TLS with SNI (Server Name Indication)
-  - DNS queries and responses
-  - **SSH connections** with version detection, software identification, and connection state tracking
-  - **QUIC protocol with CONNECTION_CLOSE frame detection** and RFC 9000 compliance
-- **Connection Lifecycle Management**:
-  - **Smart protocol-aware timeouts** based on protocol, state, and activity level
-  - **TCP connections**: 5-10 minutes for established (activity-based), with DPI-aware extensions
-  - **HTTP/HTTPS keep-alive**: 10 minutes (both TCP and UDP/HTTP3)
-  - **SSH sessions**: 30 minutes (both TCP and UDP)
-  - **QUIC connections**: 5-10 minutes (activity-based)
-  - **Fast cleanup**: DNS (30s), TCP closed (5s), QUIC draining (10s)
-  - **Visual staleness indicators**: Connections turn yellow (75% timeout) then red (90% timeout) before cleanup
+- **Connection States**: Track TCP states (`ESTABLISHED`, `SYN_SENT`, `TIME_WAIT`), QUIC states (`QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`), DNS states, SSH states, and activity-based UDP states
+- **Deep Packet Inspection (DPI)**: Detect application protocols including HTTP, HTTPS/TLS with SNI, DNS, SSH with version detection, and QUIC with CONNECTION_CLOSE frame detection
+- **Smart Connection Lifecycle**: Protocol-aware timeouts with visual staleness indicators (white → yellow → red) before cleanup
 - **Process Identification**: Associate network connections with running processes
-  - **Note**: With experimental eBPF support, process names are limited to 16 characters from the kernel's `comm` field and may show thread names instead of full executable names
 - **Service Name Resolution**: Identify well-known services using port numbers
 - **Cross-platform Support**: Works on Linux, macOS, Windows and potentially BSD systems
-- **Advanced Filtering**: Real-time vim/fzf-style filtering with keyword support:
-  - Navigate while typing filters
-  - Fuzzy search across all connection fields including DPI data
-  - Keyword filters: `port:44`, `src:192.168`, `dst:google.com`, `sni:github.com`, `process:firefox`
-- **Terminal User Interface**: TUI built with ratatui with adjustable column widths for state visibility
-- **Multi-threaded Processing**: Concurrent packet processing across multiple threads
+- **Advanced Filtering**: Real-time vim/fzf-style filtering with keyword support (`port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`)
+- **Terminal User Interface**: Beautiful TUI built with ratatui with adjustable column widths
+- **Multi-threaded Processing**: Concurrent packet processing for high performance
 - **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
 
-### eBPF Enhanced Process Identification (Experimental)
+<details>
+<summary><b>eBPF Enhanced Process Identification (Experimental - Linux)</b></summary>
 
 When built with the `ebpf` feature on Linux, RustNet uses kernel eBPF programs for enhanced performance and lower overhead process identification. However, this comes with important limitations:
 
@@ -65,539 +45,103 @@ When built with the `ebpf` feature on Linux, RustNet uses kernel eBPF programs f
 - When eBPF fails to load or lacks sufficient permissions, RustNet automatically falls back to standard procfs-based process identification
 - Standard mode provides full process names but with higher CPU overhead
 
-## Installation
+See [EBPF_BUILD.md](EBPF_BUILD.md) for build instructions and [ARCHITECTURE.md](ARCHITECTURE.md) for technical details.
 
-### Installing from Release Packages
+</details>
 
-Pre-built packages are available for each release on the [GitHub Releases](https://github.com/domcyrus/rustnet/releases) page.
+## Quick Start
 
-#### macOS DMG Installation
+### Installation
 
-> **💡 Prefer Homebrew?** If you have Homebrew installed, using `brew install` is easier and avoids Gatekeeper bypass steps. See [Homebrew Installation](#option-3-homebrew-installation) for instructions.
-
-1. **Download** the appropriate DMG for your architecture:
-   - `Rustnet_macOS_AppleSilicon.dmg` for Apple Silicon Macs (M1/M2/M3)
-   - `Rustnet_macOS_Intel.dmg` for Intel-based Macs
-
-2. **Open the DMG** and drag Rustnet.app to your Applications folder
-
-3. **Bypass Gatekeeper** (for unsigned builds):
-   - When you first try to open Rustnet, macOS will block it because the app is not signed
-   - Go to **System Settings → Privacy & Security**
-   - Scroll down to find the message about Rustnet being blocked
-   - Click **"Open Anyway"** to allow the application to run
-   - You may need to confirm this choice when launching the app again
-
-4. **Run Rustnet**:
-   - Double-click Rustnet.app to launch it in a Terminal window with sudo
-   - Or run from command line: `sudo /Applications/Rustnet.app/Contents/MacOS/rustnet`
-
-5. **Optional: Create a symlink for shell access**:
-   ```bash
-   # Create a symlink so you can run 'rustnet' from anywhere
-   sudo ln -s /Applications/Rustnet.app/Contents/MacOS/rustnet /usr/local/bin/rustnet
-
-   # Now you can run from any terminal:
-   sudo rustnet
-   ```
-
-6. **Optional: Setup BPF permissions** (to avoid needing sudo):
-   - Install Wireshark's BPF permission helper: `brew install --cask wireshark-chmodbpf`
-   - Log out and back in for group changes to take effect
-   - See the [Permissions](#permissions) section for detailed setup instructions
-
-#### Windows MSI Installation
-
-1. **Install Npcap Runtime** (required for packet capture):
-   - Download from https://npcap.com/dist/
-   - Run the installer and select **"WinPcap API compatible mode"**
-
-2. **Download and install** the appropriate MSI package:
-   - `Rustnet_Windows_64-bit.msi` for 64-bit Windows
-   - `Rustnet_Windows_32-bit.msi` for 32-bit Windows
-
-3. **Run the installer** and follow the installation wizard
-
-4. **Run Rustnet**:
-   - Open Command Prompt or PowerShell
-   - Run: `rustnet.exe`
-   - If Npcap is not installed or not in WinPcap compatible mode, RustNet will display a helpful error message with installation instructions
-   - Note: Depending on your Npcap installation settings, you may or may not need Administrator privileges
-
-#### Linux Package Installation
-
-**Debian/Ubuntu (.deb packages):**
-
+**From crates.io (Recommended):**
 ```bash
-# Download the appropriate package for your architecture:
-# - Rustnet_LinuxDEB_amd64.deb (x86_64)
-# - Rustnet_LinuxDEB_arm64.deb (ARM64)
-# - Rustnet_LinuxDEB_armhf.deb (ARMv7)
-
-# Install the package
-sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
-
-# Install dependencies if needed
-sudo apt-get install -f
-
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (see Permissions section)
-sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
-rustnet
-```
-
-**RedHat/Fedora/CentOS (.rpm packages):**
-
-```bash
-# Download the appropriate package for your architecture:
-# - Rustnet_LinuxRPM_x86_64.rpm
-# - Rustnet_LinuxRPM_aarch64.rpm
-
-# Install the package
-sudo rpm -i Rustnet_LinuxRPM_x86_64.rpm
-# Or with dnf/yum:
-sudo dnf install Rustnet_LinuxRPM_x86_64.rpm
-
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (see Permissions section)
-sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
-rustnet
-```
-
-**Arch Linux (AUR)**
-Two AUR packages are available:
-- [`rustnet`](https://aur.archlinux.org/packages/rustnet) - Build from source (maintained by [@DeepChirp](https://github.com/DeepChirp))
-- [`rustnet-bin`](https://aur.archlinux.org/packages/rustnet-bin) - Pre-compiled binary for faster installation
-
-Install with your preferred AUR helper:
-```bash
-# Source build (optimized for your system)
-yay -S rustnet
-
-# OR pre-compiled binary (faster installation)
-yay -S rustnet-bin
-```
-
-**Fedora/RHEL/CentOS**
-```bash
-sudo dnf copr enable domcyrus/rustnet
-sudo dnf install rustnet
-```
-
-### Prerequisites
-
-- Rust 2024 edition or later (install from [rustup.rs](https://rustup.rs/))
-- libpcap or similar packet capture library:
-  - **Linux**: `sudo apt-get install libpcap-dev` (Debian/Ubuntu) or `sudo yum install libpcap-devel` (RedHat/CentOS)
-  - **macOS**: Included by default
-  - **Windows**: Install Npcap and Npcap SDK (see [Windows Build Setup](#windows-build-setup) below)
-- **For eBPF support (optional, experimental - Linux only)**:
-  - `sudo apt-get install libelf-dev clang llvm` (Debian/Ubuntu)
-  - `sudo yum install elfutils-libelf-devel clang llvm` (RedHat/CentOS)
-  - Linux kernel 4.19+ with BTF support recommended
-
-### Windows Build Setup
-
-Building RustNet on Windows requires the Npcap SDK and proper environment configuration:
-
-#### Build Requirements
-
-1. **Download and Install Npcap SDK**:
-   - Download the Npcap SDK from https://npcap.com/dist/
-   - Extract the SDK to a directory (e.g., `C:\npcap-sdk`)
-
-2. **Set Environment Variables**:
-   - Set the `LIB` environment variable to include the SDK's library path:
-     ```cmd
-     set LIB=%LIB%;C:\npcap-sdk\Lib\x64
-     ```
-   - For PowerShell:
-     ```powershell
-     $env:LIB = "$env:LIB;C:\npcap-sdk\Lib\x64"
-     ```
-   - For permanent setup, add this to your system environment variables
-
-3. **Build RustNet**:
-   ```cmd
-   cargo build --release
-   ```
-
-#### Runtime Requirements
-
-1. **Install Npcap Runtime**:
-   - Download the Npcap installer from https://npcap.com/dist/
-   - Run the installer and **select "WinPcap API compatible mode"** during installation
-   - This ensures compatibility with the packet capture library
-
-2. **Run RustNet**:
-   ```cmd
-   rustnet.exe
-   ```
-
-**Note**: Depending on your Npcap installation settings, you may or may not need Administrator privileges. If you didn't select the option to restrict packet capture to administrators during Npcap installation, RustNet can run with normal user privileges.
-
-### Install via Cargo (Recommended)
-
-```bash
-# Install directly from crates.io
 cargo install rustnet-monitor
-
-# The binary will be installed to ~/.cargo/bin/rustnet
-# Make sure ~/.cargo/bin is in your PATH
 ```
 
-### Building from source
+**From release packages:**
+- Download pre-built packages for macOS, Windows, or Linux from [GitHub Releases](https://github.com/domcyrus/rustnet/releases)
+- See [INSTALL.md](INSTALL.md) for detailed installation instructions for all platforms
 
+**From source:**
 ```bash
-# Clone the repository
 git clone https://github.com/domcyrus/rustnet.git
 cd rustnet
-
-# Build in release mode (basic functionality)
 cargo build --release
-
-# Build with experimental eBPF support for enhanced Linux performance (Linux only)
-cargo build --release --features ebpf
-
-# The executable will be in target/release/rustnet
 ```
 
-### Using Docker
-
-RustNet is available as a Docker container from GitHub Container Registry:
-
+**Via Docker:**
 ```bash
-# Pull the latest image
 docker pull ghcr.io/domcyrus/rustnet:latest
-
-# Or pull a specific version
-docker pull ghcr.io/domcyrus/rustnet:0.7.0
-
-# Run with required network capabilities (latest)
 docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
   ghcr.io/domcyrus/rustnet:latest
-
-# Run with specific version
-docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
-  ghcr.io/domcyrus/rustnet:0.7.0
-
-# Run with specific interface
-docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
-  ghcr.io/domcyrus/rustnet:latest -i eth0
-
-# Alternative: Run with privileged mode (less secure but simpler)
-docker run --rm -it --privileged --net=host \
-  ghcr.io/domcyrus/rustnet:latest
-
-# View available options
-docker run --rm ghcr.io/domcyrus/rustnet:latest --help
-
-# Or with specific version
-docker run --rm ghcr.io/domcyrus/rustnet:0.7.0 --help
 ```
-
-**Note:** The container requires network capabilities (`NET_RAW` and `NET_ADMIN`) or privileged mode for packet capture. Host networking (`--net=host`) is recommended for monitoring all network interfaces.
 
 ### Running RustNet
 
-Packet capture requires elevated privileges on most systems. See the [Permissions](#permissions) section below for detailed setup instructions for each platform.
-
-**Quick start:**
+Packet capture requires elevated privileges. See [INSTALL.md](INSTALL.md) for detailed permission setup.
 
 ```bash
-# Run with sudo (works on all platforms)
+# Quick start with sudo
 sudo rustnet
 
-# Or grant capabilities to run without sudo (see Permissions section for details)
-# Linux example:
+# Or grant capabilities to run without sudo (Linux)
 sudo setcap cap_net_raw,cap_net_admin=eip /path/to/rustnet
 rustnet
 ```
 
-## Usage
-
+**Common options:**
 ```bash
-# Run with default settings (monitors default interface)
-rustnet
-
-# Specify network interface
-rustnet -i eth0
-rustnet --interface wlan0
-
-# Filter out localhost connections (already filtered by default)
-rustnet --no-localhost
-
-# Show localhost connections (override default filtering)
-rustnet --show-localhost
-
-# Set UI refresh interval (in milliseconds)
-rustnet -r 500
-rustnet --refresh-interval 2000
-
-# Disable deep packet inspection
-rustnet --no-dpi
-
-# Enable logging with specific level (options: error, warn, info, debug, trace)
-rustnet -l debug
-rustnet --log-level info
-
-# View help and all options
-rustnet --help
+rustnet -i eth0              # Specify network interface
+rustnet --show-localhost     # Show localhost connections
+rustnet -r 500               # Set refresh interval (ms)
+rustnet --no-dpi             # Disable deep packet inspection
+rustnet -l debug             # Enable debug logging
 ```
 
-### Command-line Options
+See [USAGE.md](USAGE.md) for complete command-line options and detailed usage guide.
 
-Usage: rustnet [OPTIONS]
+## Keyboard Controls
 
-Options:
-  -i, --interface <INTERFACE>            Network interface to monitor
-      --no-localhost                     Filter out localhost connections (default: filtered)
-      --show-localhost                   Show localhost connections (overrides default filtering)
-  -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 1000]
-      --no-dpi                           Disable deep packet inspection
-  -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
-  -h, --help                             Print help
-  -V, --version                          Print version
+| Key | Action |
+|-----|--------|
+| `q` | Quit (press twice to confirm) |
+| `Ctrl+C` | Quit immediately |
+| `Tab` | Switch between tabs |
+| `↑/k` `↓/j` | Navigate up/down |
+| `g` `G` | Jump to first/last connection |
+| `Enter` | View connection details |
+| `Esc` | Go back or clear filter |
+| `c` | Copy remote address |
+| `p` | Toggle service names/ports |
+| `s` `S` | Cycle sort columns / toggle direction |
+| `/` | Enter filter mode |
+| `h` | Toggle help |
 
-### Keyboard Controls
+See [USAGE.md](USAGE.md) for detailed keyboard controls and navigation tips.
 
-- `q`: Quit the application (press twice to confirm)
-- `Ctrl+C`: Quit immediately
-- `Tab`: Switch between tabs (Overview, Details, Help)
-- `↑/k`: Navigate up in connection list
-- `↓/j`: Navigate down in connection list
-- `g`: Jump to first connection (vim-style)
-- `G` (Shift+g): Jump to last connection (vim-style)
-- `PageUp`: Move up by 10 items
-- `PageDown`: Move down by 10 items
-- `Enter`: View detailed information about selected connection
-- `Esc`: Go back to previous view or clear active filter
-- `c`: Copy remote address to clipboard
-- `p`: Toggle between service names and port numbers
-- `s`: Cycle through sort columns (left-to-right order)
-- `S` (Shift+s): Toggle sort direction (ascending/descending)
-- `h`: Toggle help screen
-- `/`: Enter filter mode (vim-style search with real-time results)
+## Filtering & Sorting
 
-## Connection Lifecycle & Visual Indicators
-
-RustNet uses intelligent timeout management to automatically clean up inactive connections while providing visual warnings before removal.
-
-### Visual Staleness Indicators
-
-Connections change color based on how close they are to being cleaned up:
-
-| Color | Meaning | Staleness |
-|-------|---------|-----------|
-| **White** (default) | Active connection | < 75% of timeout |
-| **Yellow** | Stale - approaching timeout | 75-90% of timeout |
-| **Red** | Critical - will be removed soon | > 90% of timeout |
-
-**Example**: An HTTP connection with a 10-minute timeout will:
-- Stay **white** for the first 7.5 minutes
-- Turn **yellow** from 7.5 to 9 minutes (warning)
-- Turn **red** after 9 minutes (critical)
-- Be removed at 10 minutes
-
-This gives you advance warning when a connection is about to disappear from the list.
-
-### Smart Protocol-Aware Timeouts
-
-RustNet adjusts connection timeouts based on the protocol and detected application:
-
-#### TCP Connections
-- **HTTP/HTTPS** (detected via DPI): **10 minutes** - supports HTTP keep-alive
-- **SSH** (detected via DPI): **30 minutes** - accommodates long interactive sessions
-- **Active established** (< 1 min idle): **10 minutes**
-- **Idle established** (> 1 min idle): **5 minutes**
-- **TIME_WAIT**: 30 seconds - standard TCP timeout
-- **CLOSED**: 5 seconds - rapid cleanup
-- **SYN_SENT, FIN_WAIT, etc.**: 30-60 seconds
-
-#### UDP Connections
-- **HTTP/3 (QUIC with HTTP)**: **10 minutes** - connection reuse
-- **HTTPS/3 (QUIC with HTTPS)**: **10 minutes** - connection reuse
-- **SSH over UDP**: **30 minutes** - long-lived sessions
-- **DNS**: **30 seconds** - short-lived queries
-- **Regular UDP**: **60 seconds** - standard timeout
-
-#### QUIC Connections (Detected State)
-- **Connected (active)** (< 1 min idle): **10 minutes**
-- **Connected (idle)** (> 1 min idle): **5 minutes**
-- **With CONNECTION_CLOSE frame**: 1-10 seconds (based on close type)
-- **Initial/Handshaking**: 60 seconds - allow connection establishment
-- **Draining**: 10 seconds - RFC 9000 draining period
-
-### Activity-Based Adjustment
-
-Connections showing recent packet activity get longer timeouts:
-- **Last packet < 60 seconds ago**: Uses "active" timeout (longer)
-- **Last packet > 60 seconds ago**: Uses "idle" timeout (shorter)
-
-This ensures active connections stay visible while idle connections are cleaned up more quickly.
-
-### Why Connections Disappear
-
-A connection is removed when:
-1. **No packets received** for the duration of its timeout period
-2. The connection enters a **closed state** (TCP CLOSED, QUIC CLOSED)
-3. **Explicit close frames** detected (QUIC CONNECTION_CLOSE)
-
-**Note**: Rate indicators (bandwidth display) show *decaying* traffic based on recent activity. A connection may show declining bandwidth (yellow bars) but remain in the list until it exceeds its idle timeout. This is intentional - the visual decay gives you time to see the connection winding down before it's removed.
-
-## Sorting
-
-RustNet provides powerful table sorting to help you analyze network connections. Press `s` to cycle through sortable columns in left-to-right visual order, and press `S` (Shift+s) to toggle between ascending and descending order.
-
-### Quick Start
-
-**Find bandwidth hogs:**
+**Quick filtering examples:**
 ```
-Press 's' repeatedly until you see: Down↓/Up
-The connections with highest download bandwidth appear at the top
+/google                        # Search for "google" anywhere
+/port:443                      # Filter by port
+/process:firefox               # Filter by process
+/state:established             # Filter by connection state
+/dport:443 sni:github.com      # Combine filters
 ```
 
-**Find top uploaders:**
-```
-Press 's' repeatedly until you see: Down/Up↓
-The connections with highest upload bandwidth appear at the top
-```
+**Sorting:**
+- Press `s` to cycle through sortable columns (Protocol, Address, State, Service, Bandwidth, Process)
+- Press `S` (Shift+s) to toggle sort direction
+- Find bandwidth hogs: Press `s` until "Down↓/Up" appears
 
-**Sort by process name:**
-```
-Press 's' repeatedly until you see: Process ↑
-Connections are sorted alphabetically by process name
-```
+See [USAGE.md](USAGE.md) for complete filtering syntax and sorting guide.
 
-### Sortable Columns
-
-Press `s` to cycle through columns in left-to-right order:
-
-| Column | Default Direction | Description |
-|--------|-------------------|-------------|
-| **Protocol** | ↑ Ascending | Sort by protocol type (TCP, UDP, ICMP, etc.) |
-| **Local Address** | ↑ Ascending | Sort by local IP:port (useful for multi-interface systems) |
-| **Remote Address** | ↑ Ascending | Sort by remote IP:port |
-| **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
-| **Service** | ↑ Ascending | Sort by service name or port number |
-| **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.) |
-| **Bandwidth ↓** | ↓ Descending | Sort by **download** bandwidth (highest first by default) |
-| **Bandwidth ↑** | ↓ Descending | Sort by **upload** bandwidth (highest first by default) |
-| **Process** | ↑ Ascending | Sort by process name alphabetically |
-
-### Sort Indicators
-
-The active sort column is highlighted with:
-- **Cyan color** and **underline** styling
-- **Arrow symbol** (↑ or ↓) showing sort direction
-- **Table title** showing current sort state
-
-**Visual indicators:**
-```
-Active column header appears in cyan with underline:
-Pro │ Local Address │ Remote Address ↑│ State │ ...
-                      ^^^^^^^^^^^^^^^^
-                      (cyan, underlined, with arrow)
-
-Table title shows current sort:
-┌─ Active Connections (Sort: Remote Addr ↑) ──┐
-```
-
-### Bandwidth Column Special Behavior
-
-The bandwidth column shows **both download and upload** metrics. The arrow attaches to the specific metric being sorted:
-
-| Display | Sorting By | Direction | Meaning |
-|---------|------------|-----------|---------|
-| `Down↓/Up` | Download | Descending (↓) | **Highest downloads first** (bandwidth hogs) |
-| `Down↑/Up` | Download | Ascending (↑) | Lowest downloads first |
-| `Down/Up↓` | Upload | Descending (↓) | **Highest uploads first** (top uploaders) |
-| `Down/Up↑` | Upload | Ascending (↑) | Lowest uploads first |
-
-**Key points:**
-- The arrow (↑/↓) indicates **sort direction**, not bandwidth direction
-- `↓` = Descending = Highest values at top (10MB → 5MB → 1MB)
-- `↑` = Ascending = Lowest values at top (1MB → 5MB → 10MB)
-- Press `s` once on bandwidth to sort by downloads, press `s` again for uploads
-- Press `S` (Shift+s) to flip between high-to-low and low-to-high
-
-### Sort Behavior
-
-**Press `s` (lowercase) - Cycle Columns:**
-- Moves to the next column in left-to-right visual order
-- **Resets to default direction** for that column
-- Bandwidth columns default to descending (↓) to show highest values first
-- Text columns default to ascending (↑) for alphabetical order
-
-**Press `S` (Shift+s) - Toggle Direction:**
-- **Stays on current column**
-- Flips between ascending (↑) and descending (↓)
-- Useful for reversing sort order (e.g., finding smallest bandwidth users)
-
-**Press `s` multiple times to return to default:**
-- Cycling through all columns returns to the default chronological sort (by connection creation time)
-- No sort indicator is shown when in default mode
-
-### Sorting with Filtering
-
-Sorting works seamlessly with filtering:
-1. **Filter first**: Press `/` and enter your filter criteria
-2. **Then sort**: Press `s` to sort the filtered results
-3. **The sort persists**: Changing the filter keeps your sort order active
-
-Example workflow:
-```
-1. Press '/' and type 'firefox' to filter Firefox connections
-2. Press 's' until you see "Down↓/Up"
-3. Now viewing Firefox connections sorted by download bandwidth
-```
-
-### Examples
-
-**Find which process is downloading the most:**
-```
-1. Press 's' until "Down↓/Up" appears
-2. Top connection shows the highest download rate
-3. Look at the "Process" column to see which application
-```
-
-**Sort connections by remote destination:**
-```
-1. Press 's' until "Remote Address ↑" appears
-2. Connections are grouped by remote IP address
-3. Press 'S' to reverse order if needed
-```
-
-**Find idle connections (lowest bandwidth):**
-```
-1. Press 's' to cycle to "Down↓/Up"
-2. Press 'S' to toggle to "Down↑/Up" (ascending)
-3. Connections with lowest download bandwidth appear first
-```
-
-**Sort by application protocol:**
-```
-1. Press 's' until "Application / Host ↑" appears
-2. All HTTPS connections group together, DNS queries together, etc.
-3. Useful for finding all connections of a specific type
-```
-
-## Filtering
-
-Press `/` to enter filter mode. Type to filter connections in real-time, navigate with arrow keys while typing.
-
-**Basic search:**
-
-- `/google` - Find connections containing "google"
-- `/firefox` - Find Firefox connections
+<details>
+<summary><b>Advanced Filtering Examples</b></summary>
 
 **Keyword filters:**
-
-- `port:44` - Ports containing "44" (443, 8080, etc.)
+- `port:44` - Ports containing "44" (443, 8080, 4433)
 - `sport:80` - Source ports containing "80"
 - `dport:443` - Destination ports containing "443"
 - `src:192.168` - Source IPs containing "192.168"
@@ -605,470 +149,55 @@ Press `/` to enter filter mode. Type to filter connections in real-time, navigat
 - `process:ssh` - Process names containing "ssh"
 - `sni:api` - SNI hostnames containing "api"
 - `ssh:openssh` - SSH connections using OpenSSH
-- `state:established` - Filter connections by protocol state
+- `state:established` - Filter by protocol state
+- `proto:tcp` - Filter by protocol type
 
 **State filtering:**
+- `state:syn_recv` - Half-open connections (SYN flood detection)
+- `state:established` - Established connections only
+- `state:quic_connected` - Active QUIC connections
+- `state:dns_query` - DNS query connections
 
-Filter connections by their current protocol state (case-insensitive):
-
-⚠️ **Note:** State tracking accuracy varies by protocol. TCP states are most reliable, while UDP, QUIC, and other protocol states are derived from packet inspection and internal lifecycle management, which may not always reflect the true connection state.
-
-- `state:syn_recv` - Show half-open connections (useful for detecting SYN floods)
-- `state:established` - Show only established connections
-- `state:fin_wait` - Show connections in closing states
-- `state:quic_handshake` - Show QUIC connections during handshake
-- `state:dns_query` - Show DNS query connections
-- `state:udp_active` - Show active UDP connections
-
-**Available states:**
-- **TCP**: `SYN_SENT`, `SYN_RECV`, `ESTABLISHED`, `FIN_WAIT1`, `FIN_WAIT2`, `TIME_WAIT`, `CLOSE_WAIT`, `LAST_ACK`, `CLOSING`, `CLOSED`
-- **QUIC**: `QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`, `QUIC_DRAINING`, `QUIC_CLOSED` ⚠️ *Note: QUIC state tracking may be incomplete due to encrypted handshake packets and reassembly challenges*
-- **UDP**: `UDP_ACTIVE`, `UDP_IDLE`, `UDP_STALE`  
-- **DNS**: `DNS_QUERY`, `DNS_RESPONSE`
-- **SSH**: `BANNER`, `KEYEXCHANGE`, `AUTHENTICATION`, `ESTABLISHED` ⚠️ *Note: SSH state tracking is based on packet inspection and may not always reflect the true connection state*
-- **Other**: `ECHO_REQUEST`, `ECHO_REPLY`, `ARP_REQUEST`, `ARP_REPLY`
-
-**Examples:**
-
+**Combined examples:**
 - `sport:80 process:nginx` - Nginx connections from port 80
-- `dport:443 sni:google.com` - HTTPS connections to Google
-- `sport:443 state:syn_recv` - Half-open connections to port 443 (SYN flood detection)
-- `proto:tcp state:established` - All established TCP connections
-- `process:firefox state:quic_connected` - Active QUIC connections from Firefox
-- `dport:22 ssh:openssh` - SSH connections using OpenSSH
-- `state:established ssh:openssh` - Established SSH connections using OpenSSH
+- `dport:443 sni:google.com` - HTTPS to Google
+- `process:firefox state:quic_connected` - Firefox QUIC connections
+- `dport:22 ssh:openssh state:established` - Established OpenSSH connections
 
-Press `Esc` to clear filter.
+</details>
 
-## Logging
+<details>
+<summary><b>Connection Lifecycle & Visual Indicators</b></summary>
 
-Logging is disabled by default. When enabled with the `--log-level` option, RustNet creates timestamped log files in the `logs/` directory. Each session generates a new log file with the format `rustnet_YYYY-MM-DD_HH-MM-SS.log`.
+RustNet uses smart timeouts and visual warnings before removing connections:
 
-Log files contain:
+**Visual staleness indicators:**
+- **White**: Active (< 75% of timeout)
+- **Yellow**: Stale (75-90% of timeout)
+- **Red**: Critical (> 90% of timeout)
 
-- Application startup and shutdown events
-- Network interface information
-- Packet capture statistics
-- Connection state changes
-- Error diagnostics
+**Protocol-aware timeouts:**
+- **HTTP/HTTPS**: 10 minutes (supports keep-alive)
+- **SSH**: 30 minutes (long sessions)
+- **TCP active**: 10 minutes, idle: 5 minutes
+- **QUIC active**: 10 minutes, idle: 5 minutes
+- **DNS**: 30 seconds
+- **TCP CLOSED**: 5 seconds
 
-**To enable logging**, use the `--log-level` option:
+Example: An HTTP connection turns yellow at 7.5 min, red at 9 min, and is removed at 10 min.
 
-```bash
-# Enable info-level logging
-sudo rustnet --log-level info
+See [USAGE.md](USAGE.md) for complete timeout details.
 
-# Enable debug-level logging for troubleshooting
-sudo rustnet --log-level debug
-```
+</details>
 
-The `scripts/clear_old_logs.sh` script is provided for log cleanup.
+## Documentation
 
-## Architecture
-
-RustNet uses a multi-threaded architecture for packet processing:
-
-```
-┌─────────────────┐
-│ Packet Capture  │ ──packets──> Crossbeam Channel
-│   (libpcap)     │                      │
-└─────────────────┘                      │
-                                         ├──> ┌──────────────────┐
-                                         ├──> │ Packet Processor │ ──> DashMap
-                                         ├──> │    (Thread 0)    │      │
-                                         └──> │    (Thread N)    │      │
-                                              └──────────────────┘      │
-                                                                        │
-┌─────────────────┐                                                     │
-│Process Enrichment│ ────────────────────────────────────────────> DashMap
-│  (Platform API) │                                                     │
-└─────────────────┘                                                     │
-                                                                        │
-┌─────────────────┐                                                     │
-│Snapshot Provider│ <─────────────────────────────────────────── DashMap
-└─────────────────┘                                                     │
-         │                                                              │
-         └──> RwLock<Vec<Connection>> (for UI)                          │
-                                                                        │
-┌─────────────────┐                                                     │
-│ Cleanup Thread  │ <─────────────────────────────────────────── DashMap
-└─────────────────┘
-```
-
-### Key Components
-
-1. **Packet Capture Thread**: Uses libpcap to capture raw packets from the network interface
-2. **Packet Processors**: Multiple worker threads parse packets and perform DPI analysis
-3. **Process Enrichment**: Platform-specific APIs to associate connections with processes
-4. **Snapshot Provider**: Creates consistent snapshots for the UI at regular intervals
-5. **Cleanup Thread**: Removes inactive connections using smart, protocol-aware timeouts:
-   - **TCP Established**: 10 minutes (active) / 5 minutes (idle)
-   - **HTTP/HTTPS**: 10 minutes (supports keep-alive)
-   - **SSH**: 30 minutes (long-lived sessions)
-   - **QUIC**: 10 minutes (active) / 5 minutes (idle)
-   - **DNS**: 30 seconds (short-lived queries)
-   - **TCP Closed**: 5 seconds (rapid cleanup)
-6. **Rate Refresh Thread**: Updates bandwidth calculations every second with gentle decay
-7. **DashMap**: Concurrent hashmap for storing connection state
-
-## Dependencies
-
-RustNet is built with the following key dependencies:
-
-- **ratatui**: Terminal user interface framework with full widget support
-- **crossterm**: Cross-platform terminal manipulation
-- **pcap**: Packet capture library bindings
-- **pnet_datalink**: Network interface enumeration
-- **dashmap**: Concurrent hashmap
-- **crossbeam**: Multi-threading utilities and channels
-- **dns-lookup**: DNS resolution capabilities
-- **clap**: Command-line argument parsing with derive features
-- **simplelog**: Flexible logging framework
-- **anyhow**: Error handling and context
-- **arboard**: Clipboard access for copying addresses
-- **log**: Logging facade
-- **num_cpus**: CPU core detection for threading
-- **simple-logging**: Additional logging utilities
-- **chrono**: Date and time handling
-- **ring**: Cryptographic operations
-- **aes**: AES encryption support
-- **procfs** (Linux): Process information from /proc filesystem
-
-## Platform-Specific Implementation
-
-### Process Lookup
-
-RustNet uses platform-specific APIs to associate network connections with processes:
-
-- **Linux**: Parses `/proc/net/tcp`, `/proc/net/udp`, and `/proc/<pid>/fd/` to find socket inodes. With eBPF enabled, uses kernel probes for enhanced performance.
-- **macOS**: Uses PKTAP (Packet Tap) headers when available for process identification from packet metadata, with fallback to `lsof` system commands for process-socket associations. PKTAP extracts process information directly from kernel packet headers when supported.
-  - **Important**: PKTAP requires `sudo` even with `wireshark-chmodbpf` installed, as it accesses a privileged kernel interface
-  - Without `sudo`: Falls back to `lsof` for process detection (slower but functional)
-  - The TUI displays which detection method is in use in the Statistics panel
-- **Windows**: Uses Windows IP Helper API (`GetExtendedTcpTable` and `GetExtendedUdpTable`) to retrieve TCP/UDP connection tables with process IDs, then resolves process names using `OpenProcess` and `QueryFullProcessImageNameW`. Supports both IPv4 and IPv6 connections.
-
-### Network Interfaces
-
-The tool automatically detects and lists available network interfaces using platform-specific methods, falling back to pcap's device enumeration when native methods are unavailable.
-
-## Performance Considerations
-
-- **Multi-threaded Processing**: Packet processing is distributed across multiple threads (up to 4 by default)
-- **Concurrent Data Structures**: Uses DashMap for concurrent access with fine-grained locking
-- **Batch Processing**: Packets are processed in batches to improve cache efficiency
-- **Selective DPI**: Deep packet inspection can be disabled with `--no-dpi` for lower overhead
-- **Configurable Intervals**: Adjust refresh rates based on your needs
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Permission Denied**: Packet capture requires elevated privileges. Run with `sudo` or set capabilities.
-
-2. **No Connections Shown**:
-   - Check if the correct network interface is selected
-   - Verify packet capture permissions
-   - Try showing localhost connections with `--show-localhost` (filtered by default)
-
-3. **High CPU Usage**:
-   - Increase the refresh interval: `--refresh-interval 2000`
-   - Disable DPI if not needed: `--no-dpi`
-   - Check log files for excessive packet rates
-
-4. **Process Names Not Showing**:
-   - On Linux, ensure `/proc` is accessible
-   - Some processes may require root privileges to identify
-
-### Debug Mode
-
-Enable debug logging to troubleshoot issues:
-
-```bash
-sudo rustnet --log-level debug
-```
-
-Check the generated log file in the `logs/` directory for detailed diagnostics. Note that logging is disabled by default, so you must explicitly enable it with the `--log-level` option.
-
-## Security Considerations
-
-- RustNet requires privileged access for packet capture
-- The tool only monitors traffic; it does not modify or block connections
-- Log files may contain sensitive connection information
-- No data is transmitted outside your system
-
-## Permissions
-
-RustNet requires elevated privileges to capture network packets because accessing network interfaces for packet capture is a privileged operation on all modern operating systems. This section explains how to properly grant these permissions on different platforms.
-
-### Why Permissions Are Required
-
-Network packet capture requires access to:
-
-- **Raw sockets** for low-level network access
-- **Network interfaces** in promiscuous mode
-- **BPF (Berkeley Packet Filter) devices** on macOS/BSD systems
-- **Network namespaces** on some Linux configurations
-
-These capabilities are restricted to prevent malicious software from intercepting network traffic.
-
-### macOS Permission Setup
-
-On macOS, packet capture requires access to BPF (Berkeley Packet Filter) devices located at `/dev/bpf*`.
-
-#### Option 1: Run with sudo (Simplest)
-
-```bash
-# Build and run with sudo
-cargo build --release
-sudo ./target/release/rustnet
-```
-
-#### Option 2: BPF Group Access (Recommended)
-
-Add your user to the `access_bpf` group for passwordless packet capture:
-
-**Using Wireshark's ChmodBPF (For basic packet capture):**
-
-```bash
-# Install Wireshark's BPF permission helper
-brew install --cask wireshark-chmodbpf
-
-# Log out and back in for group changes to take effect
-# Then run rustnet without sudo:
-rustnet  # Uses lsof for process detection (slower)
-
-# For PKTAP support with process metadata from packet headers, use sudo:
-sudo rustnet  # Uses PKTAP for faster process detection
-```
-
-**Note**: `wireshark-chmodbpf` grants access to `/dev/bpf*` for packet capture, but **PKTAP** is a separate privileged kernel interface that requires root privileges regardless of BPF permissions. The TUI will display which detection method is active ("pktap" with sudo, or "lsof" without).
-
-**Manual BPF Group Setup:**
-
-```bash
-# Create the access_bpf group (if it doesn't exist)
-sudo dseditgroup -o create access_bpf
-
-# Add your user to the group
-sudo dseditgroup -o edit -a $USER -t user access_bpf
-
-# Set permissions on BPF devices (this needs to be done after each reboot)
-sudo chmod g+rw /dev/bpf*
-sudo chgrp access_bpf /dev/bpf*
-
-# Log out and back in for group membership to take effect
-```
-
-#### Option 3: Homebrew Installation
-
-If installed via Homebrew, the formula will provide detailed setup instructions:
-
-```bash
-brew tap domcyrus/rustnet
-brew install rustnet
-# Follow the caveats displayed after installation
-```
-
-### Linux Permission Setup
-
-On Linux, packet capture requires `CAP_NET_RAW` and `CAP_NET_ADMIN` capabilities.
-
-#### Option 1: Run with sudo (Simplest)
-
-```bash
-# Build and run with sudo
-cargo build --release
-sudo ./target/release/rustnet
-```
-
-#### Option 2: Grant Capabilities (Recommended)
-
-Grant specific network capabilities to the binary without full root privileges:
-
-**For source builds:**
-
-```bash
-# Build the binary first
-cargo build --release
-
-# Grant network capabilities to the binary
-sudo setcap cap_net_raw,cap_net_admin=eip ./target/release/rustnet
-
-# Now run without sudo
-./target/release/rustnet
-```
-
-**For cargo-installed binaries:**
-
-```bash
-# If installed via cargo install rustnet-monitor
-sudo setcap cap_net_raw,cap_net_admin=eip ~/.cargo/bin/rustnet
-
-# Now run without sudo
-rustnet
-```
-
-**For experimental eBPF-enabled builds (enhanced Linux performance):**
-
-eBPF is an experimental feature that provides lower-overhead process identification using kernel probes:
-
-```bash
-# Build with eBPF support
-cargo build --release --features ebpf
-
-# Try modern capabilities first (Linux 5.8+)
-sudo setcap 'cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
-./target/release/rustnet
-
-# If eBPF fails to load, add CAP_SYS_ADMIN (may be required depending on kernel version)
-sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
-./target/release/rustnet
-# Check TUI Statistics panel - should show "Process Detection: eBPF + procfs"
-```
-
-**Capability requirements for eBPF:**
-
-Base capabilities (always required):
-- `CAP_NET_RAW` - Raw socket access for packet capture
-- `CAP_NET_ADMIN` - Network administration
-
-eBPF-specific capabilities (Linux 5.8+):
-- `CAP_BPF` - BPF program loading and map operations
-- `CAP_PERFMON` - Performance monitoring and tracing operations
-
-Additional capability (may be required):
-- `CAP_SYS_ADMIN` - Some kernel versions or configurations may still require this for kprobe attachment, even with CAP_BPF and CAP_PERFMON available. Requirements vary by kernel version and configuration.
-
-**Fallback behavior**: If eBPF cannot load (e.g., insufficient capabilities, incompatible kernel), the application automatically uses procfs-only mode. The TUI Statistics panel displays which detection method is active:
-- `Process Detection: eBPF + procfs` - eBPF successfully loaded
-- `Process Detection: procfs` - Using procfs fallback
-
-**Note:** eBPF support is experimental and may have limitations with process name display (see [eBPF Enhanced Process Identification](#ebpf-enhanced-process-identification-experimental)).
-
-**For system-wide installation:**
-
-```bash
-# If installed via package manager or copied to /usr/local/bin
-sudo setcap cap_net_raw,cap_net_admin=eip /usr/local/bin/rustnet
-rustnet
-```
-
-#### Option 3: Homebrew on Linux
-
-```bash
-# Install via Homebrew
-brew install domcyrus/rustnet/rustnet
-
-# Grant capabilities to the Homebrew-installed binary
-sudo setcap cap_net_raw,cap_net_admin=eip $(brew --prefix)/bin/rustnet
-
-# Run without sudo
-rustnet
-```
-
-### Windows Permission Setup
-
-Windows support is currently limited, but when available:
-
-- RustNet will require **Administrator privileges**
-- Must install **WinPcap** or **Npcap** for packet capture
-- Run Command Prompt or PowerShell "As Administrator"
-
-### Verifying Permissions
-
-To verify that permissions are set up correctly:
-
-#### macOS
-
-```bash
-# Check BPF device permissions
-ls -la /dev/bpf*
-
-# Check group membership
-groups | grep access_bpf
-
-# Test without sudo
-rustnet --help
-```
-
-#### Linux
-
-```bash
-# Check capabilities on the binary
-# For source builds:
-getcap ./target/release/rustnet
-
-# For cargo-installed binaries:
-getcap ~/.cargo/bin/rustnet
-
-# For system-wide installations:
-getcap $(which rustnet)
-
-# Should show: cap_net_raw,cap_net_admin=eip
-
-# Test without sudo
-rustnet --help
-```
-
-### Troubleshooting Permission Issues
-
-#### "Permission denied" errors
-
-**On macOS:**
-
-- Ensure you're in the `access_bpf` group: `groups | grep access_bpf`
-- Check BPF device permissions: `ls -la /dev/bpf0`
-- Try running with sudo to confirm it's a permission issue
-- Log out and back in after group changes
-
-**On Linux:**
-
-- Check if capabilities are set: `getcap $(which rustnet)` or `getcap ~/.cargo/bin/rustnet`
-- Verify libpcap is installed: `ldconfig -p | grep pcap`
-- Try running with sudo to confirm it's a permission issue: `sudo $(which rustnet)`
-- Some systems require `CAP_NET_BIND_SERVICE` as well
-
-#### "No suitable capture interfaces found"
-
-- Check available interfaces: `ip link show` (Linux) or `ifconfig` (macOS)
-- Try specifying an interface explicitly: `rustnet -i eth0`
-- Ensure the interface is up and has an IP address
-- Some virtual interfaces may not support packet capture
-
-#### "Operation not permitted" with capabilities set
-
-- Capabilities may have been removed by system updates
-- Re-apply capabilities: `sudo setcap cap_net_raw,cap_net_admin=eip $(which rustnet)`
-- Some filesystems don't support extended attributes (capabilities)
-- Try copying the binary to a different filesystem (e.g., from NFS to local disk)
-
-### Security Best Practices
-
-1. **Use capabilities instead of sudo** when possible (Linux)
-2. **Use group-based access** instead of running as root (macOS)
-3. **Regularly audit** which users have packet capture privileges
-4. **Consider network segmentation** if running on production systems
-5. **Monitor log files** for unauthorized usage
-6. **Remove capabilities** when RustNet is no longer needed:
-
-   ```bash
-   # Linux: Remove capabilities
-   sudo setcap -r /path/to/rustnet
-
-   # macOS: Remove from group
-   sudo dseditgroup -o edit -d $USER -t user access_bpf
-   ```
-
-### Integration with System Monitoring
-
-For production environments, consider:
-
-- **Audit logging** of packet capture access
-- **Network monitoring policies** and compliance requirements
-- **User access reviews** for privileged network access
-- **Automated capability management** in configuration management systems
-
-This permissions setup ensures RustNet can capture packets while maintaining security best practices and principle of least privilege.
+- **[INSTALL.md](INSTALL.md)** - Detailed installation instructions for all platforms, permission setup, and troubleshooting
+- **[USAGE.md](USAGE.md)** - Complete usage guide including command-line options, filtering, sorting, and logging
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture, platform implementations, and performance details
+- **[ROADMAP.md](ROADMAP.md)** - Planned features and future improvements
+- **[RELEASE.md](RELEASE.md)** - Release process for maintainers
+- **[EBPF_BUILD.md](EBPF_BUILD.md)** - eBPF build instructions and requirements
 
 ## Contributing
 
@@ -1080,14 +209,6 @@ Contributions are welcome! Please:
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## For Maintainers
-
-For detailed information about the release process, see [RELEASE.md](RELEASE.md).
-
-## Roadmap
-
-For planned features and future improvements, see [ROADMAP.md](ROADMAP.md).
-
 ## License
 
 This project is licensed under the Apache License, Version 2.0 - see the [LICENSE](LICENSE) file for details.
@@ -1098,3 +219,14 @@ This project is licensed under the Apache License, Version 2.0 - see the [LICENS
 - Packet capture powered by [libpcap](https://www.tcpdump.org/)
 - Inspired by tools like `tshark/wireshark/tcpdump`, `sniffnet`, `netstat`, `ss`, and `iftop`
 - Some code is vibe coded (OMG) / may the LLM gods be with you
+
+---
+
+## Documentation Moved
+
+Some sections have been moved to dedicated files for better organization:
+
+- **Permissions Setup**: Now in [INSTALL.md - Permissions Setup](INSTALL.md#permissions-setup)
+- **Installation Instructions**: Now in [INSTALL.md](INSTALL.md)
+- **Detailed Usage**: Now in [USAGE.md](USAGE.md)
+- **Architecture Details**: Now in [ARCHITECTURE.md](ARCHITECTURE.md)

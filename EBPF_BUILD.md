@@ -80,14 +80,14 @@ After building with eBPF support, test that it works correctly:
 # Option 1: Run with sudo (always works)
 sudo cargo run --features ebpf
 
-# Option 2: Set capabilities (Linux only, see README.md Permissions section)
+# Option 2: Set capabilities (Linux only, see INSTALL.md Permissions section)
 sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
 ./target/release/rustnet
 
 # Check the TUI Statistics panel to verify it shows "Process Detection: eBPF + procfs"
 ```
 
-**Note**: eBPF kprobe programs require specific Linux capabilities. See the main [README.md Permissions section](README.md#permissions) for detailed capability requirements. The required capabilities may vary by kernel version.
+**Note**: eBPF kprobe programs require specific Linux capabilities. See [INSTALL.md - Permissions Setup](INSTALL.md#permissions-setup) for detailed capability requirements. The required capabilities may vary by kernel version.
 
 ## Generating vmlinux.h from Your Local Kernel (Optional)
 
@@ -131,7 +131,7 @@ This is typically not needed since the bundled headers work across kernel versio
 - Check if BTF is available: `ls /sys/kernel/btf/vmlinux`
 
 **"Permission denied" when loading eBPF**:
-- See the [README.md Permissions section](README.md#permissions) for capability setup
+- See [INSTALL.md - Permissions Setup](INSTALL.md#permissions-setup) for capability setup
 - Required capabilities: `CAP_NET_RAW`, `CAP_NET_ADMIN`, `CAP_BPF`, `CAP_PERFMON`
 - Some kernels may also require `CAP_SYS_ADMIN`
 
