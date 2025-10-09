@@ -18,6 +18,7 @@ fn main() -> Result<()> {
 
     println!("cargo:rerun-if-changed=src/network/platform/linux_ebpf/programs/");
     println!("cargo:rerun-if-changed=src/cli.rs");
+    println!("cargo:rerun-if-changed=resources/ebpf/vmlinux/");
 
     Ok(())
 }
@@ -149,70 +150,22 @@ fn download_windows_npcap_sdk() -> Result<()> {
 }
 
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
-fn download_vmlinux_header(arch: &str) -> Result<PathBuf> {
-    use std::fs;
-    use std::io::{Read, Write};
+fn get_vmlinux_header(arch: &str) -> Result<PathBuf> {
+    // Use bundled vmlinux.h from resources directory
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    let bundled_dir = manifest_dir.join("resources/ebpf/vmlinux").join(arch);
+    let bundled_file = bundled_dir.join("vmlinux.h");
 
-    // Cache directory in OUT_DIR
-    let out_dir = PathBuf::from(env::var("OUT_DIR")?);
-    let cache_dir = out_dir.join("vmlinux_headers").join(arch);
-    let vmlinux_file = cache_dir.join("vmlinux.h");
-
-    // Return cached version if it exists
-    if vmlinux_file.exists() {
-        println!("cargo:warning=Using cached vmlinux.h for {}", arch);
-        return Ok(cache_dir);
+    if bundled_file.exists() {
+        println!("cargo:warning=Using bundled vmlinux.h for {}", arch);
+        Ok(bundled_dir)
+    } else {
+        Err(anyhow::anyhow!(
+            "Bundled vmlinux.h not found for architecture '{}'. Expected at: {}",
+            arch,
+            bundled_file.display()
+        ))
     }
-
-    // Download from libbpf/vmlinux.h repository
-    // Note: vmlinux.h is a symlink, so we first download it to get the target filename
-    let symlink_url = format!(
-        "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/{}/vmlinux.h",
-        arch
-    );
-
-    println!("cargo:warning=Downloading vmlinux.h for {} from {}", arch, symlink_url);
-
-    // Create cache directory
-    fs::create_dir_all(&cache_dir)?;
-
-    // Download the symlink to get the actual filename
-    let response = ureq::get(&symlink_url)
-        .call()
-        .map_err(|e| anyhow::anyhow!("Failed to download vmlinux.h symlink: {}", e))?;
-
-    let mut symlink_content = String::new();
-    response.into_reader()
-        .read_to_string(&mut symlink_content)
-        .map_err(|e| anyhow::anyhow!("Failed to read symlink: {}", e))?;
-
-    // The symlink content is just the target filename, e.g. "vmlinux_6.14.h"
-    let target_filename = symlink_content.trim();
-
-    // Download the actual vmlinux header file
-    let actual_url = format!(
-        "https://raw.githubusercontent.com/libbpf/vmlinux.h/main/include/{}/{}",
-        arch, target_filename
-    );
-
-    println!("cargo:warning=Following symlink to {}", target_filename);
-
-    let response = ureq::get(&actual_url)
-        .call()
-        .map_err(|e| anyhow::anyhow!("Failed to download {}: {}", target_filename, e))?;
-
-    let mut content = Vec::new();
-    response.into_reader()
-        .read_to_end(&mut content)
-        .map_err(|e| anyhow::anyhow!("Failed to read response: {}", e))?;
-
-    // Write to cache
-    let mut file = fs::File::create(&vmlinux_file)?;
-    file.write_all(&content)?;
-
-    println!("cargo:warning=Downloaded and cached vmlinux.h for {}", arch);
-
-    Ok(cache_dir)
 }
 
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
@@ -240,9 +193,9 @@ fn compile_ebpf_programs() {
         _ => ("-D__TARGET_ARCH_x86", "x86"), // fallback
     };
 
-    // Download architecture-specific vmlinux.h if not cached
-    let vmlinux_include_path = download_vmlinux_header(vmlinux_arch)
-        .expect("Failed to download vmlinux.h");
+    // Get bundled architecture-specific vmlinux.h
+    let vmlinux_include_path = get_vmlinux_header(vmlinux_arch)
+        .expect("Failed to locate bundled vmlinux.h");
 
     SkeletonBuilder::new()
         .source(src)
