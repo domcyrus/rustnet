@@ -75,7 +75,6 @@ windows = { version = "0.59", features = [
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
 libbpf-cargo = "0.25"
-ureq = { version = "2.10", default-features = false, features = ["tls"] }
 
 [features]
 default = []

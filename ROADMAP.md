@@ -24,13 +24,11 @@ The experimental eBPF support provides efficient process identification but has 
 ### Current Limitations
 - **Process Names Limited to 16 Characters**: Uses kernel `comm` field, causing truncation (e.g., "Firefox" → "Socket Thread")
 - **Thread Names vs Process Names**: Shows thread command names instead of full executable names
-- **Minimal vmlinux.h Maintenance**: Current approach requires manual updates when adding new kernel structure access
 
 ### Planned Improvements
 - **Hybrid eBPF + Procfs Approach**: Use eBPF for connection tracking, selectively lookup full process names via procfs for better accuracy
 - **Full Executable Path Resolution**: Investigate accessing full process executable path from eBPF programs
 - **Better Process-Thread Mapping**: Improve mapping from thread IDs to parent process information
-- **vmlinux.h Strategy**: Consider switching to full auto-generated vmlinux.h for easier maintenance vs current minimal approach
 - **Enhanced BTF Support**: Better compatibility across different kernel versions and distributions
 - **Performance Optimizations**: Reduce eBPF map lookups and improve connection-to-process matching efficiency
 

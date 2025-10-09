@@ -24,6 +24,9 @@ COPY Cargo.toml Cargo.lock ./
 # Copy build script for eBPF compilation
 COPY build.rs ./
 
+# Copy bundled eBPF vmlinux headers (required for eBPF compilation)
+COPY resources/ebpf/vmlinux ./resources/ebpf/vmlinux
+
 # Copy source code
 COPY src ./src
 COPY assets/services ./assets/services
