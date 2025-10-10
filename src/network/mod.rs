@@ -1,10 +1,10 @@
 pub mod capture;
 pub mod dpi;
+pub mod link_layer;
 pub mod merge;
 pub mod parser;
-#[cfg(target_os = "macos")]
-pub mod pktap;
 pub mod platform;
 pub mod privileges;
+pub mod protocol;
 pub mod services;
 pub mod types;

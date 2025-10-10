@@ -102,7 +102,7 @@ fn find_best_device() -> Result<Device> {
                 !d.name.starts_with("awdl") &&   // Skip Apple Wireless Direct
                 !d.name.starts_with("llw") &&    // Skip Low latency WLAN
                 !d.name.starts_with("bridge") && // Skip bridges
-                !d.name.starts_with("utun") &&   // Skip tunnels
+                // TUN/TAP interfaces now supported - removed utun/tun/tap exclusion
                 !d.name.starts_with("vmnet") &&  // Skip VM interfaces
                 // Note: 'any' is excluded here because it's not a real interface
                 // Users can still specify '-i any' explicitly on Linux
@@ -199,10 +199,26 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     log::info!("Setting up regular packet capture");
     let device = find_capture_device(&config.interface)?;
 
+    // Check if this is a TUN/TAP interface
+    use crate::network::link_layer::tun_tap;
+    let is_tunnel = tun_tap::is_tunnel_interface(&device.name);
+    let tunnel_type = if tun_tap::is_tun_interface(&device.name) {
+        "TUN (Layer 3)"
+    } else if tun_tap::is_tap_interface(&device.name) {
+        "TAP (Layer 2)"
+    } else {
+        "N/A"
+    };
+
     log::info!(
-        "Setting up capture on device: {} ({})",
+        "Setting up capture on device: {} ({}){}",
         device.name,
-        device.desc.as_deref().unwrap_or("no description")
+        device.desc.as_deref().unwrap_or("no description"),
+        if is_tunnel {
+            format!(" [Tunnel: {}]", tunnel_type)
+        } else {
+            String::new()
+        }
     );
 
     let device_name = device.name.clone();
@@ -322,7 +338,7 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                         || device.name.starts_with("awdl")
                         || device.name.starts_with("llw")
                         || device.name.starts_with("bridge")
-                        || device.name.starts_with("utun")
+                        // TUN/TAP interfaces now supported - removed utun/tun/tap check
                         || device.name.starts_with("vmnet")
                         || (device.name == "any" && !cfg!(target_os = "linux"))
                         || device.flags.is_loopback();
@@ -381,11 +397,23 @@ impl PacketReader {
     /// Get capture statistics
     pub fn stats(&mut self) -> Result<CaptureStats> {
         let stats = self.capture.stats()?;
-        Ok(CaptureStats {
+        let capture_stats = CaptureStats {
             received: stats.received,
             dropped: stats.dropped,
             if_dropped: stats.if_dropped,
-        })
+        };
+
+        // Log dropped packets if any occurred
+        if capture_stats.total_dropped() > 0 {
+            log::debug!(
+                "Total {} packets dropped (kernel: {}, interface: {})",
+                capture_stats.total_dropped(),
+                capture_stats.dropped,
+                capture_stats.if_dropped
+            );
+        }
+
+        Ok(capture_stats)
     }
 }
 
@@ -394,9 +422,15 @@ impl PacketReader {
 pub struct CaptureStats {
     pub received: u32,
     pub dropped: u32,
-    #[allow(dead_code)]
-    // TODO: implement interface-specific dropped packets
+    /// Interface-level dropped packets (platform-specific)
     pub if_dropped: u32,
+}
+
+impl CaptureStats {
+    /// Get total packets dropped (both kernel and interface level)
+    pub fn total_dropped(&self) -> u32 {
+        self.dropped.saturating_add(self.if_dropped)
+    }
 }
 
 #[cfg(test)]

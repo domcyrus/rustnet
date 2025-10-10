@@ -735,9 +735,14 @@ fn draw_stats_panel(
         .unwrap_or_else(|| "Unknown".to_string());
 
     let process_detection_method = app.get_process_detection_method();
+    let (link_layer_type, is_tunnel) = app.get_link_layer_info();
 
     let conn_stats_text: Vec<Line> = vec![
         Line::from(format!("Interface: {}", interface_name)),
+        Line::from(format!("Link Layer: {}{}",
+            link_layer_type,
+            if is_tunnel { " (Tunnel)" } else { "" }
+        )),
         Line::from(format!("Process Detection: {}", process_detection_method)),
         Line::from(""),
         Line::from(format!("TCP Connections: {}", tcp_count)),

@@ -791,6 +791,29 @@ impl App {
             .unwrap_or_else(|_| String::from("unknown"))
     }
 
+    /// Get link layer information for the current interface
+    /// Returns (link_layer_type_name, is_tunnel)
+    pub fn get_link_layer_info(&self) -> (String, bool) {
+        use crate::network::link_layer::LinkLayerType;
+
+        if let Ok(linktype_opt) = self.linktype.read() {
+            if let Some(dlt) = *linktype_opt {
+                // Get interface name to detect TUN/TAP more accurately
+                let interface_name = self.current_interface
+                    .read()
+                    .ok()
+                    .and_then(|opt| opt.clone())
+                    .unwrap_or_default();
+
+                let link_type = LinkLayerType::from_dlt_and_name(dlt, &interface_name);
+                let type_name = format!("{:?}", link_type);
+                let is_tunnel = link_type.is_tunnel();
+                return (type_name, is_tunnel);
+            }
+        }
+        (String::from("Unknown"), false)
+    }
+
     /// Stop all threads gracefully
     pub fn stop(&self) {
         info!("Stopping application");
