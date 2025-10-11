@@ -3,6 +3,9 @@ use anyhow::Result;
 use crossbeam::channel::{self, Receiver, Sender};
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
+use serde_json::json;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
@@ -27,6 +30,73 @@ use std::sync::{LazyLock, Mutex};
 static QUIC_CONNECTION_MAPPING: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Helper function to log connection events as JSON
+fn log_connection_event(json_log_path: &str, event_type: &str, conn: &Connection, duration_secs: Option<u64>) {
+    // Build JSON object based on event type
+    let mut event = json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "event": event_type,
+        "protocol": conn.protocol.to_string(),
+        "source_ip": conn.local_addr.ip().to_string(),
+        "source_port": conn.local_addr.port(),
+        "destination_ip": conn.remote_addr.ip().to_string(),
+        "destination_port": conn.remote_addr.port(),
+    });
+
+    // Add DPI information if available
+    if let Some(dpi) = &conn.dpi_info {
+        event["dpi_protocol"] = json!(dpi.application.to_string());
+
+        // Extract domain/hostname from DPI info
+        match &dpi.application {
+            ApplicationProtocol::Dns(info) => {
+                if let Some(domain) = &info.query_name {
+                    event["dpi_domain"] = json!(domain);
+                }
+            }
+            ApplicationProtocol::Http(info) => {
+                if let Some(host) = &info.host {
+                    event["dpi_domain"] = json!(host);
+                }
+            }
+            ApplicationProtocol::Https(info) => {
+                if let Some(tls_info) = &info.tls_info
+                    && let Some(sni) = &tls_info.sni
+                {
+                    event["dpi_domain"] = json!(sni);
+                }
+            }
+            ApplicationProtocol::Quic(info) => {
+                if let Some(tls_info) = &info.tls_info
+                    && let Some(sni) = &tls_info.sni
+                {
+                    event["dpi_domain"] = json!(sni);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Add connection statistics for closed events
+    if event_type == "connection_closed" {
+        event["bytes_sent"] = json!(conn.bytes_sent);
+        event["bytes_received"] = json!(conn.bytes_received);
+        if let Some(duration) = duration_secs {
+            event["duration_secs"] = json!(duration);
+        }
+    }
+
+    // Write to file
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(json_log_path)
+        && let Ok(json_str) = serde_json::to_string(&event)
+    {
+        let _ = writeln!(file, "{}", json_str);
+    }
+}
+
 /// Application configuration
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -40,6 +110,8 @@ pub struct Config {
     pub enable_dpi: bool,
     /// BPF filter for packet capture
     pub bpf_filter: Option<String>,
+    /// JSON log file path for connection events
+    pub json_log_file: Option<String>,
 }
 
 impl Default for Config {
@@ -50,6 +122,7 @@ impl Default for Config {
             refresh_interval: 1000,
             enable_dpi: true,
             bpf_filter: None, // No filter by default to see all packets
+            json_log_file: None,
         }
     }
 }
@@ -321,6 +394,7 @@ impl App {
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let linktype_storage = Arc::clone(&self.linktype);
+        let json_log_path = self.config.json_log_file.clone();
         let parser_config = ParserConfig {
             enable_dpi: self.config.enable_dpi,
             ..Default::default()
@@ -361,7 +435,7 @@ impl App {
                 let mut parsed_count = 0;
                 for packet_data in &batch {
                     if let Some(parsed) = parser.parse_packet(packet_data) {
-                        update_connection(&connections, parsed, &stats);
+                        update_connection(&connections, parsed, &stats, &json_log_path);
                         parsed_count += 1;
                     }
                 }
@@ -679,6 +753,7 @@ impl App {
     /// Start cleanup thread to remove old connections
     fn start_cleanup_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
+        let json_log_path = self.config.json_log_file.clone();
 
         thread::spawn(move || {
             info!("Cleanup thread started");
@@ -703,6 +778,18 @@ impl App {
                     if !should_keep {
                         removed += 1;
                         removed_keys.push(key.clone());
+
+                        // Calculate connection duration
+                        let duration_secs = now
+                            .duration_since(conn.created_at)
+                            .map(|d| d.as_secs())
+                            .ok();
+
+                        // Log connection_closed event if JSON logging is enabled
+                        if let Some(log_path) = &json_log_path {
+                            log_connection_event(log_path, "connection_closed", conn, duration_secs);
+                        }
+
                         // Log cleanup reason for debugging
                         let conn_timeout = conn.get_timeout();
                         let idle_time = now.duration_since(conn.last_activity).unwrap_or_default();
@@ -829,6 +916,7 @@ fn update_connection(
     connections: &DashMap<String, Connection>,
     parsed: ParsedPacket,
     _stats: &AppStats,
+    json_log_path: &Option<String>,
 ) {
     let mut key = parsed.connection_key.clone();
     let now = SystemTime::now();
@@ -863,7 +951,14 @@ fn update_connection(
         })
         .or_insert_with(|| {
             debug!("New connection detected: {}", key);
-            create_connection_from_packet(&parsed, now)
+            let conn = create_connection_from_packet(&parsed, now);
+
+            // Log new connection event if JSON logging is enabled
+            if let Some(log_path) = json_log_path {
+                log_connection_event(log_path, "new_connection", &conn, None);
+            }
+
+            conn
         });
 }
 
