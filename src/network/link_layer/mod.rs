@@ -38,9 +38,9 @@ pub enum LinkLayerType {
     RawIP,
     LinuxSLL,
     LinuxSLL2,
-    PKTAP,
-    TUN,
-    TAP,
+    Pktap,
+    Tun,
+    Tap,
     Unknown,
 }
 
@@ -54,7 +54,7 @@ impl LinkLayerType {
             }
             dlt::LINUX_SLL => LinkLayerType::LinuxSLL,
             dlt::LINUX_SLL2 => LinkLayerType::LinuxSLL2,
-            dlt::PKTAP | dlt::PKTAP_STANDARD => LinkLayerType::PKTAP,
+            dlt::PKTAP | dlt::PKTAP_STANDARD => LinkLayerType::Pktap,
             _ => LinkLayerType::Unknown,
         }
     }
@@ -68,18 +68,18 @@ impl LinkLayerType {
     ///
     /// ```rust,ignore
     /// let link_type = LinkLayerType::from_dlt_and_name(12, "tun0");
-    /// assert!(matches!(link_type, LinkLayerType::TUN));
+    /// assert!(matches!(link_type, LinkLayerType::Tun));
     ///
     /// let link_type = LinkLayerType::from_dlt_and_name(1, "tap0");
-    /// assert!(matches!(link_type, LinkLayerType::TAP));
+    /// assert!(matches!(link_type, LinkLayerType::Tap));
     /// ```
     pub fn from_dlt_and_name(dlt: i32, interface_name: &str) -> Self {
         // Check if this is a TUN/TAP interface by name
         if tun_tap::is_tun_interface(interface_name) {
-            return LinkLayerType::TUN;
+            return LinkLayerType::Tun;
         }
         if tun_tap::is_tap_interface(interface_name) {
-            return LinkLayerType::TAP;
+            return LinkLayerType::Tap;
         }
 
         // Otherwise, use DLT-based detection
@@ -88,7 +88,7 @@ impl LinkLayerType {
 
     /// Check if this link type represents a TUN/TAP interface
     pub fn is_tunnel(&self) -> bool {
-        matches!(self, LinkLayerType::TUN | LinkLayerType::TAP)
+        matches!(self, LinkLayerType::Tun | LinkLayerType::Tap)
     }
 }
 
@@ -103,8 +103,8 @@ mod tests {
         assert_eq!(LinkLayerType::from_dlt(dlt::NULL), LinkLayerType::RawIP);
         assert_eq!(LinkLayerType::from_dlt(dlt::LINUX_SLL), LinkLayerType::LinuxSLL);
         assert_eq!(LinkLayerType::from_dlt(dlt::LINUX_SLL2), LinkLayerType::LinuxSLL2);
-        assert_eq!(LinkLayerType::from_dlt(dlt::PKTAP), LinkLayerType::PKTAP);
-        assert_eq!(LinkLayerType::from_dlt(dlt::PKTAP_STANDARD), LinkLayerType::PKTAP);
+        assert_eq!(LinkLayerType::from_dlt(dlt::PKTAP), LinkLayerType::Pktap);
+        assert_eq!(LinkLayerType::from_dlt(dlt::PKTAP_STANDARD), LinkLayerType::Pktap);
         assert_eq!(LinkLayerType::from_dlt(dlt::LINKTYPE_RAW), LinkLayerType::RawIP);
         assert_eq!(LinkLayerType::from_dlt(dlt::LINKTYPE_IPV4), LinkLayerType::RawIP);
         assert_eq!(LinkLayerType::from_dlt(dlt::LINKTYPE_IPV6), LinkLayerType::RawIP);
@@ -113,12 +113,12 @@ mod tests {
 
     #[test]
     fn test_is_tunnel() {
-        assert!(LinkLayerType::TUN.is_tunnel());
-        assert!(LinkLayerType::TAP.is_tunnel());
+        assert!(LinkLayerType::Tun.is_tunnel());
+        assert!(LinkLayerType::Tap.is_tunnel());
         assert!(!LinkLayerType::Ethernet.is_tunnel());
         assert!(!LinkLayerType::RawIP.is_tunnel());
         assert!(!LinkLayerType::LinuxSLL.is_tunnel());
-        assert!(!LinkLayerType::PKTAP.is_tunnel());
+        assert!(!LinkLayerType::Pktap.is_tunnel());
     }
 
     #[test]
@@ -126,17 +126,17 @@ mod tests {
         // Test TUN interface detection
         assert_eq!(
             LinkLayerType::from_dlt_and_name(dlt::RAW, "tun0"),
-            LinkLayerType::TUN
+            LinkLayerType::Tun
         );
         assert_eq!(
             LinkLayerType::from_dlt_and_name(dlt::RAW, "utun0"),
-            LinkLayerType::TUN
+            LinkLayerType::Tun
         );
 
         // Test TAP interface detection
         assert_eq!(
             LinkLayerType::from_dlt_and_name(dlt::EN10MB, "tap0"),
-            LinkLayerType::TAP
+            LinkLayerType::Tap
         );
 
         // Test regular interface (not TUN/TAP)

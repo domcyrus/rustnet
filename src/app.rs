@@ -188,6 +188,9 @@ impl App {
 
     /// Start packet capture thread
     fn start_capture_thread(&self, packet_tx: Sender<Vec<u8>>) -> Result<()> {
+        // Validate interface exists before spawning thread (fail fast)
+        crate::network::capture::validate_interface(&self.config.interface)?;
+
         let capture_config = CaptureConfig {
             interface: self.config.interface.clone(),
             filter: self.config.bpf_filter.clone(),
@@ -210,7 +213,7 @@ impl App {
                     // Check if PKTAP is active (linktype 149 or 258)
                     #[cfg(target_os = "macos")]
                     {
-                        use crate::network::pktap;
+                        use crate::network::link_layer::pktap;
                         if pktap::is_pktap_linktype(linktype) {
                             _pktap_active.store(true, Ordering::Relaxed);
                             info!("✓ PKTAP is active - process metadata will be provided directly");
@@ -796,20 +799,20 @@ impl App {
     pub fn get_link_layer_info(&self) -> (String, bool) {
         use crate::network::link_layer::LinkLayerType;
 
-        if let Ok(linktype_opt) = self.linktype.read() {
-            if let Some(dlt) = *linktype_opt {
-                // Get interface name to detect TUN/TAP more accurately
-                let interface_name = self.current_interface
-                    .read()
-                    .ok()
-                    .and_then(|opt| opt.clone())
-                    .unwrap_or_default();
+        if let Ok(linktype_opt) = self.linktype.read()
+            && let Some(dlt) = *linktype_opt
+        {
+            // Get interface name to detect TUN/TAP more accurately
+            let interface_name = self.current_interface
+                .read()
+                .ok()
+                .and_then(|opt| opt.clone())
+                .unwrap_or_default();
 
-                let link_type = LinkLayerType::from_dlt_and_name(dlt, &interface_name);
-                let type_name = format!("{:?}", link_type);
-                let is_tunnel = link_type.is_tunnel();
-                return (type_name, is_tunnel);
-            }
+            let link_type = LinkLayerType::from_dlt_and_name(dlt, &interface_name);
+            let type_name = format!("{:?}", link_type);
+            let is_tunnel = link_type.is_tunnel();
+            return (type_name, is_tunnel);
         }
         (String::from("Unknown"), false)
     }

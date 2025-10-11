@@ -137,9 +137,9 @@ fn find_best_device() -> Result<Device> {
 
 /// Setup packet capture with the given configuration
 pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, String, i32)> {
-    // Try PKTAP first on macOS for process metadata
+    // Try PKTAP first on macOS for process metadata, but only when no interface is explicitly specified
     #[cfg(target_os = "macos")]
-    {
+    if config.interface.is_none() {
         log::info!("Attempting to use PKTAP for process metadata on macOS");
 
         match Capture::from_device("pktap") {
@@ -255,6 +255,16 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     Ok((cap, device_name, linktype.0))
 }
 
+/// Validate that the specified interface exists (if provided)
+/// This is useful for failing fast before starting capture threads
+pub fn validate_interface(interface_name: &Option<String>) -> Result<()> {
+    if let Some(name) = interface_name {
+        // This will return an error if the interface doesn't exist
+        find_capture_device(&Some(name.clone()))?;
+    }
+    Ok(())
+}
+
 /// Find a capture device by name or return the default
 fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
     match interface_name {
@@ -295,19 +305,13 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
             // List available interfaces for error message
             let available: Vec<String> = devices
                 .iter()
-                .map(|d| {
-                    format!(
-                        "{} ({})",
-                        d.name,
-                        d.desc.as_deref().unwrap_or("no description")
-                    )
-                })
+                .map(|d| d.name.clone())
                 .collect();
 
             Err(anyhow!(
-                "Interface '{}' not found. Available interfaces:\n{}",
+                "Interface '{}' not found. Available interfaces: {}",
                 name,
-                available.join("\n")
+                available.join(", ")
             ))
         }
         None => {

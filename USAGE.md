@@ -31,12 +31,17 @@ rustnet
 **Basic usage examples:**
 
 ```bash
-# Run with default settings (monitors default interface)
+# Run with default settings
+# macOS: Uses PKTAP for process metadata
+# Linux/Other: Auto-detects active interface
 rustnet
 
 # Specify network interface
 rustnet -i eth0
 rustnet --interface wlan0
+
+# Linux: Monitor all interfaces simultaneously
+rustnet -i any
 
 # Filter out localhost connections (already filtered by default)
 rustnet --no-localhost
@@ -79,14 +84,50 @@ Options:
 
 #### `-i, --interface <INTERFACE>`
 
-Specify which network interface to monitor. If not provided, RustNet will use the first available non-loopback interface.
+Specify which network interface to monitor.
+
+**Default behavior (no `-i` flag):**
+- **macOS**: Automatically uses PKTAP for enhanced process metadata (requires sudo)
+- **Linux/Other**: Auto-detects the first available non-loopback interface
 
 **Examples:**
 ```bash
+# Default: Auto-detect interface (PKTAP on macOS)
+rustnet
+
+# Linux: Monitor all interfaces using the special "any" pseudo-interface
+rustnet -i any
+
+# Monitor specific interfaces
 rustnet -i eth0          # Monitor Ethernet interface
 rustnet -i wlan0         # Monitor WiFi interface
 rustnet -i en0           # Monitor macOS primary interface
+
+# Monitor VPN and tunnel interfaces (TUN/TAP support)
+rustnet -i utun0         # macOS VPN tunnel (TUN, Layer 3)
+rustnet -i tun0          # Linux/BSD VPN tunnel (TUN, Layer 3)
+rustnet -i tap0          # TAP interface (Layer 2, includes Ethernet)
 ```
+
+**TUN/TAP Interface Support:**
+
+RustNet fully supports monitoring VPN and virtual network interfaces:
+
+- **TUN interfaces** (Layer 3): Carry IP packets directly without Ethernet headers
+  - Common on VPNs: WireGuard, OpenVPN (tun mode), Tailscale
+  - Examples: `utun0-utun9` (macOS), `tun0-tun9` (Linux/BSD)
+
+- **TAP interfaces** (Layer 2): Include full Ethernet frames
+  - Used by: OpenVPN (tap mode), QEMU/KVM virtual networks, Docker
+  - Examples: `tap0-tap9` (Linux/BSD)
+
+RustNet automatically detects TUN/TAP interfaces and adjusts packet parsing accordingly. The interface type is displayed in the UI status area.
+
+**Platform-specific notes:**
+- **macOS**: Without `-i`, PKTAP is used automatically for better process detection. Use `-i <interface>` to monitor a specific interface instead
+- **Linux**: Use `-i any` to capture on all interfaces simultaneously (not available on other platforms)
+- **TUN/TAP**: Fully supported on all platforms - RustNet detects interface type by name and adjusts parsing
+- **All platforms**: If you specify a non-existent interface, an error will show available interfaces
 
 **Finding your interfaces:**
 - Linux: `ip link show` or `ifconfig`
