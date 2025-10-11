@@ -69,12 +69,19 @@ fn find_best_device() -> Result<Device> {
     // Find the best active device
     let suitable_device = devices
         .iter()
-        // First priority: up, running, and has a valid IP address
+        // First priority: up, running, has a valid IP address, and NOT virtual
         .find(|d| {
+            // Check if it's a virtual/problematic interface
+            let desc_lower = d.desc.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+            let is_virtual = desc_lower.contains("hyper-v")
+                || desc_lower.contains("vmware")
+                || desc_lower.contains("virtualbox");
+
             !d.name.starts_with("lo")
                 // Note: 'any' is excluded here because it's not a real interface
                 // Users can still specify '-i any' explicitly on Linux
                 && d.name != "any"
+                && !is_virtual  // Skip virtual adapters in first priority too
                 && d.flags.is_up()
                 && d.flags.is_running()
                 && d.addresses.iter().any(|addr| {
@@ -97,16 +104,25 @@ fn find_best_device() -> Result<Device> {
         // Third priority: any up interface with valid addresses (excluding problematic ones)
         .or_else(|| {
             devices.iter().find(|d| {
+                // Check if it's a virtual/problematic interface
+                let desc_lower = d.desc.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                let is_virtual = desc_lower.contains("hyper-v")
+                    || desc_lower.contains("virtual")
+                    || desc_lower.contains("vmware")
+                    || desc_lower.contains("virtualbox")
+                    || desc_lower.contains("loopback");
+
                 !d.name.starts_with("lo") &&
                 !d.name.starts_with("ap") &&     // Skip Apple's ap interfaces
                 !d.name.starts_with("awdl") &&   // Skip Apple Wireless Direct
                 !d.name.starts_with("llw") &&    // Skip Low latency WLAN
                 !d.name.starts_with("bridge") && // Skip bridges
-                !d.name.starts_with("utun") &&   // Skip tunnels
+                // TUN/TAP interfaces now supported - removed utun/tun/tap exclusion
                 !d.name.starts_with("vmnet") &&  // Skip VM interfaces
                 // Note: 'any' is excluded here because it's not a real interface
                 // Users can still specify '-i any' explicitly on Linux
                 d.name != "any" &&
+                !is_virtual &&                    // Skip virtual adapters
                 d.flags.is_up() &&
                 !d.addresses.is_empty()
             })
@@ -137,9 +153,9 @@ fn find_best_device() -> Result<Device> {
 
 /// Setup packet capture with the given configuration
 pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, String, i32)> {
-    // Try PKTAP first on macOS for process metadata
+    // Try PKTAP first on macOS for process metadata, but only when no interface is explicitly specified
     #[cfg(target_os = "macos")]
-    {
+    if config.interface.is_none() {
         log::info!("Attempting to use PKTAP for process metadata on macOS");
 
         match Capture::from_device("pktap") {
@@ -199,10 +215,26 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     log::info!("Setting up regular packet capture");
     let device = find_capture_device(&config.interface)?;
 
+    // Check if this is a TUN/TAP interface
+    use crate::network::link_layer::tun_tap;
+    let is_tunnel = tun_tap::is_tunnel_interface(&device.name);
+    let tunnel_type = if tun_tap::is_tun_interface(&device.name) {
+        "TUN (Layer 3)"
+    } else if tun_tap::is_tap_interface(&device.name) {
+        "TAP (Layer 2)"
+    } else {
+        "N/A"
+    };
+
     log::info!(
-        "Setting up capture on device: {} ({})",
+        "Setting up capture on device: {} ({}){}",
         device.name,
-        device.desc.as_deref().unwrap_or("no description")
+        device.desc.as_deref().unwrap_or("no description"),
+        if is_tunnel {
+            format!(" [Tunnel: {}]", tunnel_type)
+        } else {
+            String::new()
+        }
     );
 
     let device_name = device.name.clone();
@@ -237,6 +269,16 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     let linktype = cap.get_datalink();
 
     Ok((cap, device_name, linktype.0))
+}
+
+/// Validate that the specified interface exists (if provided)
+/// This is useful for failing fast before starting capture threads
+pub fn validate_interface(interface_name: &Option<String>) -> Result<()> {
+    if let Some(name) = interface_name {
+        // This will return an error if the interface doesn't exist
+        find_capture_device(&Some(name.clone()))?;
+    }
+    Ok(())
 }
 
 /// Find a capture device by name or return the default
@@ -279,19 +321,13 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
             // List available interfaces for error message
             let available: Vec<String> = devices
                 .iter()
-                .map(|d| {
-                    format!(
-                        "{} ({})",
-                        d.name,
-                        d.desc.as_deref().unwrap_or("no description")
-                    )
-                })
+                .map(|d| d.name.clone())
                 .collect();
 
             Err(anyhow!(
-                "Interface '{}' not found. Available interfaces:\n{}",
+                "Interface '{}' not found. Available interfaces: {}",
                 name,
-                available.join("\n")
+                available.join(", ")
             ))
         }
         None => {
@@ -322,7 +358,7 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                         || device.name.starts_with("awdl")
                         || device.name.starts_with("llw")
                         || device.name.starts_with("bridge")
-                        || device.name.starts_with("utun")
+                        // TUN/TAP interfaces now supported - removed utun/tun/tap check
                         || device.name.starts_with("vmnet")
                         || (device.name == "any" && !cfg!(target_os = "linux"))
                         || device.flags.is_loopback();
@@ -381,11 +417,23 @@ impl PacketReader {
     /// Get capture statistics
     pub fn stats(&mut self) -> Result<CaptureStats> {
         let stats = self.capture.stats()?;
-        Ok(CaptureStats {
+        let capture_stats = CaptureStats {
             received: stats.received,
             dropped: stats.dropped,
             if_dropped: stats.if_dropped,
-        })
+        };
+
+        // Log dropped packets if any occurred
+        if capture_stats.total_dropped() > 0 {
+            log::debug!(
+                "Total {} packets dropped (kernel: {}, interface: {})",
+                capture_stats.total_dropped(),
+                capture_stats.dropped,
+                capture_stats.if_dropped
+            );
+        }
+
+        Ok(capture_stats)
     }
 }
 
@@ -394,9 +442,15 @@ impl PacketReader {
 pub struct CaptureStats {
     pub received: u32,
     pub dropped: u32,
-    #[allow(dead_code)]
-    // TODO: implement interface-specific dropped packets
+    /// Interface-level dropped packets (platform-specific)
     pub if_dropped: u32,
+}
+
+impl CaptureStats {
+    /// Get total packets dropped (both kernel and interface level)
+    pub fn total_dropped(&self) -> u32 {
+        self.dropped.saturating_add(self.if_dropped)
+    }
 }
 
 #[cfg(test)]

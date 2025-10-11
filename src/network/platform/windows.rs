@@ -29,10 +29,17 @@ struct ProcessCache {
 
 impl WindowsProcessLookup {
     pub fn new() -> Result<Self> {
+        // Use a very old timestamp that's guaranteed to be before now
+        // by using checked_sub and falling back to epoch
+        let now = Instant::now();
+        let initial_refresh = now
+            .checked_sub(Duration::from_secs(3600))
+            .unwrap_or_else(|| now.checked_sub(Duration::from_secs(60)).unwrap_or(now));
+
         Ok(Self {
             cache: RwLock::new(ProcessCache {
                 lookup: HashMap::new(),
-                last_refresh: Instant::now() - Duration::from_secs(3600), // Force initial refresh
+                last_refresh: initial_refresh,
             }),
         })
     }
@@ -64,7 +71,14 @@ impl WindowsProcessLookup {
             );
 
             if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
+                log::debug!("GetExtendedTcpTable (IPv4) returned no data or error: {}", result);
                 return Ok(()); // No connections or error
+            }
+
+            if size == 0 || size > 100_000_000 {
+                // Sanity check: reject unreasonably large sizes (100MB limit)
+                log::warn!("GetExtendedTcpTable (IPv4) returned invalid size: {}", size);
+                return Ok(());
             }
 
             // Allocate buffer and get actual data
@@ -79,12 +93,34 @@ impl WindowsProcessLookup {
             );
 
             if result != 0 {
+                log::debug!("GetExtendedTcpTable (IPv4) second call failed: {}", result);
                 return Ok(()); // Error getting table
+            }
+
+            // Verify we have enough data for the header
+            if table.len() < std::mem::size_of::<u32>() {
+                log::warn!("TCP table buffer too small for header");
+                return Ok(());
             }
 
             // Parse the table
             let tcp_table = &*(table.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
             let num_entries = tcp_table.dwNumEntries as usize;
+
+            // Bounds check: ensure we have enough space for all entries
+            let required_size = std::mem::size_of::<u32>()
+                + num_entries * std::mem::size_of::<MIB_TCPROW_OWNER_PID>();
+            if table.len() < required_size {
+                log::warn!(
+                    "TCP table buffer too small: got {} bytes, need {} for {} entries",
+                    table.len(),
+                    required_size,
+                    num_entries
+                );
+                return Ok(());
+            }
+
+            log::debug!("Processing {} TCP IPv4 connections", num_entries);
 
             // Get pointer to the first entry
             let rows_ptr = &tcp_table.table[0] as *const MIB_TCPROW_OWNER_PID;
@@ -94,12 +130,12 @@ impl WindowsProcessLookup {
 
                 let local_addr = SocketAddr::new(
                     IpAddr::V4(Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes())),
-                    u16::from_be((row.dwLocalPort as u16).to_be()),
+                    u16::from_be(row.dwLocalPort as u16),
                 );
 
                 let remote_addr = SocketAddr::new(
                     IpAddr::V4(Ipv4Addr::from(row.dwRemoteAddr.to_ne_bytes())),
-                    u16::from_be((row.dwRemotePort as u16).to_be()),
+                    u16::from_be(row.dwRemotePort as u16),
                 );
 
                 let key = ConnectionKey {
@@ -109,6 +145,14 @@ impl WindowsProcessLookup {
                 };
 
                 if let Some(process_name) = get_process_name_from_pid(row.dwOwningPid) {
+                    log::trace!(
+                        "Cached: {:?} {} -> {} (PID: {}, {})",
+                        key.protocol,
+                        local_addr,
+                        remote_addr,
+                        row.dwOwningPid,
+                        process_name
+                    );
                     cache.insert(key, (row.dwOwningPid, process_name));
                 }
             }
@@ -133,7 +177,14 @@ impl WindowsProcessLookup {
             );
 
             if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
+                log::debug!("GetExtendedTcpTable (IPv6) returned no data or error: {}", result);
                 return Ok(()); // No connections or error
+            }
+
+            if size == 0 || size > 100_000_000 {
+                // Sanity check: reject unreasonably large sizes (100MB limit)
+                log::warn!("GetExtendedTcpTable (IPv6) returned invalid size: {}", size);
+                return Ok(());
             }
 
             // Allocate buffer and get actual data
@@ -148,12 +199,34 @@ impl WindowsProcessLookup {
             );
 
             if result != 0 {
+                log::debug!("GetExtendedTcpTable (IPv6) second call failed: {}", result);
                 return Ok(()); // Error getting table
+            }
+
+            // Verify we have enough data for the header
+            if table.len() < std::mem::size_of::<u32>() {
+                log::warn!("TCP IPv6 table buffer too small for header");
+                return Ok(());
             }
 
             // Parse the table
             let tcp_table = &*(table.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID);
             let num_entries = tcp_table.dwNumEntries as usize;
+
+            // Bounds check: ensure we have enough space for all entries
+            let required_size = std::mem::size_of::<u32>()
+                + num_entries * std::mem::size_of::<MIB_TCP6ROW_OWNER_PID>();
+            if table.len() < required_size {
+                log::warn!(
+                    "TCP IPv6 table buffer too small: got {} bytes, need {} for {} entries",
+                    table.len(),
+                    required_size,
+                    num_entries
+                );
+                return Ok(());
+            }
+
+            log::debug!("Processing {} TCP IPv6 connections", num_entries);
 
             // Get pointer to the first entry
             let rows_ptr = &tcp_table.table[0] as *const MIB_TCP6ROW_OWNER_PID;
@@ -163,12 +236,12 @@ impl WindowsProcessLookup {
 
                 let local_addr = SocketAddr::new(
                     IpAddr::V6(Ipv6Addr::from(row.ucLocalAddr)),
-                    u16::from_be((row.dwLocalPort as u16).to_be()),
+                    u16::from_be(row.dwLocalPort as u16),
                 );
 
                 let remote_addr = SocketAddr::new(
                     IpAddr::V6(Ipv6Addr::from(row.ucRemoteAddr)),
-                    u16::from_be((row.dwRemotePort as u16).to_be()),
+                    u16::from_be(row.dwRemotePort as u16),
                 );
 
                 let key = ConnectionKey {
@@ -178,6 +251,14 @@ impl WindowsProcessLookup {
                 };
 
                 if let Some(process_name) = get_process_name_from_pid(row.dwOwningPid) {
+                    log::trace!(
+                        "Cached: {:?} {} -> {} (PID: {}, {})",
+                        key.protocol,
+                        local_addr,
+                        remote_addr,
+                        row.dwOwningPid,
+                        process_name
+                    );
                     cache.insert(key, (row.dwOwningPid, process_name));
                 }
             }
@@ -213,7 +294,14 @@ impl WindowsProcessLookup {
             );
 
             if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
+                log::debug!("GetExtendedUdpTable (IPv4) returned no data or error: {}", result);
                 return Ok(()); // No connections or error
+            }
+
+            if size == 0 || size > 100_000_000 {
+                // Sanity check: reject unreasonably large sizes (100MB limit)
+                log::warn!("GetExtendedUdpTable (IPv4) returned invalid size: {}", size);
+                return Ok(());
             }
 
             // Allocate buffer and get actual data
@@ -228,12 +316,34 @@ impl WindowsProcessLookup {
             );
 
             if result != 0 {
+                log::debug!("GetExtendedUdpTable (IPv4) second call failed: {}", result);
                 return Ok(()); // Error getting table
+            }
+
+            // Verify we have enough data for the header
+            if table.len() < std::mem::size_of::<u32>() {
+                log::warn!("UDP table buffer too small for header");
+                return Ok(());
             }
 
             // Parse the table
             let udp_table = &*(table.as_ptr() as *const MIB_UDPTABLE_OWNER_PID);
             let num_entries = udp_table.dwNumEntries as usize;
+
+            // Bounds check: ensure we have enough space for all entries
+            let required_size = std::mem::size_of::<u32>()
+                + num_entries * std::mem::size_of::<MIB_UDPROW_OWNER_PID>();
+            if table.len() < required_size {
+                log::warn!(
+                    "UDP table buffer too small: got {} bytes, need {} for {} entries",
+                    table.len(),
+                    required_size,
+                    num_entries
+                );
+                return Ok(());
+            }
+
+            log::debug!("Processing {} UDP IPv4 connections", num_entries);
 
             // Get pointer to the first entry
             let rows_ptr = &udp_table.table[0] as *const MIB_UDPROW_OWNER_PID;
@@ -243,7 +353,7 @@ impl WindowsProcessLookup {
 
                 let local_addr = SocketAddr::new(
                     IpAddr::V4(Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes())),
-                    u16::from_be((row.dwLocalPort as u16).to_be()),
+                    u16::from_be(row.dwLocalPort as u16),
                 );
 
                 // UDP doesn't have remote address in the table
@@ -256,6 +366,14 @@ impl WindowsProcessLookup {
                 };
 
                 if let Some(process_name) = get_process_name_from_pid(row.dwOwningPid) {
+                    log::trace!(
+                        "Cached: {:?} {} -> {} (PID: {}, {})",
+                        key.protocol,
+                        local_addr,
+                        remote_addr,
+                        row.dwOwningPid,
+                        process_name
+                    );
                     cache.insert(key, (row.dwOwningPid, process_name));
                 }
             }
@@ -275,20 +393,46 @@ impl ProcessLookup for WindowsProcessLookup {
     fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
         let key = ConnectionKey::from_connection(conn);
 
-        // Try cache first
+        // Try cache first - handle poisoned lock gracefully
         {
-            let cache = self.cache.read().unwrap();
+            let cache = match self.cache.read() {
+                Ok(cache) => cache,
+                Err(poisoned) => {
+                    log::warn!("Process cache lock was poisoned, recovering data");
+                    poisoned.into_inner()
+                }
+            };
+
             if cache.last_refresh.elapsed() < Duration::from_secs(2)
                 && let Some(process_info) = cache.lookup.get(&key)
             {
+                log::trace!("✓ Cache hit: {:?} {} -> {} => {:?}",
+                    key.protocol, key.local_addr, key.remote_addr, process_info);
                 return Some(process_info.clone());
+            } else {
+                log::trace!("✗ Cache miss: {:?} {} -> {} (cache: {} entries, age: {}s)",
+                    key.protocol, key.local_addr, key.remote_addr,
+                    cache.lookup.len(), cache.last_refresh.elapsed().as_secs());
             }
         }
 
         // Cache is stale or miss, refresh
         if self.refresh().is_ok() {
-            let cache = self.cache.read().unwrap();
-            cache.lookup.get(&key).cloned()
+            let cache = match self.cache.read() {
+                Ok(cache) => cache,
+                Err(poisoned) => {
+                    log::warn!("Process cache lock was poisoned after refresh, recovering data");
+                    poisoned.into_inner()
+                }
+            };
+            let result = cache.lookup.get(&key).cloned();
+            if result.is_some() {
+                log::trace!("✓ Found after refresh: {:?} => {:?}", key, result);
+            } else {
+                log::trace!("✗ Still no match after refresh for: {:?} {} -> {}",
+                    key.protocol, key.local_addr, key.remote_addr);
+            }
+            result
         } else {
             None
         }
@@ -300,15 +444,25 @@ impl ProcessLookup for WindowsProcessLookup {
         self.refresh_tcp_processes(&mut new_cache)?;
         self.refresh_udp_processes(&mut new_cache)?;
 
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = match self.cache.write() {
+            Ok(cache) => cache,
+            Err(poisoned) => {
+                log::warn!("Process cache write lock was poisoned, recovering and replacing cache");
+                poisoned.into_inner()
+            }
+        };
+
+        let total_entries = new_cache.len();
         cache.lookup = new_cache;
         cache.last_refresh = Instant::now();
+
+        log::debug!("Windows process lookup refresh complete: {} entries cached", total_entries);
 
         Ok(())
     }
 
     fn get_detection_method(&self) -> &str {
-        "N/A"
+        "windows-iphlpapi"
     }
 }
 
