@@ -49,4 +49,11 @@ pub fn build_cli() -> Command {
                 .help("Set the log level (if not provided, no logging will be enabled)")
                 .required(false),
         )
+        .arg(
+            Arg::new("json-log")
+                .long("json-log")
+                .value_name("FILE")
+                .help("Enable JSON logging of connection events to specified file")
+                .required(false),
+        )
 }

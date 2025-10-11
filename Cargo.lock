@@ -1785,6 +1785,8 @@ dependencies = [
  "procfs",
  "ratatui",
  "ring",
+ "serde",
+ "serde_json",
  "simple-logging",
  "simplelog",
  "windows",

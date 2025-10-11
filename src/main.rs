@@ -62,6 +62,11 @@ fn main() -> Result<()> {
         info!("Deep packet inspection disabled");
     }
 
+    if let Some(json_log_path) = matches.get_one::<String>("json-log") {
+        config.json_log_file = Some(json_log_path.to_string());
+        info!("JSON logging enabled: {}", json_log_path);
+    }
+
     // Set up terminal
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;
