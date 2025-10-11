@@ -196,23 +196,12 @@ impl ProcessLookup for LinuxProcessLookup {
     fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
         let key = ConnectionKey::from_connection(conn);
 
-        // Try cache first
-        {
-            let cache = self.cache.read().unwrap();
-            if cache.last_refresh.elapsed() < Duration::from_secs(2)
-                && let Some(process_info) = cache.lookup.get(&key)
-            {
-                return Some(process_info.clone());
-            }
-        }
-
-        // Cache is stale or miss, refresh
-        if self.refresh().is_ok() {
-            let cache = self.cache.read().unwrap();
-            cache.lookup.get(&key).cloned()
-        } else {
-            None
-        }
+        // Simple cache lookup with no refresh on cache miss.
+        // The enrichment thread (app.rs:495-500) handles periodic refresh every 5 seconds.
+        // IMPORTANT: Do NOT refresh here as it caused high CPU usage when called for every
+        // connection without process info (flamegraph showed this was the main bottleneck).
+        let cache = self.cache.read().unwrap();
+        cache.lookup.get(&key).cloned()
     }
 
     fn refresh(&self) -> Result<()> {
