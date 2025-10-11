@@ -195,6 +195,7 @@ See [USAGE.md](USAGE.md) for complete timeout details.
 - **[INSTALL.md](INSTALL.md)** - Detailed installation instructions for all platforms, permission setup, and troubleshooting
 - **[USAGE.md](USAGE.md)** - Complete usage guide including command-line options, filtering, sorting, and logging
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture, platform implementations, and performance details
+- **[PROFILING.md](PROFILING.md)** - Performance profiling guide with flamegraph setup and optimization tips
 - **[ROADMAP.md](ROADMAP.md)** - Planned features and future improvements
 - **[RELEASE.md](RELEASE.md)** - Release process for maintainers
 - **[EBPF_BUILD.md](EBPF_BUILD.md)** - eBPF build instructions and requirements
