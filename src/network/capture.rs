@@ -69,12 +69,19 @@ fn find_best_device() -> Result<Device> {
     // Find the best active device
     let suitable_device = devices
         .iter()
-        // First priority: up, running, and has a valid IP address
+        // First priority: up, running, has a valid IP address, and NOT virtual
         .find(|d| {
+            // Check if it's a virtual/problematic interface
+            let desc_lower = d.desc.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+            let is_virtual = desc_lower.contains("hyper-v")
+                || desc_lower.contains("vmware")
+                || desc_lower.contains("virtualbox");
+
             !d.name.starts_with("lo")
                 // Note: 'any' is excluded here because it's not a real interface
                 // Users can still specify '-i any' explicitly on Linux
                 && d.name != "any"
+                && !is_virtual  // Skip virtual adapters in first priority too
                 && d.flags.is_up()
                 && d.flags.is_running()
                 && d.addresses.iter().any(|addr| {
@@ -97,6 +104,14 @@ fn find_best_device() -> Result<Device> {
         // Third priority: any up interface with valid addresses (excluding problematic ones)
         .or_else(|| {
             devices.iter().find(|d| {
+                // Check if it's a virtual/problematic interface
+                let desc_lower = d.desc.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                let is_virtual = desc_lower.contains("hyper-v")
+                    || desc_lower.contains("virtual")
+                    || desc_lower.contains("vmware")
+                    || desc_lower.contains("virtualbox")
+                    || desc_lower.contains("loopback");
+
                 !d.name.starts_with("lo") &&
                 !d.name.starts_with("ap") &&     // Skip Apple's ap interfaces
                 !d.name.starts_with("awdl") &&   // Skip Apple Wireless Direct
@@ -107,6 +122,7 @@ fn find_best_device() -> Result<Device> {
                 // Note: 'any' is excluded here because it's not a real interface
                 // Users can still specify '-i any' explicitly on Linux
                 d.name != "any" &&
+                !is_virtual &&                    // Skip virtual adapters
                 d.flags.is_up() &&
                 !d.addresses.is_empty()
             })
