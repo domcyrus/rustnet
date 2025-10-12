@@ -6,7 +6,7 @@ This document is for maintainers releasing new versions of RustNet.
 
 ### 1. Prepare the Release
 
-Update version in `Cargo.toml` and update `CHANGELOG.md` with release notes:
+Update version in `Cargo.toml`, `rpm/rustnet.spec`, and update `CHANGELOG.md` with release notes:
 
 ```bash
 # Ensure you're on the main branch with latest changes
@@ -14,6 +14,7 @@ git checkout main
 git pull origin main
 
 # Update Cargo.toml version (e.g., version = "0.3.0")
+# Update rpm/rustnet.spec Version field (e.g., Version: 0.3.0)
 # Update CHANGELOG.md with new version section
 
 # Update Cargo.lock and test the build
@@ -25,7 +26,7 @@ cargo test
 
 ```bash
 # Stage and commit the version and changelog changes
-git add Cargo.toml Cargo.lock CHANGELOG.md
+git add Cargo.toml Cargo.lock CHANGELOG.md rpm/rustnet.spec
 git commit -m "Release v0.3.0
 
 - Feature or fix summary here
@@ -97,6 +98,7 @@ The release process is fully automated via [`.github/workflows/release.yml`](.gi
 Before pushing the tag, ensure:
 
 - [ ] Version number updated in `Cargo.toml`
+- [ ] Version number updated in `rpm/rustnet.spec` (line 5: `Version: x.y.z`)
 - [ ] `Cargo.lock` updated (via `cargo build`)
 - [ ] `CHANGELOG.md` updated with release notes in format `## [x.y.z] - YYYY-MM-DD`
 - [ ] All tests pass (`cargo test`)
