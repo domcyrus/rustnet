@@ -14,7 +14,7 @@ cargo install flamegraph
 
 # 2. Build a release binary with debug symbols
 # IMPORTANT: Debug symbols are required for meaningful flamegraphs!
-CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release --features linux-default
+CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release
 
 # Or add this to Cargo.toml temporarily:
 # [profile.release]
@@ -41,7 +41,7 @@ If you prefer to use `perf` directly:
 
 ```bash
 # Build with debug symbols
-cargo build --release --features linux-default
+cargo build --release
 
 # Record performance data (run for 30-60 seconds, then Ctrl+C to stop)
 sudo perf record -F 99 -g ./target/release/rustnet -i eth0
@@ -131,7 +131,7 @@ If your flamegraph only shows "rustnet (100%)" with no details:
 **Solution**:
 ```bash
 # Rebuild with debug symbols
-CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release --features linux-default
+CARGO_PROFILE_RELEASE_DEBUG=true cargo build --release
 
 # Or add to Cargo.toml:
 [profile.release]
