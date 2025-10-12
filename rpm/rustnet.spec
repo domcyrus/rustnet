@@ -39,7 +39,7 @@ Features include:
 
 %build
 export RUSTFLAGS="%{build_rustflags}"
-cargo build --release
+cargo build --release --features "linux-default"
 
 %install
 install -Dpm 0755 target/release/rustnet -t %{buildroot}%{_bindir}/

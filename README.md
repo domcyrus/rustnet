@@ -48,7 +48,7 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 
 ### eBPF Enhanced Process Identification (Experimental)
 
-On Linux, RustNet uses kernel eBPF programs by default for enhanced performance and lower overhead process identification. However, this comes with important limitations:
+When built with the `ebpf` feature on Linux, RustNet uses kernel eBPF programs for enhanced performance and lower overhead process identification. However, this comes with important limitations:
 
 **Process Name Limitations:**
 - eBPF uses the kernel's `comm` field, which is limited to 16 characters
