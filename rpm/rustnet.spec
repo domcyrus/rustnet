@@ -32,14 +32,15 @@ Features include:
 - Process identification and service name resolution
 - Cross-platform support (Linux, macOS, Windows, BSD)
 - Advanced filtering with vim/fzf-style search
-- Optional eBPF support for enhanced Linux performance
+- eBPF-enhanced process detection (enabled by default with automatic fallback)
 
 %prep
 %autosetup -n %{name}-%{version}
 
 %build
 export RUSTFLAGS="%{build_rustflags}"
-cargo build --release --features "linux-default"
+# eBPF is now enabled by default, no need for explicit feature flag
+cargo build --release
 
 %install
 install -Dpm 0755 target/release/rustnet -t %{buildroot}%{_bindir}/
