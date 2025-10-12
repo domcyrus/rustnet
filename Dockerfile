@@ -31,8 +31,8 @@ COPY resources/ebpf/vmlinux ./resources/ebpf/vmlinux
 COPY src ./src
 COPY assets/services ./assets/services
 
-# Build the application in release mode with eBPF support
-RUN cargo build --release --features "linux-default"
+# Build the application in release mode (eBPF is enabled by default on Linux)
+RUN cargo build --release
 
 # Runtime stage - use trixie-slim to match GLIBC version from builder
 FROM debian:trixie-slim

@@ -79,8 +79,11 @@ windows = { version = "0.61", features = [
 libbpf-cargo = "0.25"
 
 [features]
-default = []
-linux-default = ["ebpf"]
+# eBPF is enabled by default for enhanced performance on Linux.
+# On non-Linux platforms, this feature has no effect as all eBPF code
+# and dependencies are Linux-specific (guarded by target_os checks).
+default = ["ebpf"]
+linux-default = ["ebpf"]  # Deprecated: kept for backwards compatibility
 ebpf = ["libbpf-rs", "bytes", "libc"]
 
 # Minimal cross configuration to override dependency conflicts
@@ -105,7 +108,7 @@ Features:
 - Process identification and service name resolution
 - Advanced filtering with vim/fzf-style search
 - Multi-threaded processing for optimal performance
-- Optional eBPF support for enhanced Linux performance
+- eBPF-enhanced process detection on Linux (with automatic fallback)
 """
 depends = "libpcap0.8, libelf1"
 section = "net"

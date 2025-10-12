@@ -26,9 +26,9 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 - **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
 
 <details>
-<summary><b>eBPF Enhanced Process Identification (Experimental - Linux)</b></summary>
+<summary><b>eBPF Enhanced Process Identification (Linux Default)</b></summary>
 
-When built with the `ebpf` feature on Linux, RustNet uses kernel eBPF programs for enhanced performance and lower overhead process identification. However, this comes with important limitations:
+RustNet uses kernel eBPF programs by default on Linux for enhanced performance and lower overhead process identification. However, this comes with important limitations:
 
 **Process Name Limitations:**
 - eBPF uses the kernel's `comm` field, which is limited to 16 characters
@@ -44,8 +44,14 @@ When built with the `ebpf` feature on Linux, RustNet uses kernel eBPF programs f
 **Fallback Behavior:**
 - When eBPF fails to load or lacks sufficient permissions, RustNet automatically falls back to standard procfs-based process identification
 - Standard mode provides full process names but with higher CPU overhead
+- eBPF is enabled by default; no special build flags needed
 
-See [EBPF_BUILD.md](EBPF_BUILD.md) for build instructions and [ARCHITECTURE.md](ARCHITECTURE.md) for technical details.
+To disable eBPF and use procfs-only mode, build with:
+```bash
+cargo build --release --no-default-features
+```
+
+See [EBPF_BUILD.md](EBPF_BUILD.md) for more details and [ARCHITECTURE.md](ARCHITECTURE.md) for technical information.
 
 </details>
 

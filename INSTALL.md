@@ -180,10 +180,11 @@ After installation, see the [Permissions Setup](#permissions-setup) section to c
   - **Linux**: `sudo apt-get install libpcap-dev` (Debian/Ubuntu) or `sudo yum install libpcap-devel` (RedHat/CentOS)
   - **macOS**: Included by default
   - **Windows**: Install Npcap and Npcap SDK (see [Windows Build Setup](#windows-build-setup) below)
-- **For eBPF support (optional, experimental - Linux only)**:
+- **For eBPF support (enabled by default on Linux)**:
   - `sudo apt-get install libelf-dev clang llvm` (Debian/Ubuntu)
   - `sudo yum install elfutils-libelf-devel clang llvm` (RedHat/CentOS)
   - Linux kernel 4.19+ with BTF support recommended
+  - Note: eBPF automatically falls back to procfs if unavailable
 
 ### Basic Build
 
@@ -192,16 +193,16 @@ After installation, see the [Permissions Setup](#permissions-setup) section to c
 git clone https://github.com/domcyrus/rustnet.git
 cd rustnet
 
-# Build in release mode (basic functionality)
+# Build in release mode (eBPF is enabled by default on Linux)
 cargo build --release
 
-# Build with experimental eBPF support for enhanced Linux performance (Linux only)
-cargo build --release --features ebpf
+# To build WITHOUT eBPF support (procfs-only mode on Linux)
+cargo build --release --no-default-features
 
 # The executable will be in target/release/rustnet
 ```
 
-See [EBPF_BUILD.md](EBPF_BUILD.md) for detailed eBPF build instructions.
+See [EBPF_BUILD.md](EBPF_BUILD.md) for detailed eBPF information.
 
 ### Windows Build Setup
 
@@ -388,13 +389,13 @@ sudo setcap cap_net_raw,cap_net_admin=eip ~/.cargo/bin/rustnet
 rustnet
 ```
 
-**For experimental eBPF-enabled builds (enhanced Linux performance):**
+**For eBPF-enabled builds (enhanced Linux performance - enabled by default):**
 
-eBPF is an experimental feature that provides lower-overhead process identification using kernel probes:
+eBPF is enabled by default on Linux and provides lower-overhead process identification using kernel probes:
 
 ```bash
-# Build with eBPF support
-cargo build --release --features ebpf
+# Build in release mode (eBPF is enabled by default)
+cargo build --release
 
 # Try modern capabilities first (Linux 5.8+)
 sudo setcap 'cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
@@ -423,7 +424,7 @@ Additional capability (may be required):
 - `Process Detection: eBPF + procfs` - eBPF successfully loaded
 - `Process Detection: procfs` - Using procfs fallback
 
-**Note:** eBPF support is experimental and may have limitations with process name display. See [ARCHITECTURE.md](ARCHITECTURE.md) for details on eBPF implementation.
+**Note:** eBPF is enabled by default on Linux builds and may have limitations with process name display. See [ARCHITECTURE.md](ARCHITECTURE.md) for details on eBPF implementation. To build without eBPF, use `cargo build --release --no-default-features`.
 
 **For system-wide installation:**
 

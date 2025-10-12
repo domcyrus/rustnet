@@ -2,6 +2,8 @@
 
 This document explains how to work with eBPF kernel headers in this project.
 
+**Note:** eBPF is now enabled by default on Linux builds. This guide provides detailed information about the eBPF implementation and how to customize the build.
+
 ## Current Setup
 
 The project bundles **architecture-specific vmlinux.h files** from the [libbpf/vmlinux.h](https://github.com/libbpf/vmlinux.h) repository. This eliminates network dependencies during builds and ensures reproducible builds.
@@ -58,27 +60,34 @@ After updating, commit the changes to the repository.
 
 ## Building with eBPF Support
 
-To build rustnet with eBPF support on Linux:
+eBPF is enabled by default on Linux. To build rustnet:
 
 ```bash
 # Install build dependencies
 sudo apt-get install libelf-dev clang llvm  # Debian/Ubuntu
 sudo yum install elfutils-libelf-devel clang llvm  # RedHat/CentOS/Fedora
 
-# Build with eBPF feature
-cargo build --release --features ebpf
+# Build in release mode (eBPF is enabled by default)
+cargo build --release
 
 # The bundled vmlinux.h files will be used automatically
 # No network access required!
 ```
 
+To build **without** eBPF support (procfs-only mode):
+
+```bash
+# Build without eBPF
+cargo build --release --no-default-features
+```
+
 ## Testing eBPF Functionality
 
-After building with eBPF support, test that it works correctly:
+After building (eBPF is enabled by default), test that it works correctly:
 
 ```bash
 # Option 1: Run with sudo (always works)
-sudo cargo run --features ebpf
+sudo cargo run --release
 
 # Option 2: Set capabilities (Linux only, see INSTALL.md Permissions section)
 sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
