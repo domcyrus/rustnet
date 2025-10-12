@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2025-10-12
+
+### Added
+- **eBPF Enabled by Default on Linux**: eBPF support is now enabled by default on Linux builds for enhanced performance
+  - Provides faster socket tracking with reduced overhead
+  - Includes CO-RE (Compile Once - Run Everywhere) support
+  - Graceful fallback to procfs when eBPF is unavailable
+- **JSON Logging for SIEM Integration**: New JSON-structured logging output for security information and event management systems
+  - Enables integration with enterprise monitoring and security platforms
+  - Structured log format for easier parsing and analysis
+- **TUN/TAP Interface Support**: Added support for TUN/TAP virtual network interfaces
+  - Enables monitoring of VPN connections and virtual network devices
+  - Expands interface compatibility for complex network setups
+- **Fedora COPR RPM Packaging**: Official Fedora COPR repository for easy installation on Fedora/RHEL-based distributions
+
+### Fixed
+- **High CPU Usage on Linux**: Eliminated excessive procfs scanning causing high CPU utilization
+  - Optimized process lookup frequency and caching strategy
+  - Significantly reduced system resource consumption during monitoring
+
+### Changed
+- **Build Dependencies**: Bundled vmlinux.h files to eliminate network dependency during builds
+  - Improves build reliability and offline build capability
+  - Reduces external dependencies for compilation
+- **Documentation**: Restructured documentation into focused files with improved musl static build documentation
+
 ## [0.13.0] - 2025-10-04
 
 ### Added
@@ -220,7 +246,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/domcyrus/rustnet/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/domcyrus/rustnet/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/domcyrus/rustnet/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/domcyrus/rustnet/compare/v0.11.0...v0.12.0
