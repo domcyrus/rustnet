@@ -106,9 +106,28 @@ jobs:
             echo "✓ Changelog already at correct version"
           fi
 
-      - name: Vendor dependencies
+      - name: Build source package
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          BASE_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          PACKAGE_NAME="rustnet-monitor"
+
+          # Create build directory
+          mkdir -p build-ppa
+
+          # Extract source from release tag
+          RELEASE_TAG="v${BASE_VERSION}"
+          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "✓ Found release tag: $RELEASE_TAG"
+            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$RELEASE_TAG" | tar -x -C build-ppa
+          else
+            echo "⚠ Release tag $RELEASE_TAG not found, using HEAD"
+            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD | tar -x -C build-ppa
+          fi
+
+          # Vendor dependencies inside the extracted source
           echo "Vendoring Rust dependencies..."
+          cd build-ppa/${PACKAGE_NAME}-${VERSION}
           cargo vendor vendor
 
           # Clean up .orig backup files created by cargo vendor
@@ -124,36 +143,10 @@ jobs:
           directory = "vendor"
           EOF
 
-      - name: Build source package
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          BASE_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          PACKAGE_NAME="rustnet-monitor"
-
-          # Create build directory
-          mkdir -p build-ppa
-
-          # Create orig tarball with vendored dependencies from release tag
-          # Use vX.Y.Z tag if it exists, otherwise use HEAD
-          ORIG_TARBALL="${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
-          RELEASE_TAG="v${BASE_VERSION}"
-
-          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "✓ Found release tag: $RELEASE_TAG"
-            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$RELEASE_TAG" | tar -x -C build-ppa
-          else
-            echo "⚠ Release tag $RELEASE_TAG not found, using HEAD"
-            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD | tar -x -C build-ppa
-          fi
-
-          # Copy vendored dependencies into extracted archive
-          echo "Copying vendored dependencies..."
-          cp -r vendor build-ppa/${PACKAGE_NAME}-${VERSION}/
-          cp -r .cargo build-ppa/${PACKAGE_NAME}-${VERSION}/
-
           # Create tarball with vendored deps
           echo "Creating tarball with vendored dependencies..."
-          cd build-ppa
+          cd ..
+          ORIG_TARBALL="${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
           tar -czf "${ORIG_TARBALL}" "${PACKAGE_NAME}-${VERSION}"
 
           # Add debian directory
