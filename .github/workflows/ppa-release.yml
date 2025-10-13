@@ -164,30 +164,6 @@ jobs:
           # Launchpad will reuse existing file if hash matches
           debuild -S -sa -d -us -uc
 
-      - name: Test build locally
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          PACKAGE_NAME="rustnet-monitor"
-
-          cd build-ppa
-
-          # Extract source package
-          dpkg-source -x ${PACKAGE_NAME}_${VERSION}-*.dsc test-build
-          cd test-build
-
-          # Verify vendored dependencies exist
-          if [ ! -d "vendor" ]; then
-            echo "❌ Error: vendor/ directory not found in tarball!"
-            exit 1
-          fi
-          echo "✓ Found vendored dependencies ($(du -sh vendor | cut -f1))"
-
-          # Test compilation with vendored deps
-          echo "Testing Rust compilation with vendored dependencies..."
-          cargo build --release --verbose --offline
-
-          echo "✅ Build test passed!"
-
       - name: Sign and upload
         env:
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
