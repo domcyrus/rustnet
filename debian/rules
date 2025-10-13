@@ -3,8 +3,9 @@
 export DH_VERBOSE = 1
 export RUSTFLAGS = -C strip=symbols
 
-# Use rustup-installed cargo/rustc instead of system version
-export PATH := $(HOME)/.cargo/bin:$(PATH)
+# Use rustup-installed toolchain
+export CARGO_HOME := $(CURDIR)/debian/.cargo
+export RUSTUP_HOME := $(CURDIR)/debian/.rustup
 
 # eBPF is enabled by default, no need for explicit feature flag
 export CARGO_BUILD_FLAGS = --release
@@ -16,14 +17,23 @@ export RUSTNET_ASSET_DIR = $(CURDIR)/debian/tmp/assets
 	dh $@
 
 override_dh_auto_clean:
-	# Use rustup cargo for clean
-	[ ! -f Cargo.toml ] || cargo clean || true
+	# Clean cargo build artifacts
+	[ ! -f Cargo.toml ] || [ ! -d $(CARGO_HOME) ] || $(CARGO_HOME)/bin/cargo clean || true
+	# Clean rustup installation
+	rm -rf $(CARGO_HOME) $(RUSTUP_HOME)
+
+override_dh_auto_configure:
+	# Install stable Rust toolchain using rustup (from package)
+	rustup-init -y --default-toolchain stable --profile minimal
+	@echo "Rust version:"
+	$(CARGO_HOME)/bin/cargo --version
+	$(CARGO_HOME)/bin/rustc --version
 
 override_dh_auto_build:
 	# Create asset directory for build.rs
 	mkdir -p $(RUSTNET_ASSET_DIR)
-	# Build with rustup cargo (supports edition 2024)
-	cargo build --release --verbose
+	# Build with rustup-installed cargo (supports edition 2024)
+	$(CARGO_HOME)/bin/cargo build --release --verbose
 
 override_dh_auto_install:
 	# Install binary
