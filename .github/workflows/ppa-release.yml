@@ -87,6 +87,21 @@ jobs:
           DEBIAN_REVISION=$(head -1 debian/changelog | sed 's/.*(\(.*\)-\(.*\)).*/\2/')
           echo "debian_revision=$DEBIAN_REVISION" >> $GITHUB_OUTPUT
 
+      - name: Vendor dependencies
+        run: |
+          echo "Vendoring Rust dependencies..."
+          cargo vendor vendor
+
+          # Create cargo config to use vendored deps
+          mkdir -p .cargo
+          cat > .cargo/config.toml << 'EOF'
+          [source.crates-io]
+          replace-with = "vendored-sources"
+
+          [source.vendored-sources]
+          directory = "vendor"
+          EOF
+
       - name: Build source package
         run: |
           VERSION="${{ steps.version.outputs.version }}"
@@ -95,27 +110,23 @@ jobs:
           # Create build directory
           mkdir -p build-ppa
 
-          # Create orig tarball from debian/<version> tag for reproducibility
-          # This ensures the same upstream version always generates identical tarballs
+          # Create orig tarball with vendored dependencies
+          # Include vendor/ and .cargo/ directories for offline builds
           ORIG_TARBALL="${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
-          DEBIAN_TAG="debian/${VERSION}"
 
-          if git rev-parse "$DEBIAN_TAG" >/dev/null 2>&1; then
-            echo "✓ Found debian tag: $DEBIAN_TAG"
-            git archive --format=tar.gz --prefix="${PACKAGE_NAME}-${VERSION}/" "$DEBIAN_TAG" \
-              > "build-ppa/${ORIG_TARBALL}"
-            echo "✓ Created orig tarball from $DEBIAN_TAG"
-          else
-            echo "⚠ Warning: debian tag $DEBIAN_TAG not found, using HEAD"
-            echo "  For reproducible builds, create the tag with: git tag $DEBIAN_TAG"
-            git archive --format=tar.gz --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD \
-              > "build-ppa/${ORIG_TARBALL}"
-            echo "✓ Created orig tarball from HEAD"
-          fi
+          echo "Creating tarball with vendored dependencies..."
+          tar -czf "build-ppa/${ORIG_TARBALL}" \
+            --transform="s,^,${PACKAGE_NAME}-${VERSION}/," \
+            --exclude='.git' \
+            --exclude='target' \
+            --exclude='build-ppa' \
+            --exclude='.github' \
+            --exclude='scripts' \
+            .
 
           # Extract and add debian directory
           cd build-ppa
-          tar -xzf "${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
+          tar -xzf "${ORIG_TARBALL}"
           cp -r "$GITHUB_WORKSPACE/debian" "${PACKAGE_NAME}-${VERSION}/"
 
           # Build source package
@@ -136,24 +147,16 @@ jobs:
           dpkg-source -x ${PACKAGE_NAME}_${VERSION}-*.dsc test-build
           cd test-build
 
-          # Install rustup package
-          sudo apt-get install -y rustup
+          # Verify vendored dependencies exist
+          if [ ! -d "vendor" ]; then
+            echo "❌ Error: vendor/ directory not found in tarball!"
+            exit 1
+          fi
+          echo "✓ Found vendored dependencies ($(du -sh vendor | cut -f1))"
 
-          # Setup environment like debian/rules does
-          export RUSTUP_HOME=$(pwd)/debian/.rustup
-          export CARGO_HOME=$(pwd)/debian/.cargo
-          export PATH=$CARGO_HOME/bin:$PATH
-
-          # Install stable toolchain using rustup
-          rustup default stable
-
-          # Verify Rust version
-          cargo --version
-          rustc --version
-
-          # Test compilation
-          echo "Testing Rust compilation..."
-          cargo build --release --verbose
+          # Test compilation with vendored deps
+          echo "Testing Rust compilation with vendored dependencies..."
+          cargo build --release --verbose --offline
 
           echo "✅ Build test passed!"
 
