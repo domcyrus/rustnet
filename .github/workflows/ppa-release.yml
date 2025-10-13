@@ -121,6 +121,35 @@ jobs:
           cd "${PACKAGE_NAME}-${VERSION}"
           debuild -S -sa -d -us -uc
 
+      - name: Test build locally
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PACKAGE_NAME="rustnet-monitor"
+
+          cd build-ppa
+
+          # Extract source package
+          dpkg-source -x ${PACKAGE_NAME}_${VERSION}-*.dsc test-build
+          cd test-build
+
+          # Install rustup (simulating Launchpad environment)
+          sudo apt-get install -y rustup
+
+          # Run the configure step to test rustup installation
+          export CARGO_HOME=$(pwd)/debian/.cargo
+          export RUSTUP_HOME=$(pwd)/debian/.rustup
+          rustup-init -y --default-toolchain stable --profile minimal
+
+          # Verify Rust version
+          $CARGO_HOME/bin/cargo --version
+          $CARGO_HOME/bin/rustc --version
+
+          # Test compilation
+          echo "Testing Rust compilation..."
+          $CARGO_HOME/bin/cargo build --release --verbose
+
+          echo "✅ Build test passed!"
+
       - name: Sign and upload
         env:
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
