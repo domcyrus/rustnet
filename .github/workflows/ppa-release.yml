@@ -87,10 +87,32 @@ jobs:
           DEBIAN_REVISION=$(head -1 debian/changelog | sed 's/.*(\(.*\)-\(.*\)).*/\2/')
           echo "debian_revision=$DEBIAN_REVISION" >> $GITHUB_OUTPUT
 
+      - name: Update changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          CURRENT_VERSION=$(head -1 debian/changelog | sed 's/.*(\(.*\)).*/\1/')
+
+          if [ "$VERSION-1ubuntu1" != "$CURRENT_VERSION" ]; then
+            echo "Updating changelog from $CURRENT_VERSION to $VERSION-1ubuntu1"
+
+            # Create new changelog entry
+            DEBFULLNAME="${{ env.DEBFULLNAME }}" DEBEMAIL="${{ env.DEBEMAIL }}" \
+              dch --newversion "$VERSION-1ubuntu1" \
+                  --distribution "questing" \
+                  "New upstream release $VERSION"
+
+            echo "✓ Changelog updated"
+          else
+            echo "✓ Changelog already at correct version"
+          fi
+
       - name: Vendor dependencies
         run: |
           echo "Vendoring Rust dependencies..."
           cargo vendor vendor
+
+          # Clean up .orig backup files created by cargo vendor
+          find vendor -name "*.orig" -delete
 
           # Create cargo config to use vendored deps
           mkdir -p .cargo
@@ -105,28 +127,36 @@ jobs:
       - name: Build source package
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          BASE_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           PACKAGE_NAME="rustnet-monitor"
 
           # Create build directory
           mkdir -p build-ppa
 
-          # Create orig tarball with vendored dependencies
-          # Include vendor/ and .cargo/ directories for offline builds
+          # Create orig tarball with vendored dependencies from release tag
+          # Use vX.Y.Z tag if it exists, otherwise use HEAD
           ORIG_TARBALL="${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
+          RELEASE_TAG="v${BASE_VERSION}"
 
+          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "✓ Found release tag: $RELEASE_TAG"
+            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$RELEASE_TAG" | tar -x -C build-ppa
+          else
+            echo "⚠ Release tag $RELEASE_TAG not found, using HEAD"
+            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD | tar -x -C build-ppa
+          fi
+
+          # Copy vendored dependencies into extracted archive
+          echo "Copying vendored dependencies..."
+          cp -r vendor build-ppa/${PACKAGE_NAME}-${VERSION}/
+          cp -r .cargo build-ppa/${PACKAGE_NAME}-${VERSION}/
+
+          # Create tarball with vendored deps
           echo "Creating tarball with vendored dependencies..."
-          tar -czf "build-ppa/${ORIG_TARBALL}" \
-            --transform="s,^,${PACKAGE_NAME}-${VERSION}/," \
-            --exclude='.git' \
-            --exclude='target' \
-            --exclude='build-ppa' \
-            --exclude='.github' \
-            --exclude='scripts' \
-            .
-
-          # Extract and add debian directory
           cd build-ppa
-          tar -xzf "${ORIG_TARBALL}"
+          tar -czf "${ORIG_TARBALL}" "${PACKAGE_NAME}-${VERSION}"
+
+          # Add debian directory
           cp -r "$GITHUB_WORKSPACE/debian" "${PACKAGE_NAME}-${VERSION}/"
 
           # Build source package
