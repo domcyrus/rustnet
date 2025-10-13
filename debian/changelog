@@ -1,4 +1,4 @@
-rustnet-monitor (0.14.0-2ubuntu1) questing; urgency=medium
+rustnet-monitor (0.14.0+ds5-1ubuntu1) questing; urgency=medium
 
   * Refactored packaging with vendored dependencies in debian/vendor.tar.xz
   * Target Ubuntu Questing (25.10) with Rust 1.88 for edition 2024 support
@@ -7,7 +7,7 @@ rustnet-monitor (0.14.0-2ubuntu1) questing; urgency=medium
   * JSON logging for SIEM integration
   * TUN/TAP interface support for VPN monitoring
 
- -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 21:25:00 +0000
+ -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 21:32:00 +0000
 
 rustnet-monitor (0.14.0-1) unstable; urgency=medium
 
