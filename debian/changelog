@@ -1,9 +1,9 @@
 rustnet-monitor (0.14.0-2ubuntu1) questing; urgency=medium
 
-  * Target Ubuntu Questing (25.10) with Rust 1.85 for edition 2024 support
-  * Use versioned cargo-1.85 and rustc-1.85 packages
+  * Target Ubuntu Questing (25.10) with Rust 1.88 for edition 2024 support
+  * Use versioned cargo-1.88 and rustc-1.88 packages
 
- -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 17:45:00 +0000
+ -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 17:55:00 +0000
 
 rustnet-monitor (0.14.0-1ubuntu1) noble; urgency=medium
 

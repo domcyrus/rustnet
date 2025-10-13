@@ -3,8 +3,8 @@ Section: net
 Priority: optional
 Maintainer: Marco Cadetg <domcyrus@example.com>
 Build-Depends: debhelper-compat (= 13),
-               cargo-1.85,
-               rustc-1.85,
+               cargo-1.88,
+               rustc-1.88,
                libpcap-dev,
                libelf-dev,
                elfutils,

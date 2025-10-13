@@ -3,10 +3,10 @@
 export DH_VERBOSE = 1
 export RUSTFLAGS = -C strip=symbols
 
-# Use versioned Rust 1.85 from Ubuntu Questing
-export CARGO = /usr/bin/cargo-1.85
-export RUSTC = /usr/bin/rustc-1.85
-export RUSTDOC = /usr/bin/rustdoc-1.85
+# Use versioned Rust 1.88 from Ubuntu Questing
+export CARGO = /usr/bin/cargo-1.88
+export RUSTC = /usr/bin/rustc-1.88
+export RUSTDOC = /usr/bin/rustdoc-1.88
 
 # eBPF is enabled by default, no need for explicit feature flag
 export CARGO_BUILD_FLAGS = --release
