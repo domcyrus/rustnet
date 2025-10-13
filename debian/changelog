@@ -1,11 +1,11 @@
-rustnet-monitor (0.14.0+ds3-1ubuntu1) questing; urgency=medium
+rustnet-monitor (0.14.0+ds4-1ubuntu1) questing; urgency=medium
 
   * Include vendored Rust dependencies for offline builds
-  * Remove prebuilt binaries from vendor directory
+  * Remove prebuilt binaries and regenerate cargo checksums
   * Target Ubuntu Questing (25.10) with Rust 1.88 for edition 2024 support
   * Use versioned cargo-1.88 and rustc-1.88 packages
 
- -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 20:30:00 +0000
+ -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 21:00:00 +0000
 
 rustnet-monitor (0.14.0-1ubuntu1) noble; urgency=medium
 
