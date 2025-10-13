@@ -28,8 +28,14 @@ override_dh_auto_clean:
 	rm -rf target
 
 override_dh_auto_configure:
+	# Check rustup availability
+	which rustup
+	rustup --version
 	# Use rustup to install stable toolchain (supports edition 2024)
+	rustup toolchain install stable
 	rustup default stable
+	rustup show
+	# Verify Rust version
 	@echo "Rust version:"
 	cargo --version
 	rustc --version
