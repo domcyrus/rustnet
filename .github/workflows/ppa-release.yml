@@ -138,6 +138,15 @@ jobs:
           find vendor -name "*.dll" -delete
           find vendor -name "*.lib" -delete
 
+          # Regenerate checksums for all crates after deletion
+          echo "Regenerating cargo checksums..."
+          for crate in vendor/*/; do
+            if [ -f "${crate}.cargo-checksum.json" ]; then
+              # Use jq to remove entries for deleted files, or regenerate from scratch
+              echo '{"files":{},"package":null}' > "${crate}.cargo-checksum.json"
+            fi
+          done
+
           # Create cargo config to use vendored deps
           mkdir -p .cargo
           cat > .cargo/config.toml << 'EOF'
