@@ -1,0 +1,73 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE = 1
+export RUSTFLAGS = -C strip=symbols
+
+# Use rustup-installed cargo/rustc instead of system version
+export PATH := $(HOME)/.cargo/bin:$(PATH)
+
+# eBPF is enabled by default, no need for explicit feature flag
+export CARGO_BUILD_FLAGS = --release
+
+# Set asset directory for completions and manpage generation
+export RUSTNET_ASSET_DIR = $(CURDIR)/debian/tmp/assets
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	# Use rustup cargo for clean
+	[ ! -f Cargo.toml ] || cargo clean || true
+
+override_dh_auto_build:
+	# Create asset directory for build.rs
+	mkdir -p $(RUSTNET_ASSET_DIR)
+	# Build with rustup cargo (supports edition 2024)
+	cargo build --release --verbose
+
+override_dh_auto_install:
+	# Install binary
+	install -Dm755 target/release/rustnet debian/rustnet/usr/bin/rustnet
+
+	# Install services file
+	install -Dm644 assets/services debian/rustnet/usr/share/rustnet-monitor/services
+
+	# Install desktop file
+	install -Dm644 resources/packaging/linux/rustnet.desktop \
+		debian/rustnet/usr/share/applications/rustnet.desktop
+
+	# Install icon
+	install -Dm644 resources/packaging/linux/graphics/rustnet.png \
+		debian/rustnet/usr/share/icons/hicolor/256x256/apps/rustnet.png
+
+	# Install documentation
+	install -Dm644 README.md debian/rustnet/usr/share/doc/rustnet/README.md
+
+	# Install shell completions if generated
+	if [ -d "$(RUSTNET_ASSET_DIR)" ]; then \
+		mkdir -p debian/rustnet/usr/share/bash-completion/completions; \
+		mkdir -p debian/rustnet/usr/share/zsh/vendor-completions; \
+		mkdir -p debian/rustnet/usr/share/fish/vendor_completions.d; \
+		[ -f "$(RUSTNET_ASSET_DIR)/rustnet.bash" ] && \
+			install -Dm644 "$(RUSTNET_ASSET_DIR)/rustnet.bash" \
+			debian/rustnet/usr/share/bash-completion/completions/rustnet || true; \
+		[ -f "$(RUSTNET_ASSET_DIR)/_rustnet" ] && \
+			install -Dm644 "$(RUSTNET_ASSET_DIR)/_rustnet" \
+			debian/rustnet/usr/share/zsh/vendor-completions/_rustnet || true; \
+		[ -f "$(RUSTNET_ASSET_DIR)/rustnet.fish" ] && \
+			install -Dm644 "$(RUSTNET_ASSET_DIR)/rustnet.fish" \
+			debian/rustnet/usr/share/fish/vendor_completions.d/rustnet.fish || true; \
+	fi
+
+	# Install manpage if generated
+	if [ -f "$(RUSTNET_ASSET_DIR)/rustnet.1" ]; then \
+		install -Dm644 "$(RUSTNET_ASSET_DIR)/rustnet.1" \
+			debian/rustnet/usr/share/man/man1/rustnet.1; \
+	fi
+
+override_dh_auto_test:
+	# Skip tests during package build (requires privileged network access)
+	@echo "Skipping tests - requires network privileges"
+
+override_dh_installchangelogs:
+	dh_installchangelogs CHANGELOG.md

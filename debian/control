@@ -1,0 +1,42 @@
+Source: rustnet-monitor
+Section: net
+Priority: optional
+Maintainer: Marco Cadetg <domcyrus@example.com>
+Build-Depends: debhelper-compat (= 13),
+               cargo,
+               rustc,
+               libpcap-dev,
+               libelf-dev,
+               elfutils,
+               zlib1g-dev,
+               clang,
+               llvm,
+               pkg-config
+Standards-Version: 4.7.2
+Homepage: https://github.com/domcyrus/rustnet
+Vcs-Git: https://github.com/domcyrus/rustnet.git
+Vcs-Browser: https://github.com/domcyrus/rustnet
+Rules-Requires-Root: no
+
+Package: rustnet
+Architecture: amd64 arm64 armhf
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         libpcap0.8,
+         libelf1,
+         elfutils
+Recommends: libcap2-bin
+Description: Cross-platform network monitoring terminal UI tool
+ RustNet provides real-time visibility into network connections with
+ detailed state information, connection lifecycle management, deep
+ packet inspection, and a terminal user interface.
+ .
+ Features include:
+  * Real-time Network Monitoring for TCP, UDP, ICMP, and ARP connections
+  * Deep Packet Inspection (DPI) for HTTP/HTTPS, DNS, SSH, and QUIC protocols
+  * Connection lifecycle management with protocol-aware timeouts
+  * Process identification and service name resolution
+  * Cross-platform support (Linux, macOS, Windows, BSD)
+  * Advanced filtering with vim/fzf-style search
+  * Multi-threaded processing for optimal performance
+  * eBPF-enhanced process detection (enabled by default with automatic fallback)

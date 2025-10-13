@@ -1,0 +1,169 @@
+name: Release to Ubuntu PPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu_release:
+        description: 'Ubuntu release codename'
+        required: true
+        default: 'noble'
+        type: choice
+        options:
+          - noble   # 24.04 LTS
+          - jammy   # 22.04 LTS
+  push:
+    tags:
+      - 'v*'
+
+env:
+  DEBEMAIL: cadetg@gmail.com
+  DEBFULLNAME: Marco Cadetg
+  PPA: ppa:domcyrus/rustnet
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        ubuntu_release:
+          - noble
+          - jammy
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            debhelper \
+            devscripts \
+            dput \
+            gnupg \
+            libpcap-dev \
+            libelf-dev \
+            elfutils \
+            zlib1g-dev \
+            clang \
+            llvm \
+            pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Import GPG key
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # Set debian revision
+          if [ "${{ matrix.ubuntu_release }}" = "noble" ]; then
+            DEBIAN_REVISION="1ubuntu1"
+          else
+            DEBIAN_REVISION="1ubuntu1~${{ matrix.ubuntu_release }}1"
+          fi
+          echo "debian_revision=$DEBIAN_REVISION" >> $GITHUB_OUTPUT
+
+      - name: Update debian/changelog
+        run: |
+          cd debian
+
+          # Update distribution
+          sed -i "s/) noble;/) ${{ matrix.ubuntu_release }};/" changelog
+
+          # For jammy, add backport entry
+          if [ "${{ matrix.ubuntu_release }}" = "jammy" ]; then
+            VERSION="${{ steps.version.outputs.version }}"
+            REVISION="${{ steps.version.outputs.debian_revision }}"
+
+            cat > changelog.new <<EOF
+rustnet-monitor (${VERSION}-${REVISION}) jammy; urgency=medium
+
+  * Backport to Ubuntu 22.04 Jammy
+
+ -- Marco Cadetg <cadetg@gmail.com>  $(date -R)
+
+EOF
+            cat changelog >> changelog.new
+            mv changelog.new changelog
+          fi
+
+      - name: Build source package
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PACKAGE_NAME="rustnet-monitor"
+
+          # Create build directory
+          mkdir -p build-ppa
+
+          # Create orig tarball
+          git archive --format=tar.gz --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD \
+            > "build-ppa/${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
+
+          # Extract and add debian directory
+          cd build-ppa
+          tar -xzf "${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
+          cp -r "$GITHUB_WORKSPACE/debian" "${PACKAGE_NAME}-${VERSION}/"
+
+          # Build source package
+          cd "${PACKAGE_NAME}-${VERSION}"
+          debuild -S -sa -d -us -uc
+
+      - name: Sign and upload
+        env:
+          GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
+        run: |
+          cd build-ppa
+          VERSION="${{ steps.version.outputs.version }}"
+          DEBIAN_REVISION="${{ steps.version.outputs.debian_revision }}"
+          CHANGES_FILE="rustnet-monitor_${VERSION}-${DEBIAN_REVISION}_source.changes"
+
+          # Sign
+          debsign -k${GPG_KEY_ID} ${CHANGES_FILE}
+
+          # Verify
+          gpg --verify ${CHANGES_FILE}
+
+          # Upload to PPA
+          dput ${{ env.PPA }} ${CHANGES_FILE}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppa-source-${{ matrix.ubuntu_release }}
+          path: |
+            build-ppa/*.dsc
+            build-ppa/*.tar.gz
+            build-ppa/*.tar.xz
+            build-ppa/*.changes
+            build-ppa/*.buildinfo
+          retention-days: 30
+
+      - name: Summary
+        run: |
+          echo "## 🎉 PPA Upload Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package**: rustnet-monitor" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ steps.version.outputs.version }}-${{ steps.version.outputs.debian_revision }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Ubuntu**: ${{ matrix.ubuntu_release }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Installation" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "sudo add-apt-repository ppa:domcyrus/rustnet" >> $GITHUB_STEP_SUMMARY
+          echo "sudo apt update && sudo apt install rustnet" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View PPA →](https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet/+packages)" >> $GITHUB_STEP_SUMMARY

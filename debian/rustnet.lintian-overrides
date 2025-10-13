@@ -1,0 +1,6 @@
+# Capabilities are intentionally set in postinst for packet capture and eBPF
+rustnet: elevated-privileges [usr/bin/rustnet]
+rustnet: setuid-binary [usr/bin/rustnet] *
+
+# Binary size is expected for Rust applications with eBPF support
+rustnet: unstripped-binary-or-object [usr/bin/rustnet]

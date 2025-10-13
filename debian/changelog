@@ -1,0 +1,23 @@
+rustnet-monitor (0.14.0-1ubuntu1) noble; urgency=medium
+
+  * Initial Ubuntu PPA release
+  * eBPF enabled by default on Linux with automatic procfs fallback
+  * JSON logging for SIEM integration
+  * TUN/TAP interface support for VPN monitoring
+  * Multi-architecture support (amd64, arm64, armhf)
+  * Desktop integration with .desktop file and icon
+  * Automatic capability setting for non-root packet capture
+
+ -- Marco Cadetg <domcyrus@example.com>  Mon, 13 Oct 2025 12:00:00 +0000
+
+rustnet-monitor (0.14.0-1) unstable; urgency=medium
+
+  * New upstream release
+  * eBPF Enabled by Default on Linux for enhanced performance
+  * JSON Logging for SIEM Integration
+  * TUN/TAP Interface Support for VPN connections
+  * Fedora COPR RPM Packaging
+  * Fixed high CPU usage on Linux
+  * Bundled vmlinux.h files to eliminate network dependency during builds
+
+ -- Marco Cadetg <domcyrus@example.com>  Sat, 12 Oct 2025 00:00:00 +0000

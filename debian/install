@@ -1,0 +1,3 @@
+assets/services usr/share/rustnet-monitor/
+resources/packaging/linux/rustnet.desktop usr/share/applications/
+resources/packaging/linux/graphics/rustnet.png usr/share/icons/hicolor/256x256/apps/

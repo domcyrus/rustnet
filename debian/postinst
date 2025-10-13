@@ -1,0 +1,64 @@
+#!/bin/sh
+set -e
+
+#DEBHELPER#
+
+case "$1" in
+    configure)
+        # Set capabilities for packet capture and eBPF support without requiring root/sudo
+        # This allows rustnet to run as a normal user with enhanced eBPF process detection
+        if command -v setcap >/dev/null 2>&1; then
+            # Try modern capabilities first (Linux 5.8+)
+            # CAP_NET_RAW, CAP_NET_ADMIN: packet capture
+            # CAP_BPF, CAP_PERFMON: eBPF support
+            # CAP_SYS_ADMIN: may be required for kprobe attachment on some kernel versions
+            setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet 2>/dev/null || \
+                # Fallback for older kernels without CAP_BPF/CAP_PERFMON
+                setcap 'cap_net_raw,cap_net_admin,cap_sys_admin+eip' /usr/bin/rustnet || true
+        fi
+
+        cat <<EOF
+
+================================================================================
+RustNet has been installed with eBPF support!
+
+NETWORK PACKET CAPTURE PERMISSIONS:
+  RustNet requires specific Linux capabilities for packet capture and eBPF
+  process detection. These have been automatically set if setcap is available.
+
+  To verify permissions are set correctly:
+    getcap /usr/bin/rustnet
+
+  Expected output (Linux 5.8+):
+    /usr/bin/rustnet cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon=eip
+
+  Or for older kernels:
+    /usr/bin/rustnet cap_net_raw,cap_net_admin,cap_sys_admin=eip
+
+  If capabilities are not set, you can manually set them:
+    # For Linux 5.8+ with eBPF support
+    sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
+
+    # Or for older kernels
+    sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin+eip' /usr/bin/rustnet
+
+  Alternatively, run rustnet with sudo:
+    sudo rustnet
+
+  eBPF FALLBACK:
+    If eBPF fails to load, rustnet will automatically fall back to procfs-based
+    process detection. Check the TUI Statistics panel to see which detection
+    method is active.
+
+USAGE:
+  rustnet              # Start network monitoring
+  rustnet --help       # Show all options
+
+For more information, visit: https://github.com/domcyrus/rustnet
+================================================================================
+
+EOF
+        ;;
+esac
+
+exit 0
