@@ -90,11 +90,11 @@ jobs:
             REVISION="${{ steps.version.outputs.debian_revision }}"
             TIMESTAMP=$(date -R)
 
-            echo "rustnet-monitor (\${VERSION}-\${REVISION}) jammy; urgency=medium" > changelog.new
+            echo "rustnet-monitor ($VERSION-$REVISION) jammy; urgency=medium" > changelog.new
             echo "" >> changelog.new
             echo "  * Backport to Ubuntu 22.04 Jammy" >> changelog.new
             echo "" >> changelog.new
-            echo " -- Marco Cadetg <cadetg@gmail.com>  \${TIMESTAMP}" >> changelog.new
+            echo " -- Marco Cadetg <cadetg@gmail.com>  $TIMESTAMP" >> changelog.new
             echo "" >> changelog.new
             cat changelog >> changelog.new
             mv changelog.new changelog
