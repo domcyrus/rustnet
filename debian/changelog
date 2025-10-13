@@ -1,4 +1,11 @@
-rustnet-monitor (0.14.0-1ubuntu1) questing; urgency=medium
+rustnet-monitor (0.14.0-2ubuntu1) questing; urgency=medium
+
+  * Target Ubuntu Questing (25.10) with Rust 1.85 for edition 2024 support
+  * Use versioned cargo-1.85 and rustc-1.85 packages
+
+ -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 17:45:00 +0000
+
+rustnet-monitor (0.14.0-1ubuntu1) noble; urgency=medium
 
   * Initial Ubuntu PPA release
   * eBPF enabled by default on Linux with automatic procfs fallback
@@ -7,7 +14,6 @@ rustnet-monitor (0.14.0-1ubuntu1) questing; urgency=medium
   * Multi-architecture support (amd64, arm64, armhf)
   * Desktop integration with .desktop file and icon
   * Automatic capability setting for non-root packet capture
-  * Targets Ubuntu Questing (25.04) with Rust 1.85 for edition 2024 support
 
  -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 12:00:00 +0000
 
