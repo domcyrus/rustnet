@@ -3,6 +3,11 @@
 export DH_VERBOSE = 1
 export RUSTFLAGS = -C strip=symbols
 
+# Use rustup-managed Rust toolchain
+export RUSTUP_HOME := $(CURDIR)/debian/.rustup
+export CARGO_HOME := $(CURDIR)/debian/.cargo
+export PATH := $(CARGO_HOME)/bin:$(PATH)
+
 # eBPF is enabled by default, no need for explicit feature flag
 export CARGO_BUILD_FLAGS = --release
 
@@ -13,13 +18,18 @@ export RUSTNET_ASSET_DIR = $(CURDIR)/debian/tmp/assets
 	dh $@
 
 override_dh_auto_clean:
-	# Clean cargo build artifacts
-	cargo clean || true
+	# Clean cargo build artifacts if installed
+	if [ -x "$(CARGO_HOME)/bin/cargo" ]; then \
+		cargo clean || true; \
+	fi
+	# Clean rustup installation
+	rm -rf $(CARGO_HOME) $(RUSTUP_HOME)
 	# Clean target directory
 	rm -rf target
 
 override_dh_auto_configure:
-	# Verify Rust toolchain from rustup package
+	# Use rustup to install stable toolchain (supports edition 2024)
+	rustup default stable
 	@echo "Rust version:"
 	cargo --version
 	rustc --version
