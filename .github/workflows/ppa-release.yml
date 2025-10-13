@@ -80,9 +80,23 @@ jobs:
           # Create build directory
           mkdir -p build-ppa
 
-          # Create orig tarball
-          git archive --format=tar.gz --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD \
-            > "build-ppa/${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
+          # Create orig tarball from debian/<version> tag for reproducibility
+          # This ensures the same upstream version always generates identical tarballs
+          ORIG_TARBALL="${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
+          DEBIAN_TAG="debian/${VERSION}"
+
+          if git rev-parse "$DEBIAN_TAG" >/dev/null 2>&1; then
+            echo "✓ Found debian tag: $DEBIAN_TAG"
+            git archive --format=tar.gz --prefix="${PACKAGE_NAME}-${VERSION}/" "$DEBIAN_TAG" \
+              > "build-ppa/${ORIG_TARBALL}"
+            echo "✓ Created orig tarball from $DEBIAN_TAG"
+          else
+            echo "⚠ Warning: debian tag $DEBIAN_TAG not found, using HEAD"
+            echo "  For reproducible builds, create the tag with: git tag $DEBIAN_TAG"
+            git archive --format=tar.gz --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD \
+              > "build-ppa/${ORIG_TARBALL}"
+            echo "✓ Created orig tarball from HEAD"
+          fi
 
           # Extract and add debian directory
           cd build-ppa
@@ -91,6 +105,9 @@ jobs:
 
           # Build source package
           cd "${PACKAGE_NAME}-${VERSION}"
+
+          # Always use -sa to include orig tarball
+          # Launchpad will reuse existing file if hash matches
           debuild -S -sa -d -us -uc
 
       - name: Test build locally
