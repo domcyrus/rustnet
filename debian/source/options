@@ -1,5 +1,0 @@
-# Exclude backup and binary files from source package
-tar-ignore = "*.orig"
-tar-ignore = "*.a"
-tar-ignore = "*.lib"
-tar-ignore = "*.dll"

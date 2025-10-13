@@ -20,11 +20,20 @@ export RUSTNET_ASSET_DIR = $(CURDIR)/debian/tmp/assets
 override_dh_auto_clean:
 	# Clean cargo build artifacts
 	$(CARGO) clean || true
-	# Clean target directory
-	rm -rf target
+	# Clean target and vendor directories
+	rm -rf target vendor .cargo
 
 override_dh_auto_configure:
-	# Verify Rust 1.85 version
+	# Extract vendored dependencies
+	tar -xJf debian/vendor.tar.xz
+	# Configure cargo to use vendored dependencies
+	mkdir -p .cargo
+	echo '[source.crates-io]' > .cargo/config.toml
+	echo 'replace-with = "vendored-sources"' >> .cargo/config.toml
+	echo '' >> .cargo/config.toml
+	echo '[source.vendored-sources]' >> .cargo/config.toml
+	echo 'directory = "vendor"' >> .cargo/config.toml
+	# Verify Rust 1.88 version
 	@echo "Rust version:"
 	$(CARGO) --version
 	$(RUSTC) --version

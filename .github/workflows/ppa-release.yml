@@ -125,46 +125,32 @@ jobs:
             git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD | tar -x -C build-ppa
           fi
 
-          # Vendor dependencies inside the extracted source
+          # Vendor dependencies separately from orig tarball
           echo "Vendoring Rust dependencies..."
           cd build-ppa/${PACKAGE_NAME}-${VERSION}
 
           cargo vendor vendor
 
-          # Remove prebuilt binaries and backup files that Debian doesn't like
+          # Remove prebuilt binaries that Debian doesn't like
           echo "Cleaning vendor directory..."
-          find vendor -name "*.orig" -delete
           find vendor -name "*.a" -delete
           find vendor -name "*.dll" -delete
           find vendor -name "*.lib" -delete
 
-          # Regenerate checksums for all crates after deletion
-          echo "Regenerating cargo checksums..."
-          for crate in vendor/*/; do
-            if [ -f "${crate}.cargo-checksum.json" ]; then
-              # Use jq to remove entries for deleted files, or regenerate from scratch
-              echo '{"files":{},"package":null}' > "${crate}.cargo-checksum.json"
-            fi
-          done
+          # Pack vendor directory as separate tarball in debian/
+          echo "Creating vendor tarball..."
+          tar -cJf ../vendor.tar.xz vendor
+          rm -rf vendor
 
-          # Create cargo config to use vendored deps
-          mkdir -p .cargo
-          cat > .cargo/config.toml << 'EOF'
-          [source.crates-io]
-          replace-with = "vendored-sources"
-
-          [source.vendored-sources]
-          directory = "vendor"
-          EOF
-
-          # Create tarball with vendored deps
-          echo "Creating tarball with vendored dependencies..."
+          # Create orig tarball (without vendor directory)
+          echo "Creating orig tarball..."
           cd ..
           ORIG_TARBALL="${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
           tar -czf "${ORIG_TARBALL}" "${PACKAGE_NAME}-${VERSION}"
 
-          # Add debian directory
+          # Add debian directory and vendor tarball
           cp -r "$GITHUB_WORKSPACE/debian" "${PACKAGE_NAME}-${VERSION}/"
+          mv vendor.tar.xz "${PACKAGE_NAME}-${VERSION}/debian/"
 
           # Build source package
           cd "${PACKAGE_NAME}-${VERSION}"
