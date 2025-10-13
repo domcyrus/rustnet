@@ -6,10 +6,11 @@ on:
       ubuntu_release:
         description: 'Ubuntu release codename'
         required: true
-        default: 'questing'
+        default: 'oracular'
         type: choice
         options:
-          - questing # 25.04 (dev release with Rust 1.85)
+          - oracular # 24.10 with Rust 1.81
+          - noble # 24.04 LTS with Rust 1.82
   push:
     tags:
       - 'v*'
@@ -66,7 +67,10 @@ jobs:
         run: |
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "debian_revision=1ubuntu1" >> $GITHUB_OUTPUT
+
+          # Extract Debian revision from changelog
+          DEBIAN_REVISION=$(head -1 debian/changelog | sed 's/.*(\(.*\)-\(.*\)).*/\2/')
+          echo "debian_revision=$DEBIAN_REVISION" >> $GITHUB_OUTPUT
 
       - name: Build source package
         run: |
