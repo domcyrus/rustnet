@@ -18,31 +18,19 @@ export RUSTNET_ASSET_DIR = $(CURDIR)/debian/tmp/assets
 	dh $@
 
 override_dh_auto_clean:
-	# Clean cargo build artifacts
 	$(CARGO) clean || true
-	# Clean target and vendor directories
 	rm -rf target vendor .cargo
 
-override_dh_auto_configure:
-	# Extract vendored dependencies
-	tar -xJf debian/vendor.tar.xz
-	# Configure cargo to use vendored dependencies
-	mkdir -p .cargo
-	echo '[source.crates-io]' > .cargo/config.toml
-	echo 'replace-with = "vendored-sources"' >> .cargo/config.toml
-	echo '' >> .cargo/config.toml
-	echo '[source.vendored-sources]' >> .cargo/config.toml
-	echo 'directory = "vendor"' >> .cargo/config.toml
-	# Verify Rust 1.88 version
-	@echo "Rust version:"
-	$(CARGO) --version
-	$(RUSTC) --version
-
 override_dh_auto_build:
+	# Setup cargo to use vendored dependencies
+	mkdir -p .cargo
+	cp debian/cargo.config .cargo/config
+	# Extract vendored dependencies
+	tar xJf debian/vendor.tar.xz
 	# Create asset directory for build.rs
 	mkdir -p $(RUSTNET_ASSET_DIR)
-	# Build with cargo-1.85 (supports edition 2024)
-	$(CARGO) build --release --verbose
+	# Build with cargo-1.88 using vendored dependencies
+	$(CARGO) build --release --frozen
 
 override_dh_auto_install:
 	# Install binary
