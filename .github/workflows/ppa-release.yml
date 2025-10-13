@@ -6,11 +6,10 @@ on:
       ubuntu_release:
         description: 'Ubuntu release codename'
         required: true
-        default: 'noble'
+        default: 'questing'
         type: choice
         options:
-          - noble   # 24.04 LTS
-          - oracular # 24.10
+          - questing # 25.04 (dev release with Rust 1.85)
   push:
     tags:
       - 'v*'
@@ -26,7 +25,7 @@ jobs:
     strategy:
       matrix:
         ubuntu_release:
-          - noble
+          - questing
 
     steps:
       - name: Checkout code

@@ -11,7 +11,7 @@ git tag v0.15.0
 git push origin v0.15.0
 ```
 
-This automatically builds and uploads to Ubuntu 24.04 (Noble) and later.
+This automatically builds and uploads to Ubuntu 25.04 (Questing) which has Rust 1.85 for edition 2024 support.
 
 ## GitHub Secrets Setup
 
