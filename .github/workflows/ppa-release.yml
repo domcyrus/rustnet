@@ -88,15 +88,14 @@ jobs:
           if [ "${{ matrix.ubuntu_release }}" = "jammy" ]; then
             VERSION="${{ steps.version.outputs.version }}"
             REVISION="${{ steps.version.outputs.debian_revision }}"
+            TIMESTAMP=$(date -R)
 
-            cat > changelog.new <<EOF
-rustnet-monitor (${VERSION}-${REVISION}) jammy; urgency=medium
-
-  * Backport to Ubuntu 22.04 Jammy
-
- -- Marco Cadetg <cadetg@gmail.com>  $(date -R)
-
-EOF
+            echo "rustnet-monitor (\${VERSION}-\${REVISION}) jammy; urgency=medium" > changelog.new
+            echo "" >> changelog.new
+            echo "  * Backport to Ubuntu 22.04 Jammy" >> changelog.new
+            echo "" >> changelog.new
+            echo " -- Marco Cadetg <cadetg@gmail.com>  \${TIMESTAMP}" >> changelog.new
+            echo "" >> changelog.new
             cat changelog >> changelog.new
             mv changelog.new changelog
           fi
