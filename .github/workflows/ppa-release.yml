@@ -131,10 +131,9 @@ jobs:
 
           cargo vendor vendor
 
-          # Remove prebuilt binaries that Debian doesn't like
+          # Remove prebuilt static libraries (keep .dll for tests)
           echo "Cleaning vendor directory..."
           find vendor -name "*.a" -delete
-          find vendor -name "*.dll" -delete
           find vendor -name "*.lib" -delete
 
           # Pack vendor directory as separate tarball in debian/

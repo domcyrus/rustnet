@@ -24,7 +24,7 @@ override_dh_auto_clean:
 override_dh_auto_build:
 	# Setup cargo to use vendored dependencies
 	mkdir -p .cargo
-	cp debian/cargo.config .cargo/config
+	cp debian/cargo.config .cargo/config.toml
 	# Extract vendored dependencies
 	tar xJf debian/vendor.tar.xz
 	# Create asset directory for build.rs
