@@ -301,9 +301,9 @@ RustNet is built with the following key dependencies:
 
 ### Platform-Specific
 
-- **procfs** (Linux) - Process information from /proc filesystem
-- **aya** (Linux, optional) - eBPF program loading and management
-- **aya-bpf** (Linux, optional) - eBPF program development
+- **procfs** (Linux) - Process information from /proc filesystem (runtime fallback)
+- **libbpf-rs** (Linux) - eBPF program loading and management
+- **libbpf-sys** (Linux) - Low-level libbpf bindings for eBPF
 - **windows-sys** (Windows) - Windows API bindings for IP Helper API
 
 ### Utilities

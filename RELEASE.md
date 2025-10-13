@@ -111,6 +111,7 @@ After GitHub Actions completes:
 - [ ] Verify all installer packages created (DEB, RPM, DMG, MSI)
 - [ ] Review automatically extracted release notes
 - [ ] Publish the draft release on GitHub
+- [ ] Homebrew formula at https://github.com/domcyrus/homebrew-rustnet will get automatically updated (runs hourly via GitHub Actions or can be triggered manually)
 - [ ] Announce release (if applicable)
 
 ## Versioning
