@@ -10,7 +10,7 @@ on:
         type: choice
         options:
           - noble   # 24.04 LTS
-          - jammy   # 22.04 LTS
+          - oracular # 24.10
   push:
     tags:
       - 'v*'
@@ -22,12 +22,11 @@ env:
 
 jobs:
   build-and-upload:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         ubuntu_release:
           - noble
-          - jammy
 
     steps:
       - name: Checkout code
@@ -68,37 +67,7 @@ jobs:
         run: |
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-          # Set debian revision
-          if [ "${{ matrix.ubuntu_release }}" = "noble" ]; then
-            DEBIAN_REVISION="1ubuntu1"
-          else
-            DEBIAN_REVISION="1ubuntu1~${{ matrix.ubuntu_release }}1"
-          fi
-          echo "debian_revision=$DEBIAN_REVISION" >> $GITHUB_OUTPUT
-
-      - name: Update debian/changelog
-        run: |
-          cd debian
-
-          # Update distribution
-          sed -i "s/) noble;/) ${{ matrix.ubuntu_release }};/" changelog
-
-          # For jammy, add backport entry
-          if [ "${{ matrix.ubuntu_release }}" = "jammy" ]; then
-            VERSION="${{ steps.version.outputs.version }}"
-            REVISION="${{ steps.version.outputs.debian_revision }}"
-            TIMESTAMP=$(date -R)
-
-            echo "rustnet-monitor ($VERSION-$REVISION) jammy; urgency=medium" > changelog.new
-            echo "" >> changelog.new
-            echo "  * Backport to Ubuntu 22.04 Jammy" >> changelog.new
-            echo "" >> changelog.new
-            echo " -- Marco Cadetg <cadetg@gmail.com>  $TIMESTAMP" >> changelog.new
-            echo "" >> changelog.new
-            cat changelog >> changelog.new
-            mv changelog.new changelog
-          fi
+          echo "debian_revision=1ubuntu1" >> $GITHUB_OUTPUT
 
       - name: Build source package
         run: |

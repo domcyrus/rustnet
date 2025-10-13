@@ -8,7 +8,7 @@ rustnet-monitor (0.14.0-1ubuntu1) noble; urgency=medium
   * Desktop integration with .desktop file and icon
   * Automatic capability setting for non-root packet capture
 
- -- Marco Cadetg <domcyrus@example.com>  Mon, 13 Oct 2025 12:00:00 +0000
+ -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 12:00:00 +0000
 
 rustnet-monitor (0.14.0-1) unstable; urgency=medium
 
@@ -20,4 +20,4 @@ rustnet-monitor (0.14.0-1) unstable; urgency=medium
   * Fixed high CPU usage on Linux
   * Bundled vmlinux.h files to eliminate network dependency during builds
 
- -- Marco Cadetg <domcyrus@example.com>  Sat, 12 Oct 2025 00:00:00 +0000
+ -- Marco Cadetg <cadetg@gmail.com>  Sat, 12 Oct 2025 00:00:00 +0000

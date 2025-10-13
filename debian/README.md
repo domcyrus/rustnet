@@ -11,7 +11,7 @@ git tag v0.15.0
 git push origin v0.15.0
 ```
 
-This automatically builds and uploads to both Ubuntu 22.04 (Jammy) and 24.04 (Noble).
+This automatically builds and uploads to Ubuntu 24.04 (Noble) and later.
 
 ## GitHub Secrets Setup
 
@@ -49,7 +49,7 @@ sudo apt install rustnet
 - **Binary**: rustnet
 - **Maintainer**: Marco Cadetg <cadetg@gmail.com>
 - **PPA**: https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet
-- **Supported**: Ubuntu 22.04 LTS, 24.04 LTS
+- **Supported**: Ubuntu 24.04 LTS (Noble) and later
 - **Architectures**: amd64, arm64, armhf
 
 ## Workflow
