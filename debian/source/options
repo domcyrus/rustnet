@@ -1,0 +1,2 @@
+# Exclude patterns for source package
+extend-diff-ignore = "(^|/)(\\.orig|\\.a|\\.lib|\\.dll)$"

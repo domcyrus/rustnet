@@ -128,10 +128,15 @@ jobs:
           # Vendor dependencies inside the extracted source
           echo "Vendoring Rust dependencies..."
           cd build-ppa/${PACKAGE_NAME}-${VERSION}
+
           cargo vendor vendor
 
-          # Clean up .orig backup files created by cargo vendor
+          # Remove prebuilt binaries and backup files that Debian doesn't like
+          echo "Cleaning vendor directory..."
           find vendor -name "*.orig" -delete
+          find vendor -name "*.a" -delete
+          find vendor -name "*.dll" -delete
+          find vendor -name "*.lib" -delete
 
           # Create cargo config to use vendored deps
           mkdir -p .cargo
