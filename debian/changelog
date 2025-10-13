@@ -1,10 +1,11 @@
-rustnet-monitor (0.14.0-3ubuntu1) questing; urgency=medium
+rustnet-monitor (0.14.0+ds1-1ubuntu1) questing; urgency=medium
 
+  * Repackaged tarball with +ds1 suffix
   * Use debian/<version> tag for reproducible orig tarballs
   * Target Ubuntu Questing (25.10) with Rust 1.88 for edition 2024 support
   * Use versioned cargo-1.88 and rustc-1.88 packages
 
- -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 19:00:00 +0000
+ -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 19:20:00 +0000
 
 rustnet-monitor (0.14.0-1ubuntu1) noble; urgency=medium
 

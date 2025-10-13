@@ -11,6 +11,11 @@ on:
         options:
           - oracular # 24.10 with Rust 1.81
           - noble # 24.04 LTS with Rust 1.82
+      tarball_suffix:
+        description: 'Tarball suffix (e.g., ds1, ds2) - leave empty for new releases'
+        required: false
+        default: ''
+        type: string
   push:
     tags:
       - 'v*'
@@ -66,7 +71,17 @@ jobs:
         id: version
         run: |
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # Add tarball suffix if provided (e.g., +ds1, +ds2)
+          TARBALL_SUFFIX="${{ github.event.inputs.tarball_suffix }}"
+          if [ -n "$TARBALL_SUFFIX" ]; then
+            TARBALL_VERSION="${VERSION}+${TARBALL_SUFFIX}"
+            echo "version=$TARBALL_VERSION" >> $GITHUB_OUTPUT
+            echo "Using tarball version: $TARBALL_VERSION"
+          else
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "Using version: $VERSION"
+          fi
 
           # Extract Debian revision from changelog
           DEBIAN_REVISION=$(head -1 debian/changelog | sed 's/.*(\(.*\)-\(.*\)).*/\2/')
