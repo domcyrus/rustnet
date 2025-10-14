@@ -6,11 +6,16 @@ on:
       ubuntu_release:
         description: 'Ubuntu release codename'
         required: true
-        default: 'noble'
+        default: 'oracular'
         type: choice
         options:
-          - noble   # 24.04 LTS
-          - jammy   # 22.04 LTS
+          - oracular # 24.10 with Rust 1.81
+          - noble # 24.04 LTS with Rust 1.82
+      tarball_suffix:
+        description: 'Tarball suffix (e.g., ds1, ds2) - leave empty for new releases'
+        required: false
+        default: ''
+        type: string
   push:
     tags:
       - 'v*'
@@ -22,12 +27,11 @@ env:
 
 jobs:
   build-and-upload:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         ubuntu_release:
-          - noble
-          - jammy
+          - questing
 
     steps:
       - name: Checkout code
@@ -67,58 +71,91 @@ jobs:
         id: version
         run: |
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-          # Set debian revision
-          if [ "${{ matrix.ubuntu_release }}" = "noble" ]; then
-            DEBIAN_REVISION="1ubuntu1"
+          # Add tarball suffix if provided (e.g., +ds1, +ds2)
+          TARBALL_SUFFIX="${{ github.event.inputs.tarball_suffix }}"
+          if [ -n "$TARBALL_SUFFIX" ]; then
+            TARBALL_VERSION="${VERSION}+${TARBALL_SUFFIX}"
+            echo "version=$TARBALL_VERSION" >> $GITHUB_OUTPUT
+            echo "Using tarball version: $TARBALL_VERSION"
           else
-            DEBIAN_REVISION="1ubuntu1~${{ matrix.ubuntu_release }}1"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "Using version: $VERSION"
           fi
+
+          # Extract Debian revision from changelog
+          DEBIAN_REVISION=$(head -1 debian/changelog | sed 's/.*(\(.*\)-\(.*\)).*/\2/')
           echo "debian_revision=$DEBIAN_REVISION" >> $GITHUB_OUTPUT
 
-      - name: Update debian/changelog
+      - name: Update changelog
         run: |
-          cd debian
+          VERSION="${{ steps.version.outputs.version }}"
+          CURRENT_VERSION=$(head -1 debian/changelog | sed 's/.*(\(.*\)).*/\1/')
 
-          # Update distribution
-          sed -i "s/) noble;/) ${{ matrix.ubuntu_release }};/" changelog
+          if [ "$VERSION-1ubuntu1" != "$CURRENT_VERSION" ]; then
+            echo "Updating changelog from $CURRENT_VERSION to $VERSION-1ubuntu1"
 
-          # For jammy, add backport entry
-          if [ "${{ matrix.ubuntu_release }}" = "jammy" ]; then
-            VERSION="${{ steps.version.outputs.version }}"
-            REVISION="${{ steps.version.outputs.debian_revision }}"
-            TIMESTAMP=$(date -R)
+            # Create new changelog entry
+            DEBFULLNAME="${{ env.DEBFULLNAME }}" DEBEMAIL="${{ env.DEBEMAIL }}" \
+              dch --newversion "$VERSION-1ubuntu1" \
+                  --distribution "questing" \
+                  "New upstream release $VERSION"
 
-            echo "rustnet-monitor ($VERSION-$REVISION) jammy; urgency=medium" > changelog.new
-            echo "" >> changelog.new
-            echo "  * Backport to Ubuntu 22.04 Jammy" >> changelog.new
-            echo "" >> changelog.new
-            echo " -- Marco Cadetg <cadetg@gmail.com>  $TIMESTAMP" >> changelog.new
-            echo "" >> changelog.new
-            cat changelog >> changelog.new
-            mv changelog.new changelog
+            echo "✓ Changelog updated"
+          else
+            echo "✓ Changelog already at correct version"
           fi
 
       - name: Build source package
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          BASE_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           PACKAGE_NAME="rustnet-monitor"
 
           # Create build directory
           mkdir -p build-ppa
 
-          # Create orig tarball
-          git archive --format=tar.gz --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD \
-            > "build-ppa/${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
+          # Extract source from release tag
+          RELEASE_TAG="v${BASE_VERSION}"
+          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "✓ Found release tag: $RELEASE_TAG"
+            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$RELEASE_TAG" | tar -x -C build-ppa
+          else
+            echo "⚠ Release tag $RELEASE_TAG not found, using HEAD"
+            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD | tar -x -C build-ppa
+          fi
 
-          # Extract and add debian directory
-          cd build-ppa
-          tar -xzf "${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
+          # Vendor dependencies separately from orig tarball
+          echo "Vendoring Rust dependencies..."
+          cd build-ppa/${PACKAGE_NAME}-${VERSION}
+
+          cargo vendor vendor
+
+          # Remove prebuilt static libraries (keep .dll for tests)
+          echo "Cleaning vendor directory..."
+          find vendor -name "*.a" -delete
+          find vendor -name "*.lib" -delete
+
+          # Pack vendor directory as separate tarball in debian/
+          echo "Creating vendor tarball..."
+          tar -cJf ../vendor.tar.xz vendor
+          rm -rf vendor
+
+          # Create orig tarball (without vendor directory)
+          echo "Creating orig tarball..."
+          cd ..
+          ORIG_TARBALL="${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
+          tar -czf "${ORIG_TARBALL}" "${PACKAGE_NAME}-${VERSION}"
+
+          # Add debian directory and vendor tarball
           cp -r "$GITHUB_WORKSPACE/debian" "${PACKAGE_NAME}-${VERSION}/"
+          mv vendor.tar.xz "${PACKAGE_NAME}-${VERSION}/debian/"
 
           # Build source package
           cd "${PACKAGE_NAME}-${VERSION}"
+
+          # Always use -sa to include orig tarball
+          # Launchpad will reuse existing file if hash matches
           debuild -S -sa -d -us -uc
 
       - name: Sign and upload

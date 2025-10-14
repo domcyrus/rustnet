@@ -1,14 +1,13 @@
-rustnet-monitor (0.14.0-1ubuntu1) noble; urgency=medium
+rustnet-monitor (0.14.0+ds6-1ubuntu1) questing; urgency=medium
 
-  * Initial Ubuntu PPA release
+  * Refactored packaging with vendored dependencies in debian/vendor.tar.xz
+  * Target Ubuntu Questing (25.10) with Rust 1.88 for edition 2024 support
+  * Use versioned cargo-1.88 and rustc-1.88 packages
   * eBPF enabled by default on Linux with automatic procfs fallback
   * JSON logging for SIEM integration
   * TUN/TAP interface support for VPN monitoring
-  * Multi-architecture support (amd64, arm64, armhf)
-  * Desktop integration with .desktop file and icon
-  * Automatic capability setting for non-root packet capture
 
- -- Marco Cadetg <domcyrus@example.com>  Mon, 13 Oct 2025 12:00:00 +0000
+ -- Marco Cadetg <cadetg@gmail.com>  Mon, 13 Oct 2025 21:32:00 +0000
 
 rustnet-monitor (0.14.0-1) unstable; urgency=medium
 
@@ -20,4 +19,4 @@ rustnet-monitor (0.14.0-1) unstable; urgency=medium
   * Fixed high CPU usage on Linux
   * Bundled vmlinux.h files to eliminate network dependency during builds
 
- -- Marco Cadetg <domcyrus@example.com>  Sat, 12 Oct 2025 00:00:00 +0000
+ -- Marco Cadetg <cadetg@gmail.com>  Sat, 12 Oct 2025 00:00:00 +0000
