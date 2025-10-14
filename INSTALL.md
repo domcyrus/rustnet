@@ -74,7 +74,33 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 
 ### Linux Package Installation
 
+#### Ubuntu PPA (Recommended for Ubuntu 25.10+)
+
+The easiest way to install RustNet on Ubuntu is via the official PPA.
+
+```bash
+# Add the RustNet PPA
+sudo add-apt-repository ppa:domcyrus/rustnet
+
+# Update package list
+sudo apt update
+
+# Install rustnet
+sudo apt install rustnet
+
+# Run with sudo
+sudo rustnet
+
+# Optional: Grant capabilities to run without sudo (see Permissions section)
+sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
+rustnet
+```
+
+**Important:** The PPA only supports Ubuntu 25.10+ due to the Rust 1.88+ requirement. Earlier Ubuntu versions don't have a recent enough Rust compiler in their repositories. For older Ubuntu versions, use the [.deb packages](#debianubuntu-deb-packages) from GitHub releases or [build from source](#building-from-source).
+
 #### Debian/Ubuntu (.deb packages)
+
+For manual installation or non-Ubuntu Debian-based distributions:
 
 ```bash
 # Download the appropriate package for your architecture:
@@ -82,39 +108,43 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 # - Rustnet_LinuxDEB_arm64.deb (ARM64)
 # - Rustnet_LinuxDEB_armhf.deb (ARMv7)
 
-# Install the package
+# Install the package (capabilities are automatically configured)
 sudo dpkg -i Rustnet_LinuxDEB_amd64.deb
 
 # Install dependencies if needed
 sudo apt-get install -f
 
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (see Permissions section)
-sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
+# Run without sudo (capabilities were set by post-install script)
 rustnet
+
+# Verify capabilities
+getcap /usr/bin/rustnet
 ```
 
+**Note:** The .deb package automatically sets Linux capabilities via post-install script, so you can run RustNet without sudo.
+
 #### RedHat/Fedora/CentOS (.rpm packages)
+
+For manual installation or distributions not using COPR:
 
 ```bash
 # Download the appropriate package for your architecture:
 # - Rustnet_LinuxRPM_x86_64.rpm
 # - Rustnet_LinuxRPM_aarch64.rpm
 
-# Install the package
+# Install the package (capabilities are automatically configured)
 sudo rpm -i Rustnet_LinuxRPM_x86_64.rpm
 # Or with dnf/yum:
 sudo dnf install Rustnet_LinuxRPM_x86_64.rpm
 
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (see Permissions section)
-sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
+# Run without sudo (capabilities were set by post-install script)
 rustnet
+
+# Verify capabilities
+getcap /usr/bin/rustnet
 ```
+
+**Note:** The .rpm package automatically sets Linux capabilities via post-install script, so you can run RustNet without sudo.
 
 #### Arch Linux (AUR)
 
@@ -131,12 +161,26 @@ yay -S rustnet
 yay -S rustnet-bin
 ```
 
-#### Fedora/RHEL/CentOS (COPR)
+#### Fedora (COPR - Recommended for Fedora 42+)
+
+The easiest way to install RustNet on Fedora is via the official COPR repository.
 
 ```bash
+# Enable the COPR repository
 sudo dnf copr enable domcyrus/rustnet
+
+# Install rustnet
 sudo dnf install rustnet
+
+# Run with sudo
+sudo rustnet
+
+# Optional: Grant capabilities to run without sudo (see Permissions section)
+sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
+rustnet
 ```
+
+**Important:** The COPR only supports Fedora 42 and 43 due to the Rust 1.88+ requirement. CentOS and RHEL don't have recent enough Rust compilers in their repositories. For those distributions, use the [.rpm packages](#redhatfedoracentos-rpm-packages) from GitHub releases or [build from source](#building-from-source).
 
 #### Homebrew Installation
 

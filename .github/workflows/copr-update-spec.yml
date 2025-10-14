@@ -1,0 +1,73 @@
+name: Update COPR Spec Version
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  update-spec:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          # Extract version by removing 'v' prefix
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+
+      - name: Update RPM spec file
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          SPEC_FILE="rpm/rustnet.spec"
+
+          # Update the Version: line in the spec file
+          sed -i "s/^Version:.*/Version: $VERSION/" "$SPEC_FILE"
+
+          echo "Updated $SPEC_FILE to version $VERSION"
+          echo ""
+          echo "Version line:"
+          grep "^Version:" "$SPEC_FILE"
+
+      - name: Commit and push changes
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Check if there are changes to commit
+          if git diff --quiet rpm/rustnet.spec; then
+            echo "No changes to rpm/rustnet.spec (already at version $VERSION)"
+            exit 0
+          fi
+
+          # Commit and push
+          git add rpm/rustnet.spec
+          git commit -m "chore: update RPM spec to version $VERSION"
+          git push origin HEAD:main
+
+          echo "Pushed changes to main branch"
+
+      - name: Summary
+        run: |
+          echo "## 🎉 RPM Spec Updated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **File**: rpm/rustnet.spec" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "COPR will automatically rebuild the package via webhook." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View COPR Builds →](https://copr.fedorainfracloud.org/coprs/domcyrus/rustnet/builds/)" >> $GITHUB_STEP_SUMMARY
