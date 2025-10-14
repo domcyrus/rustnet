@@ -59,7 +59,19 @@ See [EBPF_BUILD.md](EBPF_BUILD.md) for more details and [ARCHITECTURE.md](ARCHIT
 
 ### Installation
 
-**From crates.io (Recommended):**
+**Ubuntu PPA (Recommended for Ubuntu 25.10+ users):**
+```bash
+sudo add-apt-repository ppa:domcyrus/rustnet
+sudo apt update && sudo apt install rustnet
+```
+
+**Fedora COPR (Recommended for Fedora 42+ users):**
+```bash
+sudo dnf copr enable domcyrus/rustnet
+sudo dnf install rustnet
+```
+
+**From crates.io:**
 ```bash
 cargo install rustnet-monitor
 ```
