@@ -50,7 +50,7 @@ bytes = { version = "1.5", optional = true }
 libc = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
@@ -67,7 +67,7 @@ clap_mangen = "0.2"
 [target.'cfg(windows)'.build-dependencies]
 http_req = "0.14"
 zip = "6.0"
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",
