@@ -49,7 +49,7 @@ RustNet uses a multi-threaded architecture for efficient packet processing:
 Uses libpcap to capture raw packets from the network interface. This thread runs independently and feeds packets into a Crossbeam channel for processing.
 
 **Responsibilities:**
-- Open network interface in promiscuous mode
+- Open network interface for packet capture (non-promiscuous, read-only mode)
 - Apply BPF filters if needed
 - Capture raw packets
 - Send packets to processing queue
@@ -163,7 +163,7 @@ RustNet uses platform-specific APIs to associate network connections with proces
 - Iterates through `/proc/<pid>/fd/` to find socket file descriptors
 - Maps inodes to process IDs and resolves process names from `/proc/<pid>/cmdline`
 
-**eBPF Mode (Experimental):**
+**eBPF Mode (Default on Linux):**
 - Uses kernel eBPF programs attached to socket syscalls
 - Captures socket creation events with process context
 - Provides lower overhead than procfs scanning
@@ -171,7 +171,10 @@ RustNet uses platform-specific APIs to associate network connections with proces
   - Process names limited to 16 characters (kernel `comm` field)
   - May show thread names instead of full executable names
   - Multi-threaded applications show internal thread names
-  - Requires `CAP_BPF`, `CAP_PERFMON`, and possibly `CAP_SYS_ADMIN`
+- **Capability requirements:**
+  - Modern Linux (5.8+): `CAP_NET_RAW` (packet capture), `CAP_BPF`, `CAP_PERFMON` (eBPF)
+  - Legacy Linux (pre-5.8): `CAP_NET_RAW` (packet capture), `CAP_SYS_ADMIN` (eBPF)
+  - Note: CAP_NET_ADMIN is NOT required (uses read-only, non-promiscuous packet capture)
 
 **Fallback Behavior:**
 - If eBPF fails to load (permissions, kernel compatibility), automatically falls back to procfs mode
@@ -319,14 +322,15 @@ RustNet is built with the following key dependencies:
 ### Privileged Access
 
 RustNet requires privileged access for packet capture:
-- **Raw socket access** - Intercept network traffic at low level
-- **Promiscuous mode** - Capture all packets on interface (if configured)
+- **Raw socket access** - Intercept network traffic at low level (read-only, non-promiscuous mode)
 - **BPF device access** - Load packet filters into kernel
+- **eBPF programs** - Optional kernel probes for enhanced process tracking (Linux only)
 
 **Mitigation:**
-- Use Linux capabilities instead of full root (principle of least privilege)
+- Use Linux capabilities instead of full root (CAP_NET_RAW for packet capture, CAP_BPF+CAP_PERFMON for eBPF)
 - Use macOS group-based access (`access_bpf` group)
 - Audit which users have packet capture permissions
+- Operates in read-only mode - cannot modify or inject packets
 
 ### Read-Only Operation
 

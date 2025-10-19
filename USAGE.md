@@ -23,8 +23,8 @@ Packet capture requires elevated privileges on most systems. See [INSTALL.md](IN
 sudo rustnet
 
 # Or grant capabilities to run without sudo (see INSTALL.md for details)
-# Linux example:
-sudo setcap cap_net_raw,cap_net_admin=eip /path/to/rustnet
+# Linux example (modern kernel 5.8+):
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /path/to/rustnet
 rustnet
 ```
 

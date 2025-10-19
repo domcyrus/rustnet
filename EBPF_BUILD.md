@@ -90,13 +90,18 @@ After building (eBPF is enabled by default), test that it works correctly:
 sudo cargo run --release
 
 # Option 2: Set capabilities (Linux only, see INSTALL.md Permissions section)
-sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
+# Modern Linux (5.8+):
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' ./target/release/rustnet
+./target/release/rustnet
+
+# Legacy Linux (older kernels):
+sudo setcap 'cap_net_raw,cap_sys_admin=eip' ./target/release/rustnet
 ./target/release/rustnet
 
 # Check the TUI Statistics panel to verify it shows "Process Detection: eBPF + procfs"
 ```
 
-**Note**: eBPF kprobe programs require specific Linux capabilities. See [INSTALL.md - Permissions Setup](INSTALL.md#permissions-setup) for detailed capability requirements. The required capabilities may vary by kernel version.
+**Note**: eBPF kprobe programs require specific Linux capabilities. RustNet uses read-only packet capture (CAP_NET_RAW) without promiscuous mode, so CAP_NET_ADMIN is not required. Modern kernels (5.8+) need CAP_BPF and CAP_PERFMON for eBPF, while older kernels require CAP_SYS_ADMIN. See [INSTALL.md - Permissions Setup](INSTALL.md#permissions-setup) for detailed capability requirements.
 
 ## Generating vmlinux.h from Your Local Kernel (Optional)
 
@@ -141,8 +146,9 @@ This is typically not needed since the bundled headers work across kernel versio
 
 **"Permission denied" when loading eBPF**:
 - See [INSTALL.md - Permissions Setup](INSTALL.md#permissions-setup) for capability setup
-- Required capabilities: `CAP_NET_RAW`, `CAP_NET_ADMIN`, `CAP_BPF`, `CAP_PERFMON`
-- Some kernels may also require `CAP_SYS_ADMIN`
+- Required capabilities (modern kernel 5.8+): `CAP_NET_RAW`, `CAP_BPF`, `CAP_PERFMON`
+- Required capabilities (legacy kernel): `CAP_NET_RAW`, `CAP_SYS_ADMIN`
+- Note: CAP_NET_ADMIN is NOT required (RustNet uses read-only packet capture)
 
 **eBPF fails to load, falls back to procfs**:
 - This is expected behavior when eBPF can't load

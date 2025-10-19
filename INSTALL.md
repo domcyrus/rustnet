@@ -91,8 +91,8 @@ sudo apt install rustnet
 # Run with sudo
 sudo rustnet
 
-# Optional: Grant capabilities to run without sudo (see Permissions section)
-sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
+# Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /usr/bin/rustnet
 rustnet
 ```
 
@@ -175,8 +175,8 @@ sudo dnf install rustnet
 # Run with sudo
 sudo rustnet
 
-# Optional: Grant capabilities to run without sudo (see Permissions section)
-sudo setcap cap_net_raw,cap_net_admin=eip /usr/bin/rustnet
+# Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /usr/bin/rustnet
 rustnet
 ```
 
@@ -196,8 +196,8 @@ brew install rustnet
 ```bash
 brew install domcyrus/rustnet/rustnet
 
-# Grant capabilities to the Homebrew-installed binary
-sudo setcap cap_net_raw,cap_net_admin=eip $(brew --prefix)/bin/rustnet
+# Grant capabilities to the Homebrew-installed binary (modern kernel 5.8+)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(brew --prefix)/bin/rustnet
 
 # Run without sudo
 rustnet
@@ -299,16 +299,16 @@ docker pull ghcr.io/domcyrus/rustnet:latest
 # Or pull a specific version
 docker pull ghcr.io/domcyrus/rustnet:0.7.0
 
-# Run with required network capabilities (latest)
-docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
+# Run with required capabilities for eBPF support (latest)
+docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
   ghcr.io/domcyrus/rustnet:latest
 
 # Run with specific version
-docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
+docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
   ghcr.io/domcyrus/rustnet:0.7.0
 
 # Run with specific interface
-docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
+docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
   ghcr.io/domcyrus/rustnet:latest -i eth0
 
 # Alternative: Run with privileged mode (less secure but simpler)
@@ -319,18 +319,30 @@ docker run --rm -it --privileged --net=host \
 docker run --rm ghcr.io/domcyrus/rustnet:latest --help
 ```
 
-**Note:** The container requires network capabilities (`NET_RAW` and `NET_ADMIN`) or privileged mode for packet capture. Host networking (`--net=host`) is recommended for monitoring all network interfaces.
+**Note:** The container requires capabilities (`NET_RAW`, `BPF`, and `PERFMON`) or privileged mode for packet capture with eBPF support. Host networking (`--net=host`) is recommended for monitoring all network interfaces.
 
 ## Permissions Setup
 
 RustNet requires elevated privileges to capture network packets because accessing network interfaces for packet capture is a privileged operation on all modern operating systems. This section explains how to properly grant these permissions on different platforms.
 
+> ### **Security Advantage: Read-Only Network Access on Linux**
+>
+> **RustNet uses read-only packet capture without promiscuous mode on all platforms.** This means:
+>
+> **Linux:** Requires only **`CAP_NET_RAW`** capability - **NOT** full root or `CAP_NET_ADMIN`
+> **Principle of Least Privilege:** Minimal permissions needed for packet capture
+> **No Promiscuous Mode:** Only captures packets to/from the host (not all network traffic)
+> **Read-Only:** Cannot modify or inject packets
+> **Enhanced Security:** Reduced attack surface compared to full root access
+>
+> **macOS Note:** PKTAP (for process metadata) requires root privileges, but you can run without sudo using the `lsof` fallback for basic packet capture.
+
 ### Why Permissions Are Required
 
 Network packet capture requires access to:
 
-- **Raw sockets** for low-level network access
-- **Network interfaces** in promiscuous mode
+- **Raw sockets** for low-level network access (read-only, non-promiscuous mode)
+- **Network interfaces** for packet capture
 - **BPF (Berkeley Packet Filter) devices** on macOS/BSD systems
 - **Network namespaces** on some Linux configurations
 
@@ -339,6 +351,8 @@ These capabilities are restricted to prevent malicious software from interceptin
 ### macOS Permission Setup
 
 On macOS, packet capture requires access to BPF (Berkeley Packet Filter) devices located at `/dev/bpf*`.
+
+**Note:** macOS PKTAP (for extracting process metadata from packets) requires **root/sudo** privileges. Without sudo, RustNet uses `lsof` as a fallback for process detection (slower but works without root).
 
 #### Option 1: Run with sudo (Simplest)
 
@@ -394,9 +408,11 @@ brew install rustnet
 # Follow the caveats displayed after installation
 ```
 
-### Linux Permission Setup
+### Linux Permission Setup (Read-Only Access - No Root Required!)
 
-On Linux, packet capture requires `CAP_NET_RAW` and `CAP_NET_ADMIN` capabilities.
+**Linux Advantage:** RustNet requires **only `CAP_NET_RAW`** for packet capture - far less than full root access!
+
+On Linux, packet capture requires only the `CAP_NET_RAW` capability for read-only, non-promiscuous packet capture. For eBPF-enhanced process tracking, additional capabilities (`CAP_BPF` and `CAP_PERFMON`) are needed, but **`CAP_NET_ADMIN` is NOT required**.
 
 #### Option 1: Run with sudo (Simplest)
 
@@ -416,8 +432,8 @@ Grant specific network capabilities to the binary without full root privileges:
 # Build the binary first
 cargo build --release
 
-# Grant network capabilities to the binary
-sudo setcap cap_net_raw,cap_net_admin=eip ./target/release/rustnet
+# Grant capabilities to the binary (modern kernel 5.8+, with eBPF support)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' ./target/release/rustnet
 
 # Now run without sudo
 ./target/release/rustnet
@@ -426,8 +442,8 @@ sudo setcap cap_net_raw,cap_net_admin=eip ./target/release/rustnet
 **For cargo-installed binaries:**
 
 ```bash
-# If installed via cargo install rustnet-monitor
-sudo setcap cap_net_raw,cap_net_admin=eip ~/.cargo/bin/rustnet
+# If installed via cargo install rustnet-monitor (modern kernel 5.8+)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' ~/.cargo/bin/rustnet
 
 # Now run without sudo
 rustnet
@@ -441,28 +457,32 @@ eBPF is enabled by default on Linux and provides lower-overhead process identifi
 # Build in release mode (eBPF is enabled by default)
 cargo build --release
 
-# Try modern capabilities first (Linux 5.8+)
-sudo setcap 'cap_net_raw,cap_net_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
+# Modern Linux (5.8+) - works with just these three capabilities:
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' ./target/release/rustnet
 ./target/release/rustnet
 
-# If eBPF fails to load, add CAP_SYS_ADMIN (may be required depending on kernel version)
-sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
+# Legacy Linux (older kernels without CAP_BPF) - use CAP_SYS_ADMIN as fallback:
+sudo setcap 'cap_net_raw,cap_sys_admin=eip' ./target/release/rustnet
 ./target/release/rustnet
+
 # Check TUI Statistics panel - should show "Process Detection: eBPF + procfs"
 ```
 
-**Capability requirements for eBPF:**
+**Capability requirements:**
 
-Base capabilities (always required):
-- `CAP_NET_RAW` - Raw socket access for packet capture
-- `CAP_NET_ADMIN` - Network administration
+**Base capability (always required):**
+- `CAP_NET_RAW` - Raw socket access for read-only packet capture (non-promiscuous mode)
 
-eBPF-specific capabilities (Linux 5.8+):
+**eBPF-specific capabilities (choose based on kernel version):**
+
+**Modern Linux (5.8+):**
 - `CAP_BPF` - BPF program loading and map operations
 - `CAP_PERFMON` - Performance monitoring and tracing operations
 
-Additional capability (may be required):
-- `CAP_SYS_ADMIN` - Some kernel versions or configurations may still require this for kprobe attachment, even with CAP_BPF and CAP_PERFMON available. Requirements vary by kernel version and configuration.
+**Legacy Linux (pre-5.8):**
+- `CAP_SYS_ADMIN` - Required for BPF operations on older kernels without CAP_BPF support
+
+**Note:** CAP_NET_ADMIN is NOT required. RustNet uses read-only packet capture without promiscuous mode.
 
 **Fallback behavior**: If eBPF cannot load (e.g., insufficient capabilities, incompatible kernel), the application automatically uses procfs-only mode. The TUI Statistics panel displays which detection method is active:
 - `Process Detection: eBPF + procfs` - eBPF successfully loaded
@@ -473,8 +493,8 @@ Additional capability (may be required):
 **For system-wide installation:**
 
 ```bash
-# If installed via package manager or copied to /usr/local/bin
-sudo setcap cap_net_raw,cap_net_admin=eip /usr/local/bin/rustnet
+# If installed via package manager or copied to /usr/local/bin (modern kernel 5.8+)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /usr/local/bin/rustnet
 rustnet
 ```
 
@@ -516,7 +536,8 @@ getcap ~/.cargo/bin/rustnet
 # For system-wide installations:
 getcap $(which rustnet)
 
-# Should show: cap_net_raw,cap_net_admin=eip
+# Modern (5.8+): Should show cap_net_raw,cap_bpf,cap_perfmon=eip
+# Legacy: Should show cap_net_raw,cap_sys_admin=eip
 
 # Test without sudo
 rustnet --help
@@ -552,7 +573,7 @@ rustnet --help
 #### Operation Not Permitted (with capabilities set)
 
 - Capabilities may have been removed by system updates
-- Re-apply capabilities: `sudo setcap cap_net_raw,cap_net_admin=eip $(which rustnet)`
+- Re-apply capabilities (modern): `sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)`
 - Some filesystems don't support extended attributes (capabilities)
 - Try copying the binary to a different filesystem (e.g., from NFS to local disk)
 

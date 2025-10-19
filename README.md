@@ -90,7 +90,7 @@ cargo build --release
 **Via Docker:**
 ```bash
 docker pull ghcr.io/domcyrus/rustnet:latest
-docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
+docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
   ghcr.io/domcyrus/rustnet:latest
 ```
 
@@ -98,13 +98,19 @@ docker run --rm -it --cap-add=NET_RAW --cap-add=NET_ADMIN --net=host \
 
 Packet capture requires elevated privileges. See [INSTALL.md](INSTALL.md) for detailed permission setup.
 
+> **Security Note (Linux):** RustNet uses **read-only packet capture** without promiscuous mode, requiring only `CAP_NET_RAW` (not full root or `CAP_NET_ADMIN`). This follows the principle of least privilege for enhanced security.
+
 ```bash
-# Quick start with sudo
+# Quick start with sudo (all platforms)
 sudo rustnet
 
-# Or grant capabilities to run without sudo (Linux)
-sudo setcap cap_net_raw,cap_net_admin=eip /path/to/rustnet
+# Linux: Grant minimal capabilities (recommended - no root required!)
+# Read-only packet capture + eBPF process tracking
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /path/to/rustnet
 rustnet
+
+# macOS: PKTAP requires root for process metadata
+sudo rustnet  # or use 'lsof' fallback without sudo
 ```
 
 **Common options:**
