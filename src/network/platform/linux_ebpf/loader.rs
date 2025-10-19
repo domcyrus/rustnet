@@ -111,59 +111,60 @@ impl EbpfLoader {
             {
                 debug!("eBPF: Current effective capabilities: 0x{:x}", cap_value);
 
-                // Required capabilities (bit positions):
-                // CAP_NET_RAW = 13, CAP_NET_ADMIN = 12, CAP_BPF = 39, CAP_PERFMON = 38, CAP_SYS_ADMIN = 21
-                let required_caps = [
-                    13, // CAP_NET_RAW - for packet capture
-                    12, // CAP_NET_ADMIN - for network administration
-                    21, // CAP_SYS_ADMIN - fallback for older kernels
-                ];
+                // Capability bit positions
+                const CAP_NET_RAW: u64 = 13;
+                const CAP_SYS_ADMIN: u64 = 21;
+                const CAP_BPF: u64 = 39;
+                const CAP_PERFMON: u64 = 38;
 
-                // Optional modern capabilities (Linux 5.8+)
-                let modern_caps = [
-                    39, // CAP_BPF - for BPF operations
-                    38, // CAP_PERFMON - for performance monitoring
-                ];
+                // Check CAP_NET_RAW (required for read-only packet capture)
+                let has_net_raw = (cap_value & (1u64 << CAP_NET_RAW)) != 0;
 
-                // Check required capabilities
-                let has_required = required_caps.iter().all(|&cap| {
-                    let has_cap = (cap_value & (1u64 << cap)) != 0;
+                debug!(
+                    "eBPF: Capability CAP_NET_RAW (bit {}): {}",
+                    CAP_NET_RAW,
+                    if has_net_raw { "present" } else { "missing" }
+                );
+
+                // Must have CAP_NET_RAW for packet capture
+                if !has_net_raw {
+                    debug!("eBPF: Missing CAP_NET_RAW (required for packet capture)");
                     debug!(
-                        "eBPF: Capability {} (bit {}): {}",
-                        match cap {
-                            13 => "CAP_NET_RAW",
-                            12 => "CAP_NET_ADMIN",
-                            21 => "CAP_SYS_ADMIN",
-                            _ => "UNKNOWN",
-                        },
-                        cap,
-                        if has_cap { "present" } else { "missing" }
+                        "eBPF: Insufficient capabilities - need CAP_NET_RAW for packet capture, plus either (CAP_BPF+CAP_PERFMON) or CAP_SYS_ADMIN for eBPF"
                     );
-                    has_cap
-                });
+                    return false;
+                }
 
-                // Check modern capabilities (nice to have)
-                let has_modern = modern_caps.iter().any(|&cap| {
-                    let has_cap = (cap_value & (1u64 << cap)) != 0;
-                    debug!(
-                        "eBPF: Modern capability {} (bit {}): {}",
-                        match cap {
-                            39 => "CAP_BPF",
-                            38 => "CAP_PERFMON",
-                            _ => "UNKNOWN",
-                        },
-                        cap,
-                        if has_cap { "present" } else { "missing" }
-                    );
-                    has_cap
-                });
+                // Check modern capabilities (Linux 5.8+)
+                let has_bpf = (cap_value & (1u64 << CAP_BPF)) != 0;
+                let has_perfmon = (cap_value & (1u64 << CAP_PERFMON)) != 0;
 
-                if has_required {
-                    if has_modern {
-                        info!("eBPF: All required and modern capabilities present");
-                    } else {
-                        info!("eBPF: Required capabilities present, using legacy mode");
-                    }
+                debug!(
+                    "eBPF: Modern capability CAP_BPF (bit {}): {}",
+                    CAP_BPF,
+                    if has_bpf { "present" } else { "missing" }
+                );
+                debug!(
+                    "eBPF: Modern capability CAP_PERFMON (bit {}): {}",
+                    CAP_PERFMON,
+                    if has_perfmon { "present" } else { "missing" }
+                );
+
+                // Check legacy capability
+                let has_sys_admin = (cap_value & (1u64 << CAP_SYS_ADMIN)) != 0;
+
+                debug!(
+                    "eBPF: Capability CAP_SYS_ADMIN (bit {}): {}",
+                    CAP_SYS_ADMIN,
+                    if has_sys_admin { "present" } else { "missing" }
+                );
+
+                // Accept either modern capabilities OR legacy capability
+                if has_bpf && has_perfmon {
+                    info!("eBPF: Using modern capabilities (CAP_BPF + CAP_PERFMON)");
+                    return true;
+                } else if has_sys_admin {
+                    info!("eBPF: Using legacy capability (CAP_SYS_ADMIN)");
                     return true;
                 } else {
                     debug!("eBPF: Missing required capabilities");
@@ -172,7 +173,7 @@ impl EbpfLoader {
         }
 
         debug!(
-            "eBPF: Insufficient capabilities - need CAP_NET_RAW, CAP_NET_ADMIN, and CAP_SYS_ADMIN (or CAP_BPF+CAP_PERFMON on newer kernels)"
+            "eBPF: Insufficient capabilities - need CAP_NET_RAW for packet capture, plus either (CAP_BPF+CAP_PERFMON) or CAP_SYS_ADMIN for eBPF"
         );
         false
     }

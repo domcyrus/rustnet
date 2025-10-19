@@ -76,7 +76,9 @@ LABEL org.opencontainers.image.description="A cross-platform network monitoring 
 LABEL org.opencontainers.image.source="https://github.com/domcyrus/rustnet"
 LABEL org.opencontainers.image.licenses="Apache License, Version 2.0"
 
-# Important: RustNet requires elevated privileges for packet capture functionality
-# Run with: docker run --cap-add=NET_RAW --cap-add=NET_ADMIN rustnet
-# Or with:  docker run --privileged rustnet
+# Important: RustNet requires elevated privileges for packet capture and eBPF functionality
+# Modern kernels (5.8+): docker run --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON rustnet
+# Legacy kernels: docker run --cap-add=NET_RAW --cap-add=SYS_ADMIN rustnet
+# Or with: docker run --privileged rustnet
+# Note: CAP_NET_ADMIN is NOT required (uses read-only, non-promiscuous packet capture)
 ENTRYPOINT ["rustnet"]

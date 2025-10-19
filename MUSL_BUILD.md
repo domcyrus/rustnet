@@ -37,7 +37,7 @@ We initially attempted to include eBPF support, which required vendoring libelf 
 For users on older distributions, the `cargo install` workaround is documented:
 ```bash
 cargo install rustnet-monitor
-sudo setcap cap_net_raw,cap_net_admin=eip ~/.cargo/bin/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' ~/.cargo/bin/rustnet
 ```
 
 ## Potential Future Approaches

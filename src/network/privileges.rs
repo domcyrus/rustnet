@@ -9,7 +9,6 @@ use anyhow::anyhow;
 use log::{debug, info};
 #[cfg(any(
     not(any(target_os = "linux", target_os = "macos", target_os = "windows")),
-    target_os = "linux",
     target_os = "windows"
 ))]
 use log::warn;
@@ -125,51 +124,33 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
 
     debug!("Current effective capabilities: 0x{:x}", cap_value);
 
-    // Required capabilities for packet capture
+    // Required capability for read-only packet capture (no promiscuous mode)
     const CAP_NET_RAW: u64 = 13; // For packet capture
-    const CAP_NET_ADMIN: u64 = 12; // For network administration
 
     let mut missing = Vec::new();
-    let mut has_net_raw = false;
-    let mut has_net_admin = false;
 
     // Check CAP_NET_RAW
     if (cap_value & (1u64 << CAP_NET_RAW)) != 0 {
         debug!("CAP_NET_RAW: present");
-        has_net_raw = true;
+        return Ok(PrivilegeStatus::sufficient());
     } else {
         debug!("CAP_NET_RAW: missing");
-        missing.push("CAP_NET_RAW capability".to_string());
-    }
-
-    // Check CAP_NET_ADMIN
-    if (cap_value & (1u64 << CAP_NET_ADMIN)) != 0 {
-        debug!("CAP_NET_ADMIN: present");
-        has_net_admin = true;
-    } else {
-        debug!("CAP_NET_ADMIN: missing");
-        missing.push("CAP_NET_ADMIN capability".to_string());
-    }
-
-    // Need at least CAP_NET_RAW for basic packet capture
-    if has_net_raw {
-        if !has_net_admin {
-            warn!("CAP_NET_ADMIN missing - some features may not work");
-        }
-        return Ok(PrivilegeStatus::sufficient());
+        missing.push("CAP_NET_RAW capability (required for packet capture)".to_string());
     }
 
     // Build instructions for gaining privileges
     let mut instructions = vec![
         "Run with sudo: sudo rustnet".to_string(),
-        "Set capabilities: sudo setcap cap_net_raw,cap_net_admin=eip $(which rustnet)".to_string(),
+        "Set capabilities (modern Linux 5.8+, with eBPF): sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)".to_string(),
+        "Set capabilities (legacy/older kernels, with eBPF): sudo setcap 'cap_net_raw,cap_sys_admin=eip' $(which rustnet)".to_string(),
+        "Set capabilities (packet capture only, no eBPF): sudo setcap 'cap_net_raw=eip' $(which rustnet)".to_string(),
     ];
 
     // Add Docker-specific instructions if it looks like we're in a container
     if is_running_in_container() {
         instructions.push(
             "If running in Docker, add these flags:\n  \
-             --cap-add=NET_RAW --cap-add=NET_ADMIN --cap-add=BPF --cap-add=PERFMON --cap-add=SYS_PTRACE \
+             --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON \
              --net=host --pid=host"
                 .to_string(),
         );
@@ -325,7 +306,10 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
 
             // Check if the error indicates a permissions issue
             let error_str = e.to_string().to_lowercase();
-            if error_str.contains("access") || error_str.contains("denied") || error_str.contains("permission") {
+            if error_str.contains("access")
+                || error_str.contains("denied")
+                || error_str.contains("permission")
+            {
                 let missing = vec!["Administrator privileges".to_string()];
 
                 let instructions = vec![
@@ -336,7 +320,10 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
                 Ok(PrivilegeStatus::insufficient(missing, instructions))
             } else {
                 // Some other error - assume it's not a privilege issue
-                warn!("Network device enumeration failed but error doesn't indicate privilege issue: {}", e);
+                warn!(
+                    "Network device enumeration failed but error doesn't indicate privilege issue: {}",
+                    e
+                );
                 Ok(PrivilegeStatus::sufficient())
             }
         }

@@ -7,8 +7,6 @@ use pcap::{Active, Capture, Device, Error as PcapError};
 pub struct CaptureConfig {
     /// Network interface name (None for default)
     pub interface: Option<String>,
-    /// Promiscuous mode
-    pub promiscuous: bool,
     /// Snapshot length (bytes to capture per packet)
     pub snaplen: i32,
     /// Buffer size for packet capture
@@ -23,7 +21,6 @@ impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
             interface: None,
-            promiscuous: true,
             snaplen: 1514,           // Limit packet size to keep more in buffer
             buffer_size: 20_000_000, // 20MB buffer
             timeout_ms: 150,         // 150ms timeout for UI responsiveness
@@ -34,8 +31,12 @@ impl Default for CaptureConfig {
 
 /// Find the best active network device
 fn find_best_device() -> Result<Device> {
-    let devices = Device::list()
-        .map_err(|e| anyhow!("Failed to list network devices: {}. This may indicate insufficient privileges.", e))?;
+    let devices = Device::list().map_err(|e| {
+        anyhow!(
+            "Failed to list network devices: {}. This may indicate insufficient privileges.",
+            e
+        )
+    })?;
 
     log::info!(
         "Scanning {} devices for best active interface...",
@@ -72,7 +73,11 @@ fn find_best_device() -> Result<Device> {
         // First priority: up, running, has a valid IP address, and NOT virtual
         .find(|d| {
             // Check if it's a virtual/problematic interface
-            let desc_lower = d.desc.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+            let desc_lower = d
+                .desc
+                .as_ref()
+                .map(|s| s.to_lowercase())
+                .unwrap_or_default();
             let is_virtual = desc_lower.contains("hyper-v")
                 || desc_lower.contains("vmware")
                 || desc_lower.contains("virtualbox");
@@ -105,7 +110,11 @@ fn find_best_device() -> Result<Device> {
         .or_else(|| {
             devices.iter().find(|d| {
                 // Check if it's a virtual/problematic interface
-                let desc_lower = d.desc.as_ref().map(|s| s.to_lowercase()).unwrap_or_default();
+                let desc_lower = d
+                    .desc
+                    .as_ref()
+                    .map(|s| s.to_lowercase())
+                    .unwrap_or_default();
                 let is_virtual = desc_lower.contains("hyper-v")
                     || desc_lower.contains("virtual")
                     || desc_lower.contains("vmware")
@@ -198,14 +207,20 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                     }
                     Err(e) => {
                         log::warn!("Failed to open PKTAP capture: {}", e);
-                        log::info!("PKTAP requires root privileges - run with 'sudo' for process metadata support");
-                        log::info!("Falling back to regular capture (process detection will use lsof)");
+                        log::info!(
+                            "PKTAP requires root privileges - run with 'sudo' for process metadata support"
+                        );
+                        log::info!(
+                            "Falling back to regular capture (process detection will use lsof)"
+                        );
                     }
                 }
             }
             Err(e) => {
                 log::warn!("Failed to create PKTAP device: {}", e);
-                log::info!("PKTAP requires root privileges - run with 'sudo' for process metadata support");
+                log::info!(
+                    "PKTAP requires root privileges - run with 'sudo' for process metadata support"
+                );
                 log::info!("Falling back to regular capture (process detection will use lsof)");
             }
         }
@@ -239,18 +254,10 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
 
     let device_name = device.name.clone();
 
-    // Disable promiscuous mode for "any" interface on Linux
-    // The "any" device doesn't support promiscuous mode
-    let use_promisc = if device_name == "any" {
-        log::info!("Disabling promiscuous mode for 'any' interface (not supported)");
-        false
-    } else {
-        config.promiscuous
-    };
-
-    // Create capture handle
+    // Create capture handle with promiscuous mode disabled
+    // We use non-promiscuous mode (read-only packet capture) which only requires CAP_NET_RAW
     let cap = Capture::from_device(device)?
-        .promisc(use_promisc)
+        .promisc(false)
         .snaplen(config.snaplen)
         .buffer_size(config.buffer_size)
         .timeout(config.timeout_ms)
@@ -319,10 +326,7 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
             }
 
             // List available interfaces for error message
-            let available: Vec<String> = devices
-                .iter()
-                .map(|d| d.name.clone())
-                .collect();
+            let available: Vec<String> = devices.iter().map(|d| d.name.clone()).collect();
 
             Err(anyhow!(
                 "Interface '{}' not found. Available interfaces: {}",
@@ -460,7 +464,6 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = CaptureConfig::default();
-        assert!(config.promiscuous);
         assert_eq!(config.snaplen, 1514);
         assert!(config.filter.is_none()); // Default starts without filter
     }

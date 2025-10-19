@@ -9,12 +9,11 @@ case "$1" in
         # This allows rustnet to run as a normal user with enhanced eBPF process detection
         if command -v setcap >/dev/null 2>&1; then
             # Try modern capabilities first (Linux 5.8+)
-            # CAP_NET_RAW, CAP_NET_ADMIN: packet capture
-            # CAP_BPF, CAP_PERFMON: eBPF support
-            # CAP_SYS_ADMIN: may be required for kprobe attachment on some kernel versions
-            setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet 2>/dev/null || \
+            # CAP_NET_RAW: read-only packet capture (non-promiscuous mode)
+            # CAP_BPF, CAP_PERFMON: eBPF support for enhanced process tracking
+            setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet 2>/dev/null || \
                 # Fallback for older kernels without CAP_BPF/CAP_PERFMON
-                setcap 'cap_net_raw,cap_net_admin,cap_sys_admin+eip' /usr/bin/rustnet || true
+                setcap 'cap_net_raw,cap_sys_admin+eip' /usr/bin/rustnet || true
         fi
 
         cat <<EOF
@@ -29,18 +28,21 @@ NETWORK PACKET CAPTURE PERMISSIONS:
   To verify permissions are set correctly:
     getcap /usr/bin/rustnet
 
-  Expected output (Linux 5.8+):
-    /usr/bin/rustnet cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon=eip
+  Expected output (modern Linux 5.8+):
+    /usr/bin/rustnet cap_net_raw,cap_bpf,cap_perfmon=eip
 
-  Or for older kernels:
-    /usr/bin/rustnet cap_net_raw,cap_net_admin,cap_sys_admin=eip
+  Or for legacy kernels (pre-5.8):
+    /usr/bin/rustnet cap_net_raw,cap_sys_admin=eip
 
   If capabilities are not set, you can manually set them:
-    # For Linux 5.8+ with eBPF support
-    sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
+    # For modern Linux 5.8+ with eBPF support
+    sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 
-    # Or for older kernels
-    sudo setcap 'cap_net_raw,cap_net_admin,cap_sys_admin+eip' /usr/bin/rustnet
+    # Or for legacy kernels without CAP_BPF support
+    sudo setcap 'cap_net_raw,cap_sys_admin+eip' /usr/bin/rustnet
+
+  Note: RustNet uses read-only packet capture (no promiscuous mode).
+        CAP_NET_ADMIN is NOT required.
 
   Alternatively, run rustnet with sudo:
     sudo rustnet
