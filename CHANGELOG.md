@@ -7,11 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2025-10-25
+
+### Added
+- **Ubuntu PPA Packaging**: Official Ubuntu PPA repository for easy installation on Ubuntu/Debian-based distributions
+  - Automated GitHub Actions workflow for PPA releases
+  - Support for multiple Ubuntu versions
+
 ### Changed
 - **Bandwidth Sorting**: Changed bandwidth sorting to use combined up+down total instead of separate up/down sorting
   - Simpler sorting behavior: press `s` once to sort by total bandwidth
   - Display still shows "Down/Up" with individual values
   - Arrow indicator shows when sorting by combined bandwidth total
+- **Packet Capture Permissions**: Removed CAP_NET_ADMIN and CAP_SYS_ADMIN requirements
+  - Uses read-only packet capture (non-promiscuous mode)
+  - Reduced security footprint with minimal required capabilities
+
+### Fixed
+- **Bandwidth Rate Tracking**: Improved accuracy and stability of bandwidth rate calculations
+  - More consistent rate measurements
+  - Better handling of network traffic bursts
 
 ## [0.14.0] - 2025-10-12
 
@@ -252,7 +267,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/domcyrus/rustnet/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/domcyrus/rustnet/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/domcyrus/rustnet/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/domcyrus/rustnet/compare/v0.12.0...v0.12.1
