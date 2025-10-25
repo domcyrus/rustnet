@@ -157,7 +157,7 @@ See [USAGE.md](USAGE.md) for detailed keyboard controls and navigation tips.
 **Sorting:**
 - Press `s` to cycle through sortable columns (Protocol, Address, State, Service, Bandwidth, Process)
 - Press `S` (Shift+s) to toggle sort direction
-- Find bandwidth hogs: Press `s` until "Down↓/Up" appears
+- Find bandwidth hogs: Press `s` until "Down/Up ↓" appears (sorts by combined up+down speed)
 
 See [USAGE.md](USAGE.md) for complete filtering syntax and sorting guide.
 

@@ -16,8 +16,7 @@ pub type Terminal<B> = RatatuiTerminal<B>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
     CreatedAt,        // Default: creation time (oldest first)
-    BandwidthDown,
-    BandwidthUp,
+    BandwidthTotal,   // Combined up + down bandwidth
     Process,
     LocalAddress,
     RemoteAddress,
@@ -43,9 +42,8 @@ impl SortColumn {
             Self::RemoteAddress => Self::State,          // Column 4: State
             Self::State => Self::Service,                // Column 5: Service
             Self::Service => Self::Application,          // Column 6: Application / Host
-            Self::Application => Self::BandwidthDown,    // Column 7: Down/Up (Down first)
-            Self::BandwidthDown => Self::BandwidthUp,    // Column 7: Down/Up (Up second)
-            Self::BandwidthUp => Self::Process,          // Column 8: Process
+            Self::Application => Self::BandwidthTotal,   // Column 7: Down/Up (combined total)
+            Self::BandwidthTotal => Self::Process,       // Column 8: Process
             Self::Process => Self::CreatedAt,            // Back to default
         }
     }
@@ -54,8 +52,7 @@ impl SortColumn {
     pub fn default_direction(self) -> bool {
         match self {
             // Descending by default - show biggest/most active first
-            Self::BandwidthDown => false,
-            Self::BandwidthUp => false,
+            Self::BandwidthTotal => false,
 
             // Ascending by default - alphabetical or chronological
             Self::Process => true,
@@ -73,8 +70,7 @@ impl SortColumn {
     pub fn display_name(self) -> &'static str {
         match self {
             Self::CreatedAt => "Time",
-            Self::BandwidthDown => "Bandwidth ↓",
-            Self::BandwidthUp => "Bandwidth ↑",
+            Self::BandwidthTotal => "Bandwidth Total",
             Self::Process => "Process",
             Self::LocalAddress => "Local Addr",
             Self::RemoteAddress => "Remote Addr",
@@ -502,15 +498,11 @@ fn draw_connections_list(
         }
     };
 
-    // Special handler for bandwidth column - attaches arrow to specific metric
+    // Special handler for bandwidth column - shows combined total when sorting by bandwidth
     let bandwidth_label = match ui_state.sort_column {
-        SortColumn::BandwidthDown => {
+        SortColumn::BandwidthTotal => {
             let arrow = if ui_state.sort_ascending { "↑" } else { "↓" };
-            format!("Down{}/Up", arrow)  // "Down↓/Up" or "Down↑/Up"
-        }
-        SortColumn::BandwidthUp => {
-            let arrow = if ui_state.sort_ascending { "↑" } else { "↓" };
-            format!("Down/Up{}", arrow)  // "Down/Up↓" or "Down/Up↑"
+            format!("Down/Up {}", arrow)  // "Down/Up ↓" or "Down/Up ↑"
         }
         _ => "Down/Up".to_string()  // No bandwidth sort active
     };
@@ -538,8 +530,7 @@ fn draw_connections_list(
                 3 => ui_state.sort_column == SortColumn::State,
                 4 => ui_state.sort_column == SortColumn::Service,
                 5 => ui_state.sort_column == SortColumn::Application,
-                6 => ui_state.sort_column == SortColumn::BandwidthDown
-                     || ui_state.sort_column == SortColumn::BandwidthUp,
+                6 => ui_state.sort_column == SortColumn::BandwidthTotal,
                 7 => ui_state.sort_column == SortColumn::Process,
                 _ => false,
             } && ui_state.sort_column != SortColumn::CreatedAt;
@@ -1415,9 +1406,8 @@ mod tests {
         assert_eq!(RemoteAddress.next(), State);
         assert_eq!(State.next(), Service);
         assert_eq!(Service.next(), Application);
-        assert_eq!(Application.next(), BandwidthDown);
-        assert_eq!(BandwidthDown.next(), BandwidthUp);
-        assert_eq!(BandwidthUp.next(), Process);
+        assert_eq!(Application.next(), BandwidthTotal);
+        assert_eq!(BandwidthTotal.next(), Process);
         assert_eq!(Process.next(), CreatedAt); // Cycles back
     }
 
@@ -1426,8 +1416,7 @@ mod tests {
         use SortColumn::*;
 
         // Bandwidth should default to descending (false)
-        assert!(!BandwidthDown.default_direction());
-        assert!(!BandwidthUp.default_direction());
+        assert!(!BandwidthTotal.default_direction());
 
         // Everything else should default to ascending (true)
         assert!(Process.default_direction());
@@ -1470,16 +1459,16 @@ mod tests {
         assert_eq!(ui_state.sort_column, SortColumn::Application);
         assert!(ui_state.sort_ascending);
 
-        // Cycle to BandwidthDown - should reset to descending
+        // Cycle to BandwidthTotal - should reset to descending
         ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthDown);
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
         assert!(!ui_state.sort_ascending); // Bandwidth defaults to descending
     }
 
     #[test]
     fn test_ui_state_toggle_sort_direction() {
         let mut ui_state = UIState {
-            sort_column: SortColumn::BandwidthDown,
+            sort_column: SortColumn::BandwidthTotal,
             sort_ascending: false,
             ..Default::default()
         };
@@ -1498,8 +1487,7 @@ mod tests {
         use SortColumn::*;
 
         assert_eq!(CreatedAt.display_name(), "Time");
-        assert_eq!(BandwidthDown.display_name(), "Bandwidth ↓");
-        assert_eq!(BandwidthUp.display_name(), "Bandwidth ↑");
+        assert_eq!(BandwidthTotal.display_name(), "Bandwidth Total");
         assert_eq!(Process.display_name(), "Process");
         assert_eq!(LocalAddress.display_name(), "Local Addr");
         assert_eq!(RemoteAddress.display_name(), "Remote Addr");
@@ -1517,40 +1505,30 @@ mod tests {
         assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
         assert!(ui_state.sort_ascending);
 
-        // Cycle through columns to reach BandwidthDown
-        // CreatedAt -> Protocol -> LocalAddress -> RemoteAddress -> State -> Service -> Application -> BandwidthDown
+        // Cycle through columns to reach BandwidthTotal
+        // CreatedAt -> Protocol -> LocalAddress -> RemoteAddress -> State -> Service -> Application -> BandwidthTotal
         for _ in 0..7 {
             ui_state.cycle_sort_column();
         }
 
-        // Should be at BandwidthDown with default descending (false)
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthDown);
-        assert!(!ui_state.sort_ascending, "BandwidthDown should default to descending");
+        // Should be at BandwidthTotal with default descending (false)
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
+        assert!(!ui_state.sort_ascending, "BandwidthTotal should default to descending");
 
         // Toggle direction with Shift+S
         ui_state.toggle_sort_direction();
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthDown);
-        assert!(ui_state.sort_ascending, "After toggle, BandwidthDown should be ascending");
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
+        assert!(ui_state.sort_ascending, "After toggle, BandwidthTotal should be ascending");
 
         // Toggle back
         ui_state.toggle_sort_direction();
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthDown);
-        assert!(!ui_state.sort_ascending, "After second toggle, BandwidthDown should be descending again");
+        assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
+        assert!(!ui_state.sort_ascending, "After second toggle, BandwidthTotal should be descending again");
 
-        // Cycle to BandwidthUp
+        // Cycle to Process (next after BandwidthTotal)
         ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthUp);
-        assert!(!ui_state.sort_ascending, "BandwidthUp should default to descending");
-
-        // Toggle direction for BandwidthUp
-        ui_state.toggle_sort_direction();
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthUp);
-        assert!(ui_state.sort_ascending, "After toggle, BandwidthUp should be ascending");
-
-        // Toggle back
-        ui_state.toggle_sort_direction();
-        assert_eq!(ui_state.sort_column, SortColumn::BandwidthUp);
-        assert!(!ui_state.sort_ascending, "After second toggle, BandwidthUp should be descending again");
+        assert_eq!(ui_state.sort_column, SortColumn::Process);
+        assert!(ui_state.sort_ascending, "Process should default to ascending");
     }
 
     #[test]

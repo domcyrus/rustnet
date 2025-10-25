@@ -82,7 +82,7 @@ The experimental eBPF support provides efficient process identification but has 
   - Direction toggle with `S` (Shift+s) for ascending/descending
   - Visual indicators: cyan/underlined active column, arrows showing direction
   - Smart defaults: bandwidth descending (show hogs), text ascending (alphabetical)
-  - Special bandwidth handling: arrows attach to specific metric (Down↓/Up or Down/Up↓)
+  - Bandwidth sorting: sorts by combined up+down bandwidth total
   - Seamless integration with filtering
 
 ### Performance & Architecture

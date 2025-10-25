@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Bandwidth Sorting**: Changed bandwidth sorting to use combined up+down total instead of separate up/down sorting
+  - Simpler sorting behavior: press `s` once to sort by total bandwidth
+  - Display still shows "Down/Up" with individual values
+  - Arrow indicator shows when sorting by combined bandwidth total
+
 ## [0.14.0] - 2025-10-12
 
 ### Added

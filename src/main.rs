@@ -123,16 +123,12 @@ fn sort_connections(
         let ordering = match sort_column {
             SortColumn::CreatedAt => a.created_at.cmp(&b.created_at),
 
-            SortColumn::BandwidthDown => {
-                // Compare as f64, handle NaN cases
-                a.current_incoming_rate_bps
-                    .partial_cmp(&b.current_incoming_rate_bps)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            }
-
-            SortColumn::BandwidthUp => {
-                a.current_outgoing_rate_bps
-                    .partial_cmp(&b.current_outgoing_rate_bps)
+            SortColumn::BandwidthTotal => {
+                // Compare combined up+down bandwidth, handle NaN cases
+                let a_total = a.current_incoming_rate_bps + a.current_outgoing_rate_bps;
+                let b_total = b.current_incoming_rate_bps + b.current_outgoing_rate_bps;
+                a_total
+                    .partial_cmp(&b_total)
                     .unwrap_or(std::cmp::Ordering::Equal)
             }
 

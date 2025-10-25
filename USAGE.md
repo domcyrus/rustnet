@@ -293,16 +293,10 @@ RustNet provides powerful table sorting to help you analyze network connections.
 
 ### Quick Start
 
-**Find bandwidth hogs:**
+**Find bandwidth hogs (combined up+down traffic):**
 ```
-Press 's' repeatedly until you see: Down↓/Up
-The connections with highest download bandwidth appear at the top
-```
-
-**Find top uploaders:**
-```
-Press 's' repeatedly until you see: Down/Up↓
-The connections with highest upload bandwidth appear at the top
+Press 's' repeatedly until you see: Down/Up ↓
+The connections with highest total bandwidth appear at the top
 ```
 
 **Sort by process name:**
@@ -323,8 +317,7 @@ Press `s` to cycle through columns in left-to-right order:
 | **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
 | **Service** | ↑ Ascending | Sort by service name or port number |
 | **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.) |
-| **Bandwidth ↓** | ↓ Descending | Sort by **download** bandwidth (highest first by default) |
-| **Bandwidth ↑** | ↓ Descending | Sort by **upload** bandwidth (highest first by default) |
+| **Bandwidth (Down/Up)** | ↓ Descending | Sort by **combined up+down** bandwidth (highest first by default) |
 | **Process** | ↑ Ascending | Sort by process name alphabetically |
 
 ### Sort Indicators
@@ -345,30 +338,12 @@ Table title shows current sort:
 ┌─ Active Connections (Sort: Remote Addr ↑) ──┐
 ```
 
-### Bandwidth Column Special Behavior
-
-The bandwidth column shows **both download and upload** metrics. The arrow attaches to the specific metric being sorted:
-
-| Display | Sorting By | Direction | Meaning |
-|---------|------------|-----------|---------|
-| `Down↓/Up` | Download | Descending (↓) | **Highest downloads first** (bandwidth hogs) |
-| `Down↑/Up` | Download | Ascending (↑) | Lowest downloads first |
-| `Down/Up↓` | Upload | Descending (↓) | **Highest uploads first** (top uploaders) |
-| `Down/Up↑` | Upload | Ascending (↑) | Lowest uploads first |
-
-**Key points:**
-- The arrow (↑/↓) indicates **sort direction**, not bandwidth direction
-- `↓` = Descending = Highest values at top (10MB → 5MB → 1MB)
-- `↑` = Ascending = Lowest values at top (1MB → 5MB → 10MB)
-- Press `s` once on bandwidth to sort by downloads, press `s` again for uploads
-- Press `S` (Shift+s) to flip between high-to-low and low-to-high
-
 ### Sort Behavior
 
 **Press `s` (lowercase) - Cycle Columns:**
 - Moves to the next column in left-to-right visual order
 - **Resets to default direction** for that column
-- Bandwidth columns default to descending (↓) to show highest values first
+- Bandwidth column defaults to descending (↓) to show highest values first
 - Text columns default to ascending (↑) for alphabetical order
 
 **Press `S` (Shift+s) - Toggle Direction:**
@@ -390,16 +365,16 @@ Sorting works seamlessly with filtering:
 Example workflow:
 ```
 1. Press '/' and type 'firefox' to filter Firefox connections
-2. Press 's' until you see "Down↓/Up"
-3. Now viewing Firefox connections sorted by download bandwidth
+2. Press 's' until you see "Down/Up ↓"
+3. Now viewing Firefox connections sorted by total bandwidth (up+down combined)
 ```
 
 ### Examples
 
-**Find which process is downloading the most:**
+**Find which process is using the most bandwidth:**
 ```
-1. Press 's' until "Down↓/Up" appears
-2. Top connection shows the highest download rate
+1. Press 's' until "Down/Up ↓" appears
+2. Top connection shows the highest total bandwidth (up+down combined)
 3. Look at the "Process" column to see which application
 ```
 
@@ -412,9 +387,9 @@ Example workflow:
 
 **Find idle connections (lowest bandwidth):**
 ```
-1. Press 's' to cycle to "Down↓/Up"
-2. Press 'S' to toggle to "Down↑/Up" (ascending)
-3. Connections with lowest download bandwidth appear first
+1. Press 's' to cycle to "Down/Up ↓"
+2. Press 'S' to toggle to "Down/Up ↑" (ascending)
+3. Connections with lowest total bandwidth appear first
 ```
 
 **Sort by application protocol:**
