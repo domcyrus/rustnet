@@ -192,12 +192,6 @@ mod ebpf_enhanced {
             }
         }
 
-        /// Get diagnostic statistics about lookup performance
-        #[allow(dead_code)]
-        pub fn get_stats(&self) -> LookupStats {
-            self.stats.read().unwrap().clone()
-        }
-
         /// Check if eBPF is available and functioning
         pub fn is_ebpf_available(&self) -> bool {
             self.ebpf_tracker
@@ -446,12 +440,6 @@ mod procfs_only {
                 }),
                 stats: RwLock::new(LookupStats::default()),
             })
-        }
-
-        /// Get diagnostic statistics about lookup performance
-        #[allow(dead_code)]
-        pub fn get_stats(&self) -> LookupStats {
-            self.stats.read().unwrap().clone()
         }
     }
 

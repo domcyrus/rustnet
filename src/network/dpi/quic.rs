@@ -660,8 +660,6 @@ pub fn process_crypto_frames_in_packet(
                 quic_info.connection_close = Some(crate::network::types::QuicCloseInfo {
                     frame_type: frame_type_byte,
                     error_code,
-                    reason: reason.clone(),
-                    detected_at: std::time::Instant::now(),
                 });
 
                 // Update connection state based on close frame

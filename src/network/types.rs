@@ -83,19 +83,16 @@ impl std::fmt::Display for ApplicationProtocol {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
-    #[allow(dead_code)]
     // Listening is not used in our model because we track connections after they are established
+    #[allow(dead_code)]
     Listen,
     SynSent,
     SynReceived,
     Established,
     FinWait1,
     FinWait2,
-    #[allow(dead_code)]
     CloseWait,
-    #[allow(dead_code)]
     LastAck,
-    #[allow(dead_code)]
     TimeWait,
     Closing,
     Closed,
@@ -106,14 +103,8 @@ pub enum TcpState {
 pub enum ProtocolState {
     Tcp(TcpState),
     Udp,
-    Icmp {
-        icmp_type: u8,
-        #[allow(dead_code)]
-        icmp_code: u8,
-    },
-    Arp {
-        operation: ArpOperation,
-    },
+    Icmp { icmp_type: u8 },
+    Arp { operation: ArpOperation },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,7 +231,6 @@ impl fmt::Display for TlsVersion {
 pub struct DnsInfo {
     pub query_name: Option<String>,
     pub query_type: Option<DnsQueryType>,
-    #[allow(dead_code)]
     pub response_ips: Vec<std::net::IpAddr>,
     pub is_response: bool,
 }
@@ -300,12 +290,9 @@ pub enum DnsQueryType {
 
 // QUIC-specific types
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Legitimate protocol fields, kept for completeness
 pub struct QuicCloseInfo {
-    pub frame_type: u8,         // 0x1c (transport) or 0x1d (application)
-    pub error_code: u64,        // Error code from the CONNECTION_CLOSE frame
-    pub reason: Option<String>, // Optional reason phrase
-    pub detected_at: Instant,   // When the frame was detected
+    pub frame_type: u8,  // 0x1c (transport) or 0x1d (application)
+    pub error_code: u64, // Error code from the CONNECTION_CLOSE frame
 }
 
 #[derive(Debug, Clone)]
@@ -562,30 +549,7 @@ impl CryptoFrameReassembler {
 #[derive(Debug, Clone)]
 pub struct DpiInfo {
     pub application: ApplicationProtocol,
-    #[allow(dead_code)]
-    pub first_packet_time: Instant,
-    #[allow(dead_code)]
     pub last_update_time: Instant,
-}
-
-#[derive(Debug, Clone)]
-pub struct RateInfo {
-    #[allow(dead_code)]
-    pub incoming_bps: f64,
-    #[allow(dead_code)]
-    pub outgoing_bps: f64,
-    #[allow(dead_code)]
-    pub last_calculation: Instant,
-}
-
-impl Default for RateInfo {
-    fn default() -> Self {
-        Self {
-            incoming_bps: 0.0,
-            outgoing_bps: 0.0,
-            last_calculation: Instant::now(),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -724,23 +688,11 @@ impl RateTracker {
         }
 
         // Sum ALL deltas in the window - each represents bytes transferred
-        let total_bytes: u64 = self
-            .samples
-            .iter()
-            .map(delta_getter)
-            .sum();
+        let total_bytes: u64 = self.samples.iter().map(delta_getter).sum();
 
         // Simple sliding window average: total bytes over time span
         // No decay - just pure average like iftop's 10-second column
         total_bytes as f64 / time_span
-    }
-
-    /// Get the age of the oldest sample in the current window
-    #[allow(dead_code)]
-    pub fn window_age(&self) -> Option<Duration> {
-        self.samples
-            .front()
-            .map(|oldest| oldest.timestamp.elapsed())
     }
 }
 
@@ -782,12 +734,6 @@ pub struct Connection {
 
     // Performance metrics
     pub rate_tracker: RateTracker,
-    #[allow(dead_code)]
-    // Legacy rate info - kept for backward compatibility during transition
-    pub current_rate_bps: RateInfo,
-    #[allow(dead_code)]
-    // TODO: implement RTT estimation
-    pub rtt_estimate: Option<Duration>,
 
     // Backward compatibility fields - updated by rate_tracker
     pub current_incoming_rate_bps: f64,
@@ -819,8 +765,6 @@ impl Connection {
             service_name: None,
             dpi_info: None,
             rate_tracker: RateTracker::new(),
-            current_rate_bps: RateInfo::default(),
-            rtt_estimate: None,
             current_incoming_rate_bps: 0.0,
             current_outgoing_rate_bps: 0.0,
         }
@@ -839,14 +783,7 @@ impl Connection {
         self.last_activity.elapsed().unwrap_or_default() < Duration::from_secs(300)
     }
 
-    /// Get the age of the connection
-    #[allow(dead_code)]
-    pub fn age(&self) -> Duration {
-        self.created_at.elapsed().unwrap_or_default()
-    }
-
     /// Get time since last activity
-    #[allow(dead_code)]
     pub fn idle_time(&self) -> Duration {
         self.last_activity.elapsed().unwrap_or_default()
     }
@@ -945,14 +882,6 @@ impl Connection {
         // Update backward compatibility fields with smoothed rates
         self.current_incoming_rate_bps = self.rate_tracker.get_incoming_rate_bps();
         self.current_outgoing_rate_bps = self.rate_tracker.get_outgoing_rate_bps();
-
-        // Also update the legacy RateInfo struct for any code that still uses it
-        let now = Instant::now();
-        self.current_rate_bps = RateInfo {
-            incoming_bps: self.current_incoming_rate_bps,
-            outgoing_bps: self.current_outgoing_rate_bps,
-            last_calculation: now,
-        };
     }
 
     /// Refresh rates without adding new data - useful for idle connections
@@ -962,14 +891,6 @@ impl Connection {
         // The calculate_rate_from_deltas method now checks sample age
         self.current_incoming_rate_bps = self.rate_tracker.get_incoming_rate_bps();
         self.current_outgoing_rate_bps = self.rate_tracker.get_outgoing_rate_bps();
-
-        // Also update the legacy RateInfo struct
-        let now = Instant::now();
-        self.current_rate_bps = RateInfo {
-            incoming_bps: self.current_incoming_rate_bps,
-            outgoing_bps: self.current_outgoing_rate_bps,
-            last_calculation: now,
-        };
     }
 
     /// Get dynamic timeout for this connection based on protocol and state
@@ -1370,10 +1291,6 @@ mod tests {
         // Verify backward compatibility fields are updated
         assert!(conn.current_outgoing_rate_bps >= 0.0);
         assert!(conn.current_incoming_rate_bps >= 0.0);
-
-        // Verify rate info is updated
-        assert!(conn.current_rate_bps.outgoing_bps >= 0.0);
-        assert!(conn.current_rate_bps.incoming_bps >= 0.0);
     }
 
     #[test]
@@ -1536,8 +1453,16 @@ mod tests {
         // Should have non-zero rate with >= 1 second of data
         let initial_out = tracker.get_outgoing_rate_bps();
         let initial_in = tracker.get_incoming_rate_bps();
-        assert!(initial_out > 0.0, "Should have outgoing traffic: {}", initial_out);
-        assert!(initial_in > 0.0, "Should have incoming traffic: {}", initial_in);
+        assert!(
+            initial_out > 0.0,
+            "Should have outgoing traffic: {}",
+            initial_out
+        );
+        assert!(
+            initial_in > 0.0,
+            "Should have incoming traffic: {}",
+            initial_in
+        );
 
         // Wait for samples to slide out of the 10-second window
         thread::sleep(Duration::from_secs(11));
@@ -1637,7 +1562,6 @@ mod tests {
 
         let dpi_info = DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic_info.clone())),
-            first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         };
         conn.dpi_info = Some(dpi_info);
@@ -1649,7 +1573,6 @@ mod tests {
         quic_connected.connection_state = QuicConnectionState::Connected;
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic_connected)),
-            first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
         assert_eq!(conn.state(), "QUIC_CONNECTED");
@@ -1659,7 +1582,6 @@ mod tests {
         quic_draining.connection_state = QuicConnectionState::Draining;
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic_draining)),
-            first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
         assert_eq!(conn.state(), "QUIC_DRAINING");
@@ -1684,7 +1606,6 @@ mod tests {
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_query),
-            first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
         assert_eq!(conn.state(), "DNS_QUERY");
@@ -1699,7 +1620,6 @@ mod tests {
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_response),
-            first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
         assert_eq!(conn.state(), "DNS_RESPONSE");
@@ -1760,13 +1680,10 @@ mod tests {
         quic_info.connection_close = Some(QuicCloseInfo {
             frame_type: 0x1c, // Transport close
             error_code: 0,    // NO_ERROR
-            reason: None,
-            detected_at: Instant::now(),
         });
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic_info)),
-            first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
 
@@ -1777,13 +1694,10 @@ mod tests {
         quic_app_close.connection_close = Some(QuicCloseInfo {
             frame_type: 0x1d, // Application close
             error_code: 1,
-            reason: Some("user_cancelled".to_string()),
-            detected_at: Instant::now(),
         });
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic_app_close)),
-            first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
 
@@ -1808,7 +1722,6 @@ mod tests {
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_info),
-            first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
 
@@ -1845,7 +1758,10 @@ mod tests {
 
         // Fresh connection - staleness ratio near 0
         let ratio = conn.staleness_ratio();
-        assert!(ratio < 0.05, "Fresh connection should have low staleness ratio");
+        assert!(
+            ratio < 0.05,
+            "Fresh connection should have low staleness ratio"
+        );
 
         // At 50% of timeout (300s total for idle, 150s elapsed)
         conn.last_activity = SystemTime::now() - Duration::from_secs(150);
@@ -1893,7 +1809,11 @@ mod tests {
         // At 75% of 30s = 22.5s
         conn.last_activity = SystemTime::now() - Duration::from_secs(23);
         let ratio = conn.staleness_ratio();
-        assert!(ratio >= 0.75, "TIME_WAIT connection should be stale at 23s, ratio: {}", ratio);
+        assert!(
+            ratio >= 0.75,
+            "TIME_WAIT connection should be stale at 23s, ratio: {}",
+            ratio
+        );
 
         // Test CLOSED (5s timeout)
         conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
@@ -1901,7 +1821,11 @@ mod tests {
         // At 75% of 5s = 3.75s
         conn.last_activity = SystemTime::now() - Duration::from_secs(4);
         let ratio = conn.staleness_ratio();
-        assert!(ratio >= 0.75, "CLOSED connection should be stale at 4s, ratio: {}", ratio);
+        assert!(
+            ratio >= 0.75,
+            "CLOSED connection should be stale at 4s, ratio: {}",
+            ratio
+        );
     }
 
     #[test]
@@ -1911,10 +1835,7 @@ mod tests {
             Protocol::ICMP,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
-            ProtocolState::Icmp {
-                icmp_type: 8,
-                icmp_code: 0,
-            },
+            ProtocolState::Icmp { icmp_type: 8 },
         );
 
         assert_eq!(conn.state(), "ECHO_REQUEST");

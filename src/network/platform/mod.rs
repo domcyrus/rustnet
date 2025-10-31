@@ -110,13 +110,6 @@ pub fn create_process_lookup_with_pktap_status(
     }
 }
 
-/// Create a basic process lookup (procfs only on Linux) - for testing or fallback
-#[cfg(target_os = "linux")]
-#[allow(dead_code)]
-pub fn create_basic_process_lookup() -> Result<Box<dyn ProcessLookup>> {
-    Ok(Box::new(LinuxProcessLookup::new()?))
-}
-
 /// Connection identifier for lookups
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ConnectionKey {

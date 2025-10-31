@@ -238,7 +238,6 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
     if let Some(dpi_result) = &parsed.dpi_result {
         conn.dpi_info = Some(DpiInfo {
             application: dpi_result.application.clone(),
-            first_packet_time: Instant::now(),
             last_update_time: Instant::now(),
         });
 
@@ -285,7 +284,6 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
             // No existing DPI info, use the new one
             conn.dpi_info = Some(DpiInfo {
                 application: dpi_result.application.clone(),
-                first_packet_time: Instant::now(),
                 last_update_time: Instant::now(),
             });
 

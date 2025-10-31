@@ -17,11 +17,6 @@ pub fn parse(
     }
 
     let icmp_type = transport_data[0];
-    let icmp_code = if transport_data.len() > 1 {
-        transport_data[1]
-    } else {
-        0
-    };
 
     // Determine direction based on local IPs
     let is_outgoing = local_ips.contains(&params.src_ip);
@@ -44,10 +39,7 @@ pub fn parse(
         local_addr,
         remote_addr,
         tcp_flags: None,
-        protocol_state: ProtocolState::Icmp {
-            icmp_type,
-            icmp_code,
-        },
+        protocol_state: ProtocolState::Icmp { icmp_type },
         is_outgoing,
         packet_len: params.packet_len,
         dpi_result: None,
@@ -67,11 +59,6 @@ pub fn parse_v6(
     }
 
     let icmp_type = transport_data[0];
-    let icmp_code = if transport_data.len() > 1 {
-        transport_data[1]
-    } else {
-        0
-    };
 
     // Determine direction based on local IPs
     let is_outgoing = local_ips.contains(&params.src_ip);
@@ -94,10 +81,7 @@ pub fn parse_v6(
         local_addr,
         remote_addr,
         tcp_flags: None,
-        protocol_state: ProtocolState::Icmp {
-            icmp_type,
-            icmp_code,
-        },
+        protocol_state: ProtocolState::Icmp { icmp_type },
         is_outgoing,
         packet_len: params.packet_len,
         dpi_result: None, // No DPI for ICMPv6
