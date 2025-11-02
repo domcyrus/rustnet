@@ -17,7 +17,7 @@ use crate::network::{
     capture::{CaptureConfig, PacketReader, setup_packet_capture},
     merge::{create_connection_from_packet, merge_packet_into_connection},
     parser::{PacketParser, ParsedPacket, ParserConfig},
-    platform::create_process_lookup_with_pktap_status,
+    platform::create_process_lookup,
     services::ServiceLookup,
     types::{ApplicationProtocol, Connection, Protocol},
 };
@@ -31,7 +31,12 @@ static QUIC_CONNECTION_MAPPING: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Helper function to log connection events as JSON
-fn log_connection_event(json_log_path: &str, event_type: &str, conn: &Connection, duration_secs: Option<u64>) {
+fn log_connection_event(
+    json_log_path: &str,
+    event_type: &str,
+    conn: &Connection,
+    duration_secs: Option<u64>,
+) {
     // Build JSON object based on event type
     let mut event = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -517,7 +522,12 @@ impl App {
             }
 
             // Start the actual process enrichment
-            if let Err(e) = Self::run_process_enrichment(connections, should_stop, pktap_active, process_detection_method) {
+            if let Err(e) = Self::run_process_enrichment(
+                connections,
+                should_stop,
+                pktap_active,
+                process_detection_method,
+            ) {
                 error!("Process enrichment thread failed: {}", e);
             }
         });
@@ -533,9 +543,9 @@ impl App {
         process_detection_method: Arc<RwLock<String>>,
     ) -> Result<()> {
         // Check PKTAP status before creating process lookup
-        let is_pktap = pktap_active.load(Ordering::Relaxed);
+        let use_pktap = pktap_active.load(Ordering::Relaxed);
 
-        let process_lookup = create_process_lookup_with_pktap_status(is_pktap)?;
+        let process_lookup = create_process_lookup(use_pktap)?;
         let interval = Duration::from_secs(2); // Use default interval
 
         // Get and set the detection method from the process lookup implementation
@@ -546,8 +556,10 @@ impl App {
             *method = process_lookup.get_detection_method().to_string();
         }
 
-        info!("Process enrichment thread started with detection method: {}",
-              process_lookup.get_detection_method());
+        info!(
+            "Process enrichment thread started with detection method: {}",
+            process_lookup.get_detection_method()
+        );
         let mut last_refresh = Instant::now();
 
         loop {
@@ -890,7 +902,8 @@ impl App {
             && let Some(dlt) = *linktype_opt
         {
             // Get interface name to detect TUN/TAP more accurately
-            let interface_name = self.current_interface
+            let interface_name = self
+                .current_interface
                 .read()
                 .ok()
                 .and_then(|opt| opt.clone())

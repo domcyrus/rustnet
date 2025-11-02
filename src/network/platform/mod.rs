@@ -4,6 +4,8 @@ use anyhow::Result;
 use std::net::SocketAddr;
 
 // Platform-specific modules
+#[cfg(target_os = "freebsd")]
+mod freebsd;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
@@ -16,6 +18,8 @@ mod macos;
 mod windows;
 
 // Re-export the appropriate implementation
+#[cfg(target_os = "freebsd")]
+pub use freebsd::FreeBSDProcessLookup;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxProcessLookup;
 #[cfg(target_os = "linux")]
@@ -60,14 +64,12 @@ impl ProcessLookup for NoOpProcessLookup {
 }
 
 /// Create a platform-specific process lookup with PKTAP status awareness
-pub fn create_process_lookup_with_pktap_status(
-    _pktap_active: bool,
-) -> Result<Box<dyn ProcessLookup>> {
+pub fn create_process_lookup(_use_pktap: bool) -> Result<Box<dyn ProcessLookup>> {
     #[cfg(target_os = "macos")]
     {
         use crate::network::platform::macos::MacOSProcessLookup;
 
-        if _pktap_active {
+        if _use_pktap {
             log::info!("Using no-op process lookup - PKTAP provides process metadata");
             Ok(Box::new(NoOpProcessLookup))
         } else {
@@ -104,7 +106,18 @@ pub fn create_process_lookup_with_pktap_status(
         Ok(Box::new(WindowsProcessLookup::new()?))
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "freebsd")]
+    {
+        log::info!("Using FreeBSD process lookup (sockstat)");
+        Ok(Box::new(FreeBSDProcessLookup::new()?))
+    }
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "freebsd"
+    )))]
     {
         Err(anyhow::anyhow!("Unsupported platform"))
     }

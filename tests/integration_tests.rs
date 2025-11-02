@@ -2,7 +2,7 @@
 
 #[cfg(target_os = "linux")]
 mod linux_tests {
-    use rustnet_monitor::network::platform::create_process_lookup_with_pktap_status;
+    use rustnet_monitor::network::platform::create_process_lookup;
 
     #[test]
     fn test_process_lookup_creation() {
@@ -31,12 +31,12 @@ mod linux_tests {
 
 #[cfg(target_os = "macos")]
 mod other_platforms {
-    use rustnet_monitor::network::platform::create_process_lookup_with_pktap_status;
+    use rustnet_monitor::network::platform::create_process_lookup;
 
     #[test]
     fn test_other_platform_lookup() {
         // Test that other platforms can create process lookups
-        let result = create_process_lookup_with_pktap_status(false);
+        let result = create_process_lookup(false);
         assert!(result.is_ok(), "Should work on other platforms too");
     }
 }

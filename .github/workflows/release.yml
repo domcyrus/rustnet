@@ -39,6 +39,7 @@ jobs:
           - linux-aarch64-gnu
           - linux-armv7-gnueabihf
           - linux-x64-gnu
+          - freebsd-x64
           - macos-aarch64
           - macos-x64
           - windows-x64-msvc
@@ -54,6 +55,9 @@ jobs:
             cargo: cross
           - build: linux-x64-gnu
             target: x86_64-unknown-linux-gnu
+          - build: freebsd-x64
+            target: x86_64-unknown-freebsd
+            cargo: cross
           - build: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin

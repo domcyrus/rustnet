@@ -58,6 +58,10 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
 ] }
 
+# FreeBSD support uses the system's sockstat command for process lookup
+# and native libpcap (via pcap crate) for packet capture.
+# No additional FreeBSD-specific dependencies required at this time.
+
 [build-dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }

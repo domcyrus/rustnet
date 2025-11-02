@@ -14,7 +14,12 @@ This document outlines the planned features and improvements for RustNet.
   - Npcap SDK and runtime integration
   - MSI installation packages for 64-bit and 32-bit
   - Process identification via Windows IP Helper API (GetExtendedTcpTable/GetExtendedUdpTable)
-- [ ] **BSD Support**: Add support for FreeBSD, OpenBSD, and NetBSD
+- [x] **FreeBSD Support**: Full support including:
+  - Process identification via `sockstat` command parsing
+  - BPF device access and permissions setup
+  - Native libpcap packet capture
+  - Cross-compilation support from Linux
+- [ ] **OpenBSD and NetBSD Support**: Future platforms to support
 - [x] **Linux Process Identification**: **Experimental eBPF Support Implemented** - Basic eBPF-based process identification now available with `--features ebpf`. Provides efficient kernel-level process-to-connection mapping with lower overhead than procfs. Currently has limitations (see eBPF Improvements section below).
 
 ## eBPF Improvements (Linux)
@@ -60,7 +65,7 @@ The experimental eBPF support provides efficient process identification but has 
 - [x] **Connection Lifecycle Management**: Smart protocol-aware timeouts with visual staleness indicators (yellow at 75%, red at 90%)
 - [x] **Process Identification**: Associate network connections with running processes (with experimental eBPF support on Linux)
 - [x] **Service Name Resolution**: Identify well-known services using port numbers
-- [x] **Cross-platform Support**: Works on Linux, macOS, Windows
+- [x] **Cross-platform Support**: Works on Linux, macOS, Windows, and FreeBSD
 - [ ] **DNS Reverse Lookup**: Add optional hostname resolution (toggle between IP and hostname display)
 - [ ] **IPv6 Support**: Full IPv6 connection tracking and display, including DNS resolution (needs testing)
 

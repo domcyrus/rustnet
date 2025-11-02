@@ -19,7 +19,7 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 - **Smart Connection Lifecycle**: Protocol-aware timeouts with visual staleness indicators (white → yellow → red) before cleanup
 - **Process Identification**: Associate network connections with running processes
 - **Service Name Resolution**: Identify well-known services using port numbers
-- **Cross-platform Support**: Works on Linux, macOS, Windows and potentially BSD systems
+- **Cross-platform Support**: Works on Linux, macOS, Windows, and FreeBSD
 - **Advanced Filtering**: Real-time vim/fzf-style filtering with keyword support (`port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`)
 - **Terminal User Interface**: Beautiful TUI built with ratatui with adjustable column widths
 - **Multi-threaded Processing**: Concurrent packet processing for high performance
