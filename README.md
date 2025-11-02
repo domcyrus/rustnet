@@ -59,6 +59,12 @@ See [EBPF_BUILD.md](EBPF_BUILD.md) for more details and [ARCHITECTURE.md](ARCHIT
 
 ### Installation
 
+**macOS / Linux Homebrew Installation:**
+```bash
+brew tap domcyrus/rustnet
+brew install rustnet
+```
+
 **Ubuntu PPA (Recommended for Ubuntu 25.10+ users):**
 ```bash
 sudo add-apt-repository ppa:domcyrus/rustnet
