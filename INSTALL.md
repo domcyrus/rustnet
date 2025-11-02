@@ -8,6 +8,7 @@ This guide covers all installation methods for RustNet across different platform
   - [macOS DMG Installation](#macos-dmg-installation)
   - [Windows MSI Installation](#windows-msi-installation)
   - [Linux Package Installation](#linux-package-installation)
+  - [FreeBSD Installation](#freebsd-installation)
 - [Install via Cargo](#install-via-cargo)
 - [Building from Source](#building-from-source)
 - [Using Docker](#using-docker)
@@ -203,6 +204,100 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(brew --prefix)/bin/rustnet
 rustnet
 ```
 
+### FreeBSD Installation
+
+FreeBSD support is available starting from version 0.15.0.
+
+#### From Ports or Packages (Future)
+
+Once available in FreeBSD ports:
+```bash
+# Using pkg (binary packages)
+pkg install rustnet
+
+# Or build from ports
+cd /usr/ports/net/rustnet && make install clean
+```
+
+#### From GitHub Releases
+
+Download the FreeBSD binary from [GitHub Releases](https://github.com/domcyrus/rustnet/releases):
+
+```bash
+# Download the appropriate package
+fetch https://github.com/domcyrus/rustnet/releases/download/vX.Y.Z/rustnet-vX.Y.Z-x86_64-unknown-freebsd.tar.gz
+
+# Extract the archive
+tar xzf rustnet-vX.Y.Z-x86_64-unknown-freebsd.tar.gz
+
+# Move binary to PATH
+sudo mv rustnet-vX.Y.Z-x86_64-unknown-freebsd/rustnet /usr/local/bin/
+
+# Make it executable
+sudo chmod +x /usr/local/bin/rustnet
+
+# Run with sudo
+sudo rustnet
+```
+
+#### Building from Source on FreeBSD
+
+```bash
+# Install dependencies
+pkg install rust libpcap
+
+# Clone the repository
+git clone https://github.com/domcyrus/rustnet.git
+cd rustnet
+
+# Build in release mode
+cargo build --release
+
+# The executable will be in target/release/rustnet
+sudo ./target/release/rustnet
+```
+
+#### Permission Setup for FreeBSD
+
+FreeBSD requires access to BPF (Berkeley Packet Filter) devices for packet capture.
+
+**Option 1: Run with sudo (Simplest)**
+```bash
+sudo rustnet
+```
+
+**Option 2: Add user to the bpf group (Recommended)**
+```bash
+# Add your user to the bpf group
+sudo pw groupmod bpf -m $(whoami)
+
+# Log out and back in for group changes to take effect
+
+# Now run without sudo
+rustnet
+```
+
+**Option 3: Change BPF device permissions (Temporary)**
+```bash
+# This will reset on reboot
+sudo chmod o+rw /dev/bpf*
+
+# Now run without sudo
+rustnet
+```
+
+**Verifying FreeBSD Permissions:**
+```bash
+# Check if you're in the bpf group
+groups | grep bpf
+
+# Check BPF device permissions
+ls -la /dev/bpf*
+
+# Test without sudo
+rustnet --help
+```
+
 ## Install via Cargo
 
 ```bash
@@ -223,6 +318,7 @@ After installation, see the [Permissions Setup](#permissions-setup) section to c
 - libpcap or similar packet capture library:
   - **Linux**: `sudo apt-get install libpcap-dev` (Debian/Ubuntu) or `sudo yum install libpcap-devel` (RedHat/CentOS)
   - **macOS**: Included by default
+  - **FreeBSD**: `pkg install libpcap` (included in base system, but headers needed for building)
   - **Windows**: Install Npcap and Npcap SDK (see [Windows Build Setup](#windows-build-setup) below)
 - **For eBPF support (enabled by default on Linux)**:
   - `sudo apt-get install libelf-dev clang llvm` (Debian/Ubuntu)

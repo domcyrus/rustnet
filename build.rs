@@ -39,6 +39,11 @@ fn setup_cross_compilation_libs() {
             println!("cargo:rustc-link-lib=elf");
             println!("cargo:rustc-link-lib=z");
         }
+        "x86_64-unknown-freebsd" => {
+            // FreeBSD uses libpcap from base system (in /usr/lib)
+            // When cross-compiling, the sysroot should provide these
+            println!("cargo:rustc-link-lib=pcap");
+        }
         _ => {
             // For other targets, including native builds, let pkg-config handle it
         }

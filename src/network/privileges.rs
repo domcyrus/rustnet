@@ -4,11 +4,16 @@
 //! network packets on different platforms (Linux, macOS, Windows).
 
 use anyhow::Result;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use anyhow::anyhow;
 use log::{debug, info};
 #[cfg(any(
-    not(any(target_os = "linux", target_os = "macos", target_os = "windows")),
+    not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "freebsd"
+    )),
     target_os = "windows"
 ))]
 use log::warn;
@@ -35,7 +40,13 @@ impl PrivilegeStatus {
     }
 
     /// Create a status indicating insufficient privileges
-    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows", test))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "freebsd",
+        test
+    ))]
     pub fn insufficient(missing: Vec<String>, instructions: Vec<String>) -> Self {
         Self {
             has_privileges: false,
@@ -88,7 +99,17 @@ pub fn check_packet_capture_privileges() -> Result<PrivilegeStatus> {
         check_windows_privileges()
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "freebsd")]
+    {
+        check_freebsd_privileges()
+    }
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "freebsd"
+    )))]
     {
         // Unknown platform - return optimistic result
         warn!("Privilege check not implemented for this platform");
@@ -328,6 +349,90 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
             }
         }
     }
+}
+
+#[cfg(target_os = "freebsd")]
+fn check_freebsd_privileges() -> Result<PrivilegeStatus> {
+    use std::fs;
+
+    // Check if running as root by reading effective UID from process
+    let is_root = is_root_user()?;
+
+    if is_root {
+        info!("Running as root - all privileges available");
+        return Ok(PrivilegeStatus::sufficient());
+    }
+
+    debug!("Not running as root, checking BPF device permissions");
+
+    // On FreeBSD, packet capture requires access to BPF devices
+    // Try to open a BPF device to check permissions
+    let bpf_devices = (0..10)
+        .map(|i| format!("/dev/bpf{}", i))
+        .collect::<Vec<_>>();
+
+    let mut can_access_bpf = false;
+    for bpf_device in &bpf_devices {
+        if fs::metadata(bpf_device).is_ok() {
+            debug!("Checking BPF device: {}", bpf_device);
+
+            // Try to actually open it (this is the real test)
+            if std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(bpf_device)
+                .is_ok()
+            {
+                can_access_bpf = true;
+                debug!("Successfully opened BPF device: {}", bpf_device);
+                break;
+            }
+        }
+    }
+
+    if can_access_bpf {
+        return Ok(PrivilegeStatus::sufficient());
+    }
+
+    // No BPF access - build error message
+    let missing = vec!["Access to BPF devices (/dev/bpf*)".to_string()];
+
+    let instructions = vec![
+        "Run with sudo: sudo rustnet".to_string(),
+        "Add your user to the bpf group:\n  \
+         sudo pw groupmod bpf -m $(whoami)\n  \
+         Then logout and login again"
+            .to_string(),
+        "Change BPF device permissions (temporary):\n  \
+         sudo chmod o+rw /dev/bpf*"
+            .to_string(),
+    ];
+
+    Ok(PrivilegeStatus::insufficient(missing, instructions))
+}
+
+/// Check if running as root user on FreeBSD
+#[cfg(target_os = "freebsd")]
+fn is_root_user() -> Result<bool> {
+    use std::process::Command;
+
+    // Use `id -u` command to get effective UID safely
+    let output = Command::new("id")
+        .arg("-u")
+        .output()
+        .map_err(|e| anyhow!("Failed to run 'id -u': {}", e))?;
+
+    if !output.status.success() {
+        return Err(anyhow!("'id -u' command failed"));
+    }
+
+    let uid_str = String::from_utf8_lossy(&output.stdout);
+    let uid = uid_str
+        .trim()
+        .parse::<u32>()
+        .map_err(|e| anyhow!("Failed to parse UID: {}", e))?;
+
+    Ok(uid == 0)
 }
 
 #[cfg(test)]
