@@ -59,22 +59,27 @@ See [EBPF_BUILD.md](EBPF_BUILD.md) for more details and [ARCHITECTURE.md](ARCHIT
 
 ### Installation
 
-**macOS / Linux Homebrew Installation:**
+**Homebrew (macOS / Linux):**
 ```bash
 brew tap domcyrus/rustnet
 brew install rustnet
 ```
 
-**Ubuntu PPA (Recommended for Ubuntu 25.10+ users):**
+**Ubuntu (25.10+):**
 ```bash
 sudo add-apt-repository ppa:domcyrus/rustnet
 sudo apt update && sudo apt install rustnet
 ```
 
-**Fedora COPR (Recommended for Fedora 42+ users):**
+**Fedora (42+):**
 ```bash
 sudo dnf copr enable domcyrus/rustnet
 sudo dnf install rustnet
+```
+
+**Arch Linux (AUR):**
+```bash
+yay -S rustnet
 ```
 
 **From crates.io:**
@@ -82,41 +87,21 @@ sudo dnf install rustnet
 cargo install rustnet-monitor
 ```
 
-**From release packages:**
-- Download pre-built packages for macOS, Windows, or Linux from [GitHub Releases](https://github.com/domcyrus/rustnet/releases)
-- See [INSTALL.md](INSTALL.md) for detailed installation instructions for all platforms
-
-**From source:**
-```bash
-git clone https://github.com/domcyrus/rustnet.git
-cd rustnet
-cargo build --release
-```
-
-**Via Docker:**
-```bash
-docker pull ghcr.io/domcyrus/rustnet:latest
-docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
-  ghcr.io/domcyrus/rustnet:latest
-```
+**Other platforms:**
+- **Windows/FreeBSD**: Download installers from [GitHub Releases](https://github.com/domcyrus/rustnet/releases)
+- **Docker, source builds, other Linux distros**: See [INSTALL.md](INSTALL.md) for detailed instructions
 
 ### Running RustNet
 
-Packet capture requires elevated privileges. See [INSTALL.md](INSTALL.md) for detailed permission setup.
-
-> **Security Note (Linux):** RustNet uses **read-only packet capture** without promiscuous mode, requiring only `CAP_NET_RAW` (not full root or `CAP_NET_ADMIN`). This follows the principle of least privilege for enhanced security.
+Packet capture requires elevated privileges:
 
 ```bash
-# Quick start with sudo (all platforms)
+# Quick start (all platforms)
 sudo rustnet
 
-# Linux: Grant minimal capabilities (recommended - no root required!)
-# Read-only packet capture + eBPF process tracking
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /path/to/rustnet
+# Linux: Grant capabilities to run without sudo (recommended)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)
 rustnet
-
-# macOS: PKTAP requires root for process metadata
-sudo rustnet  # or use 'lsof' fallback without sudo
 ```
 
 **Common options:**
@@ -124,11 +109,9 @@ sudo rustnet  # or use 'lsof' fallback without sudo
 rustnet -i eth0              # Specify network interface
 rustnet --show-localhost     # Show localhost connections
 rustnet -r 500               # Set refresh interval (ms)
-rustnet --no-dpi             # Disable deep packet inspection
-rustnet -l debug             # Enable debug logging
 ```
 
-See [USAGE.md](USAGE.md) for complete command-line options and detailed usage guide.
+See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.md) for complete options.
 
 ## Keyboard Controls
 
