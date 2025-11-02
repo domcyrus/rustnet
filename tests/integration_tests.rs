@@ -7,7 +7,7 @@ mod linux_tests {
     #[test]
     fn test_process_lookup_creation() {
         // Test that we can create a process lookup without panicking
-        let result = create_process_lookup_with_pktap_status(false);
+        let result = create_process_lookup(false);
         assert!(result.is_ok(), "Should be able to create process lookup");
     }
 
@@ -16,7 +16,7 @@ mod linux_tests {
     fn test_ebpf_enhanced_lookup() {
         // This test verifies that the enhanced lookup can be created
         // when eBPF feature is enabled
-        let result = create_process_lookup_with_pktap_status(false);
+        let result = create_process_lookup(false);
         assert!(
             result.is_ok(),
             "Enhanced lookup should be created successfully"
