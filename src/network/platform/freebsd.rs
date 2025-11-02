@@ -3,7 +3,7 @@ use super::{ConnectionKey, ProcessLookup};
 use crate::network::types::{Connection, Protocol};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
@@ -129,7 +129,7 @@ impl FreeBSDProcessLookup {
         Ok(result)
     }
 
-    /// Parse address in format "ip:port" or "*:port"
+    /// Parse address in format "ip:port", "*:port", or "[ipv6]:port"
     fn parse_address(addr_str: &str) -> Option<SocketAddr> {
         // Handle wildcard addresses
         if addr_str.starts_with("*:") {
@@ -138,17 +138,26 @@ impl FreeBSDProcessLookup {
             return Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
         }
 
-        // Split by last colon to handle IPv6 addresses
+        // Handle IPv6 with brackets: [::1]:8080
+        if addr_str.starts_with('[') {
+            let closing_bracket = addr_str.find(']')?;
+            let ip_str = &addr_str[1..closing_bracket];
+            let port_str = addr_str.get(closing_bracket + 2..)?; // Skip "]:"
+            let port = port_str.parse::<u16>().ok()?;
+            let ip = IpAddr::V6(ip_str.parse().ok()?);
+            return Some(SocketAddr::new(ip, port));
+        }
+
+        // Split by last colon to handle addresses
         let last_colon = addr_str.rfind(':')?;
         let (ip_str, port_str) = addr_str.split_at(last_colon);
         let port_str = &port_str[1..]; // Remove the colon
 
         let port = port_str.parse::<u16>().ok()?;
 
-        // Parse IP address
+        // Detect IPv6 (contains colons) vs IPv4
         let ip = if ip_str.contains(':') {
-            // IPv6 address
-            let ip_str = ip_str.trim_start_matches('[').trim_end_matches(']');
+            // IPv6 address without brackets (e.g., "::1" or "fe80::1")
             IpAddr::V6(ip_str.parse().ok()?)
         } else {
             // IPv4 address
@@ -181,5 +190,140 @@ impl ProcessLookup for FreeBSDProcessLookup {
 
     fn get_detection_method(&self) -> &str {
         "sockstat"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    #[test]
+    fn test_parse_ipv4_address() {
+        let addr = FreeBSDProcessLookup::parse_address("192.168.1.1:8080");
+        assert_eq!(
+            addr,
+            Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                8080
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_ipv4_loopback() {
+        let addr = FreeBSDProcessLookup::parse_address("127.0.0.1:80");
+        assert_eq!(
+            addr,
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80))
+        );
+    }
+
+    #[test]
+    fn test_parse_ipv6_with_brackets() {
+        let addr = FreeBSDProcessLookup::parse_address("[::1]:8080");
+        assert_eq!(
+            addr,
+            Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8080))
+        );
+    }
+
+    #[test]
+    fn test_parse_ipv6_full_address_with_brackets() {
+        let addr = FreeBSDProcessLookup::parse_address("[2001:db8::1]:443");
+        assert_eq!(
+            addr,
+            Some(SocketAddr::new(
+                IpAddr::V6("2001:db8::1".parse().unwrap()),
+                443
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_ipv6_link_local_with_brackets() {
+        let addr = FreeBSDProcessLookup::parse_address("[fe80::1]:22");
+        assert_eq!(
+            addr,
+            Some(SocketAddr::new(
+                IpAddr::V6("fe80::1".parse().unwrap()),
+                22
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_ipv6_without_brackets() {
+        // This may occur in some sockstat outputs
+        let addr = FreeBSDProcessLookup::parse_address("::1:8080");
+        // This should parse as IPv6 ::1 with port 8080
+        // Note: This is ambiguous, but our logic treats multiple colons as IPv6
+        assert!(addr.is_some());
+        if let Some(socket_addr) = addr {
+            assert_eq!(socket_addr.port(), 8080);
+        }
+    }
+
+    #[test]
+    fn test_parse_wildcard_address() {
+        let addr = FreeBSDProcessLookup::parse_address("*:80");
+        assert_eq!(
+            addr,
+            Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                80
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_wildcard_high_port() {
+        let addr = FreeBSDProcessLookup::parse_address("*:65535");
+        assert_eq!(
+            addr,
+            Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                65535
+            ))
+        );
+    }
+
+    #[test]
+    fn test_parse_invalid_address() {
+        // Missing port
+        assert_eq!(FreeBSDProcessLookup::parse_address("192.168.1.1"), None);
+    }
+
+    #[test]
+    fn test_parse_invalid_ipv6_brackets() {
+        // Missing closing bracket
+        assert_eq!(FreeBSDProcessLookup::parse_address("[::1:8080"), None);
+    }
+
+    #[test]
+    fn test_parse_invalid_port() {
+        // Port out of range
+        assert_eq!(
+            FreeBSDProcessLookup::parse_address("192.168.1.1:99999"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_empty_string() {
+        assert_eq!(FreeBSDProcessLookup::parse_address(""), None);
+    }
+
+    #[test]
+    fn test_parse_ipv4_mapped_ipv6() {
+        // IPv4-mapped IPv6 address
+        let addr = FreeBSDProcessLookup::parse_address("[::ffff:192.168.1.1]:80");
+        assert_eq!(
+            addr,
+            Some(SocketAddr::new(
+                IpAddr::V6("::ffff:192.168.1.1".parse().unwrap()),
+                80
+            ))
+        );
     }
 }

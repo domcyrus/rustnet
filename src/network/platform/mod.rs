@@ -4,6 +4,8 @@ use anyhow::Result;
 use std::net::SocketAddr;
 
 // Platform-specific modules
+#[cfg(target_os = "freebsd")]
+mod freebsd;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
@@ -14,10 +16,10 @@ mod linux_enhanced;
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
-#[cfg(target_os = "freebsd")]
-mod freebsd;
 
 // Re-export the appropriate implementation
+#[cfg(target_os = "freebsd")]
+pub use freebsd::FreeBSDProcessLookup;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxProcessLookup;
 #[cfg(target_os = "linux")]
@@ -26,8 +28,6 @@ pub use linux::LinuxProcessLookup;
 pub use macos::MacOSProcessLookup;
 #[cfg(target_os = "windows")]
 pub use windows::WindowsProcessLookup;
-#[cfg(target_os = "freebsd")]
-pub use freebsd::FreeBSDProcessLookup;
 
 /// Trait for platform-specific process lookup
 pub trait ProcessLookup: Send + Sync {
@@ -64,12 +64,12 @@ impl ProcessLookup for NoOpProcessLookup {
 }
 
 /// Create a platform-specific process lookup with PKTAP status awareness
-pub fn create_process_lookup(use_pktap: bool) -> Result<Box<dyn ProcessLookup>> {
+pub fn create_process_lookup(_use_pktap: bool) -> Result<Box<dyn ProcessLookup>> {
     #[cfg(target_os = "macos")]
     {
         use crate::network::platform::macos::MacOSProcessLookup;
 
-        if use_pktap {
+        if _use_pktap {
             log::info!("Using no-op process lookup - PKTAP provides process metadata");
             Ok(Box::new(NoOpProcessLookup))
         } else {
