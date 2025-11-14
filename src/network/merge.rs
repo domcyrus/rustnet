@@ -49,12 +49,109 @@ fn update_tcp_state(current_state: TcpState, flags: &TcpFlags, is_outgoing: bool
     }
 }
 
+/// Analyze TCP segment and update analytics for retransmissions and packet quality
+/// Returns (new_retransmits, new_out_of_order, new_fast_retransmits)
+fn analyze_tcp_segment(
+    analytics: &mut crate::network::types::TcpAnalytics,
+    seq: u32,
+    ack: u32,
+    window: u16,
+    payload_len: u32,
+    is_outgoing: bool,
+    has_ack_flag: bool,
+) -> (u64, u64, u64) {
+    let mut new_retransmits = 0;
+    let mut new_out_of_order = 0;
+    let mut new_fast_retransmits = 0;
+
+    // Track window size
+    analytics.last_window_size = window;
+
+    if is_outgoing {
+        // Outbound packet - check for retransmissions
+        if payload_len > 0 {
+            // Only consider packets with payload for retransmit detection
+            if analytics.last_seq_outbound != 0 {
+                // Check if this sequence number is less than expected (retransmission)
+                let expected_seq = analytics.last_seq_outbound;
+
+                if seq < expected_seq {
+                    // This is a retransmission
+                    analytics.retransmit_count += 1;
+                    new_retransmits += 1;
+                    debug!("TCP retransmission detected: seq={}, expected={}", seq, expected_seq);
+                } else if seq > expected_seq {
+                    // Gap in sequence numbers - might be out of order or packet loss
+                    debug!("TCP sequence gap detected: seq={}, expected={}", seq, expected_seq);
+                } else {
+                    // seq == expected_seq, normal in-order packet
+                    analytics.last_seq_outbound = seq.wrapping_add(payload_len);
+                }
+            } else {
+                // First packet with data
+                analytics.last_seq_outbound = seq.wrapping_add(payload_len);
+            }
+        }
+    } else {
+        // Inbound packet - check for out-of-order and duplicate ACKs
+        if payload_len > 0 {
+            if analytics.last_seq_inbound != 0 {
+                let expected_seq = analytics.last_seq_inbound;
+
+                if seq < expected_seq {
+                    // Out-of-order packet (arrived late)
+                    analytics.out_of_order_count += 1;
+                    new_out_of_order += 1;
+                    debug!("TCP out-of-order packet: seq={}, expected={}", seq, expected_seq);
+                } else if seq > expected_seq {
+                    // Gap - possible packet loss
+                    analytics.last_seq_inbound = seq.wrapping_add(payload_len);
+                } else {
+                    // Normal in-order packet
+                    analytics.last_seq_inbound = seq.wrapping_add(payload_len);
+                }
+            } else {
+                // First inbound packet with data
+                analytics.last_seq_inbound = seq.wrapping_add(payload_len);
+            }
+        }
+
+        // Check for duplicate ACKs (fast retransmit indicator)
+        if has_ack_flag {
+            if analytics.last_ack_received != 0 {
+                if ack == analytics.last_ack_received {
+                    // Duplicate ACK
+                    analytics.duplicate_ack_count += 1;
+
+                    // RFC 2581: 3 duplicate ACKs trigger fast retransmit
+                    if analytics.duplicate_ack_count == 3 {
+                        analytics.fast_retransmit_count += 1;
+                        new_fast_retransmits += 1;
+                        debug!("TCP fast retransmit triggered (3 duplicate ACKs)");
+                    }
+                } else {
+                    // New ACK - reset duplicate counter
+                    analytics.last_ack_received = ack;
+                    analytics.duplicate_ack_count = 0;
+                }
+            } else {
+                // First ACK seen
+                analytics.last_ack_received = ack;
+            }
+        }
+    }
+
+    (new_retransmits, new_out_of_order, new_fast_retransmits)
+}
+
 /// Merge a parsed packet into an existing connection
+/// Returns (updated_connection, (new_retransmits, new_out_of_order, new_fast_retransmits))
 pub fn merge_packet_into_connection(
     mut conn: Connection,
     parsed: &ParsedPacket,
     now: SystemTime,
-) -> Connection {
+) -> (Connection, (u64, u64, u64)) {
+    let mut tcp_events = (0, 0, 0); // (retransmits, out_of_order, fast_retransmits)
     // Update timing
     conn.last_activity = now;
 
@@ -68,7 +165,7 @@ pub fn merge_packet_into_connection(
     }
 
     // Update protocol state (from packet flags/state)
-    if parsed.tcp_flags.is_some() {
+    if let Some(tcp_header) = parsed.tcp_header {
         let current_tcp_state = match conn.protocol_state {
             ProtocolState::Tcp(state) => state,
             _ => {
@@ -79,7 +176,7 @@ pub fn merge_packet_into_connection(
 
         let new_tcp_state = update_tcp_state(
             current_tcp_state,
-            &parsed.tcp_flags.unwrap(),
+            &tcp_header.flags,
             parsed.is_outgoing,
         );
 
@@ -91,6 +188,26 @@ pub fn merge_packet_into_connection(
         }
 
         conn.protocol_state = ProtocolState::Tcp(new_tcp_state);
+
+        // Update TCP analytics for retransmission and quality metrics
+        if let Some(analytics) = conn.tcp_analytics.as_mut() {
+            // Use actual TCP payload length from header
+            // Note: SYN and FIN flags also consume 1 sequence number each, even with no payload
+            let payload_len = tcp_header.payload_len;
+            let seq_consumed = payload_len
+                + if tcp_header.flags.syn { 1 } else { 0 }
+                + if tcp_header.flags.fin { 1 } else { 0 };
+
+            tcp_events = analyze_tcp_segment(
+                analytics,
+                tcp_header.seq,
+                tcp_header.ack,
+                tcp_header.window,
+                seq_consumed,
+                parsed.is_outgoing,
+                tcp_header.flags.ack,
+            );
+        }
     } else {
         // If no TCP flags, keep existing state or use the one from packet
         match (&conn.protocol_state, &parsed.protocol_state) {
@@ -190,7 +307,7 @@ pub fn merge_packet_into_connection(
     // Update rate calculations
     update_connection_rates(&mut conn);
 
-    conn
+    (conn, tcp_events)
 }
 
 /// Create a new connection from a parsed packet
@@ -203,19 +320,17 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
     );
 
     // Set initial TCP state based on flags if TCP
-    if parsed.tcp_flags.is_some() {
-        if let Some(tcp_flags) = &parsed.tcp_flags {
-            conn.protocol_state = ProtocolState::Tcp(update_tcp_state(
-                TcpState::Unknown,
-                tcp_flags,
-                parsed.is_outgoing,
-            ));
+    if let Some(tcp_header) = parsed.tcp_header {
+        conn.protocol_state = ProtocolState::Tcp(update_tcp_state(
+            TcpState::Unknown,
+            &tcp_header.flags,
+            parsed.is_outgoing,
+        ));
 
-            debug!(
-                "Created new {} connection: {:?} -> {:?}, state: {:?}",
-                parsed.protocol, parsed.local_addr, parsed.remote_addr, conn.protocol_state
-            );
-        }
+        debug!(
+            "Created new {} connection: {:?} -> {:?}, state: {:?}",
+            parsed.protocol, parsed.local_addr, parsed.remote_addr, conn.protocol_state
+        );
     } else {
         // For non-TCP protocols, use the provided state directly
         conn.protocol_state = parsed.protocol_state;
@@ -655,19 +770,27 @@ mod tests {
     }
 
     fn create_test_packet(is_outgoing: bool, fin: bool) -> ParsedPacket {
+        use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
+
         ParsedPacket {
             connection_key: "test".to_string(),
             protocol: Protocol::TCP,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
             protocol_state: ProtocolState::Tcp(TcpState::Unknown),
-            tcp_flags: Some(TcpFlags {
-                syn: false,
-                ack: false,
-                fin,
-                rst: false,
-                psh: false,
-                urg: false,
+            tcp_header: Some(TcpHeaderInfo {
+                seq: 1000,
+                ack: 2000,
+                window: 65535,
+                flags: TcpFlags {
+                    syn: false,
+                    ack: false,
+                    fin,
+                    rst: false,
+                    psh: false,
+                    urg: false,
+                },
+                payload_len: 60, // Simulated payload length
             }),
             is_outgoing,
             packet_len: 100,
@@ -682,7 +805,8 @@ mod tests {
         let mut conn = create_test_connection();
         let packet = create_test_packet(true, false);
 
-        conn = merge_packet_into_connection(conn, &packet, SystemTime::now());
+        let (updated_conn, _tcp_events) = merge_packet_into_connection(conn, &packet, SystemTime::now());
+        conn = updated_conn;
 
         assert_eq!(conn.packets_sent, 1);
         assert_eq!(conn.bytes_sent, 100);
@@ -711,7 +835,7 @@ mod tests {
 
         // Now simulate merging another packet
         let packet2 = create_test_packet(true, false);
-        let mut updated_conn = merge_packet_into_connection(conn, &packet2, SystemTime::now());
+        let (mut updated_conn, _tcp_events) = merge_packet_into_connection(conn, &packet2, SystemTime::now());
 
         // Bytes should have increased
         assert_eq!(updated_conn.bytes_sent, 200);

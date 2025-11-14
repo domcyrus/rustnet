@@ -9,6 +9,7 @@ This guide covers detailed usage of RustNet, including command-line options, key
 - [Keyboard Controls](#keyboard-controls)
 - [Filtering](#filtering)
 - [Sorting](#sorting)
+- [Network Statistics Panel](#network-statistics-panel)
 - [Connection Lifecycle & Visual Indicators](#connection-lifecycle--visual-indicators)
 - [Logging](#logging)
 
@@ -398,6 +399,69 @@ Example workflow:
 2. All HTTPS connections group together, DNS queries together, etc.
 3. Useful for finding all connections of a specific type
 ```
+
+## Network Statistics Panel
+
+The Network Statistics panel appears on the right side of the interface, below the Traffic panel. It provides real-time TCP connection quality metrics derived directly from packet capture analysis, making it platform-independent across Linux, macOS, Windows, and FreeBSD.
+
+### Available Metrics
+
+**TCP Retransmits**
+Detects when a TCP segment is retransmitted due to packet loss or timeout. RustNet identifies retransmissions by analyzing TCP sequence numbers: when a packet arrives with a sequence number lower than expected, it indicates the original packet was lost and is being resent.
+
+**Out-of-Order Packets**
+Tracks inbound TCP packets that arrive out of sequence, typically caused by network congestion or multiple routing paths. These packets eventually arrive but in the wrong order, requiring the receiver to buffer and reorder them.
+
+**Fast Retransmits**
+Identifies TCP fast retransmit events triggered by receiving three duplicate acknowledgments (RFC 2581). This mechanism allows TCP to detect and recover from packet loss more quickly than waiting for a timeout, improving connection performance.
+
+### Statistics Display Format
+
+The panel shows both **active** and **total** counts for each metric:
+
+```
+TCP Retransmits: 5 / 142 total
+Out-of-Order: 2 / 89 total
+Fast Retransmits: 1 / 23 total
+Active TCP Flows: 18
+```
+
+- **Active count** (left number): Sum of events from currently tracked connections. This number goes up and down as connections are established and cleaned up.
+- **Total count** (right number): Cumulative count since RustNet started. This number only increases and provides historical context.
+- **Active TCP Flows**: Number of active TCP connections with analytics data.
+
+### Per-Connection Statistics
+
+When viewing connection details (press `Enter` on a connection), TCP analytics are shown for that specific connection:
+
+```
+TCP Retransmits: 3
+Out-of-Order: 1
+Fast Retransmits: 0
+```
+
+These counters are tracked independently for each connection, allowing you to identify problematic connections experiencing packet loss or network issues.
+
+### Use Cases
+
+**Network Quality Monitoring**
+A sudden increase in retransmissions or out-of-order packets indicates network congestion, packet loss, or routing issues.
+
+**Connection Troubleshooting**
+High retransmit counts on specific connections can identify:
+- Unreliable network paths to certain destinations
+- Bandwidth-constrained links
+- Faulty network hardware or drivers
+
+**Performance Analysis**
+Fast retransmit frequency indicates how well TCP is recovering from packet loss without waiting for timeouts.
+
+### Technical Notes
+
+- Statistics are derived from TCP sequence number analysis without requiring packet timestamps
+- Analysis works on both outbound and inbound packets
+- SYN and FIN flags are properly accounted for in sequence number tracking (each consumes 1 sequence number)
+- Only TCP connections show analytics; UDP, ICMP, and other protocols do not have these metrics
 
 ## Connection Lifecycle & Visual Indicators
 

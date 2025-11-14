@@ -707,7 +707,8 @@ fn draw_stats_panel(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(10), // Connection stats (increased for interface line)
-            Constraint::Min(0),     // Traffic stats
+            Constraint::Length(5),  // Traffic stats
+            Constraint::Min(0),     // Network stats (TCP analytics)
         ])
         .split(area);
 
@@ -783,6 +784,37 @@ fn draw_stats_panel(
         .block(Block::default().borders(Borders::ALL).title("Traffic"))
         .style(Style::default());
     f.render_widget(traffic_stats, chunks[1]);
+
+    // Network statistics (TCP analytics)
+    let mut tcp_retransmits: u64 = 0;
+    let mut tcp_out_of_order: u64 = 0;
+    let mut tcp_fast_retransmits: u64 = 0;
+    let mut tcp_connections_with_analytics = 0;
+
+    for conn in connections {
+        if let Some(analytics) = &conn.tcp_analytics {
+            tcp_retransmits += analytics.retransmit_count;
+            tcp_out_of_order += analytics.out_of_order_count;
+            tcp_fast_retransmits += analytics.fast_retransmit_count;
+            tcp_connections_with_analytics += 1;
+        }
+    }
+
+    let total_retransmits = stats.total_tcp_retransmits.load(std::sync::atomic::Ordering::Relaxed);
+    let total_out_of_order = stats.total_tcp_out_of_order.load(std::sync::atomic::Ordering::Relaxed);
+    let total_fast_retransmits = stats.total_tcp_fast_retransmits.load(std::sync::atomic::Ordering::Relaxed);
+
+    let network_stats_text: Vec<Line> = vec![
+        Line::from(format!("TCP Retransmits: {} / {} total", tcp_retransmits, total_retransmits)),
+        Line::from(format!("Out-of-Order: {} / {} total", tcp_out_of_order, total_out_of_order)),
+        Line::from(format!("Fast Retransmits: {} / {} total", tcp_fast_retransmits, total_fast_retransmits)),
+        Line::from(format!("Active TCP Flows: {}", tcp_connections_with_analytics)),
+    ];
+
+    let network_stats = Paragraph::new(network_stats_text)
+        .block(Block::default().borders(Borders::ALL).title("Network Stats"))
+        .style(Style::default());
+    f.render_widget(network_stats, chunks[2]);
 
     Ok(())
 }
@@ -1010,6 +1042,31 @@ fn draw_connection_details(
                 Span::raw("-".to_string()),
             ]));
         }
+    }
+
+    // Add TCP analytics if available
+    if let Some(analytics) = &conn.tcp_analytics {
+        details_text.push(Line::from(""));
+        details_text.push(Line::from(vec![
+            Span::styled("TCP Retransmits: ", Style::default().fg(Color::Yellow)),
+            Span::raw(analytics.retransmit_count.to_string()),
+        ]));
+        details_text.push(Line::from(vec![
+            Span::styled("Out-of-Order Packets: ", Style::default().fg(Color::Yellow)),
+            Span::raw(analytics.out_of_order_count.to_string()),
+        ]));
+        details_text.push(Line::from(vec![
+            Span::styled("Duplicate ACKs: ", Style::default().fg(Color::Yellow)),
+            Span::raw(analytics.duplicate_ack_count.to_string()),
+        ]));
+        details_text.push(Line::from(vec![
+            Span::styled("Fast Retransmits: ", Style::default().fg(Color::Yellow)),
+            Span::raw(analytics.fast_retransmit_count.to_string()),
+        ]));
+        details_text.push(Line::from(vec![
+            Span::styled("Window Size: ", Style::default().fg(Color::Yellow)),
+            Span::raw(analytics.last_window_size.to_string()),
+        ]));
     }
 
     let details = Paragraph::new(details_text)
