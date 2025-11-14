@@ -702,6 +702,47 @@ impl Default for RateTracker {
     }
 }
 
+/// TCP analytics for tracking retransmissions and connection quality
+#[derive(Debug, Clone)]
+pub struct TcpAnalytics {
+    // Sequence number tracking
+    pub last_seq_outbound: u32,
+    pub last_seq_inbound: u32,
+
+    // ACK tracking for duplicate detection
+    pub last_ack_received: u32,
+    pub duplicate_ack_count: u32,
+
+    // Statistics counters
+    pub retransmit_count: u64,
+    pub out_of_order_count: u64,
+    pub fast_retransmit_count: u64,
+
+    // Window tracking
+    pub last_window_size: u16,
+}
+
+impl TcpAnalytics {
+    pub fn new() -> Self {
+        Self {
+            last_seq_outbound: 0,
+            last_seq_inbound: 0,
+            last_ack_received: 0,
+            duplicate_ack_count: 0,
+            retransmit_count: 0,
+            out_of_order_count: 0,
+            fast_retransmit_count: 0,
+            last_window_size: 0,
+        }
+    }
+}
+
+impl Default for TcpAnalytics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Connection {
     // Core identification
@@ -738,6 +779,9 @@ pub struct Connection {
     // Backward compatibility fields - updated by rate_tracker
     pub current_incoming_rate_bps: f64,
     pub current_outgoing_rate_bps: f64,
+
+    // TCP analytics (only for TCP connections)
+    pub tcp_analytics: Option<TcpAnalytics>,
 }
 
 impl Connection {
@@ -749,6 +793,13 @@ impl Connection {
         state: ProtocolState,
     ) -> Self {
         let now = SystemTime::now();
+        // Initialize TCP analytics for TCP connections
+        let tcp_analytics = if protocol == Protocol::TCP {
+            Some(TcpAnalytics::new())
+        } else {
+            None
+        };
+
         Self {
             protocol,
             local_addr,
@@ -767,6 +818,7 @@ impl Connection {
             rate_tracker: RateTracker::new(),
             current_incoming_rate_bps: 0.0,
             current_outgoing_rate_bps: 0.0,
+            tcp_analytics,
         }
     }
 

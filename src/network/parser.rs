@@ -8,8 +8,8 @@ use crate::network::protocol::TransportParams;
 use crate::network::types::*;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-// Re-export TcpFlags for backward compatibility
-pub use crate::network::protocol::tcp::TcpFlags;
+// Re-export TCP types
+pub use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
 
 /// Result of parsing a packet
 #[derive(Debug)]
@@ -18,7 +18,7 @@ pub struct ParsedPacket {
     pub protocol: Protocol,
     pub local_addr: SocketAddr,
     pub remote_addr: SocketAddr,
-    pub tcp_flags: Option<TcpFlags>,
+    pub tcp_header: Option<TcpHeaderInfo>, // TCP header info (seq, ack, window, flags)
     pub protocol_state: ProtocolState,
     pub is_outgoing: bool,
     pub packet_len: usize,
@@ -439,7 +439,7 @@ impl PacketParser {
             protocol: Protocol::ARP,
             local_addr,
             remote_addr,
-            tcp_flags: None,
+            tcp_header: None,
             protocol_state: ProtocolState::Arp { operation },
             is_outgoing,
             packet_len: data.len(),
@@ -716,8 +716,8 @@ mod tests {
         // Since source is local IP, local_addr should be source, remote should be dest
         assert_eq!(p.local_addr.port(), 1234, "Local port should be 1234");
         assert_eq!(p.remote_addr.port(), 80, "Remote port should be 80");
-        assert!(p.tcp_flags.is_some());
-        assert!(p.tcp_flags.unwrap().syn, "SYN flag should be set");
+        assert!(p.tcp_header.is_some());
+        assert!(p.tcp_header.unwrap().flags.syn, "SYN flag should be set");
     }
 
     #[test]

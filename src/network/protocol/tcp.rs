@@ -26,6 +26,16 @@ pub struct TcpFlags {
     pub urg: bool,
 }
 
+/// TCP header information extracted from the packet
+#[derive(Debug, Clone, Copy)]
+pub struct TcpHeaderInfo {
+    pub seq: u32,            // Sequence number
+    pub ack: u32,            // Acknowledgment number
+    pub window: u16,         // Window size
+    pub flags: TcpFlags,     // TCP flags
+    pub payload_len: u32,    // Actual TCP payload length (not including headers)
+}
+
 /// Parse TCP flags from the flags byte
 pub fn parse_tcp_flags(flags: u8) -> TcpFlags {
     TcpFlags {
@@ -51,9 +61,36 @@ pub fn parse(
 
     let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
     let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
+
+    // Extract TCP header fields
+    let seq = u32::from_be_bytes([
+        transport_data[4],
+        transport_data[5],
+        transport_data[6],
+        transport_data[7],
+    ]);
+    let ack = u32::from_be_bytes([
+        transport_data[8],
+        transport_data[9],
+        transport_data[10],
+        transport_data[11],
+    ]);
+    let window = u16::from_be_bytes([transport_data[14], transport_data[15]]);
     let flags = transport_data[13];
 
     let tcp_flags = parse_tcp_flags(flags);
+
+    // Calculate actual TCP payload length
+    let tcp_header_len = ((transport_data[12] >> 4) as usize) * 4;
+    let tcp_payload_len = transport_data.len().saturating_sub(tcp_header_len) as u32;
+
+    let tcp_header = TcpHeaderInfo {
+        seq,
+        ack,
+        window,
+        flags: tcp_flags,
+        payload_len: tcp_payload_len,
+    };
 
     // Log TCP flags for debugging
     log::trace!(
@@ -104,7 +141,7 @@ pub fn parse(
         protocol: Protocol::TCP,
         local_addr,
         remote_addr,
-        tcp_flags: Some(tcp_flags),
+        tcp_header: Some(tcp_header),
         protocol_state: ProtocolState::Tcp(TcpState::Unknown),
         is_outgoing,
         packet_len: params.packet_len,

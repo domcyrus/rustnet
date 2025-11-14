@@ -53,7 +53,7 @@ pub fn parse(
         protocol: Protocol::UDP,
         local_addr,
         remote_addr,
-        tcp_flags: None,
+        tcp_header: None,
         protocol_state: ProtocolState::Udp,
         is_outgoing,
         packet_len: params.packet_len,

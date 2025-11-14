@@ -139,6 +139,10 @@ pub struct AppStats {
     pub packets_dropped: AtomicU64,
     pub connections_tracked: AtomicU64,
     pub last_update: RwLock<Instant>,
+    // TCP analytics totals (since program start)
+    pub total_tcp_retransmits: AtomicU64,
+    pub total_tcp_out_of_order: AtomicU64,
+    pub total_tcp_fast_retransmits: AtomicU64,
 }
 
 impl Default for AppStats {
@@ -148,6 +152,9 @@ impl Default for AppStats {
             packets_dropped: AtomicU64::new(0),
             connections_tracked: AtomicU64::new(0),
             last_update: RwLock::new(Instant::now()),
+            total_tcp_retransmits: AtomicU64::new(0),
+            total_tcp_out_of_order: AtomicU64::new(0),
+            total_tcp_fast_retransmits: AtomicU64::new(0),
         }
     }
 }
@@ -872,6 +879,9 @@ impl App {
                 self.stats.connections_tracked.load(Ordering::Relaxed),
             ),
             last_update: RwLock::new(*self.stats.last_update.read().unwrap()),
+            total_tcp_retransmits: AtomicU64::new(self.stats.total_tcp_retransmits.load(Ordering::Relaxed)),
+            total_tcp_out_of_order: AtomicU64::new(self.stats.total_tcp_out_of_order.load(Ordering::Relaxed)),
+            total_tcp_fast_retransmits: AtomicU64::new(self.stats.total_tcp_fast_retransmits.load(Ordering::Relaxed)),
         }
     }
 
@@ -960,7 +970,20 @@ fn update_connection(
     connections
         .entry(key.clone())
         .and_modify(|conn| {
-            *conn = merge_packet_into_connection(conn.clone(), &parsed, now);
+            let (updated_conn, (new_retransmits, new_out_of_order, new_fast_retransmits)) =
+                merge_packet_into_connection(conn.clone(), &parsed, now);
+            *conn = updated_conn;
+
+            // Update global statistics
+            if new_retransmits > 0 {
+                _stats.total_tcp_retransmits.fetch_add(new_retransmits, Ordering::Relaxed);
+            }
+            if new_out_of_order > 0 {
+                _stats.total_tcp_out_of_order.fetch_add(new_out_of_order, Ordering::Relaxed);
+            }
+            if new_fast_retransmits > 0 {
+                _stats.total_tcp_fast_retransmits.fetch_add(new_fast_retransmits, Ordering::Relaxed);
+            }
         })
         .or_insert_with(|| {
             debug!("New connection detected: {}", key);
