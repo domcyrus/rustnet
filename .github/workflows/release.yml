@@ -73,7 +73,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -145,7 +145,7 @@ jobs:
     needs: build-release
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Download all artifacts
         uses: actions/download-artifact@v6
@@ -213,7 +213,7 @@ jobs:
     needs: create-release
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Download build artifacts
         uses: actions/download-artifact@v6
@@ -313,7 +313,7 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install packaging tools
         run: |
@@ -428,7 +428,7 @@ jobs:
             target: x86_64-pc-windows-msvc
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Install dependencies
         shell: powershell
