@@ -143,15 +143,19 @@ jobs:
 
       - name: Generate .SRCINFO
         run: |
-          # Use Arch Linux container to run makepkg
-          docker run --rm -v "$PWD/aur-rustnet-bin:/pkg" archlinux:latest bash -c '
-            pacman -Sy --noconfirm binutils fakeroot sudo &&
-            useradd -m builder &&
-            chown -R builder:builder /pkg &&
+          # Use Arch Linux container to run makepkg as the host user
+          docker run --rm -v "$PWD/aur-rustnet-bin:/pkg" --user $(id -u):$(id -g) archlinux:latest bash -c '
             cd /pkg &&
-            sudo -u builder makepkg --printsrcinfo > .SRCINFO &&
-            chown $(stat -c "%u:%g" PKGBUILD) .SRCINFO
-          '
+            makepkg --printsrcinfo > .SRCINFO
+          ' || {
+            # If that fails (no write permissions), install tools as root then run as user
+            docker run --rm -v "$PWD/aur-rustnet-bin:/pkg" archlinux:latest bash -c "
+              pacman -Sy --noconfirm binutils fakeroot sudo &&
+              useradd -m -u $(id -u) builder &&
+              cd /pkg &&
+              su builder -c 'makepkg --printsrcinfo > .SRCINFO'
+            "
+          }
 
           echo ".SRCINFO generated successfully"
 
