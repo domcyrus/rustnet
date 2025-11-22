@@ -99,8 +99,14 @@ jobs:
         run: |
           mkdir -p "$RUSTNET_ASSET_DIR"
           # build.rs will handle Npcap SDK download on Windows
-          # eBPF is now enabled by default on Linux, no need for explicit feature flag
-          ${{ matrix.cargo }} build --verbose --release --target ${{ matrix.target }}
+          # eBPF is enabled by default on Linux, but must be disabled for other platforms
+          if [[ "${{ matrix.target }}" == *"linux"* ]]; then
+            # Linux builds: use default features (includes eBPF)
+            ${{ matrix.cargo }} build --verbose --release --target ${{ matrix.target }}
+          else
+            # Non-Linux builds: disable default features (no eBPF)
+            ${{ matrix.cargo }} build --verbose --release --target ${{ matrix.target }} --no-default-features
+          fi
 
       - name: Create release archive
         shell: bash
