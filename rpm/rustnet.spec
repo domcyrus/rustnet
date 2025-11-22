@@ -2,7 +2,7 @@
 
 Name:    rustnet
 # renovate: datasource=github-releases depName=domcyrus/rustnet extractVersion=true
-Version: 0.15.0
+Version: 0.16.0
 Release: 1%{?dist}
 Summary: A cross-platform network monitoring terminal UI tool built with Rust
 License: Apache-2.0

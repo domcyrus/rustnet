@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2025-11-22
+
+### Added
+- **Network Interface Statistics**: Real-time monitoring of network interface statistics across all platforms
+  - Cross-platform support for Linux, macOS, Windows, and FreeBSD
+  - Display of interface-level metrics including packets sent/received, bytes transferred, and errors
+  - Platform-specific implementations optimized for each operating system
+  - New interface statistics module with dedicated platform handlers
+
+### Changed
+- **Link Layer Parsing**: Refactored link layer parsing into modular components
+  - Separated link layer types (Ethernet, Linux SLL, Raw IP, TUN/TAP, PKTAP)
+  - Improved packet parsing architecture for better maintainability
+  - Enhanced support for various network interface types
+
+### Fixed
+- **Windows Interface Stats**: Fixed interface statistics collection on Windows platforms
+  - Improved reliability of Windows network adapter statistics
+  - Better handling of Windows-specific network interfaces
+- **macOS Interface Stats**: Platform-specific improvements for macOS interface statistics
+  - Enhanced accuracy of macOS network interface metrics
+  - Better integration with macOS network stack
+
 ## [0.15.0] - 2025-10-25
 
 ### Added
