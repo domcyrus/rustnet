@@ -22,7 +22,7 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             # Get the latest tag when manually triggered
             git fetch --tags
-            TAG=$(git describe --tags --abbrev=0)
+            TAG=$(git tag --sort=-version:refname | head -n1)
           else
             TAG="${GITHUB_REF_NAME}"
           fi
