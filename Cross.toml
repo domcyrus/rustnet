@@ -14,3 +14,9 @@ pre-build = [
     "apt-get install -y libelf-dev:armhf zlib1g-dev:armhf libpcap-dev:armhf gcc-arm-linux-gnueabihf protobuf-compiler libseccomp-dev:armhf libbpf-dev clang llvm"
 ]
 
+[target.x86_64-unknown-freebsd]
+pre-build = [
+    # FreeBSD uses pkg as package manager
+    "pkg install -y libpcap",
+]
+
