@@ -364,7 +364,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Tab navigation
                     (KeyCode::Tab, _) => {
                         ui_state.quit_confirmation = false;
-                        ui_state.selected_tab = (ui_state.selected_tab + 1) % 3;
+                        ui_state.selected_tab = (ui_state.selected_tab + 1) % 4;
                     }
 
                     // Help toggle
@@ -372,9 +372,19 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         ui_state.quit_confirmation = false;
                         ui_state.show_help = !ui_state.show_help;
                         if ui_state.show_help {
-                            ui_state.selected_tab = 2; // Switch to help tab
+                            ui_state.selected_tab = 3; // Switch to help tab
                         } else {
                             ui_state.selected_tab = 0; // Back to overview
+                        }
+                    }
+
+                    // Interface stats toggle (shortcut to Interface tab)
+                    (KeyCode::Char('i'), _) | (KeyCode::Char('I'), _) => {
+                        ui_state.quit_confirmation = false;
+                        if ui_state.selected_tab == 2 {
+                            ui_state.selected_tab = 0; // Back to overview
+                        } else {
+                            ui_state.selected_tab = 2; // Switch to interfaces tab
                         }
                     }
 

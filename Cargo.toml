@@ -49,10 +49,14 @@ libbpf-rs = { version = "0.25", optional = true }
 bytes = { version = "1.11", optional = true }
 libc = { version = "0.2", optional = true }
 
+[target.'cfg(any(target_os = "macos", target_os = "freebsd"))'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
@@ -74,6 +78,7 @@ zip = "6.0"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",

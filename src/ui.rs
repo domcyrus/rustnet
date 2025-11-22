@@ -13,8 +13,9 @@ use crate::network::types::{Connection, Protocol};
 pub type Terminal<B> = RatatuiTerminal<B>;
 
 /// Sort column options for the connections table
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortColumn {
+    #[default]
     CreatedAt,        // Default: creation time (oldest first)
     BandwidthTotal,   // Combined up + down bandwidth
     Process,
@@ -24,12 +25,6 @@ pub enum SortColumn {
     Service,
     State,
     Protocol,
-}
-
-impl Default for SortColumn {
-    fn default() -> Self {
-        Self::CreatedAt
-    }
 }
 
 impl SortColumn {
@@ -410,7 +405,8 @@ pub fn draw(
     match ui_state.selected_tab {
         0 => draw_overview(f, ui_state, connections, stats, app, content_area)?,
         1 => draw_connection_details(f, ui_state, connections, content_area)?,
-        2 => draw_help(f, content_area)?,
+        2 => draw_interface_stats(f, app, content_area)?,
+        3 => draw_help(f, content_area)?,
         _ => {}
     }
 
@@ -428,6 +424,7 @@ fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect) {
     let titles = vec![
         Span::styled("Overview", Style::default().fg(Color::Green)),
         Span::styled("Details", Style::default().fg(Color::Green)),
+        Span::styled("Interfaces", Style::default().fg(Color::Green)),
         Span::styled("Help", Style::default().fg(Color::Green)),
     ];
 
@@ -708,7 +705,8 @@ fn draw_stats_panel(
         .constraints([
             Constraint::Length(10), // Connection stats (increased for interface line)
             Constraint::Length(5),  // Traffic stats
-            Constraint::Min(0),     // Network stats (TCP analytics)
+            Constraint::Length(7),  // Network stats (TCP analytics + header)
+            Constraint::Min(0),     // Interface stats
         ])
         .split(area);
 
@@ -805,9 +803,12 @@ fn draw_stats_panel(
     let total_fast_retransmits = stats.total_tcp_fast_retransmits.load(std::sync::atomic::Ordering::Relaxed);
 
     let network_stats_text: Vec<Line> = vec![
-        Line::from(format!("TCP Retransmits: {} / {} total", tcp_retransmits, total_retransmits)),
-        Line::from(format!("Out-of-Order: {} / {} total", tcp_out_of_order, total_out_of_order)),
-        Line::from(format!("Fast Retransmits: {} / {} total", tcp_fast_retransmits, total_fast_retransmits)),
+        Line::from(vec![
+            Span::styled("(Active / Total)", Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(format!("TCP Retransmits: {} / {}", tcp_retransmits, total_retransmits)),
+        Line::from(format!("Out-of-Order: {} / {}", tcp_out_of_order, total_out_of_order)),
+        Line::from(format!("Fast Retransmits: {} / {}", tcp_fast_retransmits, total_fast_retransmits)),
         Line::from(format!("Active TCP Flows: {}", tcp_connections_with_analytics)),
     ];
 
@@ -815,6 +816,124 @@ fn draw_stats_panel(
         .block(Block::default().borders(Borders::ALL).title("Network Stats"))
         .style(Style::default());
     f.render_widget(network_stats, chunks[2]);
+
+    // Interface statistics
+    let all_interface_stats = app.get_interface_stats();
+    let interface_rates = app.get_interface_rates();
+
+    // Filter to show only the captured interface (or active interfaces if "any" or "pktap")
+    let captured_interface = app.get_current_interface();
+    let filtered_interface_stats: Vec<_> = if let Some(ref iface) = captured_interface {
+        // Windows uses NPF device paths like \Device\NPF_{GUID} which don't match friendly names
+        // For these, show all active interfaces instead of trying exact match
+        let is_npf_device = iface.starts_with("\\Device\\NPF_");
+
+        if iface == "any" || iface == "pktap" || is_npf_device {
+            // Show interfaces with some data
+            // pktap is a macOS virtual interface that captures from all interfaces,
+            // so we show all active interfaces rather than trying to show stats for pktap itself
+            // On Windows, NPF device names don't match friendly names, so show active interfaces
+            all_interface_stats.into_iter()
+                .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
+                .collect()
+        } else {
+            // Show only the captured interface
+            all_interface_stats.into_iter()
+                .filter(|s| s.interface_name == *iface)
+                .collect()
+        }
+    } else {
+        // No interface specified yet - show active interfaces
+        all_interface_stats.into_iter()
+            .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
+            .collect()
+    };
+
+    // Calculate how many interfaces can fit in the available space
+    // Each interface takes 2 lines, and we need 2 lines for borders
+    // Reserve 1 line for the "... N more" message if needed
+    let available_height = chunks[3].height as usize;
+    let lines_for_borders = 2;
+    let lines_per_interface = 2;
+    let lines_for_more_message = 1;
+
+    let max_interfaces = if available_height > lines_for_borders + lines_for_more_message {
+        (available_height - lines_for_borders - lines_for_more_message) / lines_per_interface
+    } else {
+        0
+    };
+
+    let interface_stats_text: Vec<Line> = if filtered_interface_stats.is_empty() {
+        vec![
+            Line::from(Span::styled(
+                "No interface stats available",
+                Style::default().fg(Color::Gray),
+            )),
+        ]
+    } else {
+        let mut lines = Vec::new();
+        let num_to_show = max_interfaces.min(filtered_interface_stats.len());
+
+        for stat in filtered_interface_stats.iter().take(num_to_show) {
+            let total_errors = stat.rx_errors + stat.tx_errors;
+            let total_drops = stat.rx_dropped + stat.tx_dropped;
+
+            let error_style = if total_errors > 0 {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+
+            let drop_style = if total_drops > 0 {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+
+            // Get rates for this interface (if available)
+            let rate_display = if let Some(rates) = interface_rates.get(&stat.interface_name) {
+                format!(
+                    "{}/s ↓ / {}/s ↑",
+                    format_bytes(rates.rx_bytes_per_sec),
+                    format_bytes(rates.tx_bytes_per_sec)
+                )
+            } else {
+                "Calculating...".to_string()
+            };
+
+            // Interface name and rate on first line
+            lines.push(Line::from(vec![
+                Span::raw(format!("{}: ", stat.interface_name)),
+                Span::raw(rate_display),
+            ]));
+
+            // Errors and drops on second line (indented) - these are cumulative totals
+            lines.push(Line::from(vec![
+                Span::raw("  Errors (Total): "),
+                Span::styled(format!("{}", total_errors), error_style),
+                Span::raw("  Drops (Total): "),
+                Span::styled(format!("{}", total_drops), drop_style),
+            ]));
+        }
+
+        // Only show "more" message if there are actually more interfaces that don't fit
+        if filtered_interface_stats.len() > num_to_show {
+            lines.push(Line::from(Span::styled(
+                format!("... and {} more (press 'i' for details)", filtered_interface_stats.len() - num_to_show),
+                Style::default().fg(Color::Gray),
+            )));
+        }
+        lines
+    };
+
+    let interface_stats_widget = Paragraph::new(interface_stats_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Interface Stats (press 'i')"),
+        )
+        .style(Style::default());
+    f.render_widget(interface_stats_widget, chunks[3]);
 
     Ok(())
 }
@@ -1188,6 +1307,10 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Toggle this help screen"),
         ]),
         Line::from(vec![
+            Span::styled("i ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle interface statistics view"),
+        ]),
+        Line::from(vec![
             Span::styled("/ ", Style::default().fg(Color::Yellow)),
             Span::raw("Enter filter mode (navigate while typing!)"),
         ]),
@@ -1251,6 +1374,130 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         .alignment(ratatui::layout::Alignment::Left);
 
     f.render_widget(help, area);
+
+    Ok(())
+}
+
+/// Draw interface statistics table
+fn draw_interface_stats(f: &mut Frame, app: &crate::app::App, area: Rect) -> Result<()> {
+    let mut stats = app.get_interface_stats();
+    let rates = app.get_interface_rates();
+
+    // Sort interfaces to show the captured interface first
+    let captured_interface = app.get_current_interface();
+    if let Some(ref captured) = captured_interface {
+        stats.sort_by(|a, b| {
+            let a_is_captured = &a.interface_name == captured;
+            let b_is_captured = &b.interface_name == captured;
+            match (a_is_captured, b_is_captured) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.interface_name.cmp(&b.interface_name),
+            }
+        });
+    }
+
+    if stats.is_empty() {
+        let empty_msg = Paragraph::new("No interface statistics available yet...")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Interface Statistics "),
+            )
+            .style(Style::default().fg(Color::Gray))
+            .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(empty_msg, area);
+        return Ok(());
+    }
+
+    // Create table rows
+    let mut rows = Vec::new();
+
+    for stat in &stats {
+        // Determine error style
+        let error_style = if stat.rx_errors > 0 || stat.tx_errors > 0 {
+            Style::default().fg(Color::Red)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+
+        // Determine drop style
+        let drop_style = if stat.rx_dropped > 0 || stat.tx_dropped > 0 {
+            Style::default().fg(Color::Yellow)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+
+        // Get rate for this interface
+        let rx_rate_str = if let Some(rate) = rates.get(&stat.interface_name) {
+            format!("{}/s", format_bytes(rate.rx_bytes_per_sec))
+        } else {
+            "---".to_string()
+        };
+
+        let tx_rate_str = if let Some(rate) = rates.get(&stat.interface_name) {
+            format!("{}/s", format_bytes(rate.tx_bytes_per_sec))
+        } else {
+            "---".to_string()
+        };
+
+        rows.push(Row::new(vec![
+            Cell::from(stat.interface_name.clone()),
+            Cell::from(rx_rate_str),
+            Cell::from(tx_rate_str),
+            Cell::from(format!("{}", stat.rx_packets)),
+            Cell::from(format!("{}", stat.tx_packets)),
+            Cell::from(format!("{}", stat.rx_errors)).style(error_style),
+            Cell::from(format!("{}", stat.tx_errors)).style(error_style),
+            Cell::from(format!("{}", stat.rx_dropped)).style(drop_style),
+            Cell::from(format!("{}", stat.tx_dropped)).style(drop_style),
+            Cell::from(format!("{}", stat.collisions)),
+        ]));
+    }
+
+    // Create table
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(14), // Interface
+            Constraint::Length(12), // RX Bytes
+            Constraint::Length(12), // TX Bytes
+            Constraint::Length(10), // RX Packets
+            Constraint::Length(10), // TX Packets
+            Constraint::Length(9),  // RX Err
+            Constraint::Length(9),  // TX Err
+            Constraint::Length(10), // RX Drop
+            Constraint::Length(10), // TX Drop
+            Constraint::Length(10), // Collis
+        ],
+    )
+    .header(
+        Row::new(vec![
+            "Interface",
+            "RX Rate",
+            "TX Rate",
+            "RX Packets",
+            "TX Packets",
+            "RX Err",
+            "TX Err",
+            "RX Drop",
+            "TX Drop",
+            "Collisions",
+        ])
+        .style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Interface Statistics (Press 'i' to toggle) "),
+    )
+    .style(Style::default());
+
+    f.render_widget(table, area);
 
     Ok(())
 }

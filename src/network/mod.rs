@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod dpi;
+pub mod interface_stats;
 pub mod link_layer;
 pub mod merge;
 pub mod parser;

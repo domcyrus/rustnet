@@ -17,6 +17,16 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
+// Platform-specific interface stats modules
+#[cfg(target_os = "linux")]
+mod linux_interface_stats;
+#[cfg(target_os = "freebsd")]
+mod freebsd_interface_stats;
+#[cfg(target_os = "macos")]
+mod macos_interface_stats;
+#[cfg(target_os = "windows")]
+mod windows_interface_stats;
+
 // Re-export the appropriate implementation
 #[cfg(target_os = "freebsd")]
 pub use freebsd::FreeBSDProcessLookup;
@@ -28,6 +38,16 @@ pub use linux::LinuxProcessLookup;
 pub use macos::MacOSProcessLookup;
 #[cfg(target_os = "windows")]
 pub use windows::WindowsProcessLookup;
+
+// Re-export interface stats providers
+#[cfg(target_os = "linux")]
+pub use linux_interface_stats::LinuxStatsProvider;
+#[cfg(target_os = "freebsd")]
+pub use freebsd_interface_stats::FreeBSDStatsProvider;
+#[cfg(target_os = "macos")]
+pub use macos_interface_stats::MacOSStatsProvider;
+#[cfg(target_os = "windows")]
+pub use windows_interface_stats::WindowsStatsProvider;
 
 /// Trait for platform-specific process lookup
 pub trait ProcessLookup: Send + Sync {

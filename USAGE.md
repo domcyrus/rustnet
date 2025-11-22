@@ -10,6 +10,7 @@ This guide covers detailed usage of RustNet, including command-line options, key
 - [Filtering](#filtering)
 - [Sorting](#sorting)
 - [Network Statistics Panel](#network-statistics-panel)
+- [Interface Statistics](#interface-statistics)
 - [Connection Lifecycle & Visual Indicators](#connection-lifecycle--visual-indicators)
 - [Logging](#logging)
 
@@ -192,6 +193,7 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 ### Views and Tabs
 
 - `Tab` - Switch between tabs (Overview, Details, Help)
+- `i` - Toggle Interface Statistics view
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
 - `h` - Toggle help screen
@@ -462,6 +464,126 @@ Fast retransmit frequency indicates how well TCP is recovering from packet loss 
 - Analysis works on both outbound and inbound packets
 - SYN and FIN flags are properly accounted for in sequence number tracking (each consumes 1 sequence number)
 - Only TCP connections show analytics; UDP, ICMP, and other protocols do not have these metrics
+
+## Interface Statistics
+
+RustNet provides real-time network interface statistics across all supported platforms (Linux, macOS, FreeBSD, Windows). Interface stats are displayed in two locations:
+
+### Accessing Interface Statistics
+
+**Overview Tab (Main Screen):**
+- Interface stats appear in the right panel below Network Stats
+- Shows up to 3 active interfaces with current rates
+- Displays: `InterfaceName: X KB/s ↓ / Y KB/s ↑`
+- Shows cumulative totals: `Errors (Total): N  Drops (Total): M`
+
+**Interfaces Tab (Detailed View):**
+- Press `i` to toggle the Interface Statistics view
+- Shows a detailed table of all network interfaces
+- Displays comprehensive metrics for each interface
+
+### Statistics Displayed
+
+| Metric | Description | Notes |
+|--------|-------------|-------|
+| **RX Rate** | Current receive rate (bytes/sec) | Calculated from recent activity |
+| **TX Rate** | Current transmit rate (bytes/sec) | Calculated from recent activity |
+| **RX Packets** | Total packets received | Cumulative since boot/interface up |
+| **TX Packets** | Total packets transmitted | Cumulative since boot/interface up |
+| **RX Err** | Receive errors | Cumulative total (not recent) |
+| **TX Err** | Transmit errors | Cumulative total (not recent) |
+| **RX Drop** | Dropped incoming packets | Cumulative total (not recent) |
+| **TX Drop** | Dropped outgoing packets | Cumulative total (not recent) |
+| **Collisions** | Network collisions | Platform-dependent availability |
+
+**Important**: Error and drop counters are **cumulative totals** since the system booted or the interface came up, not recent activity. These help identify long-term interface reliability but won't show immediate issues.
+
+### Platform-Specific Behavior
+
+**All Platforms:**
+- All counters (bytes, packets, errors, drops) are cumulative from boot/interface up
+- Rates (bytes/sec) are calculated from snapshots taken every 2 seconds
+- Loopback interface is included for monitoring local traffic
+
+**Windows:**
+- Filters out virtual/filter adapters to show only physical interfaces:
+  - Excludes: `-Npcap`, `-WFP`, `-QoS`, `-Native`, `-Virtual`, `-Packet` variants
+  - Excludes: `Lightweight Filter`, `MAC Layer` interfaces
+  - Excludes: Disconnected "Local Area Connection" adapters
+- Uses LUID-based deduplication to prevent duplicate interface entries
+- Collisions: Always 0 (not available on modern Windows interfaces)
+
+**macOS:**
+- Includes data validation to detect corrupt counters on virtual interfaces
+- TX Drops: Always 0 (limited availability on macOS)
+- Sanitizes error/drop counters if values appear corrupted (>2^31 or errors>packets)
+
+**FreeBSD:**
+- TX Drops: Always 0 (not typically available on FreeBSD)
+- Uses BSD getifaddrs API with AF_LINK filtering
+
+**Linux:**
+- Reads statistics from `/sys/class/net/{interface}/statistics`
+- All counters typically available and reliable
+
+### Interpreting the Statistics
+
+**Healthy Interface:**
+```
+Ethernet: 2.40 KB/s ↓ / 1.96 KB/s ↑
+  Errors (Total): 0  Drops (Total): 0
+```
+Zero or very low error/drop counts indicate a reliable network connection.
+
+**Problematic Interface:**
+```
+WiFi: 150 KB/s ↓ / 45 KB/s ↑
+  Errors (Total): 1089  Drops (Total): 2178
+```
+High error/drop counts may indicate:
+- Signal interference (WiFi)
+- Cable issues (Ethernet)
+- Network congestion
+- Driver or hardware problems
+
+**Note**: Since error/drop counters are cumulative, evaluate them relative to total packets. A few errors out of millions of packets is normal; thousands of errors with low packet counts indicates problems.
+
+### Interface Filtering
+
+**Which Interfaces Are Shown:**
+- Interfaces must be operationally "up" OR have traffic statistics
+- Loopback interface is included (useful for monitoring local connections)
+- Virtual/filter adapters are excluded on Windows (they mirror physical interfaces)
+
+**Overview Tab Filtering:**
+- Windows: Shows all active interfaces (NPF device path detected automatically)
+- macOS/Linux: Shows interfaces with recent traffic (`rx_bytes > 0 || tx_bytes > 0 || rx_packets > 0 || tx_packets > 0`)
+- Special interfaces (`any`, `pktap`): Shows all interfaces with any activity
+
+**Interfaces Tab:**
+- Shows all detected interfaces that pass the platform-specific filters
+- Sorts to show the currently captured interface first (highlighted)
+- Other interfaces appear in alphabetical order
+
+### Use Cases
+
+**Bandwidth Monitoring:**
+Monitor real-time bandwidth usage across all network interfaces to identify:
+- Which interface is carrying the most traffic
+- Bandwidth distribution across WiFi vs Ethernet
+- Local traffic volume (loopback interface)
+
+**Reliability Analysis:**
+Check cumulative error and drop counters to:
+- Identify unreliable network interfaces
+- Detect hardware or driver issues
+- Compare interface quality over time
+
+**Multi-Interface Systems:**
+On systems with multiple network interfaces:
+- Compare performance across interfaces
+- Monitor VPN tunnel statistics
+- Track interface failover behavior
 
 ## Connection Lifecycle & Visual Indicators
 
