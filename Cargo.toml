@@ -85,7 +85,7 @@ windows = { version = "0.62", features = [
 ] }
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
-libbpf-cargo = "0.25"
+libbpf-cargo = { version = "0.25", optional = true }
 
 [features]
 # eBPF is enabled by default for enhanced performance on Linux.
@@ -93,7 +93,7 @@ libbpf-cargo = "0.25"
 # and dependencies are Linux-specific (guarded by target_os checks).
 default = ["ebpf"]
 linux-default = ["ebpf"]  # Deprecated: kept for backwards compatibility
-ebpf = ["libbpf-rs", "bytes", "libc"]
+ebpf = ["libbpf-rs", "bytes", "libc", "dep:libbpf-cargo"]
 
 # Minimal cross configuration to override dependency conflicts
 [workspace.metadata.cross.build.env]

@@ -1,0 +1,60 @@
+name: Test FreeBSD Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'build.rs'
+      - 'src/**'
+      - '.github/workflows/test-freebsd.yml'
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+  test-freebsd-build:
+    name: Test FreeBSD x64 Build
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libpcap-dev pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-freebsd
+
+      - name: Install cross
+        run: cargo install cross@0.2.5
+
+      - name: Build for FreeBSD (without eBPF)
+        env:
+          RUSTFLAGS: "-C strip=symbols"
+        run: |
+          echo "Building for FreeBSD target without default features (no eBPF)"
+          cross build --verbose --release --target x86_64-unknown-freebsd --no-default-features
+
+      - name: Verify binary was created
+        run: |
+          if [ -f "target/x86_64-unknown-freebsd/release/rustnet" ]; then
+            echo "✅ FreeBSD binary successfully built"
+            ls -lh target/x86_64-unknown-freebsd/release/rustnet
+          else
+            echo "❌ FreeBSD binary not found"
+            exit 1
+          fi
+
+      - name: Upload binary as artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: rustnet-freebsd-x64
+          path: target/x86_64-unknown-freebsd/release/rustnet
+          if-no-files-found: error
