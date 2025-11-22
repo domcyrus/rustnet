@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] - 2025-11-22
+
+### Fixed
+- **Cross-Compilation**: Fixed eBPF build issues when cross-compiling to non-Linux platforms
+  - Made `libbpf-cargo` an optional build dependency
+  - Fixed `build.rs` to check TARGET environment variable instead of host platform
+  - Prevents Linux-specific dependencies from being built for FreeBSD, macOS, and Windows
+- **FreeBSD Build**: Switched from cross-compilation to native FreeBSD VM builds
+  - Uses `vmactions/freebsd-vm` for native FreeBSD compilation
+  - Eliminates cross-compilation sysroot and library linking issues
+  - Ensures FreeBSD builds work reliably with native package manager
+
 ## [0.16.0] - 2025-11-22
 
 ### Added
