@@ -824,12 +824,17 @@ fn draw_stats_panel(
     // Filter to show only the captured interface (or active interfaces if "any" or "pktap")
     let captured_interface = app.get_current_interface();
     let filtered_interface_stats: Vec<_> = if let Some(ref iface) = captured_interface {
-        if iface == "any" || iface == "pktap" {
+        // Windows uses NPF device paths like \Device\NPF_{GUID} which don't match friendly names
+        // For these, show all active interfaces instead of trying exact match
+        let is_npf_device = iface.starts_with("\\Device\\NPF_");
+
+        if iface == "any" || iface == "pktap" || is_npf_device {
             // Show interfaces with some data
             // pktap is a macOS virtual interface that captures from all interfaces,
             // so we show all active interfaces rather than trying to show stats for pktap itself
+            // On Windows, NPF device names don't match friendly names, so show active interfaces
             all_interface_stats.into_iter()
-                .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0)
+                .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
                 .collect()
         } else {
             // Show only the captured interface
@@ -840,7 +845,7 @@ fn draw_stats_panel(
     } else {
         // No interface specified yet - show active interfaces
         all_interface_stats.into_iter()
-            .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0)
+            .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
             .collect()
     };
 
@@ -902,11 +907,11 @@ fn draw_stats_panel(
                 Span::raw(rate_display),
             ]));
 
-            // Errors and drops on second line (indented)
+            // Errors and drops on second line (indented) - these are cumulative totals
             lines.push(Line::from(vec![
-                Span::raw("  Errors: "),
+                Span::raw("  Errors (Total): "),
                 Span::styled(format!("{}", total_errors), error_style),
-                Span::raw("  Drops: "),
+                Span::raw("  Drops (Total): "),
                 Span::styled(format!("{}", total_drops), drop_style),
             ]));
         }

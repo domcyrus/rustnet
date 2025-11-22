@@ -1,9 +1,12 @@
 use crate::network::interface_stats::{InterfaceStats, InterfaceStatsProvider};
+use std::collections::HashMap;
 use std::io;
 use std::time::SystemTime;
 
 #[cfg(target_os = "windows")]
 use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
+#[cfg(target_os = "windows")]
+use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 
 /// Windows-specific implementation using IP Helper API
 pub struct WindowsStatsProvider;
@@ -29,24 +32,23 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
 
             let result = GetIfTable2(&mut table);
             if result.is_err() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     format!("GetIfTable2 failed with error code: {:?}", result),
                 ));
             }
 
             if table.is_null() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     "Failed to get interface table",
                 ));
             }
 
             let num_entries = (*table).NumEntries as usize;
-            let mut stats = Vec::new();
+            // Use LUID as key for deduplication since it's unique per interface
+            let mut stats_map: HashMap<u64, InterfaceStats> = HashMap::new();
 
             for i in 0..num_entries {
-                let row = &(*table).Table[i];
+                let row = &*(*table).Table.as_ptr().add(i);
 
                 // Convert interface alias (friendly name) to string
                 let name = String::from_utf16_lossy(&row.Alias)
@@ -57,8 +59,37 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
                     continue;
                 }
 
-                stats.push(InterfaceStats {
-                    interface_name: name,
+                // Skip virtual/filter interfaces by name patterns
+                // These are NDIS filter drivers, WFP filters, and virtual adapters
+                // Always skip these as they just mirror the physical interface
+                let name_lower = name.to_lowercase();
+                if name_lower.contains("-npcap")
+                    || name_lower.contains("-wfp")
+                    || name_lower.contains("-qos")
+                    || name_lower.contains("-native")
+                    || name_lower.contains("-virtual")
+                    || name_lower.contains("-packet")
+                    || name_lower.contains("lightweight filter")
+                    || name_lower.contains("mac layer")
+                {
+                    continue;
+                }
+
+                // Skip "Local Area Con" with zero traffic (these are usually disconnected adapters)
+                let total_traffic = row.InOctets + row.OutOctets + row.InUcastPkts + row.OutUcastPkts;
+                if name_lower.starts_with("local area con") && total_traffic == 0 {
+                    continue;
+                }
+
+                // Skip interfaces that are not operationally up
+                // But allow them if they have any traffic statistics
+                let has_traffic = row.InOctets > 0 || row.OutOctets > 0;
+                if row.OperStatus != IfOperStatusUp && !has_traffic {
+                    continue;
+                }
+
+                let stat = InterfaceStats {
+                    interface_name: name.clone(),
                     rx_bytes: row.InOctets,
                     tx_bytes: row.OutOctets,
                     rx_packets: row.InUcastPkts + row.InNUcastPkts,
@@ -69,11 +100,31 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
                     tx_dropped: row.OutDiscards,
                     collisions: 0, // Not available on modern Windows interfaces
                     timestamp: SystemTime::now(),
-                });
+                };
+
+                // Use InterfaceLuid.Value as unique key to prevent duplicates
+                // This ensures each physical interface appears only once
+                let luid_value = row.InterfaceLuid.Value;
+                stats_map.insert(luid_value, stat);
             }
 
             FreeMibTable(table.cast());
-            Ok(stats)
+
+            let stats_vec: Vec<InterfaceStats> = stats_map.into_values().collect();
+            log::debug!(
+                "Windows interface stats collected: {} interfaces",
+                stats_vec.len()
+            );
+            for stat in &stats_vec {
+                log::debug!(
+                    "  {} - RX: {} bytes, TX: {} bytes",
+                    stat.interface_name,
+                    stat.rx_bytes,
+                    stat.tx_bytes
+                );
+            }
+
+            Ok(stats_vec)
         }
     }
 

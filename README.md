@@ -60,23 +60,14 @@ See [EBPF_BUILD.md](EBPF_BUILD.md) for more details and [ARCHITECTURE.md](ARCHIT
 <details>
 <summary><b>Interface Statistics Monitoring</b></summary>
 
-RustNet provides real-time network interface statistics across all supported platforms. Interface stats are displayed in two ways:
+RustNet provides real-time network interface statistics across all supported platforms:
 
-**Quick View (Overview Tab):**
-- Shows up to 3 interfaces in the stats panel on the right
-- Displays RX/TX bytes with error and drop indicators
-- Color-coded: Green (healthy), Yellow (drops), Red (errors)
-- Located below Network Stats panel
+- **Overview Tab**: Shows active interfaces with current rates, errors, and drops
+- **Interfaces Tab** (press `i`): Detailed table with comprehensive metrics for all interfaces
+- **Cross-Platform**: Linux (sysfs), macOS/FreeBSD (getifaddrs), Windows (GetIfTable2 API)
+- **Smart Filtering**: Windows automatically excludes virtual/filter adapters
 
-**Detailed View (Interfaces Tab):**
-- Press `i` or use Tab to switch to Interfaces tab
-- Shows all network interfaces with comprehensive metrics
-- Columns: Interface name, RX/TX bytes, RX/TX packets, errors, drops, collisions
-
-**Platform Implementation:**
-- **Linux**: Uses sysfs (`/sys/class/net/`)
-- **macOS/FreeBSD**: Uses `getifaddrs()` with `if_data` structure
-- **Windows**: Uses IP Helper API (`GetIfTable2`)
+See [USAGE.md](USAGE.md#interface-statistics) for detailed documentation on interpreting interface statistics and platform-specific behavior.
 
 **Metrics Available:**
 - Total bytes and packets (RX/TX)
