@@ -5,6 +5,11 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v0.16.1)'
+        required: true
+        type: string
 
 jobs:
   update-aur:
@@ -18,12 +23,20 @@ jobs:
       - name: Extract version from tag
         id: version
         run: |
+          # Determine the tag based on trigger type
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+
           # Extract version by removing 'v' prefix
-          VERSION=${GITHUB_REF#refs/tags/v}
+          VERSION="${TAG#v}"
+
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
-          echo "Tag: $GITHUB_REF_NAME"
+          echo "Tag: $TAG"
 
       - name: Wait for release to be created
         run: |
