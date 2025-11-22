@@ -145,9 +145,11 @@ jobs:
         run: |
           # Use Arch Linux container to run makepkg
           docker run --rm -v "$PWD/aur-rustnet-bin:/pkg" archlinux:latest bash -c '
+            pacman -Sy --noconfirm binutils fakeroot sudo &&
+            useradd -m builder &&
+            chown -R builder:builder /pkg &&
             cd /pkg &&
-            pacman -Sy --noconfirm binutils fakeroot &&
-            makepkg --printsrcinfo > .SRCINFO
+            sudo -u builder makepkg --printsrcinfo > .SRCINFO
           '
 
           echo ".SRCINFO generated successfully"
