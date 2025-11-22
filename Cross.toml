@@ -15,8 +15,7 @@ pre-build = [
 ]
 
 [target.x86_64-unknown-freebsd]
-pre-build = [
-    # FreeBSD uses pkg as package manager
-    "pkg install -y libpcap",
-]
+# FreeBSD cross-compilation uses a Linux container with FreeBSD sysroot
+# The sysroot should already contain libpcap
+# No pre-build steps needed as we can't run FreeBSD package manager in Linux container
 

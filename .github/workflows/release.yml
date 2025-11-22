@@ -39,7 +39,6 @@ jobs:
           - linux-aarch64-gnu
           - linux-armv7-gnueabihf
           - linux-x64-gnu
-          - freebsd-x64
           - macos-aarch64
           - macos-x64
           - windows-x64-msvc
@@ -55,9 +54,6 @@ jobs:
             cargo: cross
           - build: linux-x64-gnu
             target: x86_64-unknown-linux-gnu
-          - build: freebsd-x64
-            target: x86_64-unknown-freebsd
-            cargo: cross
           - build: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
@@ -145,10 +141,51 @@ jobs:
           path: ${{ env.ASSET }}
           if-no-files-found: error
 
+  build-freebsd:
+    name: build-freebsd
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y curl libpcap rust
+          run: |
+            # Build release binary (without eBPF - not available on FreeBSD)
+            cargo build --verbose --release --no-default-features
+
+            # Create release archive
+            mkdir -p "rustnet-${{ github.ref_name }}-x86_64-unknown-freebsd"
+            cp target/release/rustnet "rustnet-${{ github.ref_name }}-x86_64-unknown-freebsd/"
+
+            # Copy assets if available
+            if [ -d "assets" ]; then
+              mkdir -p "rustnet-${{ github.ref_name }}-x86_64-unknown-freebsd/assets"
+              cp -r assets/* "rustnet-${{ github.ref_name }}-x86_64-unknown-freebsd/assets/" || true
+            fi
+
+            # Copy documentation
+            cp README.md "rustnet-${{ github.ref_name }}-x86_64-unknown-freebsd/" || true
+            cp LICENSE "rustnet-${{ github.ref_name }}-x86_64-unknown-freebsd/" || true
+
+            # Create tarball
+            tar czf "rustnet-${{ github.ref_name }}-x86_64-unknown-freebsd.tar.gz" "rustnet-${{ github.ref_name }}-x86_64-unknown-freebsd"
+
+      - name: Upload FreeBSD artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: build-x86_64-unknown-freebsd
+          path: rustnet-${{ github.ref_name }}-x86_64-unknown-freebsd.tar.gz
+          if-no-files-found: error
+
   create-release:
     name: create-release
     runs-on: ubuntu-latest
-    needs: build-release
+    needs: [build-release, build-freebsd]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6

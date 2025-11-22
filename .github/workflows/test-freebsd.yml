@@ -15,46 +15,34 @@ env:
 jobs:
   test-freebsd-build:
     name: Test FreeBSD x64 Build
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libpcap-dev pkg-config
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Build and test on FreeBSD
+        uses: vmactions/freebsd-vm@v1
         with:
-          toolchain: stable
-          targets: x86_64-unknown-freebsd
+          usesh: true
+          prepare: |
+            pkg install -y curl libpcap rust
+          run: |
+            echo "Building for FreeBSD without default features (no eBPF)"
+            cargo build --verbose --release --no-default-features
 
-      - name: Install cross
-        run: cargo install cross@0.2.5
-
-      - name: Build for FreeBSD (without eBPF)
-        env:
-          RUSTFLAGS: "-C strip=symbols"
-        run: |
-          echo "Building for FreeBSD target without default features (no eBPF)"
-          cross build --verbose --release --target x86_64-unknown-freebsd --no-default-features
-
-      - name: Verify binary was created
-        run: |
-          if [ -f "target/x86_64-unknown-freebsd/release/rustnet" ]; then
-            echo "✅ FreeBSD binary successfully built"
-            ls -lh target/x86_64-unknown-freebsd/release/rustnet
-          else
-            echo "❌ FreeBSD binary not found"
-            exit 1
-          fi
+            echo "Verifying binary was created"
+            if [ -f "target/release/rustnet" ]; then
+              echo "✅ FreeBSD binary successfully built"
+              ls -lh target/release/rustnet
+            else
+              echo "❌ FreeBSD binary not found"
+              exit 1
+            fi
 
       - name: Upload binary as artifact
         uses: actions/upload-artifact@v5
         with:
           name: rustnet-freebsd-x64
-          path: target/x86_64-unknown-freebsd/release/rustnet
+          path: target/release/rustnet
           if-no-files-found: error
