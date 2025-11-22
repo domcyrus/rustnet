@@ -94,11 +94,11 @@ mod tests {
     #[test]
     fn test_windows_list_interfaces() {
         let provider = WindowsStatsProvider;
-        let result = provider.list_interfaces();
+        let result = provider.get_all_stats();
 
         match result {
-            Ok(interfaces) => {
-                assert!(!interfaces.is_empty(), "Expected at least one interface");
+            Ok(stats) => {
+                assert!(!stats.is_empty(), "Expected at least one interface");
             }
             Err(e) => {
                 panic!("Failed to list interfaces: {:?}", e);

@@ -13,8 +13,9 @@ use crate::network::types::{Connection, Protocol};
 pub type Terminal<B> = RatatuiTerminal<B>;
 
 /// Sort column options for the connections table
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortColumn {
+    #[default]
     CreatedAt,        // Default: creation time (oldest first)
     BandwidthTotal,   // Combined up + down bandwidth
     Process,
@@ -24,12 +25,6 @@ pub enum SortColumn {
     Service,
     State,
     Protocol,
-}
-
-impl Default for SortColumn {
-    fn default() -> Self {
-        Self::CreatedAt
-    }
 }
 
 impl SortColumn {
@@ -826,11 +821,13 @@ fn draw_stats_panel(
     let all_interface_stats = app.get_interface_stats();
     let interface_rates = app.get_interface_rates();
 
-    // Filter to show only the captured interface (or active interfaces if "any")
+    // Filter to show only the captured interface (or active interfaces if "any" or "pktap")
     let captured_interface = app.get_current_interface();
     let filtered_interface_stats: Vec<_> = if let Some(ref iface) = captured_interface {
-        if iface == "any" {
+        if iface == "any" || iface == "pktap" {
             // Show interfaces with some data
+            // pktap is a macOS virtual interface that captures from all interfaces,
+            // so we show all active interfaces rather than trying to show stats for pktap itself
             all_interface_stats.into_iter()
                 .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0)
                 .collect()
