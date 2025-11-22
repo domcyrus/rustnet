@@ -9,7 +9,9 @@ fn main() -> Result<()> {
     setup_cross_compilation_libs();
 
     // Compile eBPF programs on Linux when the feature is enabled
-    if cfg!(target_os = "linux") && env::var("CARGO_FEATURE_EBPF").is_ok() {
+    // Check TARGET environment variable, not cfg!, to handle cross-compilation correctly
+    let target = env::var("TARGET").unwrap_or_default();
+    if target.contains("linux") && env::var("CARGO_FEATURE_EBPF").is_ok() {
         compile_ebpf_programs();
     }
 
