@@ -15,12 +15,23 @@ use crate::filter::ConnectionFilter;
 
 use crate::network::{
     capture::{CaptureConfig, PacketReader, setup_packet_capture},
+    interface_stats::{InterfaceStats, InterfaceStatsProvider, InterfaceRates},
     merge::{create_connection_from_packet, merge_packet_into_connection},
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
     services::ServiceLookup,
     types::{ApplicationProtocol, Connection, Protocol},
 };
+
+// Platform-specific interface stats provider
+#[cfg(target_os = "linux")]
+use crate::network::platform::LinuxStatsProvider as PlatformStatsProvider;
+#[cfg(target_os = "freebsd")]
+use crate::network::platform::FreeBSDStatsProvider as PlatformStatsProvider;
+#[cfg(target_os = "macos")]
+use crate::network::platform::MacOSStatsProvider as PlatformStatsProvider;
+#[cfg(target_os = "windows")]
+use crate::network::platform::WindowsStatsProvider as PlatformStatsProvider;
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -190,6 +201,12 @@ pub struct App {
 
     /// Current process detection method (e.g., "eBPF + procfs", "pktap", "lsof", "N/A")
     process_detection_method: Arc<RwLock<String>>,
+
+    /// Interface statistics (cumulative totals)
+    interface_stats: Arc<DashMap<String, InterfaceStats>>,
+
+    /// Interface rates (per-second rates)
+    interface_rates: Arc<DashMap<String, InterfaceRates>>,
 }
 
 impl App {
@@ -212,6 +229,8 @@ impl App {
             linktype: Arc::new(RwLock::new(None)),
             pktap_active: Arc::new(AtomicBool::new(false)),
             process_detection_method: Arc::new(RwLock::new(String::from("initializing..."))),
+            interface_stats: Arc::new(DashMap::new()),
+            interface_rates: Arc::new(DashMap::new()),
         })
     }
 
@@ -236,6 +255,9 @@ impl App {
 
         // Start rate refresh thread
         self.start_rate_refresh_thread(connections)?;
+
+        // Start interface stats collection thread
+        self.start_interface_stats_thread()?;
 
         // Mark loading as complete after a short delay
         let is_loading = Arc::clone(&self.is_loading);
@@ -769,6 +791,56 @@ impl App {
         Ok(())
     }
 
+    /// Start interface statistics collection thread
+    fn start_interface_stats_thread(&self) -> Result<()> {
+        let should_stop = Arc::clone(&self.should_stop);
+        let interface_stats = Arc::clone(&self.interface_stats);
+        let interface_rates = Arc::clone(&self.interface_rates);
+
+        thread::spawn(move || {
+            info!("Interface stats collection thread started");
+
+            let provider = PlatformStatsProvider;
+            let mut previous_stats: HashMap<String, InterfaceStats> = HashMap::new();
+
+            loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    info!("Interface stats thread stopping");
+                    break;
+                }
+
+                // Collect stats from all interfaces
+                match provider.get_all_stats() {
+                    Ok(stats_vec) => {
+                        // Clear old entries
+                        interface_stats.clear();
+                        interface_rates.clear();
+
+                        for stat in stats_vec {
+                            // Calculate rates if we have previous data
+                            if let Some(prev) = previous_stats.get(&stat.interface_name) {
+                                let rates = stat.calculate_rates(prev);
+                                interface_rates.insert(stat.interface_name.clone(), rates);
+                            }
+
+                            // Store current stats
+                            interface_stats.insert(stat.interface_name.clone(), stat.clone());
+                            previous_stats.insert(stat.interface_name.clone(), stat);
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to collect interface stats: {}", e);
+                    }
+                }
+
+                // Refresh every 2 seconds
+                thread::sleep(Duration::from_secs(2));
+            }
+        });
+
+        Ok(())
+    }
+
     /// Start cleanup thread to remove old connections
     fn start_cleanup_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
@@ -867,6 +939,22 @@ impl App {
         connections
             .into_iter()
             .filter(|conn| filter.matches(conn))
+            .collect()
+    }
+
+    /// Get interface statistics
+    pub fn get_interface_stats(&self) -> Vec<InterfaceStats> {
+        self.interface_stats
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect()
+    }
+
+    /// Get interface rates (bytes/sec)
+    pub fn get_interface_rates(&self) -> HashMap<String, InterfaceRates> {
+        self.interface_rates
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect()
     }
 

@@ -15,6 +15,7 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 
 - **Real-time Network Monitoring**: Monitor active TCP, UDP, ICMP, and ARP connections with detailed state information
 - **Connection States**: Track TCP states (`ESTABLISHED`, `SYN_SENT`, `TIME_WAIT`), QUIC states (`QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`), DNS states, SSH states, and activity-based UDP states
+- **Interface Statistics**: Real-time monitoring of network interface metrics including bytes/packets transferred, errors, drops, and collisions
 - **Deep Packet Inspection (DPI)**: Detect application protocols including HTTP, HTTPS/TLS with SNI, DNS, SSH with version detection, and QUIC with CONNECTION_CLOSE frame detection
 - **TCP Network Analytics**: Real-time detection of TCP retransmissions, out-of-order packets, and fast retransmits with per-connection and aggregate statistics
 - **Smart Connection Lifecycle**: Protocol-aware timeouts with visual staleness indicators (white → yellow → red) before cleanup
@@ -53,6 +54,37 @@ cargo build --release --no-default-features
 ```
 
 See [EBPF_BUILD.md](EBPF_BUILD.md) for more details and [ARCHITECTURE.md](ARCHITECTURE.md) for technical information.
+
+</details>
+
+<details>
+<summary><b>Interface Statistics Monitoring</b></summary>
+
+RustNet provides real-time network interface statistics across all supported platforms. Interface stats are displayed in two ways:
+
+**Quick View (Overview Tab):**
+- Shows up to 3 interfaces in the stats panel on the right
+- Displays RX/TX bytes with error and drop indicators
+- Color-coded: Green (healthy), Yellow (drops), Red (errors)
+- Located below Network Stats panel
+
+**Detailed View (Interfaces Tab):**
+- Press `i` or use Tab to switch to Interfaces tab
+- Shows all network interfaces with comprehensive metrics
+- Columns: Interface name, RX/TX bytes, RX/TX packets, errors, drops, collisions
+
+**Platform Implementation:**
+- **Linux**: Uses sysfs (`/sys/class/net/`)
+- **macOS/FreeBSD**: Uses `getifaddrs()` with `if_data` structure
+- **Windows**: Uses IP Helper API (`GetIfTable2`)
+
+**Metrics Available:**
+- Total bytes and packets (RX/TX)
+- Error counters (receive and transmit)
+- Packet drops (queue overflows)
+- Collisions (legacy, rarely used on modern networks)
+
+Stats are collected every 2 seconds in a background thread with minimal performance impact.
 
 </details>
 
@@ -121,6 +153,7 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `q` | Quit (press twice to confirm) |
 | `Ctrl+C` | Quit immediately |
 | `Tab` | Switch between tabs |
+| `i` | Toggle interface statistics view |
 | `↑/k` `↓/j` | Navigate up/down |
 | `g` `G` | Jump to first/last connection |
 | `Enter` | View connection details |

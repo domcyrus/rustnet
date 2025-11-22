@@ -49,6 +49,9 @@ libbpf-rs = { version = "0.25", optional = true }
 bytes = { version = "1.11", optional = true }
 libc = { version = "0.2", optional = true }
 
+[target.'cfg(any(target_os = "macos", target_os = "freebsd"))'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
