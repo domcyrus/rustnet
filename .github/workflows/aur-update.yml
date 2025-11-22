@@ -1,0 +1,180 @@
+name: Update AUR Package
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+
+jobs:
+  update-aur:
+    name: update-aur
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          # Extract version by removing 'v' prefix
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$GITHUB_REF_NAME" >> $GITHUB_OUTPUT
+          echo "Extracted version: $VERSION"
+          echo "Tag: $GITHUB_REF_NAME"
+
+      - name: Wait for release to be created
+        run: |
+          echo "Waiting for GitHub release to be created..."
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+
+          # Wait up to 10 minutes for the release to be created
+          for i in {1..60}; do
+            if gh release view "$TAG" &>/dev/null; then
+              echo "Release $TAG found!"
+              break
+            fi
+            echo "Waiting for release... (attempt $i/60)"
+            sleep 10
+          done
+
+          # Verify release exists
+          if ! gh release view "$TAG" &>/dev/null; then
+            echo "Error: Release $TAG not found after waiting"
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Download release assets and calculate checksums
+        id: checksums
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+
+          # Define asset names
+          ASSET_X64="rustnet-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          ASSET_ARM64="rustnet-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
+
+          echo "Downloading release assets..."
+
+          # Download assets
+          gh release download "$TAG" -p "$ASSET_X64" -p "$ASSET_ARM64"
+
+          # Calculate SHA256 checksums
+          SHA256_X64=$(sha256sum "$ASSET_X64" | awk '{print $1}')
+          SHA256_ARM64=$(sha256sum "$ASSET_ARM64" | awk '{print $1}')
+
+          echo "x64_checksum=$SHA256_X64" >> $GITHUB_OUTPUT
+          echo "arm64_checksum=$SHA256_ARM64" >> $GITHUB_OUTPUT
+
+          echo "Checksums calculated:"
+          echo "  x86_64: $SHA256_X64"
+          echo "  aarch64: $SHA256_ARM64"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Setup SSH for AUR
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+
+          # Configure SSH to use the AUR key
+          cat > ~/.ssh/config <<EOF
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            User aur
+          EOF
+
+      - name: Clone AUR repository
+        run: |
+          git clone ssh://aur@aur.archlinux.org/rustnet-bin.git aur-rustnet-bin
+          cd aur-rustnet-bin
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update PKGBUILD
+        run: |
+          cd aur-rustnet-bin
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${{ steps.version.outputs.tag }}"
+          SHA256_X64="${{ steps.checksums.outputs.x64_checksum }}"
+          SHA256_ARM64="${{ steps.checksums.outputs.arm64_checksum }}"
+
+          echo "Updating PKGBUILD to version $VERSION..."
+
+          # Update version and release
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
+
+          # Update source URLs (need to escape special characters for sed)
+          ESCAPED_TAG=$(echo "$TAG" | sed 's/[\/&]/\\&/g')
+          sed -i "s|rustnet-v[0-9.]*-\${arch}|rustnet-${ESCAPED_TAG}-\${arch}|g" PKGBUILD
+
+          # Update checksums
+          sed -i "s/sha256sums_x86_64=.*/sha256sums_x86_64=('$SHA256_X64')/" PKGBUILD
+          sed -i "s/sha256sums_aarch64=.*/sha256sums_aarch64=('$SHA256_ARM64')/" PKGBUILD
+
+          echo "PKGBUILD updated successfully"
+          echo ""
+          echo "Version info:"
+          grep "^pkgver=" PKGBUILD
+          grep "^pkgrel=" PKGBUILD
+          echo ""
+          echo "Checksums:"
+          grep "sha256sums_" PKGBUILD
+
+      - name: Generate .SRCINFO
+        run: |
+          # Use Arch Linux container to run makepkg
+          docker run --rm -v "$PWD/aur-rustnet-bin:/pkg" archlinux:latest bash -c '
+            cd /pkg &&
+            pacman -Sy --noconfirm binutils fakeroot &&
+            makepkg --printsrcinfo > .SRCINFO
+          '
+
+          echo ".SRCINFO generated successfully"
+
+      - name: Commit and push to AUR
+        run: |
+          cd aur-rustnet-bin
+          VERSION="${{ steps.version.outputs.version }}"
+
+          # Check if there are changes to commit
+          if git diff --quiet PKGBUILD .SRCINFO; then
+            echo "No changes to PKGBUILD or .SRCINFO (already at version $VERSION)"
+            exit 0
+          fi
+
+          # Show changes
+          echo "Changes to be committed:"
+          git diff PKGBUILD .SRCINFO
+
+          # Commit and push
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to version $VERSION"
+          git push origin master
+
+          echo "Pushed changes to AUR repository"
+
+      - name: Summary
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          echo "## 🎉 AUR Package Updated" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package**: rustnet-bin" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: $VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- **Architectures**: x86_64, aarch64" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Checksums" >> $GITHUB_STEP_SUMMARY
+          echo "- **x86_64**: \`${{ steps.checksums.outputs.x64_checksum }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **aarch64**: \`${{ steps.checksums.outputs.arm64_checksum }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[View AUR Package →](https://aur.archlinux.org/packages/rustnet-bin)" >> $GITHUB_STEP_SUMMARY
