@@ -149,7 +149,8 @@ jobs:
             useradd -m builder &&
             chown -R builder:builder /pkg &&
             cd /pkg &&
-            sudo -u builder makepkg --printsrcinfo > .SRCINFO
+            sudo -u builder makepkg --printsrcinfo > .SRCINFO &&
+            chown $(stat -c "%u:%g" PKGBUILD) .SRCINFO
           '
 
           echo ".SRCINFO generated successfully"
