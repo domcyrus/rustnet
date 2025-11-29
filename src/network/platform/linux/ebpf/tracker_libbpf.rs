@@ -1,9 +1,9 @@
 //! eBPF socket tracker implementation using libbpf-rs
 
 use super::{
-    ProcessInfo,
     loader::EbpfLoader,
     maps_libbpf::{ConnKey, MapReader},
+    ProcessInfo,
 };
 use anyhow::Result;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};

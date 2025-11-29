@@ -1,3 +1,5 @@
+// network/platform/macos/interface_stats.rs - macOS getifaddrs-based interface stats
+
 use crate::network::interface_stats::{InterfaceStats, InterfaceStatsProvider};
 use std::ffi::CStr;
 use std::io;
@@ -12,7 +14,6 @@ pub struct MacOSStatsProvider;
 /// statistics fields, particularly ifi_iqdrops. We detect these by checking if:
 /// 1. The value is suspiciously large (> 2^31, suggesting signed overflow or garbage)
 /// 2. The value is larger than total packets (logically impossible for drops/errors)
-#[cfg(target_os = "macos")]
 fn sanitize_counter(value: u32, total_packets: u32) -> u64 {
     const MAX_REASONABLE_U32: u32 = 0x7FFF_FFFF; // 2^31 - 1
 
@@ -67,29 +68,29 @@ impl InterfaceStatsProvider for MacOSStatsProvider {
 
                     // Get if_data from ifa_data
                     if !ifa.ifa_data.is_null() {
-                        #[cfg(target_os = "macos")]
-                        {
-                            let if_data = &*(ifa.ifa_data as *const libc::if_data);
+                        let if_data = &*(ifa.ifa_data as *const libc::if_data);
 
-                            // Calculate total packets for validation
-                            let total_rx_packets = if_data.ifi_ipackets;
-                            let total_tx_packets = if_data.ifi_opackets;
+                        // Calculate total packets for validation
+                        let total_rx_packets = if_data.ifi_ipackets;
+                        let total_tx_packets = if_data.ifi_opackets;
 
-                            stats.push(InterfaceStats {
-                                interface_name: name,
-                                rx_bytes: if_data.ifi_ibytes as u64,
-                                tx_bytes: if_data.ifi_obytes as u64,
-                                rx_packets: total_rx_packets as u64,
-                                tx_packets: total_tx_packets as u64,
-                                // Sanitize error and drop counters (may contain garbage on virtual interfaces)
-                                rx_errors: sanitize_counter(if_data.ifi_ierrors, total_rx_packets),
-                                tx_errors: sanitize_counter(if_data.ifi_oerrors, total_tx_packets),
-                                rx_dropped: sanitize_counter(if_data.ifi_iqdrops, total_rx_packets),
-                                tx_dropped: 0, // Limited on macOS
-                                collisions: sanitize_counter(if_data.ifi_collisions, total_rx_packets + total_tx_packets),
-                                timestamp: SystemTime::now(),
-                            });
-                        }
+                        stats.push(InterfaceStats {
+                            interface_name: name,
+                            rx_bytes: if_data.ifi_ibytes as u64,
+                            tx_bytes: if_data.ifi_obytes as u64,
+                            rx_packets: total_rx_packets as u64,
+                            tx_packets: total_tx_packets as u64,
+                            // Sanitize error and drop counters (may contain garbage on virtual interfaces)
+                            rx_errors: sanitize_counter(if_data.ifi_ierrors, total_rx_packets),
+                            tx_errors: sanitize_counter(if_data.ifi_oerrors, total_tx_packets),
+                            rx_dropped: sanitize_counter(if_data.ifi_iqdrops, total_rx_packets),
+                            tx_dropped: 0, // Limited on macOS
+                            collisions: sanitize_counter(
+                                if_data.ifi_collisions,
+                                total_rx_packets + total_tx_packets,
+                            ),
+                            timestamp: SystemTime::now(),
+                        });
                     }
                 }
 
@@ -115,7 +116,8 @@ mod tests {
         match result {
             Ok(stats) => {
                 assert!(!stats.is_empty(), "Expected at least one interface");
-                let interface_names: Vec<String> = stats.iter().map(|s| s.interface_name.clone()).collect();
+                let interface_names: Vec<String> =
+                    stats.iter().map(|s| s.interface_name.clone()).collect();
                 // macOS should have at least loopback (lo0)
                 assert!(
                     interface_names.iter().any(|i| i.starts_with("lo")),

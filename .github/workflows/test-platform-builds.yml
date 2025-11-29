@@ -1,0 +1,190 @@
+name: Test Platform Builds
+
+# Test builds on all supported platforms.
+# Runs automatically on PRs and can be triggered manually for specific platforms.
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to build'
+        required: true
+        type: choice
+        options:
+          - all
+          - linux
+          - macos
+          - windows
+          - freebsd
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'build.rs'
+      - 'src/**'
+      - '.github/workflows/test-platform-builds.yml'
+
+permissions:
+  contents: read
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-linux:
+    name: Build Linux (x64)
+    if: ${{ github.event_name == 'pull_request' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'linux' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --verbose --release
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: rustnet-linux-x64
+          path: target/release/rustnet
+          if-no-files-found: error
+
+  build-macos-intel:
+    name: Build macOS (Intel)
+    if: ${{ github.event_name == 'pull_request' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'macos' }}
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Build
+        run: cargo build --verbose --release --target x86_64-apple-darwin --no-default-features
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: rustnet-macos-intel
+          path: target/x86_64-apple-darwin/release/rustnet
+          if-no-files-found: error
+
+  build-macos-arm:
+    name: Build macOS (Apple Silicon)
+    if: ${{ github.event_name == 'pull_request' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'macos' }}
+    runs-on: macos-14
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build
+        run: cargo build --verbose --release --target aarch64-apple-darwin --no-default-features
+
+      - name: Run tests
+        run: cargo test --verbose
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: rustnet-macos-arm
+          path: target/aarch64-apple-darwin/release/rustnet
+          if-no-files-found: error
+
+  build-windows-x64:
+    name: Build Windows (64-bit)
+    if: ${{ github.event_name == 'pull_request' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'windows' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build
+        run: cargo build --verbose --release --target x86_64-pc-windows-msvc --no-default-features
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: rustnet-windows-x64
+          path: target/x86_64-pc-windows-msvc/release/rustnet.exe
+          if-no-files-found: error
+
+  build-windows-x86:
+    name: Build Windows (32-bit)
+    if: ${{ github.event_name == 'pull_request' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'windows' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-pc-windows-msvc
+
+      - name: Build
+        run: cargo build --verbose --release --target i686-pc-windows-msvc --no-default-features
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: rustnet-windows-x86
+          path: target/i686-pc-windows-msvc/release/rustnet.exe
+          if-no-files-found: error
+
+  build-freebsd:
+    name: Build FreeBSD (x64)
+    if: ${{ github.event_name == 'pull_request' || github.event.inputs.platform == 'all' || github.event.inputs.platform == 'freebsd' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@b9c3f24600acdef618ef1c9e2d3c6eeda4dce712  # v1.2.7
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y curl libpcap rust
+          run: |
+            echo "Building for FreeBSD without default features (no eBPF)"
+            cargo build --verbose --release --no-default-features
+
+            echo "Verifying binary was created"
+            if [ -f "target/release/rustnet" ]; then
+              echo "FreeBSD binary successfully built"
+              ls -lh target/release/rustnet
+            else
+              echo "FreeBSD binary not found"
+              exit 1
+            fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: rustnet-freebsd-x64
+          path: target/release/rustnet
+          if-no-files-found: error

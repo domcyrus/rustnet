@@ -1,8 +1,8 @@
 //! Enhanced Linux process lookup combining eBPF and procfs approaches
 
-use super::{ConnectionKey, ProcessLookup};
+use crate::network::platform::{ConnectionKey, ProcessLookup};
 
-use super::linux::LinuxProcessLookup;
+use super::process::LinuxProcessLookup;
 use crate::network::types::{Connection, Protocol};
 use anyhow::Result;
 use log::{debug, info, warn};
@@ -12,7 +12,7 @@ use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "ebpf")]
-use super::linux_ebpf::EbpfSocketTracker;
+use super::ebpf::EbpfSocketTracker;
 
 // When eBPF is enabled, use the full enhanced implementation
 #[cfg(feature = "ebpf")]
@@ -440,6 +440,11 @@ mod procfs_only {
                 }),
                 stats: RwLock::new(LookupStats::default()),
             })
+        }
+
+        /// Check if eBPF is available (always false when feature disabled)
+        pub fn is_ebpf_available(&self) -> bool {
+            false
         }
     }
 

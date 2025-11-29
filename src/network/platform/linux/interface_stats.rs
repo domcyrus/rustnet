@@ -1,3 +1,5 @@
+// network/platform/linux/interface_stats.rs - Linux sysfs-based interface stats
+
 use crate::network::interface_stats::{InterfaceStats, InterfaceStatsProvider};
 use std::fs;
 use std::io;
@@ -54,10 +56,7 @@ impl InterfaceStatsProvider for LinuxStatsProvider {
 fn read_stat(base_path: &str, stat_name: &str) -> Result<u64, io::Error> {
     let path = format!("{}/{}", base_path, stat_name);
     let content = fs::read_to_string(&path).map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!("Failed to read {}: {}", path, e),
-        )
+        io::Error::new(e.kind(), format!("Failed to read {}: {}", path, e))
     })?;
 
     content
@@ -102,11 +101,9 @@ mod tests {
         match result {
             Ok(stats) => {
                 // Should have at least loopback
-                assert!(
-                    !stats.is_empty(),
-                    "Expected at least one interface (lo)"
-                );
-                let interface_names: Vec<String> = stats.iter().map(|s| s.interface_name.clone()).collect();
+                assert!(!stats.is_empty(), "Expected at least one interface (lo)");
+                let interface_names: Vec<String> =
+                    stats.iter().map(|s| s.interface_name.clone()).collect();
                 assert!(
                     interface_names.iter().any(|name| name == "lo"),
                     "Expected loopback interface"

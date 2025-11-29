@@ -1,3 +1,5 @@
+// network/platform/freebsd/interface_stats.rs - FreeBSD getifaddrs-based interface stats
+
 use crate::network::interface_stats::{InterfaceStats, InterfaceStatsProvider};
 use std::ffi::CStr;
 use std::io;
@@ -36,9 +38,7 @@ impl InterfaceStatsProvider for FreeBSDStatsProvider {
                 let ifa = &*current;
 
                 // Only process AF_LINK entries (data link layer)
-                if !ifa.ifa_addr.is_null()
-                    && (*ifa.ifa_addr).sa_family as i32 == libc::AF_LINK
-                {
+                if !ifa.ifa_addr.is_null() && (*ifa.ifa_addr).sa_family as i32 == libc::AF_LINK {
                     let name = CStr::from_ptr(ifa.ifa_name)
                         .to_string_lossy()
                         .to_string();

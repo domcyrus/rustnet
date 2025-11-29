@@ -20,6 +20,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: read
+
 env:
   DEBEMAIL: cadetg@gmail.com
   DEBFULLNAME: Marco Cadetg
