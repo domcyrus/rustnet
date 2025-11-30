@@ -53,7 +53,7 @@ To disable eBPF and use procfs-only mode, build with:
 cargo build --release --no-default-features
 ```
 
-See [EBPF_BUILD.md](EBPF_BUILD.md) for more details and [ARCHITECTURE.md](ARCHITECTURE.md) for technical information.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for technical information.
 
 </details>
 
@@ -236,7 +236,6 @@ See [USAGE.md](USAGE.md) for complete timeout details.
 - **[PROFILING.md](PROFILING.md)** - Performance profiling guide with flamegraph setup and optimization tips
 - **[ROADMAP.md](ROADMAP.md)** - Planned features and future improvements
 - **[RELEASE.md](RELEASE.md)** - Release process for maintainers
-- **[EBPF_BUILD.md](EBPF_BUILD.md)** - eBPF build instructions and requirements
 
 ## Contributing
 

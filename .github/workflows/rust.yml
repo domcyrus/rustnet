@@ -33,7 +33,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
     - name: Install dependencies
-      run: sudo apt-get update && sudo apt-get install -y libpcap-dev libelf-dev clang llvm
+      run: sudo apt-get update && sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
     - name: Build
       run: cargo build --verbose
     - name: Run tests
