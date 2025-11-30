@@ -18,7 +18,7 @@ fn main() -> Result<()> {
     #[cfg(target_os = "windows")]
     download_windows_npcap_sdk()?;
 
-    println!("cargo:rerun-if-changed=src/network/platform/linux_ebpf/programs/");
+    println!("cargo:rerun-if-changed=src/network/platform/linux/ebpf/programs/");
     println!("cargo:rerun-if-changed=src/cli.rs");
     println!("cargo:rerun-if-changed=resources/ebpf/vmlinux/");
 
@@ -184,7 +184,7 @@ fn compile_ebpf_programs() {
     let mut out = PathBuf::from(env::var("OUT_DIR").unwrap());
     out.push("socket_tracker.skel.rs");
 
-    let src = "src/network/platform/linux_ebpf/programs/socket_tracker.bpf.c";
+    let src = "src/network/platform/linux/ebpf/programs/socket_tracker.bpf.c";
 
     println!("cargo:warning=Building eBPF program using libbpf-cargo");
 

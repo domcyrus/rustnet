@@ -1,4 +1,6 @@
-use super::{ConnectionKey, ProcessLookup};
+// network/platform/macos/process.rs - macOS lsof-based process lookup
+
+use crate::network::platform::{ConnectionKey, ProcessLookup};
 use crate::network::types::{Connection, Protocol};
 use anyhow::Result;
 use log::{debug, error, info, warn};

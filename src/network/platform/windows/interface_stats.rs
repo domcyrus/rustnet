@@ -1,3 +1,5 @@
+// network/platform/windows/interface_stats.rs - Windows IP Helper API interface stats
+
 use crate::network::interface_stats::{InterfaceStats, InterfaceStatsProvider};
 use std::collections::HashMap;
 use std::io;
@@ -32,15 +34,14 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
 
             let result = GetIfTable2(&mut table);
             if result.is_err() {
-                return Err(io::Error::other(
-                    format!("GetIfTable2 failed with error code: {:?}", result),
-                ));
+                return Err(io::Error::other(format!(
+                    "GetIfTable2 failed with error code: {:?}",
+                    result
+                )));
             }
 
             if table.is_null() {
-                return Err(io::Error::other(
-                    "Failed to get interface table",
-                ));
+                return Err(io::Error::other("Failed to get interface table"));
             }
 
             let num_entries = (*table).NumEntries as usize;
@@ -76,7 +77,8 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
                 }
 
                 // Skip "Local Area Con" with zero traffic (these are usually disconnected adapters)
-                let total_traffic = row.InOctets + row.OutOctets + row.InUcastPkts + row.OutUcastPkts;
+                let total_traffic =
+                    row.InOctets + row.OutOctets + row.InUcastPkts + row.OutUcastPkts;
                 if name_lower.starts_with("local area con") && total_traffic == 0 {
                     continue;
                 }

@@ -1,53 +1,33 @@
-// network/platform/mod.rs - Platform process lookup
+// network/platform/mod.rs - Platform-specific process lookup
+//
+// Each platform is organized in its own subdirectory with consistent exports:
+// - {platform}/mod.rs: create_process_lookup() factory function
+// - {platform}/process.rs: ProcessLookup implementation
+// - {platform}/interface_stats.rs: InterfaceStatsProvider implementation
+
 use crate::network::types::{Connection, Protocol};
 use anyhow::Result;
 use std::net::SocketAddr;
 
-// Platform-specific modules
-#[cfg(target_os = "freebsd")]
-mod freebsd;
+// Platform-specific modules (one cfg per platform instead of many)
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(all(target_os = "linux", feature = "ebpf"))]
-mod linux_ebpf;
-#[cfg(all(target_os = "linux", feature = "ebpf"))]
-mod linux_enhanced;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
-
-// Platform-specific interface stats modules
-#[cfg(target_os = "linux")]
-mod linux_interface_stats;
 #[cfg(target_os = "freebsd")]
-mod freebsd_interface_stats;
-#[cfg(target_os = "macos")]
-mod macos_interface_stats;
-#[cfg(target_os = "windows")]
-mod windows_interface_stats;
+mod freebsd;
 
-// Re-export the appropriate implementation
-#[cfg(target_os = "freebsd")]
-pub use freebsd::FreeBSDProcessLookup;
+// Re-export factory functions and types from platform modules
 #[cfg(target_os = "linux")]
-pub use linux::LinuxProcessLookup;
-#[cfg(target_os = "linux")]
-// pub use linux_enhanced::EnhancedLinuxProcessLookup;
+pub use linux::{create_process_lookup, LinuxStatsProvider};
 #[cfg(target_os = "macos")]
-pub use macos::MacOSProcessLookup;
+pub use macos::{create_process_lookup, MacOSStatsProvider};
 #[cfg(target_os = "windows")]
-pub use windows::WindowsProcessLookup;
-
-// Re-export interface stats providers
-#[cfg(target_os = "linux")]
-pub use linux_interface_stats::LinuxStatsProvider;
+pub use windows::{create_process_lookup, WindowsProcessLookup, WindowsStatsProvider};
 #[cfg(target_os = "freebsd")]
-pub use freebsd_interface_stats::FreeBSDStatsProvider;
-#[cfg(target_os = "macos")]
-pub use macos_interface_stats::MacOSStatsProvider;
-#[cfg(target_os = "windows")]
-pub use windows_interface_stats::WindowsStatsProvider;
+pub use freebsd::{create_process_lookup, FreeBSDProcessLookup, FreeBSDStatsProvider};
 
 /// Trait for platform-specific process lookup
 pub trait ProcessLookup: Send + Sync {
@@ -62,85 +42,6 @@ pub trait ProcessLookup: Send + Sync {
 
     /// Get the detection method name for display purposes
     fn get_detection_method(&self) -> &str;
-}
-
-/// No-op process lookup for when PKTAP is providing process metadata
-#[cfg(target_os = "macos")]
-pub struct NoOpProcessLookup;
-
-#[cfg(target_os = "macos")]
-impl ProcessLookup for NoOpProcessLookup {
-    fn get_process_for_connection(&self, _conn: &Connection) -> Option<(u32, String)> {
-        None // PKTAP provides this information directly
-    }
-
-    fn refresh(&self) -> Result<()> {
-        Ok(()) // Nothing to refresh
-    }
-
-    fn get_detection_method(&self) -> &str {
-        "pktap"
-    }
-}
-
-/// Create a platform-specific process lookup with PKTAP status awareness
-pub fn create_process_lookup(_use_pktap: bool) -> Result<Box<dyn ProcessLookup>> {
-    #[cfg(target_os = "macos")]
-    {
-        use crate::network::platform::macos::MacOSProcessLookup;
-
-        if _use_pktap {
-            log::info!("Using no-op process lookup - PKTAP provides process metadata");
-            Ok(Box::new(NoOpProcessLookup))
-        } else {
-            Ok(Box::new(MacOSProcessLookup::new()?))
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        #[cfg(feature = "ebpf")]
-        {
-            // Try enhanced lookup first (with eBPF if available), fall back to basic
-            match linux_enhanced::EnhancedLinuxProcessLookup::new() {
-                Ok(enhanced) => {
-                    log::info!("Using enhanced Linux process lookup (eBPF + procfs)");
-                    return Ok(Box::new(enhanced));
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Enhanced lookup failed, falling back to basic procfs: {}",
-                        e
-                    );
-                }
-            }
-        }
-        // Use basic procfs lookup (either as fallback or when eBPF is not enabled)
-        log::info!("Using Linux process lookup (procfs)");
-        Ok(Box::new(LinuxProcessLookup::new()?))
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        log::info!("Using Windows process lookup (IP Helper API)");
-        Ok(Box::new(WindowsProcessLookup::new()?))
-    }
-
-    #[cfg(target_os = "freebsd")]
-    {
-        log::info!("Using FreeBSD process lookup (sockstat)");
-        Ok(Box::new(FreeBSDProcessLookup::new()?))
-    }
-
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "windows",
-        target_os = "macos",
-        target_os = "freebsd"
-    )))]
-    {
-        Err(anyhow::anyhow!("Unsupported platform"))
-    }
 }
 
 /// Connection identifier for lookups

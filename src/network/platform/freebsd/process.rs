@@ -1,5 +1,6 @@
-// network/platform/freebsd.rs - FreeBSD process lookup
-use super::{ConnectionKey, ProcessLookup};
+// network/platform/freebsd/process.rs - FreeBSD sockstat-based process lookup
+
+use crate::network::platform::{ConnectionKey, ProcessLookup};
 use crate::network::types::{Connection, Protocol};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -269,10 +270,7 @@ mod tests {
         let addr = FreeBSDProcessLookup::parse_address("*:80");
         assert_eq!(
             addr,
-            Some(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                80
-            ))
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 80))
         );
     }
 
@@ -281,10 +279,7 @@ mod tests {
         let addr = FreeBSDProcessLookup::parse_address("*:65535");
         assert_eq!(
             addr,
-            Some(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                65535
-            ))
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 65535))
         );
     }
 

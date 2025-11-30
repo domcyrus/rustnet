@@ -180,8 +180,6 @@ RustNet uses platform-specific APIs to associate network connections with proces
 - If eBPF fails to load (permissions, kernel compatibility), automatically falls back to procfs mode
 - TUI Statistics panel shows active detection method
 
-See [EBPF_BUILD.md](EBPF_BUILD.md) for detailed eBPF build and deployment information.
-
 #### macOS
 
 **PKTAP Mode (with sudo):**

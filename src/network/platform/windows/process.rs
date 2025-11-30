@@ -1,4 +1,6 @@
-use super::{ConnectionKey, ProcessLookup};
+// network/platform/windows/process.rs - Windows IP Helper API process lookup
+
+use crate::network::platform::{ConnectionKey, ProcessLookup};
 use crate::network::types::{Connection, Protocol};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -10,8 +12,8 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, WIN32_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
-    MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_UDPROW_OWNER_PID,
-    MIB_UDPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
+    MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_UDPROW_OWNER_PID, MIB_UDPTABLE_OWNER_PID,
+    TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
 };
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows::Win32::System::Threading::{
@@ -55,7 +57,10 @@ impl WindowsProcessLookup {
         Ok(())
     }
 
-    fn refresh_tcp_table_v4(&self, cache: &mut HashMap<ConnectionKey, (u32, String)>) -> Result<()> {
+    fn refresh_tcp_table_v4(
+        &self,
+        cache: &mut HashMap<ConnectionKey, (u32, String)>,
+    ) -> Result<()> {
         unsafe {
             let mut size: u32 = 0;
             let mut table: Vec<u8>;
@@ -71,13 +76,19 @@ impl WindowsProcessLookup {
             );
 
             if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
-                log::debug!("GetExtendedTcpTable (IPv4) returned no data or error: {}", result);
+                log::debug!(
+                    "GetExtendedTcpTable (IPv4) returned no data or error: {}",
+                    result
+                );
                 return Ok(()); // No connections or error
             }
 
             if size == 0 || size > 100_000_000 {
                 // Sanity check: reject unreasonably large sizes (100MB limit)
-                log::warn!("GetExtendedTcpTable (IPv4) returned invalid size: {}", size);
+                log::warn!(
+                    "GetExtendedTcpTable (IPv4) returned invalid size: {}",
+                    size
+                );
                 return Ok(());
             }
 
@@ -93,7 +104,10 @@ impl WindowsProcessLookup {
             );
 
             if result != 0 {
-                log::debug!("GetExtendedTcpTable (IPv4) second call failed: {}", result);
+                log::debug!(
+                    "GetExtendedTcpTable (IPv4) second call failed: {}",
+                    result
+                );
                 return Ok(()); // Error getting table
             }
 
@@ -161,7 +175,10 @@ impl WindowsProcessLookup {
         Ok(())
     }
 
-    fn refresh_tcp_table_v6(&self, cache: &mut HashMap<ConnectionKey, (u32, String)>) -> Result<()> {
+    fn refresh_tcp_table_v6(
+        &self,
+        cache: &mut HashMap<ConnectionKey, (u32, String)>,
+    ) -> Result<()> {
         unsafe {
             let mut size: u32 = 0;
             let mut table: Vec<u8>;
@@ -177,13 +194,19 @@ impl WindowsProcessLookup {
             );
 
             if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
-                log::debug!("GetExtendedTcpTable (IPv6) returned no data or error: {}", result);
+                log::debug!(
+                    "GetExtendedTcpTable (IPv6) returned no data or error: {}",
+                    result
+                );
                 return Ok(()); // No connections or error
             }
 
             if size == 0 || size > 100_000_000 {
                 // Sanity check: reject unreasonably large sizes (100MB limit)
-                log::warn!("GetExtendedTcpTable (IPv6) returned invalid size: {}", size);
+                log::warn!(
+                    "GetExtendedTcpTable (IPv6) returned invalid size: {}",
+                    size
+                );
                 return Ok(());
             }
 
@@ -199,7 +222,10 @@ impl WindowsProcessLookup {
             );
 
             if result != 0 {
-                log::debug!("GetExtendedTcpTable (IPv6) second call failed: {}", result);
+                log::debug!(
+                    "GetExtendedTcpTable (IPv6) second call failed: {}",
+                    result
+                );
                 return Ok(()); // Error getting table
             }
 
@@ -278,7 +304,10 @@ impl WindowsProcessLookup {
         Ok(())
     }
 
-    fn refresh_udp_table_v4(&self, cache: &mut HashMap<ConnectionKey, (u32, String)>) -> Result<()> {
+    fn refresh_udp_table_v4(
+        &self,
+        cache: &mut HashMap<ConnectionKey, (u32, String)>,
+    ) -> Result<()> {
         unsafe {
             let mut size: u32 = 0;
             let mut table: Vec<u8>;
@@ -294,13 +323,19 @@ impl WindowsProcessLookup {
             );
 
             if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
-                log::debug!("GetExtendedUdpTable (IPv4) returned no data or error: {}", result);
+                log::debug!(
+                    "GetExtendedUdpTable (IPv4) returned no data or error: {}",
+                    result
+                );
                 return Ok(()); // No connections or error
             }
 
             if size == 0 || size > 100_000_000 {
                 // Sanity check: reject unreasonably large sizes (100MB limit)
-                log::warn!("GetExtendedUdpTable (IPv4) returned invalid size: {}", size);
+                log::warn!(
+                    "GetExtendedUdpTable (IPv4) returned invalid size: {}",
+                    size
+                );
                 return Ok(());
             }
 
@@ -316,7 +351,10 @@ impl WindowsProcessLookup {
             );
 
             if result != 0 {
-                log::debug!("GetExtendedUdpTable (IPv4) second call failed: {}", result);
+                log::debug!(
+                    "GetExtendedUdpTable (IPv4) second call failed: {}",
+                    result
+                );
                 return Ok(()); // Error getting table
             }
 
@@ -382,7 +420,10 @@ impl WindowsProcessLookup {
         Ok(())
     }
 
-    fn refresh_udp_table_v6(&self, _cache: &mut HashMap<ConnectionKey, (u32, String)>) -> Result<()> {
+    fn refresh_udp_table_v6(
+        &self,
+        _cache: &mut HashMap<ConnectionKey, (u32, String)>,
+    ) -> Result<()> {
         // IPv6 UDP table structures are not available in current windows crate version
         // This will be implemented when the structures are available
         Ok(())
@@ -406,13 +447,23 @@ impl ProcessLookup for WindowsProcessLookup {
             if cache.last_refresh.elapsed() < Duration::from_secs(2)
                 && let Some(process_info) = cache.lookup.get(&key)
             {
-                log::trace!("✓ Cache hit: {:?} {} -> {} => {:?}",
-                    key.protocol, key.local_addr, key.remote_addr, process_info);
+                log::trace!(
+                    "✓ Cache hit: {:?} {} -> {} => {:?}",
+                    key.protocol,
+                    key.local_addr,
+                    key.remote_addr,
+                    process_info
+                );
                 return Some(process_info.clone());
             } else {
-                log::trace!("✗ Cache miss: {:?} {} -> {} (cache: {} entries, age: {}s)",
-                    key.protocol, key.local_addr, key.remote_addr,
-                    cache.lookup.len(), cache.last_refresh.elapsed().as_secs());
+                log::trace!(
+                    "✗ Cache miss: {:?} {} -> {} (cache: {} entries, age: {}s)",
+                    key.protocol,
+                    key.local_addr,
+                    key.remote_addr,
+                    cache.lookup.len(),
+                    cache.last_refresh.elapsed().as_secs()
+                );
             }
         }
 
@@ -429,8 +480,12 @@ impl ProcessLookup for WindowsProcessLookup {
             if result.is_some() {
                 log::trace!("✓ Found after refresh: {:?} => {:?}", key, result);
             } else {
-                log::trace!("✗ Still no match after refresh for: {:?} {} -> {}",
-                    key.protocol, key.local_addr, key.remote_addr);
+                log::trace!(
+                    "✗ Still no match after refresh for: {:?} {} -> {}",
+                    key.protocol,
+                    key.local_addr,
+                    key.remote_addr
+                );
             }
             result
         } else {
@@ -447,7 +502,9 @@ impl ProcessLookup for WindowsProcessLookup {
         let mut cache = match self.cache.write() {
             Ok(cache) => cache,
             Err(poisoned) => {
-                log::warn!("Process cache write lock was poisoned, recovering and replacing cache");
+                log::warn!(
+                    "Process cache write lock was poisoned, recovering and replacing cache"
+                );
                 poisoned.into_inner()
             }
         };
@@ -456,7 +513,10 @@ impl ProcessLookup for WindowsProcessLookup {
         cache.lookup = new_cache;
         cache.last_refresh = Instant::now();
 
-        log::debug!("Windows process lookup refresh complete: {} entries cached", total_entries);
+        log::debug!(
+            "Windows process lookup refresh complete: {} entries cached",
+            total_entries
+        );
 
         Ok(())
     }

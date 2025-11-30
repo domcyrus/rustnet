@@ -315,16 +315,18 @@ After installation, see the [Permissions Setup](#permissions-setup) section to c
 ### Prerequisites
 
 - Rust 2024 edition or later (install from [rustup.rs](https://rustup.rs/))
-- libpcap or similar packet capture library:
-  - **Linux**: `sudo apt-get install libpcap-dev` (Debian/Ubuntu) or `sudo yum install libpcap-devel` (RedHat/CentOS)
-  - **macOS**: Included by default
-  - **FreeBSD**: `pkg install libpcap` (included in base system, but headers needed for building)
+- Platform-specific dependencies:
+  - **Linux (Debian/Ubuntu)**:
+    ```bash
+    sudo apt-get install build-essential pkg-config libpcap-dev libelf-dev zlib1g-dev clang llvm
+    ```
+  - **Linux (RedHat/CentOS/Fedora)**:
+    ```bash
+    sudo yum install make pkgconfig libpcap-devel elfutils-libelf-devel zlib-devel clang llvm
+    ```
+  - **macOS**: Install Xcode Command Line Tools: `xcode-select --install`
+  - **FreeBSD**: `pkg install rust libpcap`
   - **Windows**: Install Npcap and Npcap SDK (see [Windows Build Setup](#windows-build-setup) below)
-- **For eBPF support (enabled by default on Linux)**:
-  - `sudo apt-get install libelf-dev clang llvm` (Debian/Ubuntu)
-  - `sudo yum install elfutils-libelf-devel clang llvm` (RedHat/CentOS)
-  - Linux kernel 4.19+ with BTF support recommended
-  - Note: eBPF automatically falls back to procfs if unavailable
 
 ### Basic Build
 
@@ -342,7 +344,7 @@ cargo build --release --no-default-features
 # The executable will be in target/release/rustnet
 ```
 
-See [EBPF_BUILD.md](EBPF_BUILD.md) for detailed eBPF information.
+To build without eBPF (procfs-only mode), use `cargo build --release --no-default-features`.
 
 ### Windows Build Setup
 
@@ -682,28 +684,19 @@ rustnet --help
 
 #### Build Errors
 
-**Linux - Missing libpcap:**
-```bash
-# Debian/Ubuntu
-sudo apt-get install libpcap-dev
-
-# RedHat/CentOS/Fedora
-sudo yum install libpcap-devel
-```
-
 **Windows - Npcap SDK not found:**
 - Ensure the `LIB` environment variable includes the Npcap SDK path
 - Check that the SDK is extracted to a directory without spaces
 - Use the correct architecture (x64 vs x86) for your Rust toolchain
 
-**eBPF build fails:**
+**Linux build fails:**
 ```bash
-# Install required dependencies
+# Install all required dependencies
 # Debian/Ubuntu
-sudo apt-get install libelf-dev clang llvm
+sudo apt-get install build-essential pkg-config libpcap-dev libelf-dev zlib1g-dev clang llvm
 
 # RedHat/CentOS/Fedora
-sudo yum install elfutils-libelf-devel clang llvm
+sudo yum install make pkgconfig libpcap-devel elfutils-libelf-devel zlib-devel clang llvm
 ```
 
 ### Getting Help
