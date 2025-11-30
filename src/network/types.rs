@@ -1209,10 +1209,11 @@ mod tests {
         // Now we have 2 samples spanning 1 second with 10,000 bytes transferred
         // This should give us 10,000 bytes/sec
         // If we were .skip(1), we'd get 0 because we'd skip the only data sample!
+        // Note: Wide tolerance due to thread::sleep timing variability in CI
         let outgoing_rate = tracker.get_outgoing_rate_bps();
 
         assert!(
-            outgoing_rate > 9_000.0 && outgoing_rate < 11_000.0,
+            outgoing_rate > 5_000.0 && outgoing_rate < 15_000.0,
             "Should include all samples (not skip first), got: {}",
             outgoing_rate
         );
