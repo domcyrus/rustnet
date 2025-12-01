@@ -31,7 +31,7 @@ dashmap = "6.1"
 dns-lookup = "3.0"
 log = "0.4"
 num_cpus = "1.17"
-pcap = "2.3.0"
+pcap = "2.4.0"
 pnet_datalink = "0.35"
 clap = { version = "4.5", features = ["derive"] }
 simple-logging = "2.0"
