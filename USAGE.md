@@ -78,6 +78,9 @@ Options:
   -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 1000]
       --no-dpi                           Disable deep packet inspection
   -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
+      --json-log <FILE>                  Enable JSON logging of connection events to specified file
+      --no-sandbox                       Disable Landlock sandboxing (Linux only)
+      --sandbox-strict                   Require full sandbox enforcement or exit (Linux only)
   -h, --help                             Print help
   -V, --version                          Print version
 ```

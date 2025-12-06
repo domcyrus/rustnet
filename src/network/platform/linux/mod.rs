@@ -8,6 +8,9 @@ pub mod ebpf;
 #[cfg(feature = "ebpf")]
 mod enhanced;
 
+#[cfg(feature = "landlock")]
+pub mod sandbox;
+
 pub use interface_stats::LinuxStatsProvider;
 pub use process::LinuxProcessLookup;
 
