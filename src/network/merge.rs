@@ -3,12 +3,25 @@
 use log::{debug, info, warn};
 use std::time::{Instant, SystemTime};
 
-use crate::network::dpi::DpiResult;
+use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reassembler};
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
     ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, ProtocolState,
     QuicConnectionState, QuicInfo, SshInfo, TcpState,
 };
+
+/// Get the priority of a QUIC connection state for proper state progression
+/// Higher priority = more advanced state. States should only progress forward.
+fn quic_state_priority(state: &QuicConnectionState) -> u8 {
+    match state {
+        QuicConnectionState::Unknown => 0,
+        QuicConnectionState::Initial => 1,
+        QuicConnectionState::Handshaking => 2,
+        QuicConnectionState::Connected => 3,
+        QuicConnectionState::Draining => 4,
+        QuicConnectionState::Closed => 5,
+    }
+}
 
 /// Update TCP connection state based on observed flags and current state
 /// This implements the TCP state machine according to RFC 793
@@ -79,10 +92,16 @@ fn analyze_tcp_segment(
                     // This is a retransmission
                     analytics.retransmit_count += 1;
                     new_retransmits += 1;
-                    debug!("TCP retransmission detected: seq={}, expected={}", seq, expected_seq);
+                    debug!(
+                        "TCP retransmission detected: seq={}, expected={}",
+                        seq, expected_seq
+                    );
                 } else if seq > expected_seq {
                     // Gap in sequence numbers - might be out of order or packet loss
-                    debug!("TCP sequence gap detected: seq={}, expected={}", seq, expected_seq);
+                    debug!(
+                        "TCP sequence gap detected: seq={}, expected={}",
+                        seq, expected_seq
+                    );
                 } else {
                     // seq == expected_seq, normal in-order packet
                     analytics.last_seq_outbound = seq.wrapping_add(payload_len);
@@ -102,7 +121,10 @@ fn analyze_tcp_segment(
                     // Out-of-order packet (arrived late)
                     analytics.out_of_order_count += 1;
                     new_out_of_order += 1;
-                    debug!("TCP out-of-order packet: seq={}, expected={}", seq, expected_seq);
+                    debug!(
+                        "TCP out-of-order packet: seq={}, expected={}",
+                        seq, expected_seq
+                    );
                 } else if seq > expected_seq {
                     // Gap - possible packet loss
                     analytics.last_seq_inbound = seq.wrapping_add(payload_len);
@@ -174,11 +196,8 @@ pub fn merge_packet_into_connection(
             }
         };
 
-        let new_tcp_state = update_tcp_state(
-            current_tcp_state,
-            &tcp_header.flags,
-            parsed.is_outgoing,
-        );
+        let new_tcp_state =
+            update_tcp_state(current_tcp_state, &tcp_header.flags, parsed.is_outgoing);
 
         if current_tcp_state != new_tcp_state {
             debug!(
@@ -499,16 +518,17 @@ fn merge_https_info(old_info: &mut HttpsInfo, new_info: &HttpsInfo) {
 
 /// Merge QUIC information with reassembly support
 fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
-    // Update connection state if it progressed
-    match (&old_info.connection_state, &new_info.connection_state) {
-        (old_state, _new_state) if !matches!(old_state, _new_state) => {
-            debug!(
-                "QUIC connection state changed: {:?} -> {:?}",
-                old_state, _new_state
-            );
-            old_info.connection_state = new_info.connection_state;
-        }
-        _ => {}
+    // Update connection state only if it progresses forward
+    // State progression: Unknown -> Initial -> Handshaking -> Connected -> Draining -> Closed
+    let old_priority = quic_state_priority(&old_info.connection_state);
+    let new_priority = quic_state_priority(&new_info.connection_state);
+
+    if new_priority > old_priority {
+        debug!(
+            "QUIC connection state progressed: {:?} -> {:?}",
+            old_info.connection_state, new_info.connection_state
+        );
+        old_info.connection_state = new_info.connection_state;
     }
 
     // Update packet type
@@ -553,13 +573,55 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
                 }
             }
 
-            // Update cached TLS info if new reassembler has it
-            if let Some(tls_info) = new_reassembler.get_cached_tls_info() {
-                old_info.tls_info = Some(tls_info.clone());
+            // If current SNI is partial or missing, try re-extracting from merged reassembler
+            let should_retry = match &old_info.tls_info {
+                None => true,
+                Some(tls) => {
+                    tls.sni.is_none() || tls.sni.as_ref().is_some_and(|s| is_partial_sni(s))
+                }
+            };
+
+            if should_retry {
                 debug!(
-                    "QUIC: Updated TLS info from reassembler - SNI: {:?}, ALPN: {:?}",
-                    tls_info.sni, tls_info.alpn
+                    "QUIC: SNI is partial or missing, attempting re-extraction from merged fragments"
                 );
+                // First try without partial extraction to get complete SNI
+                if let Some(new_tls) = try_extract_tls_from_reassembler(old_reassembler, false) {
+                    debug!(
+                        "QUIC: Re-extraction succeeded with complete SNI: {:?}",
+                        new_tls.sni
+                    );
+                    old_info.tls_info = Some(new_tls);
+                } else {
+                    // If complete extraction failed, allow partial as fallback
+                    if let Some(new_tls) = try_extract_tls_from_reassembler(old_reassembler, true) {
+                        debug!(
+                            "QUIC: Re-extraction returned partial SNI as fallback: {:?}",
+                            new_tls.sni
+                        );
+                        old_info.tls_info = Some(new_tls);
+                    }
+                }
+            }
+
+            // Update cached TLS info if new reassembler has it and it's better
+            if let Some(tls_info) = new_reassembler.get_cached_tls_info() {
+                let new_is_complete = tls_info.sni.as_ref().is_some_and(|s| !is_partial_sni(s));
+                let should_update = match &old_info.tls_info {
+                    None => true,
+                    Some(old_tls) => {
+                        let old_is_partial =
+                            old_tls.sni.as_ref().is_some_and(|s| is_partial_sni(s));
+                        old_tls.sni.is_none() || (old_is_partial && new_is_complete)
+                    }
+                };
+                if should_update {
+                    old_info.tls_info = Some(tls_info.clone());
+                    debug!(
+                        "QUIC: Updated TLS info from reassembler - SNI: {:?}, ALPN: {:?}",
+                        tls_info.sni, tls_info.alpn
+                    );
+                }
             }
         }
     }
@@ -575,7 +637,19 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
             let mut updated = false;
             let mut merged_tls = old_tls.clone();
 
+            // Prefer complete SNI over partial, or any SNI over none
+            let old_sni_is_partial = old_tls.sni.as_ref().is_some_and(|s| is_partial_sni(s));
+            let new_sni_is_partial = new_tls.sni.as_ref().is_some_and(|s| is_partial_sni(s));
+
             if old_tls.sni.is_none() && new_tls.sni.is_some() {
+                merged_tls.sni = new_tls.sni.clone();
+                updated = true;
+            } else if old_sni_is_partial && new_tls.sni.is_some() && !new_sni_is_partial {
+                // Replace partial with complete
+                debug!(
+                    "QUIC: Replacing partial SNI {:?} with complete SNI {:?}",
+                    old_tls.sni, new_tls.sni
+                );
                 merged_tls.sni = new_tls.sni.clone();
                 updated = true;
             }
@@ -805,7 +879,8 @@ mod tests {
         let mut conn = create_test_connection();
         let packet = create_test_packet(true, false);
 
-        let (updated_conn, _tcp_events) = merge_packet_into_connection(conn, &packet, SystemTime::now());
+        let (updated_conn, _tcp_events) =
+            merge_packet_into_connection(conn, &packet, SystemTime::now());
         conn = updated_conn;
 
         assert_eq!(conn.packets_sent, 1);
@@ -835,7 +910,8 @@ mod tests {
 
         // Now simulate merging another packet
         let packet2 = create_test_packet(true, false);
-        let (mut updated_conn, _tcp_events) = merge_packet_into_connection(conn, &packet2, SystemTime::now());
+        let (mut updated_conn, _tcp_events) =
+            merge_packet_into_connection(conn, &packet2, SystemTime::now());
 
         // Bytes should have increased
         assert_eq!(updated_conn.bytes_sent, 200);

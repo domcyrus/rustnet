@@ -9,6 +9,7 @@ mod quic;
 mod ssh;
 
 pub use cipher_suites::{format_cipher_suite, is_secure_cipher_suite};
+pub use quic::{is_partial_sni, try_extract_tls_from_reassembler};
 
 /// Result of DPI analysis
 #[derive(Debug, Clone)]

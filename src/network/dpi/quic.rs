@@ -19,34 +19,318 @@ const INITIAL_SALT_V2: &[u8] = &[
     0xf9, 0xbd, 0x2e, 0xd9,
 ];
 
+// ============================================================================
+// SNI Validation and Parsing Helpers
+// ============================================================================
+
+/// Minimum length for partial SNI extraction
+const PARTIAL_SNI_MIN_LENGTH: usize = 3;
+
+/// Marker suffix for partial SNI values
+const PARTIAL_SNI_MARKER: &str = "[PARTIAL]";
+
+/// Validate if a string looks like a valid complete hostname
+///
+/// This is the unified hostname validation function used across all SNI extraction methods.
+/// Rules:
+/// - Length between 4 and 253 characters
+/// - Contains at least one '.'
+/// - Only ASCII alphanumeric, '.', and '-' characters
+/// - Doesn't start or end with '.' or '-'
+/// - No consecutive dots '..'
+/// - Has at least one alphabetic character
+/// - Each label is non-empty and at most 63 characters
+fn is_valid_hostname(hostname: &str) -> bool {
+    // Length check
+    if hostname.len() < 4 || hostname.len() > 253 {
+        return false;
+    }
+
+    // Must contain at least one dot
+    if !hostname.contains('.') {
+        return false;
+    }
+
+    // Check for valid hostname characters only
+    if !hostname
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return false;
+    }
+
+    // Must not start or end with a dot or hyphen
+    if hostname.starts_with('.')
+        || hostname.ends_with('.')
+        || hostname.starts_with('-')
+        || hostname.ends_with('-')
+    {
+        return false;
+    }
+
+    // Must not contain consecutive dots
+    if hostname.contains("..") {
+        return false;
+    }
+
+    // Must have at least one alphabetic character (not just numbers and dots)
+    if !hostname.chars().any(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    // Each label must be non-empty and at most 63 characters
+    let parts: Vec<&str> = hostname.split('.').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    if !parts
+        .iter()
+        .all(|part| !part.is_empty() && part.len() <= 63)
+    {
+        return false;
+    }
+
+    true
+}
+
+/// Validate if a string looks like a valid partial hostname
+///
+/// Partial hostnames have relaxed rules since they may be truncated:
+/// - Minimum length (PARTIAL_SNI_MIN_LENGTH)
+/// - Only ASCII alphanumeric, '.', and '-' characters
+/// - Has at least one alphabetic character
+/// - Doesn't start with '.' or '-'
+fn is_valid_partial_hostname(hostname: &str) -> bool {
+    if hostname.len() < PARTIAL_SNI_MIN_LENGTH {
+        return false;
+    }
+
+    // Check for valid hostname characters only
+    if !hostname
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return false;
+    }
+
+    // Must have at least one alphabetic character
+    if !hostname.chars().any(|c| c.is_ascii_alphabetic()) {
+        return false;
+    }
+
+    // Must not start with '.' or '-'
+    if hostname.starts_with('.') || hostname.starts_with('-') {
+        return false;
+    }
+
+    true
+}
+
+/// Mark an SNI value as partial by appending the marker
+fn mark_partial_sni(hostname: &str) -> String {
+    format!("{}{}", hostname, PARTIAL_SNI_MARKER)
+}
+
+/// Check if an SNI value is marked as partial
+pub fn is_partial_sni(sni: &str) -> bool {
+    sni.ends_with(PARTIAL_SNI_MARKER)
+}
+
+/// Parsed SNI extension header
+struct SniHeader {
+    /// Server name list length
+    list_len: u16,
+    /// Name type (should be 0x00 for hostname) - validated but not stored
+    #[allow(dead_code)]
+    _name_type: u8,
+    /// Hostname length
+    name_len: u16,
+}
+
+/// Parse the SNI extension header from raw data
+///
+/// Expects data starting at the SNI extension content (after extension type and length):
+/// - 2 bytes: server name list length
+/// - 1 byte: name type (0x00 = hostname)
+/// - 2 bytes: hostname length
+///
+/// Returns None if data is too short or name type is not hostname
+fn parse_sni_header(data: &[u8]) -> Option<SniHeader> {
+    if data.len() < 5 {
+        return None;
+    }
+
+    let list_len = u16::from_be_bytes([data[0], data[1]]);
+    let name_type = data[2];
+    let name_len = u16::from_be_bytes([data[3], data[4]]);
+
+    // Name type must be 0x00 (hostname)
+    if name_type != 0x00 {
+        return None;
+    }
+
+    // Validate hostname length is reasonable
+    if name_len == 0 || name_len > 253 {
+        return None;
+    }
+
+    Some(SniHeader {
+        list_len,
+        _name_type: name_type,
+        name_len,
+    })
+}
+
+// ============================================================================
+
 /// Main entry point for QUIC packet parsing
+/// Handles coalesced packets - multiple QUIC packets in a single UDP datagram
 pub fn parse_quic_packet(payload: &[u8]) -> Option<QuicInfo> {
     if payload.is_empty() {
         debug!("QUIC: Empty payload");
         return None;
     }
 
-    let first_byte = payload[0];
-    let is_long_header = (first_byte & 0x80) != 0;
+    let mut combined_info: Option<QuicInfo> = None;
+    let mut offset = 0;
+    let mut packet_count = 0;
 
-    debug!(
-        "QUIC: Parsing packet - first_byte=0x{:02x}, is_long_header={}, payload_len={}",
-        first_byte,
-        is_long_header,
-        payload.len()
-    );
+    // Process all coalesced packets in the UDP datagram
+    while offset < payload.len() {
+        let remaining = &payload[offset..];
+        if remaining.is_empty() {
+            break;
+        }
 
-    if is_long_header {
-        parse_long_header_packet(payload)
-    } else {
-        parse_short_header_packet(payload)
+        let first_byte = remaining[0];
+        let is_long_header = (first_byte & 0x80) != 0;
+
+        debug!(
+            "QUIC: Parsing packet {} at offset {} - first_byte=0x{:02x}, is_long_header={}, remaining_len={}",
+            packet_count + 1,
+            offset,
+            first_byte,
+            is_long_header,
+            remaining.len()
+        );
+
+        let (packet_info, packet_len) = if is_long_header {
+            parse_long_header_packet_with_length(remaining)
+        } else {
+            // Short header packet - consumes rest of datagram (no length field)
+            let info = parse_short_header_packet(remaining);
+            (info, remaining.len())
+        };
+
+        if let Some(info) = packet_info {
+            combined_info = Some(merge_quic_packet_info(combined_info, info));
+        }
+
+        // Move to next packet
+        if packet_len == 0 {
+            // Couldn't determine length, stop processing
+            break;
+        }
+        offset += packet_len;
+        packet_count += 1;
+
+        // Safety limit - don't process more than 10 coalesced packets
+        if packet_count >= 10 {
+            debug!("QUIC: Reached coalesced packet limit (10), stopping");
+            break;
+        }
+    }
+
+    if packet_count > 1 {
+        debug!(
+            "QUIC: Processed {} coalesced packets in UDP datagram",
+            packet_count
+        );
+    }
+
+    combined_info
+}
+
+/// Merge QUIC info from multiple coalesced packets
+/// Prefers more complete information (SNI without [PARTIAL], higher connection state, etc.)
+fn merge_quic_packet_info(existing: Option<QuicInfo>, new: QuicInfo) -> QuicInfo {
+    match existing {
+        None => new,
+        Some(mut existing) => {
+            // Prefer higher connection state
+            let existing_priority = match existing.connection_state {
+                QuicConnectionState::Unknown => 0,
+                QuicConnectionState::Initial => 1,
+                QuicConnectionState::Handshaking => 2,
+                QuicConnectionState::Connected => 3,
+                QuicConnectionState::Draining => 4,
+                QuicConnectionState::Closed => 5,
+            };
+            let new_priority = match new.connection_state {
+                QuicConnectionState::Unknown => 0,
+                QuicConnectionState::Initial => 1,
+                QuicConnectionState::Handshaking => 2,
+                QuicConnectionState::Connected => 3,
+                QuicConnectionState::Draining => 4,
+                QuicConnectionState::Closed => 5,
+            };
+            if new_priority > existing_priority {
+                existing.connection_state = new.connection_state;
+            }
+
+            // Merge TLS info - prefer complete SNI over partial
+            match (&existing.tls_info, &new.tls_info) {
+                (None, Some(new_tls)) => {
+                    existing.tls_info = Some(new_tls.clone());
+                }
+                (Some(old_tls), Some(new_tls)) => {
+                    let old_is_partial = old_tls
+                        .sni
+                        .as_ref()
+                        .map(|s| is_partial_sni(s))
+                        .unwrap_or(true);
+                    let new_is_partial = new_tls
+                        .sni
+                        .as_ref()
+                        .map(|s| is_partial_sni(s))
+                        .unwrap_or(true);
+
+                    // Prefer complete SNI over partial, or any SNI over none
+                    if (old_is_partial && !new_is_partial)
+                        || (old_tls.sni.is_none() && new_tls.sni.is_some())
+                    {
+                        existing.tls_info = Some(new_tls.clone());
+                    }
+                }
+                _ => {}
+            }
+
+            // Update connection ID if we have a better one
+            if existing.connection_id.is_empty() && !new.connection_id.is_empty() {
+                existing.connection_id = new.connection_id;
+                existing.connection_id_hex = new.connection_id_hex;
+            }
+
+            // Update version if we didn't have it
+            if existing.version_string.is_none() && new.version_string.is_some() {
+                existing.version_string = new.version_string;
+            }
+
+            // Merge crypto reassembler if present
+            if existing.crypto_reassembler.is_none() && new.crypto_reassembler.is_some() {
+                existing.crypto_reassembler = new.crypto_reassembler;
+            }
+
+            existing
+        }
     }
 }
 
-/// Parse a QUIC long header packet
-fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
+/// Parse a QUIC long header packet and return both the info and the packet length
+/// This is needed for coalesced packet handling
+fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<QuicInfo>, usize) {
     if payload.len() < 6 {
-        return None;
+        return (None, 0);
     }
 
     let first_byte = payload[0];
@@ -72,7 +356,7 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
             "QUIC: Payload too short to read DCID length at offset {}",
             offset
         );
-        return None;
+        return (None, 0);
     }
     let dcid_len = payload[offset] as usize;
     offset += 1;
@@ -88,11 +372,10 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
             offset + dcid_len,
             payload.len()
         );
-        return None;
+        return (None, 0);
     }
     let dcid = payload[offset..offset + dcid_len].to_vec();
     quic_info.connection_id = dcid.clone();
-    // Don't set connection_id_hex yet - only set it for Client Initial packets with crypto frames
     quic_info.connection_id_hex = None;
     offset += dcid_len;
 
@@ -102,7 +385,7 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
             "QUIC: Payload too short for SCID length at offset {}",
             offset
         );
-        return None;
+        return (None, 0);
     }
     let scid_len = payload[offset] as usize;
     offset += 1;
@@ -113,9 +396,60 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
             offset + scid_len,
             payload.len()
         );
-        return None;
+        return (None, 0);
     }
-    // offset += scid_len; // No longer needed as we don't parse further
+    offset += scid_len;
+
+    // For Initial packets, parse token length
+    if packet_type == QuicPacketType::Initial {
+        if let Some((token_len, bytes_read)) = parse_variable_length_int(&payload[offset..]) {
+            offset += bytes_read;
+            offset += token_len as usize; // Skip token
+        } else {
+            return (Some(quic_info), payload.len()); // Can't parse, assume rest of datagram
+        }
+    }
+
+    // Parse packet length (variable-length integer)
+    let packet_length =
+        if let Some((pkt_len, bytes_read)) = parse_variable_length_int(&payload[offset..]) {
+            offset += bytes_read;
+            pkt_len as usize
+        } else {
+            // Can't parse packet length, assume rest of datagram
+            return (Some(quic_info), payload.len());
+        };
+
+    // Total packet size = header (offset) + packet_length (includes pkt num + payload)
+    let total_packet_size = offset + packet_length;
+
+    debug!(
+        "QUIC: Long header packet - header_len={}, packet_length={}, total={}",
+        offset, packet_length, total_packet_size
+    );
+
+    // Now do the actual TLS extraction on this packet
+    let packet_data = if total_packet_size <= payload.len() {
+        &payload[..total_packet_size]
+    } else {
+        payload // Use what we have if packet extends beyond datagram
+    };
+
+    // Extract TLS info from this packet
+    extract_tls_from_long_header_packet(packet_data, &mut quic_info, &dcid, version, packet_type);
+
+    (Some(quic_info), total_packet_size.min(payload.len()))
+}
+
+/// Extract TLS information from a long header packet
+fn extract_tls_from_long_header_packet(
+    payload: &[u8],
+    quic_info: &mut QuicInfo,
+    dcid: &[u8],
+    version: u32,
+    packet_type: QuicPacketType,
+) {
+    let dcid_len = dcid.len();
 
     // Set connection state based on packet type
     quic_info.connection_state = match packet_type {
@@ -127,15 +461,9 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
         _ => QuicConnectionState::Unknown,
     };
 
-    // Always try to extract any available information, even if we can't decrypt
-    // This includes looking for unencrypted TLS extensions or other plaintext data
-    if let Some(tls_info) = try_parse_unencrypted_crypto_frames(payload) {
-        debug!(
-            "QUIC: Found TLS info in unencrypted packet data: SNI={:?}, ALPN={:?}",
-            tls_info.sni, tls_info.alpn
-        );
-        quic_info.tls_info = Some(tls_info);
-    }
+    // NOTE: QUIC Initial and Handshake packets are ENCRYPTED using keys derived from the DCID.
+    // We must decrypt them first before extracting TLS information.
+    // Do NOT try to pattern-match on encrypted payload - it will give garbage results.
 
     // For Initial and Handshake packets, try to decrypt and extract TLS information
     // Focus on Client packets as they contain the SNI information
@@ -143,30 +471,29 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
         QuicPacketType::Initial if dcid_len > 0 => {
             debug!("QUIC: Processing Initial packet with DCID len={}", dcid_len);
             // Try to decrypt as client packet first (most likely to have SNI)
-            if let Some(decrypted_payload) = decrypt_client_initial_packet(payload, &dcid, version)
-            {
+            if let Some(decrypted_payload) = decrypt_client_initial_packet(payload, dcid, version) {
                 debug!("QUIC: Successfully decrypted Client Initial packet");
                 // Extract TLS info from decrypted payload using reassembly
                 if let Some(tls_info) =
-                    process_crypto_frames_in_packet(&decrypted_payload, &mut quic_info)
+                    process_crypto_frames_in_packet(&decrypted_payload, quic_info)
                 {
                     quic_info.tls_info = Some(tls_info);
                     // This is a Client Initial packet with crypto frames - mark it for connection tracking
                     if !dcid.is_empty() {
-                        quic_info.connection_id_hex = Some(connection_id_to_hex(&dcid));
+                        quic_info.connection_id_hex = Some(connection_id_to_hex(dcid));
                         debug!(
                             "QUIC: Marking Client Initial packet with DCID {} for connection tracking",
-                            connection_id_to_hex(&dcid)
+                            connection_id_to_hex(dcid)
                         );
                     }
                 }
             } else if let Some(decrypted_payload) =
-                decrypt_server_initial_packet(payload, &dcid, version)
+                decrypt_server_initial_packet(payload, dcid, version)
             {
                 debug!("QUIC: Successfully decrypted Server Initial packet");
                 // Server Initial rarely has SNI but may have ALPN or other TLS info
                 if let Some(tls_info) =
-                    process_crypto_frames_in_packet(&decrypted_payload, &mut quic_info)
+                    process_crypto_frames_in_packet(&decrypted_payload, quic_info)
                 {
                     quic_info.tls_info = Some(tls_info);
                 }
@@ -180,49 +507,23 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
                     version,
                     payload.len()
                 );
-
-                // Try to extract any unencrypted TLS information
-                if let Some(tls_info) = try_parse_unencrypted_crypto_frames(payload) {
-                    debug!(
-                        "QUIC: Found TLS info in unencrypted parts: SNI={:?}",
-                        tls_info.sni
-                    );
-                    quic_info.tls_info = Some(tls_info);
-                }
+                // Cannot extract TLS info from encrypted payload - don't try pattern matching
             }
         }
         QuicPacketType::Handshake if dcid_len > 0 => {
-            debug!("QUIC: Processing Handshake packet - these often contain ClientHello");
-            // Handshake packets may also contain TLS ClientHello
-            // Modern QUIC often puts the actual TLS handshake in Handshake packets, not Initial
-            if let Some(tls_info) = try_parse_unencrypted_crypto_frames(payload) {
-                debug!(
-                    "QUIC: Found TLS info in Handshake packet: SNI={:?}",
-                    tls_info.sni
-                );
-                quic_info.tls_info = Some(tls_info);
-            }
+            // Handshake packets are encrypted with handshake keys derived from the TLS handshake
+            // We cannot decrypt these without the handshake secrets, so we skip TLS extraction
+            debug!("QUIC: Processing Handshake packet - encrypted, cannot extract TLS info");
         }
         QuicPacketType::Initial => {
-            debug!(
-                "QUIC: Initial packet has zero-length DCID - this is normal for some QUIC implementations"
-            );
+            debug!("QUIC: Initial packet has zero-length DCID - cannot derive decryption keys");
             debug!(
                 "QUIC: Packet details - version=0x{:08x}, payload_len={}, packet_type={:?}",
                 version,
                 payload.len(),
                 packet_type
             );
-
-            // Zero-length DCID is actually valid for some QUIC implementations
-            // We should still try to extract what we can from unencrypted parts
-            if let Some(tls_info) = try_parse_unencrypted_crypto_frames(payload) {
-                debug!(
-                    "QUIC: Extracted TLS info from unencrypted frames: SNI={:?}",
-                    tls_info.sni
-                );
-                quic_info.tls_info = Some(tls_info);
-            }
+            // Cannot decrypt without DCID - don't try pattern matching on encrypted data
         }
         _ => {
             debug!(
@@ -231,8 +532,6 @@ fn parse_long_header_packet(payload: &[u8]) -> Option<QuicInfo> {
             );
         }
     }
-
-    Some(quic_info)
 }
 
 /// Parse a QUIC short header packet
@@ -699,7 +998,7 @@ pub fn process_crypto_frames_in_packet(
 
     if found_crypto_frames
         && let Some(reassembler) = &mut quic_info.crypto_reassembler
-        && let Some(tls_info) = try_extract_tls_from_reassembler(reassembler)
+        && let Some(tls_info) = try_extract_tls_from_reassembler(reassembler, false)
     {
         debug!(
             "QUIC: Successfully extracted TLS info: SNI={:?}",
@@ -712,46 +1011,60 @@ pub fn process_crypto_frames_in_packet(
     None
 }
 
-/// Try to extract TLS information from reassembled fragments
-pub fn try_extract_tls_from_reassembler(
-    reassembler: &mut CryptoFrameReassembler,
-) -> Option<TlsInfo> {
-    // If we already have complete info, return it
-    if let Some(tls_info) = reassembler.get_cached_tls_info() {
-        return Some(tls_info.clone());
+/// Check if SNI is complete (not partial)
+fn is_complete_sni(sni: &Option<String>) -> bool {
+    match sni {
+        Some(s) => !is_partial_sni(s),
+        None => false,
     }
+}
 
-    // Try to reassemble and parse contiguous data first
-    if let Some(reassembled) = reassembler.get_contiguous_data() {
+/// Strategy 1: Try to extract TLS info from contiguous reassembled data
+fn try_extract_from_contiguous(
+    reassembler: &CryptoFrameReassembler,
+    allow_partial: bool,
+) -> Option<TlsInfo> {
+    let reassembled = reassembler.get_contiguous_data()?;
+
+    debug!(
+        "QUIC: Attempting to parse {} bytes of contiguous crypto data (allow_partial={})",
+        reassembled.len(),
+        allow_partial
+    );
+
+    // Only attempt to parse if we have enough data for a reasonable ClientHello
+    // Use lower threshold (50 bytes) when allowing partial extraction
+    let threshold = if allow_partial { 50 } else { 100 };
+    if reassembled.len() < threshold {
         debug!(
-            "QUIC: Attempting to parse {} bytes of contiguous crypto data",
+            "QUIC: Only {} contiguous bytes available, waiting for more data before parsing",
             reassembled.len()
         );
-
-        // Only attempt to parse if we have enough data for a reasonable ClientHello
-        // A minimal ClientHello is typically at least 100 bytes, but SNI usually appears
-        // after 70-200 bytes. Wait for at least 200 bytes to be safe.
-        if reassembled.len() >= 200 {
-            if let Some(tls_info) = parse_partial_tls_handshake(&reassembled) {
-                // Check if we have the essential info (SNI and ALPN)
-                if tls_info.sni.is_some() || !tls_info.alpn.is_empty() {
-                    debug!("QUIC: Found complete TLS info from contiguous data");
-                    reassembler.set_complete_tls_info(tls_info.clone());
-                    return Some(tls_info);
-                }
-            }
-        } else {
-            debug!(
-                "QUIC: Only {} contiguous bytes available, waiting for more data before parsing",
-                reassembled.len()
-            );
-        }
+        return None;
     }
 
-    // If contiguous parsing failed, try parsing individual fragments
-    // This can help when we have complete TLS records in separate fragments
-    // Only parse fragments that start with proper TLS structures to avoid partial data
+    let tls_info = parse_partial_tls_handshake(&reassembled, allow_partial)?;
+
+    // Check if we have the essential info (SNI and ALPN)
+    if tls_info.sni.is_none() && tls_info.alpn.is_empty() {
+        return None;
+    }
+
+    let sni_is_complete = is_complete_sni(&tls_info.sni);
+    debug!(
+        "QUIC: Found TLS info from contiguous data (complete={})",
+        sni_is_complete
+    );
+    Some(tls_info)
+}
+
+/// Strategy 2: Try to parse individual fragments with proper TLS headers
+fn try_extract_from_fragments(
+    reassembler: &CryptoFrameReassembler,
+    allow_partial: bool,
+) -> Option<TlsInfo> {
     debug!("QUIC: Trying to parse individual crypto fragments with proper TLS headers");
+
     for (&offset, fragment_data) in reassembler.get_fragments() {
         debug!(
             "QUIC: Trying fragment at offset {} with {} bytes",
@@ -763,14 +1076,14 @@ pub fn try_extract_tls_from_reassembler(
         // Check if fragment starts with TLS handshake header (0x01 for ClientHello)
         if fragment_data.len() >= 4
             && fragment_data[0] == 0x01
-            && let Some(tls_info) = parse_partial_tls_handshake(fragment_data)
+            && let Some(tls_info) = parse_partial_tls_handshake(fragment_data, allow_partial)
             && (tls_info.sni.is_some() || !tls_info.alpn.is_empty())
         {
+            let sni_is_complete = is_complete_sni(&tls_info.sni);
             debug!(
-                "QUIC: Found TLS info from individual fragment at offset {}",
-                offset
+                "QUIC: Found TLS info from individual fragment at offset {} (complete={})",
+                offset, sni_is_complete
             );
-            reassembler.set_complete_tls_info(tls_info.clone());
             return Some(tls_info);
         }
 
@@ -780,36 +1093,108 @@ pub fn try_extract_tls_from_reassembler(
             && let Some(tls_info) = try_parse_unencrypted_crypto_frames(fragment_data)
             && (tls_info.sni.is_some() || !tls_info.alpn.is_empty())
         {
+            let sni_is_complete = is_complete_sni(&tls_info.sni);
             debug!(
-                "QUIC: Found TLS info from pattern matching in fragment at offset {}",
-                offset
+                "QUIC: Found TLS info from pattern matching in fragment at offset {} (complete={})",
+                offset, sni_is_complete
             );
-            reassembler.set_complete_tls_info(tls_info.clone());
             return Some(tls_info);
-        } else {
-            debug!(
-                "QUIC: Skipping fragment at offset {} - doesn't start with TLS header",
-                offset
-            );
+        }
+
+        debug!(
+            "QUIC: Skipping fragment at offset {} - doesn't start with TLS header",
+            offset
+        );
+    }
+
+    None
+}
+
+/// Strategy 3: Try greedy SNI extraction from all fragments and contiguous data
+fn try_extract_greedy_from_reassembler(reassembler: &CryptoFrameReassembler) -> Option<TlsInfo> {
+    debug!("QUIC: Attempting greedy SNI extraction as final fallback");
+
+    // Try greedy extraction on fragments
+    for fragment_data in reassembler.get_fragments().values() {
+        if let Some(sni) = try_extract_sni_greedy(fragment_data, true) {
+            let mut tls_info = TlsInfo::new();
+            tls_info.sni = Some(sni);
+            debug!("QUIC: Greedy extraction succeeded from fragment");
+            return Some(tls_info);
         }
     }
 
-    // Only try fragment reconstruction if we have a reasonable amount of data
-    // but not enough contiguous data (likely due to out-of-order packets)
-    let total_fragment_size: usize = reassembler.get_fragments().values().map(|v| v.len()).sum();
+    // Also try on contiguous data if available
+    if let Some(contiguous) = reassembler.get_contiguous_data()
+        && let Some(sni) = try_extract_sni_greedy(&contiguous, true)
+    {
+        let mut tls_info = TlsInfo::new();
+        tls_info.sni = Some(sni);
+        debug!("QUIC: Greedy extraction succeeded from contiguous data");
+        return Some(tls_info);
+    }
 
-    if total_fragment_size >= 200 {
+    None
+}
+
+/// Try to extract TLS information from reassembled fragments
+///
+/// The `allow_partial` parameter controls whether partial SNI extraction is allowed:
+/// - `false`: Only return complete SNI (used during initial packet parsing)
+/// - `true`: Return partial SNI as fallback (used during merge/re-extraction)
+///
+/// This function orchestrates multiple extraction strategies in order of preference:
+/// 1. Check cache for complete SNI
+/// 2. Parse contiguous data
+/// 3. Parse individual fragments with TLS headers
+/// 4. Reconstruct SNI from fragmented data
+/// 5. Greedy fallback extraction
+pub fn try_extract_tls_from_reassembler(
+    reassembler: &mut CryptoFrameReassembler,
+    allow_partial: bool,
+) -> Option<TlsInfo> {
+    // Strategy 0: Check cache for complete SNI
+    if let Some(tls_info) = reassembler.get_cached_tls_info() {
+        if is_complete_sni(&tls_info.sni) {
+            return Some(tls_info.clone());
+        }
+        debug!("QUIC: Cached SNI is partial, attempting to find complete SNI");
+    }
+
+    // Strategy 1: Try to parse contiguous data
+    if let Some(tls_info) = try_extract_from_contiguous(reassembler, allow_partial) {
+        if is_complete_sni(&tls_info.sni) {
+            reassembler.set_complete_tls_info(tls_info.clone());
+        }
+        return Some(tls_info);
+    }
+
+    // Strategy 2: Try parsing individual fragments with TLS headers
+    if let Some(tls_info) = try_extract_from_fragments(reassembler, allow_partial) {
+        if is_complete_sni(&tls_info.sni) {
+            reassembler.set_complete_tls_info(tls_info.clone());
+        }
+        return Some(tls_info);
+    }
+
+    // Strategy 3: Try fragment reconstruction (requires reasonable data amount)
+    let total_fragment_size: usize = reassembler.get_fragments().values().map(|v| v.len()).sum();
+    if total_fragment_size >= 100 {
         debug!(
             "QUIC: Have {} total bytes in fragments, attempting reconstruction",
             total_fragment_size
         );
-
-        // Try to reconstruct SNI from fragmented data by looking for hostname patterns
         if let Some(sni) = try_reconstruct_sni_from_fragments(reassembler) {
             let mut tls_info = TlsInfo::new();
+            let sni_is_complete = !is_partial_sni(&sni);
             tls_info.sni = Some(sni);
-            debug!("QUIC: Reconstructed SNI from fragmented data");
-            reassembler.set_complete_tls_info(tls_info.clone());
+            debug!(
+                "QUIC: Reconstructed SNI from fragmented data (complete={})",
+                sni_is_complete
+            );
+            if sni_is_complete {
+                reassembler.set_complete_tls_info(tls_info.clone());
+            }
             return Some(tls_info);
         }
     } else {
@@ -819,12 +1204,18 @@ pub fn try_extract_tls_from_reassembler(
         );
     }
 
+    // Strategy 4: Greedy fallback extraction
+    if let Some(tls_info) = try_extract_greedy_from_reassembler(reassembler) {
+        reassembler.set_complete_tls_info(tls_info.clone());
+        return Some(tls_info);
+    }
+
     debug!("QUIC: No TLS info could be extracted from reassembler");
     None
 }
 
 /// Parse a TLS handshake from reassembled data
-fn parse_partial_tls_handshake(data: &[u8]) -> Option<TlsInfo> {
+fn parse_partial_tls_handshake(data: &[u8], allow_partial: bool) -> Option<TlsInfo> {
     if data.len() < 4 {
         debug!("QUIC: TLS handshake data too short: {} bytes", data.len());
         return None;
@@ -834,10 +1225,11 @@ fn parse_partial_tls_handshake(data: &[u8]) -> Option<TlsInfo> {
     let handshake_length = u32::from_be_bytes([0, data[1], data[2], data[3]]) as usize;
 
     debug!(
-        "QUIC: TLS handshake type=0x{:02x}, declared_length={}, available_data={}",
+        "QUIC: TLS handshake type=0x{:02x}, declared_length={}, available_data={}, allow_partial={}",
         handshake_type,
         handshake_length,
-        data.len() - 4
+        data.len() - 4,
+        allow_partial
     );
 
     let mut info = TlsInfo::new();
@@ -858,7 +1250,7 @@ fn parse_partial_tls_handshake(data: &[u8]) -> Option<TlsInfo> {
         0x01 => {
             // Client Hello
             debug!("QUIC: Parsing ClientHello with {} bytes", parse_length);
-            parse_partial_client_hello(&available_data[..parse_length], &mut info);
+            parse_partial_client_hello(&available_data[..parse_length], &mut info, allow_partial);
         }
         0x02 => {
             // Server Hello
@@ -888,8 +1280,12 @@ fn parse_partial_tls_handshake(data: &[u8]) -> Option<TlsInfo> {
 }
 
 /// Parse a partial Client Hello
-fn parse_partial_client_hello(data: &[u8], info: &mut TlsInfo) {
-    debug!("QUIC: Parsing ClientHello with {} bytes", data.len());
+fn parse_partial_client_hello(data: &[u8], info: &mut TlsInfo, allow_partial: bool) {
+    debug!(
+        "QUIC: Parsing ClientHello with {} bytes (allow_partial={})",
+        data.len(),
+        allow_partial
+    );
 
     if data.len() < 34 {
         debug!(
@@ -946,7 +1342,12 @@ fn parse_partial_client_hello(data: &[u8], info: &mut TlsInfo) {
     let available_ext_len = (data.len() - offset).min(extensions_len);
     if available_ext_len > 0 {
         debug!("QUIC: Parsing {} bytes of extensions", available_ext_len);
-        parse_tls_extensions(&data[offset..offset + available_ext_len], info, true);
+        parse_tls_extensions(
+            &data[offset..offset + available_ext_len],
+            info,
+            true,
+            allow_partial,
+        );
     } else {
         debug!("QUIC: No extensions data available");
     }
@@ -993,17 +1394,23 @@ fn parse_partial_server_hello(data: &[u8], info: &mut TlsInfo) {
 
     let available_ext_len = (data.len() - offset).min(extensions_len);
     if available_ext_len > 0 {
-        parse_tls_extensions(&data[offset..offset + available_ext_len], info, false);
+        parse_tls_extensions(
+            &data[offset..offset + available_ext_len],
+            info,
+            false,
+            false,
+        );
     }
 }
 
 /// Parse TLS extensions
-fn parse_tls_extensions(data: &[u8], info: &mut TlsInfo, is_client: bool) {
+fn parse_tls_extensions(data: &[u8], info: &mut TlsInfo, is_client: bool, allow_partial: bool) {
     let mut offset = 0;
     debug!(
-        "QUIC: Parsing {} bytes of TLS extensions (is_client={})",
+        "QUIC: Parsing {} bytes of TLS extensions (is_client={}, allow_partial={})",
         data.len(),
-        is_client
+        is_client,
+        allow_partial
     );
 
     while offset + 4 <= data.len() {
@@ -1016,56 +1423,28 @@ fn parse_tls_extensions(data: &[u8], info: &mut TlsInfo, is_client: bool) {
         );
 
         if offset + 4 + ext_len > data.len() {
-            debug!(
-                "QUIC: Extension data extends beyond available data (need {} bytes, have {})",
-                offset + 4 + ext_len,
-                data.len()
-            );
-
-            // Try to parse with partial data if we have some extension data
-            let available_ext_len = (data.len() - offset - 4).min(ext_len);
-            if available_ext_len > 0 {
-                debug!(
-                    "QUIC: Attempting to parse {} bytes of partial extension data",
-                    available_ext_len
-                );
-                let ext_data = &data[offset + 4..offset + 4 + available_ext_len];
-
-                // Try to parse the partial extension
-                match ext_type {
-                    0x0000 if is_client => {
-                        // SNI - try partial parsing
-                        debug!(
-                            "QUIC: Found partial SNI extension with {} bytes (declared {})",
-                            available_ext_len, ext_len
-                        );
-                        if let Some(sni) = parse_sni_extension(ext_data) {
-                            debug!("QUIC: Successfully parsed SNI from partial data: {}", sni);
-                            info.sni = Some(sni);
-                        } else {
-                            debug!("QUIC: Failed to parse partial SNI extension");
-                        }
-                    }
-                    0x0010 => {
-                        // ALPN - try partial parsing
-                        debug!(
-                            "QUIC: Found partial ALPN extension with {} bytes (declared {})",
-                            available_ext_len, ext_len
-                        );
-                        if let Some(alpn) = parse_alpn_extension(ext_data) {
-                            debug!(
-                                "QUIC: Successfully parsed ALPN from partial data: {:?}",
-                                alpn
-                            );
-                            info.alpn = alpn;
-                        } else {
-                            debug!("QUIC: Failed to parse partial ALPN extension");
-                        }
-                    }
-                    _ => {
-                        debug!("QUIC: Skipping partial extension type 0x{:04x}", ext_type);
+            // Extension data is incomplete
+            if allow_partial && ext_type == 0x0000 && is_client {
+                // Try to extract partial SNI as fallback
+                let available_ext_len = data.len() - offset - 4;
+                if available_ext_len > 5 {
+                    debug!(
+                        "QUIC: SNI extension is incomplete (need {} bytes, have {}), attempting partial extraction",
+                        ext_len, available_ext_len
+                    );
+                    let ext_data = &data[offset + 4..];
+                    if let Some(sni) = parse_sni_extension(ext_data, true) {
+                        debug!("QUIC: Extracted partial SNI as fallback: {}", sni);
+                        info.sni = Some(sni);
                     }
                 }
+            } else {
+                debug!(
+                    "QUIC: Extension 0x{:04x} is incomplete (need {} bytes, have {}), waiting for more data",
+                    ext_type,
+                    ext_len,
+                    data.len() - offset - 4
+                );
             }
             break;
         }
@@ -1076,7 +1455,7 @@ fn parse_tls_extensions(data: &[u8], info: &mut TlsInfo, is_client: bool) {
             0x0000 if is_client => {
                 // SNI
                 debug!("QUIC: Found SNI extension with {} bytes", ext_len);
-                if let Some(sni) = parse_sni_extension(ext_data) {
+                if let Some(sni) = parse_sni_extension(ext_data, allow_partial) {
                     debug!("QUIC: Successfully parsed SNI: {}", sni);
                     info.sni = Some(sni);
                 } else {
@@ -1119,58 +1498,42 @@ fn parse_tls_extensions(data: &[u8], info: &mut TlsInfo, is_client: bool) {
 }
 
 /// Parse SNI extension
-fn parse_sni_extension(data: &[u8]) -> Option<String> {
+fn parse_sni_extension(data: &[u8], allow_partial: bool) -> Option<String> {
     debug!(
-        "QUIC: Parsing SNI extension with {} bytes: {:02x?}",
+        "QUIC: Parsing SNI extension with {} bytes (allow_partial={}): {:02x?}",
         data.len(),
+        allow_partial,
         &data[..data.len().min(20)]
     );
 
-    if data.len() < 5 {
-        debug!(
-            "QUIC: SNI extension too short: {} bytes (need at least 5)",
-            data.len()
-        );
-        return None;
-    }
+    // Parse the SNI header using the unified helper
+    let header = match parse_sni_header(data) {
+        Some(h) => h,
+        None => {
+            debug!(
+                "QUIC: Failed to parse SNI header (data len: {})",
+                data.len()
+            );
+            return None;
+        }
+    };
 
-    // Parse list length
-    let list_len = u16::from_be_bytes([data[0], data[1]]) as usize;
-    debug!("QUIC: SNI list length: {}", list_len);
+    debug!(
+        "QUIC: SNI header - list_len: {}, name_len: {}",
+        header.list_len, header.name_len
+    );
 
-    // Skip list length (2 bytes) and check type (1 byte)
-    if data[2] != 0x00 {
-        debug!("QUIC: SNI type is not hostname (got 0x{:02x})", data[2]);
-        return None;
-    }
+    let name_len = header.name_len as usize;
+    let hostname_start = 5; // After header (2 + 1 + 2 bytes)
 
-    if data.len() < 5 {
-        debug!("QUIC: Not enough data for SNI name length");
-        return None;
-    }
-
-    let name_len = u16::from_be_bytes([data[3], data[4]]) as usize;
-    debug!("QUIC: SNI name length: {}", name_len);
-
-    // Validate name length is reasonable
-    if name_len == 0 || name_len > 253 {
-        debug!("QUIC: Invalid SNI name length {}", name_len);
-        return None;
-    }
-
-    if 5 + name_len <= data.len() {
-        let sni_data = &data[5..5 + name_len];
+    if hostname_start + name_len <= data.len() {
+        // Full hostname available
+        let sni_data = &data[hostname_start..hostname_start + name_len];
         debug!("QUIC: SNI data: {:02x?}", sni_data);
 
         match std::str::from_utf8(sni_data) {
             Ok(sni) => {
-                // Validate the SNI looks like a hostname
-                if sni.contains('.')
-                    && sni.len() >= 4
-                    && sni
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-                {
+                if is_valid_hostname(sni) {
                     debug!("QUIC: Successfully parsed complete SNI: {}", sni);
                     Some(sni.to_string())
                 } else {
@@ -1183,14 +1546,29 @@ fn parse_sni_extension(data: &[u8]) -> Option<String> {
                 None
             }
         }
-    } else {
+    } else if allow_partial && data.len() > hostname_start {
+        // Extract partial SNI as fallback when allowed
+        let available = &data[hostname_start..];
         debug!(
-            "QUIC: SNI name extends beyond available data (need {}, have {}) - skipping partial extraction",
-            5 + name_len,
+            "QUIC: SNI name extends beyond available data (need {}, have {}), extracting partial",
+            hostname_start + name_len,
             data.len()
         );
-        // Don't extract partial SNI as it leads to fragmented hostnames like "play.go"
-        // Let the fragment reconstruction handle this case
+
+        if let Ok(partial) = std::str::from_utf8(available)
+            && is_valid_partial_hostname(partial)
+        {
+            debug!("QUIC: Extracted partial SNI: {}", mark_partial_sni(partial));
+            return Some(mark_partial_sni(partial));
+        }
+        None
+    } else {
+        // SNI data is incomplete - don't extract partial, wait for more data
+        debug!(
+            "QUIC: SNI name extends beyond available data (need {}, have {}), waiting for more data",
+            hostname_start + name_len,
+            data.len()
+        );
         None
     }
 }
@@ -1225,6 +1603,82 @@ fn parse_alpn_extension(data: &[u8]) -> Option<Vec<String>> {
     } else {
         Some(protocols)
     }
+}
+
+/// Greedy SNI extraction - scans raw data for SNI extension pattern
+/// This works even when full ClientHello parsing fails due to incomplete data
+///
+/// The `allow_partial` parameter controls whether partial SNI extraction is allowed:
+/// - `false`: Only return complete SNI
+/// - `true`: Return partial SNI as fallback when full hostname is truncated
+fn try_extract_sni_greedy(data: &[u8], allow_partial: bool) -> Option<String> {
+    // SNI extension structure:
+    // 0x00 0x00 - extension type (SNI)
+    // 2 bytes - extension length
+    // 2 bytes - server name list length
+    // 0x00 - name type (hostname)
+    // 2 bytes - hostname length
+    // N bytes - hostname
+
+    if data.len() < 9 {
+        return None;
+    }
+
+    // Scan for SNI extension type pattern (0x00 0x00)
+    for i in 0..data.len().saturating_sub(9) {
+        // Look for SNI extension type marker
+        if data[i] == 0x00 && data[i + 1] == 0x00 {
+            // Read extension length
+            if i + 4 > data.len() {
+                continue;
+            }
+            let ext_len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+
+            // Sanity check extension length (5-300 bytes is reasonable for SNI)
+            if !(5..=300).contains(&ext_len) {
+                continue;
+            }
+
+            // Parse SNI header using unified helper
+            let sni_data = &data[i + 4..];
+            let header = match parse_sni_header(sni_data) {
+                Some(h) => h,
+                None => continue,
+            };
+
+            // List length should be <= ext_len - 2
+            if header.list_len as usize > ext_len {
+                continue;
+            }
+
+            let name_len = header.name_len as usize;
+            let hostname_start = i + 9; // After: ext_type(2) + ext_len(2) + list_len(2) + name_type(1) + name_len(2)
+            let hostname_end = hostname_start + name_len;
+
+            if hostname_end <= data.len() {
+                // Full hostname available
+                if let Ok(hostname) = std::str::from_utf8(&data[hostname_start..hostname_end])
+                    && is_valid_hostname(hostname)
+                {
+                    debug!("QUIC: Greedy SNI extraction found: {}", hostname);
+                    return Some(hostname.to_string());
+                }
+            } else if allow_partial && hostname_start < data.len() {
+                // Partial hostname available - extract what we have (only if allowed)
+                if let Ok(partial) = std::str::from_utf8(&data[hostname_start..])
+                    && is_valid_partial_hostname(partial)
+                {
+                    debug!(
+                        "QUIC: Greedy SNI extraction found partial: {}",
+                        mark_partial_sni(partial)
+                    );
+                    return Some(mark_partial_sni(partial));
+                }
+            }
+        }
+    }
+
+    None
 }
 
 /// Parse supported versions extension
@@ -1498,7 +1952,7 @@ fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsInfo> {
                     if !handshake_data.is_empty() && handshake_data[0] == 0x01 {
                         debug!("QUIC: Found potential TLS ClientHello at offset {}", offset);
 
-                        if let Some(tls_info) = parse_partial_tls_handshake(handshake_data) {
+                        if let Some(tls_info) = parse_partial_tls_handshake(handshake_data, false) {
                             debug!(
                                 "QUIC: Successfully parsed TLS from unencrypted data - SNI={:?}",
                                 tls_info.sni
@@ -1530,9 +1984,10 @@ fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsInfo> {
                     offset, handshake_length
                 );
 
-                if let Some(tls_info) =
-                    parse_partial_tls_handshake(&payload[offset..offset + 4 + handshake_length])
-                {
+                if let Some(tls_info) = parse_partial_tls_handshake(
+                    &payload[offset..offset + 4 + handshake_length],
+                    false,
+                ) {
                     debug!(
                         "QUIC: Successfully parsed TLS from direct handshake - SNI={:?}",
                         tls_info.sni
@@ -1563,7 +2018,7 @@ fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsInfo> {
                         && name_len <= 253
                         && (3..=256).contains(&list_len)
                         && list_len == name_len + 3
-                        && let Some(sni) = parse_sni_extension(ext_data)
+                        && let Some(sni) = parse_sni_extension(ext_data, false)
                     {
                         debug!("QUIC: Found SNI directly in packet: {}", sni);
                         let mut tls_info = TlsInfo::new();
@@ -1642,34 +2097,31 @@ fn try_reconstruct_sni_from_fragments(reassembler: &CryptoFrameReassembler) -> O
                 if data[i] == 0x00 && data[i + 1] == 0x00 {
                     let ext_len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
 
-                    // Add more strict validation to reduce false positives
                     // SNI extension length should be reasonable (5-300 bytes typically)
-                    if (5..=300).contains(&ext_len) && i + 4 + ext_len <= data.len() {
-                        let sni_data = &data[i + 4..i + 4 + ext_len];
+                    if (5..=300).contains(&ext_len) {
+                        // Check if we have full extension data or partial
+                        let available_ext_data = if i + 4 + ext_len <= data.len() {
+                            &data[i + 4..i + 4 + ext_len]
+                        } else {
+                            &data[i + 4..]
+                        };
 
-                        // Additional validation: check if this looks like a real SNI extension
-                        // Real SNI extensions start with list length (2 bytes) + type 0x00 (1 byte) + name length (2 bytes)
-                        if sni_data.len() >= 5 {
-                            let list_len = u16::from_be_bytes([sni_data[0], sni_data[1]]) as usize;
-                            let sni_type = sni_data[2];
-                            let name_len = u16::from_be_bytes([sni_data[3], sni_data[4]]) as usize;
-
-                            // Validate SNI structure: type should be 0x00, lengths should be reasonable
-                            if sni_type == 0x00
-                                && name_len > 0
-                                && name_len <= 253
-                                && (3..=256).contains(&list_len)
-                                && list_len == name_len + 3
-                            {
-                                // list_len should equal name_len + 3 (type + name_len)
-                                if let Some(sni) = parse_sni_extension(sni_data) {
-                                    debug!("QUIC: Found complete SNI in fragment: {}", sni);
+                        // Parse SNI header using unified helper
+                        if let Some(header) = parse_sni_header(available_ext_data) {
+                            // Additional validation: list_len should be reasonable
+                            if (3..=256).contains(&(header.list_len as usize)) {
+                                // Try to parse with partial extraction allowed
+                                if let Some(sni) = parse_sni_extension(available_ext_data, true) {
+                                    if is_partial_sni(&sni) {
+                                        debug!("QUIC: Found partial SNI in fragment: {}", sni);
+                                    } else {
+                                        debug!("QUIC: Found complete SNI in fragment: {}", sni);
+                                    }
                                     return Some(sni);
                                 }
                             }
                         }
                     }
-                    // Skip the overly aggressive partial data parsing that causes false positives
                 }
                 i += 1;
             }
@@ -1711,13 +2163,15 @@ fn try_reconstruct_sni_from_fragments(reassembler: &CryptoFrameReassembler) -> O
 
                 // Gaps in the first 100 bytes are critical as they likely contain SNI
                 // The SNI extension typically appears between bytes 70-200 of the ClientHello
-                if expected_offset < 100 && gap_size > 20 {
+                // Relaxed threshold from 20 to 50 bytes to be less aggressive
+                if expected_offset < 100 && gap_size > 50 {
                     has_significant_gaps = true;
                     debug!("QUIC: Gap in critical ClientHello region - SNI might be incomplete");
                 }
 
                 // Large gaps anywhere might indicate missing data
-                if gap_size > 200 {
+                // Relaxed threshold from 200 to 300 bytes
+                if gap_size > 300 {
                     has_significant_gaps = true;
                     debug!(
                         "QUIC: Large gap detected ({} bytes) - data might be incomplete",
@@ -1726,7 +2180,7 @@ fn try_reconstruct_sni_from_fragments(reassembler: &CryptoFrameReassembler) -> O
                 }
 
                 // For smaller gaps, add minimal padding to maintain data alignment
-                if gap_size <= 50 && !all_data.is_empty() {
+                if gap_size <= 100 && !all_data.is_empty() {
                     // Add minimal padding to maintain structure
                     all_data.resize(all_data.len() + gap_size as usize, 0);
                     debug!("QUIC: Added {} bytes of padding for small gap", gap_size);
@@ -1779,27 +2233,22 @@ fn try_reconstruct_sni_from_fragments(reassembler: &CryptoFrameReassembler) -> O
         }
     } else {
         // No significant gaps - process normally
+        // Only accept complete valid hostnames
         for candidate in candidates {
             if is_valid_hostname(&candidate) {
                 processed_candidates.push(candidate);
-            } else {
-                // Check if this might be a truncated hostname
-                if let Some(marked_hostname) =
-                    detect_and_mark_truncated_hostname(&candidate, &all_data)
-                {
-                    processed_candidates.push(marked_hostname);
-                }
             }
+            // Don't try to mark truncated hostnames - wait for complete data
         }
     }
 
     // Sort by length (longer first) to prefer complete hostnames, but prioritize unmarked ones
     processed_candidates.sort_by(|a, b| {
-        let a_has_dots = a.contains("...");
-        let b_has_dots = b.contains("...");
+        let a_is_partial = is_partial_sni(a) || a.contains("...");
+        let b_is_partial = is_partial_sni(b) || b.contains("...");
 
-        // Prefer complete hostnames over truncated ones
-        match (a_has_dots, b_has_dots) {
+        // Prefer complete hostnames over truncated/partial ones
+        match (a_is_partial, b_is_partial) {
             (false, true) => std::cmp::Ordering::Less, // a is complete, prefer it
             (true, false) => std::cmp::Ordering::Greater, // b is complete, prefer it
             _ => b.len().cmp(&a.len()),                // both same type, prefer longer
@@ -1821,14 +2270,14 @@ fn find_hostname_candidates(data: &[u8]) -> Vec<String> {
     let mut i = 0;
     while i < data.len() {
         // Look for sequences that might be hostnames
-        if is_ascii_letter_or_digit(data[i]) {
+        if data[i].is_ascii_alphanumeric() {
             let mut end = i;
             let mut has_dot = false;
             let mut dot_count = 0;
 
             // Extend while we have valid hostname characters
             while end < data.len()
-                && (is_ascii_letter_or_digit(data[end]) || data[end] == b'.' || data[end] == b'-')
+                && (data[end].is_ascii_alphanumeric() || data[end] == b'.' || data[end] == b'-')
             {
                 if data[end] == b'.' {
                     has_dot = true;
@@ -1893,173 +2342,185 @@ fn find_hostname_candidates(data: &[u8]) -> Vec<String> {
     unique_candidates
 }
 
-/// Check if a character is an ASCII letter or digit
-fn is_ascii_letter_or_digit(b: u8) -> bool {
-    b.is_ascii_lowercase() || b.is_ascii_uppercase() || b.is_ascii_digit()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Detect if a hostname candidate appears to be truncated and mark it with ...
-fn detect_and_mark_truncated_hostname(candidate: &str, full_data: &[u8]) -> Option<String> {
-    // Must have basic hostname structure
-    if candidate.len() < 3 || !candidate.contains('.') {
-        return None;
+    /// Build a minimal SNI extension structure
+    fn build_sni_extension(hostname: &str) -> Vec<u8> {
+        let name_bytes = hostname.as_bytes();
+        let name_len = name_bytes.len() as u16;
+        let list_len = name_len + 3; // name_type (1) + name_len (2)
+        let ext_len = list_len + 2; // list_len (2)
+
+        let mut data = Vec::new();
+        // Extension type: SNI (0x0000)
+        data.push(0x00);
+        data.push(0x00);
+        // Extension length
+        data.extend_from_slice(&ext_len.to_be_bytes());
+        // Server name list length
+        data.extend_from_slice(&list_len.to_be_bytes());
+        // Name type: hostname (0x00)
+        data.push(0x00);
+        // Name length
+        data.extend_from_slice(&name_len.to_be_bytes());
+        // Hostname
+        data.extend_from_slice(name_bytes);
+
+        data
     }
 
-    // Must have some alphabetic content to be a hostname
-    if !candidate.chars().any(|c| c.is_ascii_alphabetic()) {
-        return None;
-    }
-
-    // Check if it looks like a truncated hostname based on context
-    let candidate_bytes = candidate.as_bytes();
-
-    // Find where this candidate appears in the full data
-    if let Some(pos) = find_substring(full_data, candidate_bytes) {
-        let mut result = candidate.to_string();
-        let mut marked = false;
-
-        // Check if there's likely missing data before this substring
-        if pos > 0 {
-            // Look for hostname-like characters before this position
-            let mut check_pos = pos;
-            let mut hostname_chars_before = 0;
-
-            while check_pos > 0 && hostname_chars_before < 20 {
-                check_pos -= 1;
-                let byte = full_data[check_pos];
-
-                if is_ascii_letter_or_digit(byte) || byte == b'.' || byte == b'-' {
-                    hostname_chars_before += 1;
-                    // There are hostname characters before, likely truncated
-                    if hostname_chars_before >= 3 {
-                        // Need at least 3 chars to be confident
-                        result = format!("...{}", result);
-                        marked = true;
-                        break;
-                    }
-                } else if byte == 0 || byte.is_ascii_whitespace() || byte > 127 {
-                    // Hit a clear boundary, not truncated
-                    break;
-                } else {
-                    // Other byte, continue searching but don't count it
-                }
-            }
+    /// Build a minimal ALPN extension structure
+    fn build_alpn_extension(protocols: &[&str]) -> Vec<u8> {
+        let mut protocol_list = Vec::new();
+        for proto in protocols {
+            let proto_bytes = proto.as_bytes();
+            protocol_list.push(proto_bytes.len() as u8);
+            protocol_list.extend_from_slice(proto_bytes);
         }
 
-        // Check if there's likely missing data after this substring
-        let end_pos = pos + candidate_bytes.len();
-        if end_pos < full_data.len() {
-            // Look for hostname-like characters after this position
-            let mut check_pos = end_pos;
-            let mut hostname_chars_after = 0;
+        let alpn_list_len = protocol_list.len() as u16;
+        let ext_len = alpn_list_len + 2;
 
-            while check_pos < full_data.len() && hostname_chars_after < 20 {
-                let byte = full_data[check_pos];
+        let mut data = Vec::new();
+        // Extension type: ALPN (0x0010)
+        data.push(0x00);
+        data.push(0x10);
+        // Extension length
+        data.extend_from_slice(&ext_len.to_be_bytes());
+        // ALPN list length
+        data.extend_from_slice(&alpn_list_len.to_be_bytes());
+        // Protocol list
+        data.extend_from_slice(&protocol_list);
 
-                if is_ascii_letter_or_digit(byte) || byte == b'.' || byte == b'-' {
-                    hostname_chars_after += 1;
-                    // There are hostname characters after, likely truncated
-                    if hostname_chars_after >= 3 {
-                        // Need at least 3 chars to be confident
-                        result = format!("{}...", result);
-                        marked = true;
-                        break;
-                    }
-                } else if byte == 0 || byte.is_ascii_whitespace() || byte > 127 {
-                    // Hit a clear boundary, not truncated
-                    break;
-                } else {
-                    // Other byte, continue searching but don't count it
-                }
-                check_pos += 1;
-            }
+        data
+    }
+
+    #[test]
+    fn test_greedy_sni_extraction_complete() {
+        let sni_ext = build_sni_extension("www.example.com");
+        // allow_partial doesn't matter when full hostname is available
+        let result = try_extract_sni_greedy(&sni_ext, false);
+        assert_eq!(result, Some("www.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_greedy_sni_extraction_with_prefix() {
+        // Add some random bytes before the SNI extension
+        let mut data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
+        data.extend(build_sni_extension("api.google.com"));
+        let result = try_extract_sni_greedy(&data, false);
+        assert_eq!(result, Some("api.google.com".to_string()));
+    }
+
+    #[test]
+    fn test_greedy_sni_extraction_partial() {
+        // Build partial SNI extension (hostname truncated)
+        // With fragmented QUIC packets, we need to extract partial SNI
+        let mut data = Vec::new();
+        data.push(0x00); // ext type
+        data.push(0x00);
+        data.extend_from_slice(&20u16.to_be_bytes()); // ext_len (full would be 20)
+        data.extend_from_slice(&18u16.to_be_bytes()); // list_len
+        data.push(0x00); // name type
+        data.extend_from_slice(&15u16.to_be_bytes()); // name_len (15 chars)
+        data.extend_from_slice(b"www.examp"); // only 9 chars provided
+
+        // With allow_partial=false, returns None
+        let result = try_extract_sni_greedy(&data, false);
+        assert_eq!(result, None);
+
+        // With allow_partial=true, returns partial SNI
+        let result = try_extract_sni_greedy(&data, true);
+        assert_eq!(result, Some("www.examp[PARTIAL]".to_string()));
+    }
+
+    #[test]
+    fn test_parse_sni_extension_complete() {
+        // Build SNI extension data (without the extension type/length header)
+        let hostname = "test.example.org";
+        let name_bytes = hostname.as_bytes();
+        let name_len = name_bytes.len() as u16;
+        let list_len = name_len + 3;
+
+        let mut data = Vec::new();
+        data.extend_from_slice(&list_len.to_be_bytes());
+        data.push(0x00); // name type
+        data.extend_from_slice(&name_len.to_be_bytes());
+        data.extend_from_slice(name_bytes);
+
+        let result = parse_sni_extension(&data, false);
+        assert_eq!(result, Some("test.example.org".to_string()));
+    }
+
+    #[test]
+    fn test_parse_sni_extension_partial() {
+        // Build partial SNI extension data
+        let mut data = Vec::new();
+        data.extend_from_slice(&20u16.to_be_bytes()); // list_len
+        data.push(0x00); // name type
+        data.extend_from_slice(&15u16.to_be_bytes()); // declared name_len
+        data.extend_from_slice(b"example.co"); // only 10 chars
+
+        // With allow_partial=false, returns None
+        let result = parse_sni_extension(&data, false);
+        assert_eq!(result, None);
+
+        // With allow_partial=true, returns partial SNI
+        let result = parse_sni_extension(&data, true);
+        assert_eq!(result, Some("example.co[PARTIAL]".to_string()));
+    }
+
+    #[test]
+    fn test_parse_alpn_extension() {
+        // Build ALPN extension data (without the extension type/length header)
+        let mut data = Vec::new();
+        let protocols = vec!["h3", "h2"];
+
+        let mut proto_list = Vec::new();
+        for proto in &protocols {
+            proto_list.push(proto.len() as u8);
+            proto_list.extend_from_slice(proto.as_bytes());
         }
 
-        // Only return if we marked it as truncated and it still looks hostname-like
-        if marked && result.split('.').count() >= 2 {
-            debug!(
-                "QUIC: Detected truncated hostname: {} -> {}",
-                candidate, result
-            );
-            return Some(result);
-        }
+        data.extend_from_slice(&(proto_list.len() as u16).to_be_bytes());
+        data.extend_from_slice(&proto_list);
+
+        let result = parse_alpn_extension(&data);
+        assert_eq!(result, Some(vec!["h3".to_string(), "h2".to_string()]));
     }
 
-    None
-}
+    #[test]
+    fn test_is_valid_hostname() {
+        assert!(is_valid_hostname("example.com"));
+        assert!(is_valid_hostname("www.example.com"));
+        assert!(is_valid_hostname("sub.domain.example.org"));
+        assert!(is_valid_hostname("my-site.io"));
 
-/// Find a substring in a byte array
-fn find_substring(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
+        // Invalid hostnames
+        assert!(!is_valid_hostname("com")); // No dot
+        assert!(!is_valid_hostname(".example.com")); // Starts with dot
+        assert!(!is_valid_hostname("example.com.")); // Ends with dot
+        assert!(!is_valid_hostname("-example.com")); // Starts with hyphen
+        assert!(!is_valid_hostname("example..com")); // Consecutive dots
+        assert!(!is_valid_hostname("ab")); // Too short
     }
 
-    (0..=(haystack.len() - needle.len())).find(|&i| &haystack[i..i + needle.len()] == needle)
-}
-
-/// Validate if a string looks like a valid hostname
-fn is_valid_hostname(hostname: &str) -> bool {
-    if hostname.len() < 4 || hostname.len() > 253 {
-        return false;
+    #[test]
+    fn test_greedy_extraction_ignores_invalid_patterns() {
+        // Data with 0x00 0x00 but invalid SNI structure
+        let data = vec![0x00, 0x00, 0x00, 0x01, 0x00]; // ext_len = 1 (too short)
+        let result = try_extract_sni_greedy(&data, true);
+        assert_eq!(result, None);
     }
 
-    // Must contain at least one dot
-    if !hostname.contains('.') {
-        return false;
+    #[test]
+    fn test_greedy_extraction_multiple_zeros() {
+        // Data with multiple 0x00 0x00 sequences, only one valid
+        let mut data = vec![0x00, 0x00, 0x00, 0x02, 0xFF]; // Invalid SNI
+        data.extend(build_sni_extension("valid.example.com"));
+        let result = try_extract_sni_greedy(&data, false);
+        assert_eq!(result, Some("valid.example.com".to_string()));
     }
-
-    // Check for valid hostname characters only
-    if !hostname
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-    {
-        return false;
-    }
-
-    // Must not start or end with a dot or hyphen
-    if hostname.starts_with('.')
-        || hostname.ends_with('.')
-        || hostname.starts_with('-')
-        || hostname.ends_with('-')
-    {
-        return false;
-    }
-
-    // Must not contain consecutive dots
-    if hostname.contains("..") {
-        return false;
-    }
-
-    // Check for reasonable TLD patterns
-    let common_tlds = [
-        "com", "net", "org", "edu", "gov", "io", "co", "uk", "de", "fr", "jp", "cn", "au", "ca",
-        "us", "ru", "br", "in", "it", "es", "pl", "nl",
-    ];
-    let has_valid_tld = common_tlds
-        .iter()
-        .any(|&tld| hostname.ends_with(&format!(".{}", tld)) || hostname == tld);
-
-    // Additional check: must have at least one alphabetic character (not just numbers and dots)
-    let has_alpha = hostname.chars().any(|c| c.is_ascii_alphabetic());
-
-    // Check if hostname has reasonable structure (at least domain.tld format)
-    let parts: Vec<&str> = hostname.split('.').collect();
-    let has_reasonable_structure = parts.len() >= 2
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.len() <= 63);
-
-    if has_valid_tld && has_alpha && has_reasonable_structure {
-        debug!(
-            "QUIC: Hostname {} looks valid (TLD: {}, Structure: {}, HasAlpha: {})",
-            hostname, has_valid_tld, has_reasonable_structure, has_alpha
-        );
-        return true;
-    }
-
-    debug!(
-        "QUIC: Hostname {} rejected (TLD: {}, Structure: {}, HasAlpha: {})",
-        hostname, has_valid_tld, has_reasonable_structure, has_alpha
-    );
-    false
 }
