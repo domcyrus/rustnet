@@ -37,6 +37,7 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 /// Sandbox status information for UI display
+#[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Default)]
 pub struct SandboxInfo {
     /// Overall status description
@@ -224,6 +225,7 @@ pub struct App {
     interface_rates: Arc<DashMap<String, InterfaceRates>>,
 
     /// Sandbox status (Linux Landlock)
+    #[cfg(target_os = "linux")]
     sandbox_info: Arc<RwLock<SandboxInfo>>,
 }
 
@@ -249,6 +251,7 @@ impl App {
             process_detection_method: Arc::new(RwLock::new(String::from("initializing..."))),
             interface_stats: Arc::new(DashMap::new()),
             interface_rates: Arc::new(DashMap::new()),
+            #[cfg(target_os = "linux")]
             sandbox_info: Arc::new(RwLock::new(SandboxInfo::default())),
         })
     }
@@ -1019,6 +1022,7 @@ impl App {
     }
 
     /// Get sandbox status information
+    #[cfg(target_os = "linux")]
     pub fn get_sandbox_info(&self) -> SandboxInfo {
         self.sandbox_info
             .read()
@@ -1027,6 +1031,7 @@ impl App {
     }
 
     /// Set sandbox status information
+    #[cfg(target_os = "linux")]
     pub fn set_sandbox_info(&self, info: SandboxInfo) {
         if let Ok(mut guard) = self.sandbox_info.write() {
             *guard = info;
