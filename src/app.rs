@@ -1028,8 +1028,8 @@ impl App {
 
     /// Set sandbox status information
     pub fn set_sandbox_info(&self, info: SandboxInfo) {
-        if let Ok(mut sandbox) = self.sandbox_info.write() {
-            *sandbox = info;
+        if let Ok(mut guard) = self.sandbox_info.write() {
+            *guard = info;
         }
     }
 

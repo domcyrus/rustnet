@@ -846,57 +846,10 @@ fn draw_stats_panel(
         .style(Style::default());
     f.render_widget(network_stats, chunks[2]);
 
-    // Security statistics (sandbox)
-    let sandbox_info = app.get_sandbox_info();
-    let security_text: Vec<Line> = if sandbox_info.status.is_empty() {
-        // Non-Linux platform or sandbox not configured - show privilege info instead
-        #[cfg(unix)]
-        let privilege_info = {
-            let uid = unsafe { libc::geteuid() };
-            let is_root = uid == 0;
-            let status_line = if is_root {
-                Line::from(Span::styled(
-                    "Running as root (UID 0)",
-                    Style::default().fg(Color::Yellow),
-                ))
-            } else {
-                Line::from(Span::styled(
-                    format!("Running as UID {}", uid),
-                    Style::default().fg(Color::Green),
-                ))
-            };
-            vec![
-                status_line,
-                Line::from(Span::styled(
-                    "Landlock: N/A (Linux only)",
-                    Style::default().fg(Color::DarkGray),
-                )),
-            ]
-        };
-        #[cfg(windows)]
-        let privilege_info = {
-            let is_elevated = crate::is_admin();
-            let status_line = if is_elevated {
-                Line::from(Span::styled(
-                    "Running as Administrator",
-                    Style::default().fg(Color::Yellow),
-                ))
-            } else {
-                Line::from(Span::styled(
-                    "Running as standard user",
-                    Style::default().fg(Color::Green),
-                ))
-            };
-            vec![
-                status_line,
-                Line::from(Span::styled(
-                    "Landlock: N/A (Linux only)",
-                    Style::default().fg(Color::DarkGray),
-                )),
-            ]
-        };
-        privilege_info
-    } else {
+    // Security statistics (sandbox) - Linux only shows Landlock info
+    #[cfg(target_os = "linux")]
+    let security_text: Vec<Line> = {
+        let sandbox_info = app.get_sandbox_info();
         let status_style = match sandbox_info.status.as_str() {
             "Fully enforced" => Style::default().fg(Color::Green),
             "Partially enforced" => Style::default().fg(Color::Yellow),
@@ -924,7 +877,7 @@ fn draw_stats_panel(
         vec![
             Line::from(vec![
                 Span::raw("Landlock: "),
-                Span::styled(&sandbox_info.status, status_style),
+                Span::styled(sandbox_info.status.clone(), status_style),
                 available_indicator,
             ]),
             Line::from(Span::styled(
@@ -936,6 +889,40 @@ fn draw_stats_panel(
                 Style::default().fg(Color::Gray),
             )),
         ]
+    };
+
+    // Non-Linux platforms: show privilege info without mentioning Landlock
+    #[cfg(all(unix, not(target_os = "linux")))]
+    let security_text: Vec<Line> = {
+        let uid = unsafe { libc::geteuid() };
+        let is_root = uid == 0;
+        if is_root {
+            vec![Line::from(Span::styled(
+                "Running as root (UID 0)",
+                Style::default().fg(Color::Yellow),
+            ))]
+        } else {
+            vec![Line::from(Span::styled(
+                format!("Running as UID {}", uid),
+                Style::default().fg(Color::Green),
+            ))]
+        }
+    };
+
+    #[cfg(target_os = "windows")]
+    let security_text: Vec<Line> = {
+        let is_elevated = crate::is_admin();
+        if is_elevated {
+            vec![Line::from(Span::styled(
+                "Running as Administrator",
+                Style::default().fg(Color::Yellow),
+            ))]
+        } else {
+            vec![Line::from(Span::styled(
+                "Running as standard user",
+                Style::default().fg(Color::Green),
+            ))]
+        }
     };
 
     let security_stats = Paragraph::new(security_text)
