@@ -60,6 +60,7 @@ windows = { version = "0.62", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
+    "Win32_Security",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
 ] }
@@ -82,6 +83,7 @@ windows = { version = "0.62", features = [
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
+    "Win32_Security",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
 ] }
