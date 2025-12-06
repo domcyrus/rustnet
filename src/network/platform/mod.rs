@@ -10,24 +10,24 @@ use anyhow::Result;
 use std::net::SocketAddr;
 
 // Platform-specific modules (one cfg per platform instead of many)
+#[cfg(target_os = "freebsd")]
+mod freebsd;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
-#[cfg(target_os = "freebsd")]
-mod freebsd;
 
 // Re-export factory functions and types from platform modules
-#[cfg(target_os = "linux")]
-pub use linux::{create_process_lookup, LinuxStatsProvider};
-#[cfg(target_os = "macos")]
-pub use macos::{create_process_lookup, MacOSStatsProvider};
-#[cfg(target_os = "windows")]
-pub use windows::{create_process_lookup, WindowsProcessLookup, WindowsStatsProvider};
 #[cfg(target_os = "freebsd")]
-pub use freebsd::{create_process_lookup, FreeBSDProcessLookup, FreeBSDStatsProvider};
+pub use freebsd::{FreeBSDProcessLookup, FreeBSDStatsProvider, create_process_lookup};
+#[cfg(target_os = "linux")]
+pub use linux::{LinuxStatsProvider, create_process_lookup};
+#[cfg(target_os = "macos")]
+pub use macos::{MacOSStatsProvider, create_process_lookup};
+#[cfg(target_os = "windows")]
+pub use windows::{WindowsProcessLookup, WindowsStatsProvider, create_process_lookup};
 
 /// Trait for platform-specific process lookup
 pub trait ProcessLookup: Send + Sync {

@@ -17,7 +17,7 @@ use windows::Win32::NetworkManagement::IpHelper::{
 };
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 
 pub struct WindowsProcessLookup {
@@ -85,10 +85,7 @@ impl WindowsProcessLookup {
 
             if size == 0 || size > 100_000_000 {
                 // Sanity check: reject unreasonably large sizes (100MB limit)
-                log::warn!(
-                    "GetExtendedTcpTable (IPv4) returned invalid size: {}",
-                    size
-                );
+                log::warn!("GetExtendedTcpTable (IPv4) returned invalid size: {}", size);
                 return Ok(());
             }
 
@@ -104,10 +101,7 @@ impl WindowsProcessLookup {
             );
 
             if result != 0 {
-                log::debug!(
-                    "GetExtendedTcpTable (IPv4) second call failed: {}",
-                    result
-                );
+                log::debug!("GetExtendedTcpTable (IPv4) second call failed: {}", result);
                 return Ok(()); // Error getting table
             }
 
@@ -203,10 +197,7 @@ impl WindowsProcessLookup {
 
             if size == 0 || size > 100_000_000 {
                 // Sanity check: reject unreasonably large sizes (100MB limit)
-                log::warn!(
-                    "GetExtendedTcpTable (IPv6) returned invalid size: {}",
-                    size
-                );
+                log::warn!("GetExtendedTcpTable (IPv6) returned invalid size: {}", size);
                 return Ok(());
             }
 
@@ -222,10 +213,7 @@ impl WindowsProcessLookup {
             );
 
             if result != 0 {
-                log::debug!(
-                    "GetExtendedTcpTable (IPv6) second call failed: {}",
-                    result
-                );
+                log::debug!("GetExtendedTcpTable (IPv6) second call failed: {}", result);
                 return Ok(()); // Error getting table
             }
 
@@ -332,10 +320,7 @@ impl WindowsProcessLookup {
 
             if size == 0 || size > 100_000_000 {
                 // Sanity check: reject unreasonably large sizes (100MB limit)
-                log::warn!(
-                    "GetExtendedUdpTable (IPv4) returned invalid size: {}",
-                    size
-                );
+                log::warn!("GetExtendedUdpTable (IPv4) returned invalid size: {}", size);
                 return Ok(());
             }
 
@@ -351,10 +336,7 @@ impl WindowsProcessLookup {
             );
 
             if result != 0 {
-                log::debug!(
-                    "GetExtendedUdpTable (IPv4) second call failed: {}",
-                    result
-                );
+                log::debug!("GetExtendedUdpTable (IPv4) second call failed: {}", result);
                 return Ok(()); // Error getting table
             }
 
@@ -502,9 +484,7 @@ impl ProcessLookup for WindowsProcessLookup {
         let mut cache = match self.cache.write() {
             Ok(cache) => cache,
             Err(poisoned) => {
-                log::warn!(
-                    "Process cache write lock was poisoned, recovering and replacing cache"
-                );
+                log::warn!("Process cache write lock was poisoned, recovering and replacing cache");
                 poisoned.into_inner()
             }
         };

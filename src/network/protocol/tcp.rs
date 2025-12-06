@@ -29,11 +29,11 @@ pub struct TcpFlags {
 /// TCP header information extracted from the packet
 #[derive(Debug, Clone, Copy)]
 pub struct TcpHeaderInfo {
-    pub seq: u32,            // Sequence number
-    pub ack: u32,            // Acknowledgment number
-    pub window: u16,         // Window size
-    pub flags: TcpFlags,     // TCP flags
-    pub payload_len: u32,    // Actual TCP payload length (not including headers)
+    pub seq: u32,         // Sequence number
+    pub ack: u32,         // Acknowledgment number
+    pub window: u16,      // Window size
+    pub flags: TcpFlags,  // TCP flags
+    pub payload_len: u32, // Actual TCP payload length (not including headers)
 }
 
 /// Parse TCP flags from the flags byte
@@ -123,12 +123,7 @@ pub fn parse(
         let tcp_header_len = ((transport_data[12] >> 4) as usize) * 4;
         if transport_data.len() > tcp_header_len {
             let payload = &transport_data[tcp_header_len..];
-            dpi::analyze_tcp_packet(
-                payload,
-                local_addr.port(),
-                remote_addr.port(),
-                is_outgoing,
-            )
+            dpi::analyze_tcp_packet(payload, local_addr.port(), remote_addr.port(), is_outgoing)
         } else {
             None
         }
