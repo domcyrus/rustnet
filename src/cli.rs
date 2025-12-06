@@ -56,4 +56,17 @@ pub fn build_cli() -> Command {
                 .help("Enable JSON logging of connection events to specified file")
                 .required(false),
         )
+        .arg(
+            Arg::new("no-sandbox")
+                .long("no-sandbox")
+                .help("Disable Landlock sandboxing (Linux only)")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("sandbox-strict")
+                .long("sandbox-strict")
+                .help("Require full sandbox enforcement or exit (Linux only)")
+                .action(clap::ArgAction::SetTrue)
+                .conflicts_with("no-sandbox"),
+        )
 }

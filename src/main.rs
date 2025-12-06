@@ -73,9 +73,87 @@ fn main() -> Result<()> {
     info!("Terminal UI initialized");
 
     // Create and start the application
-    let mut app = app::App::new(config)?;
+    let mut app = app::App::new(config.clone())?;
     app.start()?;
     info!("Application started");
+
+    // Apply Landlock sandbox (Linux only)
+    // This must be done AFTER app.start() because:
+    // - eBPF programs need to be loaded first (access to /sys/kernel/btf)
+    // - Packet capture handles need to be opened first (access to /dev)
+    // - Log files need to be created first
+    #[cfg(all(target_os = "linux", feature = "landlock"))]
+    {
+        use network::platform::sandbox::{apply_sandbox, SandboxConfig, SandboxMode, SandboxStatus};
+        use std::path::PathBuf;
+
+        let sandbox_mode = if matches.get_flag("no-sandbox") {
+            SandboxMode::Disabled
+        } else if matches.get_flag("sandbox-strict") {
+            SandboxMode::Strict
+        } else {
+            SandboxMode::BestEffort
+        };
+
+        let mut write_paths = Vec::new();
+
+        // Add logs directory if logging is enabled
+        if matches.get_one::<String>("log-level").is_some() {
+            write_paths.push(PathBuf::from("logs"));
+        }
+
+        // Add JSON log path if specified
+        if let Some(json_log_path) = &config.json_log_file {
+            write_paths.push(PathBuf::from(json_log_path));
+        }
+
+        let sandbox_config = SandboxConfig {
+            mode: sandbox_mode,
+            block_network: true, // RustNet is passive, doesn't need TCP
+            write_paths,
+        };
+
+        match apply_sandbox(&sandbox_config) {
+            Ok(result) => {
+                // Update UI with sandbox status
+                let status_str = match result.status {
+                    SandboxStatus::FullyEnforced => {
+                        info!("Sandbox fully enforced: {}", result.message);
+                        "Fully enforced"
+                    }
+                    SandboxStatus::PartiallyEnforced => {
+                        info!("Sandbox partially enforced: {}", result.message);
+                        "Partially enforced"
+                    }
+                    SandboxStatus::NotApplied => {
+                        debug!("Sandbox not applied: {}", result.message);
+                        "Not applied"
+                    }
+                };
+
+                app.set_sandbox_info(app::SandboxInfo {
+                    status: status_str.to_string(),
+                    cap_dropped: result.cap_net_raw_dropped,
+                    landlock_available: result.landlock_available,
+                    fs_restricted: result.landlock_fs_applied,
+                    net_restricted: result.landlock_net_applied,
+                });
+            }
+            Err(e) => {
+                if sandbox_mode == SandboxMode::Strict {
+                    return Err(e.context("Sandbox enforcement required but failed"));
+                }
+                info!("Sandbox application error (non-strict mode): {}", e);
+                app.set_sandbox_info(app::SandboxInfo {
+                    status: "Error".to_string(),
+                    cap_dropped: false,
+                    landlock_available: false,
+                    fs_restricted: false,
+                    net_restricted: false,
+                });
+            }
+        }
+    }
 
     // Run the UI loop
     let res = run_ui_loop(&mut terminal, &app);

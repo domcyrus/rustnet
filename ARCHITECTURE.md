@@ -9,7 +9,7 @@ This document describes the technical architecture and implementation details of
 - [Platform-Specific Implementations](#platform-specific-implementations)
 - [Performance Considerations](#performance-considerations)
 - [Dependencies](#dependencies)
-- [Security Considerations](#security-considerations)
+- [Security](#security)
 
 ## Multi-threaded Architecture
 
@@ -315,78 +315,6 @@ RustNet is built with the following key dependencies:
 - **ring** - Cryptographic operations (for TLS/SNI parsing)
 - **aes** - AES encryption support (for protocol detection)
 
-## Security Considerations
+## Security
 
-### Privileged Access
-
-RustNet requires privileged access for packet capture:
-- **Raw socket access** - Intercept network traffic at low level (read-only, non-promiscuous mode)
-- **BPF device access** - Load packet filters into kernel
-- **eBPF programs** - Optional kernel probes for enhanced process tracking (Linux only)
-
-**Mitigation:**
-- Use Linux capabilities instead of full root (CAP_NET_RAW for packet capture, CAP_BPF+CAP_PERFMON for eBPF)
-- Use macOS group-based access (`access_bpf` group)
-- Audit which users have packet capture permissions
-- Operates in read-only mode - cannot modify or inject packets
-
-### Read-Only Operation
-
-The tool only monitors traffic; it does not:
-- Modify packets
-- Block connections
-- Inject traffic
-- Alter routing tables
-- Change firewall rules
-
-### Log File Privacy
-
-Log files may contain sensitive information:
-- IP addresses and ports
-- Hostnames and SNI data
-- Process names and PIDs
-- DNS queries and responses
-
-**Best Practices:**
-- Disable logging by default (no `--log-level` flag)
-- Secure log directory permissions
-- Implement log rotation and retention policies
-- Review logs for sensitive data before sharing
-
-### No External Communication
-
-RustNet operates entirely locally:
-- No telemetry or analytics
-- No network requests (except monitored traffic)
-- No cloud services or remote APIs
-- All data stays on your system
-
-### eBPF Security
-
-When using experimental eBPF support:
-- Requires additional kernel capabilities (`CAP_BPF`, `CAP_PERFMON`)
-- eBPF programs are verified by kernel before loading
-- Limited to read-only operations (no packet modification)
-- Automatically falls back to procfs if eBPF fails
-
-### Audit and Compliance
-
-For production environments:
-- **Audit logging** of who runs RustNet with packet capture privileges
-- **Network monitoring policies** and compliance with data protection regulations
-- **User access reviews** for privileged network access
-- **Automated capability management** via configuration management systems
-
-### Threat Model
-
-**What RustNet protects against:**
-- Unauthorized users cannot capture packets without proper permissions
-- Capability-based permissions limit blast radius of compromise
-
-**What RustNet does NOT protect against:**
-- Users with packet capture permissions can see all unencrypted traffic
-- Root/Administrator users can modify RustNet or capture packets directly
-- Physical access to the machine enables packet capture
-- Network-level attacks (RustNet is a monitoring tool, not a security appliance)
-
-For detailed permission setup and security best practices, see [INSTALL.md](INSTALL.md).
+For security documentation including Landlock sandboxing, privilege requirements, and threat model, see [SECURITY.md](SECURITY.md).

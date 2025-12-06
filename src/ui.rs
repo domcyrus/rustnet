@@ -710,6 +710,7 @@ fn draw_stats_panel(
             Constraint::Length(10), // Connection stats (increased for interface line)
             Constraint::Length(5),  // Traffic stats
             Constraint::Length(7),  // Network stats (TCP analytics + header)
+            Constraint::Length(4),  // Security stats (sandbox)
             Constraint::Min(0),     // Interface stats
         ])
         .split(area);
@@ -845,6 +846,103 @@ fn draw_stats_panel(
         .style(Style::default());
     f.render_widget(network_stats, chunks[2]);
 
+    // Security statistics (sandbox)
+    let sandbox_info = app.get_sandbox_info();
+    let security_text: Vec<Line> = if sandbox_info.status.is_empty() {
+        // Non-Linux platform or sandbox not configured - show privilege info instead
+        #[cfg(unix)]
+        let privilege_info = {
+            let uid = unsafe { libc::geteuid() };
+            let is_root = uid == 0;
+            let status_line = if is_root {
+                Line::from(Span::styled(
+                    "Running as root (UID 0)",
+                    Style::default().fg(Color::Yellow),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    format!("Running as UID {}", uid),
+                    Style::default().fg(Color::Green),
+                ))
+            };
+            vec![
+                status_line,
+                Line::from(Span::styled(
+                    "Landlock: N/A (Linux only)",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ]
+        };
+        #[cfg(windows)]
+        let privilege_info = {
+            let is_elevated = crate::is_admin();
+            let status_line = if is_elevated {
+                Line::from(Span::styled(
+                    "Running as Administrator",
+                    Style::default().fg(Color::Yellow),
+                ))
+            } else {
+                Line::from(Span::styled(
+                    "Running as standard user",
+                    Style::default().fg(Color::Green),
+                ))
+            };
+            vec![
+                status_line,
+                Line::from(Span::styled(
+                    "Landlock: N/A (Linux only)",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ]
+        };
+        privilege_info
+    } else {
+        let status_style = match sandbox_info.status.as_str() {
+            "Fully enforced" => Style::default().fg(Color::Green),
+            "Partially enforced" => Style::default().fg(Color::Yellow),
+            "Not applied" | "Error" => Style::default().fg(Color::Red),
+            _ => Style::default(),
+        };
+
+        let mut features = Vec::new();
+        if sandbox_info.cap_dropped {
+            features.push("CAP_NET_RAW dropped");
+        }
+        if sandbox_info.fs_restricted {
+            features.push("FS restricted");
+        }
+        if sandbox_info.net_restricted {
+            features.push("Net blocked");
+        }
+
+        let available_indicator = if sandbox_info.landlock_available {
+            Span::styled(" [kernel supported]", Style::default().fg(Color::DarkGray))
+        } else {
+            Span::styled(" [kernel unsupported]", Style::default().fg(Color::DarkGray))
+        };
+
+        vec![
+            Line::from(vec![
+                Span::raw("Landlock: "),
+                Span::styled(&sandbox_info.status, status_style),
+                available_indicator,
+            ]),
+            Line::from(Span::styled(
+                if features.is_empty() {
+                    "No restrictions active".to_string()
+                } else {
+                    features.join(", ")
+                },
+                Style::default().fg(Color::Gray),
+            )),
+        ]
+    };
+
+    let security_stats = Paragraph::new(security_text)
+        .block(Block::default().borders(Borders::ALL).title("Security"))
+        .style(Style::default());
+    f.render_widget(security_stats, chunks[3]);
+
     // Interface statistics
     let all_interface_stats = app.get_interface_stats();
     let interface_rates = app.get_interface_rates();
@@ -885,7 +983,7 @@ fn draw_stats_panel(
     // Calculate how many interfaces can fit in the available space
     // Each interface takes 2 lines, and we need 2 lines for borders
     // Reserve 1 line for the "... N more" message if needed
-    let available_height = chunks[3].height as usize;
+    let available_height = chunks[4].height as usize;
     let lines_for_borders = 2;
     let lines_per_interface = 2;
     let lines_for_more_message = 1;
@@ -967,7 +1065,7 @@ fn draw_stats_panel(
                 .title("Interface Stats (press 'i')"),
         )
         .style(Style::default());
-    f.render_widget(interface_stats_widget, chunks[3]);
+    f.render_widget(interface_stats_widget, chunks[4]);
 
     Ok(())
 }

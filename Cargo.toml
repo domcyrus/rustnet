@@ -48,6 +48,8 @@ procfs = "0.18"
 libbpf-rs = { version = "0.25", optional = true }
 bytes = { version = "1.11", optional = true }
 libc = { version = "0.2", optional = true }
+landlock = { version = "0.4", optional = true }
+caps = { version = "0.5", optional = true }
 
 [target.'cfg(any(target_os = "macos", target_os = "freebsd"))'.dependencies]
 libc = "0.2"
@@ -91,9 +93,11 @@ libbpf-cargo = { version = "0.25", optional = true }
 # eBPF is enabled by default for enhanced performance on Linux.
 # On non-Linux platforms, this feature has no effect as all eBPF code
 # and dependencies are Linux-specific (guarded by target_os checks).
-default = ["ebpf"]
+# Landlock provides security sandboxing on Linux 5.13+.
+default = ["ebpf", "landlock"]
 linux-default = ["ebpf"]  # Deprecated: kept for backwards compatibility
 ebpf = ["libbpf-rs", "bytes", "libc", "dep:libbpf-cargo"]
+landlock = ["dep:landlock", "dep:caps"]
 
 # Minimal cross configuration to override dependency conflicts
 [workspace.metadata.cross.build.env]

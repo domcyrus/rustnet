@@ -26,6 +26,7 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 - **Terminal User Interface**: Beautiful TUI built with ratatui with adjustable column widths
 - **Multi-threaded Processing**: Concurrent packet processing for high performance
 - **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
+- **Security Sandboxing**: Landlock-based filesystem/network restrictions on Linux 5.13+ (see [SECURITY.md](SECURITY.md))
 
 <details>
 <summary><b>eBPF Enhanced Process Identification (Linux Default)</b></summary>
@@ -232,6 +233,7 @@ See [USAGE.md](USAGE.md) for complete timeout details.
 
 - **[INSTALL.md](INSTALL.md)** - Detailed installation instructions for all platforms, permission setup, and troubleshooting
 - **[USAGE.md](USAGE.md)** - Complete usage guide including command-line options, filtering, sorting, and logging
+- **[SECURITY.md](SECURITY.md)** - Security features including Landlock sandboxing and privilege management
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture, platform implementations, and performance details
 - **[PROFILING.md](PROFILING.md)** - Performance profiling guide with flamegraph setup and optimization tips
 - **[ROADMAP.md](ROADMAP.md)** - Planned features and future improvements
