@@ -62,16 +62,17 @@ impl Default for ParserConfig {
         // Log DPI configuration for debugging
         log::trace!(
             "ParserConfig: DPI {} (limit: {} packets per connection)",
-            if config.enable_dpi { "enabled" } else { "disabled" },
+            if config.enable_dpi {
+                "enabled"
+            } else {
+                "disabled"
+            },
             config.dpi_packet_limit
         );
 
         // Demonstrate usage: check if we should perform DPI on hypothetical packet counts
         if config.enable_dpi {
-            log::trace!(
-                "  - Packet 0: DPI = {}",
-                config.should_perform_dpi(0)
-            );
+            log::trace!("  - Packet 0: DPI = {}", config.should_perform_dpi(0));
             log::trace!(
                 "  - Packet {}: DPI = {}",
                 config.dpi_packet_limit - 1,
@@ -166,7 +167,11 @@ impl PacketParser {
             log::trace!("  - TUN interfaces (Layer 3): tun*, utun*");
             log::trace!("  - TAP interfaces (Layer 2): tap*");
         } else {
-            log::trace!("Parser configured with linktype {} ({:?})", linktype, link_type);
+            log::trace!(
+                "Parser configured with linktype {} ({:?})",
+                linktype,
+                link_type
+            );
         }
 
         self
@@ -177,7 +182,11 @@ impl PacketParser {
         if let Some(linktype) = self.linktype {
             // Determine the link layer type
             let link_type = link_layer::LinkLayerType::from_dlt(linktype);
-            log::trace!("Parsing packet with linktype {} ({:?})", linktype, link_type);
+            log::trace!(
+                "Parsing packet with linktype {} ({:?})",
+                linktype,
+                link_type
+            );
 
             match linktype {
                 // PKTAP (macOS process metadata)
@@ -197,7 +206,12 @@ impl PacketParser {
                     return link_layer::linux_sll::parse_sll2(data, self, None, None);
                 }
                 // TUN/TAP interfaces - use unified parser
-                0 | 1 | 12 | 101 | link_layer::dlt::LINKTYPE_IPV4 | link_layer::dlt::LINKTYPE_IPV6 => {
+                0
+                | 1
+                | 12
+                | 101
+                | link_layer::dlt::LINKTYPE_IPV4
+                | link_layer::dlt::LINKTYPE_IPV6 => {
                     log::debug!("Parsing TUN/TAP packet (linktype {})", linktype);
                     return link_layer::tun_tap::parse_by_dlt(data, linktype, self, None, None);
                 }
@@ -211,7 +225,6 @@ impl PacketParser {
         log::debug!("Using fallback Ethernet parsing");
         link_layer::ethernet::parse(data, self, None, None)
     }
-
 
     #[cfg(target_os = "macos")]
     fn parse_pktap_packet(&self, data: &[u8]) -> Option<ParsedPacket> {
@@ -306,13 +319,8 @@ impl PacketParser {
 
         let transport_data = &ip_data[ip_header_len..];
 
-        let params = TransportParams::new(
-            src_ip,
-            dst_ip,
-            actual_packet_len,
-            process_name,
-            process_id,
-        );
+        let params =
+            TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
         match protocol_num {
             1 => protocol::icmp::parse(transport_data, params, &self.local_ips),
@@ -377,13 +385,8 @@ impl PacketParser {
             self.parse_ipv6_extension_headers(next_header, transport_data);
         let final_transport_data = &transport_data[transport_offset..];
 
-        let params = TransportParams::new(
-            src_ip,
-            dst_ip,
-            actual_packet_len,
-            process_name,
-            process_id,
-        );
+        let params =
+            TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
         match final_next_header {
             58 => protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips),
@@ -392,10 +395,6 @@ impl PacketParser {
             _ => None,
         }
     }
-
-
-
-
 
     /// Parse an ARP packet from Ethernet frame data
     /// (data includes the 14-byte Ethernet header)
@@ -483,13 +482,8 @@ impl PacketParser {
 
         let transport_data = &data[ip_header_len..];
 
-        let params = TransportParams::new(
-            src_ip,
-            dst_ip,
-            actual_packet_len,
-            process_name,
-            process_id,
-        );
+        let params =
+            TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
         match protocol_num {
             1 => protocol::icmp::parse(transport_data, params, &self.local_ips),
@@ -553,13 +547,8 @@ impl PacketParser {
             self.parse_ipv6_extension_headers(next_header, transport_data);
         let final_transport_data = &transport_data[transport_offset..];
 
-        let params = TransportParams::new(
-            src_ip,
-            dst_ip,
-            actual_packet_len,
-            process_name,
-            process_id,
-        );
+        let params =
+            TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
         match final_next_header {
             58 => protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips),
@@ -629,7 +618,9 @@ mod tests {
     fn create_parser_with_linktype(linktype: i32) -> PacketParser {
         let mut parser = PacketParser::with_config(ParserConfig::default()).with_linktype(linktype);
         // Add test IP to local_ips so the parser treats it as local
-        parser.local_ips.insert(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)));
+        parser
+            .local_ips
+            .insert(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)));
         parser
     }
 
@@ -640,8 +631,7 @@ mod tests {
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x08, 0x00,
             // IPv4 header
             0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00, 0x40, 0x06, 0x00, 0x00, 192, 168, 1,
-            100, 93, 184, 216, 34,
-            // TCP header (SYN flag)
+            100, 93, 184, 216, 34, // TCP header (SYN flag)
             0x04, 0xd2, 0x00, 0x50, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x50, 0x02,
             0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]
@@ -653,8 +643,7 @@ mod tests {
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x08, 0x00,
             // IPv4
             0x45, 0x00, 0x00, 0x20, 0x00, 0x01, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00, 192, 168, 1,
-            100, 8, 8, 8, 8,
-            // UDP
+            100, 8, 8, 8, 8, // UDP
             0x04, 0xd2, 0x00, 0x35, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
         ]
     }
@@ -677,11 +666,9 @@ mod tests {
         vec![
             // Linux SLL header
             0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x00,
-            0x08, 0x00,
-            // IPv4
+            0x08, 0x00, // IPv4
             0x45, 0x00, 0x00, 0x28, 0x00, 0x01, 0x00, 0x00, 0x40, 0x06, 0x00, 0x00, 192, 168, 1,
-            100, 93, 184, 216, 34,
-            // TCP
+            100, 93, 184, 216, 34, // TCP
             0x04, 0xd2, 0x00, 0x50, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x50, 0x02,
             0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]
@@ -691,11 +678,9 @@ mod tests {
         vec![
             // Linux SLL2 header
             0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x06, 0xaa, 0xbb,
-            0xcc, 0xdd, 0xee, 0xff, 0x00, 0x00,
-            // IPv4
+            0xcc, 0xdd, 0xee, 0xff, 0x00, 0x00, // IPv4
             0x45, 0x00, 0x00, 0x20, 0x00, 0x01, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00, 192, 168, 1,
-            100, 8, 8, 8, 8,
-            // UDP
+            100, 8, 8, 8, 8, // UDP
             0x04, 0xd2, 0x00, 0x35, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
         ]
     }
@@ -708,7 +693,10 @@ mod tests {
         let packet = ethernet_ipv4_tcp_syn();
 
         let parsed = parser.parse_packet(&packet);
-        assert!(parsed.is_some(), "Should parse valid Ethernet IPv4 TCP packet");
+        assert!(
+            parsed.is_some(),
+            "Should parse valid Ethernet IPv4 TCP packet"
+        );
 
         let p = parsed.unwrap();
         assert_eq!(p.protocol, Protocol::TCP);

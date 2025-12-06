@@ -1022,15 +1022,14 @@ impl Connection {
             QuicConnectionState::Handshaking => Duration::from_secs(60), // Crypto negotiation
             QuicConnectionState::Connected => {
                 // Use idle timeout from transport params if available, otherwise default
+                // Note: We cannot see CONNECTION_CLOSE frames (they're encrypted in 1-RTT packets)
+                // so we must rely on timeouts to clean up closed connections
                 if let Some(idle_timeout) = quic.idle_timeout {
                     idle_timeout
                 } else {
-                    // Default timeout, but consider activity (increased for HTTP/3 connection reuse)
-                    if self.idle_time() < Duration::from_secs(60) {
-                        Duration::from_secs(600) // 10 minutes for active QUIC (was 5 min)
-                    } else {
-                        Duration::from_secs(300) // 5 minutes for idle QUIC (was 3 min)
-                    }
+                    // Use 3 minutes - matches typical browser idle timeouts
+                    // and gives connections enough time to remain visible
+                    Duration::from_secs(180)
                 }
             }
             QuicConnectionState::Draining => Duration::from_secs(10), // RFC 9000: ~3 * PTO

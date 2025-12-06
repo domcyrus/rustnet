@@ -40,4 +40,3 @@ pub fn create_process_lookup(use_pktap: bool) -> Result<Box<dyn ProcessLookup>> 
         Ok(Box::new(MacOSProcessLookup::new()?))
     }
 }
-

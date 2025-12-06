@@ -138,19 +138,19 @@ fn sort_connections(
                 a_process.cmp(b_process)
             }
 
-            SortColumn::LocalAddress => {
-                a.local_addr.to_string().cmp(&b.local_addr.to_string())
-            }
+            SortColumn::LocalAddress => a.local_addr.to_string().cmp(&b.local_addr.to_string()),
 
-            SortColumn::RemoteAddress => {
-                a.remote_addr.to_string().cmp(&b.remote_addr.to_string())
-            }
+            SortColumn::RemoteAddress => a.remote_addr.to_string().cmp(&b.remote_addr.to_string()),
 
             SortColumn::Application => {
-                let a_app = a.dpi_info.as_ref()
+                let a_app = a
+                    .dpi_info
+                    .as_ref()
                     .map(|dpi| dpi.application.to_string())
                     .unwrap_or_default();
-                let b_app = b.dpi_info.as_ref()
+                let b_app = b
+                    .dpi_info
+                    .as_ref()
                     .map(|dpi| dpi.application.to_string())
                     .unwrap_or_default();
                 a_app.cmp(&b_app)
@@ -162,13 +162,9 @@ fn sort_connections(
                 a_service.cmp(b_service)
             }
 
-            SortColumn::State => {
-                a.state().cmp(&b.state())
-            }
+            SortColumn::State => a.state().cmp(&b.state()),
 
-            SortColumn::Protocol => {
-                a.protocol.to_string().cmp(&b.protocol.to_string())
-            }
+            SortColumn::Protocol => a.protocol.to_string().cmp(&b.protocol.to_string()),
         };
 
         if ascending {
@@ -199,7 +195,11 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
 
         // Apply sorting (after filtering)
         // This sorted list MUST be used for all operations (display + navigation)
-        sort_connections(&mut connections, ui_state.sort_column, ui_state.sort_ascending);
+        sort_connections(
+            &mut connections,
+            ui_state.sort_column,
+            ui_state.sort_ascending,
+        );
 
         let stats = app.get_stats();
 
@@ -393,10 +393,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         ui_state.quit_confirmation = false;
                         // Use the SAME sorted connections list from the main loop
                         // to ensure index consistency with the displayed table
-                        debug!(
-                            "Navigation UP: {} connections available",
-                            connections.len()
-                        );
+                        debug!("Navigation UP: {} connections available", connections.len());
                         ui_state.move_selection_up(&connections);
                     }
 
@@ -468,7 +465,11 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         info!(
                             "Sort column: {} ({})",
                             ui_state.sort_column.display_name(),
-                            if ui_state.sort_ascending { "ascending" } else { "descending" }
+                            if ui_state.sort_ascending {
+                                "ascending"
+                            } else {
+                                "descending"
+                            }
                         );
                     }
 
@@ -478,7 +479,11 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         ui_state.toggle_sort_direction();
                         info!(
                             "Sort direction: {} ({})",
-                            if ui_state.sort_ascending { "ascending" } else { "descending" },
+                            if ui_state.sort_ascending {
+                                "ascending"
+                            } else {
+                                "descending"
+                            },
                             ui_state.sort_column.display_name()
                         );
                     }
@@ -547,13 +552,21 @@ fn check_privileges_early() -> Result<()> {
     match network::privileges::check_packet_capture_privileges() {
         Ok(status) if !status.has_privileges => {
             // Print error to stderr before TUI starts
-            eprintln!("\n╔═══════════════════════════════════════════════════════════════════════════╗");
-            eprintln!("║                   INSUFFICIENT PRIVILEGES                                 ║");
-            eprintln!("╚═══════════════════════════════════════════════════════════════════════════╝");
+            eprintln!(
+                "\n╔═══════════════════════════════════════════════════════════════════════════╗"
+            );
+            eprintln!(
+                "║                   INSUFFICIENT PRIVILEGES                                 ║"
+            );
+            eprintln!(
+                "╚═══════════════════════════════════════════════════════════════════════════╝"
+            );
             eprintln!();
             eprintln!("{}", status.error_message());
 
-            return Err(anyhow::anyhow!("Insufficient privileges for packet capture"));
+            return Err(anyhow::anyhow!(
+                "Insufficient privileges for packet capture"
+            ));
         }
         Err(e) => {
             // Privilege check failed - warn but continue
@@ -578,7 +591,9 @@ fn check_windows_dependencies() -> Result<()> {
     let packet_available = check_dll_available("Packet.dll");
 
     if !wpcap_available || !packet_available {
-        eprintln!("\n╔═══════════════════════════════════════════════════════════════════════════╗");
+        eprintln!(
+            "\n╔═══════════════════════════════════════════════════════════════════════════╗"
+        );
         eprintln!("║                          MISSING DEPENDENCY                               ║");
         eprintln!("╚═══════════════════════════════════════════════════════════════════════════╝");
         eprintln!();
@@ -603,7 +618,9 @@ fn check_windows_dependencies() -> Result<()> {
         eprintln!("After installation, restart your terminal and try again.");
         eprintln!();
 
-        return Err(anyhow!("Npcap is not installed or not in WinPcap compatible mode"));
+        return Err(anyhow!(
+            "Npcap is not installed or not in WinPcap compatible mode"
+        ));
     }
 
     Ok(())
@@ -626,7 +643,9 @@ fn check_dll_available(dll_name: &str) -> bool {
         // Use LoadLibraryA to check if the DLL can be loaded
         let handle = LoadLibraryA(PCSTR(dll_cstring.as_ptr() as *const u8));
 
-        if let Ok(h) = handle && h != HMODULE(std::ptr::null_mut()) {
+        if let Ok(h) = handle
+            && h != HMODULE(std::ptr::null_mut())
+        {
             // Free the library if it was loaded
             let _ = FreeLibrary(h);
             true

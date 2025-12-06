@@ -201,8 +201,8 @@ fn compile_ebpf_programs() {
     };
 
     // Get bundled architecture-specific vmlinux.h
-    let vmlinux_include_path = get_vmlinux_header(vmlinux_arch)
-        .expect("Failed to locate bundled vmlinux.h");
+    let vmlinux_include_path =
+        get_vmlinux_header(vmlinux_arch).expect("Failed to locate bundled vmlinux.h");
 
     SkeletonBuilder::new()
         .source(src)
@@ -221,4 +221,3 @@ fn compile_ebpf_programs() {
 fn compile_ebpf_programs() {
     // No-op when not on Linux or eBPF feature is not enabled
 }
-

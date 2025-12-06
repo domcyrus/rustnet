@@ -77,7 +77,11 @@ impl FreeBSDProcessLookup {
             .arg(if ipv6_flag { "-6" } else { "-4" })
             .arg("-n") // numeric output
             .arg("-P")
-            .arg(if proto.starts_with("tcp") { "tcp" } else { "udp" })
+            .arg(if proto.starts_with("tcp") {
+                "tcp"
+            } else {
+                "udp"
+            })
             .output()
             .context("Failed to execute sockstat")?;
 
@@ -246,10 +250,7 @@ mod tests {
         let addr = FreeBSDProcessLookup::parse_address("[fe80::1]:22");
         assert_eq!(
             addr,
-            Some(SocketAddr::new(
-                IpAddr::V6("fe80::1".parse().unwrap()),
-                22
-            ))
+            Some(SocketAddr::new(IpAddr::V6("fe80::1".parse().unwrap()), 22))
         );
     }
 

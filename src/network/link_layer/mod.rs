@@ -17,18 +17,18 @@ pub mod tun_tap;
 /// Data Link Type (DLT) constants
 /// These match the values from libpcap
 pub mod dlt {
-    pub const EN10MB: i32 = 1;    // Ethernet
-    pub const RAW: i32 = 12;      // Raw IP (no link layer)
-    pub const NULL: i32 = 0;      // BSD loopback (sometimes used by TUN)
-    pub const LINUX_SLL: i32 = 113;  // Linux "cooked" capture v1
-    pub const PKTAP: i32 = 149;   // Apple PKTAP (DLT_USER2)
+    pub const EN10MB: i32 = 1; // Ethernet
+    pub const RAW: i32 = 12; // Raw IP (no link layer)
+    pub const NULL: i32 = 0; // BSD loopback (sometimes used by TUN)
+    pub const LINUX_SLL: i32 = 113; // Linux "cooked" capture v1
+    pub const PKTAP: i32 = 149; // Apple PKTAP (DLT_USER2)
     pub const PKTAP_STANDARD: i32 = 258; // Standard PKTAP
     pub const LINUX_SLL2: i32 = 276; // Linux "cooked" capture v2
 
     // Link type values for raw IP packets
-    pub const LINKTYPE_RAW: i32 = 101;   // Raw IPv4/IPv6
-    pub const LINKTYPE_IPV4: i32 = 228;  // Raw IPv4 only
-    pub const LINKTYPE_IPV6: i32 = 229;  // Raw IPv6 only
+    pub const LINKTYPE_RAW: i32 = 101; // Raw IPv4/IPv6
+    pub const LINKTYPE_IPV4: i32 = 228; // Raw IPv4 only
+    pub const LINKTYPE_IPV6: i32 = 229; // Raw IPv6 only
 }
 
 /// Link layer type enum for identifying interface types
@@ -98,16 +98,37 @@ mod tests {
 
     #[test]
     fn test_linktype_from_dlt() {
-        assert_eq!(LinkLayerType::from_dlt(dlt::EN10MB), LinkLayerType::Ethernet);
+        assert_eq!(
+            LinkLayerType::from_dlt(dlt::EN10MB),
+            LinkLayerType::Ethernet
+        );
         assert_eq!(LinkLayerType::from_dlt(dlt::RAW), LinkLayerType::RawIP);
         assert_eq!(LinkLayerType::from_dlt(dlt::NULL), LinkLayerType::RawIP);
-        assert_eq!(LinkLayerType::from_dlt(dlt::LINUX_SLL), LinkLayerType::LinuxSLL);
-        assert_eq!(LinkLayerType::from_dlt(dlt::LINUX_SLL2), LinkLayerType::LinuxSLL2);
+        assert_eq!(
+            LinkLayerType::from_dlt(dlt::LINUX_SLL),
+            LinkLayerType::LinuxSLL
+        );
+        assert_eq!(
+            LinkLayerType::from_dlt(dlt::LINUX_SLL2),
+            LinkLayerType::LinuxSLL2
+        );
         assert_eq!(LinkLayerType::from_dlt(dlt::PKTAP), LinkLayerType::Pktap);
-        assert_eq!(LinkLayerType::from_dlt(dlt::PKTAP_STANDARD), LinkLayerType::Pktap);
-        assert_eq!(LinkLayerType::from_dlt(dlt::LINKTYPE_RAW), LinkLayerType::RawIP);
-        assert_eq!(LinkLayerType::from_dlt(dlt::LINKTYPE_IPV4), LinkLayerType::RawIP);
-        assert_eq!(LinkLayerType::from_dlt(dlt::LINKTYPE_IPV6), LinkLayerType::RawIP);
+        assert_eq!(
+            LinkLayerType::from_dlt(dlt::PKTAP_STANDARD),
+            LinkLayerType::Pktap
+        );
+        assert_eq!(
+            LinkLayerType::from_dlt(dlt::LINKTYPE_RAW),
+            LinkLayerType::RawIP
+        );
+        assert_eq!(
+            LinkLayerType::from_dlt(dlt::LINKTYPE_IPV4),
+            LinkLayerType::RawIP
+        );
+        assert_eq!(
+            LinkLayerType::from_dlt(dlt::LINKTYPE_IPV6),
+            LinkLayerType::RawIP
+        );
         assert_eq!(LinkLayerType::from_dlt(999), LinkLayerType::Unknown);
     }
 

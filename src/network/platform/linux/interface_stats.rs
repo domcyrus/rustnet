@@ -55,9 +55,8 @@ impl InterfaceStatsProvider for LinuxStatsProvider {
 /// Read a single statistic from sysfs
 fn read_stat(base_path: &str, stat_name: &str) -> Result<u64, io::Error> {
     let path = format!("{}/{}", base_path, stat_name);
-    let content = fs::read_to_string(&path).map_err(|e| {
-        io::Error::new(e.kind(), format!("Failed to read {}: {}", path, e))
-    })?;
+    let content = fs::read_to_string(&path)
+        .map_err(|e| io::Error::new(e.kind(), format!("Failed to read {}: {}", path, e)))?;
 
     content
         .trim()

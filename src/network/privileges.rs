@@ -6,7 +6,6 @@
 use anyhow::Result;
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 use anyhow::anyhow;
-use log::{debug, info};
 #[cfg(any(
     not(any(
         target_os = "linux",
@@ -17,6 +16,7 @@ use log::{debug, info};
     target_os = "windows"
 ))]
 use log::warn;
+use log::{debug, info};
 
 /// Privilege check result with detailed information
 #[derive(Debug, Clone)]

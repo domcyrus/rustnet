@@ -15,7 +15,7 @@ use crate::filter::ConnectionFilter;
 
 use crate::network::{
     capture::{CaptureConfig, PacketReader, setup_packet_capture},
-    interface_stats::{InterfaceStats, InterfaceStatsProvider, InterfaceRates},
+    interface_stats::{InterfaceRates, InterfaceStats, InterfaceStatsProvider},
     merge::{create_connection_from_packet, merge_packet_into_connection},
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
@@ -24,10 +24,10 @@ use crate::network::{
 };
 
 // Platform-specific interface stats provider
-#[cfg(target_os = "linux")]
-use crate::network::platform::LinuxStatsProvider as PlatformStatsProvider;
 #[cfg(target_os = "freebsd")]
 use crate::network::platform::FreeBSDStatsProvider as PlatformStatsProvider;
+#[cfg(target_os = "linux")]
+use crate::network::platform::LinuxStatsProvider as PlatformStatsProvider;
 #[cfg(target_os = "macos")]
 use crate::network::platform::MacOSStatsProvider as PlatformStatsProvider;
 #[cfg(target_os = "windows")]
@@ -967,9 +967,17 @@ impl App {
                 self.stats.connections_tracked.load(Ordering::Relaxed),
             ),
             last_update: RwLock::new(*self.stats.last_update.read().unwrap()),
-            total_tcp_retransmits: AtomicU64::new(self.stats.total_tcp_retransmits.load(Ordering::Relaxed)),
-            total_tcp_out_of_order: AtomicU64::new(self.stats.total_tcp_out_of_order.load(Ordering::Relaxed)),
-            total_tcp_fast_retransmits: AtomicU64::new(self.stats.total_tcp_fast_retransmits.load(Ordering::Relaxed)),
+            total_tcp_retransmits: AtomicU64::new(
+                self.stats.total_tcp_retransmits.load(Ordering::Relaxed),
+            ),
+            total_tcp_out_of_order: AtomicU64::new(
+                self.stats.total_tcp_out_of_order.load(Ordering::Relaxed),
+            ),
+            total_tcp_fast_retransmits: AtomicU64::new(
+                self.stats
+                    .total_tcp_fast_retransmits
+                    .load(Ordering::Relaxed),
+            ),
         }
     }
 
@@ -1064,13 +1072,19 @@ fn update_connection(
 
             // Update global statistics
             if new_retransmits > 0 {
-                _stats.total_tcp_retransmits.fetch_add(new_retransmits, Ordering::Relaxed);
+                _stats
+                    .total_tcp_retransmits
+                    .fetch_add(new_retransmits, Ordering::Relaxed);
             }
             if new_out_of_order > 0 {
-                _stats.total_tcp_out_of_order.fetch_add(new_out_of_order, Ordering::Relaxed);
+                _stats
+                    .total_tcp_out_of_order
+                    .fetch_add(new_out_of_order, Ordering::Relaxed);
             }
             if new_fast_retransmits > 0 {
-                _stats.total_tcp_fast_retransmits.fetch_add(new_fast_retransmits, Ordering::Relaxed);
+                _stats
+                    .total_tcp_fast_retransmits
+                    .fetch_add(new_fast_retransmits, Ordering::Relaxed);
             }
         })
         .or_insert_with(|| {

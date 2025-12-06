@@ -15,4 +15,3 @@ pub fn create_process_lookup(_use_pktap: bool) -> Result<Box<dyn ProcessLookup>>
     log::info!("Using Windows process lookup (IP Helper API)");
     Ok(Box::new(WindowsProcessLookup::new()?))
 }
-

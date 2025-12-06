@@ -16,8 +16,8 @@ pub type Terminal<B> = RatatuiTerminal<B>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortColumn {
     #[default]
-    CreatedAt,        // Default: creation time (oldest first)
-    BandwidthTotal,   // Combined up + down bandwidth
+    CreatedAt, // Default: creation time (oldest first)
+    BandwidthTotal, // Combined up + down bandwidth
     Process,
     LocalAddress,
     RemoteAddress,
@@ -31,15 +31,15 @@ impl SortColumn {
     /// Get the next sort column in the cycle (follows left-to-right visual order)
     pub fn next(self) -> Self {
         match self {
-            Self::CreatedAt => Self::Protocol,           // Column 1: Pro
-            Self::Protocol => Self::LocalAddress,        // Column 2: Local Address
-            Self::LocalAddress => Self::RemoteAddress,   // Column 3: Remote Address
-            Self::RemoteAddress => Self::State,          // Column 4: State
-            Self::State => Self::Service,                // Column 5: Service
-            Self::Service => Self::Application,          // Column 6: Application / Host
-            Self::Application => Self::BandwidthTotal,   // Column 7: Down/Up (combined total)
-            Self::BandwidthTotal => Self::Process,       // Column 8: Process
-            Self::Process => Self::CreatedAt,            // Back to default
+            Self::CreatedAt => Self::Protocol,         // Column 1: Pro
+            Self::Protocol => Self::LocalAddress,      // Column 2: Local Address
+            Self::LocalAddress => Self::RemoteAddress, // Column 3: Remote Address
+            Self::RemoteAddress => Self::State,        // Column 4: State
+            Self::State => Self::Service,              // Column 5: Service
+            Self::Service => Self::Application,        // Column 6: Application / Host
+            Self::Application => Self::BandwidthTotal, // Column 7: Down/Up (combined total)
+            Self::BandwidthTotal => Self::Process,     // Column 8: Process
+            Self::Process => Self::CreatedAt,          // Back to default
         }
     }
 
@@ -473,22 +473,25 @@ fn draw_connections_list(
     area: Rect,
 ) {
     let widths = [
-        Constraint::Length(6),  // Protocol (TCP/UDP + arrow = "Pro ↑" = 5 chars, give 6 for padding)
+        Constraint::Length(6), // Protocol (TCP/UDP + arrow = "Pro ↑" = 5 chars, give 6 for padding)
         Constraint::Length(17), // Local Address (13 + arrow = 15, fits in 17)
         Constraint::Length(21), // Remote Address (14 + arrow = 16, fits in 21)
         Constraint::Length(16), // State (5 + arrow = 7, fits in 16)
         Constraint::Length(10), // Service (7 + arrow = 9, need at least 10 for padding)
         Constraint::Length(24), // DPI/Application (18 + arrow = 20, fits in 24)
         Constraint::Length(12), // Bandwidth (7 + arrow = 9, fits in 12)
-        Constraint::Min(20),    // Process (flexible remaining space)
+        Constraint::Min(20),   // Process (flexible remaining space)
     ];
 
     // Helper function to add sort indicator to column headers
     let add_sort_indicator = |label: &str, columns: &[SortColumn]| -> String {
-        if columns.contains(&ui_state.sort_column)
-            && ui_state.sort_column != SortColumn::CreatedAt
+        if columns.contains(&ui_state.sort_column) && ui_state.sort_column != SortColumn::CreatedAt
         {
-            let arrow = if ui_state.sort_ascending { "↑" } else { "↓" };
+            let arrow = if ui_state.sort_ascending {
+                "↑"
+            } else {
+                "↓"
+            };
             format!("{} {}", label, arrow)
         } else {
             label.to_string()
@@ -498,10 +501,14 @@ fn draw_connections_list(
     // Special handler for bandwidth column - shows combined total when sorting by bandwidth
     let bandwidth_label = match ui_state.sort_column {
         SortColumn::BandwidthTotal => {
-            let arrow = if ui_state.sort_ascending { "↑" } else { "↓" };
-            format!("Down/Up {}", arrow)  // "Down/Up ↓" or "Down/Up ↑"
+            let arrow = if ui_state.sort_ascending {
+                "↑"
+            } else {
+                "↓"
+            };
+            format!("Down/Up {}", arrow) // "Down/Up ↓" or "Down/Up ↑"
         }
-        _ => "Down/Up".to_string()  // No bandwidth sort active
+        _ => "Down/Up".to_string(), // No bandwidth sort active
     };
 
     let header_labels = [
@@ -511,41 +518,38 @@ fn draw_connections_list(
         add_sort_indicator("State", &[SortColumn::State]),
         add_sort_indicator("Service", &[SortColumn::Service]),
         add_sort_indicator("Application / Host", &[SortColumn::Application]),
-        bandwidth_label,  // Use custom bandwidth label instead of generic indicator
+        bandwidth_label, // Use custom bandwidth label instead of generic indicator
         add_sort_indicator("Process", &[SortColumn::Process]),
     ];
 
-    let header_cells = header_labels
-        .iter()
-        .enumerate()
-        .map(|(idx, h)| {
-            // Determine if this is the active sort column
-            let is_active = match idx {
-                0 => ui_state.sort_column == SortColumn::Protocol,
-                1 => ui_state.sort_column == SortColumn::LocalAddress,
-                2 => ui_state.sort_column == SortColumn::RemoteAddress,
-                3 => ui_state.sort_column == SortColumn::State,
-                4 => ui_state.sort_column == SortColumn::Service,
-                5 => ui_state.sort_column == SortColumn::Application,
-                6 => ui_state.sort_column == SortColumn::BandwidthTotal,
-                7 => ui_state.sort_column == SortColumn::Process,
-                _ => false,
-            } && ui_state.sort_column != SortColumn::CreatedAt;
+    let header_cells = header_labels.iter().enumerate().map(|(idx, h)| {
+        // Determine if this is the active sort column
+        let is_active = match idx {
+            0 => ui_state.sort_column == SortColumn::Protocol,
+            1 => ui_state.sort_column == SortColumn::LocalAddress,
+            2 => ui_state.sort_column == SortColumn::RemoteAddress,
+            3 => ui_state.sort_column == SortColumn::State,
+            4 => ui_state.sort_column == SortColumn::Service,
+            5 => ui_state.sort_column == SortColumn::Application,
+            6 => ui_state.sort_column == SortColumn::BandwidthTotal,
+            7 => ui_state.sort_column == SortColumn::Process,
+            _ => false,
+        } && ui_state.sort_column != SortColumn::CreatedAt;
 
-            let style = if is_active {
-                // Active sort column: Cyan + Bold + Underlined
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                // Inactive columns: Yellow + Bold (normal)
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            };
+        let style = if is_active {
+            // Active sort column: Cyan + Bold + Underlined
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            // Inactive columns: Yellow + Bold (normal)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        };
 
-            Cell::from(h.as_str()).style(style)
-        });
+        Cell::from(h.as_str()).style(style)
+    });
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
     let rows: Vec<Row> = connections
@@ -669,7 +673,11 @@ fn draw_connections_list(
 
     // Build dynamic title with sort information
     let table_title = if ui_state.sort_column != SortColumn::CreatedAt {
-        let direction = if ui_state.sort_ascending { "↑" } else { "↓" };
+        let direction = if ui_state.sort_ascending {
+            "↑"
+        } else {
+            "↓"
+        };
         format!(
             "Active Connections (Sort: {} {})",
             ui_state.sort_column.display_name(),
@@ -681,11 +689,7 @@ fn draw_connections_list(
 
     let connections_table = Table::new(rows, &widths)
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(table_title),
-        )
+        .block(Block::default().borders(Borders::ALL).title(table_title))
         .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
 
@@ -729,7 +733,8 @@ fn draw_stats_panel(
 
     let conn_stats_text: Vec<Line> = vec![
         Line::from(format!("Interface: {}", interface_name)),
-        Line::from(format!("Link Layer: {}{}",
+        Line::from(format!(
+            "Link Layer: {}{}",
             link_layer_type,
             if is_tunnel { " (Tunnel)" } else { "" }
         )),
@@ -798,22 +803,45 @@ fn draw_stats_panel(
         }
     }
 
-    let total_retransmits = stats.total_tcp_retransmits.load(std::sync::atomic::Ordering::Relaxed);
-    let total_out_of_order = stats.total_tcp_out_of_order.load(std::sync::atomic::Ordering::Relaxed);
-    let total_fast_retransmits = stats.total_tcp_fast_retransmits.load(std::sync::atomic::Ordering::Relaxed);
+    let total_retransmits = stats
+        .total_tcp_retransmits
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let total_out_of_order = stats
+        .total_tcp_out_of_order
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let total_fast_retransmits = stats
+        .total_tcp_fast_retransmits
+        .load(std::sync::atomic::Ordering::Relaxed);
 
     let network_stats_text: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("(Active / Total)", Style::default().fg(Color::Gray)),
-        ]),
-        Line::from(format!("TCP Retransmits: {} / {}", tcp_retransmits, total_retransmits)),
-        Line::from(format!("Out-of-Order: {} / {}", tcp_out_of_order, total_out_of_order)),
-        Line::from(format!("Fast Retransmits: {} / {}", tcp_fast_retransmits, total_fast_retransmits)),
-        Line::from(format!("Active TCP Flows: {}", tcp_connections_with_analytics)),
+        Line::from(vec![Span::styled(
+            "(Active / Total)",
+            Style::default().fg(Color::Gray),
+        )]),
+        Line::from(format!(
+            "TCP Retransmits: {} / {}",
+            tcp_retransmits, total_retransmits
+        )),
+        Line::from(format!(
+            "Out-of-Order: {} / {}",
+            tcp_out_of_order, total_out_of_order
+        )),
+        Line::from(format!(
+            "Fast Retransmits: {} / {}",
+            tcp_fast_retransmits, total_fast_retransmits
+        )),
+        Line::from(format!(
+            "Active TCP Flows: {}",
+            tcp_connections_with_analytics
+        )),
     ];
 
     let network_stats = Paragraph::new(network_stats_text)
-        .block(Block::default().borders(Borders::ALL).title("Network Stats"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Network Stats"),
+        )
         .style(Style::default());
     f.render_widget(network_stats, chunks[2]);
 
@@ -833,18 +861,23 @@ fn draw_stats_panel(
             // pktap is a macOS virtual interface that captures from all interfaces,
             // so we show all active interfaces rather than trying to show stats for pktap itself
             // On Windows, NPF device names don't match friendly names, so show active interfaces
-            all_interface_stats.into_iter()
-                .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
+            all_interface_stats
+                .into_iter()
+                .filter(|s| {
+                    s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0
+                })
                 .collect()
         } else {
             // Show only the captured interface
-            all_interface_stats.into_iter()
+            all_interface_stats
+                .into_iter()
                 .filter(|s| s.interface_name == *iface)
                 .collect()
         }
     } else {
         // No interface specified yet - show active interfaces
-        all_interface_stats.into_iter()
+        all_interface_stats
+            .into_iter()
             .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
             .collect()
     };
@@ -864,12 +897,10 @@ fn draw_stats_panel(
     };
 
     let interface_stats_text: Vec<Line> = if filtered_interface_stats.is_empty() {
-        vec![
-            Line::from(Span::styled(
-                "No interface stats available",
-                Style::default().fg(Color::Gray),
-            )),
-        ]
+        vec![Line::from(Span::styled(
+            "No interface stats available",
+            Style::default().fg(Color::Gray),
+        ))]
     } else {
         let mut lines = Vec::new();
         let num_to_show = max_interfaces.min(filtered_interface_stats.len());
@@ -919,7 +950,10 @@ fn draw_stats_panel(
         // Only show "more" message if there are actually more interfaces that don't fit
         if filtered_interface_stats.len() > num_to_show {
             lines.push(Line::from(Span::styled(
-                format!("... and {} more (press 'i' for details)", filtered_interface_stats.len() - num_to_show),
+                format!(
+                    "... and {} more (press 'i' for details)",
+                    filtered_interface_stats.len() - num_to_show
+                ),
                 Style::default().fg(Color::Gray),
             )));
         }
@@ -1682,7 +1716,10 @@ mod tests {
     #[test]
     fn test_port_toggle_default_state() {
         let ui_state = UIState::default();
-        assert!(!ui_state.show_port_numbers, "Port numbers should be hidden by default");
+        assert!(
+            !ui_state.show_port_numbers,
+            "Port numbers should be hidden by default"
+        );
     }
 
     #[test]
@@ -1692,11 +1729,17 @@ mod tests {
 
         // Toggle to show port numbers
         ui_state.show_port_numbers = !ui_state.show_port_numbers;
-        assert!(ui_state.show_port_numbers, "Port numbers should be visible after toggle");
+        assert!(
+            ui_state.show_port_numbers,
+            "Port numbers should be visible after toggle"
+        );
 
         // Toggle back to show service names
         ui_state.show_port_numbers = !ui_state.show_port_numbers;
-        assert!(!ui_state.show_port_numbers, "Service names should be visible after second toggle");
+        assert!(
+            !ui_state.show_port_numbers,
+            "Service names should be visible after second toggle"
+        );
     }
 
     #[test]
@@ -1817,28 +1860,40 @@ mod tests {
 
         // Should be at BandwidthTotal with default descending (false)
         assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(!ui_state.sort_ascending, "BandwidthTotal should default to descending");
+        assert!(
+            !ui_state.sort_ascending,
+            "BandwidthTotal should default to descending"
+        );
 
         // Toggle direction with Shift+S
         ui_state.toggle_sort_direction();
         assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(ui_state.sort_ascending, "After toggle, BandwidthTotal should be ascending");
+        assert!(
+            ui_state.sort_ascending,
+            "After toggle, BandwidthTotal should be ascending"
+        );
 
         // Toggle back
         ui_state.toggle_sort_direction();
         assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
-        assert!(!ui_state.sort_ascending, "After second toggle, BandwidthTotal should be descending again");
+        assert!(
+            !ui_state.sort_ascending,
+            "After second toggle, BandwidthTotal should be descending again"
+        );
 
         // Cycle to Process (next after BandwidthTotal)
         ui_state.cycle_sort_column();
         assert_eq!(ui_state.sort_column, SortColumn::Process);
-        assert!(ui_state.sort_ascending, "Process should default to ascending");
+        assert!(
+            ui_state.sort_ascending,
+            "Process should default to ascending"
+        );
     }
 
     #[test]
     fn test_navigation_consistency_with_sorted_list() {
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
         use crate::network::types::{Protocol, ProtocolState};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         // Create test connections with different process names for sorting
         let mut connections = vec![
@@ -1876,27 +1931,46 @@ mod tests {
 
         // Sort by process name (ascending): alpha, beta, charlie
         connections.sort_by(|a, b| {
-            a.process_name.as_deref().unwrap_or("").cmp(b.process_name.as_deref().unwrap_or(""))
+            a.process_name
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.process_name.as_deref().unwrap_or(""))
         });
 
         // After sorting, "charlie" is now at index 2
         // Selection should still point to "charlie" by key
         let current_index = ui_state.get_selected_index(&connections);
-        assert_eq!(current_index, Some(2), "Selected connection should now be at index 2 after sorting");
+        assert_eq!(
+            current_index,
+            Some(2),
+            "Selected connection should now be at index 2 after sorting"
+        );
 
         // Navigate down: should move from charlie (2) to wrap to alpha (0)
         ui_state.move_selection_down(&connections);
-        assert_eq!(ui_state.get_selected_index(&connections), Some(0), "Should wrap to index 0");
+        assert_eq!(
+            ui_state.get_selected_index(&connections),
+            Some(0),
+            "Should wrap to index 0"
+        );
         assert_eq!(ui_state.selected_connection_key, Some(connections[0].key()));
 
         // Navigate down: should move from alpha (0) to beta (1)
         ui_state.move_selection_down(&connections);
-        assert_eq!(ui_state.get_selected_index(&connections), Some(1), "Should move to index 1");
+        assert_eq!(
+            ui_state.get_selected_index(&connections),
+            Some(1),
+            "Should move to index 1"
+        );
         assert_eq!(ui_state.selected_connection_key, Some(connections[1].key()));
 
         // Navigate up: should move from beta (1) to alpha (0)
         ui_state.move_selection_up(&connections);
-        assert_eq!(ui_state.get_selected_index(&connections), Some(0), "Should move to index 0");
+        assert_eq!(
+            ui_state.get_selected_index(&connections),
+            Some(0),
+            "Should move to index 0"
+        );
         assert_eq!(ui_state.selected_connection_key, Some(connections[0].key()));
     }
 }
