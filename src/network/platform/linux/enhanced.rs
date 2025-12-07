@@ -166,8 +166,19 @@ mod ebpf_enhanced {
                 is_tcp,
             ) {
                 Some(process_info) => {
+                    // Try to resolve the correct main process name using the PID.
+                    // eBPF captures thread names (e.g., "Socket Thread"), but we want
+                    // the main process name (e.g., "firefox"). The procfs cache maps
+                    // PIDs to main process names from /proc/<pid>/comm.
+                    // For short-lived processes (like curl), the PID won't be in the
+                    // cache (process already exited), so we fall back to the eBPF name.
+                    let resolved_name = self
+                        .procfs_lookup
+                        .get_process_name_by_pid(process_info.pid)
+                        .unwrap_or_else(|| process_info.comm.clone());
+
                     debug!(
-                        "eBPF lookup successful for {}:{} -> {}:{} - PID: {}, UID: {}, Comm: {}, Age: {}ns",
+                        "eBPF lookup successful for {}:{} -> {}:{} - PID: {}, UID: {}, eBPF comm: {}, Resolved: {}, Age: {}ns",
                         conn.local_addr.ip(),
                         conn.local_addr.port(),
                         conn.remote_addr.ip(),
@@ -175,9 +186,10 @@ mod ebpf_enhanced {
                         process_info.pid,
                         process_info.uid,
                         process_info.comm,
+                        resolved_name,
                         process_info.timestamp
                     );
-                    Some((process_info.pid, process_info.comm))
+                    Some((process_info.pid, resolved_name))
                 }
                 None => {
                     debug!(

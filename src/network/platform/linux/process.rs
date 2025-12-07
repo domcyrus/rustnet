@@ -7,11 +7,20 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+/// Map of socket inode to (PID, process name)
+type InodeProcessMap = HashMap<u64, (u32, String)>;
+/// Map of PID to process name
+type PidNameMap = HashMap<u32, String>;
+/// Map of connection key to (PID, process name)
+type ConnectionProcessMap = HashMap<ConnectionKey, (u32, String)>;
 
 pub struct LinuxProcessLookup {
     // Cache: ConnectionKey -> (pid, process_name)
     cache: RwLock<ProcessCache>,
+    // Cache: PID -> process_name (for resolving eBPF thread names to main process names)
+    pid_names: RwLock<HashMap<u32, String>>,
 }
 
 struct ProcessCache {
@@ -21,20 +30,36 @@ struct ProcessCache {
 
 impl LinuxProcessLookup {
     pub fn new() -> Result<Self> {
+        // Populate the cache immediately so early connections have process names available.
+        // This ensures the PID→name cache is ready before packet capture starts.
+        let (process_map, pid_names) = Self::build_process_map()?;
+
         Ok(Self {
             cache: RwLock::new(ProcessCache {
-                lookup: HashMap::new(),
-                last_refresh: Instant::now() - Duration::from_secs(3600),
+                lookup: process_map,
+                last_refresh: Instant::now(),
             }),
+            pid_names: RwLock::new(pid_names),
         })
     }
 
-    /// Build connection -> process mapping
-    fn build_process_map() -> Result<HashMap<ConnectionKey, (u32, String)>> {
+    /// Get process name by PID from the cached procfs scan.
+    /// Returns None if PID not found (process may have exited or not yet scanned).
+    pub fn get_process_name_by_pid(&self, pid: u32) -> Option<String> {
+        self.pid_names
+            .read()
+            .expect("pid_names lock poisoned")
+            .get(&pid)
+            .cloned()
+    }
+
+    /// Build connection -> process mapping and PID -> name mapping
+    fn build_process_map() -> Result<(ConnectionProcessMap, PidNameMap)>
+    {
         let mut process_map = HashMap::new();
 
-        // First, build inode -> process mapping
-        let inode_to_process = Self::build_inode_map()?;
+        // First, build inode -> process mapping and PID -> name mapping
+        let (inode_to_process, pid_names) = Self::build_inode_map()?;
 
         // Then, parse network files to map connections -> inodes -> processes
         Self::parse_and_map(
@@ -62,12 +87,13 @@ impl LinuxProcessLookup {
             &mut process_map,
         )?;
 
-        Ok(process_map)
+        Ok((process_map, pid_names))
     }
 
-    /// Build inode -> (pid, process_name) mapping
-    fn build_inode_map() -> Result<HashMap<u64, (u32, String)>> {
+    /// Build inode -> (pid, process_name) mapping and PID -> process_name mapping
+    fn build_inode_map() -> Result<(InodeProcessMap, PidNameMap)> {
         let mut inode_map = HashMap::new();
+        let mut pid_names = HashMap::new();
 
         for entry in fs::read_dir("/proc")? {
             let entry = entry?;
@@ -87,7 +113,10 @@ impl LinuxProcessLookup {
                     .trim()
                     .to_string();
 
-                // Check file descriptors
+                // Store PID -> name mapping for all processes
+                pid_names.insert(pid, process_name.clone());
+
+                // Check file descriptors for socket inodes
                 let fd_dir = path.join("fd");
                 if let Ok(fd_entries) = fs::read_dir(&fd_dir) {
                     for fd_entry in fd_entries.flatten() {
@@ -102,15 +131,15 @@ impl LinuxProcessLookup {
             }
         }
 
-        Ok(inode_map)
+        Ok((inode_map, pid_names))
     }
 
     /// Parse /proc/net file and map connections to processes
     fn parse_and_map(
         path: &str,
         protocol: Protocol,
-        inode_map: &HashMap<u64, (u32, String)>,
-        result: &mut HashMap<ConnectionKey, (u32, String)>,
+        inode_map: &InodeProcessMap,
+        result: &mut ConnectionProcessMap,
     ) -> Result<()> {
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
@@ -201,16 +230,18 @@ impl ProcessLookup for LinuxProcessLookup {
         // The enrichment thread (app.rs:495-500) handles periodic refresh every 5 seconds.
         // IMPORTANT: Do NOT refresh here as it caused high CPU usage when called for every
         // connection without process info (flamegraph showed this was the main bottleneck).
-        let cache = self.cache.read().unwrap();
+        let cache = self.cache.read().expect("process cache lock poisoned");
         cache.lookup.get(&key).cloned()
     }
 
     fn refresh(&self) -> Result<()> {
-        let process_map = Self::build_process_map()?;
+        let (process_map, pid_names) = Self::build_process_map()?;
 
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write().expect("process cache lock poisoned");
         cache.lookup = process_map;
         cache.last_refresh = Instant::now();
+
+        *self.pid_names.write().expect("pid_names lock poisoned") = pid_names;
 
         Ok(())
     }
