@@ -1,9 +1,8 @@
 name: Update AUR Package
 
 on:
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -27,7 +26,8 @@ jobs:
             git fetch --tags
             TAG=$(git tag --sort=-version:refname | head -n1)
           else
-            TAG="${GITHUB_REF_NAME}"
+            # For release event, use the release tag
+            TAG="${{ github.event.release.tag_name }}"
           fi
 
           # Extract version by removing 'v' prefix
@@ -37,30 +37,6 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Extracted version: $VERSION"
           echo "Tag: $TAG"
-
-      - name: Wait for release to be created
-        run: |
-          echo "Waiting for GitHub release to be created..."
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="${{ steps.version.outputs.tag }}"
-
-          # Wait up to 10 minutes for the release to be created
-          for i in {1..60}; do
-            if gh release view "$TAG" &>/dev/null; then
-              echo "Release $TAG found!"
-              break
-            fi
-            echo "Waiting for release... (attempt $i/60)"
-            sleep 10
-          done
-
-          # Verify release exists
-          if ! gh release view "$TAG" &>/dev/null; then
-            echo "Error: Release $TAG not found after waiting"
-            exit 1
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Download release assets and calculate checksums
         id: checksums
