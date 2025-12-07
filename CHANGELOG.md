@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2025-12-07
+
+### Added
+- **Landlock Sandbox for Linux**: Filesystem and network sandboxing for enhanced security
+  - Restricts filesystem access to `/proc` only after initialization
+  - Network sandbox blocks TCP bind/connect on kernel 6.4+
+  - Drops `CAP_NET_RAW` capability after pcap handle is opened
+  - New CLI options: `--no-sandbox` and `--sandbox-strict`
+  - Comprehensive security documentation in SECURITY.md
+- **eBPF Thread Name Resolution**: Resolve eBPF thread names (e.g., 'Socket Thread') to main process names (e.g., 'firefox')
+  - Uses periodic procfs PID cache for resolution
+  - Falls back to eBPF name for short-lived processes
+- **AUR Package Automation**: Automated Arch Linux AUR package publishing workflow
+
+### Changed
+- **Platform Code Reorganization**: Restructured platform-specific code into cleaner module hierarchy
+  - `src/network/platform/linux/` - Linux-specific code with eBPF and sandbox subdirectories
+  - `src/network/platform/macos/` - macOS-specific code
+  - `src/network/platform/freebsd/` - FreeBSD-specific code
+  - `src/network/platform/windows/` - Windows-specific code
+- **QUIC DPI Simplification**: Unified SNI extraction helpers and simplified QUIC protocol handling
+
+### Fixed
+- **Test Determinism**: Made RateTracker tests deterministic with injectable timestamps
+
 ## [0.16.1] - 2025-11-22
 
 ### Fixed
@@ -302,7 +327,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/domcyrus/rustnet/compare/v0.16.1...v0.17.0
+[0.16.1]: https://github.com/domcyrus/rustnet/compare/v0.15.0...v0.16.1
 [0.15.0]: https://github.com/domcyrus/rustnet/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/domcyrus/rustnet/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/domcyrus/rustnet/compare/v0.12.1...v0.13.0
