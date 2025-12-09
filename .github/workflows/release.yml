@@ -152,7 +152,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build on FreeBSD
-        uses: vmactions/freebsd-vm@0cd283ca698d48b59cda444a9948f48a30709627  # v1.2.8
+        uses: vmactions/freebsd-vm@670398e4236735b8b65805c3da44b7a511fb8b27  # v1.3.0
         with:
           usesh: true
           prepare: |
