@@ -439,10 +439,20 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         break;
                     }
 
-                    // Tab navigation
-                    (KeyCode::Tab, _) => {
+                    // Tab navigation (forward)
+                    (KeyCode::Tab, KeyModifiers::NONE) => {
                         ui_state.quit_confirmation = false;
-                        ui_state.selected_tab = (ui_state.selected_tab + 1) % 4;
+                        ui_state.selected_tab = (ui_state.selected_tab + 1) % 5;
+                    }
+
+                    // Shift+Tab navigation (backward)
+                    (KeyCode::BackTab, _) | (KeyCode::Tab, KeyModifiers::SHIFT) => {
+                        ui_state.quit_confirmation = false;
+                        ui_state.selected_tab = if ui_state.selected_tab == 0 {
+                            4 // Wrap to last tab
+                        } else {
+                            ui_state.selected_tab - 1
+                        };
                     }
 
                     // Help toggle
@@ -450,7 +460,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         ui_state.quit_confirmation = false;
                         ui_state.show_help = !ui_state.show_help;
                         if ui_state.show_help {
-                            ui_state.selected_tab = 3; // Switch to help tab
+                            ui_state.selected_tab = 4; // Switch to help tab
                         } else {
                             ui_state.selected_tab = 0; // Back to overview
                         }

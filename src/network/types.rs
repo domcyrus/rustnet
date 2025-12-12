@@ -552,6 +552,241 @@ pub struct DpiInfo {
     pub last_update_time: Instant,
 }
 
+// ============================================================================
+// Traffic History Types (for graph visualization)
+// ============================================================================
+
+/// Chart data points as (time_offset, value) pairs
+pub type ChartData = Vec<(f64, f64)>;
+
+/// A single sample of aggregate traffic data for graphing
+#[derive(Debug, Clone)]
+pub struct TrafficSample {
+    pub timestamp: Instant,
+    pub rx_bytes_per_sec: u64,
+    pub tx_bytes_per_sec: u64,
+    pub connection_count: usize,
+}
+
+/// Ring buffer for aggregate traffic history (used for graphs)
+#[derive(Debug, Clone)]
+pub struct TrafficHistory {
+    samples: VecDeque<TrafficSample>,
+    max_samples: usize,
+}
+
+impl TrafficHistory {
+    pub fn new(max_samples: usize) -> Self {
+        Self {
+            samples: VecDeque::with_capacity(max_samples),
+            max_samples,
+        }
+    }
+
+    /// Add a new sample
+    pub fn add_sample(
+        &mut self,
+        rx_bytes_per_sec: u64,
+        tx_bytes_per_sec: u64,
+        connection_count: usize,
+    ) {
+        let sample = TrafficSample {
+            timestamp: Instant::now(),
+            rx_bytes_per_sec,
+            tx_bytes_per_sec,
+            connection_count,
+        };
+
+        if self.samples.len() >= self.max_samples {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(sample);
+    }
+
+    /// Get RX bytes/sec values for sparkline (newest last), smoothed with moving average
+    pub fn get_rx_sparkline_data(&self, count: usize) -> Vec<u64> {
+        let raw: Vec<u64> = self
+            .samples
+            .iter()
+            .rev()
+            .take(count)
+            .map(|s| s.rx_bytes_per_sec)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        Self::smooth_data(&raw, 3)
+    }
+
+    /// Get TX bytes/sec values for sparkline (newest last), smoothed with moving average
+    pub fn get_tx_sparkline_data(&self, count: usize) -> Vec<u64> {
+        let raw: Vec<u64> = self
+            .samples
+            .iter()
+            .rev()
+            .take(count)
+            .map(|s| s.tx_bytes_per_sec)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+        Self::smooth_data(&raw, 3)
+    }
+
+    /// Get connection count values for sparkline (newest last)
+    pub fn get_connection_sparkline_data(&self, count: usize) -> Vec<u64> {
+        self.samples
+            .iter()
+            .rev()
+            .take(count)
+            .map(|s| s.connection_count as u64)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    }
+
+    /// Apply simple moving average smoothing to data
+    fn smooth_data(data: &[u64], window: usize) -> Vec<u64> {
+        if data.len() < window || window == 0 {
+            return data.to_vec();
+        }
+        data.windows(window)
+            .map(|w| w.iter().sum::<u64>() / window as u64)
+            .collect()
+    }
+
+    /// Get data for Chart widget: (time_offset, rate) pairs, smoothed with moving average
+    /// Time offset is negative seconds from now
+    pub fn get_chart_data(&self) -> (ChartData, ChartData) {
+        let now = Instant::now();
+        let samples: Vec<_> = self.samples.iter().collect();
+
+        // Apply smoothing with window of 3
+        let window = 3;
+        if samples.len() < window {
+            // Not enough data for smoothing, return raw
+            let rx: ChartData = samples
+                .iter()
+                .map(|s| {
+                    let age = now.duration_since(s.timestamp).as_secs_f64();
+                    (-age, s.rx_bytes_per_sec as f64)
+                })
+                .collect();
+            let tx: ChartData = samples
+                .iter()
+                .map(|s| {
+                    let age = now.duration_since(s.timestamp).as_secs_f64();
+                    (-age, s.tx_bytes_per_sec as f64)
+                })
+                .collect();
+            return (rx, tx);
+        }
+
+        let rx: ChartData = samples
+            .windows(window)
+            .map(|w| {
+                let avg_age: f64 = w
+                    .iter()
+                    .map(|s| now.duration_since(s.timestamp).as_secs_f64())
+                    .sum::<f64>()
+                    / window as f64;
+                let avg_rate: f64 =
+                    w.iter().map(|s| s.rx_bytes_per_sec as f64).sum::<f64>() / window as f64;
+                (-avg_age, avg_rate)
+            })
+            .collect();
+
+        let tx: ChartData = samples
+            .windows(window)
+            .map(|w| {
+                let avg_age: f64 = w
+                    .iter()
+                    .map(|s| now.duration_since(s.timestamp).as_secs_f64())
+                    .sum::<f64>()
+                    / window as f64;
+                let avg_rate: f64 =
+                    w.iter().map(|s| s.tx_bytes_per_sec as f64).sum::<f64>() / window as f64;
+                (-avg_age, avg_rate)
+            })
+            .collect();
+
+        (rx, tx)
+    }
+
+    /// Check if we have enough data to display
+    pub fn has_enough_data(&self) -> bool {
+        self.samples.len() >= 2
+    }
+}
+
+impl Default for TrafficHistory {
+    fn default() -> Self {
+        Self::new(60) // 60 seconds of history
+    }
+}
+
+/// Distribution of connections by application protocol (from DPI)
+#[derive(Debug, Clone, Default)]
+pub struct AppProtocolDistribution {
+    pub https_count: usize,
+    pub http_count: usize,
+    pub quic_count: usize,
+    pub dns_count: usize,
+    pub ssh_count: usize,
+    pub other_count: usize,
+}
+
+impl AppProtocolDistribution {
+    /// Calculate distribution from a list of connections
+    pub fn from_connections(connections: &[Connection]) -> Self {
+        let mut dist = Self::default();
+
+        for conn in connections {
+            if let Some(dpi_info) = &conn.dpi_info {
+                match &dpi_info.application {
+                    ApplicationProtocol::Https(_) => dist.https_count += 1,
+                    ApplicationProtocol::Http(_) => dist.http_count += 1,
+                    ApplicationProtocol::Quic(_) => dist.quic_count += 1,
+                    ApplicationProtocol::Dns(_) => dist.dns_count += 1,
+                    ApplicationProtocol::Ssh(_) => dist.ssh_count += 1,
+                }
+            } else {
+                dist.other_count += 1;
+            }
+        }
+
+        dist
+    }
+
+    /// Get total connection count
+    pub fn total(&self) -> usize {
+        self.https_count
+            + self.http_count
+            + self.quic_count
+            + self.dns_count
+            + self.ssh_count
+            + self.other_count
+    }
+
+    /// Get distribution as percentages (label, count, percentage)
+    pub fn as_percentages(&self) -> Vec<(&'static str, usize, f64)> {
+        let total = self.total().max(1) as f64;
+        vec![
+            ("HTTPS", self.https_count, self.https_count as f64 / total * 100.0),
+            ("QUIC", self.quic_count, self.quic_count as f64 / total * 100.0),
+            ("HTTP", self.http_count, self.http_count as f64 / total * 100.0),
+            ("DNS", self.dns_count, self.dns_count as f64 / total * 100.0),
+            ("SSH", self.ssh_count, self.ssh_count as f64 / total * 100.0),
+            ("Other", self.other_count, self.other_count as f64 / total * 100.0),
+        ]
+    }
+}
+
+// ============================================================================
+// Rate Tracking Types
+// ============================================================================
+
 #[derive(Debug, Clone)]
 struct RateSample {
     timestamp: Instant,

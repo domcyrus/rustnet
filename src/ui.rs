@@ -3,12 +3,13 @@ use ratatui::{
     Frame, Terminal as RatatuiTerminal,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols,
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Paragraph, Row, Table, Tabs, Wrap},
+    widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Sparkline, Table, Tabs, Wrap},
 };
 
 use crate::app::{App, AppStats};
-use crate::network::types::{Connection, Protocol};
+use crate::network::types::{AppProtocolDistribution, Connection, Protocol, TrafficHistory};
 
 pub type Terminal<B> = RatatuiTerminal<B>;
 
@@ -406,7 +407,8 @@ pub fn draw(
         0 => draw_overview(f, ui_state, connections, stats, app, content_area)?,
         1 => draw_connection_details(f, ui_state, connections, content_area)?,
         2 => draw_interface_stats(f, app, content_area)?,
-        3 => draw_help(f, content_area)?,
+        3 => draw_graph_tab(f, app, connections, content_area)?,
+        4 => draw_help(f, content_area)?,
         _ => {}
     }
 
@@ -425,6 +427,7 @@ fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect) {
         Span::styled("Overview", Style::default().fg(Color::Green)),
         Span::styled("Details", Style::default().fg(Color::Green)),
         Span::styled("Interfaces", Style::default().fg(Color::Green)),
+        Span::styled("Graph", Style::default().fg(Color::Green)),
         Span::styled("Help", Style::default().fg(Color::Green)),
     ];
 
@@ -708,10 +711,9 @@ fn draw_stats_panel(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(10), // Connection stats (increased for interface line)
-            Constraint::Length(5),  // Traffic stats
             Constraint::Length(7),  // Network stats (TCP analytics + header)
             Constraint::Length(4),  // Security stats (sandbox)
-            Constraint::Min(0),     // Interface stats
+            Constraint::Min(0),     // Interface stats (with traffic graph)
         ])
         .split(area);
 
@@ -763,31 +765,6 @@ fn draw_stats_panel(
         .block(Block::default().borders(Borders::ALL).title("Statistics"))
         .style(Style::default());
     f.render_widget(conn_stats, chunks[0]);
-
-    // Traffic statistics
-    let total_incoming: f64 = connections
-        .iter()
-        .map(|c| c.current_incoming_rate_bps)
-        .sum();
-    let total_outgoing: f64 = connections
-        .iter()
-        .map(|c| c.current_outgoing_rate_bps)
-        .sum();
-
-    let traffic_stats_text: Vec<Line> = vec![
-        Line::from(format!("Total Incoming: {}", format_rate(total_incoming))),
-        Line::from(format!("Total Outgoing: {}", format_rate(total_outgoing))),
-        Line::from(""),
-        Line::from(format!(
-            "Last Update: {:?} ago",
-            stats.last_update.read().unwrap().elapsed()
-        )),
-    ];
-
-    let traffic_stats = Paragraph::new(traffic_stats_text)
-        .block(Block::default().borders(Borders::ALL).title("Traffic"))
-        .style(Style::default());
-    f.render_widget(traffic_stats, chunks[1]);
 
     // Network statistics (TCP analytics)
     let mut tcp_retransmits: u64 = 0;
@@ -844,7 +821,7 @@ fn draw_stats_panel(
                 .title("Network Stats"),
         )
         .style(Style::default());
-    f.render_widget(network_stats, chunks[2]);
+    f.render_widget(network_stats, chunks[1]);
 
     // Security statistics (sandbox) - Linux only shows Landlock info
     #[cfg(target_os = "linux")]
@@ -928,24 +905,105 @@ fn draw_stats_panel(
     let security_stats = Paragraph::new(security_text)
         .block(Block::default().borders(Borders::ALL).title("Security"))
         .style(Style::default());
-    f.render_widget(security_stats, chunks[3]);
+    f.render_widget(security_stats, chunks[2]);
 
-    // Interface statistics
+    // Interface statistics with traffic graph
+    draw_interface_stats_with_graph(f, app, chunks[3])?;
+
+    Ok(())
+}
+
+/// Draw interface stats section with embedded traffic sparklines
+fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Interface Stats (press 'i')");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Split into: sparklines (3 lines) + interface details (remaining)
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Traffic sparklines
+            Constraint::Min(0),    // Interface details
+        ])
+        .split(inner);
+
+    // Draw traffic sparklines
+    let traffic_history = app.get_traffic_history();
+    let sparkline_width = sections[0].width.saturating_sub(8) as usize; // Leave room for labels
+
+    // Split sparkline area into rows
+    let sparkline_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // RX sparkline
+            Constraint::Length(1), // TX sparkline
+            Constraint::Length(1), // Current rates
+        ])
+        .split(sections[0]);
+
+    // RX row: label + sparkline
+    let rx_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(sparkline_rows[0]);
+
+    let rx_label = Paragraph::new("RX").style(Style::default().fg(Color::Green));
+    f.render_widget(rx_label, rx_cols[0]);
+
+    let rx_data = traffic_history.get_rx_sparkline_data(sparkline_width);
+    let rx_sparkline = Sparkline::default()
+        .data(&rx_data)
+        .style(Style::default().fg(Color::Green));
+    f.render_widget(rx_sparkline, rx_cols[1]);
+
+    // TX row: label + sparkline
+    let tx_cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(sparkline_rows[1]);
+
+    let tx_label = Paragraph::new("TX").style(Style::default().fg(Color::Blue));
+    f.render_widget(tx_label, tx_cols[0]);
+
+    let tx_data = traffic_history.get_tx_sparkline_data(sparkline_width);
+    let tx_sparkline = Sparkline::default()
+        .data(&tx_data)
+        .style(Style::default().fg(Color::Blue));
+    f.render_widget(tx_sparkline, tx_cols[1]);
+
+    // Current rates row
+    let (current_rx, current_tx) = rx_data
+        .last()
+        .zip(tx_data.last())
+        .map(|(rx, tx)| (*rx, *tx))
+        .unwrap_or((0, 0));
+
+    let rates_text = Line::from(vec![
+        Span::styled(
+            format!("↓{}/s", format_bytes(current_rx)),
+            Style::default().fg(Color::Green),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("↑{}/s", format_bytes(current_tx)),
+            Style::default().fg(Color::Blue),
+        ),
+    ]);
+    let rates_para = Paragraph::new(rates_text);
+    f.render_widget(rates_para, sparkline_rows[2]);
+
+    // Interface details section (errors/drops only, rates shown in sparklines above)
     let all_interface_stats = app.get_interface_stats();
-    let interface_rates = app.get_interface_rates();
 
     // Filter to show only the captured interface (or active interfaces if "any" or "pktap")
     let captured_interface = app.get_current_interface();
     let filtered_interface_stats: Vec<_> = if let Some(ref iface) = captured_interface {
-        // Windows uses NPF device paths like \Device\NPF_{GUID} which don't match friendly names
-        // For these, show all active interfaces instead of trying exact match
         let is_npf_device = iface.starts_with("\\Device\\NPF_");
 
         if iface == "any" || iface == "pktap" || is_npf_device {
-            // Show interfaces with some data
-            // pktap is a macOS virtual interface that captures from all interfaces,
-            // so we show all active interfaces rather than trying to show stats for pktap itself
-            // On Windows, NPF device names don't match friendly names, so show active interfaces
             all_interface_stats
                 .into_iter()
                 .filter(|s| {
@@ -953,35 +1011,23 @@ fn draw_stats_panel(
                 })
                 .collect()
         } else {
-            // Show only the captured interface
             all_interface_stats
                 .into_iter()
                 .filter(|s| s.interface_name == *iface)
                 .collect()
         }
     } else {
-        // No interface specified yet - show active interfaces
         all_interface_stats
             .into_iter()
             .filter(|s| s.rx_bytes > 0 || s.tx_bytes > 0 || s.rx_packets > 0 || s.tx_packets > 0)
             .collect()
     };
 
-    // Calculate how many interfaces can fit in the available space
-    // Each interface takes 2 lines, and we need 2 lines for borders
-    // Reserve 1 line for the "... N more" message if needed
-    let available_height = chunks[4].height as usize;
-    let lines_for_borders = 2;
-    let lines_per_interface = 2;
-    let lines_for_more_message = 1;
+    // Calculate how many interfaces can fit (1 line per interface now)
+    let available_height = sections[1].height as usize;
+    let max_interfaces = available_height.saturating_sub(1); // Reserve 1 for "more" message
 
-    let max_interfaces = if available_height > lines_for_borders + lines_for_more_message {
-        (available_height - lines_for_borders - lines_for_more_message) / lines_per_interface
-    } else {
-        0
-    };
-
-    let interface_stats_text: Vec<Line> = if filtered_interface_stats.is_empty() {
+    let interface_text: Vec<Line> = if filtered_interface_stats.is_empty() {
         vec![Line::from(Span::styled(
             "No interface stats available",
             Style::default().fg(Color::Gray),
@@ -1006,37 +1052,20 @@ fn draw_stats_panel(
                 Style::default().fg(Color::Green)
             };
 
-            // Get rates for this interface (if available)
-            let rate_display = if let Some(rates) = interface_rates.get(&stat.interface_name) {
-                format!(
-                    "{}/s ↓ / {}/s ↑",
-                    format_bytes(rates.rx_bytes_per_sec),
-                    format_bytes(rates.tx_bytes_per_sec)
-                )
-            } else {
-                "Calculating...".to_string()
-            };
-
-            // Interface name and rate on first line
+            // Show interface name with errors/drops on single line
             lines.push(Line::from(vec![
                 Span::raw(format!("{}: ", stat.interface_name)),
-                Span::raw(rate_display),
-            ]));
-
-            // Errors and drops on second line (indented) - these are cumulative totals
-            lines.push(Line::from(vec![
-                Span::raw("  Errors (Total): "),
+                Span::raw("Err: "),
                 Span::styled(format!("{}", total_errors), error_style),
-                Span::raw("  Drops (Total): "),
+                Span::raw("  Drop: "),
                 Span::styled(format!("{}", total_drops), drop_style),
             ]));
         }
 
-        // Only show "more" message if there are actually more interfaces that don't fit
         if filtered_interface_stats.len() > num_to_show {
             lines.push(Line::from(Span::styled(
                 format!(
-                    "... and {} more (press 'i' for details)",
+                    "... {} more (press 'i')",
                     filtered_interface_stats.len() - num_to_show
                 ),
                 Style::default().fg(Color::Gray),
@@ -1045,16 +1074,293 @@ fn draw_stats_panel(
         lines
     };
 
-    let interface_stats_widget = Paragraph::new(interface_stats_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Interface Stats (press 'i')"),
-        )
-        .style(Style::default());
-    f.render_widget(interface_stats_widget, chunks[4]);
+    let interface_para = Paragraph::new(interface_text);
+    f.render_widget(interface_para, sections[1]);
 
     Ok(())
+}
+
+/// Draw the Graph tab with traffic visualization
+fn draw_graph_tab(
+    f: &mut Frame,
+    app: &App,
+    connections: &[Connection],
+    area: Rect,
+) -> Result<()> {
+    let traffic_history = app.get_traffic_history();
+
+    // Main layout: top row (charts + legend), bottom row (info)
+    let main_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(0),          // Charts
+            Constraint::Length(1),       // Legend row
+            Constraint::Percentage(45),  // App distribution + top processes
+        ])
+        .split(area);
+
+    // Top row: traffic chart (70%) + connections sparkline (30%)
+    let top_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(main_chunks[0]);
+
+    // Legend row: traffic legend (70%) + empty/connections count (30%)
+    let legend_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(main_chunks[1]);
+
+    // Bottom row: app distribution (50%) + top processes (50%)
+    let bottom_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(main_chunks[2]);
+
+    // Draw components
+    draw_traffic_chart(f, &traffic_history, top_chunks[0]);
+    draw_connections_sparkline(f, &traffic_history, top_chunks[1]);
+    draw_traffic_legend(f, legend_chunks[0]);
+    // legend_chunks[1] intentionally empty for alignment
+    draw_app_distribution(f, connections, bottom_chunks[0]);
+    draw_top_processes(f, connections, bottom_chunks[1]);
+
+    Ok(())
+}
+
+/// Draw the full traffic chart with RX/TX lines
+fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Traffic Over Time (60s)");
+
+    if !history.has_enough_data() {
+        let placeholder = Paragraph::new("Collecting data...")
+            .block(block)
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(placeholder, area);
+        return;
+    }
+
+    let (rx_data, tx_data) = history.get_chart_data();
+
+    // Find max value for Y axis scaling
+    let max_rate = rx_data
+        .iter()
+        .chain(tx_data.iter())
+        .map(|(_, y)| *y)
+        .fold(0.0f64, |a, b| a.max(b))
+        .max(1024.0); // Minimum 1 KB/s scale
+
+    let datasets = vec![
+        Dataset::default()
+            .name("RX ↓")
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Green))
+            .data(&rx_data),
+        Dataset::default()
+            .name("TX ↑")
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Blue))
+            .data(&tx_data),
+    ];
+
+    let chart = Chart::new(datasets)
+        .block(block)
+        .x_axis(
+            Axis::default()
+                .title("Time")
+                .style(Style::default().fg(Color::Gray))
+                .bounds([-60.0, 0.0])
+                .labels(vec![
+                    Line::from("-60s"),
+                    Line::from("-30s"),
+                    Line::from("now"),
+                ]),
+        )
+        .y_axis(
+            Axis::default()
+                .title("Rate")
+                .style(Style::default().fg(Color::Gray))
+                .bounds([0.0, max_rate])
+                .labels(vec![
+                    Line::from("0"),
+                    Line::from(format_rate_compact(max_rate / 2.0)),
+                    Line::from(format_rate_compact(max_rate)),
+                ]),
+        );
+
+    f.render_widget(chart, area);
+}
+
+/// Draw connections count sparkline
+fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Connections");
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if !history.has_enough_data() {
+        let placeholder = Paragraph::new("Collecting...")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(placeholder, inner);
+        return;
+    }
+
+    // Layout: sparkline + current count label
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(inner);
+
+    let width = inner.width as usize;
+    let conn_data = history.get_connection_sparkline_data(width);
+
+    let sparkline = Sparkline::default()
+        .data(&conn_data)
+        .style(Style::default().fg(Color::Cyan));
+    f.render_widget(sparkline, chunks[0]);
+
+    // Current connection count label
+    let current_count = conn_data.last().copied().unwrap_or(0);
+    let label = Paragraph::new(format!("{} connections", current_count))
+        .style(Style::default().fg(Color::White));
+    f.render_widget(label, chunks[1]);
+}
+
+/// Draw application protocol distribution
+fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Application Distribution");
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let dist = AppProtocolDistribution::from_connections(connections);
+    let percentages = dist.as_percentages();
+
+    // Filter out zero-count protocols and create bars
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (label, count, pct) in percentages {
+        if count == 0 {
+            continue;
+        }
+
+        // Create a bar visualization
+        let bar_width = (inner.width as f64 * 0.6) as usize; // 60% for bar
+        let filled = ((pct / 100.0) * bar_width as f64) as usize;
+        let bar: String = "█".repeat(filled) + &"░".repeat(bar_width.saturating_sub(filled));
+
+        let color = match label {
+            "HTTPS" => Color::Green,
+            "QUIC" => Color::Cyan,
+            "HTTP" => Color::Yellow,
+            "DNS" => Color::Magenta,
+            "SSH" => Color::Blue,
+            _ => Color::Gray,
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:6}", label), Style::default().fg(color)),
+            Span::raw(" "),
+            Span::styled(bar, Style::default().fg(color)),
+            Span::raw(format!(" {:5.1}%", pct)),
+        ]));
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No connections",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, inner);
+}
+
+/// Draw top processes by bandwidth
+fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
+    use std::collections::HashMap;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Top Processes");
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Aggregate traffic by process
+    let mut process_traffic: HashMap<String, f64> = HashMap::new();
+    for conn in connections {
+        let name = conn
+            .process_name
+            .clone()
+            .unwrap_or_else(|| "Unknown".to_string());
+        let traffic = conn.current_incoming_rate_bps + conn.current_outgoing_rate_bps;
+        *process_traffic.entry(name).or_insert(0.0) += traffic;
+    }
+
+    // Sort by traffic descending, filter out processes with no traffic
+    let mut sorted: Vec<_> = process_traffic
+        .into_iter()
+        .filter(|(_, rate)| *rate > 0.0)
+        .collect();
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Create rows for top 5 processes
+    let rows: Vec<Row> = sorted
+        .into_iter()
+        .take(5)
+        .map(|(name, rate)| {
+            let display_name = if name.len() > 20 {
+                format!("{}...", &name[..17])
+            } else {
+                name
+            };
+            Row::new(vec![
+                Cell::from(display_name),
+                Cell::from(format_rate(rate)).style(Style::default().fg(Color::Cyan)),
+            ])
+        })
+        .collect();
+
+    if rows.is_empty() {
+        let placeholder = Paragraph::new("No active processes")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(placeholder, inner);
+        return;
+    }
+
+    let table = Table::new(
+        rows,
+        [Constraint::Percentage(60), Constraint::Percentage(40)],
+    )
+    .header(
+        Row::new(vec!["Process", "Rate"])
+            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    );
+
+    f.render_widget(table, inner);
+}
+
+/// Draw chart legend
+fn draw_traffic_legend(f: &mut Frame, area: Rect) {
+    let legend = Paragraph::new(Line::from(vec![
+        Span::styled("▬", Style::default().fg(Color::Green)),
+        Span::raw(" RX (incoming)  "),
+        Span::styled("▬", Style::default().fg(Color::Blue)),
+        Span::raw(" TX (outgoing)"),
+    ]))
+    .style(Style::default().fg(Color::DarkGray));
+
+    f.render_widget(legend, area);
 }
 
 /// Draw connection details view
@@ -1435,6 +1741,33 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
+            "Tabs:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from(vec![
+            Span::styled("  Overview ", Style::default().fg(Color::Green)),
+            Span::raw("Connection list with mini traffic graph"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Details ", Style::default().fg(Color::Green)),
+            Span::raw("Full details for selected connection"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Interfaces ", Style::default().fg(Color::Green)),
+            Span::raw("Network interface statistics"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Graph ", Style::default().fg(Color::Green)),
+            Span::raw("Traffic charts and protocol distribution"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Help ", Style::default().fg(Color::Green)),
+            Span::raw("This help screen"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
             "Connection Colors:",
             Style::default()
                 .fg(Color::Cyan)
@@ -1670,12 +2003,12 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
         }
     } else if !ui_state.filter_query.is_empty() {
         format!(
-            " Press 'h' for help | '/' to filter | Showing {} filtered connections (Esc to clear filter) ",
+            " 'h' help | Tab/Shift+Tab switch tabs | Showing {} filtered connections (Esc to clear) ",
             connection_count
         )
     } else {
         format!(
-            " Press 'h' for help | '/' to filter & navigate | 'c' to copy address | Connections: {} ",
+            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'c' copy | Connections: {} ",
             connection_count
         )
     };
