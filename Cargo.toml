@@ -24,7 +24,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-arboard = "3.6"
+arboard = { version = "3.6", features = ["wayland-data-control"] }
 crossterm = "0.29"
 crossbeam = "0.8"
 dashmap = "6.1"

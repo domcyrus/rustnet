@@ -20,7 +20,7 @@ use crate::network::{
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
     services::ServiceLookup,
-    types::{ApplicationProtocol, Connection, Protocol},
+    types::{ApplicationProtocol, Connection, Protocol, TrafficHistory},
 };
 
 // Platform-specific interface stats provider
@@ -224,6 +224,9 @@ pub struct App {
     /// Interface rates (per-second rates)
     interface_rates: Arc<DashMap<String, InterfaceRates>>,
 
+    /// Traffic history for graph visualization
+    traffic_history: Arc<RwLock<TrafficHistory>>,
+
     /// Sandbox status (Linux Landlock)
     #[cfg(target_os = "linux")]
     sandbox_info: Arc<RwLock<SandboxInfo>>,
@@ -251,6 +254,7 @@ impl App {
             process_detection_method: Arc::new(RwLock::new(String::from("initializing..."))),
             interface_stats: Arc::new(DashMap::new()),
             interface_rates: Arc::new(DashMap::new()),
+            traffic_history: Arc::new(RwLock::new(TrafficHistory::new(60))), // 60 seconds of history
             #[cfg(target_os = "linux")]
             sandbox_info: Arc::new(RwLock::new(SandboxInfo::default())),
         })
@@ -280,6 +284,9 @@ impl App {
 
         // Start interface stats collection thread
         self.start_interface_stats_thread()?;
+
+        // Start traffic history thread for graph visualization
+        self.start_traffic_history_thread()?;
 
         // Mark loading as complete after a short delay
         let is_loading = Arc::clone(&self.is_loading);
@@ -863,6 +870,49 @@ impl App {
         Ok(())
     }
 
+    /// Start traffic history thread for graph visualization
+    fn start_traffic_history_thread(&self) -> Result<()> {
+        let should_stop = Arc::clone(&self.should_stop);
+        let traffic_history = Arc::clone(&self.traffic_history);
+        let interface_rates = Arc::clone(&self.interface_rates);
+        let connections_snapshot = Arc::clone(&self.connections_snapshot);
+
+        thread::spawn(move || {
+            info!("Traffic history thread started");
+
+            loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    info!("Traffic history thread stopping");
+                    break;
+                }
+
+                // Aggregate rates from all interfaces
+                let (total_rx, total_tx) = interface_rates.iter().fold((0u64, 0u64), |(rx, tx), entry| {
+                    (
+                        rx + entry.value().rx_bytes_per_sec,
+                        tx + entry.value().tx_bytes_per_sec,
+                    )
+                });
+
+                // Get connection count from snapshot
+                let connection_count = connections_snapshot
+                    .read()
+                    .map(|snap| snap.len())
+                    .unwrap_or(0);
+
+                // Add sample to traffic history
+                if let Ok(mut history) = traffic_history.write() {
+                    history.add_sample(total_rx, total_tx, connection_count);
+                }
+
+                // Update every 1 second
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
+
+        Ok(())
+    }
+
     /// Start cleanup thread to remove old connections
     fn start_cleanup_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
@@ -978,6 +1028,14 @@ impl App {
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
             .collect()
+    }
+
+    /// Get traffic history for graph visualization
+    pub fn get_traffic_history(&self) -> TrafficHistory {
+        self.traffic_history
+            .read()
+            .map(|h| h.clone())
+            .unwrap_or_default()
     }
 
     /// Get application statistics
