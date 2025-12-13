@@ -67,6 +67,14 @@ fn main() -> Result<()> {
         info!("JSON logging enabled: {}", json_log_path);
     }
 
+    if let Some(bpf_filter) = matches.get_one::<String>("bpf-filter") {
+        let filter = bpf_filter.trim();
+        if !filter.is_empty() {
+            config.bpf_filter = Some(filter.to_string());
+            info!("Using BPF filter: {}", filter);
+        }
+    }
+
     // Set up terminal
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;

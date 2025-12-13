@@ -57,6 +57,14 @@ pub fn build_cli() -> Command {
                 .required(false),
         )
         .arg(
+            Arg::new("bpf-filter")
+                .short('f')
+                .long("bpf-filter")
+                .value_name("FILTER")
+                .help("BPF filter expression for packet capture (e.g., \"tcp port 443\")")
+                .required(false),
+        )
+        .arg(
             Arg::new("no-sandbox")
                 .long("no-sandbox")
                 .help("Disable Landlock sandboxing (Linux only)")
