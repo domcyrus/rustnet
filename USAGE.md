@@ -79,6 +79,7 @@ Options:
       --no-dpi                           Disable deep packet inspection
   -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
       --json-log <FILE>                  Enable JSON logging of connection events to specified file
+  -f, --bpf-filter <FILTER>              BPF filter expression for packet capture
       --no-sandbox                       Disable Landlock sandboxing (Linux only)
       --sandbox-strict                   Require full sandbox enforcement or exit (Linux only)
   -h, --help                             Print help
@@ -168,6 +169,34 @@ Disable Deep Packet Inspection (DPI). This reduces CPU usage by 20-40% on high-t
 - QUIC protocol detection
 
 Useful for performance-constrained environments or when application-level details aren't needed.
+
+#### `-f, --bpf-filter <FILTER>`
+
+Apply a BPF (Berkeley Packet Filter) expression to filter packets at capture time. This is more efficient than application-level filtering as packets are filtered in the kernel before reaching RustNet.
+
+**Common filter expressions:**
+
+```bash
+# Filter by port
+rustnet --bpf-filter "port 443"
+rustnet --bpf-filter "port 80 or port 8080"
+
+# Filter by host
+rustnet --bpf-filter "host 192.168.1.1"
+rustnet --bpf-filter "net 10.0.0.0/8"
+
+# Filter by protocol
+rustnet --bpf-filter "tcp"
+rustnet --bpf-filter "udp port 53"
+
+# Combine filters
+rustnet --bpf-filter "tcp port 443 and host github.com"
+
+# Exclude traffic
+rustnet --bpf-filter "not port 22"
+```
+
+**Note:** BPF filter syntax follows the pcap-filter(7) format. Invalid filters will cause RustNet to exit with an error. Use `man pcap-filter` for complete syntax documentation.
 
 #### `-l, --log-level <LEVEL>`
 
