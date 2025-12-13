@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AppStats};
-use crate::network::types::{AppProtocolDistribution, Connection, Protocol, TrafficHistory};
+use crate::network::types::{AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory};
 
 pub type Terminal<B> = RatatuiTerminal<B>;
 
@@ -1089,13 +1089,14 @@ fn draw_graph_tab(
 ) -> Result<()> {
     let traffic_history = app.get_traffic_history();
 
-    // Main layout: top row (charts + legend), bottom row (info)
+    // Main layout: traffic chart, health chart, legend, bottom row
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),          // Charts
+            Constraint::Percentage(35),  // Traffic chart
+            Constraint::Percentage(20),  // Network health + TCP states
             Constraint::Length(1),       // Legend row
-            Constraint::Percentage(45),  // App distribution + top processes
+            Constraint::Min(0),          // App distribution + top processes
         ])
         .split(area);
 
@@ -1105,23 +1106,35 @@ fn draw_graph_tab(
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(main_chunks[0]);
 
-    // Legend row: traffic legend (70%) + empty/connections count (30%)
-    let legend_chunks = Layout::default()
+    // Health row: health chart (70%) + TCP states (30%)
+    let health_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(main_chunks[1]);
+
+    // Legend row: traffic legend (35%) + health legend (35%) + empty (30%)
+    let legend_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Percentage(35),
+            Constraint::Percentage(30),
+        ])
+        .split(main_chunks[2]);
 
     // Bottom row: app distribution (50%) + top processes (50%)
     let bottom_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(main_chunks[2]);
+        .split(main_chunks[3]);
 
     // Draw components
     draw_traffic_chart(f, &traffic_history, top_chunks[0]);
     draw_connections_sparkline(f, &traffic_history, top_chunks[1]);
+    draw_health_chart(f, &traffic_history, health_chunks[0]);
+    draw_tcp_states(f, connections, health_chunks[1]);
     draw_traffic_legend(f, legend_chunks[0]);
-    // legend_chunks[1] intentionally empty for alignment
+    draw_health_legend(f, legend_chunks[1]);
     draw_app_distribution(f, connections, bottom_chunks[0]);
     draw_top_processes(f, connections, bottom_chunks[1]);
 
@@ -1361,6 +1374,209 @@ fn draw_traffic_legend(f: &mut Frame, area: Rect) {
     .style(Style::default().fg(Color::DarkGray));
 
     f.render_widget(legend, area);
+}
+
+/// Draw the network health chart with RTT and packet loss
+fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Network Health (60s)");
+
+    if !history.has_enough_data() {
+        let placeholder = Paragraph::new("Collecting data...")
+            .block(block)
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(placeholder, area);
+        return;
+    }
+
+    let (loss_data, rtt_data) = history.get_health_chart_data();
+
+    // Find max values for Y axis scaling
+    let max_loss = loss_data
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(0.0f64, |a, b| a.max(b))
+        .max(1.0); // Minimum 1% scale
+
+    let max_rtt = rtt_data
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(0.0f64, |a, b| a.max(b))
+        .max(10.0); // Minimum 10ms scale
+
+    // Scale RTT data to fit on the same chart as loss percentage
+    // RTT values (ms) scaled to match loss percentage range
+    let scaled_rtt: Vec<(f64, f64)> = rtt_data
+        .iter()
+        .map(|(x, y)| (*x, *y * max_loss / max_rtt))
+        .collect();
+
+    // Create datasets
+    let mut datasets = vec![
+        Dataset::default()
+            .name("Loss %")
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::Red))
+            .data(&loss_data),
+    ];
+
+    // Only add RTT if we have data
+    if !scaled_rtt.is_empty() {
+        datasets.push(
+            Dataset::default()
+                .name("RTT")
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .style(Style::default().fg(Color::Yellow))
+                .data(&scaled_rtt),
+        );
+    }
+
+    // Format Y-axis labels
+    let loss_label = if max_loss >= 1.0 {
+        format!("{:.1}%", max_loss)
+    } else {
+        format!("{:.2}%", max_loss)
+    };
+
+    let rtt_label = if max_rtt >= 100.0 {
+        format!("{:.0}ms", max_rtt)
+    } else {
+        format!("{:.1}ms", max_rtt)
+    };
+
+    let chart = Chart::new(datasets)
+        .block(block)
+        .x_axis(
+            Axis::default()
+                .title("Time")
+                .style(Style::default().fg(Color::Gray))
+                .bounds([-60.0, 0.0])
+                .labels(vec![
+                    Line::from("-60s"),
+                    Line::from("-30s"),
+                    Line::from("now"),
+                ]),
+        )
+        .y_axis(
+            Axis::default()
+                .title(format!("Loss / RTT({})", rtt_label))
+                .style(Style::default().fg(Color::Gray))
+                .bounds([0.0, max_loss])
+                .labels(vec![
+                    Line::from("0"),
+                    Line::from(format!("{:.1}%", max_loss / 2.0)),
+                    Line::from(loss_label),
+                ]),
+        );
+
+    f.render_widget(chart, area);
+}
+
+/// Draw network health legend
+fn draw_health_legend(f: &mut Frame, area: Rect) {
+    let legend = Paragraph::new(Line::from(vec![
+        Span::styled("▬", Style::default().fg(Color::Red)),
+        Span::raw(" Packet Loss  "),
+        Span::styled("▬", Style::default().fg(Color::Yellow)),
+        Span::raw(" RTT (latency)"),
+    ]))
+    .style(Style::default().fg(Color::DarkGray));
+
+    f.render_widget(legend, area);
+}
+
+/// Draw TCP connection states breakdown
+fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
+    use std::collections::HashMap;
+
+    // Count TCP states
+    let mut state_counts: HashMap<&str, usize> = HashMap::new();
+    for conn in connections {
+        if conn.protocol == Protocol::TCP
+            && let ProtocolState::Tcp(tcp_state) = &conn.protocol_state
+        {
+            let state_name = match tcp_state {
+                TcpState::Established => "ESTAB",
+                TcpState::SynSent => "SYN_SENT",
+                TcpState::SynReceived => "SYN_RECV",
+                TcpState::FinWait1 => "FIN_WAIT1",
+                TcpState::FinWait2 => "FIN_WAIT2",
+                TcpState::TimeWait => "TIME_WAIT",
+                TcpState::CloseWait => "CLOSE_WAIT",
+                TcpState::LastAck => "LAST_ACK",
+                TcpState::Closing => "CLOSING",
+                TcpState::Closed => "CLOSED",
+                TcpState::Listen => "LISTEN",
+                TcpState::Unknown => "UNKNOWN",
+            };
+            *state_counts.entry(state_name).or_insert(0) += 1;
+        }
+    }
+
+    // Fixed order based on connection lifecycle (most important first)
+    const STATE_ORDER: &[&str] = &[
+        "ESTAB", "SYN_SENT", "SYN_RECV", "FIN_WAIT1", "FIN_WAIT2",
+        "TIME_WAIT", "CLOSE_WAIT", "LAST_ACK", "CLOSING", "CLOSED",
+        "LISTEN", "UNKNOWN",
+    ];
+
+    // Build ordered list with only non-zero counts
+    let states: Vec<_> = STATE_ORDER
+        .iter()
+        .filter_map(|&name| state_counts.get(name).map(|&count| (name, count)))
+        .collect();
+
+    let block = Block::default().borders(Borders::ALL).title("TCP States");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if states.is_empty() {
+        let text = Paragraph::new("No TCP connections")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(text, inner);
+        return;
+    }
+
+    // Find max count for bar scaling
+    let max_count = states.iter().map(|(_, c)| *c).max().unwrap_or(1);
+    let bar_width = inner.width.saturating_sub(15) as usize; // Leave room for label + count
+
+    // Build lines for each state (limit to available height)
+    let max_rows = inner.height as usize;
+    let lines: Vec<Line> = states
+        .iter()
+        .take(max_rows)
+        .map(|(name, count)| {
+            let bar_len = if max_count > 0 {
+                (*count * bar_width) / max_count
+            } else {
+                0
+            };
+            let bar = "█".repeat(bar_len.max(1));
+
+            // Color based on state health
+            let color = match *name {
+                "ESTAB" => Color::Green,
+                "SYN_SENT" | "SYN_RECV" => Color::Yellow,
+                "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" => Color::Cyan,
+                "CLOSE_WAIT" | "LAST_ACK" | "CLOSING" => Color::Magenta,
+                "CLOSED" => Color::DarkGray,
+                _ => Color::White,
+            };
+
+            Line::from(vec![
+                Span::styled(format!("{:>10} ", name), Style::default().fg(color)),
+                Span::styled(bar, Style::default().fg(color)),
+                Span::raw(format!(" {}", count)),
+            ])
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, inner);
 }
 
 /// Draw connection details view
@@ -1610,6 +1826,22 @@ fn draw_connection_details(
         details_text.push(Line::from(vec![
             Span::styled("Window Size: ", Style::default().fg(Color::Yellow)),
             Span::raw(analytics.last_window_size.to_string()),
+        ]));
+    }
+
+    // Add initial RTT measurement if available
+    if let Some(rtt) = conn.initial_rtt {
+        let rtt_ms = rtt.as_secs_f64() * 1000.0;
+        let rtt_color = if rtt_ms < 50.0 {
+            Color::Green
+        } else if rtt_ms < 150.0 {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+        details_text.push(Line::from(vec![
+            Span::styled("Initial RTT: ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{:.1}ms", rtt_ms), Style::default().fg(rtt_color)),
         ]));
     }
 

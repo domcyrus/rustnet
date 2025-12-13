@@ -20,7 +20,7 @@ use crate::network::{
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
     services::ServiceLookup,
-    types::{ApplicationProtocol, Connection, Protocol, TrafficHistory},
+    types::{ApplicationProtocol, Connection, ConnectionKey, Protocol, RttTracker, TrafficHistory},
 };
 
 // Platform-specific interface stats provider
@@ -227,6 +227,9 @@ pub struct App {
     /// Traffic history for graph visualization
     traffic_history: Arc<RwLock<TrafficHistory>>,
 
+    /// RTT tracker for latency measurement
+    rtt_tracker: Arc<Mutex<RttTracker>>,
+
     /// Sandbox status (Linux Landlock)
     #[cfg(target_os = "linux")]
     sandbox_info: Arc<RwLock<SandboxInfo>>,
@@ -255,6 +258,7 @@ impl App {
             interface_stats: Arc::new(DashMap::new()),
             interface_rates: Arc::new(DashMap::new()),
             traffic_history: Arc::new(RwLock::new(TrafficHistory::new(60))), // 60 seconds of history
+            rtt_tracker: Arc::new(Mutex::new(RttTracker::new())),
             #[cfg(target_os = "linux")]
             sandbox_info: Arc::new(RwLock::new(SandboxInfo::default())),
         })
@@ -458,6 +462,7 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let linktype_storage = Arc::clone(&self.linktype);
         let json_log_path = self.config.json_log_file.clone();
+        let rtt_tracker = Arc::clone(&self.rtt_tracker);
         let parser_config = ParserConfig {
             enable_dpi: self.config.enable_dpi,
             ..Default::default()
@@ -498,7 +503,7 @@ impl App {
                 let mut parsed_count = 0;
                 for packet_data in &batch {
                     if let Some(parsed) = parser.parse_packet(packet_data) {
-                        update_connection(&connections, parsed, &stats, &json_log_path);
+                        update_connection(&connections, parsed, &stats, &json_log_path, &rtt_tracker);
                         parsed_count += 1;
                     }
                 }
@@ -876,9 +881,15 @@ impl App {
         let traffic_history = Arc::clone(&self.traffic_history);
         let interface_rates = Arc::clone(&self.interface_rates);
         let connections_snapshot = Arc::clone(&self.connections_snapshot);
+        let stats = Arc::clone(&self.stats);
+        let rtt_tracker = Arc::clone(&self.rtt_tracker);
 
         thread::spawn(move || {
             info!("Traffic history thread started");
+
+            // Track previous values for delta calculation
+            let mut prev_packets: u64 = 0;
+            let mut prev_retransmits: u64 = 0;
 
             loop {
                 if should_stop.load(Ordering::Relaxed) {
@@ -900,9 +911,32 @@ impl App {
                     .map(|snap| snap.len())
                     .unwrap_or(0);
 
+                // Get packet and retransmit counts (calculate deltas)
+                let current_packets = stats.packets_processed.load(Ordering::Relaxed);
+                let current_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
+
+                let packets_delta = current_packets.saturating_sub(prev_packets);
+                let retransmits_delta = current_retransmits.saturating_sub(prev_retransmits);
+
+                prev_packets = current_packets;
+                prev_retransmits = current_retransmits;
+
+                // Get average RTT from tracker (last 1 second window)
+                let avg_rtt_ms = rtt_tracker
+                    .lock()
+                    .ok()
+                    .and_then(|mut tracker| tracker.take_average_rtt(1));
+
                 // Add sample to traffic history
                 if let Ok(mut history) = traffic_history.write() {
-                    history.add_sample(total_rx, total_tx, connection_count);
+                    history.add_sample(
+                        total_rx,
+                        total_tx,
+                        connection_count,
+                        packets_delta,
+                        retransmits_delta,
+                        avg_rtt_ms,
+                    );
                 }
 
                 // Update every 1 second
@@ -1133,9 +1167,30 @@ fn update_connection(
     parsed: ParsedPacket,
     _stats: &AppStats,
     json_log_path: &Option<String>,
+    rtt_tracker: &Arc<Mutex<RttTracker>>,
 ) {
     let mut key = parsed.connection_key.clone();
     let now = SystemTime::now();
+
+    // Track RTT for TCP connections using SYN/SYN-ACK timing
+    let mut measured_rtt: Option<std::time::Duration> = None;
+    if parsed.protocol == Protocol::TCP
+        && let Some(tcp_header) = &parsed.tcp_header
+    {
+        let conn_key = ConnectionKey::new(parsed.local_addr, parsed.remote_addr);
+
+        if tcp_header.flags.syn && !tcp_header.flags.ack {
+            // This is a SYN packet (outgoing connection initiation)
+            if let Ok(mut tracker) = rtt_tracker.lock() {
+                tracker.record_syn(conn_key);
+            }
+        } else if tcp_header.flags.syn && tcp_header.flags.ack {
+            // This is a SYN-ACK packet (connection response)
+            if let Ok(mut tracker) = rtt_tracker.lock() {
+                measured_rtt = tracker.record_syn_ack(&conn_key);
+            }
+        }
+    }
 
     // For QUIC packets, check if we have a connection ID mapping
     if parsed.protocol == Protocol::UDP
@@ -1163,8 +1218,17 @@ fn update_connection(
     connections
         .entry(key.clone())
         .and_modify(|conn| {
-            let (updated_conn, (new_retransmits, new_out_of_order, new_fast_retransmits)) =
+            let (mut updated_conn, (new_retransmits, new_out_of_order, new_fast_retransmits)) =
                 merge_packet_into_connection(conn.clone(), &parsed, now);
+
+            // Store RTT measurement if we got one from SYN-ACK
+            if let Some(rtt) = measured_rtt
+                && updated_conn.initial_rtt.is_none()
+            {
+                updated_conn.initial_rtt = Some(rtt);
+                debug!("RTT measured for {}: {:?}", key, rtt);
+            }
+
             *conn = updated_conn;
 
             // Update global statistics
@@ -1186,7 +1250,12 @@ fn update_connection(
         })
         .or_insert_with(|| {
             debug!("New connection detected: {}", key);
-            let conn = create_connection_from_packet(&parsed, now);
+            let mut conn = create_connection_from_packet(&parsed, now);
+
+            // Store RTT measurement if we got one (unlikely for new connection, but handle it)
+            if let Some(rtt) = measured_rtt {
+                conn.initial_rtt = Some(rtt);
+            }
 
             // Log new connection event if JSON logging is enabled
             if let Some(log_path) = json_log_path {
