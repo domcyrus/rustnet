@@ -573,28 +573,52 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                             && let Some(conn) = connections.get(selected_idx)
                         {
                             let remote_addr = conn.remote_addr.to_string();
-                            match Clipboard::new() {
-                                Ok(mut clipboard) => {
-                                    if let Err(e) = clipboard.set_text(&remote_addr) {
-                                        error!("Failed to copy to clipboard: {}", e);
-                                        ui_state.clipboard_message = Some((
-                                            format!("Failed to copy: {}", e),
-                                            std::time::Instant::now(),
-                                        ));
-                                    } else {
-                                        info!("Copied {} to clipboard", remote_addr);
-                                        ui_state.clipboard_message = Some((
-                                            format!("Copied {} to clipboard", remote_addr),
-                                            std::time::Instant::now(),
-                                        ));
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Failed to access clipboard: {}", e);
+
+                            // Try arboard first, fall back to wl-copy for Wayland (GNOME doesn't
+                            // support the wlr-data-control protocol that arboard relies on)
+                            let result = Clipboard::new()
+                                .and_then(|mut cb| cb.set_text(&remote_addr));
+
+                            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                            let result = result.or_else(|_| {
+                                std::process::Command::new("wl-copy")
+                                    .arg(&remote_addr)
+                                    .status()
+                                    .map_err(|e| arboard::Error::Unknown {
+                                        description: e.to_string(),
+                                    })
+                                    .and_then(|s| {
+                                        if s.success() {
+                                            Ok(())
+                                        } else {
+                                            Err(arboard::Error::Unknown {
+                                                description: "wl-copy failed".to_string(),
+                                            })
+                                        }
+                                    })
+                            });
+
+                            match result {
+                                Ok(()) => {
+                                    info!("Copied {} to clipboard", remote_addr);
                                     ui_state.clipboard_message = Some((
-                                        format!("Clipboard error: {}", e),
+                                        format!("Copied {} to clipboard", remote_addr),
                                         std::time::Instant::now(),
                                     ));
+                                }
+                                Err(e) => {
+                                    // Check if sandbox might be blocking clipboard access
+                                    #[cfg(target_os = "linux")]
+                                    let msg = if app.get_sandbox_info().fs_restricted {
+                                        "Clipboard unavailable (sandbox active). Use --no-sandbox to enable.".to_string()
+                                    } else {
+                                        format!("Clipboard error: {}", e)
+                                    };
+                                    #[cfg(not(target_os = "linux"))]
+                                    let msg = format!("Clipboard error: {}", e);
+
+                                    error!("{}", msg);
+                                    ui_state.clipboard_message = Some((msg, std::time::Instant::now()));
                                 }
                             }
                         }
