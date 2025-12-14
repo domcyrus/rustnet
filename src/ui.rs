@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AppStats};
-use crate::network::types::{AppProtocolDistribution, Connection, Protocol, TrafficHistory};
+use crate::network::types::{AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory};
 
 pub type Terminal<B> = RatatuiTerminal<B>;
 
@@ -1089,13 +1089,14 @@ fn draw_graph_tab(
 ) -> Result<()> {
     let traffic_history = app.get_traffic_history();
 
-    // Main layout: top row (charts + legend), bottom row (info)
+    // Main layout: traffic chart, health chart, legend, bottom row
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(0),          // Charts
+            Constraint::Percentage(35),  // Traffic chart
+            Constraint::Percentage(20),  // Network health + TCP states
             Constraint::Length(1),       // Legend row
-            Constraint::Percentage(45),  // App distribution + top processes
+            Constraint::Min(0),          // App distribution + top processes
         ])
         .split(area);
 
@@ -1105,23 +1106,29 @@ fn draw_graph_tab(
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(main_chunks[0]);
 
-    // Legend row: traffic legend (70%) + empty/connections count (30%)
-    let legend_chunks = Layout::default()
+    // Health row: health gauges (35%) + TCP counters (35%) + TCP states (30%)
+    let health_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Percentage(35),
+            Constraint::Percentage(30),
+        ])
         .split(main_chunks[1]);
 
     // Bottom row: app distribution (50%) + top processes (50%)
     let bottom_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(main_chunks[2]);
+        .split(main_chunks[3]);
 
     // Draw components
     draw_traffic_chart(f, &traffic_history, top_chunks[0]);
     draw_connections_sparkline(f, &traffic_history, top_chunks[1]);
-    draw_traffic_legend(f, legend_chunks[0]);
-    // legend_chunks[1] intentionally empty for alignment
+    draw_health_chart(f, &traffic_history, health_chunks[0]);
+    draw_tcp_counters(f, app, health_chunks[1]);
+    draw_tcp_states(f, connections, health_chunks[2]);
+    draw_traffic_legend(f, main_chunks[2]);
     draw_app_distribution(f, connections, bottom_chunks[0]);
     draw_top_processes(f, connections, bottom_chunks[1]);
 
@@ -1361,6 +1368,261 @@ fn draw_traffic_legend(f: &mut Frame, area: Rect) {
     .style(Style::default().fg(Color::DarkGray));
 
     f.render_widget(legend, area);
+}
+
+/// Draw the network health gauges with RTT and packet loss bars
+fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Network Health");
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if !history.has_enough_data() {
+        let placeholder = Paragraph::new("Collecting data...")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(placeholder, inner);
+        return;
+    }
+
+    // Get current values from history
+    let (loss_data, rtt_data) = history.get_health_chart_data();
+
+    // Get most recent values (last data point)
+    let current_loss = loss_data.last().map(|(_, v)| *v).unwrap_or(0.0);
+    let current_rtt = rtt_data.last().map(|(_, v)| *v);
+
+    // Calculate averages
+    let avg_loss = if !loss_data.is_empty() {
+        loss_data.iter().map(|(_, v)| v).sum::<f64>() / loss_data.len() as f64
+    } else {
+        0.0
+    };
+    let avg_rtt = if !rtt_data.is_empty() {
+        Some(rtt_data.iter().map(|(_, v)| v).sum::<f64>() / rtt_data.len() as f64)
+    } else {
+        None
+    };
+
+    // Thresholds for gauges
+    const RTT_MAX: f64 = 200.0;   // 200ms max scale
+    const LOSS_MAX: f64 = 10.0;   // 10% max scale
+
+    let bar_width = inner.width.saturating_sub(18) as usize; // Leave room for label + value
+
+    // Build RTT gauge
+    let rtt_line = if let Some(rtt) = current_rtt {
+        let rtt_pct = (rtt / RTT_MAX).min(1.0);
+        let filled = (rtt_pct * bar_width as f64) as usize;
+        let empty = bar_width.saturating_sub(filled);
+
+        let color = if rtt < 50.0 {
+            Color::Green
+        } else if rtt < 150.0 {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+
+        Line::from(vec![
+            Span::styled("  RTT  ", Style::default().fg(Color::White)),
+            Span::styled("█".repeat(filled), Style::default().fg(color)),
+            Span::styled("░".repeat(empty), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!(" {:>6.1}ms", rtt), Style::default().fg(color)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("  RTT  ", Style::default().fg(Color::White)),
+            Span::styled("░".repeat(bar_width), Style::default().fg(Color::DarkGray)),
+            Span::styled("    --  ", Style::default().fg(Color::DarkGray)),
+        ])
+    };
+
+    // Build Loss gauge
+    let loss_pct = (current_loss / LOSS_MAX).min(1.0);
+    let filled = (loss_pct * bar_width as f64) as usize;
+    let empty = bar_width.saturating_sub(filled);
+
+    let loss_color = if current_loss < 1.0 {
+        Color::Green
+    } else if current_loss < 5.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+
+    let loss_line = Line::from(vec![
+        Span::styled("  Loss ", Style::default().fg(Color::White)),
+        Span::styled("█".repeat(filled.max(if current_loss > 0.0 { 1 } else { 0 })), Style::default().fg(loss_color)),
+        Span::styled("░".repeat(empty.min(bar_width)), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {:>6.2}%", current_loss), Style::default().fg(loss_color)),
+    ]);
+
+    // Build averages line
+    let avg_line = Line::from(vec![
+        Span::styled("  avg: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            avg_rtt.map(|r| format!("{:.0}ms", r)).unwrap_or_else(|| "--".to_string()),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(" / ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{:.2}%", avg_loss), Style::default().fg(Color::DarkGray)),
+    ]);
+
+    let paragraph = Paragraph::new(vec![rtt_line, loss_line, avg_line]);
+    f.render_widget(paragraph, inner);
+}
+
+/// Draw TCP counters (retransmits, out of order, fast retransmits)
+fn draw_tcp_counters(f: &mut Frame, app: &App, area: Rect) {
+    use std::sync::atomic::Ordering;
+
+    let stats = app.get_stats();
+    let retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
+    let out_of_order = stats.total_tcp_out_of_order.load(Ordering::Relaxed);
+    let fast_retransmits = stats.total_tcp_fast_retransmits.load(Ordering::Relaxed);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("TCP Counters");
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // Color based on counts (higher = more concerning)
+    let retrans_color = if retransmits == 0 {
+        Color::Green
+    } else if retransmits < 100 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+
+    let ooo_color = if out_of_order == 0 {
+        Color::Green
+    } else if out_of_order < 50 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+
+    let fast_color = if fast_retransmits == 0 {
+        Color::Green
+    } else if fast_retransmits < 50 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("  Retransmits  ", Style::default().fg(Color::White)),
+            Span::styled(format!("{:>8}", retransmits), Style::default().fg(retrans_color)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Out of Order ", Style::default().fg(Color::White)),
+            Span::styled(format!("{:>8}", out_of_order), Style::default().fg(ooo_color)),
+        ]),
+        Line::from(vec![
+            Span::styled("  Fast Retrans ", Style::default().fg(Color::White)),
+            Span::styled(format!("{:>8}", fast_retransmits), Style::default().fg(fast_color)),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, inner);
+}
+
+/// Draw TCP connection states breakdown
+fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
+    use std::collections::HashMap;
+
+    // Count TCP states
+    let mut state_counts: HashMap<&str, usize> = HashMap::new();
+    for conn in connections {
+        if conn.protocol == Protocol::TCP
+            && let ProtocolState::Tcp(tcp_state) = &conn.protocol_state
+        {
+            let state_name = match tcp_state {
+                TcpState::Established => "ESTAB",
+                TcpState::SynSent => "SYN_SENT",
+                TcpState::SynReceived => "SYN_RECV",
+                TcpState::FinWait1 => "FIN_WAIT1",
+                TcpState::FinWait2 => "FIN_WAIT2",
+                TcpState::TimeWait => "TIME_WAIT",
+                TcpState::CloseWait => "CLOSE_WAIT",
+                TcpState::LastAck => "LAST_ACK",
+                TcpState::Closing => "CLOSING",
+                TcpState::Closed => "CLOSED",
+                TcpState::Listen => "LISTEN",
+                TcpState::Unknown => "UNKNOWN",
+            };
+            *state_counts.entry(state_name).or_insert(0) += 1;
+        }
+    }
+
+    // Fixed order based on connection lifecycle (most important first)
+    const STATE_ORDER: &[&str] = &[
+        "ESTAB", "SYN_SENT", "SYN_RECV", "FIN_WAIT1", "FIN_WAIT2",
+        "TIME_WAIT", "CLOSE_WAIT", "LAST_ACK", "CLOSING", "CLOSED",
+        "LISTEN", "UNKNOWN",
+    ];
+
+    // Build ordered list with only non-zero counts
+    let states: Vec<_> = STATE_ORDER
+        .iter()
+        .filter_map(|&name| state_counts.get(name).map(|&count| (name, count)))
+        .collect();
+
+    let block = Block::default().borders(Borders::ALL).title("TCP States");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    if states.is_empty() {
+        let text = Paragraph::new("No TCP connections")
+            .style(Style::default().fg(Color::DarkGray));
+        f.render_widget(text, inner);
+        return;
+    }
+
+    // Find max count for bar scaling
+    let max_count = states.iter().map(|(_, c)| *c).max().unwrap_or(1);
+    let bar_width = inner.width.saturating_sub(15) as usize; // Leave room for label + count
+
+    // Build lines for each state (limit to available height)
+    let max_rows = inner.height as usize;
+    let lines: Vec<Line> = states
+        .iter()
+        .take(max_rows)
+        .map(|(name, count)| {
+            let bar_len = if max_count > 0 {
+                (*count * bar_width) / max_count
+            } else {
+                0
+            };
+            let bar = "█".repeat(bar_len.max(1));
+
+            // Color based on state health
+            let color = match *name {
+                "ESTAB" => Color::Green,
+                "SYN_SENT" | "SYN_RECV" => Color::Yellow,
+                "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" => Color::Cyan,
+                "CLOSE_WAIT" | "LAST_ACK" | "CLOSING" => Color::Magenta,
+                "CLOSED" => Color::DarkGray,
+                _ => Color::White,
+            };
+
+            Line::from(vec![
+                Span::styled(format!("{:>10} ", name), Style::default().fg(color)),
+                Span::styled(bar, Style::default().fg(color)),
+                Span::raw(format!(" {}", count)),
+            ])
+        })
+        .collect();
+
+    let paragraph = Paragraph::new(lines);
+    f.render_widget(paragraph, inner);
 }
 
 /// Draw connection details view
@@ -1610,6 +1872,22 @@ fn draw_connection_details(
         details_text.push(Line::from(vec![
             Span::styled("Window Size: ", Style::default().fg(Color::Yellow)),
             Span::raw(analytics.last_window_size.to_string()),
+        ]));
+    }
+
+    // Add initial RTT measurement if available
+    if let Some(rtt) = conn.initial_rtt {
+        let rtt_ms = rtt.as_secs_f64() * 1000.0;
+        let rtt_color = if rtt_ms < 50.0 {
+            Color::Green
+        } else if rtt_ms < 150.0 {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+        details_text.push(Line::from(vec![
+            Span::styled("Initial RTT: ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{:.1}ms", rtt_ms), Style::default().fg(rtt_color)),
         ]));
     }
 

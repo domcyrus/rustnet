@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
@@ -566,6 +566,9 @@ pub struct TrafficSample {
     pub rx_bytes_per_sec: u64,
     pub tx_bytes_per_sec: u64,
     pub connection_count: usize,
+    // Network health metrics
+    pub packet_loss_pct: f32,
+    pub avg_rtt_ms: Option<f64>,
 }
 
 /// Ring buffer for aggregate traffic history (used for graphs)
@@ -589,12 +592,23 @@ impl TrafficHistory {
         rx_bytes_per_sec: u64,
         tx_bytes_per_sec: u64,
         connection_count: usize,
+        total_packets: u64,
+        retransmit_count: u64,
+        avg_rtt_ms: Option<f64>,
     ) {
+        let packet_loss_pct = if total_packets > 0 {
+            (retransmit_count as f32 / total_packets as f32) * 100.0
+        } else {
+            0.0
+        };
+
         let sample = TrafficSample {
             timestamp: Instant::now(),
             rx_bytes_per_sec,
             tx_bytes_per_sec,
             connection_count,
+            packet_loss_pct,
+            avg_rtt_ms,
         };
 
         if self.samples.len() >= self.max_samples {
@@ -714,6 +728,70 @@ impl TrafficHistory {
         (rx, tx)
     }
 
+    /// Get network health chart data: (packet_loss_pct, rtt_ms) as ChartData pairs
+    /// Time offset is negative seconds from now
+    pub fn get_health_chart_data(&self) -> (ChartData, ChartData) {
+        let now = Instant::now();
+        let samples: Vec<_> = self.samples.iter().collect();
+
+        // Apply smoothing with window of 3
+        let window = 3;
+        if samples.len() < window {
+            // Not enough data for smoothing, return raw
+            let loss: ChartData = samples
+                .iter()
+                .map(|s| {
+                    let age = now.duration_since(s.timestamp).as_secs_f64();
+                    (-age, s.packet_loss_pct as f64)
+                })
+                .collect();
+            let rtt: ChartData = samples
+                .iter()
+                .filter_map(|s| {
+                    s.avg_rtt_ms.map(|rtt| {
+                        let age = now.duration_since(s.timestamp).as_secs_f64();
+                        (-age, rtt)
+                    })
+                })
+                .collect();
+            return (loss, rtt);
+        }
+
+        let loss: ChartData = samples
+            .windows(window)
+            .map(|w| {
+                let avg_age: f64 = w
+                    .iter()
+                    .map(|s| now.duration_since(s.timestamp).as_secs_f64())
+                    .sum::<f64>()
+                    / window as f64;
+                let avg_loss: f64 =
+                    w.iter().map(|s| s.packet_loss_pct as f64).sum::<f64>() / window as f64;
+                (-avg_age, avg_loss)
+            })
+            .collect();
+
+        let rtt: ChartData = samples
+            .windows(window)
+            .filter_map(|w| {
+                let rtts: Vec<f64> = w.iter().filter_map(|s| s.avg_rtt_ms).collect();
+                if rtts.is_empty() {
+                    None
+                } else {
+                    let avg_age: f64 = w
+                        .iter()
+                        .map(|s| now.duration_since(s.timestamp).as_secs_f64())
+                        .sum::<f64>()
+                        / window as f64;
+                    let avg_rtt: f64 = rtts.iter().sum::<f64>() / rtts.len() as f64;
+                    Some((-avg_age, avg_rtt))
+                }
+            })
+            .collect();
+
+        (loss, rtt)
+    }
+
     /// Check if we have enough data to display
     pub fn has_enough_data(&self) -> bool {
         self.samples.len() >= 2
@@ -723,6 +801,108 @@ impl TrafficHistory {
 impl Default for TrafficHistory {
     fn default() -> Self {
         Self::new(60) // 60 seconds of history
+    }
+}
+
+// ============================================================================
+// RTT Tracking Types (for latency measurement)
+// ============================================================================
+
+/// Key for tracking pending SYN packets
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConnectionKey {
+    pub local_addr: SocketAddr,
+    pub remote_addr: SocketAddr,
+}
+
+impl ConnectionKey {
+    pub fn new(local_addr: SocketAddr, remote_addr: SocketAddr) -> Self {
+        Self {
+            local_addr,
+            remote_addr,
+        }
+    }
+}
+
+/// Tracks pending SYN packets and recent RTT measurements
+#[derive(Debug)]
+pub struct RttTracker {
+    /// Pending SYN packets awaiting SYN-ACK: (connection_key -> timestamp)
+    pending_syns: HashMap<ConnectionKey, Instant>,
+    /// Recent RTT measurements for aggregation: (timestamp, rtt_duration)
+    recent_rtts: VecDeque<(Instant, Duration)>,
+    /// Maximum age for pending SYNs (cleanup stale entries)
+    max_pending_age: Duration,
+    /// Maximum number of recent RTTs to keep
+    max_recent_rtts: usize,
+}
+
+impl RttTracker {
+    pub fn new() -> Self {
+        Self {
+            pending_syns: HashMap::new(),
+            recent_rtts: VecDeque::new(),
+            max_pending_age: Duration::from_secs(30),
+            max_recent_rtts: 100,
+        }
+    }
+
+    /// Record a SYN packet being sent/received
+    pub fn record_syn(&mut self, key: ConnectionKey) {
+        self.pending_syns.insert(key, Instant::now());
+        self.cleanup_stale();
+    }
+
+    /// Try to match a SYN-ACK to a pending SYN and calculate RTT
+    /// Returns the RTT if a match was found
+    pub fn record_syn_ack(&mut self, key: &ConnectionKey) -> Option<Duration> {
+        // SYN and SYN-ACK have the same (local_addr, remote_addr) from parser's perspective
+        if let Some(syn_time) = self.pending_syns.remove(key) {
+            let rtt = syn_time.elapsed();
+            self.add_rtt_sample(rtt);
+            Some(rtt)
+        } else {
+            None
+        }
+    }
+
+    /// Add an RTT sample
+    fn add_rtt_sample(&mut self, rtt: Duration) {
+        let now = Instant::now();
+        if self.recent_rtts.len() >= self.max_recent_rtts {
+            self.recent_rtts.pop_front();
+        }
+        self.recent_rtts.push_back((now, rtt));
+    }
+
+    /// Get average RTT for the last N seconds, clearing consumed samples
+    pub fn take_average_rtt(&mut self, window_secs: u64) -> Option<f64> {
+        let cutoff = Instant::now() - Duration::from_secs(window_secs);
+        let samples: Vec<Duration> = self
+            .recent_rtts
+            .iter()
+            .filter(|(ts, _)| *ts >= cutoff)
+            .map(|(_, rtt)| *rtt)
+            .collect();
+
+        if samples.is_empty() {
+            None
+        } else {
+            let total_ms: f64 = samples.iter().map(|d| d.as_secs_f64() * 1000.0).sum();
+            Some(total_ms / samples.len() as f64)
+        }
+    }
+
+    /// Clean up stale pending SYNs
+    fn cleanup_stale(&mut self) {
+        let cutoff = Instant::now() - self.max_pending_age;
+        self.pending_syns.retain(|_, ts| *ts > cutoff);
+    }
+}
+
+impl Default for RttTracker {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1045,6 +1225,9 @@ pub struct Connection {
 
     // TCP analytics (only for TCP connections)
     pub tcp_analytics: Option<TcpAnalytics>,
+
+    // Initial RTT measurement (from SYN-ACK timing)
+    pub initial_rtt: Option<std::time::Duration>,
 }
 
 impl Connection {
@@ -1082,6 +1265,7 @@ impl Connection {
             current_incoming_rate_bps: 0.0,
             current_outgoing_rate_bps: 0.0,
             tcp_analytics,
+            initial_rtt: None,
         }
     }
 
@@ -2186,5 +2370,146 @@ mod tests {
         };
         assert_eq!(conn.state(), "ARP_REQUEST");
         assert_eq!(conn.get_timeout(), Duration::from_secs(30));
+    }
+
+    // ========================================================================
+    // RTT Tracker Tests
+    // ========================================================================
+
+    #[test]
+    fn test_rtt_tracker_new() {
+        let tracker = RttTracker::new();
+        assert!(tracker.pending_syns.is_empty());
+        assert!(tracker.recent_rtts.is_empty());
+    }
+
+    #[test]
+    fn test_rtt_tracker_record_syn() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
+        );
+
+        tracker.record_syn(key.clone());
+        assert_eq!(tracker.pending_syns.len(), 1);
+        assert!(tracker.pending_syns.contains_key(&key));
+    }
+
+    #[test]
+    fn test_rtt_tracker_record_syn_ack_no_match() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
+        );
+
+        // Try to record SYN-ACK without prior SYN
+        let rtt = tracker.record_syn_ack(&key);
+        assert!(rtt.is_none());
+    }
+
+    #[test]
+    fn test_rtt_tracker_record_syn_ack_match() {
+        let mut tracker = RttTracker::new();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+
+        // Record SYN (outgoing: local -> remote)
+        let syn_key = ConnectionKey::new(local, remote);
+        tracker.record_syn(syn_key);
+
+        // Simulate some delay
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Record SYN-ACK (same key - parser normalizes to local,remote)
+        let syn_ack_key = ConnectionKey::new(local, remote);
+        let rtt = tracker.record_syn_ack(&syn_ack_key);
+
+        assert!(rtt.is_some());
+        let rtt = rtt.unwrap();
+        assert!(rtt >= Duration::from_millis(10));
+        assert!(tracker.pending_syns.is_empty());
+        assert_eq!(tracker.recent_rtts.len(), 1);
+    }
+
+    #[test]
+    fn test_rtt_tracker_take_average_rtt() {
+        let mut tracker = RttTracker::new();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+
+        // Record multiple RTT measurements
+        for port in 12345..12348 {
+            let local_with_port = SocketAddr::new(local.ip(), port);
+            let key = ConnectionKey::new(local_with_port, remote);
+            tracker.record_syn(key.clone());
+            std::thread::sleep(Duration::from_millis(5));
+            tracker.record_syn_ack(&key);
+        }
+
+        // Get average RTT
+        let avg = tracker.take_average_rtt(60);
+        assert!(avg.is_some());
+        let avg = avg.unwrap();
+        assert!(avg >= 5.0); // At least 5ms
+    }
+
+    // ========================================================================
+    // Traffic History Health Data Tests
+    // ========================================================================
+
+    #[test]
+    fn test_traffic_sample_packet_loss_calculation() {
+        let mut history = TrafficHistory::new(60);
+
+        // Add sample with 100 packets and 5 retransmits (5% loss)
+        history.add_sample(1000, 500, 10, 100, 5, Some(25.0));
+
+        let (loss_data, rtt_data) = history.get_health_chart_data();
+
+        // Should have at least one data point
+        assert!(!loss_data.is_empty());
+        // Loss percentage should be 5%
+        assert!((loss_data[0].1 - 5.0).abs() < 0.01);
+
+        // Should have RTT data
+        assert!(!rtt_data.is_empty());
+        // RTT should be around 25ms
+        assert!((rtt_data[0].1 - 25.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_traffic_sample_zero_packets() {
+        let mut history = TrafficHistory::new(60);
+
+        // Add sample with 0 packets (no loss calculation possible)
+        history.add_sample(1000, 500, 10, 0, 0, None);
+
+        let (loss_data, rtt_data) = history.get_health_chart_data();
+
+        // Should have data with 0% loss
+        assert!(!loss_data.is_empty());
+        assert!((loss_data[0].1).abs() < 0.01);
+
+        // No RTT data
+        assert!(rtt_data.is_empty());
+    }
+
+    #[test]
+    fn test_traffic_history_health_smoothing() {
+        let mut history = TrafficHistory::new(60);
+
+        // Add multiple samples
+        for i in 0..5 {
+            history.add_sample(1000, 500, 10, 100, i * 2, Some((i * 10) as f64));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let (loss_data, rtt_data) = history.get_health_chart_data();
+
+        // Should have smoothed data points
+        assert!(loss_data.len() >= 2);
+        assert!(rtt_data.len() >= 2);
     }
 }
