@@ -126,6 +126,7 @@ The experimental eBPF support provides efficient process identification but has 
 - [x] **Help Screen**: Toggle help screen with keyboard shortcuts (h key)
 - [x] **Clipboard Support**: Copy remote address to clipboard (c key)
 - [x] **Service/Port Toggle**: Toggle between service names and port numbers (p key)
+- [x] **Platform-Specific CLI Help**: Show only relevant options per platform (hide Linux sandbox options on macOS, hide PKTAP notes on Linux)
 - [ ] **Resizable Columns**: Dynamic column width adjustment
 - [ ] **Connection Grouping**: Group connections by process/service
 - [ ] **ASCII Graphs**: Terminal-based graphs for bandwidth/packet visualization

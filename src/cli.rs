@@ -1,7 +1,19 @@
 use clap::{Arg, Command};
 
+#[cfg(target_os = "linux")]
+const INTERFACE_HELP: &str = "Network interface to monitor (use \"any\" to capture all interfaces)";
+
+#[cfg(not(target_os = "linux"))]
+const INTERFACE_HELP: &str = "Network interface to monitor";
+
+#[cfg(target_os = "macos")]
+const BPF_HELP: &str = "BPF filter expression for packet capture (e.g., \"tcp port 443\"). Note: Using a BPF filter disables PKTAP (process info falls back to lsof)";
+
+#[cfg(not(target_os = "macos"))]
+const BPF_HELP: &str = "BPF filter expression for packet capture (e.g., \"tcp port 443\", \"dst port 80\")";
+
 pub fn build_cli() -> Command {
-    Command::new("rustnet")
+    let cmd = Command::new("rustnet")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Network Monitor")
         .about("Cross-platform network monitoring tool")
@@ -10,7 +22,7 @@ pub fn build_cli() -> Command {
                 .short('i')
                 .long("interface")
                 .value_name("INTERFACE")
-                .help("Network interface to monitor")
+                .help(INTERFACE_HELP)
                 .required(false),
         )
         .arg(
@@ -61,20 +73,25 @@ pub fn build_cli() -> Command {
                 .short('f')
                 .long("bpf-filter")
                 .value_name("FILTER")
-                .help("BPF filter expression for packet capture (e.g., \"tcp port 443\", \"dst port 80\"). Note: On macOS, using a BPF filter disables PKTAP (process info falls back to lsof)")
+                .help(BPF_HELP)
                 .required(false),
-        )
+        );
+
+    #[cfg(target_os = "linux")]
+    let cmd = cmd
         .arg(
             Arg::new("no-sandbox")
                 .long("no-sandbox")
-                .help("Disable Landlock sandboxing (Linux only)")
+                .help("Disable Landlock sandboxing")
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("sandbox-strict")
                 .long("sandbox-strict")
-                .help("Require full sandbox enforcement or exit (Linux only)")
+                .help("Require full sandbox enforcement or exit")
                 .action(clap::ArgAction::SetTrue)
                 .conflicts_with("no-sandbox"),
-        )
+        );
+
+    cmd
 }
