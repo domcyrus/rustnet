@@ -61,7 +61,7 @@ pub fn build_cli() -> Command {
                 .short('f')
                 .long("bpf-filter")
                 .value_name("FILTER")
-                .help("BPF filter expression for packet capture (e.g., \"tcp port 443\")")
+                .help("BPF filter expression for packet capture (e.g., \"tcp port 443\", \"dst port 80\"). Note: On macOS, using a BPF filter disables PKTAP (process info falls back to lsof)")
                 .required(false),
         )
         .arg(
