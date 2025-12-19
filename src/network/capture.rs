@@ -162,9 +162,11 @@ fn find_best_device() -> Result<Device> {
 
 /// Setup packet capture with the given configuration
 pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, String, i32)> {
-    // Try PKTAP first on macOS for process metadata, but only when no interface is explicitly specified
+    // Try PKTAP first on macOS for process metadata, but only when:
+    // - No interface is explicitly specified
+    // - No BPF filter is specified (BPF filters don't work with PKTAP's linktype 149)
     #[cfg(target_os = "macos")]
-    if config.interface.is_none() {
+    if config.interface.is_none() && config.filter.is_none() {
         log::info!("Attempting to use PKTAP for process metadata on macOS");
 
         match Capture::from_device("pktap") {
@@ -227,6 +229,10 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     }
 
     // Fallback to regular capture (original code)
+    #[cfg(target_os = "macos")]
+    if config.filter.is_some() {
+        log::warn!("BPF filter specified - using regular capture instead of PKTAP (BPF filters don't work with PKTAP)");
+    }
     log::info!("Setting up regular packet capture");
     let device = find_capture_device(&config.interface)?;
 

@@ -177,9 +177,16 @@ Apply a BPF (Berkeley Packet Filter) expression to filter packets at capture tim
 **Common filter expressions:**
 
 ```bash
-# Filter by port
+# Filter by port (matches source OR destination)
 rustnet --bpf-filter "port 443"
 rustnet --bpf-filter "port 80 or port 8080"
+
+# Filter by destination port specifically
+rustnet --bpf-filter "dst port 443"
+rustnet --bpf-filter "tcp dst port 80"
+
+# Filter by source port specifically
+rustnet --bpf-filter "src port 443"
 
 # Filter by host
 rustnet --bpf-filter "host 192.168.1.1"
@@ -196,7 +203,9 @@ rustnet --bpf-filter "tcp port 443 and host github.com"
 rustnet --bpf-filter "not port 22"
 ```
 
-**Note:** BPF filter syntax follows the pcap-filter(7) format. Invalid filters will cause RustNet to exit with an error. Use `man pcap-filter` for complete syntax documentation.
+**Notes:**
+- BPF filter syntax follows the pcap-filter(7) format. Invalid filters will cause RustNet to exit with an error. Use `man pcap-filter` for complete syntax documentation.
+- **macOS limitation:** BPF filters are incompatible with PKTAP (linktype 149). When you specify a BPF filter on macOS, RustNet automatically falls back to regular interface capture. This means process identification uses `lsof` instead of PKTAP's direct process metadata, which may be slightly less accurate for short-lived connections.
 
 #### `-l, --log-level <LEVEL>`
 
