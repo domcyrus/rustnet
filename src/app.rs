@@ -75,6 +75,19 @@ fn log_connection_event(
         "destination_port": conn.remote_addr.port(),
     });
 
+    // Add process information if available
+    if let Some(pid) = conn.pid {
+        event["pid"] = json!(pid);
+    }
+    if let Some(process_name) = &conn.process_name {
+        event["process_name"] = json!(process_name);
+    }
+
+    // Add service name if available
+    if let Some(service_name) = &conn.service_name {
+        event["service_name"] = json!(service_name);
+    }
+
     // Add DPI information if available
     if let Some(dpi) = &conn.dpi_info {
         event["dpi_protocol"] = json!(dpi.application.to_string());

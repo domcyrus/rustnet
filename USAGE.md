@@ -787,3 +787,59 @@ When reporting issues:
 5. Redact sensitive information before sharing
 
 For performance issues, trace-level logging provides the most detail but generates large log files quickly.
+
+### JSON Logging
+
+The `--json-log` option enables structured JSON logging of connection events to a file. Each line is a separate JSON object (JSONL format).
+
+```bash
+# Enable JSON logging
+sudo rustnet --json-log /tmp/connections.json
+
+# Combine with other options
+sudo rustnet -i eth0 --json-log ~/network-events.json
+```
+
+**Event types:**
+- `new_connection` - Logged when a new connection is first detected
+- `connection_closed` - Logged when a connection is cleaned up after becoming inactive
+
+**JSON fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `timestamp` | string | RFC3339 UTC timestamp |
+| `event` | string | Event type (`new_connection` or `connection_closed`) |
+| `protocol` | string | Protocol (TCP, UDP, etc.) |
+| `source_ip` | string | Local IP address |
+| `source_port` | number | Local port number |
+| `destination_ip` | string | Remote IP address |
+| `destination_port` | number | Remote port number |
+| `pid` | number | Process ID (if available) |
+| `process_name` | string | Process name (if available) |
+| `service_name` | string | Service name from port lookup (if available) |
+| `dpi_protocol` | string | Detected application protocol (if DPI enabled) |
+| `dpi_domain` | string | Extracted domain/hostname (if available) |
+| `bytes_sent` | number | Total bytes sent (connection_closed only) |
+| `bytes_received` | number | Total bytes received (connection_closed only) |
+| `duration_secs` | number | Connection duration in seconds (connection_closed only) |
+
+**Example output:**
+
+```json
+{"timestamp":"2025-01-15T10:30:00Z","event":"new_connection","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","dpi_protocol":"HTTPS","dpi_domain":"example.com"}
+{"timestamp":"2025-01-15T10:30:05Z","event":"connection_closed","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","bytes_sent":1024,"bytes_received":4096,"duration_secs":5}
+```
+
+**Processing JSON logs:**
+
+```bash
+# Pretty-print latest events
+tail -f /tmp/connections.json | jq .
+
+# Filter by process
+cat /tmp/connections.json | jq 'select(.process_name == "firefox")'
+
+# Count connections by destination
+cat /tmp/connections.json | jq -s 'group_by(.destination_ip) | map({ip: .[0].destination_ip, count: length})'
+```
