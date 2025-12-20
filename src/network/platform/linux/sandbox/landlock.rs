@@ -19,8 +19,8 @@
 
 use anyhow::{Context, Result};
 use landlock::{
-    Access, AccessFs, AccessNet, BitFlags, LandlockStatus, PathBeneath, PathFd, Ruleset,
-    RulesetAttr, RulesetCreatedAttr, RulesetStatus, ABI,
+    ABI, Access, AccessFs, AccessNet, BitFlags, LandlockStatus, PathBeneath, PathFd, Ruleset,
+    RulesetAttr, RulesetCreatedAttr, RulesetStatus,
 };
 use std::path::Path;
 
@@ -95,7 +95,9 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
     };
 
     // Create the ruleset
-    let mut ruleset_created = ruleset.create().context("Failed to create Landlock ruleset")?;
+    let mut ruleset_created = ruleset
+        .create()
+        .context("Failed to create Landlock ruleset")?;
 
     // Add rule for /proc (read-only)
     // This is required for process identification via procfs

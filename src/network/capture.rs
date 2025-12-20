@@ -231,7 +231,9 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     // Fallback to regular capture (original code)
     #[cfg(target_os = "macos")]
     if config.filter.is_some() {
-        log::warn!("BPF filter specified - using regular capture instead of PKTAP (BPF filters don't work with PKTAP)");
+        log::warn!(
+            "BPF filter specified - using regular capture instead of PKTAP (BPF filters don't work with PKTAP)"
+        );
     }
     log::info!("Setting up regular packet capture");
     let device = find_capture_device(&config.interface)?;

@@ -340,18 +340,38 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
 
     // Set initial TCP state based on flags if TCP
     if let Some(tcp_header) = parsed.tcp_header {
-        conn.protocol_state = ProtocolState::Tcp(update_tcp_state(
-            TcpState::Unknown,
-            &tcp_header.flags,
-            parsed.is_outgoing,
-        ));
+        let tcp_state = update_tcp_state(TcpState::Unknown, &tcp_header.flags, parsed.is_outgoing);
+        conn.protocol_state = ProtocolState::Tcp(tcp_state);
+
+        // Set connection direction only if we observed the TCP handshake
+        // SynSent = we initiated (outgoing), SynReceived = they initiated (incoming)
+        // Also detect from SYN+ACK: receiving SYN+ACK means we initiated (outgoing)
+        conn.connection_direction = match tcp_state {
+            TcpState::SynSent => Some(true),      // outgoing - we sent SYN
+            TcpState::SynReceived => Some(false), // incoming - we received SYN
+            _ => {
+                // Check if first packet is SYN+ACK - can also determine direction
+                if tcp_header.flags.syn && tcp_header.flags.ack {
+                    // SYN+ACK received = we initiated (outgoing)
+                    // SYN+ACK sent = they initiated (incoming)
+                    Some(!parsed.is_outgoing)
+                } else {
+                    None // mid-stream capture, direction unknown
+                }
+            }
+        };
 
         debug!(
-            "Created new {} connection: {:?} -> {:?}, state: {:?}",
-            parsed.protocol, parsed.local_addr, parsed.remote_addr, conn.protocol_state
+            "Created new {} connection: {:?} -> {:?}, state: {:?}, direction: {:?}",
+            parsed.protocol,
+            parsed.local_addr,
+            parsed.remote_addr,
+            conn.protocol_state,
+            conn.connection_direction
         );
     } else {
         // For non-TCP protocols, use the provided state directly
+        // Connection direction is not determinable for stateless protocols
         conn.protocol_state = parsed.protocol_state;
     }
 

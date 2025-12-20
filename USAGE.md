@@ -818,6 +818,7 @@ sudo rustnet -i eth0 --json-log ~/network-events.json
 | `pid` | number | Process ID (if available) |
 | `process_name` | string | Process name (if available) |
 | `service_name` | string | Service name from port lookup (if available) |
+| `direction` | string | Connection direction (`outgoing` or `incoming`), TCP only when handshake observed |
 | `dpi_protocol` | string | Detected application protocol (if DPI enabled) |
 | `dpi_domain` | string | Extracted domain/hostname (if available) |
 | `bytes_sent` | number | Total bytes sent (connection_closed only) |
@@ -827,8 +828,8 @@ sudo rustnet -i eth0 --json-log ~/network-events.json
 **Example output:**
 
 ```json
-{"timestamp":"2025-01-15T10:30:00Z","event":"new_connection","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","dpi_protocol":"HTTPS","dpi_domain":"example.com"}
-{"timestamp":"2025-01-15T10:30:05Z","event":"connection_closed","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","bytes_sent":1024,"bytes_received":4096,"duration_secs":5}
+{"timestamp":"2025-01-15T10:30:00Z","event":"new_connection","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","direction":"outgoing","dpi_protocol":"HTTPS","dpi_domain":"example.com"}
+{"timestamp":"2025-01-15T10:30:05Z","event":"connection_closed","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","direction":"outgoing","bytes_sent":1024,"bytes_received":4096,"duration_secs":5}
 ```
 
 **Processing JSON logs:**
