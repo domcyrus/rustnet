@@ -21,7 +21,7 @@ use crate::network::{
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
     services::ServiceLookup,
-    types::{ApplicationProtocol, Connection, ConnectionKey, Protocol, RttTracker, TrafficHistory},
+    types::{ApplicationProtocol, Connection, ConnectionKey, DnsQueryType, Protocol, RttTracker, TrafficHistory},
 };
 
 // Platform-specific interface stats provider
@@ -1096,12 +1096,33 @@ impl App {
 
     /// Get current connections for UI display
     pub fn get_connections(&self) -> Vec<Connection> {
-        self.connections_snapshot.read().unwrap().clone()
+        self.get_filtered_connections("")
     }
 
     /// Get filtered connections for UI display
     pub fn get_filtered_connections(&self, filter_query: &str) -> Vec<Connection> {
         let connections = self.connections_snapshot.read().unwrap().clone();
+
+        // Filter out DNS PTR queries/responses when reverse DNS is enabled
+        let hide_ptr_lookups = self.dns_resolver.is_some() && !self.config.show_ptr_lookups;
+
+        let connections: Vec<Connection> = if hide_ptr_lookups {
+            connections
+                .into_iter()
+                .filter(|conn| {
+                    // Hide DNS PTR queries/responses (used for reverse DNS lookups)
+                    if let Some(ref dpi) = conn.dpi_info
+                        && let ApplicationProtocol::Dns(ref dns_info) = dpi.application
+                        && dns_info.query_type == Some(DnsQueryType::PTR)
+                    {
+                        return false;
+                    }
+                    true
+                })
+                .collect()
+        } else {
+            connections
+        };
 
         if filter_query.trim().is_empty() {
             return connections;
@@ -1228,16 +1249,6 @@ impl App {
     /// Check if DNS resolution is enabled
     pub fn is_dns_resolution_enabled(&self) -> bool {
         self.dns_resolver.is_some()
-    }
-
-    /// Get hostname for an IP address if resolved
-    pub fn get_hostname(&self, ip: &std::net::IpAddr) -> Option<String> {
-        self.dns_resolver.as_ref()?.get_hostname(ip)
-    }
-
-    /// Check if PTR lookup connections should be shown
-    pub fn show_ptr_lookups(&self) -> bool {
-        self.config.show_ptr_lookups
     }
 
     /// Stop all threads gracefully

@@ -58,6 +58,9 @@ rustnet --refresh-interval 2000
 # Disable deep packet inspection
 rustnet --no-dpi
 
+# Enable reverse DNS lookups to show hostnames
+rustnet --resolve-dns
+
 # Enable logging with specific level (options: error, warn, info, debug, trace)
 rustnet -l debug
 rustnet --log-level info
@@ -77,6 +80,8 @@ Options:
       --show-localhost                   Show localhost connections (overrides default filtering)
   -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 1000]
       --no-dpi                           Disable deep packet inspection
+      --resolve-dns                      Enable reverse DNS lookups to show hostnames
+      --show-ptr-lookups                 Show PTR lookup connections (hidden by default with --resolve-dns)
   -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
       --json-log <FILE>                  Enable JSON logging of connection events to specified file
   -f, --bpf-filter <FILTER>              BPF filter expression for packet capture
@@ -170,6 +175,15 @@ Disable Deep Packet Inspection (DPI). This reduces CPU usage by 20-40% on high-t
 
 Useful for performance-constrained environments or when application-level details aren't needed.
 
+#### `--resolve-dns` / `--show-ptr-lookups`
+
+Enable reverse DNS lookups to display hostnames instead of IP addresses.
+
+- **`--resolve-dns`**: Resolves IP addresses to hostnames in the background. Hostnames appear in the connection list (toggle with `d` key) and in the Details tab.
+- **`--show-ptr-lookups`**: By default, PTR lookup traffic is hidden when `--resolve-dns` is enabled. Use this flag to show the DNS PTR queries.
+
+**Note**: Resolved hostnames are also included in JSON logs (`destination_hostname`, `source_hostname` fields).
+
 #### `-f, --bpf-filter <FILTER>`
 
 Apply a BPF (Berkeley Packet Filter) expression to filter packets at capture time. This is more efficient than application-level filtering as packets are filtered in the kernel before reaching RustNet.
@@ -243,6 +257,7 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 
 - `c` - Copy remote address to clipboard
 - `p` - Toggle between service names and port numbers
+- `d` - Toggle between hostnames and IP addresses (requires `--resolve-dns`)
 - `/` - Enter filter mode (vim-style search with real-time results)
 
 ### Sorting

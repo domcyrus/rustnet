@@ -414,7 +414,10 @@ pub fn draw(
 
     match ui_state.selected_tab {
         0 => draw_overview(f, ui_state, connections, stats, app, content_area)?,
-        1 => draw_connection_details(f, ui_state, connections, content_area)?,
+        1 => {
+            let dns_resolver = app.get_dns_resolver();
+            draw_connection_details(f, ui_state, connections, content_area, dns_resolver.as_deref())?
+        }
         2 => draw_interface_stats(f, app, content_area)?,
         3 => draw_graph_tab(f, app, connections, content_area)?,
         4 => draw_help(f, content_area)?,
@@ -1697,6 +1700,7 @@ fn draw_connection_details(
     ui_state: &UIState,
     connections: &[Connection],
     area: Rect,
+    dns_resolver: Option<&DnsResolver>,
 ) -> Result<()> {
     if connections.is_empty() {
         let text = Paragraph::new("No connections available")
@@ -1754,6 +1758,24 @@ fn draw_connection_details(
             Span::raw(conn.service_name.clone().unwrap_or_else(|| "-".to_string())),
         ]),
     ];
+
+    // Add reverse DNS hostnames if available
+    if let Some(resolver) = dns_resolver {
+        let local_hostname = resolver.get_hostname(&conn.local_addr.ip());
+        let remote_hostname = resolver.get_hostname(&conn.remote_addr.ip());
+
+        if local_hostname.is_some() || remote_hostname.is_some() {
+            details_text.push(Line::from("")); // Empty line separator
+            details_text.push(Line::from(vec![
+                Span::styled("Local Hostname: ", Style::default().fg(Color::Yellow)),
+                Span::raw(local_hostname.unwrap_or_else(|| "-".to_string())),
+            ]));
+            details_text.push(Line::from(vec![
+                Span::styled("Remote Hostname: ", Style::default().fg(Color::Yellow)),
+                Span::raw(remote_hostname.unwrap_or_else(|| "-".to_string())),
+            ]));
+        }
+    }
 
     // Add DPI information
     match &conn.dpi_info {

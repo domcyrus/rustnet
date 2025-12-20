@@ -272,28 +272,6 @@ impl DnsResolver {
         })
     }
 
-    /// Get the display string for an IP (hostname if resolved, IP otherwise)
-    pub fn get_display_name(&self, ip: &IpAddr) -> String {
-        self.get_hostname(ip).unwrap_or_else(|| ip.to_string())
-    }
-
-    /// Get cache statistics
-    pub fn cache_stats(&self) -> (usize, usize, usize) {
-        let mut resolved = 0;
-        let mut pending = 0;
-        let mut failed = 0;
-
-        for entry in self.cache.iter() {
-            match entry.state {
-                ResolutionState::Resolved => resolved += 1,
-                ResolutionState::Pending => pending += 1,
-                ResolutionState::Failed => failed += 1,
-            }
-        }
-
-        (resolved, pending, failed)
-    }
-
     /// Stop the resolver
     pub fn stop(&self) {
         self.should_stop.store(true, Ordering::Relaxed);
