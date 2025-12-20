@@ -5,11 +5,16 @@ use ratatui::{
     style::{Color, Modifier, Style},
     symbols,
     text::{Line, Span},
-    widgets::{Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Sparkline, Table, Tabs, Wrap},
+    widgets::{
+        Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Sparkline, Table,
+        Tabs, Wrap,
+    },
 };
 
 use crate::app::{App, AppStats};
-use crate::network::types::{AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory};
+use crate::network::types::{
+    AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory,
+};
 
 pub type Terminal<B> = RatatuiTerminal<B>;
 
@@ -848,7 +853,10 @@ fn draw_stats_panel(
         let available_indicator = if sandbox_info.landlock_available {
             Span::styled(" [kernel supported]", Style::default().fg(Color::DarkGray))
         } else {
-            Span::styled(" [kernel unsupported]", Style::default().fg(Color::DarkGray))
+            Span::styled(
+                " [kernel unsupported]",
+                Style::default().fg(Color::DarkGray),
+            )
         };
 
         vec![
@@ -1081,22 +1089,17 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
 }
 
 /// Draw the Graph tab with traffic visualization
-fn draw_graph_tab(
-    f: &mut Frame,
-    app: &App,
-    connections: &[Connection],
-    area: Rect,
-) -> Result<()> {
+fn draw_graph_tab(f: &mut Frame, app: &App, connections: &[Connection], area: Rect) -> Result<()> {
     let traffic_history = app.get_traffic_history();
 
     // Main layout: traffic chart, health chart, legend, bottom row
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(35),  // Traffic chart
-            Constraint::Percentage(20),  // Network health + TCP states
-            Constraint::Length(1),       // Legend row
-            Constraint::Min(0),          // App distribution + top processes
+            Constraint::Percentage(35), // Traffic chart
+            Constraint::Percentage(20), // Network health + TCP states
+            Constraint::Length(1),      // Legend row
+            Constraint::Min(0),         // App distribution + top processes
         ])
         .split(area);
 
@@ -1204,16 +1207,14 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
 
 /// Draw connections count sparkline
 fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("Connections");
+    let block = Block::default().borders(Borders::ALL).title("Connections");
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     if !history.has_enough_data() {
-        let placeholder = Paragraph::new("Collecting...")
-            .style(Style::default().fg(Color::DarkGray));
+        let placeholder =
+            Paragraph::new("Collecting...").style(Style::default().fg(Color::DarkGray));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -1339,8 +1340,8 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
         .collect();
 
     if rows.is_empty() {
-        let placeholder = Paragraph::new("No active processes")
-            .style(Style::default().fg(Color::DarkGray));
+        let placeholder =
+            Paragraph::new("No active processes").style(Style::default().fg(Color::DarkGray));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -1350,8 +1351,11 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
         [Constraint::Percentage(60), Constraint::Percentage(40)],
     )
     .header(
-        Row::new(vec!["Process", "Rate"])
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Row::new(vec!["Process", "Rate"]).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
     );
 
     f.render_widget(table, inner);
@@ -1380,8 +1384,8 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     f.render_widget(block, area);
 
     if !history.has_enough_data() {
-        let placeholder = Paragraph::new("Collecting data...")
-            .style(Style::default().fg(Color::DarkGray));
+        let placeholder =
+            Paragraph::new("Collecting data...").style(Style::default().fg(Color::DarkGray));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -1406,8 +1410,8 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     };
 
     // Thresholds for gauges
-    const RTT_MAX: f64 = 200.0;   // 200ms max scale
-    const LOSS_MAX: f64 = 10.0;   // 10% max scale
+    const RTT_MAX: f64 = 200.0; // 200ms max scale
+    const LOSS_MAX: f64 = 10.0; // 10% max scale
 
     let bar_width = inner.width.saturating_sub(18) as usize; // Leave room for label + value
 
@@ -1454,20 +1458,34 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
 
     let loss_line = Line::from(vec![
         Span::styled("  Loss ", Style::default().fg(Color::White)),
-        Span::styled("█".repeat(filled.max(if current_loss > 0.0 { 1 } else { 0 })), Style::default().fg(loss_color)),
-        Span::styled("░".repeat(empty.min(bar_width)), Style::default().fg(Color::DarkGray)),
-        Span::styled(format!(" {:>6.2}%", current_loss), Style::default().fg(loss_color)),
+        Span::styled(
+            "█".repeat(filled.max(if current_loss > 0.0 { 1 } else { 0 })),
+            Style::default().fg(loss_color),
+        ),
+        Span::styled(
+            "░".repeat(empty.min(bar_width)),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::styled(
+            format!(" {:>6.2}%", current_loss),
+            Style::default().fg(loss_color),
+        ),
     ]);
 
     // Build averages line
     let avg_line = Line::from(vec![
         Span::styled("  avg: ", Style::default().fg(Color::DarkGray)),
         Span::styled(
-            avg_rtt.map(|r| format!("{:.0}ms", r)).unwrap_or_else(|| "--".to_string()),
+            avg_rtt
+                .map(|r| format!("{:.0}ms", r))
+                .unwrap_or_else(|| "--".to_string()),
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(" / ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{:.2}%", avg_loss), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("{:.2}%", avg_loss),
+            Style::default().fg(Color::DarkGray),
+        ),
     ]);
 
     let paragraph = Paragraph::new(vec![rtt_line, loss_line, avg_line]);
@@ -1483,9 +1501,7 @@ fn draw_tcp_counters(f: &mut Frame, app: &App, area: Rect) {
     let out_of_order = stats.total_tcp_out_of_order.load(Ordering::Relaxed);
     let fast_retransmits = stats.total_tcp_fast_retransmits.load(Ordering::Relaxed);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("TCP Counters");
+    let block = Block::default().borders(Borders::ALL).title("TCP Counters");
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1518,15 +1534,24 @@ fn draw_tcp_counters(f: &mut Frame, app: &App, area: Rect) {
     let lines = vec![
         Line::from(vec![
             Span::styled("  Retransmits  ", Style::default().fg(Color::White)),
-            Span::styled(format!("{:>8}", retransmits), Style::default().fg(retrans_color)),
+            Span::styled(
+                format!("{:>8}", retransmits),
+                Style::default().fg(retrans_color),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Out of Order ", Style::default().fg(Color::White)),
-            Span::styled(format!("{:>8}", out_of_order), Style::default().fg(ooo_color)),
+            Span::styled(
+                format!("{:>8}", out_of_order),
+                Style::default().fg(ooo_color),
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Fast Retrans ", Style::default().fg(Color::White)),
-            Span::styled(format!("{:>8}", fast_retransmits), Style::default().fg(fast_color)),
+            Span::styled(
+                format!("{:>8}", fast_retransmits),
+                Style::default().fg(fast_color),
+            ),
         ]),
     ];
 
@@ -1564,9 +1589,18 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
 
     // Fixed order based on connection lifecycle (most important first)
     const STATE_ORDER: &[&str] = &[
-        "ESTAB", "SYN_SENT", "SYN_RECV", "FIN_WAIT1", "FIN_WAIT2",
-        "TIME_WAIT", "CLOSE_WAIT", "LAST_ACK", "CLOSING", "CLOSED",
-        "LISTEN", "UNKNOWN",
+        "ESTAB",
+        "SYN_SENT",
+        "SYN_RECV",
+        "FIN_WAIT1",
+        "FIN_WAIT2",
+        "TIME_WAIT",
+        "CLOSE_WAIT",
+        "LAST_ACK",
+        "CLOSING",
+        "CLOSED",
+        "LISTEN",
+        "UNKNOWN",
     ];
 
     // Build ordered list with only non-zero counts
@@ -1580,8 +1614,7 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
     f.render_widget(block, area);
 
     if states.is_empty() {
-        let text = Paragraph::new("No TCP connections")
-            .style(Style::default().fg(Color::DarkGray));
+        let text = Paragraph::new("No TCP connections").style(Style::default().fg(Color::DarkGray));
         f.render_widget(text, inner);
         return;
     }

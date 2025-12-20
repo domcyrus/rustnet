@@ -92,7 +92,9 @@ fn main() -> Result<()> {
     // - Log files need to be created first
     #[cfg(all(target_os = "linux", feature = "landlock"))]
     {
-        use network::platform::sandbox::{apply_sandbox, SandboxConfig, SandboxMode, SandboxStatus};
+        use network::platform::sandbox::{
+            SandboxConfig, SandboxMode, SandboxStatus, apply_sandbox,
+        };
         use std::path::PathBuf;
 
         let sandbox_mode = if matches.get_flag("no-sandbox") {
@@ -594,8 +596,8 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
 
                             // Try arboard first, fall back to wl-copy for Wayland (GNOME doesn't
                             // support the wlr-data-control protocol that arboard relies on)
-                            let result = Clipboard::new()
-                                .and_then(|mut cb| cb.set_text(&remote_addr));
+                            let result =
+                                Clipboard::new().and_then(|mut cb| cb.set_text(&remote_addr));
 
                             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
                             let result = result.or_else(|_| {
@@ -636,7 +638,8 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                                     let msg = format!("Clipboard error: {}", e);
 
                                     error!("{}", msg);
-                                    ui_state.clipboard_message = Some((msg, std::time::Instant::now()));
+                                    ui_state.clipboard_message =
+                                        Some((msg, std::time::Instant::now()));
                                 }
                             }
                         }
@@ -779,7 +782,9 @@ fn check_dll_available(dll_name: &str) -> bool {
 #[cfg(target_os = "windows")]
 fn is_admin() -> bool {
     use windows::Win32::Foundation::HANDLE;
-    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::Security::{
+        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+    };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     unsafe {

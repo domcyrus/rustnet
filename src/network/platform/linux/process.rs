@@ -54,8 +54,7 @@ impl LinuxProcessLookup {
     }
 
     /// Build connection -> process mapping and PID -> name mapping
-    fn build_process_map() -> Result<(ConnectionProcessMap, PidNameMap)>
-    {
+    fn build_process_map() -> Result<(ConnectionProcessMap, PidNameMap)> {
         let mut process_map = HashMap::new();
 
         // First, build inode -> process mapping and PID -> name mapping

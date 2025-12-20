@@ -10,7 +10,8 @@ const INTERFACE_HELP: &str = "Network interface to monitor";
 const BPF_HELP: &str = "BPF filter expression for packet capture (e.g., \"tcp port 443\"). Note: Using a BPF filter disables PKTAP (process info falls back to lsof)";
 
 #[cfg(not(target_os = "macos"))]
-const BPF_HELP: &str = "BPF filter expression for packet capture (e.g., \"tcp port 443\", \"dst port 80\")";
+const BPF_HELP: &str =
+    "BPF filter expression for packet capture (e.g., \"tcp port 443\", \"dst port 80\")";
 
 pub fn build_cli() -> Command {
     let cmd = Command::new("rustnet")

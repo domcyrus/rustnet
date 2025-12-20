@@ -953,12 +953,28 @@ impl AppProtocolDistribution {
     pub fn as_percentages(&self) -> Vec<(&'static str, usize, f64)> {
         let total = self.total().max(1) as f64;
         vec![
-            ("HTTPS", self.https_count, self.https_count as f64 / total * 100.0),
-            ("QUIC", self.quic_count, self.quic_count as f64 / total * 100.0),
-            ("HTTP", self.http_count, self.http_count as f64 / total * 100.0),
+            (
+                "HTTPS",
+                self.https_count,
+                self.https_count as f64 / total * 100.0,
+            ),
+            (
+                "QUIC",
+                self.quic_count,
+                self.quic_count as f64 / total * 100.0,
+            ),
+            (
+                "HTTP",
+                self.http_count,
+                self.http_count as f64 / total * 100.0,
+            ),
             ("DNS", self.dns_count, self.dns_count as f64 / total * 100.0),
             ("SSH", self.ssh_count, self.ssh_count as f64 / total * 100.0),
-            ("Other", self.other_count, self.other_count as f64 / total * 100.0),
+            (
+                "Other",
+                self.other_count,
+                self.other_count as f64 / total * 100.0,
+            ),
         ]
     }
 }
@@ -1200,6 +1216,10 @@ pub struct Connection {
     pub pid: Option<u32>,
     pub process_name: Option<String>,
 
+    // Connection direction: true = outgoing (local initiated), false = incoming (remote initiated)
+    // Only set for TCP when we observe the handshake (SYN/SYN+ACK), None otherwise
+    pub connection_direction: Option<bool>,
+
     // Traffic statistics
     pub bytes_sent: u64,
     pub bytes_received: u64,
@@ -1253,6 +1273,7 @@ impl Connection {
             protocol_state: state,
             pid: None,
             process_name: None,
+            connection_direction: None,
             bytes_sent: 0,
             bytes_received: 0,
             packets_sent: 0,
@@ -1786,16 +1807,24 @@ mod tests {
         // Simulate receiving packets - use internal rate_tracker directly for deterministic timing
         conn.bytes_sent = 1000;
         conn.bytes_received = 500;
-        conn.rate_tracker.update_at_time(start, conn.bytes_sent, conn.bytes_received);
+        conn.rate_tracker
+            .update_at_time(start, conn.bytes_sent, conn.bytes_received);
 
         conn.bytes_sent = 3000;
         conn.bytes_received = 1500;
-        conn.rate_tracker
-            .update_at_time(start + Duration::from_secs(1), conn.bytes_sent, conn.bytes_received);
+        conn.rate_tracker.update_at_time(
+            start + Duration::from_secs(1),
+            conn.bytes_sent,
+            conn.bytes_received,
+        );
 
         // Update cached rate values
-        conn.current_outgoing_rate_bps = conn.rate_tracker.get_outgoing_rate_at(start + Duration::from_secs(1));
-        conn.current_incoming_rate_bps = conn.rate_tracker.get_incoming_rate_at(start + Duration::from_secs(1));
+        conn.current_outgoing_rate_bps = conn
+            .rate_tracker
+            .get_outgoing_rate_at(start + Duration::from_secs(1));
+        conn.current_incoming_rate_bps = conn
+            .rate_tracker
+            .get_incoming_rate_at(start + Duration::from_secs(1));
 
         // Verify backward compatibility fields are updated
         assert!(conn.current_outgoing_rate_bps >= 0.0);
@@ -2007,13 +2036,17 @@ mod tests {
         // Simulate first packet
         conn.bytes_sent = 50_000;
         conn.bytes_received = 25_000;
-        conn.rate_tracker.update_at_time(start, conn.bytes_sent, conn.bytes_received);
+        conn.rate_tracker
+            .update_at_time(start, conn.bytes_sent, conn.bytes_received);
 
         // Simulate more traffic after 1 second
         conn.bytes_sent = 100_000;
         conn.bytes_received = 50_000;
-        conn.rate_tracker
-            .update_at_time(start + Duration::from_secs(1), conn.bytes_sent, conn.bytes_received);
+        conn.rate_tracker.update_at_time(
+            start + Duration::from_secs(1),
+            conn.bytes_sent,
+            conn.bytes_received,
+        );
 
         // Update cached rates at the 1-second mark
         let check_time = start + Duration::from_secs(1);

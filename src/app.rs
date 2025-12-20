@@ -75,6 +75,24 @@ fn log_connection_event(
         "destination_port": conn.remote_addr.port(),
     });
 
+    // Add process information if available
+    if let Some(pid) = conn.pid {
+        event["pid"] = json!(pid);
+    }
+    if let Some(process_name) = &conn.process_name {
+        event["process_name"] = json!(process_name);
+    }
+
+    // Add service name if available
+    if let Some(service_name) = &conn.service_name {
+        event["service_name"] = json!(service_name);
+    }
+
+    // Add connection direction (only for TCP when we observed the handshake)
+    if let Some(is_outgoing) = conn.connection_direction {
+        event["direction"] = json!(if is_outgoing { "outgoing" } else { "incoming" });
+    }
+
     // Add DPI information if available
     if let Some(dpi) = &conn.dpi_info {
         event["dpi_protocol"] = json!(dpi.application.to_string());
@@ -503,7 +521,13 @@ impl App {
                 let mut parsed_count = 0;
                 for packet_data in &batch {
                     if let Some(parsed) = parser.parse_packet(packet_data) {
-                        update_connection(&connections, parsed, &stats, &json_log_path, &rtt_tracker);
+                        update_connection(
+                            &connections,
+                            parsed,
+                            &stats,
+                            &json_log_path,
+                            &rtt_tracker,
+                        );
                         parsed_count += 1;
                     }
                 }
@@ -898,12 +922,15 @@ impl App {
                 }
 
                 // Aggregate rates from all interfaces
-                let (total_rx, total_tx) = interface_rates.iter().fold((0u64, 0u64), |(rx, tx), entry| {
-                    (
-                        rx + entry.value().rx_bytes_per_sec,
-                        tx + entry.value().tx_bytes_per_sec,
-                    )
-                });
+                let (total_rx, total_tx) =
+                    interface_rates
+                        .iter()
+                        .fold((0u64, 0u64), |(rx, tx), entry| {
+                            (
+                                rx + entry.value().rx_bytes_per_sec,
+                                tx + entry.value().tx_bytes_per_sec,
+                            )
+                        });
 
                 // Get connection count from snapshot
                 let connection_count = connections_snapshot

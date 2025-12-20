@@ -45,9 +45,7 @@ pub fn drop_cap_net_raw() -> Result<bool> {
 
     // Also drop from permitted set to prevent re-acquiring
     // This is optional but provides stronger security
-    if caps::has_cap(None, CapSet::Permitted, Capability::CAP_NET_RAW)
-        .unwrap_or(false)
-    {
+    if caps::has_cap(None, CapSet::Permitted, Capability::CAP_NET_RAW).unwrap_or(false) {
         if let Err(e) = caps::drop(None, CapSet::Permitted, Capability::CAP_NET_RAW) {
             // Not fatal - we already dropped from effective
             log::warn!("Could not drop CAP_NET_RAW from permitted set: {}", e);
