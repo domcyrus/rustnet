@@ -75,6 +75,16 @@ fn main() -> Result<()> {
         }
     }
 
+    if matches.get_flag("resolve-dns") {
+        config.resolve_dns = true;
+        info!("Reverse DNS resolution enabled");
+    }
+
+    if matches.get_flag("show-ptr-lookups") {
+        config.show_ptr_lookups = true;
+        info!("PTR lookup connections will be shown in UI");
+    }
+
     // Set up terminal
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;
@@ -554,6 +564,22 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                                 "showing service names"
                             }
                         );
+                    }
+
+                    // Toggle hostname display (when DNS resolution is enabled)
+                    (KeyCode::Char('d'), _) => {
+                        if app.is_dns_resolution_enabled() {
+                            ui_state.quit_confirmation = false;
+                            ui_state.show_hostnames = !ui_state.show_hostnames;
+                            info!(
+                                "Toggled hostname display: {}",
+                                if ui_state.show_hostnames {
+                                    "showing hostnames"
+                                } else {
+                                    "showing IP addresses"
+                                }
+                            );
+                        }
                     }
 
                     // Cycle sort column with 's'

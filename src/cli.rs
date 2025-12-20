@@ -76,6 +76,18 @@ pub fn build_cli() -> Command {
                 .value_name("FILTER")
                 .help(BPF_HELP)
                 .required(false),
+        )
+        .arg(
+            Arg::new("resolve-dns")
+                .long("resolve-dns")
+                .help("Enable reverse DNS resolution for IP addresses (shows hostnames instead of IPs)")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("show-ptr-lookups")
+                .long("show-ptr-lookups")
+                .help("Show PTR lookup connections in UI (hidden by default when --resolve-dns is enabled)")
+                .action(clap::ArgAction::SetTrue),
         );
 
     #[cfg(target_os = "linux")]

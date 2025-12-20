@@ -15,6 +15,7 @@ use crate::filter::ConnectionFilter;
 
 use crate::network::{
     capture::{CaptureConfig, PacketReader, setup_packet_capture},
+    dns::DnsResolver,
     interface_stats::{InterfaceRates, InterfaceStats, InterfaceStatsProvider},
     merge::{create_connection_from_packet, merge_packet_into_connection},
     parser::{PacketParser, ParsedPacket, ParserConfig},
@@ -63,6 +64,7 @@ fn log_connection_event(
     event_type: &str,
     conn: &Connection,
     duration_secs: Option<u64>,
+    dns_resolver: Option<&DnsResolver>,
 ) {
     // Build JSON object based on event type
     let mut event = json!({
@@ -74,6 +76,16 @@ fn log_connection_event(
         "destination_ip": conn.remote_addr.ip().to_string(),
         "destination_port": conn.remote_addr.port(),
     });
+
+    // Add hostname fields if DNS resolution is enabled and hostnames are resolved
+    if let Some(resolver) = dns_resolver {
+        if let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip()) {
+            event["destination_hostname"] = json!(hostname);
+        }
+        if let Some(hostname) = resolver.get_hostname(&conn.local_addr.ip()) {
+            event["source_hostname"] = json!(hostname);
+        }
+    }
 
     // Add process information if available
     if let Some(pid) = conn.pid {
@@ -162,6 +174,10 @@ pub struct Config {
     pub bpf_filter: Option<String>,
     /// JSON log file path for connection events
     pub json_log_file: Option<String>,
+    /// Enable reverse DNS resolution for IP addresses
+    pub resolve_dns: bool,
+    /// Show PTR lookup connections in UI (when DNS resolution is enabled)
+    pub show_ptr_lookups: bool,
 }
 
 impl Default for Config {
@@ -173,6 +189,8 @@ impl Default for Config {
             enable_dpi: true,
             bpf_filter: None, // No filter by default to see all packets
             json_log_file: None,
+            resolve_dns: false,
+            show_ptr_lookups: false,
         }
     }
 }
@@ -248,6 +266,9 @@ pub struct App {
     /// RTT tracker for latency measurement
     rtt_tracker: Arc<Mutex<RttTracker>>,
 
+    /// DNS resolver for reverse DNS lookups
+    dns_resolver: Option<Arc<DnsResolver>>,
+
     /// Sandbox status (Linux Landlock)
     #[cfg(target_os = "linux")]
     sandbox_info: Arc<RwLock<SandboxInfo>>,
@@ -261,6 +282,14 @@ impl App {
             warn!("Failed to load embedded services: {}, using defaults", e);
             ServiceLookup::with_defaults()
         });
+
+        // Initialize DNS resolver if enabled
+        let dns_resolver = if config.resolve_dns {
+            info!("DNS resolution enabled - starting background resolver");
+            Some(Arc::new(DnsResolver::with_defaults()))
+        } else {
+            None
+        };
 
         Ok(Self {
             config,
@@ -277,6 +306,7 @@ impl App {
             interface_rates: Arc::new(DashMap::new()),
             traffic_history: Arc::new(RwLock::new(TrafficHistory::new(60))), // 60 seconds of history
             rtt_tracker: Arc::new(Mutex::new(RttTracker::new())),
+            dns_resolver,
             #[cfg(target_os = "linux")]
             sandbox_info: Arc::new(RwLock::new(SandboxInfo::default())),
         })
@@ -481,6 +511,7 @@ impl App {
         let linktype_storage = Arc::clone(&self.linktype);
         let json_log_path = self.config.json_log_file.clone();
         let rtt_tracker = Arc::clone(&self.rtt_tracker);
+        let dns_resolver = self.dns_resolver.clone();
         let parser_config = ParserConfig {
             enable_dpi: self.config.enable_dpi,
             ..Default::default()
@@ -527,6 +558,7 @@ impl App {
                             &stats,
                             &json_log_path,
                             &rtt_tracker,
+                            dns_resolver.as_deref(),
                         );
                         parsed_count += 1;
                     }
@@ -978,6 +1010,7 @@ impl App {
     fn start_cleanup_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
         let json_log_path = self.config.json_log_file.clone();
+        let dns_resolver = self.dns_resolver.clone();
 
         thread::spawn(move || {
             info!("Cleanup thread started");
@@ -1011,7 +1044,13 @@ impl App {
 
                         // Log connection_closed event if JSON logging is enabled
                         if let Some(log_path) = &json_log_path {
-                            log_connection_event(log_path, "connection_closed", conn, duration_secs);
+                            log_connection_event(
+                                log_path,
+                                "connection_closed",
+                                conn,
+                                duration_secs,
+                                dns_resolver.as_deref(),
+                            );
                         }
 
                         // Log cleanup reason for debugging
@@ -1181,6 +1220,26 @@ impl App {
         (String::from("Unknown"), false)
     }
 
+    /// Get the DNS resolver if enabled
+    pub fn get_dns_resolver(&self) -> Option<Arc<DnsResolver>> {
+        self.dns_resolver.clone()
+    }
+
+    /// Check if DNS resolution is enabled
+    pub fn is_dns_resolution_enabled(&self) -> bool {
+        self.dns_resolver.is_some()
+    }
+
+    /// Get hostname for an IP address if resolved
+    pub fn get_hostname(&self, ip: &std::net::IpAddr) -> Option<String> {
+        self.dns_resolver.as_ref()?.get_hostname(ip)
+    }
+
+    /// Check if PTR lookup connections should be shown
+    pub fn show_ptr_lookups(&self) -> bool {
+        self.config.show_ptr_lookups
+    }
+
     /// Stop all threads gracefully
     pub fn stop(&self) {
         info!("Stopping application");
@@ -1195,6 +1254,7 @@ fn update_connection(
     _stats: &AppStats,
     json_log_path: &Option<String>,
     rtt_tracker: &Arc<Mutex<RttTracker>>,
+    dns_resolver: Option<&DnsResolver>,
 ) {
     let mut key = parsed.connection_key.clone();
     let now = SystemTime::now();
@@ -1286,7 +1346,7 @@ fn update_connection(
 
             // Log new connection event if JSON logging is enabled
             if let Some(log_path) = json_log_path {
-                log_connection_event(log_path, "new_connection", &conn, None);
+                log_connection_event(log_path, "new_connection", &conn, None, dns_resolver);
             }
 
             conn

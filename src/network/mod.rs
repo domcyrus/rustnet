@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod dns;
 pub mod dpi;
 pub mod interface_stats;
 pub mod link_layer;
