@@ -21,6 +21,7 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 - **Smart Connection Lifecycle**: Protocol-aware timeouts with visual staleness indicators (white → yellow → red) before cleanup
 - **Process Identification**: Associate network connections with running processes
 - **Service Name Resolution**: Identify well-known services using port numbers
+- **Reverse DNS Lookups**: Resolve IP addresses to hostnames with background async resolution and caching
 - **Cross-platform Support**: Works on Linux, macOS, Windows, and FreeBSD
 - **Advanced Filtering**: Real-time vim/fzf-style filtering with keyword support (`port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`)
 - **Terminal User Interface**: Beautiful TUI built with ratatui with adjustable column widths
@@ -133,6 +134,7 @@ rustnet
 ```bash
 rustnet -i eth0              # Specify network interface
 rustnet --show-localhost     # Show localhost connections
+rustnet --resolve-dns        # Enable reverse DNS lookups
 rustnet -r 500               # Set refresh interval (ms)
 ```
 
@@ -152,6 +154,7 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `Esc` | Go back or clear filter |
 | `c` | Copy remote address |
 | `p` | Toggle service names/ports |
+| `d` | Toggle hostnames/IPs (with `--resolve-dns`) |
 | `s` `S` | Cycle sort columns / toggle direction |
 | `/` | Enter filter mode |
 | `h` | Toggle help |

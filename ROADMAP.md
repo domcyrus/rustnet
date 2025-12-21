@@ -66,7 +66,7 @@ The experimental eBPF support provides efficient process identification but has 
 - [x] **Process Identification**: Associate network connections with running processes (with experimental eBPF support on Linux)
 - [x] **Service Name Resolution**: Identify well-known services using port numbers
 - [x] **Cross-platform Support**: Works on Linux, macOS, Windows, and FreeBSD
-- [ ] **DNS Reverse Lookup**: Add optional hostname resolution (toggle between IP and hostname display)
+- [x] **DNS Reverse Lookup**: Add optional hostname resolution (toggle between IP and hostname display) - `--resolve-dns` flag with `d` key toggle
 - [ ] **IPv6 Support**: Full IPv6 connection tracking and display, including DNS resolution (needs testing)
 
 ### Filtering & Search

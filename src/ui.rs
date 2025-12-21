@@ -12,6 +12,7 @@ use ratatui::{
 };
 
 use crate::app::{App, AppStats};
+use crate::network::dns::DnsResolver;
 use crate::network::types::{
     AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory,
 };
@@ -122,6 +123,8 @@ pub struct UIState {
     pub show_port_numbers: bool,
     pub sort_column: SortColumn,
     pub sort_ascending: bool,
+    /// Show hostnames instead of IP addresses (when DNS resolution is enabled)
+    pub show_hostnames: bool,
 }
 
 impl Default for UIState {
@@ -138,6 +141,7 @@ impl Default for UIState {
             show_port_numbers: false,
             sort_column: SortColumn::default(),
             sort_ascending: true, // Default to ascending
+            show_hostnames: true, // Show hostnames by default when DNS resolution is enabled
         }
     }
 }
@@ -410,7 +414,10 @@ pub fn draw(
 
     match ui_state.selected_tab {
         0 => draw_overview(f, ui_state, connections, stats, app, content_area)?,
-        1 => draw_connection_details(f, ui_state, connections, content_area)?,
+        1 => {
+            let dns_resolver = app.get_dns_resolver();
+            draw_connection_details(f, ui_state, connections, content_area, dns_resolver.as_deref())?
+        }
         2 => draw_interface_stats(f, app, content_area)?,
         3 => draw_graph_tab(f, app, connections, content_area)?,
         4 => draw_help(f, content_area)?,
@@ -467,7 +474,9 @@ fn draw_overview(
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(area);
 
-    draw_connections_list(f, ui_state, connections, chunks[0]);
+    // Get DNS resolver from app if enabled
+    let dns_resolver = app.get_dns_resolver();
+    draw_connections_list(f, ui_state, connections, chunks[0], dns_resolver.as_deref());
     draw_stats_panel(f, connections, stats, app, chunks[1])?;
 
     Ok(())
@@ -479,11 +488,15 @@ fn draw_connections_list(
     ui_state: &UIState,
     connections: &[Connection],
     area: Rect,
+    dns_resolver: Option<&DnsResolver>,
 ) {
+    // When DNS resolution is enabled, we need more space for hostnames
+    let remote_addr_width = if dns_resolver.is_some() && ui_state.show_hostnames { 30 } else { 21 };
+
     let widths = [
         Constraint::Length(6), // Protocol (TCP/UDP + arrow = "Pro ↑" = 5 chars, give 6 for padding)
         Constraint::Length(17), // Local Address (13 + arrow = 15, fits in 17)
-        Constraint::Length(21), // Remote Address (14 + arrow = 16, fits in 21)
+        Constraint::Length(remote_addr_width), // Remote Address - wider when showing hostnames
         Constraint::Length(16), // State (5 + arrow = 7, fits in 16)
         Constraint::Length(10), // Service (7 + arrow = 9, need at least 10 for padding)
         Constraint::Length(24), // DPI/Application (18 + arrow = 20, fits in 24)
@@ -659,10 +672,33 @@ fn draw_connections_list(
                 Style::default()
             };
 
+            // Format addresses - use hostnames when DNS resolution is enabled and show_hostnames is true
+            let local_addr_display = conn.local_addr.to_string();
+            let remote_addr_display = if ui_state.show_hostnames {
+                if let Some(resolver) = dns_resolver {
+                    if let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip()) {
+                        // Truncate hostname if too long, but always show port
+                        let port = conn.remote_addr.port();
+                        let max_hostname_len = (remote_addr_width as usize).saturating_sub(7); // Leave room for :port
+                        if hostname.len() > max_hostname_len {
+                            format!("{}...:{}", &hostname[..max_hostname_len.saturating_sub(3)], port)
+                        } else {
+                            format!("{}:{}", hostname, port)
+                        }
+                    } else {
+                        conn.remote_addr.to_string()
+                    }
+                } else {
+                    conn.remote_addr.to_string()
+                }
+            } else {
+                conn.remote_addr.to_string()
+            };
+
             let cells = [
                 Cell::from(conn.protocol.to_string()),
-                Cell::from(conn.local_addr.to_string()),
-                Cell::from(conn.remote_addr.to_string()),
+                Cell::from(local_addr_display),
+                Cell::from(remote_addr_display),
                 Cell::from(conn.state()),
                 Cell::from(service_display),
                 Cell::from(dpi_display),
@@ -1664,6 +1700,7 @@ fn draw_connection_details(
     ui_state: &UIState,
     connections: &[Connection],
     area: Rect,
+    dns_resolver: Option<&DnsResolver>,
 ) -> Result<()> {
     if connections.is_empty() {
         let text = Paragraph::new("No connections available")
@@ -1721,6 +1758,24 @@ fn draw_connection_details(
             Span::raw(conn.service_name.clone().unwrap_or_else(|| "-".to_string())),
         ]),
     ];
+
+    // Add reverse DNS hostnames if available
+    if let Some(resolver) = dns_resolver {
+        let local_hostname = resolver.get_hostname(&conn.local_addr.ip());
+        let remote_hostname = resolver.get_hostname(&conn.remote_addr.ip());
+
+        if local_hostname.is_some() || remote_hostname.is_some() {
+            details_text.push(Line::from("")); // Empty line separator
+            details_text.push(Line::from(vec![
+                Span::styled("Local Hostname: ", Style::default().fg(Color::Yellow)),
+                Span::raw(local_hostname.unwrap_or_else(|| "-".to_string())),
+            ]));
+            details_text.push(Line::from(vec![
+                Span::styled("Remote Hostname: ", Style::default().fg(Color::Yellow)),
+                Span::raw(remote_hostname.unwrap_or_else(|| "-".to_string())),
+            ]));
+        }
+    }
 
     // Add DPI information
     match &conn.dpi_info {
@@ -2021,6 +2076,10 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         Line::from(vec![
             Span::styled("p ", Style::default().fg(Color::Yellow)),
             Span::raw("Toggle between service names and port numbers"),
+        ]),
+        Line::from(vec![
+            Span::styled("d ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle between hostnames and IP addresses (when --resolve-dns)"),
         ]),
         Line::from(vec![
             Span::styled("s ", Style::default().fg(Color::Yellow)),
