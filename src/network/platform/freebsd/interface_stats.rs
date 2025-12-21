@@ -34,8 +34,7 @@ impl InterfaceStatsProvider for FreeBSDStatsProvider {
             let mut stats = Vec::new();
             let mut current = ifap;
 
-            while !current.is_null() {
-                let ifa = &*current;
+            while let Some(ifa) = current.as_ref() {
 
                 // Only process AF_LINK entries (data link layer)
                 if !ifa.ifa_addr.is_null() && (*ifa.ifa_addr).sa_family as i32 == libc::AF_LINK {

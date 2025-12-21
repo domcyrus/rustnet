@@ -40,16 +40,17 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
                 )));
             }
 
-            if table.is_null() {
-                return Err(io::Error::other("Failed to get interface table"));
-            }
+            let table_ref = match table.as_ref() {
+                Some(t) => t,
+                None => return Err(io::Error::other("Failed to get interface table")),
+            };
 
-            let num_entries = (*table).NumEntries as usize;
+            let num_entries = table_ref.NumEntries as usize;
             // Use LUID as key for deduplication since it's unique per interface
             let mut stats_map: HashMap<u64, InterfaceStats> = HashMap::new();
 
             for i in 0..num_entries {
-                let row = &*(*table).Table.as_ptr().add(i);
+                let row = &*table_ref.Table.as_ptr().add(i);
 
                 // Convert interface alias (friendly name) to string
                 let name = String::from_utf16_lossy(&row.Alias)
