@@ -113,8 +113,14 @@ yay -S rustnet
 cargo install rustnet-monitor
 ```
 
+**Windows (Chocolatey):**
+```powershell
+# Run in Administrator PowerShell
+choco install rustnet
+```
+
 **Other platforms:**
-- **Windows/FreeBSD**: Download installers from [GitHub Releases](https://github.com/domcyrus/rustnet/releases)
+- **FreeBSD**: Download from [GitHub Releases](https://github.com/domcyrus/rustnet/releases)
 - **Docker, source builds, other Linux distros**: See [INSTALL.md](INSTALL.md) for detailed instructions
 
 ### Running RustNet

@@ -7,6 +7,7 @@ This guide covers all installation methods for RustNet across different platform
 - [Installing from Release Packages](#installing-from-release-packages)
   - [macOS DMG Installation](#macos-dmg-installation)
   - [Windows MSI Installation](#windows-msi-installation)
+  - [Windows Chocolatey Installation](#windows-chocolatey-installation)
   - [Linux Package Installation](#linux-package-installation)
   - [FreeBSD Installation](#freebsd-installation)
 - [Install via Cargo](#install-via-cargo)
@@ -72,6 +73,17 @@ Pre-built packages are available for each release on the [GitHub Releases](https
    - Run: `rustnet.exe`
    - If Npcap is not installed or not in WinPcap compatible mode, RustNet will display a helpful error message with installation instructions
    - Note: Depending on your Npcap installation settings, you may or may not need Administrator privileges
+
+### Windows Chocolatey Installation
+
+The easiest way to install RustNet on Windows is via [Chocolatey](https://community.chocolatey.org/packages/rustnet):
+
+```powershell
+# Run in Administrator PowerShell
+choco install rustnet
+```
+
+**Note:** You still need to install [Npcap](https://npcap.com) separately with "WinPcap API compatible mode" enabled.
 
 ### Linux Package Installation
 
