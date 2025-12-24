@@ -116,6 +116,7 @@ pub struct UIState {
     pub selected_connection_key: Option<String>,
     pub show_help: bool,
     pub quit_confirmation: bool,
+    pub clear_confirmation: bool,
     pub clipboard_message: Option<(String, std::time::Instant)>,
     pub filter_mode: bool,
     pub filter_query: String,
@@ -134,6 +135,7 @@ impl Default for UIState {
             selected_connection_key: None,
             show_help: false,
             quit_confirmation: false,
+            clear_confirmation: false,
             clipboard_message: None,
             filter_mode: false,
             filter_query: String::new(),
@@ -2054,6 +2056,10 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Quit immediately"),
         ]),
         Line::from(vec![
+            Span::styled("x ", Style::default().fg(Color::Yellow)),
+            Span::raw("Clear all connections (press twice to confirm)"),
+        ]),
+        Line::from(vec![
             Span::styled("Tab ", Style::default().fg(Color::Yellow)),
             Span::raw("Switch between tabs"),
         ]),
@@ -2361,6 +2367,8 @@ fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
 fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, area: Rect) {
     let status = if ui_state.quit_confirmation {
         " Press 'q' again to quit or any other key to cancel ".to_string()
+    } else if ui_state.clear_confirmation {
+        " Press 'x' again to clear all connections or any other key to cancel ".to_string()
     } else if let Some((ref msg, ref time)) = ui_state.clipboard_message {
         // Show clipboard message for 3 seconds
         if time.elapsed().as_secs() < 3 {
@@ -2383,7 +2391,7 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
         )
     };
 
-    let style = if ui_state.quit_confirmation {
+    let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {
         Style::default().fg(Color::Black).bg(Color::Yellow)
     } else if ui_state.clipboard_message.is_some()
         && ui_state

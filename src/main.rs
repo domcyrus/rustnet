@@ -462,12 +462,14 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Tab navigation (forward)
                     (KeyCode::Tab, KeyModifiers::NONE) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         ui_state.selected_tab = (ui_state.selected_tab + 1) % 5;
                     }
 
                     // Shift+Tab navigation (backward)
                     (KeyCode::BackTab, _) | (KeyCode::Tab, KeyModifiers::SHIFT) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         ui_state.selected_tab = if ui_state.selected_tab == 0 {
                             4 // Wrap to last tab
                         } else {
@@ -478,6 +480,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Help toggle
                     (KeyCode::Char('h'), _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         ui_state.show_help = !ui_state.show_help;
                         if ui_state.show_help {
                             ui_state.selected_tab = 4; // Switch to help tab
@@ -489,6 +492,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Interface stats toggle (shortcut to Interface tab)
                     (KeyCode::Char('i'), _) | (KeyCode::Char('I'), _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         if ui_state.selected_tab == 2 {
                             ui_state.selected_tab = 0; // Back to overview
                         } else {
@@ -499,6 +503,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Navigation in connection list
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         // Use the SAME sorted connections list from the main loop
                         // to ensure index consistency with the displayed table
                         debug!("Navigation UP: {} connections available", connections.len());
@@ -507,6 +512,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
 
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         // Use the SAME sorted connections list from the main loop
                         // to ensure index consistency with the displayed table
                         debug!(
@@ -519,6 +525,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Page Up/Down navigation
                     (KeyCode::PageUp, _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         // Use the SAME sorted connections list from the main loop
                         // Move up by roughly 10 items (or adjust based on terminal height)
                         ui_state.move_selection_page_up(&connections, 10);
@@ -526,6 +533,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
 
                     (KeyCode::PageDown, _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         // Use the SAME sorted connections list from the main loop
                         // Move down by roughly 10 items (or adjust based on terminal height)
                         ui_state.move_selection_page_down(&connections, 10);
@@ -534,12 +542,14 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Vim-style jump to first/last (g/G)
                     (KeyCode::Char('g'), KeyModifiers::NONE) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         // Jump to first connection (vim-style 'g')
                         ui_state.move_selection_to_first(&connections);
                     }
 
                     (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         // Jump to last connection (vim-style 'G')
                         ui_state.move_selection_to_last(&connections);
                     }
@@ -547,6 +557,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Enter to view details
                     (KeyCode::Enter, _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         if ui_state.selected_tab == 0 && !connections.is_empty() {
                             ui_state.selected_tab = 1; // Switch to details view
                         }
@@ -555,6 +566,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Toggle port number display
                     (KeyCode::Char('p'), _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         ui_state.show_port_numbers = !ui_state.show_port_numbers;
                         info!(
                             "Toggled port display: {}",
@@ -570,6 +582,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     (KeyCode::Char('d'), _) => {
                         if app.is_dns_resolution_enabled() {
                             ui_state.quit_confirmation = false;
+                            ui_state.clear_confirmation = false;
                             ui_state.show_hostnames = !ui_state.show_hostnames;
                             info!(
                                 "Toggled hostname display: {}",
@@ -585,6 +598,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Cycle sort column with 's'
                     (KeyCode::Char('s'), KeyModifiers::NONE) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         ui_state.cycle_sort_column();
                         info!(
                             "Sort column: {} ({})",
@@ -600,6 +614,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Toggle sort direction with 'S' (Shift+s)
                     (KeyCode::Char('S'), _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         ui_state.toggle_sort_direction();
                         info!(
                             "Sort direction: {} ({})",
@@ -615,6 +630,7 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                     // Copy remote address to clipboard
                     (KeyCode::Char('c'), _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         if let Some(selected_idx) = ui_state.get_selected_index(&connections)
                             && let Some(conn) = connections.get(selected_idx)
                         {
@@ -671,9 +687,28 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         }
                     }
 
+                    // Clear all connections with confirmation
+                    (KeyCode::Char('x'), _) => {
+                        ui_state.quit_confirmation = false;
+                        if ui_state.clear_confirmation {
+                            info!("User confirmed clear all connections");
+                            app.clear_all_connections();
+                            ui_state.clear_confirmation = false;
+                            ui_state.selected_connection_key = None;
+                            ui_state.clipboard_message = Some((
+                                "All connections cleared".to_string(),
+                                std::time::Instant::now(),
+                            ));
+                        } else {
+                            info!("User requested clear - showing confirmation");
+                            ui_state.clear_confirmation = true;
+                        }
+                    }
+
                     // Escape to go back or clear filter
                     (KeyCode::Esc, _) => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                         if !ui_state.filter_query.is_empty() {
                             // Clear filter if one is active
                             ui_state.clear_filter();
@@ -684,9 +719,10 @@ fn run_ui_loop<B: ratatui::prelude::Backend>(
                         }
                     }
 
-                    // Any other key resets quit confirmation
+                    // Any other key resets confirmations
                     _ => {
                         ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
                     }
                 }
             }

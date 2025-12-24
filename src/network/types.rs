@@ -796,6 +796,11 @@ impl TrafficHistory {
     pub fn has_enough_data(&self) -> bool {
         self.samples.len() >= 2
     }
+
+    /// Clear all traffic history samples
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
 }
 
 impl Default for TrafficHistory {
@@ -897,6 +902,12 @@ impl RttTracker {
     fn cleanup_stale(&mut self) {
         let cutoff = Instant::now() - self.max_pending_age;
         self.pending_syns.retain(|_, ts| *ts > cutoff);
+    }
+
+    /// Clear all RTT tracking data
+    pub fn clear(&mut self) {
+        self.pending_syns.clear();
+        self.recent_rtts.clear();
     }
 }
 

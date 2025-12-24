@@ -152,6 +152,7 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 |-----|--------|
 | `q` | Quit (press twice to confirm) |
 | `Ctrl+C` | Quit immediately |
+| `x` | Clear all connections (press twice to confirm) |
 | `Tab` | Switch between tabs |
 | `i` | Toggle interface statistics view |
 | `↑/k` `↓/j` | Navigate up/down |
