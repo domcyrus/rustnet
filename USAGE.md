@@ -85,6 +85,7 @@ Options:
   -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
       --json-log <FILE>                  Enable JSON logging of connection events to specified file
   -f, --bpf-filter <FILTER>              BPF filter expression for packet capture
+      --lang <LOCALE>                    Override system locale (e.g., en, es, de, fr, zh, ru)
       --no-sandbox                       Disable Landlock sandboxing (Linux only)
       --sandbox-strict                   Require full sandbox enforcement or exit (Linux only)
   -h, --help                             Print help
@@ -233,6 +234,37 @@ Enable logging with the specified level. Logging is **disabled by default**.
 - `trace` - Very verbose output (includes packet-level details)
 
 Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`
+
+#### `--lang <LOCALE>`
+
+Override the system locale for the user interface. RustNet automatically detects your system language, but you can override it with this option.
+
+**Available locales:**
+- `en` - English (default)
+- `es` - Spanish (Español)
+- `de` - German (Deutsch)
+- `fr` - French (Français)
+- `zh` - Chinese (中文)
+- `ru` - Russian (Русский)
+
+**Examples:**
+```bash
+# Use German interface
+rustnet --lang de
+
+# Use Spanish interface
+rustnet --lang es
+```
+
+**Environment variable:** You can also set `RUSTNET_LANG` to override the locale:
+```bash
+RUSTNET_LANG=fr rustnet
+```
+
+**Priority order:**
+1. `--lang` command-line flag (highest priority)
+2. `RUSTNET_LANG` environment variable
+3. System locale detection (automatic)
 
 ## Keyboard Controls
 

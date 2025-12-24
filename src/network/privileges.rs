@@ -17,6 +17,7 @@ use anyhow::anyhow;
 ))]
 use log::warn;
 use log::{debug, info};
+use rust_i18n::t;
 
 /// Privilege check result with detailed information
 #[derive(Debug, Clone)]
@@ -61,10 +62,10 @@ impl PrivilegeStatus {
             return String::new();
         }
 
-        let mut msg = String::from("Insufficient privileges for network packet capture.\n\n");
+        let mut msg = format!("{}\n\n", t!("privileges.insufficient"));
 
         if !self.missing.is_empty() {
-            msg.push_str("Missing:\n");
+            msg.push_str(&format!("{}:\n", t!("privileges.missing")));
             for item in &self.missing {
                 msg.push_str(&format!("  • {}\n", item));
             }
@@ -72,7 +73,7 @@ impl PrivilegeStatus {
         }
 
         if !self.instructions.is_empty() {
-            msg.push_str("How to fix:\n");
+            msg.push_str(&format!("{}:\n", t!("privileges.how_to_fix")));
             for (i, instruction) in self.instructions.iter().enumerate() {
                 msg.push_str(&format!("  {}. {}\n", i + 1, instruction));
             }
@@ -156,25 +157,20 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
         return Ok(PrivilegeStatus::sufficient());
     } else {
         debug!("CAP_NET_RAW: missing");
-        missing.push("CAP_NET_RAW capability (required for packet capture)".to_string());
+        missing.push(t!("privileges.linux.cap_net_raw_missing").to_string());
     }
 
     // Build instructions for gaining privileges
     let mut instructions = vec![
-        "Run with sudo: sudo rustnet".to_string(),
-        "Set capabilities (modern Linux 5.8+, with eBPF): sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)".to_string(),
-        "Set capabilities (legacy/older kernels, with eBPF): sudo setcap 'cap_net_raw,cap_sys_admin=eip' $(which rustnet)".to_string(),
-        "Set capabilities (packet capture only, no eBPF): sudo setcap 'cap_net_raw=eip' $(which rustnet)".to_string(),
+        t!("privileges.linux.run_sudo").to_string(),
+        t!("privileges.linux.setcap_modern").to_string(),
+        t!("privileges.linux.setcap_legacy").to_string(),
+        t!("privileges.linux.setcap_minimal").to_string(),
     ];
 
     // Add Docker-specific instructions if it looks like we're in a container
     if is_running_in_container() {
-        instructions.push(
-            "If running in Docker, add these flags:\n  \
-             --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON \
-             --net=host --pid=host"
-                .to_string(),
-        );
+        instructions.push(t!("privileges.linux.docker_flags").to_string());
     }
 
     Ok(PrivilegeStatus::insufficient(missing, instructions))
@@ -268,16 +264,12 @@ fn check_macos_privileges() -> Result<PrivilegeStatus> {
     }
 
     // No BPF access - build error message
-    let missing = vec!["Access to BPF devices (/dev/bpf*)".to_string()];
+    let missing = vec![t!("privileges.macos.bpf_access_missing").to_string()];
 
     let instructions = vec![
-        "Run with sudo: sudo rustnet".to_string(),
-        "Change BPF device permissions (temporary):\n  \
-         sudo chmod o+rw /dev/bpf*"
-            .to_string(),
-        "Install BPF permission helper (persistent):\n  \
-         brew install wireshark && sudo /usr/local/bin/install-bpf"
-            .to_string(),
+        t!("privileges.macos.run_sudo").to_string(),
+        t!("privileges.macos.chmod_bpf").to_string(),
+        t!("privileges.macos.install_wireshark").to_string(),
     ];
 
     Ok(PrivilegeStatus::insufficient(missing, instructions))
@@ -331,11 +323,11 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
                 || error_str.contains("denied")
                 || error_str.contains("permission")
             {
-                let missing = vec!["Administrator privileges".to_string()];
+                let missing = vec![t!("privileges.windows.admin_missing").to_string()];
 
                 let instructions = vec![
-                    "Run as Administrator: Right-click the terminal and select 'Run as Administrator'".to_string(),
-                    "If using Npcap: Ensure it was installed with 'WinPcap API-compatible Mode' enabled".to_string(),
+                    t!("privileges.windows.run_admin").to_string(),
+                    t!("privileges.windows.npcap_mode").to_string(),
                 ];
 
                 Ok(PrivilegeStatus::insufficient(missing, instructions))
@@ -395,17 +387,12 @@ fn check_freebsd_privileges() -> Result<PrivilegeStatus> {
     }
 
     // No BPF access - build error message
-    let missing = vec!["Access to BPF devices (/dev/bpf*)".to_string()];
+    let missing = vec![t!("privileges.freebsd.bpf_access_missing").to_string()];
 
     let instructions = vec![
-        "Run with sudo: sudo rustnet".to_string(),
-        "Add your user to the bpf group:\n  \
-         sudo pw groupmod bpf -m $(whoami)\n  \
-         Then logout and login again"
-            .to_string(),
-        "Change BPF device permissions (temporary):\n  \
-         sudo chmod o+rw /dev/bpf*"
-            .to_string(),
+        t!("privileges.freebsd.run_sudo").to_string(),
+        t!("privileges.freebsd.add_to_bpf_group").to_string(),
+        t!("privileges.freebsd.chmod_bpf").to_string(),
     ];
 
     Ok(PrivilegeStatus::insufficient(missing, instructions))
