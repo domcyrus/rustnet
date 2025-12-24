@@ -259,6 +259,7 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 - `p` - Toggle between service names and port numbers
 - `d` - Toggle between hostnames and IP addresses (requires `--resolve-dns`)
 - `/` - Enter filter mode (vim-style search with real-time results)
+- `x` - Clear all connections and reset statistics (press twice to confirm)
 
 ### Sorting
 

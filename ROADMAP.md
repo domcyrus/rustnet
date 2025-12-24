@@ -121,7 +121,7 @@ The experimental eBPF support provides efficient process identification but has 
 
 - [x] **Terminal User Interface**: TUI built with ratatui with adjustable column widths
 - [x] **Sortable Columns**: Keyboard-based sorting by all table columns
-- [x] **Keyboard Controls**: Comprehensive keyboard navigation (q, Ctrl+C, Tab, arrows, j/k, PageUp/Down, Enter, Esc, c, p, s, S, h, /)
+- [x] **Keyboard Controls**: Comprehensive keyboard navigation (q, Ctrl+C, x, Tab, arrows, j/k, PageUp/Down, Enter, Esc, c, p, s, S, h, /)
 - [x] **Connection Details View**: Detailed information about selected connections (Enter key)
 - [x] **Help Screen**: Toggle help screen with keyboard shortcuts (h key)
 - [x] **Clipboard Support**: Copy remote address to clipboard (c key)

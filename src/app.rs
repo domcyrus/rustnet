@@ -230,6 +230,9 @@ pub struct App {
     /// Control flag for graceful shutdown
     should_stop: Arc<AtomicBool>,
 
+    /// Active connections map (shared with background threads)
+    connections: Arc<DashMap<String, Connection>>,
+
     /// Current connections snapshot for UI
     connections_snapshot: Arc<RwLock<Vec<Connection>>>,
 
@@ -294,6 +297,7 @@ impl App {
         Ok(Self {
             config,
             should_stop: Arc::new(AtomicBool::new(false)),
+            connections: Arc::new(DashMap::new()),
             connections_snapshot: Arc::new(RwLock::new(Vec::new())),
             service_lookup: Arc::new(service_lookup),
             stats: Arc::new(AppStats::default()),
@@ -316,8 +320,8 @@ impl App {
     pub fn start(&mut self) -> Result<()> {
         info!("Starting network monitor application");
 
-        // Create shared connection map
-        let connections: Arc<DashMap<String, Connection>> = Arc::new(DashMap::new());
+        // Use stored connection map
+        let connections = Arc::clone(&self.connections);
 
         // Start packet capture pipeline
         self.start_packet_capture_pipeline(connections.clone())?;
@@ -1249,6 +1253,50 @@ impl App {
     /// Check if DNS resolution is enabled
     pub fn is_dns_resolution_enabled(&self) -> bool {
         self.dns_resolver.is_some()
+    }
+
+    /// Clear all connections and related data, starting fresh
+    /// This clears:
+    /// - All tracked connections
+    /// - Traffic history (graph data)
+    /// - RTT measurements
+    /// - QUIC connection mappings
+    /// - Resets statistics counters
+    pub fn clear_all_connections(&self) {
+        info!("Clearing all connections and resetting statistics");
+
+        // Clear the main connections map
+        self.connections.clear();
+
+        // Clear the UI snapshot
+        if let Ok(mut snapshot) = self.connections_snapshot.write() {
+            snapshot.clear();
+        }
+
+        // Clear traffic history
+        if let Ok(mut history) = self.traffic_history.write() {
+            history.clear();
+        }
+
+        // Clear RTT tracker
+        if let Ok(mut tracker) = self.rtt_tracker.lock() {
+            tracker.clear();
+        }
+
+        // Clear QUIC connection ID mappings
+        if let Ok(mut mapping) = QUIC_CONNECTION_MAPPING.lock() {
+            mapping.clear();
+        }
+
+        // Reset statistics counters
+        self.stats.packets_processed.store(0, Ordering::Relaxed);
+        self.stats.packets_dropped.store(0, Ordering::Relaxed);
+        self.stats.connections_tracked.store(0, Ordering::Relaxed);
+        self.stats.total_tcp_retransmits.store(0, Ordering::Relaxed);
+        self.stats.total_tcp_out_of_order.store(0, Ordering::Relaxed);
+        self.stats.total_tcp_fast_retransmits.store(0, Ordering::Relaxed);
+
+        info!("All connections cleared successfully");
     }
 
     /// Stop all threads gracefully
