@@ -108,7 +108,7 @@ The experimental eBPF support provides efficient process identification but has 
 
 ### Future Enhancements
 
-- [ ] **Internationalization (i18n)**: Support for multiple languages in the UI
+- [x] **Internationalization (i18n)**: Support for multiple languages in the UI (English, Spanish, German, French, Chinese, Russian)
 - [ ] **Connection History**: Store and display historical connection data
 - [ ] **Export Functionality**: Export connections to CSV/JSON formats
 - [ ] **Configuration File**: Support for persistent configuration (filters, UI preferences)

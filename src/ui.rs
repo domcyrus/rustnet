@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use anyhow::Result;
 use ratatui::{
     Frame, Terminal as RatatuiTerminal,
@@ -10,6 +12,7 @@ use ratatui::{
         Tabs, Wrap,
     },
 };
+use rust_i18n::t;
 
 use crate::app::{App, AppStats};
 use crate::network::dns::DnsResolver;
@@ -68,18 +71,21 @@ impl SortColumn {
         }
     }
 
-    /// Get the display name for the sort column
-    pub fn display_name(self) -> &'static str {
+    /// Get the display name for the sort column.
+    ///
+    /// Returns `Cow<'static, str>` to avoid allocations when using English locale
+    /// (the `t!()` macro returns the static string directly in that case).
+    pub fn display_name(self) -> Cow<'static, str> {
         match self {
-            Self::CreatedAt => "Time",
-            Self::BandwidthTotal => "Bandwidth Total",
-            Self::Process => "Process",
-            Self::LocalAddress => "Local Addr",
-            Self::RemoteAddress => "Remote Addr",
-            Self::Application => "Application",
-            Self::Service => "Service",
-            Self::State => "State",
-            Self::Protocol => "Protocol",
+            Self::CreatedAt => t!("sort.time"),
+            Self::BandwidthTotal => t!("sort.bandwidth"),
+            Self::Process => t!("sort.process"),
+            Self::LocalAddress => t!("sort.local_addr"),
+            Self::RemoteAddress => t!("sort.remote_addr"),
+            Self::Application => t!("sort.application"),
+            Self::Service => t!("sort.service"),
+            Self::State => t!("sort.state"),
+            Self::Protocol => t!("sort.protocol"),
         }
     }
 }
@@ -438,18 +444,18 @@ pub fn draw(
 /// Draw mode tabs
 fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect) {
     let titles = vec![
-        Span::styled("Overview", Style::default().fg(Color::Green)),
-        Span::styled("Details", Style::default().fg(Color::Green)),
-        Span::styled("Interfaces", Style::default().fg(Color::Green)),
-        Span::styled("Graph", Style::default().fg(Color::Green)),
-        Span::styled("Help", Style::default().fg(Color::Green)),
+        Span::styled(t!("tabs.overview").to_string(), Style::default().fg(Color::Green)),
+        Span::styled(t!("tabs.details").to_string(), Style::default().fg(Color::Green)),
+        Span::styled(t!("tabs.interfaces").to_string(), Style::default().fg(Color::Green)),
+        Span::styled(t!("tabs.graph").to_string(), Style::default().fg(Color::Green)),
+        Span::styled(t!("tabs.help").to_string(), Style::default().fg(Color::Green)),
     ];
 
     let tabs = Tabs::new(titles.into_iter().map(Line::from).collect::<Vec<_>>())
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("RustNet Monitor"),
+                .title(t!("app.name").to_string()),
         )
         .select(ui_state.selected_tab)
         .style(Style::default())
@@ -529,20 +535,20 @@ fn draw_connections_list(
             } else {
                 "↓"
             };
-            format!("Down/Up {}", arrow) // "Down/Up ↓" or "Down/Up ↑"
+            format!("{} {}", t!("table.headers.bandwidth"), arrow)
         }
-        _ => "Down/Up".to_string(), // No bandwidth sort active
+        _ => t!("table.headers.bandwidth").to_string(),
     };
 
     let header_labels = [
-        add_sort_indicator("Pro", &[SortColumn::Protocol]),
-        add_sort_indicator("Local Address", &[SortColumn::LocalAddress]),
-        add_sort_indicator("Remote Address", &[SortColumn::RemoteAddress]),
-        add_sort_indicator("State", &[SortColumn::State]),
-        add_sort_indicator("Service", &[SortColumn::Service]),
-        add_sort_indicator("Application / Host", &[SortColumn::Application]),
+        add_sort_indicator(&t!("table.headers.protocol"), &[SortColumn::Protocol]),
+        add_sort_indicator(&t!("table.headers.local_address"), &[SortColumn::LocalAddress]),
+        add_sort_indicator(&t!("table.headers.remote_address"), &[SortColumn::RemoteAddress]),
+        add_sort_indicator(&t!("table.headers.state"), &[SortColumn::State]),
+        add_sort_indicator(&t!("table.headers.service"), &[SortColumn::Service]),
+        add_sort_indicator(&t!("table.headers.application"), &[SortColumn::Application]),
         bandwidth_label, // Use custom bandwidth label instead of generic indicator
-        add_sort_indicator("Process", &[SortColumn::Process]),
+        add_sort_indicator(&t!("table.headers.process"), &[SortColumn::Process]),
     ];
 
     let header_cells = header_labels.iter().enumerate().map(|(idx, h)| {
@@ -724,13 +730,9 @@ fn draw_connections_list(
         } else {
             "↓"
         };
-        format!(
-            "Active Connections (Sort: {} {})",
-            ui_state.sort_column.display_name(),
-            direction
-        )
+        t!("table.title_sorted", column = ui_state.sort_column.display_name(), direction = direction).to_string()
     } else {
-        "Active Connections".to_string()
+        t!("table.title").to_string()
     };
 
     let connections_table = Table::new(rows, &widths)
@@ -777,35 +779,27 @@ fn draw_stats_panel(
     let process_detection_method = app.get_process_detection_method();
     let (link_layer_type, is_tunnel) = app.get_link_layer_info();
 
+    let link_layer_display = if is_tunnel {
+        t!("stats.link_layer_tunnel", "type" = link_layer_type).to_string()
+    } else {
+        t!("stats.link_layer", "type" = link_layer_type).to_string()
+    };
+
     let conn_stats_text: Vec<Line> = vec![
-        Line::from(format!("Interface: {}", interface_name)),
-        Line::from(format!(
-            "Link Layer: {}{}",
-            link_layer_type,
-            if is_tunnel { " (Tunnel)" } else { "" }
-        )),
-        Line::from(format!("Process Detection: {}", process_detection_method)),
+        Line::from(t!("stats.interface", name = interface_name).to_string()),
+        Line::from(link_layer_display),
+        Line::from(t!("stats.process_detection", method = process_detection_method).to_string()),
         Line::from(""),
-        Line::from(format!("TCP Connections: {}", tcp_count)),
-        Line::from(format!("UDP Connections: {}", udp_count)),
-        Line::from(format!("Total Connections: {}", connections.len())),
+        Line::from(t!("stats.tcp_connections", count = tcp_count).to_string()),
+        Line::from(t!("stats.udp_connections", count = udp_count).to_string()),
+        Line::from(t!("stats.total_connections", count = connections.len()).to_string()),
         Line::from(""),
-        Line::from(format!(
-            "Packets Processed: {}",
-            stats
-                .packets_processed
-                .load(std::sync::atomic::Ordering::Relaxed)
-        )),
-        Line::from(format!(
-            "Packets Dropped: {}",
-            stats
-                .packets_dropped
-                .load(std::sync::atomic::Ordering::Relaxed)
-        )),
+        Line::from(t!("stats.packets_processed", count = stats.packets_processed.load(std::sync::atomic::Ordering::Relaxed)).to_string()),
+        Line::from(t!("stats.packets_dropped", count = stats.packets_dropped.load(std::sync::atomic::Ordering::Relaxed)).to_string()),
     ];
 
     let conn_stats = Paragraph::new(conn_stats_text)
-        .block(Block::default().borders(Borders::ALL).title("Statistics"))
+        .block(Block::default().borders(Borders::ALL).title(t!("stats.title").to_string()))
         .style(Style::default());
     f.render_widget(conn_stats, chunks[0]);
 
@@ -861,7 +855,7 @@ fn draw_stats_panel(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Network Stats"),
+                .title(t!("network_stats.title").to_string()),
         )
         .style(Style::default());
     f.render_widget(network_stats, chunks[1]);
@@ -879,33 +873,33 @@ fn draw_stats_panel(
 
         let mut features = Vec::new();
         if sandbox_info.cap_dropped {
-            features.push("CAP_NET_RAW dropped");
+            features.push(t!("security.cap_dropped").to_string());
         }
         if sandbox_info.fs_restricted {
-            features.push("FS restricted");
+            features.push(t!("security.fs_restricted").to_string());
         }
         if sandbox_info.net_restricted {
-            features.push("Net blocked");
+            features.push(t!("security.net_blocked").to_string());
         }
 
         let available_indicator = if sandbox_info.landlock_available {
-            Span::styled(" [kernel supported]", Style::default().fg(Color::DarkGray))
+            Span::styled(format!(" {}", t!("security.kernel_supported")), Style::default().fg(Color::DarkGray))
         } else {
             Span::styled(
-                " [kernel unsupported]",
+                format!(" {}", t!("security.kernel_unsupported")),
                 Style::default().fg(Color::DarkGray),
             )
         };
 
         vec![
             Line::from(vec![
-                Span::raw("Landlock: "),
+                Span::raw(format!("{} ", t!("security.landlock"))),
                 Span::styled(sandbox_info.status.clone(), status_style),
                 available_indicator,
             ]),
             Line::from(Span::styled(
                 if features.is_empty() {
-                    "No restrictions active".to_string()
+                    t!("security.no_restrictions").to_string()
                 } else {
                     features.join(", ")
                 },
@@ -921,12 +915,12 @@ fn draw_stats_panel(
         let is_root = uid == 0;
         if is_root {
             vec![Line::from(Span::styled(
-                "Running as root (UID 0)",
+                t!("security.running_as_root").to_string(),
                 Style::default().fg(Color::Yellow),
             ))]
         } else {
             vec![Line::from(Span::styled(
-                format!("Running as UID {}", uid),
+                t!("security.running_as_uid", uid = uid).to_string(),
                 Style::default().fg(Color::Green),
             ))]
         }
@@ -937,19 +931,19 @@ fn draw_stats_panel(
         let is_elevated = crate::is_admin();
         if is_elevated {
             vec![Line::from(Span::styled(
-                "Running as Administrator",
+                t!("security.running_as_admin").to_string(),
                 Style::default().fg(Color::Yellow),
             ))]
         } else {
             vec![Line::from(Span::styled(
-                "Running as standard user",
+                t!("security.running_as_standard").to_string(),
                 Style::default().fg(Color::Green),
             ))]
         }
     };
 
     let security_stats = Paragraph::new(security_text)
-        .block(Block::default().borders(Borders::ALL).title("Security"))
+        .block(Block::default().borders(Borders::ALL).title(t!("security.title").to_string()))
         .style(Style::default());
     f.render_widget(security_stats, chunks[2]);
 
@@ -963,7 +957,7 @@ fn draw_stats_panel(
 fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Interface Stats (press 'i')");
+        .title(t!("interface_stats.title").to_string());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1101,19 +1095,16 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
             // Show interface name with errors/drops on single line
             lines.push(Line::from(vec![
                 Span::raw(format!("{}: ", stat.interface_name)),
-                Span::raw("Err: "),
+                Span::raw(t!("interface_stats.err_label").to_string()),
                 Span::styled(format!("{}", total_errors), error_style),
-                Span::raw("  Drop: "),
+                Span::raw(format!("  {}", t!("interface_stats.drop_label"))),
                 Span::styled(format!("{}", total_drops), drop_style),
             ]));
         }
 
         if filtered_interface_stats.len() > num_to_show {
             lines.push(Line::from(Span::styled(
-                format!(
-                    "... {} more (press 'i')",
-                    filtered_interface_stats.len() - num_to_show
-                ),
+                t!("interface_stats.more", count = filtered_interface_stats.len() - num_to_show).to_string(),
                 Style::default().fg(Color::Gray),
             )));
         }
@@ -1180,10 +1171,10 @@ fn draw_graph_tab(f: &mut Frame, app: &App, connections: &[Connection], area: Re
 fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Traffic Over Time (60s)");
+        .title(t!("graph.traffic_title").to_string());
 
     if !history.has_enough_data() {
-        let placeholder = Paragraph::new("Collecting data...")
+        let placeholder = Paragraph::new(t!("graph.collecting_data").to_string())
             .block(block)
             .style(Style::default().fg(Color::DarkGray));
         f.render_widget(placeholder, area);
@@ -1219,7 +1210,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         .block(block)
         .x_axis(
             Axis::default()
-                .title("Time")
+                .title(t!("graph.axis.time").to_string())
                 .style(Style::default().fg(Color::Gray))
                 .bounds([-60.0, 0.0])
                 .labels(vec![
@@ -1230,7 +1221,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         )
         .y_axis(
             Axis::default()
-                .title("Rate")
+                .title(t!("graph.axis.rate").to_string())
                 .style(Style::default().fg(Color::Gray))
                 .bounds([0.0, max_rate])
                 .labels(vec![
@@ -1245,14 +1236,14 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
 
 /// Draw connections count sparkline
 fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title("Connections");
+    let block = Block::default().borders(Borders::ALL).title(t!("graph.connections_title").to_string());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     if !history.has_enough_data() {
         let placeholder =
-            Paragraph::new("Collecting...").style(Style::default().fg(Color::DarkGray));
+            Paragraph::new(t!("graph.collecting_short").to_string()).style(Style::default().fg(Color::DarkGray));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -1273,7 +1264,7 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
 
     // Current connection count label
     let current_count = conn_data.last().copied().unwrap_or(0);
-    let label = Paragraph::new(format!("{} connections", current_count))
+    let label = Paragraph::new(t!("graph.connections_label", count = current_count).to_string())
         .style(Style::default().fg(Color::White));
     f.render_widget(label, chunks[1]);
 }
@@ -1282,7 +1273,7 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
 fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Application Distribution");
+        .title(t!("graph.app_distribution").to_string());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1322,7 +1313,7 @@ fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) 
 
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No connections",
+            t!("graph.no_connections").to_string(),
             Style::default().fg(Color::DarkGray),
         )));
     }
@@ -1337,7 +1328,7 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Top Processes");
+        .title(t!("graph.top_processes").to_string());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1379,7 +1370,7 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
 
     if rows.is_empty() {
         let placeholder =
-            Paragraph::new("No active processes").style(Style::default().fg(Color::DarkGray));
+            Paragraph::new(t!("graph.no_active_processes").to_string()).style(Style::default().fg(Color::DarkGray));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -1403,9 +1394,9 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
 fn draw_traffic_legend(f: &mut Frame, area: Rect) {
     let legend = Paragraph::new(Line::from(vec![
         Span::styled("▬", Style::default().fg(Color::Green)),
-        Span::raw(" RX (incoming)  "),
+        Span::raw(format!(" {}  ", t!("graph.legend.rx"))),
         Span::styled("▬", Style::default().fg(Color::Blue)),
-        Span::raw(" TX (outgoing)"),
+        Span::raw(format!(" {}", t!("graph.legend.tx"))),
     ]))
     .style(Style::default().fg(Color::DarkGray));
 
@@ -1416,14 +1407,14 @@ fn draw_traffic_legend(f: &mut Frame, area: Rect) {
 fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Network Health");
+        .title(t!("graph.network_health").to_string());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     if !history.has_enough_data() {
         let placeholder =
-            Paragraph::new("Collecting data...").style(Style::default().fg(Color::DarkGray));
+            Paragraph::new(t!("graph.collecting_data").to_string()).style(Style::default().fg(Color::DarkGray));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -1539,7 +1530,7 @@ fn draw_tcp_counters(f: &mut Frame, app: &App, area: Rect) {
     let out_of_order = stats.total_tcp_out_of_order.load(Ordering::Relaxed);
     let fast_retransmits = stats.total_tcp_fast_retransmits.load(Ordering::Relaxed);
 
-    let block = Block::default().borders(Borders::ALL).title("TCP Counters");
+    let block = Block::default().borders(Borders::ALL).title(t!("graph.tcp_counters").to_string());
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -1647,12 +1638,12 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
         .filter_map(|&name| state_counts.get(name).map(|&count| (name, count)))
         .collect();
 
-    let block = Block::default().borders(Borders::ALL).title("TCP States");
+    let block = Block::default().borders(Borders::ALL).title(t!("graph.tcp_states").to_string());
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     if states.is_empty() {
-        let text = Paragraph::new("No TCP connections").style(Style::default().fg(Color::DarkGray));
+        let text = Paragraph::new(t!("graph.no_tcp_connections").to_string()).style(Style::default().fg(Color::DarkGray));
         f.render_widget(text, inner);
         return;
     }
@@ -1705,11 +1696,11 @@ fn draw_connection_details(
     dns_resolver: Option<&DnsResolver>,
 ) -> Result<()> {
     if connections.is_empty() {
-        let text = Paragraph::new("No connections available")
+        let text = Paragraph::new(t!("details.no_connections").to_string())
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Connection Details"),
+                    .title(t!("details.title").to_string()),
             )
             .style(Style::default().fg(Color::Red))
             .alignment(ratatui::layout::Alignment::Center);
@@ -1976,7 +1967,7 @@ fn draw_connection_details(
             Color::Red
         };
         details_text.push(Line::from(vec![
-            Span::styled("Initial RTT: ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{} ", t!("details.initial_rtt")), Style::default().fg(Color::Yellow)),
             Span::styled(format!("{:.1}ms", rtt_ms), Style::default().fg(rtt_color)),
         ]));
     }
@@ -1985,7 +1976,7 @@ fn draw_connection_details(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Connection Information"),
+                .title(t!("details.info_title").to_string()),
         )
         .style(Style::default())
         .wrap(Wrap { trim: true });
@@ -1995,27 +1986,27 @@ fn draw_connection_details(
     // Traffic details
     let traffic_text: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled("Bytes Sent: ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{} ", t!("details.bytes_sent")), Style::default().fg(Color::Yellow)),
             Span::raw(format_bytes(conn.bytes_sent)),
         ]),
         Line::from(vec![
-            Span::styled("Bytes Received: ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{} ", t!("details.bytes_received")), Style::default().fg(Color::Yellow)),
             Span::raw(format_bytes(conn.bytes_received)),
         ]),
         Line::from(vec![
-            Span::styled("Packets Sent: ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{} ", t!("details.packets_sent")), Style::default().fg(Color::Yellow)),
             Span::raw(conn.packets_sent.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Packets Received: ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{} ", t!("details.packets_received")), Style::default().fg(Color::Yellow)),
             Span::raw(conn.packets_received.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Current Rate (In): ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{} ", t!("details.current_rate_in")), Style::default().fg(Color::Yellow)),
             Span::raw(format_rate(conn.current_incoming_rate_bps)),
         ]),
         Line::from(vec![
-            Span::styled("Current Rate (Out): ", Style::default().fg(Color::Yellow)),
+            Span::styled(format!("{} ", t!("details.current_rate_out")), Style::default().fg(Color::Yellow)),
             Span::raw(format_rate(conn.current_outgoing_rate_bps)),
         ]),
     ];
@@ -2024,7 +2015,7 @@ fn draw_connection_details(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Traffic Statistics"),
+                .title(t!("details.traffic_title").to_string()),
         )
         .style(Style::default())
         .wrap(Wrap { trim: true });
@@ -2039,21 +2030,21 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
     let help_text: Vec<Line> = vec![
         Line::from(vec![
             Span::styled(
-                "RustNet Monitor ",
+                format!("{} ", t!("help.title")),
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("- Network Connection Monitor"),
+            Span::raw(format!("- {}", t!("help.subtitle"))),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("q ", Style::default().fg(Color::Yellow)),
-            Span::raw("Quit application (press twice to confirm)"),
+            Span::raw(t!("help.keys.quit").to_string()),
         ]),
         Line::from(vec![
             Span::styled("Ctrl+C ", Style::default().fg(Color::Yellow)),
-            Span::raw("Quit immediately"),
+            Span::raw(t!("help.keys.quit_immediate").to_string()),
         ]),
         Line::from(vec![
             Span::styled("x ", Style::default().fg(Color::Yellow)),
@@ -2061,142 +2052,146 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         ]),
         Line::from(vec![
             Span::styled("Tab ", Style::default().fg(Color::Yellow)),
-            Span::raw("Switch between tabs"),
+            Span::raw(t!("help.keys.switch_tabs").to_string()),
         ]),
         Line::from(vec![
             Span::styled("↑/k, ↓/j ", Style::default().fg(Color::Yellow)),
-            Span::raw("Navigate connections (wraps around)"),
+            Span::raw(t!("help.keys.navigate").to_string()),
         ]),
         Line::from(vec![
             Span::styled("g, G ", Style::default().fg(Color::Yellow)),
-            Span::raw("Jump to first/last connection (vim-style)"),
+            Span::raw(t!("help.keys.jump_first_last").to_string()),
         ]),
         Line::from(vec![
             Span::styled("Page Up/Down ", Style::default().fg(Color::Yellow)),
-            Span::raw("Navigate connections by page"),
+            Span::raw(t!("help.keys.page_navigate").to_string()),
         ]),
         Line::from(vec![
             Span::styled("c ", Style::default().fg(Color::Yellow)),
-            Span::raw("Copy remote address to clipboard"),
+            Span::raw(t!("help.keys.copy_address").to_string()),
         ]),
         Line::from(vec![
             Span::styled("p ", Style::default().fg(Color::Yellow)),
-            Span::raw("Toggle between service names and port numbers"),
+            Span::raw(t!("help.keys.toggle_ports").to_string()),
         ]),
         Line::from(vec![
             Span::styled("d ", Style::default().fg(Color::Yellow)),
-            Span::raw("Toggle between hostnames and IP addresses (when --resolve-dns)"),
+            Span::raw(t!("help.keys.toggle_hostnames").to_string()),
         ]),
         Line::from(vec![
             Span::styled("s ", Style::default().fg(Color::Yellow)),
-            Span::raw("Cycle through sort columns (Bandwidth, Process, etc.)"),
+            Span::raw(t!("help.keys.cycle_sort").to_string()),
         ]),
         Line::from(vec![
             Span::styled("S ", Style::default().fg(Color::Yellow)),
-            Span::raw("Toggle sort direction (ascending/descending)"),
+            Span::raw(t!("help.keys.toggle_sort_dir").to_string()),
         ]),
         Line::from(vec![
             Span::styled("Enter ", Style::default().fg(Color::Yellow)),
-            Span::raw("View connection details"),
+            Span::raw(t!("help.keys.view_details").to_string()),
         ]),
         Line::from(vec![
             Span::styled("Esc ", Style::default().fg(Color::Yellow)),
-            Span::raw("Return to overview"),
+            Span::raw(t!("help.keys.return_overview").to_string()),
         ]),
         Line::from(vec![
             Span::styled("h ", Style::default().fg(Color::Yellow)),
-            Span::raw("Toggle this help screen"),
+            Span::raw(t!("help.keys.toggle_help").to_string()),
         ]),
         Line::from(vec![
             Span::styled("i ", Style::default().fg(Color::Yellow)),
-            Span::raw("Toggle interface statistics view"),
+            Span::raw(t!("help.keys.toggle_interfaces").to_string()),
         ]),
         Line::from(vec![
             Span::styled("/ ", Style::default().fg(Color::Yellow)),
-            Span::raw("Enter filter mode (navigate while typing!)"),
+            Span::raw(t!("help.keys.filter_mode").to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("x ", Style::default().fg(Color::Yellow)),
+            Span::raw(t!("help.keys.clear_connections").to_string()),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Tabs:",
+            t!("help.sections.tabs").to_string(),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![
-            Span::styled("  Overview ", Style::default().fg(Color::Green)),
-            Span::raw("Connection list with mini traffic graph"),
+            Span::styled(format!("  {} ", t!("tabs.overview")), Style::default().fg(Color::Green)),
+            Span::raw(t!("help.sections.overview_desc").to_string()),
         ]),
         Line::from(vec![
-            Span::styled("  Details ", Style::default().fg(Color::Green)),
-            Span::raw("Full details for selected connection"),
+            Span::styled(format!("  {} ", t!("tabs.details")), Style::default().fg(Color::Green)),
+            Span::raw(t!("help.sections.details_desc").to_string()),
         ]),
         Line::from(vec![
-            Span::styled("  Interfaces ", Style::default().fg(Color::Green)),
-            Span::raw("Network interface statistics"),
+            Span::styled(format!("  {} ", t!("tabs.interfaces")), Style::default().fg(Color::Green)),
+            Span::raw(t!("help.sections.interfaces_desc").to_string()),
         ]),
         Line::from(vec![
-            Span::styled("  Graph ", Style::default().fg(Color::Green)),
-            Span::raw("Traffic charts and protocol distribution"),
+            Span::styled(format!("  {} ", t!("tabs.graph")), Style::default().fg(Color::Green)),
+            Span::raw(t!("help.sections.graph_desc").to_string()),
         ]),
         Line::from(vec![
-            Span::styled("  Help ", Style::default().fg(Color::Green)),
-            Span::raw("This help screen"),
+            Span::styled(format!("  {} ", t!("tabs.help")), Style::default().fg(Color::Green)),
+            Span::raw(t!("help.sections.help_desc").to_string()),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Connection Colors:",
+            t!("help.sections.colors").to_string(),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![
-            Span::styled("  White ", Style::default()),
-            Span::raw("Active connection (< 75% of timeout)"),
+            Span::styled(format!("  {} ", t!("help.colors.white")), Style::default()),
+            Span::raw(t!("help.sections.colors_white").to_string()),
         ]),
         Line::from(vec![
-            Span::styled("  Yellow ", Style::default().fg(Color::Yellow)),
-            Span::raw("Stale connection (75-90% of timeout)"),
+            Span::styled(format!("  {} ", t!("help.colors.yellow")), Style::default().fg(Color::Yellow)),
+            Span::raw(t!("help.sections.colors_yellow").to_string()),
         ]),
         Line::from(vec![
-            Span::styled("  Red ", Style::default().fg(Color::Red)),
-            Span::raw("Critical - will be removed soon (> 90% of timeout)"),
+            Span::styled(format!("  {} ", t!("help.colors.red")), Style::default().fg(Color::Red)),
+            Span::raw(t!("help.sections.colors_red").to_string()),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Filter Examples:",
+            t!("help.sections.filter_examples").to_string(),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![
             Span::styled("  /google ", Style::default().fg(Color::Green)),
-            Span::raw("Search for 'google' in all fields"),
+            Span::raw(t!("help.filter_examples.general", term = "google").to_string()),
         ]),
         Line::from(vec![
             Span::styled("  /port:44 ", Style::default().fg(Color::Green)),
-            Span::raw("Filter ports containing '44' (443, 8080, etc.)"),
+            Span::raw(t!("help.filter_examples.port", term = "44").to_string()),
         ]),
         Line::from(vec![
             Span::styled("  /src:192.168 ", Style::default().fg(Color::Green)),
-            Span::raw("Filter by source IP prefix"),
+            Span::raw(t!("help.filter_examples.src").to_string()),
         ]),
         Line::from(vec![
             Span::styled("  /dst:github.com ", Style::default().fg(Color::Green)),
-            Span::raw("Filter by destination"),
+            Span::raw(t!("help.filter_examples.dst").to_string()),
         ]),
         Line::from(vec![
             Span::styled("  /sni:example.com ", Style::default().fg(Color::Green)),
-            Span::raw("Filter by SNI hostname"),
+            Span::raw(t!("help.filter_examples.sni").to_string()),
         ]),
         Line::from(vec![
             Span::styled("  /process:firefox ", Style::default().fg(Color::Green)),
-            Span::raw("Filter by process name"),
+            Span::raw(t!("help.filter_examples.process").to_string()),
         ]),
         Line::from(""),
     ];
 
     let help = Paragraph::new(help_text)
-        .block(Block::default().borders(Borders::ALL).title("Help"))
+        .block(Block::default().borders(Borders::ALL).title(t!("tabs.help").to_string()))
         .style(Style::default())
         .wrap(Wrap { trim: true })
         .alignment(ratatui::layout::Alignment::Left);
@@ -2226,11 +2221,11 @@ fn draw_interface_stats(f: &mut Frame, app: &crate::app::App, area: Rect) -> Res
     }
 
     if stats.is_empty() {
-        let empty_msg = Paragraph::new("No interface statistics available yet...")
+        let empty_msg = Paragraph::new(t!("interface_stats.no_stats").to_string())
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(" Interface Statistics "),
+                    .title(format!(" {} ", t!("tabs.interfaces"))),
             )
             .style(Style::default().fg(Color::Gray))
             .alignment(ratatui::layout::Alignment::Center);
@@ -2301,16 +2296,16 @@ fn draw_interface_stats(f: &mut Frame, app: &crate::app::App, area: Rect) -> Res
     )
     .header(
         Row::new(vec![
-            "Interface",
-            "RX Rate",
-            "TX Rate",
-            "RX Packets",
-            "TX Packets",
-            "RX Err",
-            "TX Err",
-            "RX Drop",
-            "TX Drop",
-            "Collisions",
+            t!("interface_stats.headers.interface").to_string(),
+            t!("interface_stats.headers.rx_rate").to_string(),
+            t!("interface_stats.headers.tx_rate").to_string(),
+            t!("interface_stats.headers.rx_packets").to_string(),
+            t!("interface_stats.headers.tx_packets").to_string(),
+            t!("interface_stats.headers.rx_err").to_string(),
+            t!("interface_stats.headers.tx_err").to_string(),
+            t!("interface_stats.headers.rx_drop").to_string(),
+            t!("interface_stats.headers.tx_drop").to_string(),
+            t!("interface_stats.headers.collisions").to_string(),
         ])
         .style(
             Style::default()
@@ -2321,7 +2316,7 @@ fn draw_interface_stats(f: &mut Frame, app: &crate::app::App, area: Rect) -> Res
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Interface Statistics (Press 'i' to toggle) "),
+            .title(format!(" {} ", t!("interface_stats.full_title"))),
     )
     .style(Style::default());
 
@@ -2333,9 +2328,9 @@ fn draw_interface_stats(f: &mut Frame, app: &crate::app::App, area: Rect) -> Res
 /// Draw filter input area
 fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
     let title = if ui_state.filter_mode {
-        "Filter (↑↓/jk to navigate, Enter to confirm, Esc to cancel)"
+        t!("filter.title_active").to_string()
     } else {
-        "Active Filter (Press Esc to clear)"
+        t!("filter.title_applied").to_string()
     };
 
     let input_text = if ui_state.filter_mode {
@@ -2366,29 +2361,20 @@ fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
 /// Draw status bar
 fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, area: Rect) {
     let status = if ui_state.quit_confirmation {
-        " Press 'q' again to quit or any other key to cancel ".to_string()
+        format!(" {} ", t!("status.quit_confirm"))
     } else if ui_state.clear_confirmation {
-        " Press 'x' again to clear all connections or any other key to cancel ".to_string()
+        format!(" {} ", t!("status.clear_confirm"))
     } else if let Some((ref msg, ref time)) = ui_state.clipboard_message {
         // Show clipboard message for 3 seconds
         if time.elapsed().as_secs() < 3 {
             format!(" {} ", msg)
         } else {
-            format!(
-                " Press 'h' for help | 'c' to copy address | Connections: {} ",
-                connection_count
-            )
+            format!(" {} ", t!("status.help_hint", count = connection_count))
         }
     } else if !ui_state.filter_query.is_empty() {
-        format!(
-            " 'h' help | Tab/Shift+Tab switch tabs | Showing {} filtered connections (Esc to clear) ",
-            connection_count
-        )
+        format!(" {} ", t!("status.filter_active", count = connection_count))
     } else {
-        format!(
-            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'c' copy | Connections: {} ",
-            connection_count
-        )
+        format!(" {} ", t!("status.default", count = connection_count))
     };
 
     let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {
@@ -2430,11 +2416,11 @@ fn draw_loading_screen(f: &mut Frame) {
         Line::from(""),
         Line::from(vec![
             Span::styled("⣾ ", Style::default().fg(Color::Yellow)),
-            Span::styled("Loading network connections...", Style::default()),
+            Span::styled(t!("loading.message").to_string(), Style::default()),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "This may take a few seconds",
+            t!("loading.subtitle").to_string(),
             Style::default().fg(Color::DarkGray),
         )]),
     ];
@@ -2444,7 +2430,7 @@ fn draw_loading_screen(f: &mut Frame) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("RustNet Monitor"),
+                .title(t!("loading.title").to_string()),
         );
 
     f.render_widget(loading_paragraph, chunks[1]);

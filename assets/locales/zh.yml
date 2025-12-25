@@ -1,0 +1,220 @@
+# =============================================================================
+# RustNet Monitor - Chinese Translations (中文翻译)
+# =============================================================================
+
+# Application name
+"app.name": "RustNet Monitor"
+
+# Tab names
+"tabs.overview": "概览"
+"tabs.details": "详情"
+"tabs.interfaces": "接口"
+"tabs.graph": "图表"
+"tabs.help": "帮助"
+
+# Table headers
+"table.headers.protocol": "协议"
+"table.headers.local_address": "本地地址"
+"table.headers.remote_address": "远程地址"
+"table.headers.state": "状态"
+"table.headers.service": "服务"
+"table.headers.application": "应用 / 主机"
+"table.headers.bandwidth": "↓/↑"
+"table.headers.process": "进程"
+"table.title": "活动连接"
+"table.title_sorted": "活动连接 (排序: %{column} %{direction})"
+
+# Sort column display names
+"sort.time": "时间"
+"sort.bandwidth": "总带宽"
+"sort.process": "进程"
+"sort.local_addr": "本地地址"
+"sort.remote_addr": "远程地址"
+"sort.application": "应用"
+"sort.service": "服务"
+"sort.state": "状态"
+"sort.protocol": "协议"
+
+# Statistics panel
+"stats.title": "统计"
+"stats.interface": "接口: %{name}"
+"stats.link_layer": "链路层: %{type}"
+"stats.link_layer_tunnel": "链路层: %{type} (隧道)"
+"stats.process_detection": "进程检测: %{method}"
+"stats.tcp_connections": "TCP 连接: %{count}"
+"stats.udp_connections": "UDP 连接: %{count}"
+"stats.total_connections": "总连接数: %{count}"
+"stats.packets_processed": "已处理数据包: %{count}"
+"stats.packets_dropped": "已丢弃数据包: %{count}"
+
+# Network stats panel
+"network_stats.title": "网络统计"
+
+# Security panel
+"security.title": "安全"
+"security.landlock": "Landlock:"
+"security.kernel_supported": "[内核支持]"
+"security.kernel_unsupported": "[内核不支持]"
+"security.no_restrictions": "无活动限制"
+"security.cap_dropped": "已删除 CAP_NET_RAW"
+"security.fs_restricted": "文件系统受限"
+"security.net_blocked": "网络已阻止"
+"security.running_as_root": "以 root 运行 (UID 0)"
+"security.running_as_uid": "以 UID %{uid} 运行"
+"security.running_as_admin": "以管理员身份运行"
+"security.running_as_standard": "以标准用户运行"
+
+# Interface stats panel
+"interface_stats.title": "接口统计 (按 'i')"
+"interface_stats.full_title": "接口统计 (按 'i' 切换)"
+"interface_stats.no_stats": "接口统计尚不可用..."
+"interface_stats.more": "... 还有 %{count} 个 (按 'i')"
+"interface_stats.err_label": "错误: "
+"interface_stats.drop_label": "丢包: "
+"interface_stats.headers.interface": "接口"
+"interface_stats.headers.rx_rate": "接收速率"
+"interface_stats.headers.tx_rate": "发送速率"
+"interface_stats.headers.rx_packets": "接收包数"
+"interface_stats.headers.tx_packets": "发送包数"
+"interface_stats.headers.rx_err": "接收错误"
+"interface_stats.headers.tx_err": "发送错误"
+"interface_stats.headers.rx_drop": "接收丢包"
+"interface_stats.headers.tx_drop": "发送丢包"
+"interface_stats.headers.collisions": "碰撞"
+
+# Graph tab
+"graph.traffic_title": "流量趋势 (60秒)"
+"graph.connections_title": "连接"
+"graph.connections_label": "%{count} 个连接"
+"graph.collecting_data": "收集数据中..."
+"graph.collecting_short": "收集中..."
+"graph.app_distribution": "应用分布"
+"graph.no_connections": "无连接"
+"graph.top_processes": "热门进程"
+"graph.no_active_processes": "无活动进程"
+"graph.network_health": "网络健康"
+"graph.tcp_counters": "TCP 计数器"
+"graph.tcp_states": "TCP 状态"
+"graph.no_tcp_connections": "无 TCP 连接"
+"graph.axis.time": "时间"
+"graph.axis.rate": "速率"
+"graph.legend.rx": "RX (入站)"
+"graph.legend.tx": "TX (出站)"
+
+# Connection details
+"details.title": "连接详情"
+"details.info_title": "连接信息"
+"details.no_connections": "无可用连接"
+"details.traffic_title": "流量统计"
+"details.bytes_sent": "已发送字节:"
+"details.bytes_received": "已接收字节:"
+"details.packets_sent": "已发送数据包:"
+"details.packets_received": "已接收数据包:"
+"details.current_rate_in": "当前速率 (入站):"
+"details.current_rate_out": "当前速率 (出站):"
+"details.initial_rtt": "初始 RTT:"
+
+# Filter input
+"filter.title_active": "过滤器 (↑↓/jk 导航, 回车确认, Esc 取消)"
+"filter.title_applied": "已激活过滤器 (按 Esc 清除)"
+
+# Status bar messages
+"status.quit_confirm": "再次按 'q' 退出或按其他键取消"
+"status.clear_confirm": "再次按 'x' 清除所有连接或按其他键取消"
+"status.default": "'h' 帮助 | Tab/Shift+Tab 切换标签 | '/' 过滤 | 'c' 复制 | 连接数: %{count}"
+"status.help_hint": "按 'h' 获取帮助 | 'c' 复制地址 | 连接数: %{count}"
+"status.filter_active": "'h' 帮助 | Tab/Shift+Tab 切换标签 | 显示 %{count} 个已过滤连接 (Esc 清除)"
+
+# Loading screen
+"loading.title": "RustNet Monitor"
+"loading.message": "正在加载网络连接..."
+"loading.subtitle": "这可能需要几秒钟"
+
+# Help screen
+"help.title": "RustNet Monitor"
+"help.subtitle": "网络连接监控器"
+"help.keys.quit": "退出应用 (按两次确认)"
+"help.keys.quit_immediate": "立即退出"
+"help.keys.switch_tabs": "切换标签页"
+"help.keys.navigate": "导航连接 (循环)"
+"help.keys.jump_first_last": "跳转到第一个/最后一个连接 (vim风格)"
+"help.keys.page_navigate": "按页导航连接"
+"help.keys.copy_address": "复制远程地址到剪贴板"
+"help.keys.toggle_ports": "切换服务名称和端口号"
+"help.keys.toggle_hostnames": "切换主机名和 IP (使用 --resolve-dns 时)"
+"help.keys.cycle_sort": "循环排序列 (带宽, 进程等)"
+"help.keys.toggle_sort_dir": "切换排序方向 (升序/降序)"
+"help.keys.view_details": "查看连接详情"
+"help.keys.return_overview": "返回概览"
+"help.keys.toggle_help": "切换此帮助屏幕"
+"help.keys.toggle_interfaces": "切换接口统计视图"
+"help.keys.filter_mode": "进入过滤模式 (边输入边导航!)"
+"help.keys.clear_connections": "清除所有连接"
+"help.sections.tabs": "标签页:"
+"help.sections.overview_desc": "带有迷你流量图的连接列表"
+"help.sections.details_desc": "所选连接的完整详情"
+"help.sections.interfaces_desc": "网络接口统计"
+"help.sections.graph_desc": "流量图表和协议分布"
+"help.sections.help_desc": "此帮助屏幕"
+"help.sections.colors": "连接颜色:"
+"help.colors.white": "白色"
+"help.colors.yellow": "黄色"
+"help.colors.red": "红色"
+"help.sections.colors_white": "活动连接 (< 75% 超时)"
+"help.sections.colors_yellow": "过期连接 (75-90% 超时)"
+"help.sections.colors_red": "危急 - 即将删除 (> 90% 超时)"
+"help.sections.filter_examples": "过滤器示例:"
+"help.filter_examples.general": "在所有字段中搜索 '%{term}'"
+"help.filter_examples.port": "过滤包含 '%{term}' 的端口 (443, 8080 等)"
+"help.filter_examples.src": "按源 IP 前缀过滤"
+"help.filter_examples.dst": "按目标过滤"
+"help.filter_examples.sni": "按 SNI 主机名过滤"
+"help.filter_examples.process": "按进程名过滤"
+
+# Error messages
+
+# Privilege error messages (platform-specific)
+"privileges.insufficient": "网络数据包捕获权限不足。"
+"privileges.missing": "缺少"
+"privileges.how_to_fix": "如何修复"
+# Linux privileges
+"privileges.linux.cap_net_raw_missing": "CAP_NET_RAW 能力 (数据包捕获必需)"
+"privileges.linux.run_sudo": "使用 sudo 运行: sudo rustnet"
+"privileges.linux.setcap_modern": "设置能力 (现代 Linux 5.8+, 使用 eBPF): sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)"
+"privileges.linux.setcap_legacy": "设置能力 (旧内核, 使用 eBPF): sudo setcap 'cap_net_raw,cap_sys_admin=eip' $(which rustnet)"
+"privileges.linux.setcap_minimal": "设置能力 (仅捕获, 无 eBPF): sudo setcap 'cap_net_raw=eip' $(which rustnet)"
+"privileges.linux.docker_flags": "如果在 Docker 中运行, 添加这些标志:\n  --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host --pid=host"
+# macOS privileges
+"privileges.macos.bpf_access_missing": "BPF 设备访问权限 (/dev/bpf*)"
+"privileges.macos.run_sudo": "使用 sudo 运行: sudo rustnet"
+"privileges.macos.chmod_bpf": "更改 BPF 设备权限 (临时):\n  sudo chmod o+rw /dev/bpf*"
+"privileges.macos.install_wireshark": "安装 BPF 权限助手 (永久):\n  brew install wireshark && sudo /usr/local/bin/install-bpf"
+# FreeBSD privileges
+"privileges.freebsd.bpf_access_missing": "BPF 设备访问权限 (/dev/bpf*)"
+"privileges.freebsd.run_sudo": "使用 sudo 运行: sudo rustnet"
+"privileges.freebsd.add_to_bpf_group": "将用户添加到 bpf 组:\n  sudo pw groupmod bpf -m $(whoami)\n  然后注销并重新登录"
+"privileges.freebsd.chmod_bpf": "更改 BPF 设备权限 (临时):\n  sudo chmod o+rw /dev/bpf*"
+# Windows privileges
+"privileges.windows.admin_missing": "管理员权限"
+"privileges.windows.run_admin": "以管理员身份运行: 右键点击终端并选择 '以管理员身份运行'"
+"privileges.windows.npcap_mode": "如使用 Npcap: 确保安装时启用了 'WinPcap API 兼容模式'"
+
+# CLI help text
+"cli.about": "跨平台网络监控工具"
+"cli.interface_help": "要监控的网络接口"
+"cli.interface_help_linux": "要监控的网络接口 (使用 \"any\" 捕获所有接口)"
+"cli.no_localhost_help": "过滤 localhost 连接"
+"cli.show_localhost_help": "显示 localhost 连接 (覆盖默认过滤)"
+"cli.refresh_interval_help": "UI 刷新间隔 (毫秒)"
+"cli.no_dpi_help": "禁用深度包检测"
+"cli.log_level_help": "设置日志级别 (如未提供, 则不启用日志)"
+"cli.json_log_help": "启用连接事件 JSON 日志记录到指定文件"
+"cli.bpf_help": "用于数据包捕获的 BPF 过滤表达式 (例如 \"tcp port 443\", \"dst port 80\")"
+"cli.bpf_help_macos": "用于数据包捕获的 BPF 过滤表达式 (例如 \"tcp port 443\")。注意: 使用 BPF 过滤器会禁用 PKTAP (进程信息回退到 lsof)"
+"cli.resolve_dns_help": "启用 IP 地址反向 DNS 解析 (显示主机名而非 IP)"
+"cli.show_ptr_lookups_help": "在 UI 中显示 PTR 查询连接 (启用 --resolve-dns 时默认隐藏)"
+"cli.lang_help": "覆盖系统语言环境 (例如 en, es, de, fr, zh, ru)"
+"cli.no_sandbox_help": "禁用 Landlock 沙箱"
+"cli.sandbox_strict_help": "要求完全沙箱执行或退出"
+
+# Common UI labels

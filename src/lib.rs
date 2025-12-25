@@ -2,6 +2,9 @@
 //!
 //! A cross-platform network monitoring library built with Rust.
 
+// Initialize internationalization with YAML files from assets/locales/ directory
+rust_i18n::i18n!("assets/locales", fallback = "en");
+
 pub mod app;
 pub mod config;
 pub mod filter;

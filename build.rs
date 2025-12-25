@@ -1,7 +1,12 @@
 use anyhow::Result;
 use std::{env, fs::File, path::PathBuf};
 
+// Initialize i18n for CLI help text generation (shell completions and manpages)
+rust_i18n::i18n!("assets/locales", fallback = "en");
+
 fn main() -> Result<()> {
+    // Set locale for build script (uses English for generated assets)
+    rust_i18n::set_locale("en");
     // Generate shell completions and manpage
     generate_assets()?;
 

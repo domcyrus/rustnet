@@ -1,41 +1,53 @@
 use clap::{Arg, Command};
+use rust_i18n::t;
 
-#[cfg(target_os = "linux")]
-const INTERFACE_HELP: &str = "Network interface to monitor (use \"any\" to capture all interfaces)";
+/// Get the interface help text (platform-specific)
+fn interface_help() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        t!("cli.interface_help_linux").to_string()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        t!("cli.interface_help").to_string()
+    }
+}
 
-#[cfg(not(target_os = "linux"))]
-const INTERFACE_HELP: &str = "Network interface to monitor";
-
-#[cfg(target_os = "macos")]
-const BPF_HELP: &str = "BPF filter expression for packet capture (e.g., \"tcp port 443\"). Note: Using a BPF filter disables PKTAP (process info falls back to lsof)";
-
-#[cfg(not(target_os = "macos"))]
-const BPF_HELP: &str =
-    "BPF filter expression for packet capture (e.g., \"tcp port 443\", \"dst port 80\")";
+/// Get the BPF filter help text (platform-specific)
+fn bpf_help() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        t!("cli.bpf_help_macos").to_string()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        t!("cli.bpf_help").to_string()
+    }
+}
 
 pub fn build_cli() -> Command {
     let cmd = Command::new("rustnet")
         .version(env!("CARGO_PKG_VERSION"))
         .author("Network Monitor")
-        .about("Cross-platform network monitoring tool")
+        .about(t!("cli.about").to_string())
         .arg(
             Arg::new("interface")
                 .short('i')
                 .long("interface")
                 .value_name("INTERFACE")
-                .help(INTERFACE_HELP)
+                .help(interface_help())
                 .required(false),
         )
         .arg(
             Arg::new("no-localhost")
                 .long("no-localhost")
-                .help("Filter out localhost connections")
+                .help(t!("cli.no_localhost_help").to_string())
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("show-localhost")
                 .long("show-localhost")
-                .help("Show localhost connections (overrides default filtering)")
+                .help(t!("cli.show_localhost_help").to_string())
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
@@ -43,7 +55,7 @@ pub fn build_cli() -> Command {
                 .short('r')
                 .long("refresh-interval")
                 .value_name("MILLISECONDS")
-                .help("UI refresh interval in milliseconds")
+                .help(t!("cli.refresh_interval_help").to_string())
                 .value_parser(clap::value_parser!(u64))
                 .default_value("1000")
                 .required(false),
@@ -51,7 +63,7 @@ pub fn build_cli() -> Command {
         .arg(
             Arg::new("no-dpi")
                 .long("no-dpi")
-                .help("Disable deep packet inspection")
+                .help(t!("cli.no_dpi_help").to_string())
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
@@ -59,14 +71,14 @@ pub fn build_cli() -> Command {
                 .short('l')
                 .long("log-level")
                 .value_name("LEVEL")
-                .help("Set the log level (if not provided, no logging will be enabled)")
+                .help(t!("cli.log_level_help").to_string())
                 .required(false),
         )
         .arg(
             Arg::new("json-log")
                 .long("json-log")
                 .value_name("FILE")
-                .help("Enable JSON logging of connection events to specified file")
+                .help(t!("cli.json_log_help").to_string())
                 .required(false),
         )
         .arg(
@@ -74,20 +86,27 @@ pub fn build_cli() -> Command {
                 .short('f')
                 .long("bpf-filter")
                 .value_name("FILTER")
-                .help(BPF_HELP)
+                .help(bpf_help())
                 .required(false),
         )
         .arg(
             Arg::new("resolve-dns")
                 .long("resolve-dns")
-                .help("Enable reverse DNS resolution for IP addresses (shows hostnames instead of IPs)")
+                .help(t!("cli.resolve_dns_help").to_string())
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("show-ptr-lookups")
                 .long("show-ptr-lookups")
-                .help("Show PTR lookup connections in UI (hidden by default when --resolve-dns is enabled)")
+                .help(t!("cli.show_ptr_lookups_help").to_string())
                 .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("lang")
+                .long("lang")
+                .value_name("LOCALE")
+                .help(t!("cli.lang_help").to_string())
+                .required(false),
         );
 
     #[cfg(target_os = "linux")]
@@ -95,13 +114,13 @@ pub fn build_cli() -> Command {
         .arg(
             Arg::new("no-sandbox")
                 .long("no-sandbox")
-                .help("Disable Landlock sandboxing")
+                .help(t!("cli.no_sandbox_help").to_string())
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("sandbox-strict")
                 .long("sandbox-strict")
-                .help("Require full sandbox enforcement or exit")
+                .help(t!("cli.sandbox_strict_help").to_string())
                 .action(clap::ArgAction::SetTrue)
                 .conflicts_with("no-sandbox"),
         );
