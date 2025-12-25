@@ -17,4 +17,4 @@ We would like to thank these people for their valuable contributions:
 
 We welcome and appreciate all contributions! Whether you're fixing bugs, adding features, improving documentation, or helping with ideas and feedback, your contributions make rustnet better.
 
-See our [README](README.md) for information on how to get started.
+See our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute.
