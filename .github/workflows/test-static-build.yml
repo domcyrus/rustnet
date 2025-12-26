@@ -48,8 +48,9 @@ jobs:
           echo "=== Size ==="
           ls -lh target/release/rustnet
           echo ""
-          # Verify it's actually static
-          if ldd target/release/rustnet 2>&1 | grep -q "statically linked"; then
+          # Verify it's actually static using file command
+          # (ldd behaves differently inside Alpine vs glibc systems)
+          if file target/release/rustnet | grep -q "static-pie linked"; then
             echo "✅ Binary is statically linked!"
           else
             echo "❌ ERROR: Binary is NOT statically linked"

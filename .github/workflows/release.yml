@@ -212,7 +212,8 @@ jobs:
       - name: Verify static linking
         run: |
           file target/release/rustnet
-          ldd target/release/rustnet 2>&1 | grep -q "statically linked" || \
+          # Use file command to verify (ldd behaves differently inside Alpine)
+          file target/release/rustnet | grep -q "static-pie linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
 
       - name: Create release archive
