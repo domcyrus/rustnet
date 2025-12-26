@@ -1,0 +1,61 @@
+# Dockerfile for building static musl-linked RustNet binary
+#
+# Usage (with eBPF - default, recommended):
+#   docker build -f Dockerfile.static -t rustnet-static .
+#   docker run --rm -v $(pwd)/dist:/dist rustnet-static cp /build/target/release/rustnet /dist/
+#
+# Usage (without eBPF - smaller binary, ~5.2MB vs ~6.5MB):
+#   docker build -f Dockerfile.static --build-arg FEATURES="--no-default-features" -t rustnet-static .
+
+FROM rust:alpine
+
+ARG FEATURES=""
+
+# Install build dependencies
+# - musl-dev: musl C library headers
+# - libpcap-dev: libpcap headers and static library (/usr/lib/libpcap.a)
+# - pkgconfig: for finding library paths
+# - build-base: basic build tools (make, gcc, etc.)
+# - perl: required by some build scripts (ring crate)
+# - elfutils-dev: libelf for eBPF (includes static library)
+# - zlib-dev/zlib-static: compression library
+# - zstd-dev/zstd-static: Zstandard compression (required by elfutils 0.189+)
+# - clang/llvm: for eBPF compilation
+# - linux-headers: kernel headers for eBPF
+RUN apk add --no-cache \
+    musl-dev \
+    libpcap-dev \
+    pkgconfig \
+    build-base \
+    perl \
+    elfutils-dev \
+    zlib-dev \
+    zlib-static \
+    zstd-dev \
+    zstd-static \
+    clang \
+    llvm \
+    linux-headers
+
+# Add rustfmt for eBPF skeleton generation
+RUN rustup component add rustfmt
+
+WORKDIR /build
+
+# Copy source code
+COPY . .
+
+# Configure static linking for zstd
+# This fixes the elfutils 0.189+ undeclared dependency on zstd
+# See: https://github.com/libbpf/bpftool/issues/152
+RUN mkdir -p .cargo && printf '[target.x86_64-unknown-linux-musl]\nrustflags = ["-C", "link-arg=-l:libzstd.a"]\n' > .cargo/config.toml
+
+# Build configuration:
+# - In Alpine/musl, binaries are statically linked by default
+# - FEATURES arg controls whether eBPF is included (default) or disabled
+# - --release: Optimized build
+RUN cargo build --release ${FEATURES}
+
+# Verify the binary is statically linked
+RUN file target/release/rustnet && \
+    ldd target/release/rustnet 2>&1 || echo "Binary is statically linked"

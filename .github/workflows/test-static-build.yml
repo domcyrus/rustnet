@@ -1,0 +1,86 @@
+name: Test Static Build
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile.static'
+      - '.github/workflows/test-static-build.yml'
+      - '.github/workflows/release.yml'
+      - 'MUSL_BUILD.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-static:
+    name: build-static-musl
+    runs-on: ubuntu-latest
+    container:
+      image: rust:alpine
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          apk add --no-cache \
+            musl-dev libpcap-dev pkgconfig build-base perl \
+            elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
+            clang llvm linux-headers git
+          rustup component add rustfmt
+
+      - name: Configure static zstd linking
+        run: |
+          # Fix for elfutils 0.189+ undeclared zstd dependency
+          # See: https://github.com/libbpf/bpftool/issues/152
+          mkdir -p .cargo
+          printf '[target.x86_64-unknown-linux-musl]\nrustflags = ["-C", "link-arg=-l:libzstd.a"]\n' > .cargo/config.toml
+
+      - name: Build static binary
+        env:
+          RUSTFLAGS: "-C strip=symbols"
+        run: cargo build --release
+
+      - name: Verify static linking
+        run: |
+          echo "=== File info ==="
+          file target/release/rustnet
+          echo ""
+          echo "=== ldd output ==="
+          ldd target/release/rustnet 2>&1 || true
+          echo ""
+          echo "=== Size ==="
+          ls -lh target/release/rustnet
+          echo ""
+          # Verify it's actually static
+          if ldd target/release/rustnet 2>&1 | grep -q "statically linked"; then
+            echo "✅ Binary is statically linked!"
+          else
+            echo "❌ ERROR: Binary is NOT statically linked"
+            exit 1
+          fi
+
+      - name: Test binary runs
+        run: |
+          ./target/release/rustnet --version
+          ./target/release/rustnet --help | head -20
+
+      - name: Create release archive
+        run: |
+          staging="rustnet-static-x86_64-unknown-linux-musl"
+          mkdir -p "$staging/assets"
+
+          cp target/release/rustnet "$staging/"
+          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+
+          tar czf "$staging.tar.gz" "$staging"
+
+      - name: Upload static binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustnet-static-musl
+          path: rustnet-static-x86_64-unknown-linux-musl.tar.gz
+          retention-days: 7

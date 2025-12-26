@@ -1,66 +1,133 @@
-# musl Static Build Challenges
+# musl Static Build Guide
 
-This document explains why RustNet currently does not provide musl static builds and the technical challenges encountered during implementation attempts.
+This document explains how to build fully static RustNet binaries using musl.
 
-## Background
+## Quick Start
 
-musl is a lightweight C standard library designed for static linking. It would allow RustNet to produce fully static binaries that work on any Linux distribution regardless of GLIBC version.
-
-## Why We Attempted musl Builds
-
-GitHub issue #40 reported that pre-built packages required GLIBC 2.38/2.39, which wasn't available on PopOS 22.04 (GLIBC 2.35). musl builds would theoretically solve this by creating fully static binaries.
-
-## Challenges Encountered
-
-### libpcap Linking Issues
-
-The primary challenge appears to be related to **libpcap** static linking with musl:
-
-- Installing `libpcap-dev` in Ubuntu-based cross-rs containers provides glibc-linked libraries
-- Attempting to statically link these with musl resulted in linker errors
-- Errors included undefined references to pthread, math (exp), and dynamic loading functions (dladdr)
-
-It's unclear whether this is due to:
-- Fundamental glibc/musl incompatibility when statically linking
-- Missing library specifications in the linker flags
-- Issues with how cross-rs musl images are configured
-- Something specific to our build configuration
-
-### eBPF Complications
-
-We initially attempted to include eBPF support, which required vendoring libelf and zlib. This was abandoned to simplify the problem, but even without eBPF the libpcap linking issues persisted.
-
-## Current Solution
-
-**We solved the original issue by pinning builds to ubuntu-22.04** (GLIBC 2.35), which ensures compatibility with PopOS 22.04 and similar distributions.
-
-For users on older distributions, the `cargo install` workaround is documented:
 ```bash
-cargo install rustnet-monitor
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' ~/.cargo/bin/rustnet
+# Build static binary with eBPF support (default, ~6.5MB)
+docker build -f Dockerfile.static -t rustnet-static .
+
+# Or build without eBPF (smaller, ~5.2MB)
+docker build -f Dockerfile.static --build-arg FEATURES="--no-default-features" -t rustnet-static .
+
+# Extract the binary
+mkdir -p dist
+docker run --rm -v $(pwd)/dist:/out rustnet-static cp /build/target/release/rustnet /out/
+
+# Verify it's static
+file dist/rustnet
+# Output: ELF 64-bit LSB pie executable, x86-64, ..., static-pie linked
+
+ldd dist/rustnet
+# Output: statically linked
 ```
 
-## Potential Future Approaches
+## Binary Characteristics
 
-If someone wants to tackle musl builds in the future, areas to investigate:
+| Build | Size | eBPF | Process Detection | Compatibility |
+|-------|------|------|-------------------|---------------|
+| With eBPF | ~6.5MB | Yes | eBPF + procfs fallback | Any Linux |
+| Without eBPF | ~5.2MB | No | procfs only | Any Linux |
 
-1. **Building libpcap from source** targeting musl in the pre-build step
-2. **Using Alpine Linux-based images** which have native musl packages
-3. **Custom linker flags** to properly link required libraries
-4. **Alternative pure-Rust packet capture** libraries (if they exist)
+## How It Works
 
-We're uncertain which approach would work best, or if there are other issues we haven't discovered yet.
+The `Dockerfile.static` uses `rust:alpine` which provides:
+- Native musl toolchain (no glibc/musl mixing issues)
+- `libpcap-dev` package with static library (`/usr/lib/libpcap.a`)
+- `elfutils-dev` with static libelf for eBPF
+- All dependencies compiled against musl
 
-## Why We're Not Pursuing This Now
+### The zstd Fix
 
-- The ubuntu-22.04 solution already addresses the reported issue
-- The complexity-to-benefit ratio seems high
-- `cargo install` provides a universal fallback for edge cases
-- More investigation would be needed to understand the root causes
+Alpine's elfutils 0.189+ has an undeclared dependency on zstd for ELF section compression. The Dockerfile includes a workaround:
 
-If you have experience with musl static linking and want to contribute, we'd welcome the help!
+```toml
+# .cargo/config.toml
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "link-arg=-l:libzstd.a"]
+```
+
+This explicitly links the static zstd library, fixing the link order issue. See [libbpf/bpftool#152](https://github.com/libbpf/bpftool/issues/152) for details.
+
+## Running the Static Binary
+
+```bash
+# Set capabilities for packet capture
+sudo setcap 'cap_net_raw=eip' dist/rustnet
+
+# For eBPF support (Linux 5.8+)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' dist/rustnet
+
+# Run
+./dist/rustnet
+```
+
+## CI Integration
+
+For GitHub Actions, use the native container approach (faster than Docker build):
+
+```yaml
+build-static:
+  name: build-static-musl
+  runs-on: ubuntu-latest
+  container:
+    image: rust:alpine
+  steps:
+    - uses: actions/checkout@v6
+
+    - name: Install dependencies
+      run: |
+        apk add --no-cache \
+          musl-dev libpcap-dev pkgconfig build-base perl \
+          elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
+          clang llvm linux-headers git
+        rustup component add rustfmt
+
+    - name: Configure static zstd linking
+      run: |
+        mkdir -p .cargo
+        printf '[target.x86_64-unknown-linux-musl]\nrustflags = ["-C", "link-arg=-l:libzstd.a"]\n' > .cargo/config.toml
+
+    - name: Build
+      run: cargo build --release
+
+    - name: Verify static linking
+      run: |
+        file target/release/rustnet
+        ldd target/release/rustnet 2>&1 | grep -q "statically linked"
+```
+
+## Historical Context
+
+### Previous Challenges (Resolved)
+
+Earlier attempts using cross-rs with Ubuntu-based containers failed:
+- Installing `libpcap-dev` in Ubuntu provides glibc-linked libraries
+- Mixing glibc libraries with musl linking caused undefined references
+- Errors included pthread, math (exp), and dladdr symbols
+
+### Why Alpine Works
+
+Alpine Linux uses musl as its system C library:
+- All packages are compiled against musl
+- Static libraries (`*.a`) are musl-compatible
+- No glibc/musl mixing occurs
+
+### The eBPF Challenge (Resolved)
+
+Static eBPF builds initially failed due to elfutils → zstd dependency chain:
+- elfutils 0.189+ added ZSTD compression for ELF sections
+- libbpf-sys didn't propagate the zstd link dependency
+- Fixed by explicitly linking `-l:libzstd.a` via cargo config
+
+## References
+
+- [libbpf/bpftool#152](https://github.com/libbpf/bpftool/issues/152) - zstd link fix
+- [arachsys/libelf](https://github.com/arachsys/libelf) - Standalone libelf (alternative)
+- [Alpine Static Linking](https://build-your-own.org/blog/20221229_alpine/) - General guidance
 
 ---
 
-*Last updated: 2025-10-09*
-*Status: Not currently pursuing due to linking complexity*
+*Last updated: 2025-12-26*
+*Status: Fully working with eBPF support*

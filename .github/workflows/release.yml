@@ -185,10 +185,64 @@ jobs:
           path: rustnet-${{ github.ref_name }}-x86_64-unknown-freebsd.tar.gz
           if-no-files-found: error
 
+  build-static:
+    name: build-static-musl
+    runs-on: ubuntu-latest
+    container:
+      image: rust:alpine
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          apk add --no-cache \
+            musl-dev libpcap-dev pkgconfig build-base perl \
+            elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
+            clang llvm linux-headers git
+          rustup component add rustfmt
+
+      - name: Configure static zstd linking
+        run: |
+          # Fix for elfutils 0.189+ undeclared zstd dependency
+          # See: https://github.com/libbpf/bpftool/issues/152
+          mkdir -p .cargo
+          printf '[target.x86_64-unknown-linux-musl]\nrustflags = ["-C", "link-arg=-l:libzstd.a"]\n' > .cargo/config.toml
+
+      - name: Build static binary
+        env:
+          RUSTFLAGS: "-C strip=symbols"
+        run: cargo build --release
+
+      - name: Verify static linking
+        run: |
+          file target/release/rustnet
+          ldd target/release/rustnet 2>&1 | grep -q "statically linked" || \
+            (echo "ERROR: Binary is not statically linked" && exit 1)
+
+      - name: Create release archive
+        run: |
+          staging="rustnet-${{ github.ref_name }}-x86_64-unknown-linux-musl"
+          mkdir -p "$staging/assets"
+
+          cp target/release/rustnet "$staging/"
+          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+
+          tar czf "$staging.tar.gz" "$staging"
+
+      - name: Upload static build artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-x86_64-unknown-linux-musl
+          path: rustnet-${{ github.ref_name }}-x86_64-unknown-linux-musl.tar.gz
+          if-no-files-found: error
+
   create-release:
     name: create-release
     runs-on: ubuntu-latest
-    needs: [build-release, build-freebsd]
+    needs: [build-release, build-freebsd, build-static]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
