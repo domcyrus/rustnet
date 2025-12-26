@@ -216,6 +216,34 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(brew --prefix)/bin/rustnet
 rustnet
 ```
 
+#### Static Binary (Portable - Any Linux Distribution)
+
+For maximum portability, static binaries are available that work on **any Linux distribution** regardless of GLIBC version. These are fully self-contained and require no system dependencies.
+
+```bash
+# Download the static binary for your architecture:
+# - rustnet-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz (x86_64)
+# - rustnet-vX.Y.Z-aarch64-unknown-linux-musl.tar.gz (ARM64)
+
+# Extract the archive
+tar xzf rustnet-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz
+
+# Move binary to PATH
+sudo mv rustnet-vX.Y.Z-x86_64-unknown-linux-musl/rustnet /usr/local/bin/
+
+# Grant capabilities (modern kernel 5.8+)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /usr/local/bin/rustnet
+
+# Run without sudo
+rustnet
+```
+
+**When to use static binaries:**
+- Older distributions with outdated GLIBC (e.g., CentOS 7, older Ubuntu)
+- Minimal/containerized environments
+- Air-gapped systems where installing dependencies is difficult
+- When you want a single portable binary
+
 ### FreeBSD Installation
 
 FreeBSD support is available starting from version 0.15.0.

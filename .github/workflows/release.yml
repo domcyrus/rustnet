@@ -186,8 +186,17 @@ jobs:
           if-no-files-found: error
 
   build-static:
-    name: build-static-musl
-    runs-on: ubuntu-latest
+    name: build-static-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
     container:
       image: rust:alpine
     steps:
@@ -213,12 +222,12 @@ jobs:
         run: |
           file target/release/rustnet
           # Use file command to verify (ldd behaves differently inside Alpine)
-          file target/release/rustnet | grep -q "static-pie linked" || \
+          file target/release/rustnet | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
 
       - name: Create release archive
         run: |
-          staging="rustnet-${{ github.ref_name }}-x86_64-unknown-linux-musl"
+          staging="rustnet-${{ github.ref_name }}-${{ matrix.target }}"
           mkdir -p "$staging/assets"
 
           cp target/release/rustnet "$staging/"
@@ -231,8 +240,8 @@ jobs:
       - name: Upload static build artifact
         uses: actions/upload-artifact@v6
         with:
-          name: build-x86_64-unknown-linux-musl
-          path: rustnet-${{ github.ref_name }}-x86_64-unknown-linux-musl.tar.gz
+          name: build-${{ matrix.target }}
+          path: rustnet-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
 
   create-release:
