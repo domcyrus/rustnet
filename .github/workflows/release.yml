@@ -202,16 +202,11 @@ jobs:
             clang llvm linux-headers git
           rustup component add rustfmt
 
-      - name: Configure static zstd linking
-        run: |
-          # Fix for elfutils 0.189+ undeclared zstd dependency
-          # See: https://github.com/libbpf/bpftool/issues/152
-          mkdir -p .cargo
-          printf '[target.x86_64-unknown-linux-musl]\nrustflags = ["-C", "link-arg=-l:libzstd.a"]\n' > .cargo/config.toml
-
       - name: Build static binary
         env:
-          RUSTFLAGS: "-C strip=symbols"
+          # -C strip=symbols: Strip debug symbols for smaller binary
+          # -C link-arg=-l:libzstd.a: Fix elfutils 0.189+ zstd dependency (libbpf/bpftool#152)
+          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
         run: cargo build --release
 
       - name: Verify static linking
