@@ -120,7 +120,7 @@ choco install rustnet
 ```
 
 **Other platforms:**
-- **FreeBSD**: Download from [GitHub Releases](https://github.com/domcyrus/rustnet/releases)
+- **FreeBSD**: Download from [rustnet-bsd releases](https://github.com/domcyrus/rustnet-bsd/releases)
 - **Docker, source builds, other Linux distros**: See [INSTALL.md](INSTALL.md) for detailed instructions
 
 ### Running RustNet
