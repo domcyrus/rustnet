@@ -21,7 +21,10 @@ use crate::network::{
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
     services::ServiceLookup,
-    types::{ApplicationProtocol, Connection, ConnectionKey, DnsQueryType, Protocol, RttTracker, TrafficHistory},
+    types::{
+        ApplicationProtocol, Connection, ConnectionKey, DnsQueryType, Protocol, RttTracker,
+        TrafficHistory,
+    },
 };
 
 // Platform-specific interface stats provider
@@ -1293,8 +1296,12 @@ impl App {
         self.stats.packets_dropped.store(0, Ordering::Relaxed);
         self.stats.connections_tracked.store(0, Ordering::Relaxed);
         self.stats.total_tcp_retransmits.store(0, Ordering::Relaxed);
-        self.stats.total_tcp_out_of_order.store(0, Ordering::Relaxed);
-        self.stats.total_tcp_fast_retransmits.store(0, Ordering::Relaxed);
+        self.stats
+            .total_tcp_out_of_order
+            .store(0, Ordering::Relaxed);
+        self.stats
+            .total_tcp_fast_retransmits
+            .store(0, Ordering::Relaxed);
 
         info!("All connections cleared successfully");
     }

@@ -8,8 +8,8 @@ use dashmap::DashMap;
 use dns_lookup::lookup_addr;
 use log::debug;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -151,7 +151,7 @@ impl DnsResolver {
                                         ResolutionState::Pending => continue,
                                         ResolutionState::Resolved if age < cache_ttl => continue,
                                         ResolutionState::Failed if age < negative_cache_ttl => {
-                                            continue
+                                            continue;
                                         }
                                         _ => {} // Expired, re-resolve
                                     }
@@ -215,10 +215,8 @@ impl DnsResolver {
 
                     // If cache is too large, remove oldest entries
                     if cache.len() > max_cache_size {
-                        let mut entries: Vec<_> = cache
-                            .iter()
-                            .map(|e| (*e.key(), e.resolved_at))
-                            .collect();
+                        let mut entries: Vec<_> =
+                            cache.iter().map(|e| (*e.key(), e.resolved_at)).collect();
                         entries.sort_by_key(|(_, time)| *time);
 
                         let to_remove = cache.len() - max_cache_size;
@@ -336,7 +334,11 @@ mod tests {
 
         // Loopback should not be queued
         resolver.request_resolution("127.0.0.1".parse().unwrap());
-        assert!(resolver.get_hostname(&"127.0.0.1".parse().unwrap()).is_none());
+        assert!(
+            resolver
+                .get_hostname(&"127.0.0.1".parse().unwrap())
+                .is_none()
+        );
 
         resolver.stop();
     }
