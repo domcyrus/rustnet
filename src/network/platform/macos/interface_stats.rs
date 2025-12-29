@@ -56,7 +56,6 @@ impl InterfaceStatsProvider for MacOSStatsProvider {
             let mut current = ifap;
 
             while let Some(ifa) = current.as_ref() {
-
                 // Only process AF_LINK entries (data link layer)
                 if !ifa.ifa_addr.is_null() && (*ifa.ifa_addr).sa_family as i32 == libc::AF_LINK {
                     let name = CStr::from_ptr(ifa.ifa_name).to_string_lossy().to_string();

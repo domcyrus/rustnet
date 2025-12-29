@@ -418,7 +418,13 @@ pub fn draw(
         0 => draw_overview(f, ui_state, connections, stats, app, content_area)?,
         1 => {
             let dns_resolver = app.get_dns_resolver();
-            draw_connection_details(f, ui_state, connections, content_area, dns_resolver.as_deref())?
+            draw_connection_details(
+                f,
+                ui_state,
+                connections,
+                content_area,
+                dns_resolver.as_deref(),
+            )?
         }
         2 => draw_interface_stats(f, app, content_area)?,
         3 => draw_graph_tab(f, app, connections, content_area)?,
@@ -493,7 +499,11 @@ fn draw_connections_list(
     dns_resolver: Option<&DnsResolver>,
 ) {
     // When DNS resolution is enabled, we need more space for hostnames
-    let remote_addr_width = if dns_resolver.is_some() && ui_state.show_hostnames { 30 } else { 21 };
+    let remote_addr_width = if dns_resolver.is_some() && ui_state.show_hostnames {
+        30
+    } else {
+        21
+    };
 
     let widths = [
         Constraint::Length(6), // Protocol (TCP/UDP + arrow = "Pro ↑" = 5 chars, give 6 for padding)
@@ -683,7 +693,11 @@ fn draw_connections_list(
                         let port = conn.remote_addr.port();
                         let max_hostname_len = (remote_addr_width as usize).saturating_sub(7); // Leave room for :port
                         if hostname.len() > max_hostname_len {
-                            format!("{}...:{}", &hostname[..max_hostname_len.saturating_sub(3)], port)
+                            format!(
+                                "{}...:{}",
+                                &hostname[..max_hostname_len.saturating_sub(3)],
+                                port
+                            )
                         } else {
                             format!("{}:{}", hostname, port)
                         }
