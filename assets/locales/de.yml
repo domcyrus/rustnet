@@ -1,0 +1,220 @@
+# =============================================================================
+# RustNet Monitor - German Translations (Deutsche Übersetzungen)
+# =============================================================================
+
+# Application name
+"app.name": "RustNet Monitor"
+
+# Tab names
+"tabs.overview": "Übersicht"
+"tabs.details": "Details"
+"tabs.interfaces": "Schnittstellen"
+"tabs.graph": "Grafik"
+"tabs.help": "Hilfe"
+
+# Table headers
+"table.headers.protocol": "Pro"
+"table.headers.local_address": "Lokale Adresse"
+"table.headers.remote_address": "Remote-Adresse"
+"table.headers.state": "Status"
+"table.headers.service": "Dienst"
+"table.headers.application": "Anwendung / Host"
+"table.headers.bandwidth": "↓/↑"
+"table.headers.process": "Prozess"
+"table.title": "Aktive Verbindungen"
+"table.title_sorted": "Aktive Verbindungen (Sortierung: %{column} %{direction})"
+
+# Sort column display names
+"sort.time": "Zeit"
+"sort.bandwidth": "Bandbreite Gesamt"
+"sort.process": "Prozess"
+"sort.local_addr": "Lokale Adr."
+"sort.remote_addr": "Remote Adr."
+"sort.application": "Anwendung"
+"sort.service": "Dienst"
+"sort.state": "Status"
+"sort.protocol": "Protokoll"
+
+# Statistics panel
+"stats.title": "Statistiken"
+"stats.interface": "Schnittstelle: %{name}"
+"stats.link_layer": "Verbindungsschicht: %{type}"
+"stats.link_layer_tunnel": "Verbindungsschicht: %{type} (Tunnel)"
+"stats.process_detection": "Prozesserkennung: %{method}"
+"stats.tcp_connections": "TCP-Verbindungen: %{count}"
+"stats.udp_connections": "UDP-Verbindungen: %{count}"
+"stats.total_connections": "Verbindungen Gesamt: %{count}"
+"stats.packets_processed": "Verarbeitete Pakete: %{count}"
+"stats.packets_dropped": "Verworfene Pakete: %{count}"
+
+# Network stats panel
+"network_stats.title": "Netzwerk-Stats"
+
+# Security panel
+"security.title": "Sicherheit"
+"security.landlock": "Landlock:"
+"security.kernel_supported": "[Kernel unterstützt]"
+"security.kernel_unsupported": "[Kernel nicht unterstützt]"
+"security.no_restrictions": "Keine Einschränkungen aktiv"
+"security.cap_dropped": "CAP_NET_RAW entfernt"
+"security.fs_restricted": "FS eingeschränkt"
+"security.net_blocked": "Netz blockiert"
+"security.running_as_root": "Läuft als root (UID 0)"
+"security.running_as_uid": "Läuft als UID %{uid}"
+"security.running_as_admin": "Läuft als Administrator"
+"security.running_as_standard": "Läuft als Standardbenutzer"
+
+# Interface stats panel
+"interface_stats.title": "Interface-Stats (drücke 'i')"
+"interface_stats.full_title": "Interface-Statistiken (Drücke 'i' zum Umschalten)"
+"interface_stats.no_stats": "Noch keine Interface-Statistiken verfügbar..."
+"interface_stats.more": "... %{count} weitere (drücke 'i')"
+"interface_stats.err_label": "Err: "
+"interface_stats.drop_label": "Drop: "
+"interface_stats.headers.interface": "Schnittstelle"
+"interface_stats.headers.rx_rate": "RX Rate"
+"interface_stats.headers.tx_rate": "TX Rate"
+"interface_stats.headers.rx_packets": "RX Pakete"
+"interface_stats.headers.tx_packets": "TX Pakete"
+"interface_stats.headers.rx_err": "RX Err"
+"interface_stats.headers.tx_err": "TX Err"
+"interface_stats.headers.rx_drop": "RX Drop"
+"interface_stats.headers.tx_drop": "TX Drop"
+"interface_stats.headers.collisions": "Kollisionen"
+
+# Graph tab
+"graph.traffic_title": "Datenverkehr über Zeit (60s)"
+"graph.connections_title": "Verbindungen"
+"graph.connections_label": "%{count} Verbindungen"
+"graph.collecting_data": "Sammle Daten..."
+"graph.collecting_short": "Sammeln..."
+"graph.app_distribution": "Anwendungsverteilung"
+"graph.no_connections": "Keine Verbindungen"
+"graph.top_processes": "Top Prozesse"
+"graph.no_active_processes": "Keine aktiven Prozesse"
+"graph.network_health": "Netzwerk-Gesundheit"
+"graph.tcp_counters": "TCP-Zähler"
+"graph.tcp_states": "TCP-Status"
+"graph.no_tcp_connections": "Keine TCP-Verbindungen"
+"graph.axis.time": "Zeit"
+"graph.axis.rate": "Rate"
+"graph.legend.rx": "RX (eingehend)"
+"graph.legend.tx": "TX (ausgehend)"
+
+# Connection details
+"details.title": "Verbindungsdetails"
+"details.info_title": "Verbindungsinformation"
+"details.no_connections": "Keine Verbindungen verfügbar"
+"details.traffic_title": "Verkehrsstatistik"
+"details.bytes_sent": "Bytes gesendet:"
+"details.bytes_received": "Bytes empfangen:"
+"details.packets_sent": "Pakete gesendet:"
+"details.packets_received": "Pakete empfangen:"
+"details.current_rate_in": "Aktuelle Rate (Eingang):"
+"details.current_rate_out": "Aktuelle Rate (Ausgang):"
+"details.initial_rtt": "Initiale RTT:"
+
+# Filter input
+"filter.title_active": "Filter (↑↓/jk navigieren, Enter bestätigen, Esc abbrechen)"
+"filter.title_applied": "Aktiver Filter (Esc zum Löschen)"
+
+# Status bar messages
+"status.quit_confirm": "Drücke 'q' erneut zum Beenden oder eine andere Taste zum Abbrechen"
+"status.clear_confirm": "Drücke 'x' erneut um alle Verbindungen zu löschen oder eine andere Taste zum Abbrechen"
+"status.default": "'h' Hilfe | Tab/Shift+Tab Tabs wechseln | '/' Filter | 'c' Kopieren | Verbindungen: %{count}"
+"status.help_hint": "Drücke 'h' für Hilfe | 'c' zum Kopieren der Adresse | Verbindungen: %{count}"
+"status.filter_active": "'h' Hilfe | Tab/Shift+Tab Tabs wechseln | Zeige %{count} gefilterte Verbindungen (Esc zum Löschen)"
+
+# Loading screen
+"loading.title": "RustNet Monitor"
+"loading.message": "Lade Netzwerkverbindungen..."
+"loading.subtitle": "Dies kann einige Sekunden dauern"
+
+# Help screen
+"help.title": "RustNet Monitor"
+"help.subtitle": "Netzwerkverbindungs-Monitor"
+"help.keys.quit": "Anwendung beenden (zweimal drücken zum Bestätigen)"
+"help.keys.quit_immediate": "Sofort beenden"
+"help.keys.switch_tabs": "Zwischen Tabs wechseln"
+"help.keys.navigate": "Verbindungen navigieren (mit Umbruch)"
+"help.keys.jump_first_last": "Zur ersten/letzten Verbindung springen (vim-Stil)"
+"help.keys.page_navigate": "Verbindungen seitenweise navigieren"
+"help.keys.copy_address": "Remote-Adresse in Zwischenablage kopieren"
+"help.keys.toggle_ports": "Zwischen Dienstnamen und Portnummern wechseln"
+"help.keys.toggle_hostnames": "Zwischen Hostnamen und IPs wechseln (mit --resolve-dns)"
+"help.keys.cycle_sort": "Sortierspalten durchlaufen (Bandbreite, Prozess, etc.)"
+"help.keys.toggle_sort_dir": "Sortierrichtung umschalten (aufsteigend/absteigend)"
+"help.keys.view_details": "Verbindungsdetails anzeigen"
+"help.keys.return_overview": "Zurück zur Übersicht"
+"help.keys.toggle_help": "Diese Hilfe ein-/ausblenden"
+"help.keys.toggle_interfaces": "Interface-Statistiken ein-/ausblenden"
+"help.keys.filter_mode": "Filtermodus aktivieren (während Eingabe navigieren!)"
+"help.keys.clear_connections": "Alle Verbindungen löschen"
+"help.sections.tabs": "Tabs:"
+"help.sections.overview_desc": "Verbindungsliste mit Mini-Verkehrsgrafik"
+"help.sections.details_desc": "Vollständige Details zur ausgewählten Verbindung"
+"help.sections.interfaces_desc": "Netzwerk-Interface-Statistiken"
+"help.sections.graph_desc": "Verkehrsdiagramme und Protokollverteilung"
+"help.sections.help_desc": "Diese Hilfe"
+"help.sections.colors": "Verbindungsfarben:"
+"help.colors.white": "Weiß"
+"help.colors.yellow": "Gelb"
+"help.colors.red": "Rot"
+"help.sections.colors_white": "Aktive Verbindung (< 75% des Timeouts)"
+"help.sections.colors_yellow": "Veraltete Verbindung (75-90% des Timeouts)"
+"help.sections.colors_red": "Kritisch - wird bald entfernt (> 90% des Timeouts)"
+"help.sections.filter_examples": "Filterbeispiele:"
+"help.filter_examples.general": "Suche nach '%{term}' in allen Feldern"
+"help.filter_examples.port": "Filter Ports mit '%{term}' (443, 8080, etc.)"
+"help.filter_examples.src": "Nach Quell-IP-Präfix filtern"
+"help.filter_examples.dst": "Nach Ziel filtern"
+"help.filter_examples.sni": "Nach SNI-Hostname filtern"
+"help.filter_examples.process": "Nach Prozessname filtern"
+
+# Error messages
+
+# Privilege error messages (platform-specific)
+"privileges.insufficient": "Unzureichende Berechtigungen für Netzwerk-Paketerfassung."
+"privileges.missing": "Fehlend"
+"privileges.how_to_fix": "Lösung"
+# Linux privileges
+"privileges.linux.cap_net_raw_missing": "CAP_NET_RAW-Fähigkeit (erforderlich für Paketerfassung)"
+"privileges.linux.run_sudo": "Mit sudo ausführen: sudo rustnet"
+"privileges.linux.setcap_modern": "Fähigkeiten setzen (modernes Linux 5.8+, mit eBPF): sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)"
+"privileges.linux.setcap_legacy": "Fähigkeiten setzen (ältere Kernel, mit eBPF): sudo setcap 'cap_net_raw,cap_sys_admin=eip' $(which rustnet)"
+"privileges.linux.setcap_minimal": "Fähigkeiten setzen (nur Paketerfassung, ohne eBPF): sudo setcap 'cap_net_raw=eip' $(which rustnet)"
+"privileges.linux.docker_flags": "Bei Docker diese Flags hinzufügen:\n  --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host --pid=host"
+# macOS privileges
+"privileges.macos.bpf_access_missing": "Zugriff auf BPF-Geräte (/dev/bpf*)"
+"privileges.macos.run_sudo": "Mit sudo ausführen: sudo rustnet"
+"privileges.macos.chmod_bpf": "BPF-Geräteberechtigungen ändern (temporär):\n  sudo chmod o+rw /dev/bpf*"
+"privileges.macos.install_wireshark": "BPF-Berechtigungs-Helfer installieren (dauerhaft):\n  brew install wireshark && sudo /usr/local/bin/install-bpf"
+# FreeBSD privileges
+"privileges.freebsd.bpf_access_missing": "Zugriff auf BPF-Geräte (/dev/bpf*)"
+"privileges.freebsd.run_sudo": "Mit sudo ausführen: sudo rustnet"
+"privileges.freebsd.add_to_bpf_group": "Benutzer zur bpf-Gruppe hinzufügen:\n  sudo pw groupmod bpf -m $(whoami)\n  Dann abmelden und wieder anmelden"
+"privileges.freebsd.chmod_bpf": "BPF-Geräteberechtigungen ändern (temporär):\n  sudo chmod o+rw /dev/bpf*"
+# Windows privileges
+"privileges.windows.admin_missing": "Administratorrechte"
+"privileges.windows.run_admin": "Als Administrator ausführen: Rechtsklick auf Terminal und 'Als Administrator ausführen' wählen"
+"privileges.windows.npcap_mode": "Bei Npcap: Sicherstellen, dass 'WinPcap API-kompatibler Modus' bei Installation aktiviert wurde"
+
+# CLI help text
+"cli.about": "Plattformübergreifendes Netzwerk-Monitoring-Tool"
+"cli.interface_help": "Zu überwachende Netzwerkschnittstelle"
+"cli.interface_help_linux": "Zu überwachende Netzwerkschnittstelle (\"any\" für alle Schnittstellen)"
+"cli.no_localhost_help": "Localhost-Verbindungen ausfiltern"
+"cli.show_localhost_help": "Localhost-Verbindungen anzeigen (überschreibt Standardfilterung)"
+"cli.refresh_interval_help": "UI-Aktualisierungsintervall in Millisekunden"
+"cli.no_dpi_help": "Deep Packet Inspection deaktivieren"
+"cli.log_level_help": "Log-Level setzen (wenn nicht angegeben, kein Logging)"
+"cli.json_log_help": "JSON-Logging von Verbindungsereignissen in angegebene Datei aktivieren"
+"cli.bpf_help": "BPF-Filterausdruck für Paketerfassung (z.B. \"tcp port 443\", \"dst port 80\")"
+"cli.bpf_help_macos": "BPF-Filterausdruck für Paketerfassung (z.B. \"tcp port 443\"). Hinweis: BPF-Filter deaktiviert PKTAP (Prozessinfo fällt auf lsof zurück)"
+"cli.resolve_dns_help": "Reverse-DNS-Auflösung für IP-Adressen aktivieren (zeigt Hostnamen statt IPs)"
+"cli.show_ptr_lookups_help": "PTR-Lookup-Verbindungen in UI anzeigen (standardmäßig versteckt bei --resolve-dns)"
+"cli.lang_help": "System-Locale überschreiben (z.B. en, es, de, fr, zh, ru)"
+"cli.no_sandbox_help": "Landlock-Sandboxing deaktivieren"
+"cli.sandbox_strict_help": "Vollständige Sandbox-Durchsetzung erfordern oder beenden"
+
+# Common UI labels

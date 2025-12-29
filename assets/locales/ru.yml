@@ -1,0 +1,220 @@
+# =============================================================================
+# RustNet Monitor - Russian Translations (Русские переводы)
+# =============================================================================
+
+# Application name
+"app.name": "RustNet Monitor"
+
+# Tab names
+"tabs.overview": "Обзор"
+"tabs.details": "Детали"
+"tabs.interfaces": "Интерфейсы"
+"tabs.graph": "График"
+"tabs.help": "Справка"
+
+# Table headers
+"table.headers.protocol": "Прот"
+"table.headers.local_address": "Локальный адрес"
+"table.headers.remote_address": "Удалённый адрес"
+"table.headers.state": "Состояние"
+"table.headers.service": "Сервис"
+"table.headers.application": "Приложение / Хост"
+"table.headers.bandwidth": "↓/↑"
+"table.headers.process": "Процесс"
+"table.title": "Активные подключения"
+"table.title_sorted": "Активные подключения (Сортировка: %{column} %{direction})"
+
+# Sort column display names
+"sort.time": "Время"
+"sort.bandwidth": "Общая пропускная способность"
+"sort.process": "Процесс"
+"sort.local_addr": "Лок. адрес"
+"sort.remote_addr": "Уд. адрес"
+"sort.application": "Приложение"
+"sort.service": "Сервис"
+"sort.state": "Состояние"
+"sort.protocol": "Протокол"
+
+# Statistics panel
+"stats.title": "Статистика"
+"stats.interface": "Интерфейс: %{name}"
+"stats.link_layer": "Канальный уровень: %{type}"
+"stats.link_layer_tunnel": "Канальный уровень: %{type} (Туннель)"
+"stats.process_detection": "Обнаружение процессов: %{method}"
+"stats.tcp_connections": "TCP подключений: %{count}"
+"stats.udp_connections": "UDP подключений: %{count}"
+"stats.total_connections": "Всего подключений: %{count}"
+"stats.packets_processed": "Обработано пакетов: %{count}"
+"stats.packets_dropped": "Отброшено пакетов: %{count}"
+
+# Network stats panel
+"network_stats.title": "Сетевая статистика"
+
+# Security panel
+"security.title": "Безопасность"
+"security.landlock": "Landlock:"
+"security.kernel_supported": "[ядро поддерживает]"
+"security.kernel_unsupported": "[ядро не поддерживает]"
+"security.no_restrictions": "Нет активных ограничений"
+"security.cap_dropped": "CAP_NET_RAW удалён"
+"security.fs_restricted": "ФС ограничена"
+"security.net_blocked": "Сеть заблокирована"
+"security.running_as_root": "Запущено от root (UID 0)"
+"security.running_as_uid": "Запущено от UID %{uid}"
+"security.running_as_admin": "Запущено от Администратора"
+"security.running_as_standard": "Запущено от обычного пользователя"
+
+# Interface stats panel
+"interface_stats.title": "Статистика интерфейса (нажмите 'i')"
+"interface_stats.full_title": "Статистика интерфейса (Нажмите 'i' для переключения)"
+"interface_stats.no_stats": "Статистика интерфейса пока недоступна..."
+"interface_stats.more": "... ещё %{count} (нажмите 'i')"
+"interface_stats.err_label": "Ош: "
+"interface_stats.drop_label": "Потери: "
+"interface_stats.headers.interface": "Интерфейс"
+"interface_stats.headers.rx_rate": "Скорость RX"
+"interface_stats.headers.tx_rate": "Скорость TX"
+"interface_stats.headers.rx_packets": "Пакеты RX"
+"interface_stats.headers.tx_packets": "Пакеты TX"
+"interface_stats.headers.rx_err": "Ош RX"
+"interface_stats.headers.tx_err": "Ош TX"
+"interface_stats.headers.rx_drop": "Потери RX"
+"interface_stats.headers.tx_drop": "Потери TX"
+"interface_stats.headers.collisions": "Коллизии"
+
+# Graph tab
+"graph.traffic_title": "Трафик за время (60с)"
+"graph.connections_title": "Подключения"
+"graph.connections_label": "%{count} подключений"
+"graph.collecting_data": "Сбор данных..."
+"graph.collecting_short": "Сбор..."
+"graph.app_distribution": "Распределение приложений"
+"graph.no_connections": "Нет подключений"
+"graph.top_processes": "Топ процессов"
+"graph.no_active_processes": "Нет активных процессов"
+"graph.network_health": "Состояние сети"
+"graph.tcp_counters": "Счётчики TCP"
+"graph.tcp_states": "Состояния TCP"
+"graph.no_tcp_connections": "Нет TCP подключений"
+"graph.axis.time": "Время"
+"graph.axis.rate": "Скорость"
+"graph.legend.rx": "RX (входящий)"
+"graph.legend.tx": "TX (исходящий)"
+
+# Connection details
+"details.title": "Детали подключения"
+"details.info_title": "Информация о подключении"
+"details.no_connections": "Нет доступных подключений"
+"details.traffic_title": "Статистика трафика"
+"details.bytes_sent": "Отправлено байт:"
+"details.bytes_received": "Получено байт:"
+"details.packets_sent": "Отправлено пакетов:"
+"details.packets_received": "Получено пакетов:"
+"details.current_rate_in": "Текущая скорость (вход.):"
+"details.current_rate_out": "Текущая скорость (исход.):"
+"details.initial_rtt": "Начальный RTT:"
+
+# Filter input
+"filter.title_active": "Фильтр (↑↓/jk навигация, Enter подтвердить, Esc отмена)"
+"filter.title_applied": "Активный фильтр (Нажмите Esc для очистки)"
+
+# Status bar messages
+"status.quit_confirm": "Нажмите 'q' ещё раз для выхода или другую клавишу для отмены"
+"status.clear_confirm": "Нажмите 'x' ещё раз для очистки всех подключений или другую клавишу для отмены"
+"status.default": "'h' справка | Tab/Shift+Tab переключение вкладок | '/' фильтр | 'c' копировать | Подключений: %{count}"
+"status.help_hint": "Нажмите 'h' для справки | 'c' для копирования адреса | Подключений: %{count}"
+"status.filter_active": "'h' справка | Tab/Shift+Tab переключение вкладок | Показано %{count} отфильтрованных подключений (Esc для очистки)"
+
+# Loading screen
+"loading.title": "RustNet Monitor"
+"loading.message": "Загрузка сетевых подключений..."
+"loading.subtitle": "Это может занять несколько секунд"
+
+# Help screen
+"help.title": "RustNet Monitor"
+"help.subtitle": "Монитор сетевых подключений"
+"help.keys.quit": "Выйти из приложения (нажмите дважды для подтверждения)"
+"help.keys.quit_immediate": "Немедленный выход"
+"help.keys.switch_tabs": "Переключение между вкладками"
+"help.keys.navigate": "Навигация по подключениям (с циклом)"
+"help.keys.jump_first_last": "Перейти к первому/последнему подключению (стиль vim)"
+"help.keys.page_navigate": "Постраничная навигация по подключениям"
+"help.keys.copy_address": "Копировать удалённый адрес в буфер обмена"
+"help.keys.toggle_ports": "Переключение между именами сервисов и номерами портов"
+"help.keys.toggle_hostnames": "Переключение между именами хостов и IP (с --resolve-dns)"
+"help.keys.cycle_sort": "Цикл по столбцам сортировки (Пропускная способность, Процесс и т.д.)"
+"help.keys.toggle_sort_dir": "Переключение направления сортировки (по возрастанию/убыванию)"
+"help.keys.view_details": "Просмотр деталей подключения"
+"help.keys.return_overview": "Вернуться к обзору"
+"help.keys.toggle_help": "Переключить этот экран справки"
+"help.keys.toggle_interfaces": "Переключить вид статистики интерфейса"
+"help.keys.filter_mode": "Войти в режим фильтра (навигация при вводе!)"
+"help.keys.clear_connections": "Очистить все подключения"
+"help.sections.tabs": "Вкладки:"
+"help.sections.overview_desc": "Список подключений с мини-графиком трафика"
+"help.sections.details_desc": "Полные детали выбранного подключения"
+"help.sections.interfaces_desc": "Статистика сетевых интерфейсов"
+"help.sections.graph_desc": "Графики трафика и распределение протоколов"
+"help.sections.help_desc": "Этот экран справки"
+"help.sections.colors": "Цвета подключений:"
+"help.colors.white": "Белый"
+"help.colors.yellow": "Жёлтый"
+"help.colors.red": "Красный"
+"help.sections.colors_white": "Активное подключение (< 75% таймаута)"
+"help.sections.colors_yellow": "Устаревшее подключение (75-90% таймаута)"
+"help.sections.colors_red": "Критично - будет удалено скоро (> 90% таймаута)"
+"help.sections.filter_examples": "Примеры фильтров:"
+"help.filter_examples.general": "Поиск '%{term}' во всех полях"
+"help.filter_examples.port": "Фильтр портов, содержащих '%{term}' (443, 8080 и т.д.)"
+"help.filter_examples.src": "Фильтр по префиксу исходного IP"
+"help.filter_examples.dst": "Фильтр по назначению"
+"help.filter_examples.sni": "Фильтр по имени хоста SNI"
+"help.filter_examples.process": "Фильтр по имени процесса"
+
+# Error messages
+
+# Privilege error messages (platform-specific)
+"privileges.insufficient": "Недостаточно привилегий для захвата сетевых пакетов."
+"privileges.missing": "Отсутствует"
+"privileges.how_to_fix": "Как исправить"
+# Linux privileges
+"privileges.linux.cap_net_raw_missing": "Возможность CAP_NET_RAW (требуется для захвата пакетов)"
+"privileges.linux.run_sudo": "Запустить с sudo: sudo rustnet"
+"privileges.linux.setcap_modern": "Установить возможности (современный Linux 5.8+, с eBPF): sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)"
+"privileges.linux.setcap_legacy": "Установить возможности (старые ядра, с eBPF): sudo setcap 'cap_net_raw,cap_sys_admin=eip' $(which rustnet)"
+"privileges.linux.setcap_minimal": "Установить возможности (только захват, без eBPF): sudo setcap 'cap_net_raw=eip' $(which rustnet)"
+"privileges.linux.docker_flags": "При запуске в Docker добавьте эти флаги:\n  --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host --pid=host"
+# macOS privileges
+"privileges.macos.bpf_access_missing": "Доступ к устройствам BPF (/dev/bpf*)"
+"privileges.macos.run_sudo": "Запустить с sudo: sudo rustnet"
+"privileges.macos.chmod_bpf": "Изменить права устройств BPF (временно):\n  sudo chmod o+rw /dev/bpf*"
+"privileges.macos.install_wireshark": "Установить помощник BPF прав (постоянно):\n  brew install wireshark && sudo /usr/local/bin/install-bpf"
+# FreeBSD privileges
+"privileges.freebsd.bpf_access_missing": "Доступ к устройствам BPF (/dev/bpf*)"
+"privileges.freebsd.run_sudo": "Запустить с sudo: sudo rustnet"
+"privileges.freebsd.add_to_bpf_group": "Добавить пользователя в группу bpf:\n  sudo pw groupmod bpf -m $(whoami)\n  Затем выйти и войти снова"
+"privileges.freebsd.chmod_bpf": "Изменить права устройств BPF (временно):\n  sudo chmod o+rw /dev/bpf*"
+# Windows privileges
+"privileges.windows.admin_missing": "Права Администратора"
+"privileges.windows.run_admin": "Запустить от Администратора: Правый клик на терминал и выбрать 'Запуск от имени Администратора'"
+"privileges.windows.npcap_mode": "При использовании Npcap: Убедитесь что установлен с 'Режимом совместимости WinPcap API'"
+
+# CLI help text
+"cli.about": "Кроссплатформенный инструмент мониторинга сети"
+"cli.interface_help": "Сетевой интерфейс для мониторинга"
+"cli.interface_help_linux": "Сетевой интерфейс для мониторинга (используйте \"any\" для захвата всех интерфейсов)"
+"cli.no_localhost_help": "Фильтровать localhost подключения"
+"cli.show_localhost_help": "Показывать localhost подключения (переопределяет фильтрацию по умолчанию)"
+"cli.refresh_interval_help": "Интервал обновления UI в миллисекундах"
+"cli.no_dpi_help": "Отключить глубокий анализ пакетов"
+"cli.log_level_help": "Установить уровень логирования (если не указан, логирование не включается)"
+"cli.json_log_help": "Включить JSON логирование событий подключений в указанный файл"
+"cli.bpf_help": "Выражение BPF фильтра для захвата пакетов (напр. \"tcp port 443\", \"dst port 80\")"
+"cli.bpf_help_macos": "Выражение BPF фильтра для захвата пакетов (напр. \"tcp port 443\"). Примечание: Использование BPF фильтра отключает PKTAP (информация о процессе возвращается к lsof)"
+"cli.resolve_dns_help": "Включить обратное DNS разрешение для IP адресов (показывает имена хостов вместо IP)"
+"cli.show_ptr_lookups_help": "Показывать PTR lookup подключения в UI (скрыты по умолчанию при --resolve-dns)"
+"cli.lang_help": "Переопределить системную локаль (напр. en, es, de, fr, zh, ru)"
+"cli.no_sandbox_help": "Отключить песочницу Landlock"
+"cli.sandbox_strict_help": "Требовать полное применение песочницы или выход"
+
+# Common UI labels

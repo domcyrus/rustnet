@@ -28,6 +28,7 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 - **Multi-threaded Processing**: Concurrent packet processing for high performance
 - **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
 - **Security Sandboxing**: Landlock-based filesystem/network restrictions on Linux 5.13+ (see [SECURITY.md](SECURITY.md))
+- **Multi-language Support**: UI available in English, Spanish, German, French, Chinese, and Russian
 
 <details>
 <summary><b>eBPF Enhanced Process Identification (Linux Default)</b></summary>

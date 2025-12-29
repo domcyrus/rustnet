@@ -8,19 +8,71 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
+// Initialize i18n for the binary crate
+rust_i18n::i18n!("assets/locales", fallback = "en");
+
 mod app;
 mod cli;
 mod filter;
 mod network;
 mod ui;
 
+/// Detect locale from environment, CLI args, or system settings (before CLI parsing).
+///
+/// NOTE: This function manually parses `--lang` from argv BEFORE clap parses arguments.
+/// This is intentional: we need the locale set before `build_cli()` is called so that
+/// clap's help text (`--help`) can be displayed in the user's language. This duplicates
+/// some of clap's parsing logic, but is necessary for proper i18n of CLI help messages.
+fn detect_locale_early() -> String {
+    // Check RUSTNET_LANG environment variable first
+    if let Ok(lang) = std::env::var("RUSTNET_LANG") {
+        return lang;
+    }
+
+    // Check for --lang argument in argv (before full CLI parsing)
+    // This allows help text to be translated correctly
+    let args: Vec<String> = std::env::args().collect();
+    for i in 0..args.len() {
+        if args[i] == "--lang" {
+            if let Some(lang) = args.get(i + 1) {
+                return lang.clone();
+            }
+        } else if let Some(lang) = args[i].strip_prefix("--lang=") {
+            return lang.to_string();
+        }
+    }
+
+    // Fall back to system locale detection
+    sys_locale::get_locale()
+        .unwrap_or_else(|| String::from("en"))
+        .split('-')
+        .next()
+        .unwrap_or("en")
+        .to_string()
+}
+
+/// Apply locale override from CLI if provided
+fn apply_locale_override(matches: &clap::ArgMatches) {
+    if let Some(lang) = matches.get_one::<String>("lang") {
+        rust_i18n::set_locale(lang);
+        info!("Locale overridden via --lang: {}", lang);
+    }
+}
+
 fn main() -> Result<()> {
     // Check for required dependencies on Windows
     #[cfg(target_os = "windows")]
     check_windows_dependencies()?;
 
-    // Parse command line arguments
+    // Detect and set locale BEFORE building CLI (so help text is translated)
+    let early_locale = detect_locale_early();
+    rust_i18n::set_locale(&early_locale);
+
+    // Parse command line arguments (now with translated help text)
     let matches = cli::build_cli().get_matches();
+
+    // Apply CLI locale override if provided (--lang flag takes precedence)
+    apply_locale_override(&matches);
 
     // Check privileges BEFORE initializing TUI (so error messages are visible)
     check_privileges_early()?;
