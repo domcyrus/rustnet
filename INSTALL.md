@@ -261,11 +261,11 @@ cd /usr/ports/net/rustnet && make install clean
 
 #### From GitHub Releases
 
-Download the FreeBSD binary from [GitHub Releases](https://github.com/domcyrus/rustnet/releases):
+Download the FreeBSD binary from the [rustnet-bsd releases](https://github.com/domcyrus/rustnet-bsd/releases):
 
 ```bash
 # Download the appropriate package
-fetch https://github.com/domcyrus/rustnet/releases/download/vX.Y.Z/rustnet-vX.Y.Z-x86_64-unknown-freebsd.tar.gz
+fetch https://github.com/domcyrus/rustnet-bsd/releases/download/vX.Y.Z/rustnet-vX.Y.Z-x86_64-unknown-freebsd.tar.gz
 
 # Extract the archive
 tar xzf rustnet-vX.Y.Z-x86_64-unknown-freebsd.tar.gz
