@@ -159,19 +159,24 @@ getcap /usr/bin/rustnet
 
 **Note:** The .rpm package automatically sets Linux capabilities via post-install script, so you can run RustNet without sudo.
 
-#### Arch Linux (AUR)
+#### Arch Linux
 
-Two AUR packages are available:
-- [`rustnet`](https://aur.archlinux.org/packages/rustnet) - Build from source (maintained by [@DeepChirp](https://github.com/DeepChirp))
-- [`rustnet-bin`](https://aur.archlinux.org/packages/rustnet-bin) - Pre-compiled binary for faster installation
+This package is included in the Arch Linux Extra repository ([link](https://archlinux.org/packages/extra/x86_64/rustnet/)). It can be installed using pacman:
+```bash
+sudo pacman -S rustnet
+```
+
+Alternatively, two AUR packages are available:
+- [`rustnet-bin`](https://aur.archlinux.org/packages/rustnet-bin) - Pre-compiled binary from GitHub Releases
+- [`rustnet-git`](https://aur.archlinux.org/packages/rustnet-git) - Build from source and use the latest commit (maintained by [@DeepChirp](https://github.com/DeepChirp))
 
 Install with your preferred AUR helper:
 ```bash
-# Source build (optimized for your system)
-yay -S rustnet
-
-# OR pre-compiled binary (faster installation)
+# Pre-compiled binary from GitHub Releases
 yay -S rustnet-bin
+
+# OR source build from the latest commit
+yay -S rustnet-git
 ```
 
 #### Fedora (COPR - Recommended for Fedora 42+)

@@ -103,9 +103,9 @@ sudo dnf copr enable domcyrus/rustnet
 sudo dnf install rustnet
 ```
 
-**Arch Linux (AUR):**
+**Arch Linux:**
 ```bash
-yay -S rustnet
+sudo pacman -S rustnet
 ```
 
 **From crates.io:**
