@@ -276,7 +276,10 @@ fn sort_connections(
 fn run_ui_loop<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,
     app: &app::App,
-) -> Result<()> {
+) -> Result<()>
+where
+    <B as ratatui::prelude::Backend>::Error: Send + Sync + 'static,
+{
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = std::time::Instant::now();
     let mut ui_state = ui::UIState::default();
