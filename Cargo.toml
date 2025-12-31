@@ -35,7 +35,7 @@ pnet_datalink = "0.35"
 clap = { version = "4.5", features = ["derive"] }
 simplelog = "0.12"
 chrono = "0.4"
-ratatui = { version = "0.29", features = ["all-widgets"] }
+ratatui = { version = "0.30", features = ["all-widgets"] }
 ring = "0.17"
 aes = "0.8"
 serde = { version = "1.0", features = ["derive"] }
