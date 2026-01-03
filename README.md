@@ -16,7 +16,7 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 - **Real-time Network Monitoring**: Monitor active TCP, UDP, ICMP, and ARP connections with detailed state information
 - **Connection States**: Track TCP states (`ESTABLISHED`, `SYN_SENT`, `TIME_WAIT`), QUIC states (`QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`), DNS states, SSH states, and activity-based UDP states
 - **Interface Statistics**: Real-time monitoring of network interface metrics including bytes/packets transferred, errors, drops, and collisions
-- **Deep Packet Inspection (DPI)**: Detect application protocols including HTTP, HTTPS/TLS with SNI, DNS, SSH with version detection, and QUIC with CONNECTION_CLOSE frame detection
+- **Deep Packet Inspection (DPI)**: Detect application protocols including HTTP, HTTPS/TLS with SNI, DNS, SSH, QUIC, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, and NetBIOS
 - **TCP Network Analytics**: Real-time detection of TCP retransmissions, out-of-order packets, and fast retransmits with per-connection and aggregate statistics
 - **Smart Connection Lifecycle**: Protocol-aware timeouts with visual staleness indicators (white → yellow → red) before cleanup
 - **Process Identification**: Associate network connections with running processes

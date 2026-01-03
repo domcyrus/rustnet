@@ -77,6 +77,51 @@ impl std::fmt::Display for ApplicationProtocol {
                     write!(f, "QUIC")
                 }
             }
+            ApplicationProtocol::Ntp(info) => {
+                write!(f, "NTP (v{} {})", info.version, info.mode)
+            }
+            ApplicationProtocol::Mdns(info) => {
+                if let Some(name) = &info.query_name {
+                    write!(f, "mDNS ({})", name)
+                } else {
+                    write!(f, "mDNS")
+                }
+            }
+            ApplicationProtocol::Llmnr(info) => {
+                if let Some(name) = &info.query_name {
+                    write!(f, "LLMNR ({})", name)
+                } else {
+                    write!(f, "LLMNR")
+                }
+            }
+            ApplicationProtocol::Dhcp(info) => {
+                if let Some(hostname) = &info.hostname {
+                    write!(f, "DHCP {} ({})", info.message_type, hostname)
+                } else {
+                    write!(f, "DHCP {}", info.message_type)
+                }
+            }
+            ApplicationProtocol::Snmp(info) => {
+                if let Some(community) = &info.community {
+                    write!(f, "SNMP {} {} ({})", info.version, info.pdu_type, community)
+                } else {
+                    write!(f, "SNMP {} {}", info.version, info.pdu_type)
+                }
+            }
+            ApplicationProtocol::Ssdp(info) => {
+                if let Some(st) = &info.service_type {
+                    write!(f, "SSDP {} ({})", info.method, st)
+                } else {
+                    write!(f, "SSDP {}", info.method)
+                }
+            }
+            ApplicationProtocol::NetBios(info) => {
+                if let Some(name) = &info.name {
+                    write!(f, "NetBIOS {} ({})", info.service, name)
+                } else {
+                    write!(f, "NetBIOS {}", info.service)
+                }
+            }
         }
     }
 }
@@ -99,12 +144,21 @@ pub enum TcpState {
     Unknown,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum ProtocolState {
     Tcp(TcpState),
     Udp,
     Icmp { icmp_type: u8 },
-    Arp { operation: ArpOperation },
+    Arp(ArpInfo),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArpInfo {
+    pub operation: ArpOperation,
+    pub sender_mac: String,
+    pub sender_ip: std::net::IpAddr,
+    pub target_mac: String,
+    pub target_ip: std::net::IpAddr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +198,13 @@ pub enum ApplicationProtocol {
     Dns(DnsInfo),
     Ssh(SshInfo),
     Quic(Box<QuicInfo>),
+    Ntp(NtpInfo),
+    Mdns(MdnsInfo),
+    Llmnr(LlmnrInfo),
+    Dhcp(DhcpInfo),
+    Snmp(SnmpInfo),
+    Ssdp(SsdpInfo),
+    NetBios(NetBiosInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -286,6 +347,238 @@ pub enum DnsQueryType {
     TA,         // 32768
     DLV,        // 32769
     Other(u16), // For any other type
+}
+
+// NTP-specific types
+#[derive(Debug, Clone)]
+pub struct NtpInfo {
+    pub version: u8,
+    pub mode: NtpMode,
+    pub stratum: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NtpMode {
+    Reserved,
+    SymmetricActive,
+    SymmetricPassive,
+    Client,
+    Server,
+    Broadcast,
+    Control,
+    Private,
+}
+
+impl std::fmt::Display for NtpMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NtpMode::Reserved => write!(f, "Reserved"),
+            NtpMode::SymmetricActive => write!(f, "SymActive"),
+            NtpMode::SymmetricPassive => write!(f, "SymPassive"),
+            NtpMode::Client => write!(f, "Client"),
+            NtpMode::Server => write!(f, "Server"),
+            NtpMode::Broadcast => write!(f, "Broadcast"),
+            NtpMode::Control => write!(f, "Control"),
+            NtpMode::Private => write!(f, "Private"),
+        }
+    }
+}
+
+impl From<u8> for NtpMode {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => NtpMode::Reserved,
+            1 => NtpMode::SymmetricActive,
+            2 => NtpMode::SymmetricPassive,
+            3 => NtpMode::Client,
+            4 => NtpMode::Server,
+            5 => NtpMode::Broadcast,
+            6 => NtpMode::Control,
+            7 => NtpMode::Private,
+            _ => NtpMode::Reserved,
+        }
+    }
+}
+
+// mDNS-specific types
+#[derive(Debug, Clone)]
+pub struct MdnsInfo {
+    pub query_name: Option<String>,
+    pub query_type: Option<DnsQueryType>,
+    pub is_response: bool,
+}
+
+// LLMNR-specific types
+#[derive(Debug, Clone)]
+pub struct LlmnrInfo {
+    pub query_name: Option<String>,
+    pub query_type: Option<DnsQueryType>,
+    pub is_response: bool,
+}
+
+// DHCP-specific types
+#[derive(Debug, Clone)]
+pub struct DhcpInfo {
+    pub message_type: DhcpMessageType,
+    pub hostname: Option<String>,
+    pub client_mac: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DhcpMessageType {
+    Discover,
+    Offer,
+    Request,
+    Decline,
+    Ack,
+    Nak,
+    Release,
+    Inform,
+    Unknown(u8),
+}
+
+impl std::fmt::Display for DhcpMessageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DhcpMessageType::Discover => write!(f, "DISCOVER"),
+            DhcpMessageType::Offer => write!(f, "OFFER"),
+            DhcpMessageType::Request => write!(f, "REQUEST"),
+            DhcpMessageType::Decline => write!(f, "DECLINE"),
+            DhcpMessageType::Ack => write!(f, "ACK"),
+            DhcpMessageType::Nak => write!(f, "NAK"),
+            DhcpMessageType::Release => write!(f, "RELEASE"),
+            DhcpMessageType::Inform => write!(f, "INFORM"),
+            DhcpMessageType::Unknown(v) => write!(f, "UNKNOWN({})", v),
+        }
+    }
+}
+
+// SNMP-specific types
+#[derive(Debug, Clone)]
+pub struct SnmpInfo {
+    pub version: SnmpVersion,
+    pub community: Option<String>,
+    pub pdu_type: SnmpPduType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnmpVersion {
+    V1,
+    V2c,
+    V3,
+}
+
+impl std::fmt::Display for SnmpVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SnmpVersion::V1 => write!(f, "v1"),
+            SnmpVersion::V2c => write!(f, "v2c"),
+            SnmpVersion::V3 => write!(f, "v3"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnmpPduType {
+    GetRequest,
+    GetNextRequest,
+    GetResponse,
+    SetRequest,
+    Trap,
+    GetBulkRequest,
+    InformRequest,
+    TrapV2,
+    Report,
+    Unknown(u8),
+}
+
+impl std::fmt::Display for SnmpPduType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SnmpPduType::GetRequest => write!(f, "GET"),
+            SnmpPduType::GetNextRequest => write!(f, "GETNEXT"),
+            SnmpPduType::GetResponse => write!(f, "RESPONSE"),
+            SnmpPduType::SetRequest => write!(f, "SET"),
+            SnmpPduType::Trap => write!(f, "TRAP"),
+            SnmpPduType::GetBulkRequest => write!(f, "GETBULK"),
+            SnmpPduType::InformRequest => write!(f, "INFORM"),
+            SnmpPduType::TrapV2 => write!(f, "TRAPv2"),
+            SnmpPduType::Report => write!(f, "REPORT"),
+            SnmpPduType::Unknown(v) => write!(f, "UNKNOWN({})", v),
+        }
+    }
+}
+
+// SSDP-specific types
+#[derive(Debug, Clone)]
+pub struct SsdpInfo {
+    pub method: SsdpMethod,
+    pub service_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SsdpMethod {
+    MSearch,
+    Notify,
+    Response,
+}
+
+impl std::fmt::Display for SsdpMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SsdpMethod::MSearch => write!(f, "M-SEARCH"),
+            SsdpMethod::Notify => write!(f, "NOTIFY"),
+            SsdpMethod::Response => write!(f, "RESPONSE"),
+        }
+    }
+}
+
+// NetBIOS-specific types
+#[derive(Debug, Clone)]
+pub struct NetBiosInfo {
+    pub service: NetBiosService,
+    pub opcode: NetBiosOpcode,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetBiosService {
+    NameService,
+    DatagramService,
+}
+
+impl std::fmt::Display for NetBiosService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetBiosService::NameService => write!(f, "NS"),
+            NetBiosService::DatagramService => write!(f, "DGM"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetBiosOpcode {
+    Query,
+    Registration,
+    Release,
+    Wack,
+    Refresh,
+    Response,
+    Unknown(u8),
+}
+
+impl std::fmt::Display for NetBiosOpcode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetBiosOpcode::Query => write!(f, "Query"),
+            NetBiosOpcode::Registration => write!(f, "Register"),
+            NetBiosOpcode::Release => write!(f, "Release"),
+            NetBiosOpcode::Wack => write!(f, "WACK"),
+            NetBiosOpcode::Refresh => write!(f, "Refresh"),
+            NetBiosOpcode::Response => write!(f, "Response"),
+            NetBiosOpcode::Unknown(v) => write!(f, "Unknown({})", v),
+        }
+    }
 }
 
 // QUIC-specific types
@@ -941,6 +1234,14 @@ impl AppProtocolDistribution {
                     ApplicationProtocol::Quic(_) => dist.quic_count += 1,
                     ApplicationProtocol::Dns(_) => dist.dns_count += 1,
                     ApplicationProtocol::Ssh(_) => dist.ssh_count += 1,
+                    // New protocols counted as "other" for now
+                    ApplicationProtocol::Ntp(_)
+                    | ApplicationProtocol::Mdns(_)
+                    | ApplicationProtocol::Llmnr(_)
+                    | ApplicationProtocol::Dhcp(_)
+                    | ApplicationProtocol::Snmp(_)
+                    | ApplicationProtocol::Ssdp(_)
+                    | ApplicationProtocol::NetBios(_) => dist.other_count += 1,
                 }
             } else {
                 dist.other_count += 1;
@@ -1376,6 +1677,33 @@ impl Connection {
                         ApplicationProtocol::Http(_) => "HTTP_UDP".to_string(),
                         ApplicationProtocol::Https(_) => "HTTPS_UDP".to_string(),
                         ApplicationProtocol::Ssh(_) => "SSH_UDP".to_string(),
+                        ApplicationProtocol::Ntp(_) => "NTP".to_string(),
+                        ApplicationProtocol::Mdns(info) => {
+                            if info.is_response {
+                                "MDNS_RESPONSE".to_string()
+                            } else {
+                                "MDNS_QUERY".to_string()
+                            }
+                        }
+                        ApplicationProtocol::Llmnr(info) => {
+                            if info.is_response {
+                                "LLMNR_RESPONSE".to_string()
+                            } else {
+                                "LLMNR_QUERY".to_string()
+                            }
+                        }
+                        ApplicationProtocol::Dhcp(info) => {
+                            format!("DHCP_{}", info.message_type)
+                        }
+                        ApplicationProtocol::Snmp(info) => {
+                            format!("SNMP_{}", info.pdu_type)
+                        }
+                        ApplicationProtocol::Ssdp(info) => {
+                            format!("SSDP_{}", info.method)
+                        }
+                        ApplicationProtocol::NetBios(info) => {
+                            format!("NETBIOS_{}", info.service)
+                        }
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -1397,9 +1725,9 @@ impl Connection {
                 11 => "TIME_EXCEEDED".to_string(),
                 _ => "ICMP_OTHER".to_string(),
             },
-            ProtocolState::Arp { operation } => match operation {
-                ArpOperation::Request => "ARP_REQUEST".to_string(),
-                ArpOperation::Reply => "ARP_REPLY".to_string(),
+            ProtocolState::Arp(info) => match info.operation {
+                ArpOperation::Request => format!("ARP_WHO_HAS {}", info.target_ip),
+                ArpOperation::Reply => format!("ARP_IS_AT {}", info.sender_mac),
             },
         }
     }
@@ -1437,6 +1765,14 @@ impl Connection {
                         ApplicationProtocol::Http(_) => Duration::from_secs(600), // 10 minutes (was 3 min)
                         ApplicationProtocol::Https(_) => Duration::from_secs(600), // 10 minutes (was 3 min)
                         ApplicationProtocol::Ssh(_) => Duration::from_secs(1800), // SSH can be very long-lived (30 min)
+                        // New UDP protocols - use reasonable timeouts
+                        ApplicationProtocol::Ntp(_) => Duration::from_secs(30),
+                        ApplicationProtocol::Mdns(_) => Duration::from_secs(30),
+                        ApplicationProtocol::Llmnr(_) => Duration::from_secs(30),
+                        ApplicationProtocol::Dhcp(_) => Duration::from_secs(60),
+                        ApplicationProtocol::Snmp(_) => Duration::from_secs(60),
+                        ApplicationProtocol::Ssdp(_) => Duration::from_secs(30),
+                        ApplicationProtocol::NetBios(_) => Duration::from_secs(60),
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -1444,7 +1780,7 @@ impl Connection {
                 }
             }
             ProtocolState::Icmp { .. } => Duration::from_secs(10),
-            ProtocolState::Arp { .. } => Duration::from_secs(30),
+            ProtocolState::Arp(_) => Duration::from_secs(30),
         }
     }
 
@@ -2409,10 +2745,14 @@ mod tests {
 
         // Test ARP states
         conn.protocol = Protocol::ARP;
-        conn.protocol_state = ProtocolState::Arp {
+        conn.protocol_state = ProtocolState::Arp(ArpInfo {
             operation: ArpOperation::Request,
-        };
-        assert_eq!(conn.state(), "ARP_REQUEST");
+            sender_mac: "aa:bb:cc:dd:ee:ff".to_string(),
+            sender_ip: "192.168.1.100".parse().unwrap(),
+            target_mac: "00:00:00:00:00:00".to_string(),
+            target_ip: "192.168.1.1".parse().unwrap(),
+        });
+        assert_eq!(conn.state(), "ARP_WHO_HAS 192.168.1.1");
         assert_eq!(conn.get_timeout(), Duration::from_secs(30));
     }
 

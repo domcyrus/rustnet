@@ -1950,6 +1950,110 @@ fn draw_connection_details(
                         ]));
                     }
                 }
+                crate::network::types::ApplicationProtocol::Ntp(info) => {
+                    details_text.push(Line::from(vec![
+                        Span::styled("  NTP Version: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(format!("{}", info.version)),
+                    ]));
+                    details_text.push(Line::from(vec![
+                        Span::styled("  NTP Mode: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(info.mode.to_string()),
+                    ]));
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Stratum: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(format!("{}", info.stratum)),
+                    ]));
+                }
+                crate::network::types::ApplicationProtocol::Mdns(info) => {
+                    if let Some(query_name) = &info.query_name {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Query Name: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(query_name.clone()),
+                        ]));
+                    }
+                    if let Some(query_type) = &info.query_type {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Query Type: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(format!("{:?}", query_type)),
+                        ]));
+                    }
+                }
+                crate::network::types::ApplicationProtocol::Llmnr(info) => {
+                    if let Some(query_name) = &info.query_name {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Query Name: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(query_name.clone()),
+                        ]));
+                    }
+                    if let Some(query_type) = &info.query_type {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Query Type: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(format!("{:?}", query_type)),
+                        ]));
+                    }
+                }
+                crate::network::types::ApplicationProtocol::Dhcp(info) => {
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Message Type: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(info.message_type.to_string()),
+                    ]));
+                    if let Some(hostname) = &info.hostname {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Hostname: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(hostname.clone()),
+                        ]));
+                    }
+                    if let Some(client_mac) = &info.client_mac {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Client MAC: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(client_mac.clone()),
+                        ]));
+                    }
+                }
+                crate::network::types::ApplicationProtocol::Snmp(info) => {
+                    details_text.push(Line::from(vec![
+                        Span::styled("  SNMP Version: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(info.version.to_string()),
+                    ]));
+                    details_text.push(Line::from(vec![
+                        Span::styled("  PDU Type: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(info.pdu_type.to_string()),
+                    ]));
+                    if let Some(community) = &info.community {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Community: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(community.clone()),
+                        ]));
+                    }
+                }
+                crate::network::types::ApplicationProtocol::Ssdp(info) => {
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Method: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(info.method.to_string()),
+                    ]));
+                    if let Some(service_type) = &info.service_type {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Service Type: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(service_type.clone()),
+                        ]));
+                    }
+                }
+                crate::network::types::ApplicationProtocol::NetBios(info) => {
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Service: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(info.service.to_string()),
+                    ]));
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Opcode: ", Style::default().fg(Color::Cyan)),
+                        Span::raw(info.opcode.to_string()),
+                    ]));
+                    if let Some(name) = &info.name {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Name: ", Style::default().fg(Color::Cyan)),
+                            Span::raw(name.clone()),
+                        ]));
+                    }
+                }
             }
         }
         None => {
@@ -1958,6 +2062,27 @@ fn draw_connection_details(
                 Span::raw("-".to_string()),
             ]));
         }
+    }
+
+    // Add ARP details if this is an ARP connection
+    if let ProtocolState::Arp(arp_info) = &conn.protocol_state {
+        details_text.push(Line::from(""));
+        details_text.push(Line::from(vec![
+            Span::styled("Sender MAC: ", Style::default().fg(Color::Cyan)),
+            Span::raw(arp_info.sender_mac.clone()),
+        ]));
+        details_text.push(Line::from(vec![
+            Span::styled("Sender IP: ", Style::default().fg(Color::Cyan)),
+            Span::raw(arp_info.sender_ip.to_string()),
+        ]));
+        details_text.push(Line::from(vec![
+            Span::styled("Target MAC: ", Style::default().fg(Color::Cyan)),
+            Span::raw(arp_info.target_mac.clone()),
+        ]));
+        details_text.push(Line::from(vec![
+            Span::styled("Target IP: ", Style::default().fg(Color::Cyan)),
+            Span::raw(arp_info.target_ip.to_string()),
+        ]));
     }
 
     // Add TCP analytics if available
