@@ -235,7 +235,7 @@ pub fn merge_packet_into_connection(
             }
             _ => {
                 // Use the state from the packet for non-TCP protocols
-                conn.protocol_state = parsed.protocol_state;
+                conn.protocol_state = parsed.protocol_state.clone();
             }
         }
     }
@@ -335,7 +335,7 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
         parsed.protocol,
         parsed.local_addr,
         parsed.remote_addr,
-        parsed.protocol_state,
+        parsed.protocol_state.clone(),
     );
 
     // Set initial TCP state based on flags if TCP
@@ -372,7 +372,7 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
     } else {
         // For non-TCP protocols, use the provided state directly
         // Connection direction is not determinable for stateless protocols
-        conn.protocol_state = parsed.protocol_state;
+        conn.protocol_state = parsed.protocol_state.clone();
     }
 
     // Set initial stats based on packet direction

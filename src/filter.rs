@@ -343,6 +343,53 @@ impl ConnectionFilter {
                     }
                 }
             }
+            ApplicationProtocol::Ntp(_) => {
+                if "ntp".contains(text) {
+                    return true;
+                }
+            }
+            ApplicationProtocol::Mdns(info) => {
+                if let Some(ref query_name) = info.query_name
+                    && query_name.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+            }
+            ApplicationProtocol::Llmnr(info) => {
+                if let Some(ref query_name) = info.query_name
+                    && query_name.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+            }
+            ApplicationProtocol::Dhcp(info) => {
+                if let Some(ref hostname) = info.hostname
+                    && hostname.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+            }
+            ApplicationProtocol::Snmp(info) => {
+                if let Some(ref community) = info.community
+                    && community.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+            }
+            ApplicationProtocol::Ssdp(info) => {
+                if let Some(ref service_type) = info.service_type
+                    && service_type.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+            }
+            ApplicationProtocol::NetBios(info) => {
+                if let Some(ref name) = info.name
+                    && name.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+            }
         }
 
         false

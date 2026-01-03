@@ -417,6 +417,16 @@ impl PacketParser {
             return None;
         }
 
+        // Extract MAC addresses
+        let sender_mac = format!(
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            arp_data[8], arp_data[9], arp_data[10], arp_data[11], arp_data[12], arp_data[13]
+        );
+        let target_mac = format!(
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            arp_data[18], arp_data[19], arp_data[20], arp_data[21], arp_data[22], arp_data[23]
+        );
+
         let sender_ip = IpAddr::from([arp_data[14], arp_data[15], arp_data[16], arp_data[17]]);
         let target_ip = IpAddr::from([arp_data[24], arp_data[25], arp_data[26], arp_data[27]]);
 
@@ -424,6 +434,14 @@ impl PacketParser {
             1 => ArpOperation::Request,
             2 => ArpOperation::Reply,
             _ => return None,
+        };
+
+        let arp_info = ArpInfo {
+            operation,
+            sender_mac,
+            sender_ip,
+            target_mac,
+            target_ip,
         };
 
         let is_outgoing = self.local_ips.contains(&sender_ip);
@@ -439,7 +457,7 @@ impl PacketParser {
             local_addr,
             remote_addr,
             tcp_header: None,
-            protocol_state: ProtocolState::Arp { operation },
+            protocol_state: ProtocolState::Arp(arp_info),
             is_outgoing,
             packet_len: data.len(),
             dpi_result: None,

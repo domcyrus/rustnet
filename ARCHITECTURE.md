@@ -67,6 +67,12 @@ Multiple worker threads (up to 4 by default, based on CPU cores) that parse pack
   - DNS queries and responses
   - SSH connections with version detection
   - QUIC protocol with CONNECTION_CLOSE frame detection
+  - NTP with version, mode, and stratum
+  - mDNS and LLMNR for local name resolution
+  - DHCP with message types and hostnames
+  - SNMP (v1, v2c, v3) with PDU types
+  - SSDP for UPnP device discovery
+  - NetBIOS Name Service and Datagram Service
 - Track connection states and lifecycle
 - Update connection metadata in DashMap
 - Calculate bandwidth metrics
