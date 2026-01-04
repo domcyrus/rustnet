@@ -302,10 +302,21 @@ where
             ui_state.sort_ascending,
         );
 
+        // Compute grouped rows if grouping is enabled
+        let grouped_rows = if ui_state.grouping_enabled {
+            ui::compute_grouped_rows(&connections, &ui_state.expanded_groups)
+        } else {
+            Vec::new()
+        };
+
         let stats = app.get_stats();
 
         // Ensure we have a valid selection (handles connection removals)
-        ui_state.ensure_valid_selection(&connections);
+        if ui_state.grouping_enabled {
+            ui_state.ensure_valid_grouped_selection(&grouped_rows);
+        } else {
+            ui_state.ensure_valid_selection(&connections);
+        }
 
         // Draw the UI
         terminal.draw(|f| {
@@ -507,22 +518,34 @@ where
                     (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                         ui_state.quit_confirmation = false;
                         ui_state.clear_confirmation = false;
-                        // Use the SAME sorted connections list from the main loop
-                        // to ensure index consistency with the displayed table
-                        debug!("Navigation UP: {} connections available", connections.len());
-                        ui_state.move_selection_up(&connections);
+                        if ui_state.grouping_enabled {
+                            debug!(
+                                "Navigation UP (grouped): {} rows available",
+                                grouped_rows.len()
+                            );
+                            ui_state.move_selection_up_grouped(&grouped_rows);
+                        } else {
+                            debug!("Navigation UP: {} connections available", connections.len());
+                            ui_state.move_selection_up(&connections);
+                        }
                     }
 
                     (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
                         ui_state.quit_confirmation = false;
                         ui_state.clear_confirmation = false;
-                        // Use the SAME sorted connections list from the main loop
-                        // to ensure index consistency with the displayed table
-                        debug!(
-                            "Navigation DOWN: {} connections available",
-                            connections.len()
-                        );
-                        ui_state.move_selection_down(&connections);
+                        if ui_state.grouping_enabled {
+                            debug!(
+                                "Navigation DOWN (grouped): {} rows available",
+                                grouped_rows.len()
+                            );
+                            ui_state.move_selection_down_grouped(&grouped_rows);
+                        } else {
+                            debug!(
+                                "Navigation DOWN: {} connections available",
+                                connections.len()
+                            );
+                            ui_state.move_selection_down(&connections);
+                        }
                     }
 
                     // Page Up/Down navigation
@@ -557,13 +580,79 @@ where
                         ui_state.move_selection_to_last(&connections);
                     }
 
-                    // Enter to view details
+                    // Enter to view details (only works on connections, not group headers)
                     (KeyCode::Enter, _) => {
                         ui_state.quit_confirmation = false;
                         ui_state.clear_confirmation = false;
-                        if ui_state.selected_tab == 0 && !connections.is_empty() {
-                            ui_state.selected_tab = 1; // Switch to details view
+                        if ui_state.selected_tab == 0
+                            && !connections.is_empty()
+                            && !(ui_state.grouping_enabled && ui_state.is_group_selected())
+                        {
+                            // Switch to details view when on a connection (not a group header)
+                            ui_state.selected_tab = 1;
                         }
+                    }
+
+                    // Space to toggle group expansion
+                    (KeyCode::Char(' '), _) => {
+                        ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
+                        if ui_state.selected_tab == 0
+                            && ui_state.grouping_enabled
+                            && ui_state.is_group_selected()
+                        {
+                            ui_state.toggle_group_expansion();
+                        }
+                    }
+
+                    // Left arrow to collapse group
+                    (KeyCode::Left, _) => {
+                        ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
+                        if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
+                            ui_state.collapse_selected_group();
+                        }
+                    }
+
+                    // Right arrow to expand group
+                    (KeyCode::Right, _) => {
+                        ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
+                        if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
+                            ui_state.expand_selected_group();
+                        }
+                    }
+
+                    // 'l' to expand group (vim-style, in addition to right arrow)
+                    (KeyCode::Char('l'), _) => {
+                        ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
+                        if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
+                            ui_state.expand_selected_group();
+                        }
+                    }
+
+                    // 'a' to toggle grouping (aggregate) mode
+                    (KeyCode::Char('a'), _) => {
+                        ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
+                        ui_state.toggle_grouping();
+                        info!(
+                            "Grouping mode: {}",
+                            if ui_state.grouping_enabled {
+                                "enabled (grouped by process)"
+                            } else {
+                                "disabled (flat list)"
+                            }
+                        );
+                    }
+
+                    // 'r' to reset all view settings (grouping, sort, filter)
+                    (KeyCode::Char('r'), _) => {
+                        ui_state.quit_confirmation = false;
+                        ui_state.clear_confirmation = false;
+                        ui_state.reset_view();
+                        info!("Reset view settings to defaults");
                     }
 
                     // Toggle port number display

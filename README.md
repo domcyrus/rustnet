@@ -163,6 +163,10 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `p` | Toggle service names/ports |
 | `d` | Toggle hostnames/IPs (with `--resolve-dns`) |
 | `s` `S` | Cycle sort columns / toggle direction |
+| `a` | Toggle process grouping |
+| `Space` | Expand/collapse process group |
+| `←/→` | Collapse/expand group |
+| `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |
 | `h` | Toggle help |
 

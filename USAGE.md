@@ -9,6 +9,7 @@ This guide covers detailed usage of RustNet, including command-line options, key
 - [Keyboard Controls](#keyboard-controls)
 - [Filtering](#filtering)
 - [Sorting](#sorting)
+- [Process Grouping](#process-grouping)
 - [Network Statistics Panel](#network-statistics-panel)
 - [Interface Statistics](#interface-statistics)
 - [Connection Lifecycle & Visual Indicators](#connection-lifecycle--visual-indicators)
@@ -260,6 +261,14 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 - `d` - Toggle between hostnames and IP addresses (requires `--resolve-dns`)
 - `/` - Enter filter mode (vim-style search with real-time results)
 - `x` - Clear all connections and reset statistics (press twice to confirm)
+- `r` - Reset view to defaults (clears grouping, sort, and filter)
+
+### Process Grouping
+
+- `a` - Toggle process grouping mode (aggregate connections by process)
+- `Space` - Expand/collapse selected process group
+- `←` or `h` - Collapse selected group
+- `→` or `l` - Expand selected group
 
 ### Sorting
 
@@ -458,6 +467,87 @@ Example workflow:
 2. All HTTPS connections group together, DNS queries together, etc.
 3. Useful for finding all connections of a specific type
 ```
+
+## Process Grouping
+
+RustNet can group connections by process name, providing an aggregated view that makes it easier to see which applications are using your network.
+
+### Enabling Process Grouping
+
+Press `a` to toggle process grouping mode. When enabled:
+- Connections are grouped by process name (sorted alphabetically)
+- Each group shows aggregated statistics
+- Groups can be expanded/collapsed to show individual connections
+
+Press `a` again to return to the flat (ungrouped) connection list.
+
+### Grouped View Display
+
+When grouping is enabled, the connection list shows process groups:
+
+```
+[+] firefox (12)              TCP: 10 UDP: 2     12.5K↓/1.2K↑
+[-] chrome (8)                TCP: 8  UDP: 0     45.2K↓/5.1K↑
+  ├── TCP  192.168.1.10:54321  142.250.80.78:443    ESTABLISHED  HTTPS
+  ├── TCP  192.168.1.10:54322  142.250.80.78:443    ESTABLISHED  HTTPS
+  └── UDP  192.168.1.10:54323  8.8.8.8:53           -            DNS
+[+] systemd-resolved (3)      TCP: 0  UDP: 3     0.2K↓/0.1K↑
+[+] <unknown> (5)             TCP: 2  UDP: 3     0.5K↓/0.2K↑
+```
+
+**Group header format:**
+- `[+]` / `[-]` - Collapsed/expanded indicator
+- Process name and connection count
+- Protocol breakdown (TCP/UDP counts)
+- Total bandwidth (download↓/upload↑)
+
+**Expanded connections:**
+- Tree-style prefixes (`├──` / `└──`) show hierarchy
+- Individual connection details (protocol, addresses, state, application)
+
+### Expanding and Collapsing Groups
+
+| Key | Action |
+|-----|--------|
+| `Space` | Toggle expand/collapse on selected group |
+| `→` or `l` | Expand selected group |
+| `←` or `h` | Collapse selected group |
+
+### Navigation in Grouped View
+
+Navigation works the same as in flat view:
+- `↑`/`k` and `↓`/`j` move through visible rows (groups and expanded connections)
+- `g` jumps to the first row
+- `G` jumps to the last row
+- `Enter` on a connection opens the Details view
+
+### Unknown Processes
+
+Connections without process information are grouped into a single `<unknown>` group. This typically includes:
+- Short-lived connections that closed before process lookup completed
+- System-level connections on some platforms
+- Connections from restricted processes
+
+### Filtering with Grouping
+
+Filtering works seamlessly with grouping:
+1. Press `/` and enter your filter
+2. Only groups containing matching connections are shown
+3. Expand groups to see which connections matched
+
+### Sorting in Grouped View
+
+When grouping is enabled:
+- Groups are sorted alphabetically by process name (A-Z)
+- The sort column indicator shows how connections within groups are sorted
+- Press `s` to change how connections are sorted within expanded groups
+
+### Reset View
+
+Press `r` to reset all view settings at once:
+- Disables process grouping
+- Clears any active filter
+- Resets sort to default (chronological order)
 
 ## Network Statistics Panel
 
