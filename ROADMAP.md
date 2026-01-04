@@ -121,14 +121,15 @@ The experimental eBPF support provides efficient process identification but has 
 
 - [x] **Terminal User Interface**: TUI built with ratatui with adjustable column widths
 - [x] **Sortable Columns**: Keyboard-based sorting by all table columns
-- [x] **Keyboard Controls**: Comprehensive keyboard navigation (q, Ctrl+C, x, Tab, arrows, j/k, PageUp/Down, Enter, Esc, c, p, s, S, h, /)
+- [x] **Keyboard Controls**: Comprehensive keyboard navigation (q, Ctrl+C, x, Tab, arrows, j/k, g/G, PageUp/Down, Enter, Esc, c, p, s, S, h, /, a, r, Space)
 - [x] **Connection Details View**: Detailed information about selected connections (Enter key)
 - [x] **Help Screen**: Toggle help screen with keyboard shortcuts (h key)
 - [x] **Clipboard Support**: Copy remote address to clipboard (c key)
 - [x] **Service/Port Toggle**: Toggle between service names and port numbers (p key)
 - [x] **Platform-Specific CLI Help**: Show only relevant options per platform (hide Linux sandbox options on macOS, hide PKTAP notes on Linux)
+- [x] **Connection Grouping**: Group connections by process with expandable tree view (press `a` to toggle, aggregated stats, Space/arrows to expand/collapse)
+- [x] **Reset View**: Reset all view settings (grouping, sort, filter) with `r` key
 - [ ] **Resizable Columns**: Dynamic column width adjustment
-- [ ] **Connection Grouping**: Group connections by process/service
 - [ ] **ASCII Graphs**: Terminal-based graphs for bandwidth/packet visualization
 - [ ] **Mouse Support**: Click to select connections
 - [ ] **Split Pane View**: Show multiple views simultaneously

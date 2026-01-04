@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::Result;
 use ratatui::{
     Frame, Terminal as RatatuiTerminal,
@@ -84,6 +86,33 @@ impl SortColumn {
     }
 }
 
+/// Aggregated stats for a process group
+#[derive(Debug, Clone, Default)]
+pub struct ProcessGroupStats {
+    pub connection_count: usize,
+    pub tcp_count: usize,
+    pub udp_count: usize,
+    pub total_incoming_rate_bps: f64,
+    pub total_outgoing_rate_bps: f64,
+}
+
+/// A row in the grouped display (either a group header or a connection)
+#[derive(Debug, Clone)]
+pub enum GroupedRow {
+    /// A collapsed or expanded group header
+    Group {
+        process_name: String,
+        stats: ProcessGroupStats,
+        expanded: bool,
+    },
+    /// An individual connection within an expanded group
+    Connection {
+        process_name: String,
+        connection: Box<Connection>,
+        is_last_in_group: bool,
+    },
+}
+
 /// Set up the terminal for the TUI application
 pub fn setup_terminal<B: ratatui::backend::Backend>(backend: B) -> Result<Terminal<B>>
 where
@@ -132,6 +161,12 @@ pub struct UIState {
     pub sort_ascending: bool,
     /// Show hostnames instead of IP addresses (when DNS resolution is enabled)
     pub show_hostnames: bool,
+    /// Whether grouping by process is enabled
+    pub grouping_enabled: bool,
+    /// Set of expanded process group names
+    pub expanded_groups: HashSet<String>,
+    /// Selected group name when in grouped view (for group-level selection)
+    pub selected_group: Option<String>,
 }
 
 impl Default for UIState {
@@ -150,6 +185,9 @@ impl Default for UIState {
             sort_column: SortColumn::default(),
             sort_ascending: true, // Default to ascending
             show_hostnames: true, // Show hostnames by default when DNS resolution is enabled
+            grouping_enabled: false,
+            expanded_groups: HashSet::new(),
+            selected_group: None,
         }
     }
 }
@@ -374,6 +412,218 @@ impl UIState {
     pub fn toggle_sort_direction(&mut self) {
         self.sort_ascending = !self.sort_ascending;
     }
+
+    /// Reset all view settings to defaults (grouping, sort, filter)
+    pub fn reset_view(&mut self) {
+        self.grouping_enabled = false;
+        self.expanded_groups.clear();
+        self.selected_group = None;
+        self.sort_column = SortColumn::default();
+        self.sort_ascending = self.sort_column.default_direction();
+        self.filter_query.clear();
+        self.filter_mode = false;
+        self.filter_cursor_position = 0;
+    }
+
+    /// Toggle grouping mode
+    pub fn toggle_grouping(&mut self) {
+        self.grouping_enabled = !self.grouping_enabled;
+        // When toggling grouping on, clear group selection to start fresh
+        if self.grouping_enabled {
+            self.selected_group = None;
+        }
+    }
+
+    /// Toggle expansion of the currently selected group
+    pub fn toggle_group_expansion(&mut self) {
+        if let Some(ref group_name) = self.selected_group {
+            if self.expanded_groups.contains(group_name) {
+                self.expanded_groups.remove(group_name);
+            } else {
+                self.expanded_groups.insert(group_name.clone());
+            }
+        }
+    }
+
+    /// Expand the currently selected group
+    pub fn expand_selected_group(&mut self) {
+        if let Some(ref group_name) = self.selected_group {
+            self.expanded_groups.insert(group_name.clone());
+        }
+    }
+
+    /// Collapse the currently selected group
+    pub fn collapse_selected_group(&mut self) {
+        if let Some(ref group_name) = self.selected_group {
+            self.expanded_groups.remove(group_name);
+        }
+    }
+
+    /// Get the current selected index in the grouped rows
+    pub fn get_selected_grouped_index(&self, grouped_rows: &[GroupedRow]) -> Option<usize> {
+        if grouped_rows.is_empty() {
+            return None;
+        }
+
+        // First check if we have a selected connection that's visible
+        if let Some(ref selected_key) = self.selected_connection_key {
+            for (idx, row) in grouped_rows.iter().enumerate() {
+                if let GroupedRow::Connection { connection, .. } = row
+                    && connection.key() == *selected_key
+                {
+                    return Some(idx);
+                }
+            }
+        }
+
+        // Then check if we have a selected group
+        if let Some(ref selected_group) = self.selected_group {
+            for (idx, row) in grouped_rows.iter().enumerate() {
+                if let GroupedRow::Group { process_name, .. } = row
+                    && process_name == selected_group
+                {
+                    return Some(idx);
+                }
+            }
+        }
+
+        // Default to first row
+        Some(0)
+    }
+
+    /// Set the selection based on a grouped row index
+    pub fn set_selected_grouped_by_index(&mut self, grouped_rows: &[GroupedRow], index: usize) {
+        if let Some(row) = grouped_rows.get(index) {
+            match row {
+                GroupedRow::Group { process_name, .. } => {
+                    self.selected_group = Some(process_name.clone());
+                    self.selected_connection_key = None;
+                }
+                GroupedRow::Connection {
+                    process_name,
+                    connection,
+                    ..
+                } => {
+                    self.selected_connection_key = Some(connection.key());
+                    self.selected_group = Some(process_name.clone());
+                }
+            }
+        }
+    }
+
+    /// Move selection up in grouped view
+    pub fn move_selection_up_grouped(&mut self, grouped_rows: &[GroupedRow]) {
+        if grouped_rows.is_empty() {
+            return;
+        }
+
+        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
+        let new_index = if current_index > 0 {
+            current_index - 1
+        } else {
+            grouped_rows.len() - 1 // Wrap to bottom
+        };
+        self.set_selected_grouped_by_index(grouped_rows, new_index);
+    }
+
+    /// Move selection down in grouped view
+    pub fn move_selection_down_grouped(&mut self, grouped_rows: &[GroupedRow]) {
+        if grouped_rows.is_empty() {
+            return;
+        }
+
+        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
+        let new_index = if current_index < grouped_rows.len() - 1 {
+            current_index + 1
+        } else {
+            0 // Wrap to top
+        };
+        self.set_selected_grouped_by_index(grouped_rows, new_index);
+    }
+
+    /// Ensure valid selection in grouped view
+    pub fn ensure_valid_grouped_selection(&mut self, grouped_rows: &[GroupedRow]) {
+        if grouped_rows.is_empty() {
+            self.selected_group = None;
+            self.selected_connection_key = None;
+            return;
+        }
+
+        // If no group is selected, or current selection is not visible, reset to first row
+        // This handles the case when grouping is first enabled
+        let needs_init = self.selected_group.is_none()
+            || self.get_selected_grouped_index(grouped_rows).is_none();
+
+        if needs_init {
+            self.set_selected_grouped_by_index(grouped_rows, 0);
+        }
+    }
+
+    /// Check if the current selection is on a group header
+    pub fn is_group_selected(&self) -> bool {
+        self.selected_group.is_some() && self.selected_connection_key.is_none()
+    }
+}
+
+/// Compute grouped rows from a list of connections
+pub fn compute_grouped_rows(
+    connections: &[Connection],
+    expanded_groups: &HashSet<String>,
+) -> Vec<GroupedRow> {
+    use std::collections::HashMap;
+
+    // Group connections by process name
+    let mut groups: HashMap<String, Vec<&Connection>> = HashMap::new();
+    for conn in connections {
+        let key = conn
+            .process_name
+            .clone()
+            .unwrap_or_else(|| "<unknown>".to_string());
+        groups.entry(key).or_default().push(conn);
+    }
+
+    // Build stats for each group and sort by total bandwidth (descending)
+    let mut group_stats: Vec<(String, ProcessGroupStats, Vec<&Connection>)> = groups
+        .into_iter()
+        .map(|(name, conns)| {
+            let stats = ProcessGroupStats {
+                connection_count: conns.len(),
+                tcp_count: conns.iter().filter(|c| c.protocol == Protocol::TCP).count(),
+                udp_count: conns.iter().filter(|c| c.protocol == Protocol::UDP).count(),
+                total_incoming_rate_bps: conns.iter().map(|c| c.current_incoming_rate_bps).sum(),
+                total_outgoing_rate_bps: conns.iter().map(|c| c.current_outgoing_rate_bps).sum(),
+            };
+            (name, stats, conns)
+        })
+        .collect();
+
+    // Sort groups alphabetically by process name for stable ordering
+    // (sorting by bandwidth causes constant reordering as rates fluctuate)
+    group_stats.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+    // Build the flattened row list
+    let mut rows = Vec::new();
+    for (name, stats, conns) in group_stats {
+        let expanded = expanded_groups.contains(&name);
+        rows.push(GroupedRow::Group {
+            process_name: name.clone(),
+            stats,
+            expanded,
+        });
+
+        if expanded {
+            let conn_count = conns.len();
+            for (idx, conn) in conns.into_iter().enumerate() {
+                rows.push(GroupedRow::Connection {
+                    process_name: name.clone(),
+                    connection: Box::new(conn.clone()),
+                    is_last_in_group: idx == conn_count - 1,
+                });
+            }
+        }
+    }
+
+    rows
 }
 
 /// Draw the UI
@@ -420,8 +670,23 @@ pub fn draw(
         (None, chunks[2])
     };
 
+    // Compute grouped rows if grouping is enabled
+    let grouped_rows = if ui_state.grouping_enabled {
+        Some(compute_grouped_rows(connections, &ui_state.expanded_groups))
+    } else {
+        None
+    };
+
     match ui_state.selected_tab {
-        0 => draw_overview(f, ui_state, connections, stats, app, content_area)?,
+        0 => draw_overview(
+            f,
+            ui_state,
+            connections,
+            stats,
+            app,
+            content_area,
+            grouped_rows.as_deref(),
+        )?,
         1 => {
             let dns_resolver = app.get_dns_resolver();
             draw_connection_details(
@@ -482,6 +747,7 @@ fn draw_overview(
     stats: &AppStats,
     app: &App,
     area: Rect,
+    grouped_rows: Option<&[GroupedRow]>,
 ) -> Result<()> {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -490,7 +756,24 @@ fn draw_overview(
 
     // Get DNS resolver from app if enabled
     let dns_resolver = app.get_dns_resolver();
-    draw_connections_list(f, ui_state, connections, chunks[0], dns_resolver.as_deref());
+
+    // Use grouped view if grouping is enabled
+    if ui_state.grouping_enabled {
+        if let Some(rows) = grouped_rows {
+            draw_grouped_connections_list(
+                f,
+                ui_state,
+                rows,
+                chunks[0],
+                dns_resolver.as_deref(),
+                ui_state.sort_column,
+                ui_state.sort_ascending,
+            );
+        }
+    } else {
+        draw_connections_list(f, ui_state, connections, chunks[0], dns_resolver.as_deref());
+    }
+
     draw_stats_panel(f, connections, stats, app, chunks[1])?;
 
     Ok(())
@@ -751,6 +1034,222 @@ fn draw_connections_list(
         )
     } else {
         "Active Connections".to_string()
+    };
+
+    let connections_table = Table::new(rows, &widths)
+        .header(header)
+        .block(Block::default().borders(Borders::ALL).title(table_title))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+
+    f.render_stateful_widget(connections_table, area, &mut state);
+}
+
+/// Draw grouped connections list (grouped by process)
+fn draw_grouped_connections_list(
+    f: &mut Frame,
+    ui_state: &UIState,
+    grouped_rows: &[GroupedRow],
+    area: Rect,
+    dns_resolver: Option<&DnsResolver>,
+    sort_column: SortColumn,
+    sort_ascending: bool,
+) {
+    // Column layout for grouped view:
+    // - First column shows expand/collapse indicator + process name or tree prefix + protocol
+    // - Remaining columns similar to flat view but with adjusted widths
+    let remote_addr_width = if dns_resolver.is_some() && ui_state.show_hostnames {
+        26
+    } else {
+        18
+    };
+
+    let widths = [
+        Constraint::Min(28),    // Process/Protocol (wider for tree structure)
+        Constraint::Length(17), // Local Address
+        Constraint::Length(remote_addr_width), // Remote Address
+        Constraint::Length(12), // State
+        Constraint::Length(8),  // Service
+        Constraint::Length(20), // Application/Host
+        Constraint::Length(14), // Bandwidth
+    ];
+
+    let header_cells = [
+        Cell::from("Process / Protocol").style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Local Address").style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Remote Address").style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("State").style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Service").style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Application").style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Cell::from("Down/Up").style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let header = Row::new(header_cells).height(1).bottom_margin(1);
+
+    let rows: Vec<Row> = grouped_rows
+        .iter()
+        .map(|row| match row {
+            GroupedRow::Group {
+                process_name,
+                stats,
+                expanded,
+            } => {
+                let expand_indicator = if *expanded { "[-]" } else { "[+]" };
+                let process_cell = format!(
+                    "{} {} ({})",
+                    expand_indicator, process_name, stats.connection_count
+                );
+
+                // Protocol breakdown
+                let proto_breakdown = format!("TCP:{} UDP:{}", stats.tcp_count, stats.udp_count);
+
+                // Bandwidth display
+                let incoming_rate = format_rate_compact(stats.total_incoming_rate_bps);
+                let outgoing_rate = format_rate_compact(stats.total_outgoing_rate_bps);
+                let bandwidth = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
+
+                let cells = [
+                    Cell::from(process_cell).style(
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(proto_breakdown),
+                    Cell::from(""),
+                    Cell::from(""),
+                    Cell::from(bandwidth),
+                ];
+                Row::new(cells)
+            }
+            GroupedRow::Connection {
+                connection,
+                is_last_in_group,
+                ..
+            } => {
+                let prefix = if *is_last_in_group {
+                    "  └── "
+                } else {
+                    "  ├── "
+                };
+
+                let protocol_cell = format!("{}{}", prefix, connection.protocol);
+
+                // Format addresses
+                let local_addr_display = connection.local_addr.to_string();
+                let remote_addr_display = if ui_state.show_hostnames {
+                    if let Some(resolver) = dns_resolver {
+                        if let Some(hostname) = resolver.get_hostname(&connection.remote_addr.ip())
+                        {
+                            let port = connection.remote_addr.port();
+                            let max_len = (remote_addr_width as usize).saturating_sub(7);
+                            if hostname.len() > max_len {
+                                format!("{}..:{}", &hostname[..max_len.saturating_sub(2)], port)
+                            } else {
+                                format!("{}:{}", hostname, port)
+                            }
+                        } else {
+                            connection.remote_addr.to_string()
+                        }
+                    } else {
+                        connection.remote_addr.to_string()
+                    }
+                } else {
+                    connection.remote_addr.to_string()
+                };
+
+                // State display
+                let state = connection.state();
+
+                // Service display
+                let service_display = if ui_state.show_port_numbers {
+                    connection.remote_addr.port().to_string()
+                } else {
+                    connection
+                        .service_name
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string())
+                };
+
+                // DPI display
+                let dpi_display = match &connection.dpi_info {
+                    Some(dpi) => dpi.application.to_string(),
+                    None => "-".to_string(),
+                };
+
+                // Bandwidth display
+                let incoming_rate = format_rate_compact(connection.current_incoming_rate_bps);
+                let outgoing_rate = format_rate_compact(connection.current_outgoing_rate_bps);
+                let bandwidth = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
+
+                // Row color based on staleness
+                let staleness = connection.staleness_ratio();
+                let row_style = if staleness >= 0.90 {
+                    Style::default().fg(Color::Red)
+                } else if staleness >= 0.75 {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default()
+                };
+
+                let cells = [
+                    Cell::from(protocol_cell),
+                    Cell::from(local_addr_display),
+                    Cell::from(remote_addr_display),
+                    Cell::from(state),
+                    Cell::from(service_display),
+                    Cell::from(dpi_display),
+                    Cell::from(bandwidth),
+                ];
+                Row::new(cells).style(row_style)
+            }
+        })
+        .collect();
+
+    // Create table state with current selection
+    let mut state = ratatui::widgets::TableState::default();
+    if let Some(selected_index) = ui_state.get_selected_grouped_index(grouped_rows) {
+        state.select(Some(selected_index));
+    }
+
+    // Build title showing both group sort (A-Z) and connection sort within groups
+    let table_title = if sort_column != SortColumn::CreatedAt {
+        let direction = if sort_ascending { "↑" } else { "↓" };
+        format!(
+            "Grouped by Process (A-Z) │ Connections: {} {}",
+            sort_column.display_name(),
+            direction
+        )
+    } else {
+        "Grouped by Process (A-Z) │ Connections: Time ↑".to_string()
     };
 
     let connections_table = Table::new(rows, &widths)
@@ -2239,6 +2738,22 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         Line::from(vec![
             Span::styled("S ", Style::default().fg(Color::Yellow)),
             Span::raw("Toggle sort direction (ascending/descending)"),
+        ]),
+        Line::from(vec![
+            Span::styled("a ", Style::default().fg(Color::Yellow)),
+            Span::raw("Toggle process grouping (aggregate by process)"),
+        ]),
+        Line::from(vec![
+            Span::styled("Space ", Style::default().fg(Color::Yellow)),
+            Span::raw("Expand/collapse group (when grouping enabled)"),
+        ]),
+        Line::from(vec![
+            Span::styled("←/→ ", Style::default().fg(Color::Yellow)),
+            Span::raw("Collapse/expand group"),
+        ]),
+        Line::from(vec![
+            Span::styled("r ", Style::default().fg(Color::Yellow)),
+            Span::raw("Reset view (grouping, sort, filter)"),
         ]),
         Line::from(vec![
             Span::styled("Enter ", Style::default().fg(Color::Yellow)),
