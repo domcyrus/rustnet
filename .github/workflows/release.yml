@@ -285,6 +285,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.BSD_DISPATCH_TOKEN }}
 
+  trigger-homebrew-update:
+    name: trigger-homebrew-update
+    runs-on: ubuntu-latest
+    needs: create-release
+    steps:
+      - name: Trigger Homebrew formula update
+        run: |
+          gh workflow run update-formula.yml \
+            --repo domcyrus/homebrew-rustnet \
+            -f version=${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_PAT }}
+
   package-installers:
     name: package-installers
     runs-on: ubuntu-22.04
