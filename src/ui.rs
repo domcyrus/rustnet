@@ -3034,10 +3034,7 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
         if time.elapsed().as_secs() < 3 {
             format!(" {} ", msg)
         } else {
-            format!(
-                " Press 'h' for help | 'c' to copy address | Connections: {} ",
-                connection_count
-            )
+            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 'c' copy ".to_string()
         }
     } else if !ui_state.filter_query.is_empty() {
         format!(
@@ -3045,10 +3042,7 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
             connection_count
         )
     } else {
-        format!(
-            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'c' copy | Connections: {} ",
-            connection_count
-        )
+        " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 'c' copy ".to_string()
     };
 
     let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {
