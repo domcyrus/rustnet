@@ -153,9 +153,11 @@ jobs:
           - arch: x86_64
             runner: ubuntu-latest
             target: x86_64-unknown-linux-musl
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
+          # TODO: aarch64 disabled - JS actions don't work in Alpine containers on ARM runners
+          # See: https://github.com/actions/runner/issues/801
+          # - arch: aarch64
+          #   runner: ubuntu-24.04-arm
+          #   target: aarch64-unknown-linux-musl
     container:
       image: rust:alpine
     steps:

@@ -1,0 +1,129 @@
+name: Test Static Builds
+
+# Test workflow for static musl builds
+# Run manually to test different approaches before updating release.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: 'Architecture to test'
+        required: true
+        type: choice
+        options:
+          - x86_64
+          - aarch64
+          - both
+
+permissions:
+  contents: read
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+  # x86_64 static build - uses Alpine container (this works)
+  build-static-x86_64:
+    name: build-static-x86_64
+    if: ${{ github.event.inputs.arch == 'x86_64' || github.event.inputs.arch == 'both' }}
+    runs-on: ubuntu-latest
+    container:
+      image: rust:alpine
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          apk add --no-cache \
+            musl-dev libpcap-dev pkgconfig build-base perl \
+            elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
+            clang llvm linux-headers git
+          rustup component add rustfmt
+
+      - name: Build static binary
+        env:
+          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
+        run: cargo build --release
+
+      - name: Verify static linking
+        run: |
+          file target/release/rustnet
+          file target/release/rustnet | grep -q "static.* linked" || \
+            (echo "ERROR: Binary is not statically linked" && exit 1)
+
+      - name: Create release archive
+        run: |
+          staging="rustnet-test-x86_64-unknown-linux-musl"
+          mkdir -p "$staging/assets"
+          cp target/release/rustnet "$staging/"
+          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+          tar czf "$staging.tar.gz" "$staging"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: static-x86_64-unknown-linux-musl
+          path: rustnet-test-x86_64-unknown-linux-musl.tar.gz
+          if-no-files-found: error
+
+  # aarch64 static build - test with manual git clone and artifact upload
+  build-static-aarch64:
+    name: build-static-aarch64
+    if: ${{ github.event.inputs.arch == 'aarch64' || github.event.inputs.arch == 'both' }}
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: rust:alpine
+    steps:
+      # JS actions don't work in Alpine containers on ARM - use manual git clone
+      - name: Checkout repository
+        run: |
+          apk add --no-cache git
+          git clone --depth 1 https://github.com/${{ github.repository }}.git .
+
+      - name: Install dependencies
+        run: |
+          apk add --no-cache \
+            musl-dev libpcap-dev pkgconfig build-base perl \
+            elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
+            clang llvm linux-headers
+          rustup component add rustfmt
+
+      - name: Build static binary
+        env:
+          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
+        run: cargo build --release
+
+      - name: Verify static linking
+        run: |
+          file target/release/rustnet
+          file target/release/rustnet | grep -q "static.* linked" || \
+            (echo "ERROR: Binary may not be fully statically linked")
+
+      - name: Show binary info
+        run: |
+          ls -la target/release/rustnet
+          file target/release/rustnet
+
+      - name: Create release archive
+        run: |
+          staging="rustnet-test-aarch64-unknown-linux-musl"
+          mkdir -p "$staging/assets"
+          cp target/release/rustnet "$staging/"
+          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+          tar czf "$staging.tar.gz" "$staging"
+          ls -la "$staging.tar.gz"
+
+      # Try uploading artifact - this may fail on ARM Alpine
+      # If it fails, the archive is still created and we know the build works
+      - name: Upload artifact (may fail on ARM)
+        continue-on-error: true
+        uses: actions/upload-artifact@v6
+        with:
+          name: static-aarch64-unknown-linux-musl
+          path: rustnet-test-aarch64-unknown-linux-musl.tar.gz
+          if-no-files-found: error
