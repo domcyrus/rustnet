@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-01-07
+
+### Added
+- **Process Grouping**: Expandable tree view to group connections by process (`a` to toggle grouping, `Space` to expand/collapse)
+- **Traffic Visualization Graph Tab**: New Graph tab with real-time network traffic graphs and bandwidth visualization (press `Tab` to cycle through tabs)
+- **Network Health Visualization**: Health indicators in Graph tab showing connection quality metrics
+- **Reverse DNS Hostnames**: Display reverse DNS names in Details tab and filter PTR traffic (`--resolve-dns` to enable, `d` to toggle display)
+- **BPF Filter Support**: New `--bpf-filter` option for custom packet capture filtering (e.g., `--bpf-filter "port 443"`)
+- **Clear All Connections**: New hotkey (`x`) to clear all tracked connections
+- **Enhanced JSON Logging**: Added pid, process_name, service_name fields to JSON log output
+- **New DPI Protocols**: NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, NetBIOS protocol detection with enhanced ARP display
+- **Static Musl Builds**: Linux static binary builds using musl for better portability
+- **Platform-Specific Help**: CLI help now shows platform-specific options
+
+### Fixed
+- **macOS BPF Filter**: Skip PKTAP when BPF filter is specified to avoid conflicts
+- **Linux Clipboard**: Handle clipboard access blocked by Landlock sandbox gracefully
+- **Interface Stats**: Use safer pointer dereference in interface statistics
+
+### Changed
+- **FreeBSD Builds**: Moved to separate rustnet-bsd repository for native builds
+- **CI Improvements**: Homebrew formula auto-update on release, AUR workflow on publish
+- **Dependencies**: Updated ratatui to 0.30.0, various dependency updates
+- **Documentation**: Added contribution guidelines, Chocolatey and Arch Linux installation instructions
+
 ## [0.17.0] - 2025-12-07
 
 ### Added
@@ -327,7 +352,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/domcyrus/rustnet/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/domcyrus/rustnet/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/domcyrus/rustnet/compare/v0.15.0...v0.16.1
 [0.15.0]: https://github.com/domcyrus/rustnet/compare/v0.14.0...v0.15.0
