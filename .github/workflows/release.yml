@@ -300,6 +300,19 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_PAT }}
 
+  trigger-chocolatey-update:
+    name: trigger-chocolatey-update
+    runs-on: ubuntu-latest
+    needs: create-release
+    steps:
+      - name: Trigger Chocolatey package update
+        run: |
+          gh workflow run update-package.yml \
+            --repo domcyrus/rustnet-chocolatey \
+            -f version=${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ secrets.CHOCOLATEY_PAT }}
+
   package-installers:
     name: package-installers
     runs-on: ubuntu-22.04
