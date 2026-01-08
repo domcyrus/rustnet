@@ -33,182 +33,18 @@ env:
   RUSTNET_ASSET_DIR: assets
 
 jobs:
-  build-release:
-    name: build-release
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        build:
-          - linux-aarch64-gnu
-          - linux-armv7-gnueabihf
-          - linux-x64-gnu
-          - macos-aarch64
-          - macos-x64
-          - windows-x64-msvc
-          - windows-x86-msvc
-        include:
-          - os: ubuntu-22.04 # default - pinned for GLIBC 2.35 compatibility
-          - cargo: cargo # default; overwrite with `cross` if necessary
-          - build: linux-aarch64-gnu
-            target: aarch64-unknown-linux-gnu
-            cargo: cross
-          - build: linux-armv7-gnueabihf
-            target: armv7-unknown-linux-gnueabihf
-            cargo: cross
-          - build: linux-x64-gnu
-            target: x86_64-unknown-linux-gnu
-          - build: macos-aarch64
-            os: macos-14
-            target: aarch64-apple-darwin
-          - build: macos-x64
-            os: macos-14
-            target: x86_64-apple-darwin
-          - build: windows-x64-msvc
-            os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - build: windows-x86-msvc
-            os: windows-latest
-            target: i686-pc-windows-msvc
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-22.04'
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: ${{ matrix.target }}
-          components: rustfmt
-
-      - name: Install cross
-        if: matrix.cargo == 'cross'
-        run: cargo install cross@0.2.5
-
-      - name: Build release binary
-        shell: bash
-        env:
-          RUSTFLAGS: "-C strip=symbols"
-        run: |
-          mkdir -p "$RUSTNET_ASSET_DIR"
-          # build.rs will handle Npcap SDK download on Windows
-          # eBPF is enabled by default on Linux, but must be disabled for other platforms
-          if [[ "${{ matrix.target }}" == *"linux"* ]]; then
-            # Linux builds: use default features (includes eBPF)
-            ${{ matrix.cargo }} build --verbose --release --target ${{ matrix.target }}
-          else
-            # Non-Linux builds: disable default features (no eBPF)
-            ${{ matrix.cargo }} build --verbose --release --target ${{ matrix.target }} --no-default-features
-          fi
-
-      - name: Create release archive
-        shell: bash
-        env:
-          RUSTNET_BIN: ${{ contains(matrix.os, 'windows') && 'rustnet.exe' || 'rustnet' }}
-        run: |
-          staging="rustnet-${{ github.ref_name }}-${{ matrix.target }}"
-          mkdir -p "$staging"
-
-          # Copy binary
-          cp "target/${{ matrix.target }}/release/$RUSTNET_BIN" "$staging/"
-
-          # Copy services file if it exists
-          if [ -f "$RUSTNET_ASSET_DIR/services" ]; then
-            mkdir -p "$staging/assets"
-            cp "$RUSTNET_ASSET_DIR/services" "$staging/assets/"
-          fi
-
-          # Copy documentation
-          cp README.md "$staging/"
-          cp LICENSE "$staging/" 2>/dev/null || true
-
-          # Create archive
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a "$staging.zip" "$staging"
-            echo "ASSET=$staging.zip" >> $GITHUB_ENV
-          else
-            tar czf "$staging.tar.gz" "$staging"
-            echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
-          fi
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: build-${{ matrix.target }}
-          path: ${{ env.ASSET }}
-          if-no-files-found: error
-
-  build-static:
-    name: build-static-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-          # TODO: aarch64 disabled - JS actions don't work in Alpine containers on ARM runners
-          # See: https://github.com/actions/runner/issues/801
-          # - arch: aarch64
-          #   runner: ubuntu-24.04-arm
-          #   target: aarch64-unknown-linux-musl
-    container:
-      image: rust:alpine
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Install dependencies
-        run: |
-          apk add --no-cache \
-            musl-dev libpcap-dev pkgconfig build-base perl \
-            elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
-            clang llvm linux-headers git
-          rustup component add rustfmt
-
-      - name: Build static binary
-        env:
-          # -C strip=symbols: Strip debug symbols for smaller binary
-          # -C link-arg=-l:libzstd.a: Fix elfutils 0.189+ zstd dependency (libbpf/bpftool#152)
-          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-        run: cargo build --release
-
-      - name: Verify static linking
-        run: |
-          file target/release/rustnet
-          # Use file command to verify (ldd behaves differently inside Alpine)
-          file target/release/rustnet | grep -q "static.* linked" || \
-            (echo "ERROR: Binary is not statically linked" && exit 1)
-
-      - name: Create release archive
-        run: |
-          staging="rustnet-${{ github.ref_name }}-${{ matrix.target }}"
-          mkdir -p "$staging/assets"
-
-          cp target/release/rustnet "$staging/"
-          cp assets/services "$staging/assets/" 2>/dev/null || true
-          cp README.md "$staging/"
-          cp LICENSE "$staging/" 2>/dev/null || true
-
-          tar czf "$staging.tar.gz" "$staging"
-
-      - name: Upload static build artifact
-        uses: actions/upload-artifact@v6
-        with:
-          name: build-${{ matrix.target }}
-          path: rustnet-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
-          if-no-files-found: error
+  # Build all platforms using shared workflow
+  build:
+    uses: ./.github/workflows/build-platforms.yml
+    with:
+      create-archives: true
+      strip-symbols: true
+      version: ${{ github.ref_name }}
 
   create-release:
     name: create-release
     runs-on: ubuntu-latest
-    needs: [build-release, build-static]
+    needs: build
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -326,10 +162,8 @@ jobs:
         with:
           path: artifacts
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
+      - name: Setup Linux dependencies
+        uses: ./.github/actions/setup-linux-deps
 
       - name: Install Rust and tools
         uses: dtolnay/rust-toolchain@stable

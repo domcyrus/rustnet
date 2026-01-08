@@ -1,0 +1,30 @@
+name: 'Build Static Binary'
+description: 'Build a statically-linked Linux binary using musl'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install dependencies
+      shell: sh
+      run: |
+        apk add --no-cache \
+          musl-dev libpcap-dev pkgconfig build-base perl \
+          elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
+          clang llvm linux-headers git
+        rustup component add rustfmt
+
+    - name: Build static binary
+      shell: sh
+      env:
+        # -C strip=symbols: Strip debug symbols for smaller binary
+        # -C link-arg=-l:libzstd.a: Fix elfutils 0.189+ zstd dependency (libbpf/bpftool#152)
+        RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
+      run: cargo build --release
+
+    - name: Verify static linking
+      shell: sh
+      run: |
+        file target/release/rustnet
+        # Use file command to verify (ldd behaves differently inside Alpine)
+        file target/release/rustnet | grep -q "static.* linked" || \
+          (echo "ERROR: Binary is not statically linked" && exit 1)

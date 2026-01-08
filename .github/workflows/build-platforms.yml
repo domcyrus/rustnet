@@ -1,0 +1,183 @@
+name: Build Platforms
+
+# Reusable workflow for building RustNet on all platforms.
+# Called by both test-platform-builds.yml and release.yml
+
+on:
+  workflow_call:
+    inputs:
+      create-archives:
+        description: 'Create release archives with README/LICENSE (true for release, false for test)'
+        type: boolean
+        default: false
+      strip-symbols:
+        description: 'Strip debug symbols from binaries'
+        type: boolean
+        default: false
+      version:
+        description: 'Version string for archive naming (e.g., v0.3.0)'
+        type: string
+        default: ''
+
+env:
+  RUST_BACKTRACE: 1
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build-${{ matrix.build }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        build:
+          - linux-x64-gnu
+          - linux-aarch64-gnu
+          - linux-armv7-gnueabihf
+          - macos-aarch64
+          - macos-x64
+          - windows-x64-msvc
+          - windows-x86-msvc
+        include:
+          - os: ubuntu-22.04
+          - cargo: cargo
+          - build: linux-x64-gnu
+            target: x86_64-unknown-linux-gnu
+            run-tests: true
+          - build: linux-aarch64-gnu
+            target: aarch64-unknown-linux-gnu
+            cargo: cross
+          - build: linux-armv7-gnueabihf
+            target: armv7-unknown-linux-gnueabihf
+            cargo: cross
+          - build: macos-aarch64
+            os: macos-14
+            target: aarch64-apple-darwin
+            run-tests: true
+          - build: macos-x64
+            os: macos-14
+            target: x86_64-apple-darwin
+          - build: windows-x64-msvc
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - build: windows-x86-msvc
+            os: windows-latest
+            target: i686-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        uses: ./.github/actions/setup-linux-deps
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: rustfmt
+
+      - name: Install cross
+        if: matrix.cargo == 'cross'
+        run: cargo install cross@0.2.5
+
+      - name: Build
+        uses: ./.github/actions/build-rustnet
+        with:
+          target: ${{ matrix.target }}
+          cargo-command: ${{ matrix.cargo }}
+          default-features: ${{ contains(matrix.target, 'linux') && 'true' || 'false' }}
+          strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
+
+      - name: Run tests
+        if: matrix.run-tests
+        run: cargo test --verbose
+
+      # For test builds: upload raw binary
+      - name: Upload binary artifact
+        if: ${{ !inputs.create-archives }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: rustnet-${{ matrix.build }}
+          path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
+          if-no-files-found: error
+
+      # For release builds: create archive with README/LICENSE
+      - name: Create release archive
+        if: ${{ inputs.create-archives }}
+        shell: bash
+        env:
+          RUSTNET_BIN: ${{ contains(matrix.os, 'windows') && 'rustnet.exe' || 'rustnet' }}
+        run: |
+          staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
+          mkdir -p "$staging"
+
+          cp "target/${{ matrix.target }}/release/$RUSTNET_BIN" "$staging/"
+
+          if [ -d "assets" ] && [ -f "assets/services" ]; then
+            mkdir -p "$staging/assets"
+            cp "assets/services" "$staging/assets/"
+          fi
+
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            7z a "$staging.zip" "$staging"
+            echo "ASSET=$staging.zip" >> $GITHUB_ENV
+          else
+            tar czf "$staging.tar.gz" "$staging"
+            echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Upload release archive
+        if: ${{ inputs.create-archives }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  build-static:
+    name: build-linux-static
+    runs-on: ubuntu-latest
+    container:
+      image: rust:alpine
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build static binary
+        uses: ./.github/actions/build-static
+
+      # For test builds: upload raw binary
+      - name: Upload binary artifact
+        if: ${{ !inputs.create-archives }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: rustnet-linux-static
+          path: target/release/rustnet
+          if-no-files-found: error
+
+      # For release builds: create archive
+      - name: Create release archive
+        if: ${{ inputs.create-archives }}
+        run: |
+          staging="rustnet-${{ inputs.version }}-x86_64-unknown-linux-musl"
+          mkdir -p "$staging/assets"
+
+          cp target/release/rustnet "$staging/"
+          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+
+          tar czf "$staging.tar.gz" "$staging"
+
+      - name: Upload release archive
+        if: ${{ inputs.create-archives }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-x86_64-unknown-linux-musl
+          path: rustnet-${{ inputs.version }}-x86_64-unknown-linux-musl.tar.gz
+          if-no-files-found: error

@@ -1,0 +1,38 @@
+name: 'Build RustNet'
+description: 'Build RustNet binary for a specific target'
+
+inputs:
+  target:
+    description: 'Rust target triple (e.g., x86_64-unknown-linux-gnu)'
+    required: true
+  cargo-command:
+    description: 'Cargo command to use (cargo or cross)'
+    required: false
+    default: 'cargo'
+  default-features:
+    description: 'Enable default features including eBPF (true/false)'
+    required: false
+    default: 'true'
+  strip-symbols:
+    description: 'Strip debug symbols from binary (true/false)'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Build binary
+      shell: bash
+      env:
+        RUSTFLAGS: ${{ inputs.strip-symbols == 'true' && '-C strip=symbols' || '' }}
+      run: |
+        mkdir -p assets  # Ensure asset dir exists for build.rs
+
+        BUILD_CMD="${{ inputs.cargo-command }} build --verbose --release --target ${{ inputs.target }}"
+
+        if [[ "${{ inputs.default-features }}" != "true" ]]; then
+          BUILD_CMD="$BUILD_CMD --no-default-features"
+        fi
+
+        echo "Running: $BUILD_CMD"
+        $BUILD_CMD
