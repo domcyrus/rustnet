@@ -19,6 +19,9 @@ on:
         type: string
         default: ''
 
+permissions:
+  contents: read
+
 env:
   RUST_BACKTRACE: 1
   CARGO_TERM_COLOR: always
