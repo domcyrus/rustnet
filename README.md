@@ -267,7 +267,7 @@ This project is licensed under the Apache License, Version 2.0 - see the [LICENS
 
 - Built with [ratatui](https://github.com/ratatui-org/ratatui) for the terminal UI
 - Packet capture powered by [libpcap](https://www.tcpdump.org/)
-- Inspired by tools like `tshark/wireshark/tcpdump`, `sniffnet`, `netstat`, `ss`, and `iftop`
+- Inspired by tools like `tshark/wireshark/tcpdump`, `sniffnet`, `netstat`, `ss`, `iftop`, and [bandwhich](https://github.com/imsnif/bandwhich)
 - Some code is vibe coded (OMG) / may the LLM gods be with you
 
 ---
