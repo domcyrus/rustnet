@@ -347,6 +347,7 @@ RustNet draws inspiration from several network monitoring tools. Here's how it c
 | **Cross-platform** | Linux, macOS, Windows, FreeBSD | Linux, macOS | Linux, macOS, Windows | Linux, macOS, BSD | All | Linux | All |
 | **eBPF support** | Yes (Linux) | No | No | No | No | Yes | No |
 | **Landlock sandboxing** | Yes (Linux) | No | No | No | No | No | No |
+| **JSON event logging** | Yes | No | No | No | No | No | Yes |
 | **Packet capture** | libpcap | Raw sockets | libpcap | libpcap | Kernel | Kernel | libpcap |
 
 ### Tool Focus Areas
