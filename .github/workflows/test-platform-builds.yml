@@ -14,6 +14,9 @@ on:
       - '.github/workflows/build-platforms.yml'
       - '.github/actions/**'
 
+permissions:
+  contents: read
+
 jobs:
   build:
     uses: ./.github/workflows/build-platforms.yml
