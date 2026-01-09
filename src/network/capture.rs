@@ -2,6 +2,14 @@
 use anyhow::{Result, anyhow};
 use pcap::{Active, Capture, Device, Error as PcapError};
 
+#[cfg(target_os = "macos")]
+use crate::network::platform::DegradationReason;
+
+/// Stores why PKTAP is not available on macOS (set during capture setup)
+#[cfg(target_os = "macos")]
+pub static PKTAP_DEGRADATION_REASON: std::sync::OnceLock<DegradationReason> =
+    std::sync::OnceLock::new();
+
 /// Packet capture configuration
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
@@ -215,6 +223,8 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                         log::info!(
                             "Falling back to regular capture (process detection will use lsof)"
                         );
+                        // Store degradation reason - failed to open (permission issue)
+                        let _ = PKTAP_DEGRADATION_REASON.set(DegradationReason::NoBpfDeviceAccess);
                     }
                 }
             }
@@ -224,17 +234,29 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                     "PKTAP requires root privileges - run with 'sudo' for process metadata support"
                 );
                 log::info!("Falling back to regular capture (process detection will use lsof)");
+                // Store degradation reason - failed to create device (permission issue)
+                let _ = PKTAP_DEGRADATION_REASON.set(DegradationReason::MissingRootPrivileges);
             }
         }
     }
 
-    // Fallback to regular capture (original code)
+    // Track PKTAP degradation reasons for macOS
     #[cfg(target_os = "macos")]
-    if config.filter.is_some() {
-        log::warn!(
-            "BPF filter specified - using regular capture instead of PKTAP (BPF filters don't work with PKTAP)"
-        );
+    {
+        if config.interface.is_some() {
+            // Specific interface requested - PKTAP can't be used
+            let _ = PKTAP_DEGRADATION_REASON.set(DegradationReason::InterfaceSpecified);
+        }
+        if config.filter.is_some() {
+            log::warn!(
+                "BPF filter specified - using regular capture instead of PKTAP (BPF filters don't work with PKTAP)"
+            );
+            // Store degradation reason - BPF filter incompatible
+            let _ = PKTAP_DEGRADATION_REASON.set(DegradationReason::BpfFilterIncompatible);
+        }
     }
+
+    // Fallback to regular capture (original code)
     log::info!("Setting up regular packet capture");
     let device = find_capture_device(&config.interface)?;
 

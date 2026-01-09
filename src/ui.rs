@@ -1293,17 +1293,53 @@ fn draw_stats_panel(
         .get_current_interface()
         .unwrap_or_else(|| "Unknown".to_string());
 
-    let process_detection_method = app.get_process_detection_method();
+    let detection_status = app.get_process_detection_status();
     let (link_layer_type, is_tunnel) = app.get_link_layer_info();
 
-    let conn_stats_text: Vec<Line> = vec![
+    // Build process detection line(s) with color based on status
+    let process_detection_color = if detection_status.is_degraded {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+
+    let mut conn_stats_text: Vec<Line> = vec![
         Line::from(format!("Interface: {}", interface_name)),
         Line::from(format!(
             "Link Layer: {}{}",
             link_layer_type,
             if is_tunnel { " (Tunnel)" } else { "" }
         )),
-        Line::from(format!("Process Detection: {}", process_detection_method)),
+        Line::from(vec![
+            Span::raw("Process Detection: "),
+            Span::styled(
+                detection_status.method.clone(),
+                Style::default().fg(process_detection_color),
+            ),
+        ]),
+    ];
+
+    // Add degradation warning on second line if degraded
+    if detection_status.is_degraded {
+        let warning_text = format!(
+            "  {} unavailable - {}",
+            detection_status
+                .unavailable_feature
+                .as_deref()
+                .unwrap_or("Enhanced"),
+            detection_status
+                .degradation_reason
+                .as_deref()
+                .unwrap_or("insufficient permissions")
+        );
+        conn_stats_text.push(Line::from(Span::styled(
+            warning_text,
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    // Add remaining stats
+    conn_stats_text.extend([
         Line::from(""),
         Line::from(format!("TCP Connections: {}", tcp_count)),
         Line::from(format!("UDP Connections: {}", udp_count)),
@@ -1321,7 +1357,7 @@ fn draw_stats_panel(
                 .packets_dropped
                 .load(std::sync::atomic::Ordering::Relaxed)
         )),
-    ];
+    ]);
 
     let conn_stats = Paragraph::new(conn_stats_text)
         .block(Block::default().borders(Borders::ALL).title("Statistics"))

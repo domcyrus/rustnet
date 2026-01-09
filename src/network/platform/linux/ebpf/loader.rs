@@ -4,6 +4,8 @@ use anyhow::Result;
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use log::{debug, info, warn};
 
+use crate::network::platform::DegradationReason;
+
 mod socket_tracker {
     include!(concat!(env!("OUT_DIR"), "/socket_tracker.skel.rs"));
 }
@@ -17,26 +19,31 @@ pub struct EbpfLoader {
 
 impl EbpfLoader {
     /// Attempt to load eBPF programs with graceful error handling
-    pub fn try_load() -> Result<Option<Self>> {
+    /// Returns (Option<Self>, DegradationReason) - the reason explains why eBPF is unavailable
+    pub fn try_load() -> Result<(Option<Self>, DegradationReason)> {
         // First check if we have necessary capabilities
-        if !Self::check_capabilities() {
-            info!("eBPF: Insufficient capabilities (need root or CAP_BPF), falling back to procfs");
-            return Ok(None);
-        } else {
-            info!("eBPF: Sufficient capabilities detected, attempting to load program");
+        let cap_result = Self::check_capabilities_detailed();
+        if cap_result != DegradationReason::None {
+            info!(
+                "eBPF: Insufficient capabilities ({}), falling back to procfs",
+                cap_result.description()
+            );
+            return Ok((None, cap_result));
         }
+
+        info!("eBPF: Sufficient capabilities detected, attempting to load program");
 
         match Self::load_program() {
             Ok(loader) => {
                 info!("eBPF: Socket tracker loaded and attached successfully");
-                Ok(Some(loader))
+                Ok((Some(loader), DegradationReason::None))
             }
             Err(e) => {
                 warn!(
                     "eBPF: Failed to load program: {}, falling back to procfs",
                     e
                 );
-                Ok(None)
+                Ok((None, DegradationReason::KernelUnsupported))
             }
         }
     }
@@ -93,13 +100,14 @@ impl EbpfLoader {
     }
 
     /// Check if we have the necessary capabilities for eBPF
-    fn check_capabilities() -> bool {
+    /// Returns DegradationReason::None if sufficient, otherwise the specific reason
+    fn check_capabilities_detailed() -> DegradationReason {
         use std::fs;
 
         // Check if we're running as root
         if unsafe { libc::geteuid() } == 0 {
             debug!("eBPF: Running as root - all capabilities available");
-            return true;
+            return DegradationReason::None;
         }
 
         // Check for required capabilities via /proc/self/status
@@ -126,14 +134,8 @@ impl EbpfLoader {
                     if has_net_raw { "present" } else { "missing" }
                 );
 
-                // Must have CAP_NET_RAW for packet capture
-                if !has_net_raw {
-                    debug!("eBPF: Missing CAP_NET_RAW (required for packet capture)");
-                    debug!(
-                        "eBPF: Insufficient capabilities - need CAP_NET_RAW for packet capture, plus either (CAP_BPF+CAP_PERFMON) or CAP_SYS_ADMIN for eBPF"
-                    );
-                    return false;
-                }
+                // Must have CAP_NET_RAW for packet capture - but this is checked elsewhere
+                // Here we focus on eBPF-specific capabilities
 
                 // Check modern capabilities (Linux 5.8+)
                 let has_bpf = (cap_value & (1u64 << CAP_BPF)) != 0;
@@ -162,20 +164,28 @@ impl EbpfLoader {
                 // Accept either modern capabilities OR legacy capability
                 if has_bpf && has_perfmon {
                     info!("eBPF: Using modern capabilities (CAP_BPF + CAP_PERFMON)");
-                    return true;
+                    return DegradationReason::None;
                 } else if has_sys_admin {
                     info!("eBPF: Using legacy capability (CAP_SYS_ADMIN)");
-                    return true;
+                    return DegradationReason::None;
                 } else {
+                    // Return specific missing capability
                     debug!("eBPF: Missing required capabilities");
+                    if !has_bpf && !has_perfmon {
+                        return DegradationReason::MissingBpfCapabilities;
+                    } else if !has_bpf {
+                        return DegradationReason::MissingCapBpf;
+                    } else {
+                        return DegradationReason::MissingCapPerfmon;
+                    }
                 }
             }
         }
 
         debug!(
-            "eBPF: Insufficient capabilities - need CAP_NET_RAW for packet capture, plus either (CAP_BPF+CAP_PERFMON) or CAP_SYS_ADMIN for eBPF"
+            "eBPF: Insufficient capabilities - need either (CAP_BPF+CAP_PERFMON) or CAP_SYS_ADMIN for eBPF"
         );
-        false
+        DegradationReason::MissingBpfCapabilities
     }
 
     /// Get the socket map for lookups

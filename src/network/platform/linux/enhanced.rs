@@ -1,6 +1,6 @@
 //! Enhanced Linux process lookup combining eBPF and procfs approaches
 
-use crate::network::platform::{ConnectionKey, ProcessLookup};
+use crate::network::platform::{ConnectionKey, DegradationReason, ProcessLookup};
 
 use super::process::LinuxProcessLookup;
 use crate::network::types::{Connection, Protocol};
@@ -27,6 +27,7 @@ mod ebpf_enhanced {
         stats: RwLock<LookupStats>,
         cleanup_config: CleanupConfig,
         last_cleanup: RwLock<Instant>,
+        degradation_reason: DegradationReason,
     }
 
     pub struct ProcessCache {
@@ -72,21 +73,24 @@ mod ebpf_enhanced {
         pub fn new_with_config(cleanup_config: CleanupConfig) -> Result<Self> {
             let procfs_lookup = LinuxProcessLookup::new()?;
 
-            let ebpf_tracker = match EbpfSocketTracker::new() {
-                Ok(tracker) => {
-                    if tracker.is_some() {
+            let (ebpf_tracker, degradation_reason) = match EbpfSocketTracker::new() {
+                Ok((tracker_opt, reason)) => {
+                    if tracker_opt.is_some() {
                         info!("eBPF socket tracker initialized successfully");
                     } else {
-                        info!("eBPF not available, using procfs only");
+                        info!(
+                            "eBPF not available ({}), using procfs only",
+                            reason.description()
+                        );
                     }
-                    tracker.map(Box::new)
+                    (tracker_opt.map(Box::new), reason)
                 }
                 Err(e) => {
                     warn!(
                         "Failed to initialize eBPF tracker: {}, falling back to procfs",
                         e
                     );
-                    None
+                    (None, DegradationReason::KernelUnsupported)
                 }
             };
 
@@ -100,6 +104,7 @@ mod ebpf_enhanced {
                 stats: RwLock::new(LookupStats::default()),
                 cleanup_config,
                 last_cleanup: RwLock::new(Instant::now() - Duration::from_secs(3600)),
+                degradation_reason,
             })
         }
 
@@ -319,6 +324,10 @@ mod ebpf_enhanced {
             } else {
                 "procfs"
             }
+        }
+
+        fn get_degradation_reason(&self) -> DegradationReason {
+            self.degradation_reason.clone()
         }
     }
 
@@ -540,6 +549,11 @@ mod procfs_only {
             } else {
                 "procfs"
             }
+        }
+
+        fn get_degradation_reason(&self) -> DegradationReason {
+            // eBPF feature is disabled at compile time
+            DegradationReason::EbpfFeatureDisabled
         }
     }
 

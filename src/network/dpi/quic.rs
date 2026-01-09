@@ -2371,32 +2371,6 @@ mod tests {
         data
     }
 
-    /// Build a minimal ALPN extension structure
-    fn build_alpn_extension(protocols: &[&str]) -> Vec<u8> {
-        let mut protocol_list = Vec::new();
-        for proto in protocols {
-            let proto_bytes = proto.as_bytes();
-            protocol_list.push(proto_bytes.len() as u8);
-            protocol_list.extend_from_slice(proto_bytes);
-        }
-
-        let alpn_list_len = protocol_list.len() as u16;
-        let ext_len = alpn_list_len + 2;
-
-        let mut data = Vec::new();
-        // Extension type: ALPN (0x0010)
-        data.push(0x00);
-        data.push(0x10);
-        // Extension length
-        data.extend_from_slice(&ext_len.to_be_bytes());
-        // ALPN list length
-        data.extend_from_slice(&alpn_list_len.to_be_bytes());
-        // Protocol list
-        data.extend_from_slice(&protocol_list);
-
-        data
-    }
-
     #[test]
     fn test_greedy_sni_extraction_complete() {
         let sni_ext = build_sni_extension("www.example.com");
