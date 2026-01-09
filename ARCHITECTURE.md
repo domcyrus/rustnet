@@ -324,3 +324,36 @@ RustNet is built with the following key dependencies:
 ## Security
 
 For security documentation including Landlock sandboxing, privilege requirements, and threat model, see [SECURITY.md](SECURITY.md).
+
+## Comparison with Similar Tools
+
+RustNet draws inspiration from several network monitoring tools. Here's how it compares:
+
+| Feature | RustNet | bandwhich | sniffnet | iftop | netstat | ss | tcpdump/wireshark |
+|---------|---------|-----------|----------|-------|---------|-----|-------------------|
+| **Language** | Rust | Rust | Rust | C | C | C | C |
+| **Interface** | TUI | TUI | GUI | TUI | CLI | CLI | CLI/GUI |
+| **Real-time monitoring** | Yes | Yes | Yes | Yes | Snapshot | Snapshot | Yes |
+| **Process identification** | Yes | Yes | No | No | Yes | Yes | No |
+| **Deep Packet Inspection** | Yes | No | No | No | No | No | Yes |
+| **SNI/Host extraction** | Yes | No | No | No | No | No | Yes |
+| **Protocol state tracking** | Yes | No | Partial | No | Yes | Yes | Yes |
+| **Bandwidth per connection** | Yes | Yes | Yes | Yes | No | No | No |
+| **Connection filtering** | Yes | No | Yes | Yes | No | Yes | Yes (BPF) |
+| **DNS reverse lookup** | Yes | Yes | Yes | Yes | No | No | Yes |
+| **GeoIP lookup** | No | No | Yes | No | No | No | Yes |
+| **Notifications** | No | No | Yes | No | No | No | No |
+| **i18n (translations)** | No | No | Yes | No | No | No | No |
+| **Cross-platform** | Linux, macOS, Windows, FreeBSD | Linux, macOS | Linux, macOS, Windows | Linux, macOS, BSD | All | Linux | All |
+| **eBPF support** | Yes (Linux) | No | No | No | No | Yes | No |
+| **Landlock sandboxing** | Yes (Linux) | No | No | No | No | No | No |
+| **Packet capture** | libpcap | Raw sockets | libpcap | libpcap | Kernel | Kernel | libpcap |
+
+### Tool Focus Areas
+
+- **RustNet**: Real-time connection monitoring with DPI, protocol state tracking, and process identification in a TUI
+- **bandwhich**: Bandwidth utilization by process/connection with minimal overhead
+- **sniffnet**: Network traffic analysis with a graphical interface and notifications
+- **iftop**: Interface bandwidth monitoring with per-host traffic display
+- **netstat/ss**: System socket and connection state inspection (ss is the modern replacement for netstat on Linux)
+- **tcpdump/wireshark/tshark**: Full packet capture and protocol analysis for deep debugging
