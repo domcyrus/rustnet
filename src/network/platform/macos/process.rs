@@ -1,6 +1,7 @@
 // network/platform/macos/process.rs - macOS lsof-based process lookup
 
-use crate::network::platform::{ConnectionKey, ProcessLookup};
+use crate::network::capture::PKTAP_DEGRADATION_REASON;
+use crate::network::platform::{ConnectionKey, DegradationReason, ProcessLookup};
 use crate::network::types::{Connection, Protocol};
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -189,6 +190,14 @@ impl ProcessLookup for MacOSProcessLookup {
 
     fn get_detection_method(&self) -> &str {
         "lsof"
+    }
+
+    fn get_degradation_reason(&self) -> DegradationReason {
+        // Return the PKTAP degradation reason if set, otherwise default to missing root
+        PKTAP_DEGRADATION_REASON
+            .get()
+            .cloned()
+            .unwrap_or(DegradationReason::MissingRootPrivileges)
     }
 }
 

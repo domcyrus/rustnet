@@ -5,6 +5,7 @@ use super::{
     loader::EbpfLoader,
     maps_libbpf::{ConnKey, MapReader},
 };
+use crate::network::platform::DegradationReason;
 use anyhow::Result;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -17,11 +18,12 @@ unsafe impl Sync for LibbpfSocketTracker {}
 
 impl LibbpfSocketTracker {
     /// Create a new eBPF socket tracker
-    /// Returns None if eBPF cannot be loaded (insufficient privileges, etc.)
-    pub fn new() -> Result<Option<Self>> {
-        match EbpfLoader::try_load()? {
-            Some(loader) => Ok(Some(Self { loader })),
-            None => Ok(None),
+    /// Returns (Option<Self>, DegradationReason) - the reason explains why eBPF is unavailable
+    pub fn new() -> Result<(Option<Self>, DegradationReason)> {
+        let (loader_opt, reason) = EbpfLoader::try_load()?;
+        match loader_opt {
+            Some(loader) => Ok((Some(Self { loader }), DegradationReason::None)),
+            None => Ok((None, reason)),
         }
     }
 

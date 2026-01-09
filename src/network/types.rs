@@ -1906,9 +1906,9 @@ mod tests {
 
         // Simulate steady traffic: 10,000 bytes/sec for 2 seconds
         // 1000 bytes every 100ms = 10KB/s out, 5KB/s in
-        for i in 1..=20 {
+        for i in 1..=20_u64 {
             let t = start + Duration::from_millis(i * 100);
-            tracker.update_at_time(t, i as u64 * 1000, i as u64 * 500);
+            tracker.update_at_time(t, i * 1000, i * 500);
         }
 
         let final_time = start + Duration::from_millis(2000);
@@ -1941,9 +1941,9 @@ mod tests {
         tracker.update_at_time(start + Duration::from_millis(500), 1_000_000, 500_000);
 
         // Then slow traffic: 10KB every 100ms
-        for i in 1..=10 {
+        for i in 1..=10_u64 {
             let t = start + Duration::from_millis(500 + 100 + i * 100);
-            tracker.update_at_time(t, 1_000_000 + i as u64 * 10_000, 500_000 + i as u64 * 5_000);
+            tracker.update_at_time(t, 1_000_000 + i * 10_000, 500_000 + i * 5_000);
         }
 
         let final_time = start + Duration::from_millis(1600);
@@ -1989,9 +1989,9 @@ mod tests {
 
         // Simulate high packet rate: 100 packets/sec for 2 seconds = 200 packets
         // Each packet is 1500 bytes, 10ms intervals
-        for i in 1..=200 {
+        for i in 1..=200_u64 {
             let t = start + Duration::from_millis(i * 10);
-            tracker.update_at_time(t, i as u64 * 1500, i as u64 * 750);
+            tracker.update_at_time(t, i * 1500, i * 750);
         }
 
         let final_time = start + Duration::from_millis(2000);
@@ -2104,9 +2104,9 @@ mod tests {
 
         // Add samples every 100ms for 1.5 seconds (15 samples)
         // 1000 bytes/100ms = 10KB/s, 500 bytes/100ms = 5KB/s
-        for i in 1..=15 {
+        for i in 1..=15_u64 {
             let t = start + Duration::from_millis(i * 100);
-            tracker.update_at_time(t, i as u64 * 1000, i as u64 * 500);
+            tracker.update_at_time(t, i * 1000, i * 500);
         }
 
         let final_time = start + Duration::from_millis(1500);
@@ -2185,9 +2185,9 @@ mod tests {
 
         // Add more samples than we need, ensuring we span > 1 second
         tracker.update_at_time(start, 0, 0);
-        for i in 1..=150 {
+        for i in 1..=150_u64 {
             let t = start + Duration::from_millis(i * 10); // 10ms intervals = 1.5 seconds total
-            tracker.update_at_time(t, i as u64 * 100, i as u64 * 50);
+            tracker.update_at_time(t, i * 100, i * 50);
         }
 
         // Should have pruned to max_samples limit (20,000)
@@ -2292,21 +2292,17 @@ mod tests {
 
         // Add initial samples - 1MB/s for first second (100KB every 100ms = 11 samples total)
         tracker.update_at_time(start, 0, 0);
-        for i in 1..=10 {
+        for i in 1..=10_u64 {
             let t = start + Duration::from_millis(i * 100);
-            tracker.update_at_time(t, i as u64 * 100_000, i as u64 * 50_000);
+            tracker.update_at_time(t, i * 100_000, i * 50_000);
         }
 
         // After window slides past first samples (at 3 seconds), add new samples
         // Start from cumulative position of 10*100KB = 1MB, add 11 more at 100KB each
         // Need >= 1 second span, so 11 samples at 100ms intervals = 1.0s span
-        for i in 0..=10 {
+        for i in 0..=10_u64 {
             let t = start + Duration::from_millis(3000 + i * 100);
-            tracker.update_at_time(
-                t,
-                1_000_000 + i as u64 * 100_000,
-                500_000 + i as u64 * 50_000,
-            );
+            tracker.update_at_time(t, 1_000_000 + i * 100_000, 500_000 + i * 50_000);
         }
 
         // Rate should be consistent: 10 deltas of 100KB over 1 second = 1MB/s
