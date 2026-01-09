@@ -110,7 +110,7 @@ The experimental eBPF support provides efficient process identification but has 
 
 - [ ] **Internationalization (i18n)**: Support for multiple languages in the UI
 - [ ] **Connection History**: Store and display historical connection data
-- [ ] **Export Functionality**: Export connections to CSV/JSON formats
+- [ ] **Export Functionality**: On-demand snapshot export (`--json-log` provides streaming)
 - [ ] **Configuration File**: Support for persistent configuration (filters, UI preferences)
 - [ ] **Connection Alerts**: Notifications for new connections or suspicious activity
 - [ ] **GeoIP Integration**: Maybe add geographical location of remote IPs
