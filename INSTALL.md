@@ -744,6 +744,21 @@ sudo apt-get install build-essential pkg-config libpcap-dev libelf-dev zlib1g-de
 sudo yum install make pkgconfig libpcap-devel elfutils-libelf-devel zlib-devel clang llvm
 ```
 
+#### Windows: Graphs Display Incorrectly in PowerShell
+
+If graphs and sparklines appear corrupted (showing question marks or garbled characters) in PowerShell, this is a **font issue**, not a RustNet bug. The default console fonts (Consolas, Lucida Console) lack support for Unicode Braille characters used for graph rendering.
+
+**Solution:** Install a font with Unicode Braille support:
+
+1. Download and install [Iosevka](https://typeof.net/Iosevka/) or any [Nerd Font](https://www.nerdfonts.com/)
+2. Open PowerShell Properties (right-click title bar → Properties)
+3. Select the installed font in the Font tab
+4. Restart PowerShell
+
+**Alternative:** Use [Windows Terminal](https://aka.ms/terminal) which has better Unicode support out of the box.
+
+See also: [ratatui#457](https://github.com/ratatui/ratatui/issues/457), [gtop#21](https://github.com/aksakalli/gtop/issues/21)
+
 ### Getting Help
 
 If you encounter issues not covered here:
