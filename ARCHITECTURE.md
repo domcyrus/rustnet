@@ -327,7 +327,21 @@ For security documentation including Landlock sandboxing, privilege requirements
 
 ## Comparison with Similar Tools
 
-RustNet draws inspiration from several network monitoring tools. Here's how it compares:
+Network monitoring tools exist on a spectrum from simple connection listing to full packet forensics:
+
+```
+Simple ←─────────────────────────────────────────────────────→ Complex
+
+netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
+   │          │           │            │            │            │
+   └── Socket ┴── Bandwidth ──────────┴── Live DPI ┴── Capture ──┴── Forensics
+       state      monitoring             + Process     & CLI        & Deep
+                                         tracking                   Analysis
+```
+
+**RustNet's position**: Real-time connection monitoring with DPI and process identification - more capable than bandwidth monitors, more focused than forensic capture tools.
+
+### Feature Comparison
 
 | Feature | RustNet | bandwhich | sniffnet | iftop | netstat | ss | tcpdump/wireshark |
 |---------|---------|-----------|----------|-------|---------|-----|-------------------|
@@ -358,3 +372,35 @@ RustNet draws inspiration from several network monitoring tools. Here's how it c
 - **iftop**: Interface bandwidth monitoring with per-host traffic display
 - **netstat/ss**: System socket and connection state inspection (ss is the modern replacement for netstat on Linux)
 - **tcpdump/wireshark/tshark**: Full packet capture and protocol analysis for deep debugging
+
+### Choosing the Right Tool
+
+| Your Goal | Best Tool |
+|-----------|-----------|
+| See which process is making a connection | RustNet |
+| Decode packets byte-by-byte | Wireshark |
+| Monitor connection states (SYN_SENT, ESTABLISHED, etc.) | RustNet |
+| Extract files or credentials from traffic | Wireshark |
+| Attribute network activity to specific applications | RustNet |
+| Deep protocol dissection (3000+ protocols) | Wireshark |
+| Quick terminal-based network overview | RustNet |
+| Save captures for later analysis | Wireshark/tcpdump |
+
+### RustNet and Wireshark: Different Strengths
+
+The key difference: **RustNet knows which process owns each connection. Wireshark cannot.**
+
+Wireshark operates at the packet capture layer (libpcap) - it sees raw network traffic but has no visibility into which application created it. RustNet combines packet capture with OS-level socket introspection (via eBPF on Linux, /proc, or platform APIs) to attribute every connection to its owning process.
+
+| Capability | RustNet | Wireshark |
+|------------|---------|-----------|
+| Process identification | Yes (eBPF, procfs, platform APIs) | No |
+| Connection state tracking | Native (TCP FSM, QUIC states) | Via dissectors |
+| Protocol dissectors | ~15 common protocols | 3000+ protocols |
+| Packet-level inspection | Metadata only | Full payload |
+| Interface | TUI (terminal) | GUI |
+| Capture to file | No | Yes (pcap) |
+
+Both tools can run in real-time. Choose based on what you need to see:
+- **"What is making this connection?"** → RustNet
+- **"What's inside this packet?"** → Wireshark

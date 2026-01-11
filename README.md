@@ -29,6 +29,16 @@ A cross-platform network monitoring tool built with Rust. RustNet provides real-
 - **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
 - **Security Sandboxing**: Landlock-based filesystem/network restrictions on Linux 5.13+ (see [SECURITY.md](SECURITY.md))
 
+## Why RustNet?
+
+RustNet fills the gap between simple connection tools (`netstat`, `ss`) and packet analyzers (`Wireshark`, `tcpdump`):
+
+- **Process attribution**: See which application owns each connection. Wireshark cannot provide this because it only sees packets, not sockets.
+- **Connection-centric view**: Track states, bandwidth, and protocols per connection in real-time
+- **SSH-friendly**: TUI works over SSH so you can quickly see what's happening on a remote server without forwarding X11 or capturing traffic
+
+RustNet complements packet capture tools. Use RustNet to see *what's making connections*. For deep forensic analysis, capture with `tcpdump` and analyze in Wireshark. See [Comparison with Similar Tools](ARCHITECTURE.md#comparison-with-similar-tools) for details.
+
 <details>
 <summary><b>eBPF Enhanced Process Identification (Linux Default)</b></summary>
 
