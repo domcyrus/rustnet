@@ -187,15 +187,32 @@ fn is_valid_ssh_packet_at_offset(payload: &[u8], offset: usize) -> bool {
         payload[offset + 3],
     ]);
     let padding_length = payload[offset + 4] as u32;
+    let msg_type = payload[offset + 5];
 
-    // Basic sanity checks
-    if packet_length > 35000 || padding_length > 255 {
+    // 1. Realistic packet size (min 8 bytes for smallest valid packet)
+    if !(8..=35000).contains(&packet_length) {
         return false;
     }
 
-    // Message type should be in valid range
-    let msg_type = payload[offset + 5];
-    matches!(msg_type, 1..=127)
+    // 2. RFC 4253 requires minimum 4 bytes padding
+    if padding_length < 4 {
+        return false;
+    }
+
+    // 3. Padding must fit within packet (padding + 1 for msg_type < packet_length)
+    if padding_length + 1 >= packet_length {
+        return false;
+    }
+
+    // 4. Only known SSH message types (not the full 1..=127 range)
+    matches!(
+        msg_type,
+        1..=4 |      // transport: disconnect, ignore, unimplemented, debug
+        20..=21 |    // kex: kexinit, newkeys
+        50..=52 |    // auth: userauth request/failure/success
+        80 |         // connection: global request
+        90..=100     // channel: open/confirm/data/eof/close/request/success/failure
+    )
 }
 
 /// Parse algorithms from KEXINIT message
@@ -329,12 +346,36 @@ mod tests {
 
     #[test]
     fn test_ssh_packet_structure() {
-        // Valid SSH packet structure
-        let valid_packet = vec![0, 0, 0, 20, 5, 50, 0, 0, 0, 0]; // packet_len=20, padding_len=5, msg_type=50
+        // Valid SSH packet: packet_len=20, padding_len=5, msg_type=50 (USERAUTH_REQUEST)
+        let valid_packet = vec![0, 0, 0, 20, 5, 50, 0, 0, 0, 0];
         assert!(is_ssh_packet_structure(&valid_packet));
 
-        // Invalid packet structure
-        let invalid_packet = vec![255, 255, 255, 255, 255, 255]; // unrealistic lengths
+        // Valid: msg_type=20 (KEXINIT)
+        let kexinit_packet = vec![0, 0, 0, 20, 5, 20, 0, 0, 0, 0];
+        assert!(is_ssh_packet_structure(&kexinit_packet));
+
+        // Valid: msg_type=90 (channel open)
+        let channel_packet = vec![0, 0, 0, 20, 5, 90, 0, 0, 0, 0];
+        assert!(is_ssh_packet_structure(&channel_packet));
+
+        // Invalid: padding too small (< 4, RFC 4253 requires min 4)
+        let bad_padding = vec![0, 0, 0, 20, 2, 50, 0, 0, 0, 0];
+        assert!(!is_ssh_packet_structure(&bad_padding));
+
+        // Invalid: unknown message type (70 is not a known SSH message)
+        let bad_msg_type = vec![0, 0, 0, 20, 5, 70, 0, 0, 0, 0];
+        assert!(!is_ssh_packet_structure(&bad_msg_type));
+
+        // Invalid: packet too small (< 8)
+        let too_small = vec![0, 0, 0, 4, 4, 50, 0, 0, 0, 0];
+        assert!(!is_ssh_packet_structure(&too_small));
+
+        // Invalid: padding larger than packet allows
+        let bad_ratio = vec![0, 0, 0, 10, 10, 50, 0, 0, 0, 0];
+        assert!(!is_ssh_packet_structure(&bad_ratio));
+
+        // Invalid: unrealistic lengths
+        let invalid_packet = vec![255, 255, 255, 255, 255, 255];
         assert!(!is_ssh_packet_structure(&invalid_packet));
     }
 
