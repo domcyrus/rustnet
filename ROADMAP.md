@@ -110,7 +110,16 @@ The experimental eBPF support provides efficient process identification but has 
 
 - [ ] **Internationalization (i18n)**: Support for multiple languages in the UI
 - [ ] **Connection History**: Store and display historical connection data
-- [ ] **Export Functionality**: On-demand snapshot export (`--json-log` provides streaming)
+- [x] **PCAP Export**: Export packets to PCAP file with process attribution sidecar (`--pcap-export`)
+  - Standard PCAP format compatible with Wireshark/tcpdump
+  - Streaming JSONL sidecar with PID, process name, timestamps
+  - Python enrichment script to create annotated PCAPNG
+- [ ] **Enhanced PCAP Metadata**: Richer process information in sidecar file
+  - Process executable full path (not just name)
+  - Command line arguments
+  - Working directory
+  - User/UID information
+  - Parent process information
 - [ ] **Configuration File**: Support for persistent configuration (filters, UI preferences)
 - [ ] **Connection Alerts**: Notifications for new connections or suspicious activity
 - [ ] **GeoIP Integration**: Maybe add geographical location of remote IPs

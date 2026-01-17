@@ -52,6 +52,7 @@ Uses libpcap to capture raw packets from the network interface. This thread runs
 - Open network interface for packet capture (non-promiscuous, read-only mode)
 - Apply BPF filters if needed
 - Capture raw packets
+- Stream packets to PCAP file if `--pcap-export` is enabled (direct disk write, no memory buffering)
 - Send packets to processing queue
 
 ### 2. Packet Processors
@@ -102,7 +103,7 @@ Creates consistent snapshots of connection data for the UI at regular intervals 
 
 ### 5. Cleanup Thread
 
-Removes inactive connections using smart, protocol-aware timeouts. This prevents memory leaks and keeps the connection list relevant.
+Removes inactive connections using smart, protocol-aware timeouts. This prevents memory leaks and keeps the connection list relevant. When `--pcap-export` is enabled, also streams connection metadata (PID, process name, timestamps) to a JSONL sidecar file as connections close.
 
 **Timeout Strategy:**
 
@@ -362,6 +363,7 @@ netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
 | **eBPF support** | Yes (Linux) | No | No | No | No | Yes | No |
 | **Landlock sandboxing** | Yes (Linux) | No | No | No | No | No | No |
 | **JSON event logging** | Yes | No | No | No | No | No | Yes |
+| **PCAP export** | Yes (+ process sidecar) | No | Yes | No | No | No | Yes |
 | **Packet capture** | libpcap | Raw sockets | libpcap | libpcap | Kernel | Kernel | libpcap |
 
 ### Tool Focus Areas
@@ -384,7 +386,8 @@ netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
 | Attribute network activity to specific applications | RustNet |
 | Deep protocol dissection (3000+ protocols) | Wireshark |
 | Quick terminal-based network overview | RustNet |
-| Save captures for later analysis | Wireshark/tcpdump |
+| Save captures with process attribution | RustNet (`--pcap-export`) |
+| Save captures for deep analysis | Wireshark/tcpdump |
 
 ### RustNet and Wireshark: Different Strengths
 
@@ -399,8 +402,35 @@ Wireshark operates at the packet capture layer (libpcap) - it sees raw network t
 | Protocol dissectors | ~15 common protocols | 3000+ protocols |
 | Packet-level inspection | Metadata only | Full payload |
 | Interface | TUI (terminal) | GUI |
-| Capture to file | No | Yes (pcap) |
+| Capture to file | Yes (`--pcap-export`) | Yes (native) |
 
 Both tools can run in real-time. Choose based on what you need to see:
 - **"What is making this connection?"** → RustNet
 - **"What's inside this packet?"** → Wireshark
+
+### Bridging the Gap: PCAP Export with Process Attribution
+
+RustNet can now export packet captures while preserving process attribution - something neither tcpdump nor Wireshark can do alone:
+
+```bash
+# Capture packets with RustNet (includes process tracking)
+sudo rustnet -i eth0 --pcap-export capture.pcap
+
+# Creates:
+#   capture.pcap                    - Standard PCAP file
+#   capture.pcap.connections.jsonl  - Process attribution (PID, name, timestamps)
+
+# Enrich PCAP with process info and create annotated PCAPNG
+python scripts/pcap_enrich.py capture.pcap -o annotated.pcapng
+
+# Open in Wireshark - packets now show process info in comments
+wireshark annotated.pcapng
+```
+
+This workflow gives you the best of both worlds:
+- **RustNet's process attribution**: Know which application generated each packet
+- **Wireshark's deep analysis**: Full protocol dissection with 3000+ analyzers
+
+The enrichment script correlates packets with their originating processes and embeds the information as PCAPNG packet comments, visible in Wireshark's packet details pane.
+
+See [USAGE.md - PCAP Export](USAGE.md#pcap-export) for detailed documentation.

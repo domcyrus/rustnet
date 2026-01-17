@@ -37,7 +37,7 @@ RustNet fills the gap between simple connection tools (`netstat`, `ss`) and pack
 - **Connection-centric view**: Track states, bandwidth, and protocols per connection in real-time
 - **SSH-friendly**: TUI works over SSH so you can quickly see what's happening on a remote server without forwarding X11 or capturing traffic
 
-RustNet complements packet capture tools. Use RustNet to see *what's making connections*. For deep forensic analysis, capture with `tcpdump` and analyze in Wireshark. See [Comparison with Similar Tools](ARCHITECTURE.md#comparison-with-similar-tools) for details.
+RustNet complements packet capture tools. Use RustNet to see *what's making connections*. For deep forensic analysis, use `--pcap-export` to capture packets with process attribution, then enrich with `scripts/pcap_enrich.py` and analyze in Wireshark with full PID/process context. See [PCAP Export](USAGE.md#pcap-export) and [Comparison with Similar Tools](ARCHITECTURE.md#comparison-with-similar-tools) for details.
 
 <details>
 <summary><b>eBPF Enhanced Process Identification (Linux Default)</b></summary>

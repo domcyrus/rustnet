@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arboard::Clipboard;
-use log::{LevelFilter, debug, error, info};
+use log::{LevelFilter, debug, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
 use simplelog::{Config as LogConfig, WriteLogger};
 use std::fs::{self, File};
@@ -67,6 +67,11 @@ fn main() -> Result<()> {
         info!("JSON logging enabled: {}", json_log_path);
     }
 
+    if let Some(pcap_path) = matches.get_one::<String>("pcap-export") {
+        config.pcap_export_file = Some(pcap_path.to_string());
+        info!("PCAP export enabled: {}", pcap_path);
+    }
+
     if let Some(bpf_filter) = matches.get_one::<String>("bpf-filter") {
         let filter = bpf_filter.trim();
         if !filter.is_empty() {
@@ -94,6 +99,15 @@ fn main() -> Result<()> {
     let mut app = app::App::new(config.clone())?;
     app.start()?;
     info!("Application started");
+
+    // Pre-create sidecar JSONL file for PCAP export (needed for Landlock permissions)
+    // This must be done BEFORE Landlock is applied so the file exists when adding rules
+    if let Some(ref pcap_path) = config.pcap_export_file {
+        let jsonl_path = format!("{}.connections.jsonl", pcap_path);
+        if let Err(e) = std::fs::File::create(&jsonl_path) {
+            warn!("Failed to pre-create sidecar JSONL file: {}", e);
+        }
+    }
 
     // Apply Landlock sandbox (Linux only)
     // This must be done AFTER app.start() because:
@@ -125,6 +139,12 @@ fn main() -> Result<()> {
         // Add JSON log path if specified
         if let Some(json_log_path) = &config.json_log_file {
             write_paths.push(PathBuf::from(json_log_path));
+        }
+
+        // Add PCAP export paths if specified (both .pcap and .pcap.connections.jsonl)
+        if let Some(pcap_path) = &config.pcap_export_file {
+            write_paths.push(PathBuf::from(pcap_path));
+            write_paths.push(PathBuf::from(format!("{}.connections.jsonl", pcap_path)));
         }
 
         let sandbox_config = SandboxConfig {

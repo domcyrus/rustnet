@@ -85,6 +85,7 @@ Options:
       --show-ptr-lookups                 Show PTR lookup connections (hidden by default with --resolve-dns)
   -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
       --json-log <FILE>                  Enable JSON logging of connection events to specified file
+      --pcap-export <FILE>               Export captured packets to PCAP file for Wireshark analysis
   -f, --bpf-filter <FILTER>              BPF filter expression for packet capture
       --no-sandbox                       Disable Landlock sandboxing (Linux only)
       --sandbox-strict                   Require full sandbox enforcement or exit (Linux only)
@@ -949,4 +950,72 @@ cat /tmp/connections.json | jq 'select(.process_name == "firefox")'
 
 # Count connections by destination
 cat /tmp/connections.json | jq -s 'group_by(.destination_ip) | map({ip: .[0].destination_ip, count: length})'
+```
+
+### PCAP Export
+
+The `--pcap-export` option captures raw packets to a standard PCAP file for analysis in Wireshark, tcpdump, or other tools.
+
+```bash
+# Export all captured packets
+sudo rustnet -i eth0 --pcap-export capture.pcap
+
+# Combine with BPF filter
+sudo rustnet -i eth0 --bpf-filter "tcp port 443" --pcap-export https.pcap
+```
+
+**Output files:**
+
+| File | Description |
+|------|-------------|
+| `capture.pcap` | Raw packet data in standard PCAP format |
+| `capture.pcap.connections.jsonl` | Streaming connection metadata with process info |
+
+**Sidecar JSONL format** (one JSON object per line, written as connections close):
+
+```json
+{"timestamp":"2026-01-17T10:30:00Z","protocol":"TCP","local_addr":"192.168.1.100:54321","remote_addr":"142.250.80.46:443","pid":1234,"process_name":"firefox","first_seen":"...","last_seen":"...","bytes_sent":1024,"bytes_received":8192,"state":"ESTABLISHED"}
+```
+
+| Field | Description |
+|-------|-------------|
+| `timestamp` | When the connection record was written |
+| `protocol` | TCP, UDP, ICMP, etc. |
+| `local_addr` / `remote_addr` | Connection endpoints |
+| `pid` / `process_name` | Process info (if identified) |
+| `first_seen` / `last_seen` | Connection timestamps |
+| `bytes_sent` / `bytes_received` | Traffic totals |
+| `state` | Final connection state |
+
+#### Enriching PCAP with Process Information
+
+Standard PCAP files don't include process information. Use the included `scripts/pcap_enrich.py` script to correlate packets with processes:
+
+```bash
+# Install scapy (required)
+pip install scapy
+
+# Show packets with process info
+python scripts/pcap_enrich.py capture.pcap
+
+# Output as TSV for further processing
+python scripts/pcap_enrich.py capture.pcap --format tsv > report.tsv
+
+# Create annotated PCAPNG with process comments (requires Wireshark's editcap)
+python scripts/pcap_enrich.py capture.pcap -o annotated.pcapng
+```
+
+The annotated PCAPNG embeds process information as packet comments, visible in Wireshark's packet details.
+
+**Manual correlation:**
+
+```bash
+# View packets
+wireshark capture.pcap
+
+# View process mappings
+cat capture.pcap.connections.jsonl | jq -r '[.protocol, .local_addr, .remote_addr, .pid, .process_name] | @tsv'
+
+# Filter in Wireshark by connection tuple
+# ip.addr == 142.250.80.46 && tcp.port == 443
 ```

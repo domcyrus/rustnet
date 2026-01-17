@@ -70,6 +70,13 @@ pub fn build_cli() -> Command {
                 .required(false),
         )
         .arg(
+            Arg::new("pcap-export")
+                .long("pcap-export")
+                .value_name("FILE")
+                .help("Export captured packets to PCAP file for Wireshark analysis")
+                .required(false),
+        )
+        .arg(
             Arg::new("bpf-filter")
                 .short('f')
                 .long("bpf-filter")
