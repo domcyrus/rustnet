@@ -201,6 +201,34 @@ fn log_connection_event(
     }
 }
 
+/// Helper function to log connection info to PCAP sidecar file (JSONL format)
+fn log_pcap_connection(pcap_path: &str, conn: &Connection) {
+    let json_path = format!("{}.connections.jsonl", pcap_path);
+
+    let event = json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "protocol": format!("{:?}", conn.protocol),
+        "local_addr": conn.local_addr.to_string(),
+        "remote_addr": conn.remote_addr.to_string(),
+        "pid": conn.pid,
+        "process_name": conn.process_name,
+        "first_seen": conn.created_at,
+        "last_seen": conn.last_activity,
+        "bytes_sent": conn.bytes_sent,
+        "bytes_received": conn.bytes_received,
+        "state": conn.state(),
+    });
+
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&json_path)
+        && let Ok(json_str) = serde_json::to_string(&event)
+    {
+        let _ = writeln!(file, "{}", json_str);
+    }
+}
+
 /// Application configuration
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -216,6 +244,8 @@ pub struct Config {
     pub bpf_filter: Option<String>,
     /// JSON log file path for connection events
     pub json_log_file: Option<String>,
+    /// PCAP export file path for Wireshark analysis
+    pub pcap_export_file: Option<String>,
     /// Enable reverse DNS resolution for IP addresses
     pub resolve_dns: bool,
     /// Show PTR lookup connections in UI (when DNS resolution is enabled)
@@ -231,6 +261,7 @@ impl Default for Config {
             enable_dpi: true,
             bpf_filter: None, // No filter by default to see all packets
             json_log_file: None,
+            pcap_export_file: None,
             resolve_dns: false,
             show_ptr_lookups: false,
         }
@@ -438,6 +469,7 @@ impl App {
         let current_interface = Arc::clone(&self.current_interface);
         let linktype_storage = Arc::clone(&self.linktype);
         let _pktap_active = Arc::clone(&self.pktap_active);
+        let pcap_export_file = self.config.pcap_export_file.clone();
 
         thread::spawn(move || {
             match setup_packet_capture(capture_config) {
@@ -460,6 +492,23 @@ impl App {
                         "Packet capture started successfully on interface: {} (linktype: {})",
                         device_name, linktype
                     );
+
+                    // Initialize PCAP export if configured (must be before PacketReader consumes capture)
+                    let mut pcap_savefile = if let Some(ref pcap_path) = pcap_export_file {
+                        match capture.savefile(pcap_path) {
+                            Ok(savefile) => {
+                                info!("PCAP export started: {}", pcap_path);
+                                Some(savefile)
+                            }
+                            Err(e) => {
+                                error!("Failed to create PCAP savefile: {}", e);
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+
                     let mut reader = PacketReader::new(capture);
                     let mut packets_read = 0u64;
                     let mut last_log = Instant::now();
@@ -488,6 +537,33 @@ impl App {
                                     last_log = Instant::now();
                                 }
 
+                                // Write to PCAP file if enabled
+                                if let Some(ref mut savefile) = pcap_savefile {
+                                    use std::time::{SystemTime, UNIX_EPOCH};
+                                    let now = SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                        .unwrap_or_default();
+                                    #[cfg(unix)]
+                                    let ts = libc::timeval {
+                                        tv_sec: now.as_secs() as libc::time_t,
+                                        tv_usec: now.subsec_micros() as libc::suseconds_t,
+                                    };
+                                    #[cfg(windows)]
+                                    let ts = libc::timeval {
+                                        tv_sec: now.as_secs() as libc::c_long,
+                                        tv_usec: now.subsec_micros() as libc::c_long,
+                                    };
+                                    let header = pcap::PacketHeader {
+                                        ts,
+                                        caplen: packet.len() as u32,
+                                        len: packet.len() as u32,
+                                    };
+                                    savefile.write(&pcap::Packet {
+                                        header: &header,
+                                        data: &packet,
+                                    });
+                                }
+
                                 if packet_tx.send(packet).is_err() {
                                     warn!("Packet channel closed");
                                     break;
@@ -514,6 +590,15 @@ impl App {
                                 error!("Capture error: {}", e);
                                 break;
                             }
+                        }
+                    }
+
+                    // Flush PCAP savefile before exiting
+                    if let Some(ref mut savefile) = pcap_savefile {
+                        if let Err(e) = savefile.flush() {
+                            error!("Failed to flush PCAP savefile: {}", e);
+                        } else {
+                            info!("PCAP export completed");
                         }
                     }
 
@@ -1071,6 +1156,7 @@ impl App {
     fn start_cleanup_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
         let json_log_path = self.config.json_log_file.clone();
+        let pcap_export_path = self.config.pcap_export_file.clone();
         let dns_resolver = self.dns_resolver.clone();
 
         thread::spawn(move || {
@@ -1112,6 +1198,11 @@ impl App {
                                 duration_secs,
                                 dns_resolver.as_deref(),
                             );
+                        }
+
+                        // Log to PCAP sidecar file if PCAP export is enabled
+                        if let Some(pcap_path) = &pcap_export_path {
+                            log_pcap_connection(pcap_path, conn);
                         }
 
                         // Log cleanup reason for debugging
@@ -1364,6 +1455,24 @@ impl App {
     pub fn stop(&self) {
         info!("Stopping application");
         self.should_stop.store(true, Ordering::Relaxed);
+
+        // Write remaining active connections to PCAP sidecar JSONL file
+        // (connections that haven't been cleaned up yet)
+        if let Some(ref pcap_path) = self.config.pcap_export_file
+            && let Ok(connections) = self.connections_snapshot.read()
+        {
+            let count = connections.len();
+            let with_pids = connections.iter().filter(|c| c.pid.is_some()).count();
+
+            for conn in connections.iter() {
+                log_pcap_connection(pcap_path, conn);
+            }
+
+            info!(
+                "Wrote {} remaining connections ({} with PIDs) to JSONL",
+                count, with_pids
+            );
+        }
     }
 }
 
