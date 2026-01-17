@@ -143,6 +143,54 @@ impl LibbpfSocketTracker {
         }
     }
 
+    /// Look up process information for an ICMP connection
+    pub fn lookup_icmp(
+        &mut self,
+        src_ip: IpAddr,
+        dst_ip: IpAddr,
+        icmp_id: u16,
+    ) -> Option<ProcessInfo> {
+        let socket_map = self.loader.socket_map();
+
+        // Try exact match first
+        let key = ConnKey::new_icmp(src_ip, dst_ip, icmp_id);
+        match MapReader::lookup_connection(socket_map, key) {
+            Ok(Some(result)) => return Some(result),
+            Ok(None) => {
+                log::debug!("eBPF ICMP exact lookup miss, trying with zero source address");
+            }
+            Err(e) => {
+                log::debug!("eBPF ICMP lookup failed: {}", e);
+            }
+        }
+
+        // Try with zero source address (common for ICMP - socket not bound to specific IP)
+        let zero_src_ip = match src_ip {
+            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        };
+        let zero_src_key = ConnKey::new_icmp(zero_src_ip, dst_ip, icmp_id);
+
+        match MapReader::lookup_connection(socket_map, zero_src_key) {
+            Ok(Some(result)) => {
+                log::debug!(
+                    "eBPF ICMP lookup succeeded with zero source address! PID: {}, comm: {}",
+                    result.pid,
+                    result.comm
+                );
+                Some(result)
+            }
+            Ok(None) => {
+                log::debug!("eBPF ICMP lookup miss for ID: {}", icmp_id);
+                None
+            }
+            Err(e) => {
+                log::debug!("eBPF ICMP zero-source lookup failed: {}", e);
+                None
+            }
+        }
+    }
+
     /// Check if the tracker is healthy and operational
     pub fn is_healthy(&self) -> bool {
         // Simple health check - in a real implementation you might

@@ -18,6 +18,7 @@ use super::ebpf::EbpfSocketTracker;
 #[cfg(feature = "ebpf")]
 mod ebpf_enhanced {
     use super::*;
+    use crate::network::types::ProtocolState;
 
     /// Enhanced process lookup that combines eBPF (fast path) with procfs (fallback)
     pub struct EnhancedLinuxProcessLookup {
@@ -110,32 +111,61 @@ mod ebpf_enhanced {
 
         /// Try eBPF lookup first, fall back to procfs
         fn lookup_process_enhanced(&self, conn: &Connection) -> Option<(u32, String)> {
-            // Try eBPF first for TCP/UDP connections
-            if matches!(conn.protocol, Protocol::TCP | Protocol::UDP) {
-                debug!(
-                    "Enhanced lookup: Trying eBPF for {}:{} -> {}:{} ({})",
-                    conn.local_addr.ip(),
-                    conn.local_addr.port(),
-                    conn.remote_addr.ip(),
-                    conn.remote_addr.port(),
-                    match conn.protocol {
-                        Protocol::TCP => "TCP",
-                        Protocol::UDP => "UDP",
-                        _ => "Unknown",
-                    }
-                );
-
-                if let Some(result) = self.try_ebpf_lookup(conn) {
-                    let mut stats = self.stats.write().unwrap();
-                    stats.ebpf_hits += 1;
+            // Try eBPF first for TCP/UDP/ICMP connections
+            match conn.protocol {
+                Protocol::TCP | Protocol::UDP => {
                     debug!(
-                        "Enhanced lookup: eBPF hit for PID {} ({})",
-                        result.0, result.1
+                        "Enhanced lookup: Trying eBPF for {}:{} -> {}:{} ({})",
+                        conn.local_addr.ip(),
+                        conn.local_addr.port(),
+                        conn.remote_addr.ip(),
+                        conn.remote_addr.port(),
+                        match conn.protocol {
+                            Protocol::TCP => "TCP",
+                            Protocol::UDP => "UDP",
+                            _ => "Unknown",
+                        }
                     );
-                    return Some(result);
-                } else {
-                    debug!("Enhanced lookup: eBPF miss, falling back to procfs");
+
+                    if let Some(result) = self.try_ebpf_lookup(conn) {
+                        let mut stats = self.stats.write().unwrap();
+                        stats.ebpf_hits += 1;
+                        debug!(
+                            "Enhanced lookup: eBPF hit for PID {} ({})",
+                            result.0, result.1
+                        );
+                        return Some(result);
+                    } else {
+                        debug!("Enhanced lookup: eBPF miss, falling back to procfs");
+                    }
                 }
+                Protocol::ICMP => {
+                    // Try eBPF lookup for ICMP using the echo ID
+                    if let ProtocolState::Icmp {
+                        icmp_id: Some(id), ..
+                    } = &conn.protocol_state
+                    {
+                        debug!(
+                            "Enhanced lookup: Trying eBPF for ICMP {} -> {} (ID: {})",
+                            conn.local_addr.ip(),
+                            conn.remote_addr.ip(),
+                            id
+                        );
+
+                        if let Some(result) = self.try_ebpf_icmp_lookup(conn, *id) {
+                            let mut stats = self.stats.write().unwrap();
+                            stats.ebpf_hits += 1;
+                            debug!(
+                                "Enhanced lookup: eBPF ICMP hit for PID {} ({})",
+                                result.0, result.1
+                            );
+                            return Some(result);
+                        } else {
+                            debug!("Enhanced lookup: eBPF ICMP miss");
+                        }
+                    }
+                }
+                _ => {}
             }
 
             // Fall back to procfs approach
@@ -203,6 +233,39 @@ mod ebpf_enhanced {
                         conn.local_addr.port(),
                         conn.remote_addr.ip(),
                         conn.remote_addr.port()
+                    );
+                    None
+                }
+            }
+        }
+
+        fn try_ebpf_icmp_lookup(&self, conn: &Connection, icmp_id: u16) -> Option<(u32, String)> {
+            let mut tracker_guard = self.ebpf_tracker.write().unwrap();
+            let tracker = tracker_guard.as_mut()?;
+
+            match tracker.lookup_icmp(conn.local_addr.ip(), conn.remote_addr.ip(), icmp_id) {
+                Some(process_info) => {
+                    let resolved_name = self
+                        .procfs_lookup
+                        .get_process_name_by_pid(process_info.pid)
+                        .unwrap_or_else(|| process_info.comm.clone());
+
+                    debug!(
+                        "eBPF ICMP lookup successful for {} -> {} (ID: {}) - PID: {}, Resolved: {}",
+                        conn.local_addr.ip(),
+                        conn.remote_addr.ip(),
+                        icmp_id,
+                        process_info.pid,
+                        resolved_name
+                    );
+                    Some((process_info.pid, resolved_name))
+                }
+                None => {
+                    debug!(
+                        "eBPF ICMP lookup missed for {} -> {} (ID: {})",
+                        conn.local_addr.ip(),
+                        conn.remote_addr.ip(),
+                        icmp_id
                     );
                     None
                 }

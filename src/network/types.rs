@@ -148,7 +148,7 @@ pub enum TcpState {
 pub enum ProtocolState {
     Tcp(TcpState),
     Udp,
-    Icmp { icmp_type: u8 },
+    Icmp { icmp_type: u8, icmp_id: Option<u16> },
     Arp(ArpInfo),
 }
 
@@ -2733,7 +2733,10 @@ mod tests {
             Protocol::ICMP,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
-            ProtocolState::Icmp { icmp_type: 8 },
+            ProtocolState::Icmp {
+                icmp_type: 8,
+                icmp_id: Some(1234),
+            },
         );
 
         assert_eq!(conn.state(), "ECHO_REQUEST");
