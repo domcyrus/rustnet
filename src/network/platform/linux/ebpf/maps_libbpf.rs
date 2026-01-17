@@ -110,6 +110,61 @@ impl ConnKey {
         )
     }
 
+    /// Create a key for ICMP lookup
+    /// icmp_id acts as the "source port", dport is 0
+    pub fn new_icmp(src_ip: IpAddr, dst_ip: IpAddr, icmp_id: u16) -> Self {
+        let mut key = Self {
+            saddr: [0; 4],
+            daddr: [0; 4],
+            sport: icmp_id,
+            dport: 0,
+            proto: match src_ip {
+                IpAddr::V4(_) => 1,  // IPPROTO_ICMP
+                IpAddr::V6(_) => 58, // IPPROTO_ICMPV6
+            },
+            family: match src_ip {
+                IpAddr::V4(_) => 2,  // AF_INET
+                IpAddr::V6(_) => 10, // AF_INET6
+            },
+        };
+
+        match (src_ip, dst_ip) {
+            (IpAddr::V4(src), IpAddr::V4(dst)) => {
+                // Use little-endian to match kernel/eBPF native format
+                key.saddr[0] = u32::from_le_bytes(src.octets());
+                key.daddr[0] = u32::from_le_bytes(dst.octets());
+            }
+            (IpAddr::V6(src), IpAddr::V6(dst)) => {
+                let src_bytes = src.octets();
+                let dst_bytes = dst.octets();
+
+                // Convert 16-byte IPv6 addresses to 4 u32 values (big-endian)
+                for i in 0..4 {
+                    let src_start = i * 4;
+                    let dst_start = i * 4;
+                    key.saddr[i] = u32::from_be_bytes([
+                        src_bytes[src_start],
+                        src_bytes[src_start + 1],
+                        src_bytes[src_start + 2],
+                        src_bytes[src_start + 3],
+                    ]);
+                    key.daddr[i] = u32::from_be_bytes([
+                        dst_bytes[dst_start],
+                        dst_bytes[dst_start + 1],
+                        dst_bytes[dst_start + 2],
+                        dst_bytes[dst_start + 3],
+                    ]);
+                }
+            }
+            _ => {
+                // Mixed IPv4/IPv6 - shouldn't happen in practice
+                panic!("Mixed IPv4/IPv6 addresses not supported");
+            }
+        }
+
+        key
+    }
+
     /// Convert to bytes for map lookup
     pub fn as_bytes(&self) -> [u8; 38] {
         unsafe { std::mem::transmute(*self) }

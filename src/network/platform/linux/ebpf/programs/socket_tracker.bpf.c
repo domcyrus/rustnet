@@ -13,8 +13,10 @@
 // Network constants not included in vmlinux.h
 #define AF_INET 2      /* IPv4 */
 #define AF_INET6 10    /* IPv6 */
-#define IPPROTO_TCP 6  /* TCP */
-#define IPPROTO_UDP 17 /* UDP */
+#define IPPROTO_ICMP 1   /* ICMP */
+#define IPPROTO_TCP 6    /* TCP */
+#define IPPROTO_UDP 17   /* UDP */
+#define IPPROTO_ICMPV6 58 /* ICMPv6 */
 
 // Connection key for socket tracking (supports both IPv4 and IPv6)
 struct conn_key
@@ -235,6 +237,97 @@ int trace_udp_v6_sendmsg(struct pt_regs *ctx)
 
     key.dport = bpf_ntohs(key.dport);
     key.proto = IPPROTO_UDP;
+    key.family = AF_INET6;
+
+    get_process_info(&info);
+
+    bpf_map_update_elem(&socket_map, &key, &info, BPF_ANY);
+    return 0;
+}
+
+// IPv4 ICMP ping tracking - uses same socket_map as TCP/UDP
+SEC("kprobe/ping_v4_sendmsg")
+int trace_ping_v4_sendmsg(struct pt_regs *ctx)
+{
+    struct sock *sk = (struct sock *)PT_REGS_PARM1_CORE(ctx);
+    struct msghdr *msg = (struct msghdr *)PT_REGS_PARM2_CORE(ctx);
+
+    if (!sk || !msg)
+        return 0;
+
+    struct conn_key key = {};
+    struct conn_info info = {};
+
+    // Source address and ICMP ID from socket
+    key.saddr[0] = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+    key.sport = BPF_CORE_READ(sk, __sk_common.skc_num); // ICMP echo ID
+
+    // Destination from msghdr (same pattern as udp_sendmsg)
+    struct sockaddr_in *dest_addr = NULL;
+    bpf_probe_read_kernel(&dest_addr, sizeof(dest_addr), &msg->msg_name);
+
+    if (dest_addr)
+    {
+        bpf_probe_read_kernel(&key.daddr[0], sizeof(__u32), &dest_addr->sin_addr.s_addr);
+    }
+    else
+    {
+        // Fallback to socket destination
+        key.daddr[0] = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+    }
+
+    if (key.daddr[0] == 0)
+        return 0;
+
+    key.dport = 0; // ICMP has no destination port
+    key.proto = IPPROTO_ICMP;
+    key.family = AF_INET;
+
+    get_process_info(&info);
+
+    bpf_map_update_elem(&socket_map, &key, &info, BPF_ANY);
+    return 0;
+}
+
+// IPv6 ICMP ping tracking
+SEC("kprobe/ping_v6_sendmsg")
+int trace_ping_v6_sendmsg(struct pt_regs *ctx)
+{
+    struct sock *sk = (struct sock *)PT_REGS_PARM1_CORE(ctx);
+    struct msghdr *msg = (struct msghdr *)PT_REGS_PARM2_CORE(ctx);
+
+    if (!sk || !msg)
+        return 0;
+
+    struct conn_key key = {};
+    struct conn_info info = {};
+
+    // Source address from socket (IPv6)
+    struct in6_addr temp_saddr;
+    BPF_CORE_READ_INTO(&temp_saddr, sk, __sk_common.skc_v6_rcv_saddr);
+    __builtin_memcpy(key.saddr, &temp_saddr, sizeof(temp_saddr));
+
+    key.sport = BPF_CORE_READ(sk, __sk_common.skc_num); // ICMP echo ID
+
+    // Destination from msghdr
+    struct sockaddr_in6 *dest_addr = NULL;
+    bpf_probe_read_kernel(&dest_addr, sizeof(dest_addr), &msg->msg_name);
+
+    if (dest_addr)
+    {
+        struct in6_addr temp_daddr;
+        bpf_probe_read_kernel(&temp_daddr, sizeof(temp_daddr), &dest_addr->sin6_addr);
+        __builtin_memcpy(key.daddr, &temp_daddr, sizeof(temp_daddr));
+    }
+    else
+    {
+        struct in6_addr temp_daddr;
+        BPF_CORE_READ_INTO(&temp_daddr, sk, __sk_common.skc_v6_daddr);
+        __builtin_memcpy(key.daddr, &temp_daddr, sizeof(temp_daddr));
+    }
+
+    key.dport = 0;
+    key.proto = IPPROTO_ICMPV6;
     key.family = AF_INET6;
 
     get_process_info(&info);
