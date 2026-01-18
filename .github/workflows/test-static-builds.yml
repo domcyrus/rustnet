@@ -93,6 +93,10 @@ jobs:
 
       - name: Build static binary
         env:
+          # -mno-outline-atomics: Prevent GCC from generating calls to __aarch64_ldadd4_sync etc.
+          # which aren't available in Alpine's libatomic. Uses inline atomics instead.
+          CFLAGS: "-mno-outline-atomics"
+          CXXFLAGS: "-mno-outline-atomics"
           RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
         run: cargo build --release
 
@@ -100,7 +104,7 @@ jobs:
         run: |
           file target/release/rustnet
           file target/release/rustnet | grep -q "static.* linked" || \
-            (echo "ERROR: Binary may not be fully statically linked")
+            (echo "ERROR: Binary is not statically linked" && exit 1)
 
       - name: Show binary info
         run: |
