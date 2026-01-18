@@ -915,6 +915,9 @@ fn draw_overview(
     // Get DNS resolver from app if enabled
     let dns_resolver = app.get_dns_resolver();
 
+    // Get GeoIP status - only show Loc column if country DB is loaded
+    let (has_country_db, _has_asn_db) = app.get_geoip_status();
+
     // Use grouped view if grouping is enabled
     if ui_state.grouping_enabled {
         if let Some(rows) = grouped_rows {
@@ -926,10 +929,18 @@ fn draw_overview(
                 dns_resolver.as_deref(),
                 ui_state.sort_column,
                 ui_state.sort_ascending,
+                has_country_db,
             );
         }
     } else {
-        draw_connections_list(f, ui_state, connections, chunks[0], dns_resolver.as_deref());
+        draw_connections_list(
+            f,
+            ui_state,
+            connections,
+            chunks[0],
+            dns_resolver.as_deref(),
+            has_country_db,
+        );
     }
 
     draw_stats_panel(f, connections, stats, app, chunks[1])?;
@@ -944,6 +955,7 @@ fn draw_connections_list(
     connections: &[Connection],
     area: Rect,
     dns_resolver: Option<&DnsResolver>,
+    show_location: bool,
 ) {
     // When DNS resolution is enabled, we need more space for hostnames
     let remote_addr_width = if dns_resolver.is_some() && ui_state.show_hostnames {
@@ -952,16 +964,22 @@ fn draw_connections_list(
         21
     };
 
-    let widths = [
-        Constraint::Length(6), // Protocol (TCP/UDP + arrow = "Pro ↑" = 5 chars, give 6 for padding)
-        Constraint::Length(17), // Local Address (13 + arrow = 15, fits in 17)
-        Constraint::Length(remote_addr_width), // Remote Address - wider when showing hostnames
-        Constraint::Length(16), // State (5 + arrow = 7, fits in 16)
-        Constraint::Length(10), // Service (7 + arrow = 9, need at least 10 for padding)
-        Constraint::Length(24), // DPI/Application (18 + arrow = 20, fits in 24)
-        Constraint::Length(12), // Bandwidth (7 + arrow = 9, fits in 12)
-        Constraint::Min(20),   // Process (flexible remaining space)
+    // Build column widths dynamically based on whether location is shown
+    let mut widths = vec![
+        Constraint::Length(6),                 // Protocol
+        Constraint::Length(17),                // Local Address
+        Constraint::Length(remote_addr_width), // Remote Address
     ];
+    if show_location {
+        widths.push(Constraint::Length(4)); // Location (2-char country code)
+    }
+    widths.extend([
+        Constraint::Length(16), // State
+        Constraint::Length(10), // Service
+        Constraint::Length(24), // DPI/Application
+        Constraint::Length(12), // Bandwidth
+        Constraint::Min(20),    // Process
+    ]);
 
     // Helper function to add sort indicator to column headers
     let add_sort_indicator = |label: &str, columns: &[SortColumn]| -> String {
@@ -986,35 +1004,49 @@ fn draw_connections_list(
             } else {
                 "↓"
             };
-            format!("Down/Up {}", arrow) // "Down/Up ↓" or "Down/Up ↑"
+            format!("Down/Up {}", arrow)
         }
-        _ => "Down/Up".to_string(), // No bandwidth sort active
+        _ => "Down/Up".to_string(),
     };
 
-    let header_labels = [
+    // Build header labels dynamically
+    let mut header_labels = vec![
         add_sort_indicator("Pro", &[SortColumn::Protocol]),
         add_sort_indicator("Local Address", &[SortColumn::LocalAddress]),
         add_sort_indicator("Remote Address", &[SortColumn::RemoteAddress]),
+    ];
+    if show_location {
+        header_labels.push("Loc".to_string());
+    }
+    header_labels.extend([
         add_sort_indicator("State", &[SortColumn::State]),
         add_sort_indicator("Service", &[SortColumn::Service]),
         add_sort_indicator("Application / Host", &[SortColumn::Application]),
-        bandwidth_label, // Use custom bandwidth label instead of generic indicator
+        bandwidth_label,
         add_sort_indicator("Process", &[SortColumn::Process]),
-    ];
+    ]);
+
+    // Compute column index offsets based on whether location is shown
+    // Columns: Pro(0), Local(1), Remote(2), [Loc(3)], State(3/4), Service(4/5), App(5/6), BW(6/7), Process(7/8)
+    let state_idx = if show_location { 4 } else { 3 };
+    let service_idx = if show_location { 5 } else { 4 };
+    let app_idx = if show_location { 6 } else { 5 };
+    let bw_idx = if show_location { 7 } else { 6 };
+    let process_idx = if show_location { 8 } else { 7 };
 
     let header_cells = header_labels.iter().enumerate().map(|(idx, h)| {
-        // Determine if this is the active sort column
-        let is_active = match idx {
+        let is_active = (match idx {
             0 => ui_state.sort_column == SortColumn::Protocol,
             1 => ui_state.sort_column == SortColumn::LocalAddress,
             2 => ui_state.sort_column == SortColumn::RemoteAddress,
-            3 => ui_state.sort_column == SortColumn::State,
-            4 => ui_state.sort_column == SortColumn::Service,
-            5 => ui_state.sort_column == SortColumn::Application,
-            6 => ui_state.sort_column == SortColumn::BandwidthTotal,
-            7 => ui_state.sort_column == SortColumn::Process,
+            i if show_location && i == 3 => false, // Loc column - not sortable
+            i if i == state_idx => ui_state.sort_column == SortColumn::State,
+            i if i == service_idx => ui_state.sort_column == SortColumn::Service,
+            i if i == app_idx => ui_state.sort_column == SortColumn::Application,
+            i if i == bw_idx => ui_state.sort_column == SortColumn::BandwidthTotal,
+            i if i == process_idx => ui_state.sort_column == SortColumn::Process,
             _ => false,
-        } && ui_state.sort_column != SortColumn::CreatedAt;
+        }) && ui_state.sort_column != SortColumn::CreatedAt;
 
         let style = if is_active {
             // Active sort column: Cyan + Bold + Underlined
@@ -1131,16 +1163,27 @@ fn draw_connections_list(
                 conn.remote_addr.to_string()
             };
 
-            let cells = [
+            // Build cells dynamically based on whether location is shown
+            let mut cells = vec![
                 Cell::from(conn.protocol.to_string()),
                 Cell::from(local_addr_display),
                 Cell::from(remote_addr_display),
+            ];
+            if show_location {
+                let location_display = conn
+                    .geoip_info
+                    .as_ref()
+                    .map(|g| g.country_display())
+                    .unwrap_or("-");
+                cells.push(Cell::from(location_display));
+            }
+            cells.extend([
                 Cell::from(conn.state()),
                 Cell::from(service_display),
                 Cell::from(dpi_display),
                 Cell::from(bandwidth_display),
                 Cell::from(process_display),
-            ];
+            ]);
             Row::new(cells).style(row_style)
         })
         .collect();
@@ -1185,6 +1228,7 @@ fn draw_grouped_connections_list(
     dns_resolver: Option<&DnsResolver>,
     sort_column: SortColumn,
     sort_ascending: bool,
+    show_location: bool,
 ) {
     // Column layout for grouped view:
     // - First column shows expand/collapse indicator + process name or tree prefix + protocol
@@ -1195,26 +1239,39 @@ fn draw_grouped_connections_list(
         18
     };
 
-    let widths = [
+    // Build widths dynamically - Loc column only when GeoIP country DB available
+    let mut widths = vec![
         Constraint::Min(28),    // Process/Protocol (wider for tree structure)
         Constraint::Length(17), // Local Address
         Constraint::Length(remote_addr_width), // Remote Address
+    ];
+    if show_location {
+        widths.push(Constraint::Length(4)); // Location (2-char country code)
+    }
+    widths.extend([
         Constraint::Length(12), // State
         Constraint::Length(8),  // Service
         Constraint::Length(20), // Application/Host
         Constraint::Length(14), // Bandwidth
-    ];
+    ]);
 
     let header_style = theme::bold_fg(theme::heading());
-    let header_cells = [
+
+    // Build header cells dynamically
+    let mut header_cells = vec![
         Cell::from("Process / Protocol").style(header_style),
         Cell::from("Local Address").style(header_style),
         Cell::from("Remote Address").style(header_style),
+    ];
+    if show_location {
+        header_cells.push(Cell::from("Loc").style(header_style));
+    }
+    header_cells.extend([
         Cell::from("State").style(header_style),
         Cell::from("Service").style(header_style),
         Cell::from("Application").style(header_style),
         Cell::from("Down/Up").style(header_style),
-    ];
+    ]);
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
     let rows: Vec<Row> = grouped_rows
@@ -1239,15 +1296,21 @@ fn draw_grouped_connections_list(
                 let outgoing_rate = format_rate_compact(stats.total_outgoing_rate_bps);
                 let bandwidth = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
 
-                let cells = [
+                // Build cells dynamically
+                let mut cells = vec![
                     Cell::from(process_cell).style(theme::bold_fg(theme::accent())),
                     Cell::from(""),
                     Cell::from(""),
+                ];
+                if show_location {
+                    cells.push(Cell::from("")); // Loc (empty for group header)
+                }
+                cells.extend([
                     Cell::from(proto_breakdown),
                     Cell::from(""),
                     Cell::from(""),
                     Cell::from(bandwidth),
-                ];
+                ]);
                 Row::new(cells)
             }
             GroupedRow::Connection {
@@ -1305,6 +1368,13 @@ fn draw_grouped_connections_list(
                     None => NONE_PLACEHOLDER.to_string(),
                 };
 
+                // GeoIP location display (2-char country code)
+                let location_display = connection
+                    .geoip_info
+                    .as_ref()
+                    .map(|g| g.country_display())
+                    .unwrap_or("-");
+
                 // Bandwidth display
                 let incoming_rate = format_rate_compact(connection.current_incoming_rate_bps);
                 let outgoing_rate = format_rate_compact(connection.current_outgoing_rate_bps);
@@ -1320,15 +1390,21 @@ fn draw_grouped_connections_list(
                     Style::default()
                 };
 
-                let cells = [
+                // Build cells dynamically
+                let mut cells = vec![
                     Cell::from(protocol_cell),
                     Cell::from(local_addr_display),
                     Cell::from(remote_addr_display),
+                ];
+                if show_location {
+                    cells.push(Cell::from(location_display));
+                }
+                cells.extend([
                     Cell::from(state),
                     Cell::from(service_display),
                     Cell::from(dpi_display),
                     Cell::from(bandwidth),
-                ];
+                ]);
                 Row::new(cells).style(row_style)
             }
         })
@@ -2416,6 +2492,40 @@ fn draw_connection_details(
             details_text.push(Line::from(vec![
                 Span::styled("Remote Hostname: ", theme::fg(theme::label())),
                 Span::raw(remote_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string())),
+            ]));
+        }
+    }
+
+    // Add GeoIP information if available
+    if let Some(ref geoip) = conn.geoip_info
+        && (geoip.country_code.is_some() || geoip.asn.is_some())
+    {
+        details_text.push(Line::from("")); // Empty line separator
+        if let Some(ref country_name) = geoip.country_name {
+            let country_display = if let Some(ref cc) = geoip.country_code {
+                format!("{} ({})", country_name, cc)
+            } else {
+                country_name.clone()
+            };
+            details_text.push(Line::from(vec![
+                Span::styled("Country: ", Style::default().fg(Color::Yellow)),
+                Span::raw(country_display),
+            ]));
+        } else if let Some(ref cc) = geoip.country_code {
+            details_text.push(Line::from(vec![
+                Span::styled("Country: ", Style::default().fg(Color::Yellow)),
+                Span::raw(cc.clone()),
+            ]));
+        }
+        if let Some(asn) = geoip.asn {
+            let asn_display = if let Some(ref org) = geoip.as_org {
+                format!("AS{} ({})", asn, org)
+            } else {
+                format!("AS{}", asn)
+            };
+            details_text.push(Line::from(vec![
+                Span::styled("ASN: ", Style::default().fg(Color::Yellow)),
+                Span::raw(asn_display),
             ]));
         }
     }

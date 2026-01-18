@@ -16,6 +16,7 @@ use crate::filter::ConnectionFilter;
 use crate::network::{
     capture::{CaptureConfig, PacketReader, setup_packet_capture},
     dns::DnsResolver,
+    geoip::{GeoIpConfig, GeoIpResolver},
     interface_stats::{InterfaceRates, InterfaceStats, InterfaceStatsProvider},
     merge::{create_connection_from_packet, merge_packet_into_connection},
     parser::{PacketParser, ParsedPacket, ParserConfig},
@@ -181,6 +182,22 @@ fn log_connection_event(
         }
     }
 
+    // Add GeoIP information if available
+    if let Some(ref geoip) = conn.geoip_info {
+        if let Some(ref cc) = geoip.country_code {
+            event["geoip_country_code"] = json!(cc);
+        }
+        if let Some(ref name) = geoip.country_name {
+            event["geoip_country_name"] = json!(name);
+        }
+        if let Some(asn) = geoip.asn {
+            event["geoip_asn"] = json!(asn);
+        }
+        if let Some(ref org) = geoip.as_org {
+            event["geoip_as_org"] = json!(org);
+        }
+    }
+
     // Add connection statistics for closed events
     if event_type == "connection_closed" {
         event["bytes_sent"] = json!(conn.bytes_sent);
@@ -205,7 +222,8 @@ fn log_connection_event(
 fn log_pcap_connection(pcap_path: &str, conn: &Connection) {
     let json_path = format!("{}.connections.jsonl", pcap_path);
 
-    let event = json!({
+    // Build base event without GeoIP fields
+    let mut event = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "protocol": format!("{:?}", conn.protocol),
         "local_addr": conn.local_addr.to_string(),
@@ -218,6 +236,22 @@ fn log_pcap_connection(pcap_path: &str, conn: &Connection) {
         "bytes_received": conn.bytes_received,
         "state": conn.state(),
     });
+
+    // Only add GeoIP fields when they have actual values
+    if let Some(ref geoip) = conn.geoip_info {
+        if let Some(ref cc) = geoip.country_code {
+            event["geoip_country_code"] = json!(cc);
+        }
+        if let Some(ref name) = geoip.country_name {
+            event["geoip_country_name"] = json!(name);
+        }
+        if let Some(asn) = geoip.asn {
+            event["geoip_asn"] = json!(asn);
+        }
+        if let Some(ref org) = geoip.as_org {
+            event["geoip_as_org"] = json!(org);
+        }
+    }
 
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
@@ -250,6 +284,12 @@ pub struct Config {
     pub resolve_dns: bool,
     /// Show PTR lookup connections in UI (when DNS resolution is enabled)
     pub show_ptr_lookups: bool,
+    /// Path to GeoLite2-Country.mmdb database (None for auto-discovery)
+    pub geoip_country_path: Option<String>,
+    /// Path to GeoLite2-ASN.mmdb database (None for auto-discovery)
+    pub geoip_asn_path: Option<String>,
+    /// Disable GeoIP lookups entirely
+    pub disable_geoip: bool,
 }
 
 impl Default for Config {
@@ -264,6 +304,9 @@ impl Default for Config {
             pcap_export_file: None,
             resolve_dns: false,
             show_ptr_lookups: false,
+            geoip_country_path: None,
+            geoip_asn_path: None,
+            disable_geoip: false,
         }
     }
 }
@@ -345,6 +388,9 @@ pub struct App {
     /// DNS resolver for reverse DNS lookups
     dns_resolver: Option<Arc<DnsResolver>>,
 
+    /// GeoIP resolver for location/ASN lookups
+    geoip_resolver: Option<Arc<GeoIpResolver>>,
+
     /// Sandbox status (Linux Landlock)
     #[cfg(target_os = "linux")]
     sandbox_info: Arc<RwLock<SandboxInfo>>,
@@ -367,6 +413,48 @@ impl App {
             None
         };
 
+        // Initialize GeoIP resolver
+        let geoip_resolver = if config.disable_geoip {
+            info!("GeoIP resolution disabled by configuration");
+            None
+        } else if config.geoip_country_path.is_some() || config.geoip_asn_path.is_some() {
+            // Use explicit paths from config
+            let geoip_config = GeoIpConfig {
+                country_db_path: config
+                    .geoip_country_path
+                    .as_ref()
+                    .map(std::path::PathBuf::from),
+                asn_db_path: config.geoip_asn_path.as_ref().map(std::path::PathBuf::from),
+                ..Default::default()
+            };
+            let resolver = GeoIpResolver::new(geoip_config);
+            if resolver.is_available() {
+                let (has_country, has_asn) = resolver.get_status();
+                info!(
+                    "GeoIP resolution enabled - Country: {}, ASN: {}",
+                    has_country, has_asn
+                );
+                Some(Arc::new(resolver))
+            } else {
+                warn!("GeoIP databases not found at specified paths - location display disabled");
+                None
+            }
+        } else {
+            // Auto-discover databases
+            let resolver = GeoIpResolver::with_auto_discovery();
+            if resolver.is_available() {
+                let (has_country, has_asn) = resolver.get_status();
+                info!(
+                    "GeoIP resolution enabled - Country: {}, ASN: {}",
+                    has_country, has_asn
+                );
+                Some(Arc::new(resolver))
+            } else {
+                info!("GeoIP databases not found - location display disabled");
+                None
+            }
+        };
+
         Ok(Self {
             config,
             should_stop: Arc::new(AtomicBool::new(false)),
@@ -386,6 +474,7 @@ impl App {
             traffic_history: Arc::new(RwLock::new(TrafficHistory::new(60))), // 60 seconds of history
             rtt_tracker: Arc::new(Mutex::new(RttTracker::new())),
             dns_resolver,
+            geoip_resolver,
             #[cfg(target_os = "linux")]
             sandbox_info: Arc::new(RwLock::new(SandboxInfo::default())),
         })
@@ -403,6 +492,9 @@ impl App {
 
         // Start process enrichment thread (but delay for PKTAP detection on macOS)
         self.start_process_enrichment_conditional(connections.clone())?;
+
+        // Start GeoIP enrichment thread
+        self.start_geoip_enrichment_thread(connections.clone())?;
 
         // Start snapshot provider for UI
         self.start_snapshot_provider(connections.clone())?;
@@ -1153,6 +1245,55 @@ impl App {
         Ok(())
     }
 
+    /// Start GeoIP enrichment thread to populate location/ASN info for connections
+    fn start_geoip_enrichment_thread(
+        &self,
+        connections: Arc<DashMap<String, Connection>>,
+    ) -> Result<()> {
+        let geoip_resolver = match &self.geoip_resolver {
+            Some(resolver) => Arc::clone(resolver),
+            None => return Ok(()), // No resolver available
+        };
+
+        let should_stop = Arc::clone(&self.should_stop);
+
+        thread::Builder::new()
+            .name("geoip-enrichment".to_string())
+            .spawn(move || {
+                info!("GeoIP enrichment thread started");
+                let interval = Duration::from_millis(500);
+
+                loop {
+                    if should_stop.load(Ordering::Relaxed) {
+                        info!("GeoIP enrichment thread stopping");
+                        break;
+                    }
+
+                    // Enrich connections without GeoIP info
+                    let mut enriched = 0;
+                    for mut entry in connections.iter_mut() {
+                        if entry.geoip_info.is_none() {
+                            let remote_ip = entry.remote_addr.ip();
+                            let info = geoip_resolver.lookup(remote_ip);
+                            if info.has_data() {
+                                entry.geoip_info = Some(info);
+                                enriched += 1;
+                            }
+                        }
+                    }
+
+                    if enriched > 0 {
+                        debug!("Enriched {} connections with GeoIP info", enriched);
+                    }
+
+                    thread::sleep(interval);
+                }
+            })
+            .expect("Failed to spawn GeoIP enrichment thread");
+
+        Ok(())
+    }
+
     /// Start cleanup thread to remove old connections
     fn start_cleanup_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
@@ -1402,6 +1543,15 @@ impl App {
     /// Check if DNS resolution is enabled
     pub fn is_dns_resolution_enabled(&self) -> bool {
         self.dns_resolver.is_some()
+    }
+
+    /// Get GeoIP database availability status
+    /// Returns (has_country, has_asn) - true if the respective database is loaded
+    pub fn get_geoip_status(&self) -> (bool, bool) {
+        match &self.geoip_resolver {
+            Some(resolver) => resolver.get_status(),
+            None => (false, false),
+        }
     }
 
     /// Clear all connections and related data, starting fresh

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Enrich RustNet PCAP captures with process information from sidecar JSONL.
+Enrich RustNet PCAP captures with process and GeoIP information from sidecar JSONL.
 
-This script correlates packets in a PCAP file with process information
+This script correlates packets in a PCAP file with process and GeoIP information
 from the accompanying .connections.jsonl file created by RustNet.
 
 NOTE: If you captured using PKTAP on macOS (e.g., `--interface pktap,en0`),
@@ -81,6 +81,11 @@ def load_connections(jsonl_path: Path) -> dict:
                         "last_seen": parse_systemtime(c.get("last_seen")),
                         "bytes_sent": c.get("bytes_sent", 0),
                         "bytes_received": c.get("bytes_received", 0),
+                        # GeoIP information
+                        "geoip_country_code": c.get("geoip_country_code"),
+                        "geoip_country_name": c.get("geoip_country_name"),
+                        "geoip_asn": c.get("geoip_asn"),
+                        "geoip_as_org": c.get("geoip_as_org"),
                     }
 
                     # Store both directions, as a list to handle port reuse
@@ -180,6 +185,9 @@ def enrich_packets(pcap_path: Path, lookup: dict, slack: float):
                 "dst": "",
                 "pid": None,
                 "process": None,
+                "country": None,
+                "asn": None,
+                "as_org": None,
             }
             continue
 
@@ -196,27 +204,34 @@ def enrich_packets(pcap_path: Path, lookup: dict, slack: float):
             "process": info.get("process_name"),
             "bytes_sent": info.get("bytes_sent"),
             "bytes_received": info.get("bytes_received"),
+            "country": info.get("geoip_country_code"),
+            "asn": info.get("geoip_asn"),
+            "as_org": info.get("geoip_as_org"),
         }
 
 
 def print_table(packets: list):
     """Print enriched packets as a formatted table."""
-    print(f"{'Frame':>6} {'Proto':<5} {'Source':<24} {'Destination':<24} {'PID':>7} {'Process':<20}")
-    print("-" * 95)
+    print(f"{'Frame':>6} {'Proto':<5} {'Source':<22} {'Destination':<22} {'Loc':<4} {'ASN':>8} {'PID':>7} {'Process':<15}")
+    print("-" * 100)
 
     for p in packets:
         pid_str = str(p["pid"]) if p["pid"] else "-"
         proc_str = p["process"] or "-"
-        if len(proc_str) > 20:
-            proc_str = proc_str[:17] + "..."
-        print(f"{p['frame']:>6} {p['proto']:<5} {p['src']:<24} {p['dst']:<24} {pid_str:>7} {proc_str:<20}")
+        if len(proc_str) > 15:
+            proc_str = proc_str[:12] + "..."
+        loc_str = p["country"] or "-"
+        asn_str = f"AS{p['asn']}" if p["asn"] else "-"
+        src_str = p["src"][:22] if len(p["src"]) > 22 else p["src"]
+        dst_str = p["dst"][:22] if len(p["dst"]) > 22 else p["dst"]
+        print(f"{p['frame']:>6} {p['proto']:<5} {src_str:<22} {dst_str:<22} {loc_str:<4} {asn_str:>8} {pid_str:>7} {proc_str:<15}")
 
 
 def print_tsv(packets: list):
     """Print enriched packets as TSV."""
-    print("frame\ttime\tproto\tsrc\tdst\tpid\tprocess")
+    print("frame\ttime\tproto\tsrc\tdst\tcountry\tasn\tas_org\tpid\tprocess")
     for p in packets:
-        print(f"{p['frame']}\t{p['time']:.6f}\t{p['proto']}\t{p['src']}\t{p['dst']}\t{p['pid'] or ''}\t{p['process'] or ''}")
+        print(f"{p['frame']}\t{p['time']:.6f}\t{p['proto']}\t{p['src']}\t{p['dst']}\t{p['country'] or ''}\t{p['asn'] or ''}\t{p['as_org'] or ''}\t{p['pid'] or ''}\t{p['process'] or ''}")
 
 
 def print_json(packets: list):
@@ -243,8 +258,12 @@ def create_pcapng(pcap_path: Path, packets: list, output_path: Path):
     # editcap -a "frame:comment" format
     annotations = []
     for p in packets:
-        if p["pid"] or p["process"]:
+        if p["pid"] or p["process"] or p["country"] or p["asn"]:
             comment_parts = []
+            if p["country"]:
+                comment_parts.append(f"Loc:{p['country']}")
+            if p["asn"]:
+                comment_parts.append(f"AS{p['asn']}")
             if p["pid"]:
                 comment_parts.append(f"PID:{p['pid']}")
             if p["process"]:
@@ -253,7 +272,7 @@ def create_pcapng(pcap_path: Path, packets: list, output_path: Path):
             annotations.append(f"{p['frame']}:{comment}")
 
     if not annotations:
-        print("No process information found to annotate.", file=sys.stderr)
+        print("No process or GeoIP information found to annotate.", file=sys.stderr)
         # Just copy the pcapng as-is
         tmp_path.rename(output_path)
         return
@@ -284,7 +303,7 @@ def create_pcapng(pcap_path: Path, packets: list, output_path: Path):
         tmp_path.unlink()
 
     print(f"Created annotated PCAPNG: {output_path}")
-    print(f"Annotated {len(annotations)} packets with process information.")
+    print(f"Annotated {len(annotations)} packets with process/GeoIP information.")
 
 
 def count_unique_connections(lookup: dict) -> int:
@@ -326,7 +345,7 @@ def print_summary(packets: list, lookup: dict):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Enrich RustNet PCAP captures with process information.",
+        description="Enrich RustNet PCAP captures with process and GeoIP information.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

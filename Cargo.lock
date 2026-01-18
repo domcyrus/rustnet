@@ -1340,6 +1340,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "maxminddb"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6087e5d8ea14861bb7c7f573afbc7be3798d3ef0fae87ec4fd9a4de9a127c3c"
+dependencies = [
+ "ipnetwork",
+ "log",
+ "memchr",
+ "serde",
+]
+
+[[package]]
 name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2179,6 +2191,7 @@ dependencies = [
  "libbpf-rs",
  "libc",
  "log",
+ "maxminddb",
  "pcap",
  "pnet_datalink",
  "procfs",

@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod dns;
 pub mod dpi;
+pub mod geoip;
 pub mod interface_stats;
 pub mod link_layer;
 pub mod merge;
