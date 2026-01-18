@@ -5,6 +5,11 @@ Enrich RustNet PCAP captures with process information from sidecar JSONL.
 This script correlates packets in a PCAP file with process information
 from the accompanying .connections.jsonl file created by RustNet.
 
+NOTE: If you captured using PKTAP on macOS (e.g., `--interface pktap,en0`),
+the process information is already embedded in the PCAP file itself.
+You can view it directly in Wireshark without using this script.
+This script is only needed for regular (non-PKTAP) captures.
+
 Usage:
     # Show packets with process info
     python pcap_enrich.py capture.pcap

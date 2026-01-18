@@ -1718,9 +1718,15 @@ impl Connection {
                     }
                 }
             }
-            ProtocolState::Icmp { icmp_type, .. } => match icmp_type {
-                8 => "ECHO_REQUEST".to_string(),
-                0 => "ECHO_REPLY".to_string(),
+            ProtocolState::Icmp { icmp_type, icmp_id } => match icmp_type {
+                8 => match icmp_id {
+                    Some(id) => format!("ECHO_REQ({})", id),
+                    None => "ECHO_REQUEST".to_string(),
+                },
+                0 => match icmp_id {
+                    Some(id) => format!("ECHO_REP({})", id),
+                    None => "ECHO_REPLY".to_string(),
+                },
                 3 => "DEST_UNREACH".to_string(),
                 11 => "TIME_EXCEEDED".to_string(),
                 _ => "ICMP_OTHER".to_string(),
@@ -2739,7 +2745,7 @@ mod tests {
             },
         );
 
-        assert_eq!(conn.state(), "ECHO_REQUEST");
+        assert_eq!(conn.state(), "ECHO_REQ(1234)");
         assert_eq!(conn.get_timeout(), Duration::from_secs(10));
 
         // Test ARP states
