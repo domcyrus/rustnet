@@ -2617,6 +2617,7 @@ checksum = "91e7d9e3bb61134e77bde20dd4825b97c010155709965fedf0f49bb138e52a9d"
 dependencies = [
  "deranged",
  "itoa",
+ "js-sys",
  "libc",
  "num-conv",
  "num_threads",
@@ -2684,6 +2685,12 @@ dependencies = [
  "nom 8.0.0",
  "petgraph",
 ]
+
+[[package]]
+name = "typed-path"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e43ffa54726cdc9ea78392023ffe9fe9cf9ac779e1c6fcb0d23f9862e3879d20"
 
 [[package]]
 name = "typenum"
@@ -3451,9 +3458,9 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "7.1.0"
+version = "7.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9013f1222db8a6d680f13a7ccdc60a781199cd09c2fa4eff58e728bb181757fc"
+checksum = "c42e33efc22a0650c311c2ef19115ce232583abbe80850bc8b66509ebef02de0"
 dependencies = [
  "aes",
  "bzip2",
@@ -3471,6 +3478,7 @@ dependencies = [
  "ppmd-rust",
  "sha1",
  "time",
+ "typed-path",
  "zeroize",
  "zopfli",
  "zstd",
