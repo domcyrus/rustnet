@@ -22,8 +22,6 @@ fn main() -> Result<()> {
     // Parse command line arguments
     let matches = cli::build_cli().get_matches();
 
-    // Check privileges BEFORE initializing TUI (so error messages are visible)
-    check_privileges_early()?;
     // Set up logging only if log-level was provided
     if let Some(log_level_str) = matches.get_one::<String>("log-level") {
         let log_level = log_level_str
@@ -31,6 +29,9 @@ fn main() -> Result<()> {
             .map_err(|_| anyhow::anyhow!("Invalid log level: {}", log_level_str))?;
         setup_logging(log_level)?;
     }
+
+    // Check privileges BEFORE initializing TUI (so error messages are visible)
+    check_privileges_early()?;
 
     info!("Starting RustNet Monitor");
 
