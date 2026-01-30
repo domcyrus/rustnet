@@ -34,16 +34,14 @@ impl std::fmt::Display for ApplicationProtocol {
                 }
             }
             ApplicationProtocol::Https(info) => {
-                if info.tls_info.is_none() {
-                    write!(f, "HTTPS")
-                } else {
-                    let info = info.tls_info.as_ref().unwrap();
-                    // If SNI is available, include it in the display
-                    if let Some(sni) = &info.sni {
+                if let Some(tls) = &info.tls_info {
+                    if let Some(sni) = &tls.sni {
                         write!(f, "HTTPS ({})", sni)
                     } else {
                         write!(f, "HTTPS")
                     }
+                } else {
+                    write!(f, "HTTPS")
                 }
             }
             ApplicationProtocol::Dns(info) => {
