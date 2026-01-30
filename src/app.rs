@@ -858,17 +858,8 @@ impl App {
                     let mut did_enrich = false;
 
                     // Only set process name if it's missing
-                    if entry.process_name.is_none() {
-                        entry.process_name = Some(name.clone());
-                        did_enrich = true;
-                        debug!(
-                            "✓ Set process name for connection {}: {}",
-                            entry.key(),
-                            name
-                        );
-                    } else {
+                    if let Some(existing_name) = &entry.process_name {
                         // Check if the existing name differs significantly (for debugging)
-                        let existing_name = entry.process_name.as_ref().unwrap();
                         let existing_normalized = existing_name
                             .split_whitespace()
                             .collect::<Vec<&str>>()
@@ -882,6 +873,14 @@ impl App {
                                 existing_name, name
                             );
                         }
+                    } else {
+                        entry.process_name = Some(name.clone());
+                        did_enrich = true;
+                        debug!(
+                            "✓ Set process name for connection {}: {}",
+                            entry.key(),
+                            name
+                        );
                     }
 
                     // Only set PID if it's missing
