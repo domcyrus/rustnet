@@ -36,28 +36,28 @@ impl InterfaceStatsProvider for FreeBSDStatsProvider {
 
             while let Some(ifa) = current.as_ref() {
                 // Only process AF_LINK entries (data link layer)
-                if !ifa.ifa_addr.is_null() && (*ifa.ifa_addr).sa_family as i32 == libc::AF_LINK {
-                    let name = CStr::from_ptr(ifa.ifa_name).to_string_lossy().to_string();
+                if let Some(addr) = ifa.ifa_addr.as_ref() {
+                    if addr.sa_family as i32 == libc::AF_LINK {
+                        let name = CStr::from_ptr(ifa.ifa_name).to_string_lossy().to_string();
 
-                    // Get if_data from ifa_data
-                    if !ifa.ifa_data.is_null() {
+                        // Get if_data from ifa_data
                         #[cfg(target_os = "freebsd")]
                         {
-                            let if_data = &*(ifa.ifa_data as *const libc::if_data);
-
-                            stats.push(InterfaceStats {
-                                interface_name: name,
-                                rx_bytes: if_data.ifi_ibytes,
-                                tx_bytes: if_data.ifi_obytes,
-                                rx_packets: if_data.ifi_ipackets,
-                                tx_packets: if_data.ifi_opackets,
-                                rx_errors: if_data.ifi_ierrors,
-                                tx_errors: if_data.ifi_oerrors,
-                                rx_dropped: if_data.ifi_iqdrops,
-                                tx_dropped: 0, // Not typically available on FreeBSD
-                                collisions: if_data.ifi_collisions,
-                                timestamp: SystemTime::now(),
-                            });
+                            if let Some(if_data) = (ifa.ifa_data as *const libc::if_data).as_ref() {
+                                stats.push(InterfaceStats {
+                                    interface_name: name,
+                                    rx_bytes: if_data.ifi_ibytes,
+                                    tx_bytes: if_data.ifi_obytes,
+                                    rx_packets: if_data.ifi_ipackets,
+                                    tx_packets: if_data.ifi_opackets,
+                                    rx_errors: if_data.ifi_ierrors,
+                                    tx_errors: if_data.ifi_oerrors,
+                                    rx_dropped: if_data.ifi_iqdrops,
+                                    tx_dropped: 0, // Not typically available on FreeBSD
+                                    collisions: if_data.ifi_collisions,
+                                    timestamp: SystemTime::now(),
+                                });
+                            }
                         }
                     }
                 }
