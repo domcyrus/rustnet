@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use ratatui::{
@@ -20,6 +21,164 @@ use crate::network::types::{
 };
 
 pub type Terminal<B> = RatatuiTerminal<B>;
+
+/// Global flag for NO_COLOR support (https://no-color.org)
+static NO_COLOR: AtomicBool = AtomicBool::new(false);
+
+/// Enable NO_COLOR mode (strips all colors from the UI)
+pub fn set_no_color(enabled: bool) {
+    NO_COLOR.store(enabled, Ordering::Relaxed);
+}
+
+/// Centralized color palette for cross-terminal consistency.
+/// All semantic colors derive from these 7 base constants.
+mod theme {
+    use ratatui::style::{Color, Modifier, Style};
+
+    // --- 7-slot base palette ---
+    const OK: Color = Color::Green; // Healthy/success
+    const WARN: Color = Color::Yellow; // Caution/attention
+    const ERR: Color = Color::Red; // Error/critical
+    const ACCENT: Color = Color::Cyan; // Informational highlight
+    const MUTED: Color = Color::Gray; // Secondary/inactive
+    const INFO: Color = Color::Blue; // Neutral info
+    const SPECIAL: Color = Color::Magenta; // Distinct/special
+
+    // --- Base color accessors ---
+    pub fn ok() -> Color {
+        OK
+    }
+    pub fn warn() -> Color {
+        WARN
+    }
+    pub fn err() -> Color {
+        ERR
+    }
+    pub fn accent() -> Color {
+        ACCENT
+    }
+    pub fn muted() -> Color {
+        MUTED
+    }
+    pub fn info() -> Color {
+        INFO
+    }
+    pub fn special() -> Color {
+        SPECIAL
+    }
+
+    // --- UI element aliases ---
+    pub fn label() -> Color {
+        accent()
+    }
+    pub fn heading() -> Color {
+        warn()
+    }
+    pub fn key() -> Color {
+        warn()
+    }
+
+    // --- Network aliases ---
+    pub fn rx() -> Color {
+        ok()
+    }
+    pub fn tx() -> Color {
+        info()
+    }
+
+    // --- Protocol aliases ---
+    pub fn proto_https() -> Color {
+        ok()
+    }
+    pub fn proto_quic() -> Color {
+        accent()
+    }
+    pub fn proto_http() -> Color {
+        warn()
+    }
+    pub fn proto_dns() -> Color {
+        special()
+    }
+    pub fn proto_ssh() -> Color {
+        info()
+    }
+    pub fn proto_other() -> Color {
+        muted()
+    }
+
+    // --- TCP state aliases ---
+    pub fn tcp_established() -> Color {
+        ok()
+    }
+    pub fn tcp_opening() -> Color {
+        warn()
+    }
+    pub fn tcp_closing() -> Color {
+        accent()
+    }
+    pub fn tcp_waiting() -> Color {
+        special()
+    }
+    pub fn tcp_closed() -> Color {
+        muted()
+    }
+
+    // --- Status bar styles ---
+    // Uses REVERSED modifier instead of fg(Black).bg(Color) which breaks on dark terminals
+    pub fn status_bar_confirm() -> Style {
+        if super::NO_COLOR.load(super::Ordering::Relaxed) {
+            return Style::default().add_modifier(Modifier::REVERSED);
+        }
+        Style::default()
+            .fg(warn())
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    }
+    pub fn status_bar_success() -> Style {
+        if super::NO_COLOR.load(super::Ordering::Relaxed) {
+            return Style::default().add_modifier(Modifier::REVERSED);
+        }
+        Style::default()
+            .fg(ok())
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    }
+    pub fn status_bar_default() -> Style {
+        if super::NO_COLOR.load(super::Ordering::Relaxed) {
+            return Style::default().add_modifier(Modifier::REVERSED);
+        }
+        Style::default().fg(info()).add_modifier(Modifier::REVERSED)
+    }
+
+    // --- Style builders (NO_COLOR-aware) ---
+
+    /// Apply a foreground color, respecting NO_COLOR.
+    pub fn fg(color: Color) -> Style {
+        if super::NO_COLOR.load(super::Ordering::Relaxed) {
+            Style::default()
+        } else {
+            Style::default().fg(color)
+        }
+    }
+
+    /// Apply a foreground color with BOLD, respecting NO_COLOR.
+    pub fn bold_fg(color: Color) -> Style {
+        if super::NO_COLOR.load(super::Ordering::Relaxed) {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(color).add_modifier(Modifier::BOLD)
+        }
+    }
+
+    /// Apply a foreground color with BOLD + UNDERLINED, respecting NO_COLOR.
+    pub fn bold_underline_fg(color: Color) -> Style {
+        if super::NO_COLOR.load(super::Ordering::Relaxed) {
+            Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default()
+                .fg(color)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        }
+    }
+}
 
 /// Sort column options for the connections table
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -715,11 +874,11 @@ pub fn draw(
 /// Draw mode tabs
 fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect) {
     let titles = vec![
-        Span::styled("Overview", Style::default().fg(Color::Green)),
-        Span::styled("Details", Style::default().fg(Color::Green)),
-        Span::styled("Interfaces", Style::default().fg(Color::Green)),
-        Span::styled("Graph", Style::default().fg(Color::Green)),
-        Span::styled("Help", Style::default().fg(Color::Green)),
+        Span::styled("Overview", theme::fg(theme::ok())),
+        Span::styled("Details", theme::fg(theme::ok())),
+        Span::styled("Interfaces", theme::fg(theme::ok())),
+        Span::styled("Graph", theme::fg(theme::ok())),
+        Span::styled("Help", theme::fg(theme::ok())),
     ];
 
     let tabs = Tabs::new(titles.into_iter().map(Line::from).collect::<Vec<_>>())
@@ -730,11 +889,7 @@ fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect) {
         )
         .select(ui_state.selected_tab)
         .style(Style::default())
-        .highlight_style(
-            Style::default()
-                .add_modifier(Modifier::BOLD)
-                .fg(Color::Yellow),
-        );
+        .highlight_style(theme::bold_fg(theme::heading()));
 
     f.render_widget(tabs, area);
 }
@@ -860,14 +1015,10 @@ fn draw_connections_list(
 
         let style = if is_active {
             // Active sort column: Cyan + Bold + Underlined
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            theme::bold_underline_fg(theme::accent())
         } else {
             // Inactive columns: Yellow + Bold (normal)
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD)
+            theme::bold_fg(theme::heading())
         };
 
         Cell::from(h.as_str()).style(style)
@@ -964,10 +1115,10 @@ fn draw_connections_list(
             let staleness = conn.staleness_ratio();
             let row_style = if staleness >= 0.90 {
                 // Critical: > 90% of timeout - will be cleaned up very soon
-                Style::default().fg(Color::Red)
+                theme::fg(theme::err())
             } else if staleness >= 0.75 {
                 // Warning: 75-90% of timeout - approaching cleanup
-                Style::default().fg(Color::Yellow)
+                theme::fg(theme::warn())
             } else {
                 // Normal: < 75% of timeout
                 Style::default()
@@ -1074,42 +1225,15 @@ fn draw_grouped_connections_list(
         Constraint::Length(14), // Bandwidth
     ];
 
+    let header_style = theme::bold_fg(theme::heading());
     let header_cells = [
-        Cell::from("Process / Protocol").style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("Local Address").style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("Remote Address").style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("State").style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("Service").style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("Application").style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Cell::from("Down/Up").style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Cell::from("Process / Protocol").style(header_style),
+        Cell::from("Local Address").style(header_style),
+        Cell::from("Remote Address").style(header_style),
+        Cell::from("State").style(header_style),
+        Cell::from("Service").style(header_style),
+        Cell::from("Application").style(header_style),
+        Cell::from("Down/Up").style(header_style),
     ];
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
@@ -1136,11 +1260,7 @@ fn draw_grouped_connections_list(
                 let bandwidth = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
 
                 let cells = [
-                    Cell::from(process_cell).style(
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Cell::from(process_cell).style(theme::bold_fg(theme::accent())),
                     Cell::from(""),
                     Cell::from(""),
                     Cell::from(proto_breakdown),
@@ -1213,9 +1333,9 @@ fn draw_grouped_connections_list(
                 // Row color based on staleness
                 let staleness = connection.staleness_ratio();
                 let row_style = if staleness >= 0.90 {
-                    Style::default().fg(Color::Red)
+                    theme::fg(theme::err())
                 } else if staleness >= 0.75 {
-                    Style::default().fg(Color::Yellow)
+                    theme::fg(theme::warn())
                 } else {
                     Style::default()
                 };
@@ -1298,9 +1418,9 @@ fn draw_stats_panel(
 
     // Build process detection line(s) with color based on status
     let process_detection_color = if detection_status.is_degraded {
-        Color::Yellow
+        theme::warn()
     } else {
-        Color::Green
+        theme::ok()
     };
 
     let mut conn_stats_text: Vec<Line> = vec![
@@ -1314,7 +1434,7 @@ fn draw_stats_panel(
             Span::raw("Process Detection: "),
             Span::styled(
                 detection_status.method.clone(),
-                Style::default().fg(process_detection_color),
+                theme::fg(process_detection_color),
             ),
         ]),
     ];
@@ -1334,7 +1454,7 @@ fn draw_stats_panel(
         );
         conn_stats_text.push(Line::from(Span::styled(
             warning_text,
-            Style::default().fg(Color::DarkGray),
+            theme::fg(theme::muted()),
         )));
     }
 
@@ -1392,7 +1512,7 @@ fn draw_stats_panel(
     let network_stats_text: Vec<Line> = vec![
         Line::from(vec![Span::styled(
             "(Active / Total)",
-            Style::default().fg(Color::Gray),
+            theme::fg(theme::muted()),
         )]),
         Line::from(format!(
             "TCP Retransmits: {} / {}",
@@ -1426,9 +1546,9 @@ fn draw_stats_panel(
     let security_text: Vec<Line> = {
         let sandbox_info = app.get_sandbox_info();
         let status_style = match sandbox_info.status.as_str() {
-            "Fully enforced" => Style::default().fg(Color::Green),
-            "Partially enforced" => Style::default().fg(Color::Yellow),
-            "Not applied" | "Error" => Style::default().fg(Color::Red),
+            "Fully enforced" => theme::fg(theme::ok()),
+            "Partially enforced" => theme::fg(theme::warn()),
+            "Not applied" | "Error" => theme::fg(theme::err()),
             _ => Style::default(),
         };
 
@@ -1444,12 +1564,9 @@ fn draw_stats_panel(
         }
 
         let available_indicator = if sandbox_info.landlock_available {
-            Span::styled(" [kernel supported]", Style::default().fg(Color::DarkGray))
+            Span::styled(" [kernel supported]", theme::fg(theme::muted()))
         } else {
-            Span::styled(
-                " [kernel unsupported]",
-                Style::default().fg(Color::DarkGray),
-            )
+            Span::styled(" [kernel unsupported]", theme::fg(theme::muted()))
         };
 
         vec![
@@ -1464,7 +1581,7 @@ fn draw_stats_panel(
                 } else {
                     features.join(", ")
                 },
-                Style::default().fg(Color::Gray),
+                theme::fg(theme::muted()),
             )),
         ]
     };
@@ -1477,12 +1594,12 @@ fn draw_stats_panel(
         if is_root {
             vec![Line::from(Span::styled(
                 "Running as root (UID 0)",
-                Style::default().fg(Color::Yellow),
+                theme::fg(theme::warn()),
             ))]
         } else {
             vec![Line::from(Span::styled(
                 format!("Running as UID {}", uid),
-                Style::default().fg(Color::Green),
+                theme::fg(theme::ok()),
             ))]
         }
     };
@@ -1493,12 +1610,12 @@ fn draw_stats_panel(
         if is_elevated {
             vec![Line::from(Span::styled(
                 "Running as Administrator",
-                Style::default().fg(Color::Yellow),
+                theme::fg(theme::warn()),
             ))]
         } else {
             vec![Line::from(Span::styled(
                 "Running as standard user",
-                Style::default().fg(Color::Green),
+                theme::fg(theme::ok()),
             ))]
         }
     };
@@ -1551,13 +1668,13 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(sparkline_rows[0]);
 
-    let rx_label = Paragraph::new("RX").style(Style::default().fg(Color::Green));
+    let rx_label = Paragraph::new("RX").style(theme::fg(theme::rx()));
     f.render_widget(rx_label, rx_cols[0]);
 
     let rx_data = traffic_history.get_rx_sparkline_data(sparkline_width);
     let rx_sparkline = Sparkline::default()
         .data(&rx_data)
-        .style(Style::default().fg(Color::Green));
+        .style(theme::fg(theme::rx()));
     f.render_widget(rx_sparkline, rx_cols[1]);
 
     // TX row: label + sparkline
@@ -1566,13 +1683,13 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(sparkline_rows[1]);
 
-    let tx_label = Paragraph::new("TX").style(Style::default().fg(Color::Blue));
+    let tx_label = Paragraph::new("TX").style(theme::fg(theme::tx()));
     f.render_widget(tx_label, tx_cols[0]);
 
     let tx_data = traffic_history.get_tx_sparkline_data(sparkline_width);
     let tx_sparkline = Sparkline::default()
         .data(&tx_data)
-        .style(Style::default().fg(Color::Blue));
+        .style(theme::fg(theme::tx()));
     f.render_widget(tx_sparkline, tx_cols[1]);
 
     // Current rates row
@@ -1585,12 +1702,12 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
     let rates_text = Line::from(vec![
         Span::styled(
             format!("↓{}/s", format_bytes(current_rx)),
-            Style::default().fg(Color::Green),
+            theme::fg(theme::rx()),
         ),
         Span::raw(" "),
         Span::styled(
             format!("↑{}/s", format_bytes(current_tx)),
-            Style::default().fg(Color::Blue),
+            theme::fg(theme::tx()),
         ),
     ]);
     let rates_para = Paragraph::new(rates_text);
@@ -1631,7 +1748,7 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
     let interface_text: Vec<Line> = if filtered_interface_stats.is_empty() {
         vec![Line::from(Span::styled(
             "No interface stats available",
-            Style::default().fg(Color::Gray),
+            theme::fg(theme::muted()),
         ))]
     } else {
         let mut lines = Vec::new();
@@ -1642,15 +1759,15 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
             let total_drops = stat.rx_dropped + stat.tx_dropped;
 
             let error_style = if total_errors > 0 {
-                Style::default().fg(Color::Red)
+                theme::fg(theme::err())
             } else {
-                Style::default().fg(Color::Green)
+                theme::fg(theme::ok())
             };
 
             let drop_style = if total_drops > 0 {
-                Style::default().fg(Color::Yellow)
+                theme::fg(theme::warn())
             } else {
-                Style::default().fg(Color::Green)
+                theme::fg(theme::ok())
             };
 
             // Show interface name with errors/drops on single line
@@ -1669,7 +1786,7 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
                     "... {} more (press 'i')",
                     filtered_interface_stats.len() - num_to_show
                 ),
-                Style::default().fg(Color::Gray),
+                theme::fg(theme::muted()),
             )));
         }
         lines
@@ -1740,7 +1857,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     if !history.has_enough_data() {
         let placeholder = Paragraph::new("Collecting data...")
             .block(block)
-            .style(Style::default().fg(Color::DarkGray));
+            .style(theme::fg(theme::muted()));
         f.render_widget(placeholder, area);
         return;
     }
@@ -1760,13 +1877,13 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
             .name("RX ↓")
             .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(Style::default().fg(Color::Green))
+            .style(theme::fg(theme::rx()))
             .data(&rx_data),
         Dataset::default()
             .name("TX ↑")
             .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
-            .style(Style::default().fg(Color::Blue))
+            .style(theme::fg(theme::tx()))
             .data(&tx_data),
     ];
 
@@ -1775,7 +1892,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         .x_axis(
             Axis::default()
                 .title("Time")
-                .style(Style::default().fg(Color::Gray))
+                .style(theme::fg(theme::muted()))
                 .bounds([-60.0, 0.0])
                 .labels(vec![
                     Line::from("-60s"),
@@ -1786,7 +1903,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         .y_axis(
             Axis::default()
                 .title("Rate")
-                .style(Style::default().fg(Color::Gray))
+                .style(theme::fg(theme::muted()))
                 .bounds([0.0, max_rate])
                 .labels(vec![
                     Line::from("0"),
@@ -1806,8 +1923,7 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
     f.render_widget(block, area);
 
     if !history.has_enough_data() {
-        let placeholder =
-            Paragraph::new("Collecting...").style(Style::default().fg(Color::DarkGray));
+        let placeholder = Paragraph::new("Collecting...").style(theme::fg(theme::muted()));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -1823,13 +1939,12 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
 
     let sparkline = Sparkline::default()
         .data(&conn_data)
-        .style(Style::default().fg(Color::Cyan));
+        .style(theme::fg(theme::accent()));
     f.render_widget(sparkline, chunks[0]);
 
     // Current connection count label
     let current_count = conn_data.last().copied().unwrap_or(0);
-    let label = Paragraph::new(format!("{} connections", current_count))
-        .style(Style::default().fg(Color::White));
+    let label = Paragraph::new(format!("{} connections", current_count));
     f.render_widget(label, chunks[1]);
 }
 
@@ -1859,18 +1974,18 @@ fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) 
         let bar: String = "█".repeat(filled) + &"░".repeat(bar_width.saturating_sub(filled));
 
         let color = match label {
-            "HTTPS" => Color::Green,
-            "QUIC" => Color::Cyan,
-            "HTTP" => Color::Yellow,
-            "DNS" => Color::Magenta,
-            "SSH" => Color::Blue,
-            _ => Color::Gray,
+            "HTTPS" => theme::proto_https(),
+            "QUIC" => theme::proto_quic(),
+            "HTTP" => theme::proto_http(),
+            "DNS" => theme::proto_dns(),
+            "SSH" => theme::proto_ssh(),
+            _ => theme::proto_other(),
         };
 
         lines.push(Line::from(vec![
-            Span::styled(format!("{:6}", label), Style::default().fg(color)),
+            Span::styled(format!("{:6}", label), theme::fg(color)),
             Span::raw(" "),
-            Span::styled(bar, Style::default().fg(color)),
+            Span::styled(bar, theme::fg(color)),
             Span::raw(format!(" {:5.1}%", pct)),
         ]));
     }
@@ -1878,7 +1993,7 @@ fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) 
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "No connections",
-            Style::default().fg(Color::DarkGray),
+            theme::fg(theme::muted()),
         )));
     }
 
@@ -1927,14 +2042,13 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
             };
             Row::new(vec![
                 Cell::from(display_name),
-                Cell::from(format_rate(rate)).style(Style::default().fg(Color::Cyan)),
+                Cell::from(format_rate(rate)).style(theme::fg(theme::accent())),
             ])
         })
         .collect();
 
     if rows.is_empty() {
-        let placeholder =
-            Paragraph::new("No active processes").style(Style::default().fg(Color::DarkGray));
+        let placeholder = Paragraph::new("No active processes").style(theme::fg(theme::muted()));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -1943,13 +2057,7 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
         rows,
         [Constraint::Percentage(60), Constraint::Percentage(40)],
     )
-    .header(
-        Row::new(vec!["Process", "Rate"]).style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
-    );
+    .header(Row::new(vec!["Process", "Rate"]).style(theme::bold_fg(theme::heading())));
 
     f.render_widget(table, inner);
 }
@@ -1957,12 +2065,12 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
 /// Draw chart legend
 fn draw_traffic_legend(f: &mut Frame, area: Rect) {
     let legend = Paragraph::new(Line::from(vec![
-        Span::styled("▬", Style::default().fg(Color::Green)),
+        Span::styled("▬", theme::fg(theme::rx())),
         Span::raw(" RX (incoming)  "),
-        Span::styled("▬", Style::default().fg(Color::Blue)),
+        Span::styled("▬", theme::fg(theme::tx())),
         Span::raw(" TX (outgoing)"),
     ]))
-    .style(Style::default().fg(Color::DarkGray));
+    .style(theme::fg(theme::muted()));
 
     f.render_widget(legend, area);
 }
@@ -1977,8 +2085,7 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     f.render_widget(block, area);
 
     if !history.has_enough_data() {
-        let placeholder =
-            Paragraph::new("Collecting data...").style(Style::default().fg(Color::DarkGray));
+        let placeholder = Paragraph::new("Collecting data...").style(theme::fg(theme::muted()));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -2015,24 +2122,24 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         let empty = bar_width.saturating_sub(filled);
 
         let color = if rtt < 50.0 {
-            Color::Green
+            theme::ok()
         } else if rtt < 150.0 {
-            Color::Yellow
+            theme::warn()
         } else {
-            Color::Red
+            theme::err()
         };
 
         Line::from(vec![
-            Span::styled("  RTT  ", Style::default().fg(Color::White)),
-            Span::styled("█".repeat(filled), Style::default().fg(color)),
-            Span::styled("░".repeat(empty), Style::default().fg(Color::DarkGray)),
-            Span::styled(format!(" {:>6.1}ms", rtt), Style::default().fg(color)),
+            Span::styled("  RTT  ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("█".repeat(filled), theme::fg(color)),
+            Span::styled("░".repeat(empty), theme::fg(theme::muted())),
+            Span::styled(format!(" {:>6.1}ms", rtt), theme::fg(color)),
         ])
     } else {
         Line::from(vec![
-            Span::styled("  RTT  ", Style::default().fg(Color::White)),
-            Span::styled("░".repeat(bar_width), Style::default().fg(Color::DarkGray)),
-            Span::styled("    --  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  RTT  ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled("░".repeat(bar_width), theme::fg(theme::muted())),
+            Span::styled("    --  ", theme::fg(theme::muted())),
         ])
     };
 
@@ -2042,43 +2149,34 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let empty = bar_width.saturating_sub(filled);
 
     let loss_color = if current_loss < 1.0 {
-        Color::Green
+        theme::ok()
     } else if current_loss < 5.0 {
-        Color::Yellow
+        theme::warn()
     } else {
-        Color::Red
+        theme::err()
     };
 
     let loss_line = Line::from(vec![
-        Span::styled("  Loss ", Style::default().fg(Color::White)),
+        Span::styled("  Loss ", Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(
             "█".repeat(filled.max(if current_loss > 0.0 { 1 } else { 0 })),
-            Style::default().fg(loss_color),
+            theme::fg(loss_color),
         ),
-        Span::styled(
-            "░".repeat(empty.min(bar_width)),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::styled(
-            format!(" {:>6.2}%", current_loss),
-            Style::default().fg(loss_color),
-        ),
+        Span::styled("░".repeat(empty.min(bar_width)), theme::fg(theme::muted())),
+        Span::styled(format!(" {:>6.2}%", current_loss), theme::fg(loss_color)),
     ]);
 
     // Build averages line
     let avg_line = Line::from(vec![
-        Span::styled("  avg: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  avg: ", theme::fg(theme::muted())),
         Span::styled(
             avg_rtt
                 .map(|r| format!("{:.0}ms", r))
                 .unwrap_or_else(|| "--".to_string()),
-            Style::default().fg(Color::DarkGray),
+            theme::fg(theme::muted()),
         ),
-        Span::styled(" / ", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!("{:.2}%", avg_loss),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(" / ", theme::fg(theme::muted())),
+        Span::styled(format!("{:.2}%", avg_loss), theme::fg(theme::muted())),
     ]);
 
     let paragraph = Paragraph::new(vec![rtt_line, loss_line, avg_line]);
@@ -2101,50 +2199,50 @@ fn draw_tcp_counters(f: &mut Frame, app: &App, area: Rect) {
 
     // Color based on counts (higher = more concerning)
     let retrans_color = if retransmits == 0 {
-        Color::Green
+        theme::ok()
     } else if retransmits < 100 {
-        Color::Yellow
+        theme::warn()
     } else {
-        Color::Red
+        theme::err()
     };
 
     let ooo_color = if out_of_order == 0 {
-        Color::Green
+        theme::ok()
     } else if out_of_order < 50 {
-        Color::Yellow
+        theme::warn()
     } else {
-        Color::Red
+        theme::err()
     };
 
     let fast_color = if fast_retransmits == 0 {
-        Color::Green
+        theme::ok()
     } else if fast_retransmits < 50 {
-        Color::Yellow
+        theme::warn()
     } else {
-        Color::Red
+        theme::err()
     };
 
     let lines = vec![
         Line::from(vec![
-            Span::styled("  Retransmits  ", Style::default().fg(Color::White)),
             Span::styled(
-                format!("{:>8}", retransmits),
-                Style::default().fg(retrans_color),
+                "  Retransmits  ",
+                Style::default().add_modifier(Modifier::BOLD),
             ),
+            Span::styled(format!("{:>8}", retransmits), theme::fg(retrans_color)),
         ]),
         Line::from(vec![
-            Span::styled("  Out of Order ", Style::default().fg(Color::White)),
             Span::styled(
-                format!("{:>8}", out_of_order),
-                Style::default().fg(ooo_color),
+                "  Out of Order ",
+                Style::default().add_modifier(Modifier::BOLD),
             ),
+            Span::styled(format!("{:>8}", out_of_order), theme::fg(ooo_color)),
         ]),
         Line::from(vec![
-            Span::styled("  Fast Retrans ", Style::default().fg(Color::White)),
             Span::styled(
-                format!("{:>8}", fast_retransmits),
-                Style::default().fg(fast_color),
+                "  Fast Retrans ",
+                Style::default().add_modifier(Modifier::BOLD),
             ),
+            Span::styled(format!("{:>8}", fast_retransmits), theme::fg(fast_color)),
         ]),
     ];
 
@@ -2207,7 +2305,7 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
     f.render_widget(block, area);
 
     if states.is_empty() {
-        let text = Paragraph::new("No TCP connections").style(Style::default().fg(Color::DarkGray));
+        let text = Paragraph::new("No TCP connections").style(theme::fg(theme::muted()));
         f.render_widget(text, inner);
         return;
     }
@@ -2231,17 +2329,17 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
 
             // Color based on state health
             let color = match *name {
-                "ESTAB" => Color::Green,
-                "SYN_SENT" | "SYN_RECV" => Color::Yellow,
-                "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" => Color::Cyan,
-                "CLOSE_WAIT" | "LAST_ACK" | "CLOSING" => Color::Magenta,
-                "CLOSED" => Color::DarkGray,
-                _ => Color::White,
+                "ESTAB" => theme::tcp_established(),
+                "SYN_SENT" | "SYN_RECV" => theme::tcp_opening(),
+                "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" => theme::tcp_closing(),
+                "CLOSE_WAIT" | "LAST_ACK" | "CLOSING" => theme::tcp_waiting(),
+                "CLOSED" => theme::tcp_closed(),
+                _ => Color::Reset,
             };
 
             Line::from(vec![
-                Span::styled(format!("{:>10} ", name), Style::default().fg(color)),
-                Span::styled(bar, Style::default().fg(color)),
+                Span::styled(format!("{:>10} ", name), theme::fg(color)),
+                Span::styled(bar, theme::fg(color)),
                 Span::raw(format!(" {}", count)),
             ])
         })
@@ -2266,7 +2364,7 @@ fn draw_connection_details(
                     .borders(Borders::ALL)
                     .title("Connection Details"),
             )
-            .style(Style::default().fg(Color::Red))
+            .style(theme::fg(theme::err()))
             .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(text, area);
         return Ok(());
@@ -2283,27 +2381,27 @@ fn draw_connection_details(
     // Connection details
     let mut details_text: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled("Protocol: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Protocol: ", theme::fg(theme::label())),
             Span::raw(conn.protocol.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Local Address: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Local Address: ", theme::fg(theme::label())),
             Span::raw(conn.local_addr.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Remote Address: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Remote Address: ", theme::fg(theme::label())),
             Span::raw(conn.remote_addr.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("State: ", Style::default().fg(Color::Yellow)),
+            Span::styled("State: ", theme::fg(theme::label())),
             Span::raw(conn.state()),
         ]),
         Line::from(vec![
-            Span::styled("Process: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Process: ", theme::fg(theme::label())),
             Span::raw(conn.process_name.clone().unwrap_or_else(|| "-".to_string())),
         ]),
         Line::from(vec![
-            Span::styled("PID: ", Style::default().fg(Color::Yellow)),
+            Span::styled("PID: ", theme::fg(theme::label())),
             Span::raw(
                 conn.pid
                     .map(|p| p.to_string())
@@ -2311,7 +2409,7 @@ fn draw_connection_details(
             ),
         ]),
         Line::from(vec![
-            Span::styled("Service: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Service: ", theme::fg(theme::label())),
             Span::raw(conn.service_name.clone().unwrap_or_else(|| "-".to_string())),
         ]),
     ];
@@ -2324,11 +2422,11 @@ fn draw_connection_details(
         if local_hostname.is_some() || remote_hostname.is_some() {
             details_text.push(Line::from("")); // Empty line separator
             details_text.push(Line::from(vec![
-                Span::styled("Local Hostname: ", Style::default().fg(Color::Yellow)),
+                Span::styled("Local Hostname: ", theme::fg(theme::label())),
                 Span::raw(local_hostname.unwrap_or_else(|| "-".to_string())),
             ]));
             details_text.push(Line::from(vec![
-                Span::styled("Remote Hostname: ", Style::default().fg(Color::Yellow)),
+                Span::styled("Remote Hostname: ", theme::fg(theme::label())),
                 Span::raw(remote_hostname.unwrap_or_else(|| "-".to_string())),
             ]));
         }
@@ -2338,7 +2436,7 @@ fn draw_connection_details(
     match &conn.dpi_info {
         Some(dpi) => {
             details_text.push(Line::from(vec![
-                Span::styled("Application: ", Style::default().fg(Color::Yellow)),
+                Span::styled("Application: ", theme::fg(theme::label())),
                 Span::raw(dpi.application.to_string()),
             ]));
 
@@ -2347,19 +2445,19 @@ fn draw_connection_details(
                 crate::network::types::ApplicationProtocol::Http(info) => {
                     if let Some(method) = &info.method {
                         details_text.push(Line::from(vec![
-                            Span::styled("  HTTP Method: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  HTTP Method: ", theme::fg(theme::label())),
                             Span::raw(method.clone()),
                         ]));
                     }
                     if let Some(path) = &info.path {
                         details_text.push(Line::from(vec![
-                            Span::styled("  HTTP Path: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  HTTP Path: ", theme::fg(theme::label())),
                             Span::raw(path.clone()),
                         ]));
                     }
                     if let Some(status) = info.status_code {
                         details_text.push(Line::from(vec![
-                            Span::styled("  HTTP Status: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  HTTP Status: ", theme::fg(theme::label())),
                             Span::raw(status.to_string()),
                         ]));
                     }
@@ -2368,32 +2466,32 @@ fn draw_connection_details(
                     if let Some(tls_info) = &info.tls_info {
                         if let Some(sni) = &tls_info.sni {
                             details_text.push(Line::from(vec![
-                                Span::styled("  SNI: ", Style::default().fg(Color::Cyan)),
+                                Span::styled("  SNI: ", theme::fg(theme::label())),
                                 Span::raw(sni.clone()),
                             ]));
                         }
                         if !tls_info.alpn.is_empty() {
                             details_text.push(Line::from(vec![
-                                Span::styled("  ALPN: ", Style::default().fg(Color::Cyan)),
+                                Span::styled("  ALPN: ", theme::fg(theme::label())),
                                 Span::raw(tls_info.alpn.join(", ")),
                             ]));
                         }
                         if let Some(version) = &tls_info.version {
                             details_text.push(Line::from(vec![
-                                Span::styled("  TLS Version: ", Style::default().fg(Color::Cyan)),
+                                Span::styled("  TLS Version: ", theme::fg(theme::label())),
                                 Span::raw(version.to_string()),
                             ]));
                         }
                         if let Some(formatted_cipher) = tls_info.format_cipher_suite() {
                             let cipher_color = if tls_info.is_cipher_suite_secure().unwrap_or(false)
                             {
-                                Color::Green
+                                theme::ok()
                             } else {
-                                Color::Yellow
+                                theme::warn()
                             };
                             details_text.push(Line::from(vec![
-                                Span::styled("  Cipher Suite: ", Style::default().fg(Color::Cyan)),
-                                Span::styled(formatted_cipher, Style::default().fg(cipher_color)),
+                                Span::styled("  Cipher Suite: ", theme::fg(theme::label())),
+                                Span::styled(formatted_cipher, theme::fg(cipher_color)),
                             ]));
                         }
                     }
@@ -2401,13 +2499,13 @@ fn draw_connection_details(
                 crate::network::types::ApplicationProtocol::Dns(info) => {
                     if let Some(query_type) = &info.query_type {
                         details_text.push(Line::from(vec![
-                            Span::styled("  DNS Type: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  DNS Type: ", theme::fg(theme::label())),
                             Span::raw(format!("{:?}", query_type)),
                         ]));
                     }
                     if !info.response_ips.is_empty() {
                         details_text.push(Line::from(vec![
-                            Span::styled("  DNS Response IPs: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  DNS Response IPs: ", theme::fg(theme::label())),
                             Span::raw(format!("{:?}", info.response_ips)),
                         ]));
                     }
@@ -2416,99 +2514,99 @@ fn draw_connection_details(
                     if let Some(tls_info) = &info.tls_info {
                         let sni = tls_info.sni.clone().unwrap_or_else(|| "-".to_string());
                         details_text.push(Line::from(vec![
-                            Span::styled("  QUIC SNI: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  QUIC SNI: ", theme::fg(theme::label())),
                             Span::raw(sni),
                         ]));
                         let alpn = tls_info.alpn.join(", ");
                         details_text.push(Line::from(vec![
-                            Span::styled("  QUIC ALPN: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  QUIC ALPN: ", theme::fg(theme::label())),
                             Span::raw(alpn),
                         ]));
                     }
                     if let Some(version) = info.version_string.as_ref() {
                         details_text.push(Line::from(vec![
-                            Span::styled("  QUIC Version: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  QUIC Version: ", theme::fg(theme::label())),
                             Span::raw(version.clone()),
                         ]));
                     }
                     if let Some(connection_id) = &info.connection_id_hex {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Connection ID: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Connection ID: ", theme::fg(theme::label())),
                             Span::raw(connection_id.clone()),
                         ]));
                     }
 
                     let packet_type = info.packet_type.to_string();
                     details_text.push(Line::from(vec![
-                        Span::styled("  Packet Type: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  Packet Type: ", theme::fg(theme::label())),
                         Span::raw(packet_type),
                     ]));
                     let connection_state = info.connection_state.to_string();
                     details_text.push(Line::from(vec![
-                        Span::styled("  Connection State: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  Connection State: ", theme::fg(theme::label())),
                         Span::raw(connection_state),
                     ]));
                 }
                 crate::network::types::ApplicationProtocol::Ssh(info) => {
                     if let Some(version) = &info.version {
                         details_text.push(Line::from(vec![
-                            Span::styled("  SSH Version: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  SSH Version: ", theme::fg(theme::label())),
                             Span::raw(format!("{:?}", version)),
                         ]));
                     }
                     if let Some(server_software) = &info.server_software {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Server Software: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Server Software: ", theme::fg(theme::label())),
                             Span::raw(server_software.clone()),
                         ]));
                     }
                     if let Some(client_software) = &info.client_software {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Client Software: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Client Software: ", theme::fg(theme::label())),
                             Span::raw(client_software.clone()),
                         ]));
                     }
                     details_text.push(Line::from(vec![
-                        Span::styled("  Connection State: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  Connection State: ", theme::fg(theme::label())),
                         Span::raw(format!("{:?}", info.connection_state)),
                     ]));
                     if !info.algorithms.is_empty() {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Algorithms: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Algorithms: ", theme::fg(theme::label())),
                             Span::raw(info.algorithms.join(", ")),
                         ]));
                     }
                     if let Some(auth_method) = &info.auth_method {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Auth Method: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Auth Method: ", theme::fg(theme::label())),
                             Span::raw(auth_method.clone()),
                         ]));
                     }
                 }
                 crate::network::types::ApplicationProtocol::Ntp(info) => {
                     details_text.push(Line::from(vec![
-                        Span::styled("  NTP Version: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  NTP Version: ", theme::fg(theme::label())),
                         Span::raw(format!("{}", info.version)),
                     ]));
                     details_text.push(Line::from(vec![
-                        Span::styled("  NTP Mode: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  NTP Mode: ", theme::fg(theme::label())),
                         Span::raw(info.mode.to_string()),
                     ]));
                     details_text.push(Line::from(vec![
-                        Span::styled("  Stratum: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  Stratum: ", theme::fg(theme::label())),
                         Span::raw(format!("{}", info.stratum)),
                     ]));
                 }
                 crate::network::types::ApplicationProtocol::Mdns(info) => {
                     if let Some(query_name) = &info.query_name {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Query Name: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Query Name: ", theme::fg(theme::label())),
                             Span::raw(query_name.clone()),
                         ]));
                     }
                     if let Some(query_type) = &info.query_type {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Query Type: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Query Type: ", theme::fg(theme::label())),
                             Span::raw(format!("{:?}", query_type)),
                         ]));
                     }
@@ -2516,75 +2614,75 @@ fn draw_connection_details(
                 crate::network::types::ApplicationProtocol::Llmnr(info) => {
                     if let Some(query_name) = &info.query_name {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Query Name: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Query Name: ", theme::fg(theme::label())),
                             Span::raw(query_name.clone()),
                         ]));
                     }
                     if let Some(query_type) = &info.query_type {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Query Type: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Query Type: ", theme::fg(theme::label())),
                             Span::raw(format!("{:?}", query_type)),
                         ]));
                     }
                 }
                 crate::network::types::ApplicationProtocol::Dhcp(info) => {
                     details_text.push(Line::from(vec![
-                        Span::styled("  Message Type: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  Message Type: ", theme::fg(theme::label())),
                         Span::raw(info.message_type.to_string()),
                     ]));
                     if let Some(hostname) = &info.hostname {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Hostname: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Hostname: ", theme::fg(theme::label())),
                             Span::raw(hostname.clone()),
                         ]));
                     }
                     if let Some(client_mac) = &info.client_mac {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Client MAC: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Client MAC: ", theme::fg(theme::label())),
                             Span::raw(client_mac.clone()),
                         ]));
                     }
                 }
                 crate::network::types::ApplicationProtocol::Snmp(info) => {
                     details_text.push(Line::from(vec![
-                        Span::styled("  SNMP Version: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  SNMP Version: ", theme::fg(theme::label())),
                         Span::raw(info.version.to_string()),
                     ]));
                     details_text.push(Line::from(vec![
-                        Span::styled("  PDU Type: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  PDU Type: ", theme::fg(theme::label())),
                         Span::raw(info.pdu_type.to_string()),
                     ]));
                     if let Some(community) = &info.community {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Community: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Community: ", theme::fg(theme::label())),
                             Span::raw(community.clone()),
                         ]));
                     }
                 }
                 crate::network::types::ApplicationProtocol::Ssdp(info) => {
                     details_text.push(Line::from(vec![
-                        Span::styled("  Method: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  Method: ", theme::fg(theme::label())),
                         Span::raw(info.method.to_string()),
                     ]));
                     if let Some(service_type) = &info.service_type {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Service Type: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Service Type: ", theme::fg(theme::label())),
                             Span::raw(service_type.clone()),
                         ]));
                     }
                 }
                 crate::network::types::ApplicationProtocol::NetBios(info) => {
                     details_text.push(Line::from(vec![
-                        Span::styled("  Service: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  Service: ", theme::fg(theme::label())),
                         Span::raw(info.service.to_string()),
                     ]));
                     details_text.push(Line::from(vec![
-                        Span::styled("  Opcode: ", Style::default().fg(Color::Cyan)),
+                        Span::styled("  Opcode: ", theme::fg(theme::label())),
                         Span::raw(info.opcode.to_string()),
                     ]));
                     if let Some(name) = &info.name {
                         details_text.push(Line::from(vec![
-                            Span::styled("  Name: ", Style::default().fg(Color::Cyan)),
+                            Span::styled("  Name: ", theme::fg(theme::label())),
                             Span::raw(name.clone()),
                         ]));
                     }
@@ -2593,7 +2691,7 @@ fn draw_connection_details(
         }
         None => {
             details_text.push(Line::from(vec![
-                Span::styled("Application: ", Style::default().fg(Color::Yellow)),
+                Span::styled("Application: ", theme::fg(theme::label())),
                 Span::raw("-".to_string()),
             ]));
         }
@@ -2603,19 +2701,19 @@ fn draw_connection_details(
     if let ProtocolState::Arp(arp_info) = &conn.protocol_state {
         details_text.push(Line::from(""));
         details_text.push(Line::from(vec![
-            Span::styled("Sender MAC: ", Style::default().fg(Color::Cyan)),
+            Span::styled("Sender MAC: ", theme::fg(theme::label())),
             Span::raw(arp_info.sender_mac.clone()),
         ]));
         details_text.push(Line::from(vec![
-            Span::styled("Sender IP: ", Style::default().fg(Color::Cyan)),
+            Span::styled("Sender IP: ", theme::fg(theme::label())),
             Span::raw(arp_info.sender_ip.to_string()),
         ]));
         details_text.push(Line::from(vec![
-            Span::styled("Target MAC: ", Style::default().fg(Color::Cyan)),
+            Span::styled("Target MAC: ", theme::fg(theme::label())),
             Span::raw(arp_info.target_mac.clone()),
         ]));
         details_text.push(Line::from(vec![
-            Span::styled("Target IP: ", Style::default().fg(Color::Cyan)),
+            Span::styled("Target IP: ", theme::fg(theme::label())),
             Span::raw(arp_info.target_ip.to_string()),
         ]));
     }
@@ -2624,23 +2722,23 @@ fn draw_connection_details(
     if let Some(analytics) = &conn.tcp_analytics {
         details_text.push(Line::from(""));
         details_text.push(Line::from(vec![
-            Span::styled("TCP Retransmits: ", Style::default().fg(Color::Yellow)),
+            Span::styled("TCP Retransmits: ", theme::fg(theme::label())),
             Span::raw(analytics.retransmit_count.to_string()),
         ]));
         details_text.push(Line::from(vec![
-            Span::styled("Out-of-Order Packets: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Out-of-Order Packets: ", theme::fg(theme::label())),
             Span::raw(analytics.out_of_order_count.to_string()),
         ]));
         details_text.push(Line::from(vec![
-            Span::styled("Duplicate ACKs: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Duplicate ACKs: ", theme::fg(theme::label())),
             Span::raw(analytics.duplicate_ack_count.to_string()),
         ]));
         details_text.push(Line::from(vec![
-            Span::styled("Fast Retransmits: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Fast Retransmits: ", theme::fg(theme::label())),
             Span::raw(analytics.fast_retransmit_count.to_string()),
         ]));
         details_text.push(Line::from(vec![
-            Span::styled("Window Size: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Window Size: ", theme::fg(theme::label())),
             Span::raw(analytics.last_window_size.to_string()),
         ]));
     }
@@ -2649,15 +2747,15 @@ fn draw_connection_details(
     if let Some(rtt) = conn.initial_rtt {
         let rtt_ms = rtt.as_secs_f64() * 1000.0;
         let rtt_color = if rtt_ms < 50.0 {
-            Color::Green
+            theme::ok()
         } else if rtt_ms < 150.0 {
-            Color::Yellow
+            theme::warn()
         } else {
-            Color::Red
+            theme::err()
         };
         details_text.push(Line::from(vec![
-            Span::styled("Initial RTT: ", Style::default().fg(Color::Yellow)),
-            Span::styled(format!("{:.1}ms", rtt_ms), Style::default().fg(rtt_color)),
+            Span::styled("Initial RTT: ", theme::fg(theme::label())),
+            Span::styled(format!("{:.1}ms", rtt_ms), theme::fg(rtt_color)),
         ]));
     }
 
@@ -2675,27 +2773,27 @@ fn draw_connection_details(
     // Traffic details
     let traffic_text: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled("Bytes Sent: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Bytes Sent: ", theme::fg(theme::label())),
             Span::raw(format_bytes(conn.bytes_sent)),
         ]),
         Line::from(vec![
-            Span::styled("Bytes Received: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Bytes Received: ", theme::fg(theme::label())),
             Span::raw(format_bytes(conn.bytes_received)),
         ]),
         Line::from(vec![
-            Span::styled("Packets Sent: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Packets Sent: ", theme::fg(theme::label())),
             Span::raw(conn.packets_sent.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Packets Received: ", Style::default().fg(Color::Yellow)),
+            Span::styled("Packets Received: ", theme::fg(theme::label())),
             Span::raw(conn.packets_received.to_string()),
         ]),
         Line::from(vec![
-            Span::styled("Current Rate (In): ", Style::default().fg(Color::Yellow)),
+            Span::styled("Current Rate (In): ", theme::fg(theme::label())),
             Span::raw(format_rate(conn.current_incoming_rate_bps)),
         ]),
         Line::from(vec![
-            Span::styled("Current Rate (Out): ", Style::default().fg(Color::Yellow)),
+            Span::styled("Current Rate (Out): ", theme::fg(theme::label())),
             Span::raw(format_rate(conn.current_outgoing_rate_bps)),
         ]),
     ];
@@ -2718,174 +2816,160 @@ fn draw_connection_details(
 fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
     let help_text: Vec<Line> = vec![
         Line::from(vec![
-            Span::styled(
-                "RustNet Monitor ",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("RustNet Monitor ", theme::bold_fg(theme::ok())),
             Span::raw("- Network Connection Monitor"),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("q ", Style::default().fg(Color::Yellow)),
+            Span::styled("q ", theme::fg(theme::key())),
             Span::raw("Quit application (press twice to confirm)"),
         ]),
         Line::from(vec![
-            Span::styled("Ctrl+C ", Style::default().fg(Color::Yellow)),
+            Span::styled("Ctrl+C ", theme::fg(theme::key())),
             Span::raw("Quit immediately"),
         ]),
         Line::from(vec![
-            Span::styled("x ", Style::default().fg(Color::Yellow)),
+            Span::styled("x ", theme::fg(theme::key())),
             Span::raw("Clear all connections (press twice to confirm)"),
         ]),
         Line::from(vec![
-            Span::styled("Tab ", Style::default().fg(Color::Yellow)),
+            Span::styled("Tab ", theme::fg(theme::key())),
             Span::raw("Switch between tabs"),
         ]),
         Line::from(vec![
-            Span::styled("↑/k, ↓/j ", Style::default().fg(Color::Yellow)),
+            Span::styled("↑/k, ↓/j ", theme::fg(theme::key())),
             Span::raw("Navigate connections (wraps around)"),
         ]),
         Line::from(vec![
-            Span::styled("g, G ", Style::default().fg(Color::Yellow)),
+            Span::styled("g, G ", theme::fg(theme::key())),
             Span::raw("Jump to first/last connection (vim-style)"),
         ]),
         Line::from(vec![
-            Span::styled("Page Up/Down ", Style::default().fg(Color::Yellow)),
+            Span::styled("Page Up/Down ", theme::fg(theme::key())),
             Span::raw("Navigate connections by page"),
         ]),
         Line::from(vec![
-            Span::styled("c ", Style::default().fg(Color::Yellow)),
+            Span::styled("c ", theme::fg(theme::key())),
             Span::raw("Copy remote address to clipboard"),
         ]),
         Line::from(vec![
-            Span::styled("p ", Style::default().fg(Color::Yellow)),
+            Span::styled("p ", theme::fg(theme::key())),
             Span::raw("Toggle between service names and port numbers"),
         ]),
         Line::from(vec![
-            Span::styled("d ", Style::default().fg(Color::Yellow)),
+            Span::styled("d ", theme::fg(theme::key())),
             Span::raw("Toggle between hostnames and IP addresses (when --resolve-dns)"),
         ]),
         Line::from(vec![
-            Span::styled("s ", Style::default().fg(Color::Yellow)),
+            Span::styled("s ", theme::fg(theme::key())),
             Span::raw("Cycle through sort columns (Bandwidth, Process, etc.)"),
         ]),
         Line::from(vec![
-            Span::styled("S ", Style::default().fg(Color::Yellow)),
+            Span::styled("S ", theme::fg(theme::key())),
             Span::raw("Toggle sort direction (ascending/descending)"),
         ]),
         Line::from(vec![
-            Span::styled("a ", Style::default().fg(Color::Yellow)),
+            Span::styled("a ", theme::fg(theme::key())),
             Span::raw("Toggle process grouping (aggregate by process)"),
         ]),
         Line::from(vec![
-            Span::styled("Space ", Style::default().fg(Color::Yellow)),
+            Span::styled("Space ", theme::fg(theme::key())),
             Span::raw("Expand/collapse group (when grouping enabled)"),
         ]),
         Line::from(vec![
-            Span::styled("←/→ ", Style::default().fg(Color::Yellow)),
+            Span::styled("←/→ ", theme::fg(theme::key())),
             Span::raw("Collapse/expand group"),
         ]),
         Line::from(vec![
-            Span::styled("r ", Style::default().fg(Color::Yellow)),
+            Span::styled("r ", theme::fg(theme::key())),
             Span::raw("Reset view (grouping, sort, filter)"),
         ]),
         Line::from(vec![
-            Span::styled("Enter ", Style::default().fg(Color::Yellow)),
+            Span::styled("Enter ", theme::fg(theme::key())),
             Span::raw("View connection details"),
         ]),
         Line::from(vec![
-            Span::styled("Esc ", Style::default().fg(Color::Yellow)),
+            Span::styled("Esc ", theme::fg(theme::key())),
             Span::raw("Return to overview"),
         ]),
         Line::from(vec![
-            Span::styled("h ", Style::default().fg(Color::Yellow)),
+            Span::styled("h ", theme::fg(theme::key())),
             Span::raw("Toggle this help screen"),
         ]),
         Line::from(vec![
-            Span::styled("i ", Style::default().fg(Color::Yellow)),
+            Span::styled("i ", theme::fg(theme::key())),
             Span::raw("Toggle interface statistics view"),
         ]),
         Line::from(vec![
-            Span::styled("/ ", Style::default().fg(Color::Yellow)),
+            Span::styled("/ ", theme::fg(theme::key())),
             Span::raw("Enter filter mode (navigate while typing!)"),
         ]),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Tabs:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )]),
+        Line::from(vec![Span::styled("Tabs:", theme::bold_fg(theme::accent()))]),
         Line::from(vec![
-            Span::styled("  Overview ", Style::default().fg(Color::Green)),
+            Span::styled("  Overview ", theme::fg(theme::ok())),
             Span::raw("Connection list with mini traffic graph"),
         ]),
         Line::from(vec![
-            Span::styled("  Details ", Style::default().fg(Color::Green)),
+            Span::styled("  Details ", theme::fg(theme::ok())),
             Span::raw("Full details for selected connection"),
         ]),
         Line::from(vec![
-            Span::styled("  Interfaces ", Style::default().fg(Color::Green)),
+            Span::styled("  Interfaces ", theme::fg(theme::ok())),
             Span::raw("Network interface statistics"),
         ]),
         Line::from(vec![
-            Span::styled("  Graph ", Style::default().fg(Color::Green)),
+            Span::styled("  Graph ", theme::fg(theme::ok())),
             Span::raw("Traffic charts and protocol distribution"),
         ]),
         Line::from(vec![
-            Span::styled("  Help ", Style::default().fg(Color::Green)),
+            Span::styled("  Help ", theme::fg(theme::ok())),
             Span::raw("This help screen"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Connection Colors:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            theme::bold_fg(theme::accent()),
         )]),
         Line::from(vec![
             Span::styled("  White ", Style::default()),
             Span::raw("Active connection (< 75% of timeout)"),
         ]),
         Line::from(vec![
-            Span::styled("  Yellow ", Style::default().fg(Color::Yellow)),
+            Span::styled("  Yellow ", theme::fg(theme::key())),
             Span::raw("Stale connection (75-90% of timeout)"),
         ]),
         Line::from(vec![
-            Span::styled("  Red ", Style::default().fg(Color::Red)),
+            Span::styled("  Red ", theme::fg(theme::err())),
             Span::raw("Critical - will be removed soon (> 90% of timeout)"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Filter Examples:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            theme::bold_fg(theme::accent()),
         )]),
         Line::from(vec![
-            Span::styled("  /google ", Style::default().fg(Color::Green)),
+            Span::styled("  /google ", theme::fg(theme::ok())),
             Span::raw("Search for 'google' in all fields"),
         ]),
         Line::from(vec![
-            Span::styled("  /port:44 ", Style::default().fg(Color::Green)),
+            Span::styled("  /port:44 ", theme::fg(theme::ok())),
             Span::raw("Filter ports containing '44' (443, 8080, etc.)"),
         ]),
         Line::from(vec![
-            Span::styled("  /src:192.168 ", Style::default().fg(Color::Green)),
+            Span::styled("  /src:192.168 ", theme::fg(theme::ok())),
             Span::raw("Filter by source IP prefix"),
         ]),
         Line::from(vec![
-            Span::styled("  /dst:github.com ", Style::default().fg(Color::Green)),
+            Span::styled("  /dst:github.com ", theme::fg(theme::ok())),
             Span::raw("Filter by destination"),
         ]),
         Line::from(vec![
-            Span::styled("  /sni:example.com ", Style::default().fg(Color::Green)),
+            Span::styled("  /sni:example.com ", theme::fg(theme::ok())),
             Span::raw("Filter by SNI hostname"),
         ]),
         Line::from(vec![
-            Span::styled("  /process:firefox ", Style::default().fg(Color::Green)),
+            Span::styled("  /process:firefox ", theme::fg(theme::ok())),
             Span::raw("Filter by process name"),
         ]),
         Line::from(""),
@@ -2928,7 +3012,7 @@ fn draw_interface_stats(f: &mut Frame, app: &crate::app::App, area: Rect) -> Res
                     .borders(Borders::ALL)
                     .title(" Interface Statistics "),
             )
-            .style(Style::default().fg(Color::Gray))
+            .style(theme::fg(theme::muted()))
             .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(empty_msg, area);
         return Ok(());
@@ -2940,16 +3024,16 @@ fn draw_interface_stats(f: &mut Frame, app: &crate::app::App, area: Rect) -> Res
     for stat in &stats {
         // Determine error style
         let error_style = if stat.rx_errors > 0 || stat.tx_errors > 0 {
-            Style::default().fg(Color::Red)
+            theme::fg(theme::err())
         } else {
-            Style::default().fg(Color::Green)
+            theme::fg(theme::ok())
         };
 
         // Determine drop style
         let drop_style = if stat.rx_dropped > 0 || stat.tx_dropped > 0 {
-            Style::default().fg(Color::Yellow)
+            theme::fg(theme::warn())
         } else {
-            Style::default().fg(Color::Green)
+            theme::fg(theme::ok())
         };
 
         // Get rate for this interface
@@ -3008,11 +3092,7 @@ fn draw_interface_stats(f: &mut Frame, app: &crate::app::App, area: Rect) -> Res
             "TX Drop",
             "Collisions",
         ])
-        .style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ),
+        .style(theme::bold_fg(theme::heading())),
     )
     .block(
         Block::default()
@@ -3046,9 +3126,9 @@ fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
     };
 
     let style = if ui_state.filter_mode {
-        Style::default().fg(Color::Yellow)
+        theme::fg(theme::warn())
     } else {
-        Style::default().fg(Color::Green)
+        theme::fg(theme::ok())
     };
 
     let filter_input = Paragraph::new(input_text)
@@ -3082,7 +3162,7 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
     };
 
     let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {
-        Style::default().fg(Color::Black).bg(Color::Yellow)
+        theme::status_bar_confirm()
     } else if ui_state.clipboard_message.is_some()
         && ui_state
             .clipboard_message
@@ -3093,9 +3173,9 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
             .as_secs()
             < 3
     {
-        Style::default().fg(Color::Black).bg(Color::Green)
+        theme::status_bar_success()
     } else {
-        Style::default().fg(Color::White).bg(Color::Blue)
+        theme::status_bar_default()
     };
 
     let status_bar = Paragraph::new(status)
@@ -3119,13 +3199,13 @@ fn draw_loading_screen(f: &mut Frame) {
     let loading_text = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("⣾ ", Style::default().fg(Color::Yellow)),
+            Span::styled("⣾ ", theme::fg(theme::heading())),
             Span::styled("Loading network connections...", Style::default()),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "This may take a few seconds",
-            Style::default().fg(Color::DarkGray),
+            theme::fg(theme::muted()),
         )]),
     ];
 

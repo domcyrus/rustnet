@@ -91,6 +91,14 @@ fn main() -> Result<()> {
         info!("PTR lookup connections will be shown in UI");
     }
 
+    // Check NO_COLOR environment variable and --no-color flag (https://no-color.org)
+    let no_color =
+        matches.get_flag("no-color") || std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty());
+    if no_color {
+        info!("Colors disabled (NO_COLOR)");
+        ui::set_no_color(true);
+    }
+
     // Set up terminal
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;
