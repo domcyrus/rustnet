@@ -941,14 +941,16 @@ impl App {
                     .map(|entry| {
                         let mut conn = entry.value().clone();
 
-                        // Enrich with service name
+                        // Enrich with service name (prefer remote port, which is
+                        // typically the server/well-known port, over the local
+                        // ephemeral port)
                         if conn.service_name.is_none() {
                             if let Some(service) =
-                                service_lookup.lookup(conn.local_addr.port(), conn.protocol)
+                                service_lookup.lookup(conn.remote_addr.port(), conn.protocol)
                             {
                                 conn.service_name = Some(service.to_string());
                             } else if let Some(service) =
-                                service_lookup.lookup(conn.remote_addr.port(), conn.protocol)
+                                service_lookup.lookup(conn.local_addr.port(), conn.protocol)
                             {
                                 conn.service_name = Some(service.to_string());
                             }
