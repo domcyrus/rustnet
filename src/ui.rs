@@ -22,6 +22,9 @@ use crate::network::types::{
 
 pub type Terminal<B> = RatatuiTerminal<B>;
 
+/// Placeholder string displayed when a value is unavailable.
+const NONE_PLACEHOLDER: &str = "-";
+
 /// Global flag for NO_COLOR support (https://no-color.org)
 static NO_COLOR: AtomicBool = AtomicBool::new(false);
 
@@ -1031,44 +1034,18 @@ fn draw_connections_list(
             let pid_str = conn
                 .pid
                 .map(|p| p.to_string())
-                .unwrap_or_else(|| "-".to_string());
-
-            // Debug: Log the raw process data to understand what's changing
-            if let Some(ref raw_process_name) = conn.process_name
-                && raw_process_name.contains("firefox")
-            {
-                log::debug!(
-                    "🔍 Raw process name for {}: '{:?}' (len:{}, bytes: {:?})",
-                    conn.key(),
-                    raw_process_name,
-                    raw_process_name.len(),
-                    raw_process_name.as_bytes()
-                );
-                log::debug!("🔍 PID: {:?}", conn.pid);
-
-                // Check for non-standard whitespace characters
-                let has_non_ascii_space = raw_process_name
-                    .chars()
-                    .any(|c| c.is_whitespace() && c != ' ' && c != '\t' && c != '\n');
-                if has_non_ascii_space {
-                    log::warn!(
-                        "🚨 Process name contains non-standard whitespace: {:?}",
-                        raw_process_name.chars().collect::<Vec<char>>()
-                    );
-                }
-            }
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
 
             // Process names are now pre-normalized at the source (PKTAP/lsof), so we can use them directly
-            let process_str = conn.process_name.clone().unwrap_or_else(|| "-".to_string());
+            let process_str = conn
+                .process_name
+                .clone()
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
 
             let process_display = if conn.pid.is_some() {
                 // Ensure exactly one space between process name and PID: "PROCESS_NAME (PID)"
                 let full_display = format!("{} ({})", process_str, pid_str);
 
-                // Debug: Log the final formatted display
-                if process_str.contains("firefox") {
-                    log::debug!("🎨 Final display for {}: '{}'", conn.key(), full_display);
-                }
                 // Truncate process display to fit in column (roughly 20+ chars available)
                 if full_display.len() > 25 {
                     format!("{}...", &full_display[..22])
@@ -1088,7 +1065,10 @@ fn draw_connections_list(
             let service_display = if ui_state.show_port_numbers {
                 conn.remote_addr.port().to_string()
             } else {
-                let service_name = conn.service_name.clone().unwrap_or_else(|| "-".to_string());
+                let service_name = conn
+                    .service_name
+                    .clone()
+                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
                 // Truncate service name to fit in 8 chars
                 if service_name.len() > 8 {
                     format!("{:.5}...", service_name)
@@ -1100,7 +1080,7 @@ fn draw_connections_list(
             // DPI/Application protocol display (enhanced for hostnames)
             let dpi_display = match &conn.dpi_info {
                 Some(dpi) => dpi.application.to_string(),
-                None => "-".to_string(),
+                None => NONE_PLACEHOLDER.to_string(),
             };
 
             // Compact bandwidth display to fit in 14 chars
@@ -1316,13 +1296,13 @@ fn draw_grouped_connections_list(
                     connection
                         .service_name
                         .clone()
-                        .unwrap_or_else(|| "-".to_string())
+                        .unwrap_or_else(|| NONE_PLACEHOLDER.to_string())
                 };
 
                 // DPI display
                 let dpi_display = match &connection.dpi_info {
                     Some(dpi) => dpi.application.to_string(),
-                    None => "-".to_string(),
+                    None => NONE_PLACEHOLDER.to_string(),
                 };
 
                 // Bandwidth display
@@ -2398,19 +2378,27 @@ fn draw_connection_details(
         ]),
         Line::from(vec![
             Span::styled("Process: ", theme::fg(theme::label())),
-            Span::raw(conn.process_name.clone().unwrap_or_else(|| "-".to_string())),
+            Span::raw(
+                conn.process_name
+                    .clone()
+                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            ),
         ]),
         Line::from(vec![
             Span::styled("PID: ", theme::fg(theme::label())),
             Span::raw(
                 conn.pid
                     .map(|p| p.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
+                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
             ),
         ]),
         Line::from(vec![
             Span::styled("Service: ", theme::fg(theme::label())),
-            Span::raw(conn.service_name.clone().unwrap_or_else(|| "-".to_string())),
+            Span::raw(
+                conn.service_name
+                    .clone()
+                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            ),
         ]),
     ];
 
@@ -2423,11 +2411,11 @@ fn draw_connection_details(
             details_text.push(Line::from("")); // Empty line separator
             details_text.push(Line::from(vec![
                 Span::styled("Local Hostname: ", theme::fg(theme::label())),
-                Span::raw(local_hostname.unwrap_or_else(|| "-".to_string())),
+                Span::raw(local_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string())),
             ]));
             details_text.push(Line::from(vec![
                 Span::styled("Remote Hostname: ", theme::fg(theme::label())),
-                Span::raw(remote_hostname.unwrap_or_else(|| "-".to_string())),
+                Span::raw(remote_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string())),
             ]));
         }
     }
@@ -2512,7 +2500,10 @@ fn draw_connection_details(
                 }
                 crate::network::types::ApplicationProtocol::Quic(info) => {
                     if let Some(tls_info) = &info.tls_info {
-                        let sni = tls_info.sni.clone().unwrap_or_else(|| "-".to_string());
+                        let sni = tls_info
+                            .sni
+                            .clone()
+                            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
                         details_text.push(Line::from(vec![
                             Span::styled("  QUIC SNI: ", theme::fg(theme::label())),
                             Span::raw(sni),
@@ -2692,7 +2683,7 @@ fn draw_connection_details(
         None => {
             details_text.push(Line::from(vec![
                 Span::styled("Application: ", theme::fg(theme::label())),
-                Span::raw("-".to_string()),
+                Span::raw(NONE_PLACEHOLDER.to_string()),
             ]));
         }
     }
@@ -3235,7 +3226,7 @@ fn format_rate(bytes_per_second: f64) -> String {
     } else if bytes_per_second > 0.0 {
         format!("{:.0} B/s", bytes_per_second)
     } else {
-        "-".to_string()
+        NONE_PLACEHOLDER.to_string()
     }
 }
 
@@ -3254,7 +3245,7 @@ fn format_rate_compact(bytes_per_second: f64) -> String {
     } else if bytes_per_second > 0.0 {
         format!("{:.0}B", bytes_per_second)
     } else {
-        "-".to_string()
+        NONE_PLACEHOLDER.to_string()
     }
 }
 

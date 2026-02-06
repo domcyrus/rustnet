@@ -160,7 +160,7 @@ impl MacOSProcessLookup {
 impl ProcessLookup for MacOSProcessLookup {
     fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
         let key = ConnectionKey::from_connection(conn);
-        let cache = self.cache.read().unwrap();
+        let cache = self.cache.read().expect("cache lock poisoned");
         let result = cache.get(&key).cloned();
 
         if result.is_some() {
@@ -183,7 +183,7 @@ impl ProcessLookup for MacOSProcessLookup {
         info!("Refreshing macOS process lookup cache");
         let new_cache = Self::parse_lsof()?;
         let cache_size = new_cache.len();
-        *self.cache.write().unwrap() = new_cache;
+        *self.cache.write().expect("cache lock poisoned") = new_cache;
         info!("Process lookup cache refreshed with {} entries", cache_size);
         Ok(())
     }

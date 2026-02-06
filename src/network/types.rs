@@ -126,7 +126,7 @@ impl std::fmt::Display for ApplicationProtocol {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
-    // Listening is not used in our model because we track connections after they are established
+    /// Never constructed — included for TCP state machine completeness.
     #[allow(dead_code)]
     Listen,
     SynSent,
@@ -140,6 +140,26 @@ pub enum TcpState {
     Closing,
     Closed,
     Unknown,
+}
+
+impl fmt::Display for TcpState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            TcpState::Listen => "LISTEN",
+            TcpState::SynSent => "SYN_SENT",
+            TcpState::SynReceived => "SYN_RECV",
+            TcpState::Established => "ESTABLISHED",
+            TcpState::FinWait1 => "FIN_WAIT1",
+            TcpState::FinWait2 => "FIN_WAIT2",
+            TcpState::CloseWait => "CLOSE_WAIT",
+            TcpState::LastAck => "LAST_ACK",
+            TcpState::TimeWait => "TIME_WAIT",
+            TcpState::Closing => "CLOSING",
+            TcpState::Closed => "CLOSED",
+            TcpState::Unknown => "TCP_UNKNOWN",
+        };
+        write!(f, "{}", name)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1621,24 +1641,7 @@ impl Connection {
     /// Get display state with enhanced UDP/QUIC visibility
     pub fn state(&self) -> String {
         match &self.protocol_state {
-            ProtocolState::Tcp(tcp_state) => {
-                // Format TCP states consistently in uppercase with underscores
-                match tcp_state {
-                    TcpState::Established => "ESTABLISHED",
-                    TcpState::SynSent => "SYN_SENT",
-                    TcpState::SynReceived => "SYN_RECV",
-                    TcpState::FinWait1 => "FIN_WAIT1",
-                    TcpState::FinWait2 => "FIN_WAIT2",
-                    TcpState::TimeWait => "TIME_WAIT",
-                    TcpState::CloseWait => "CLOSE_WAIT",
-                    TcpState::LastAck => "LAST_ACK",
-                    TcpState::Closing => "CLOSING",
-                    TcpState::Closed => "CLOSED",
-                    TcpState::Listen => "LISTEN",
-                    TcpState::Unknown => "TCP_UNKNOWN",
-                }
-                .to_string()
-            }
+            ProtocolState::Tcp(tcp_state) => tcp_state.to_string(),
             ProtocolState::Udp => {
                 // Check if it's a DPI-identified protocol
                 if let Some(dpi_info) = &self.dpi_info {
@@ -2447,6 +2450,22 @@ mod tests {
 
         conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
         assert_eq!(conn.state(), "CLOSED");
+    }
+
+    #[test]
+    fn test_tcp_state_display() {
+        assert_eq!(TcpState::Listen.to_string(), "LISTEN");
+        assert_eq!(TcpState::SynSent.to_string(), "SYN_SENT");
+        assert_eq!(TcpState::SynReceived.to_string(), "SYN_RECV");
+        assert_eq!(TcpState::Established.to_string(), "ESTABLISHED");
+        assert_eq!(TcpState::FinWait1.to_string(), "FIN_WAIT1");
+        assert_eq!(TcpState::FinWait2.to_string(), "FIN_WAIT2");
+        assert_eq!(TcpState::CloseWait.to_string(), "CLOSE_WAIT");
+        assert_eq!(TcpState::LastAck.to_string(), "LAST_ACK");
+        assert_eq!(TcpState::TimeWait.to_string(), "TIME_WAIT");
+        assert_eq!(TcpState::Closing.to_string(), "CLOSING");
+        assert_eq!(TcpState::Closed.to_string(), "CLOSED");
+        assert_eq!(TcpState::Unknown.to_string(), "TCP_UNKNOWN");
     }
 
     #[test]
