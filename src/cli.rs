@@ -95,6 +95,12 @@ pub fn build_cli() -> Command {
                 .long("show-ptr-lookups")
                 .help("Show PTR lookup connections in UI (hidden by default when --resolve-dns is enabled)")
                 .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("no-color")
+                .long("no-color")
+                .help("Disable all colors in the UI (also respects NO_COLOR env var)")
+                .action(clap::ArgAction::SetTrue),
         );
 
     #[cfg(target_os = "linux")]

@@ -128,7 +128,7 @@ mod ebpf_enhanced {
                     );
 
                     if let Some(result) = self.try_ebpf_lookup(conn) {
-                        let mut stats = self.stats.write().unwrap();
+                        let mut stats = self.stats.write().expect("stats lock poisoned");
                         stats.ebpf_hits += 1;
                         debug!(
                             "Enhanced lookup: eBPF hit for PID {} ({})",
@@ -153,7 +153,7 @@ mod ebpf_enhanced {
                         );
 
                         if let Some(result) = self.try_ebpf_icmp_lookup(conn, *id) {
-                            let mut stats = self.stats.write().unwrap();
+                            let mut stats = self.stats.write().expect("stats lock poisoned");
                             stats.ebpf_hits += 1;
                             debug!(
                                 "Enhanced lookup: eBPF ICMP hit for PID {} ({})",
@@ -170,7 +170,7 @@ mod ebpf_enhanced {
 
             // Fall back to procfs approach
             if let Some(result) = self.procfs_lookup.get_process_for_connection(conn) {
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write().expect("stats lock poisoned");
                 stats.procfs_hits += 1;
                 return Some(result);
             }
@@ -179,7 +179,10 @@ mod ebpf_enhanced {
         }
 
         fn try_ebpf_lookup(&self, conn: &Connection) -> Option<(u32, String)> {
-            let mut tracker_guard = self.ebpf_tracker.write().unwrap();
+            let mut tracker_guard = self
+                .ebpf_tracker
+                .write()
+                .expect("ebpf_tracker lock poisoned");
             let tracker = match tracker_guard.as_mut() {
                 Some(t) => {
                     debug!("eBPF lookup: Tracker available, performing lookup");
@@ -240,7 +243,10 @@ mod ebpf_enhanced {
         }
 
         fn try_ebpf_icmp_lookup(&self, conn: &Connection, icmp_id: u16) -> Option<(u32, String)> {
-            let mut tracker_guard = self.ebpf_tracker.write().unwrap();
+            let mut tracker_guard = self
+                .ebpf_tracker
+                .write()
+                .expect("ebpf_tracker lock poisoned");
             let tracker = tracker_guard.as_mut()?;
 
             match tracker.lookup_icmp(conn.local_addr.ip(), conn.remote_addr.ip(), icmp_id) {
@@ -276,7 +282,7 @@ mod ebpf_enhanced {
         pub fn is_ebpf_available(&self) -> bool {
             self.ebpf_tracker
                 .read()
-                .unwrap()
+                .expect("ebpf_tracker lock poisoned")
                 .as_ref()
                 .map(|t| t.is_healthy())
                 .unwrap_or(false)
@@ -285,7 +291,10 @@ mod ebpf_enhanced {
         /// Perform periodic cleanup of stale eBPF map entries
         fn maybe_cleanup_ebpf_map(&self) {
             let now = Instant::now();
-            let mut last_cleanup = self.last_cleanup.write().unwrap();
+            let mut last_cleanup = self
+                .last_cleanup
+                .write()
+                .expect("last_cleanup lock poisoned");
 
             if now.duration_since(*last_cleanup).as_secs()
                 >= self.cleanup_config.cleanup_interval_secs
@@ -294,7 +303,12 @@ mod ebpf_enhanced {
                 drop(last_cleanup);
 
                 // Perform cleanup
-                if let Some(tracker) = self.ebpf_tracker.write().unwrap().as_mut() {
+                if let Some(tracker) = self
+                    .ebpf_tracker
+                    .write()
+                    .expect("ebpf_tracker lock poisoned")
+                    .as_mut()
+                {
                     let cleaned =
                         tracker.cleanup_stale_entries(self.cleanup_config.stale_threshold_secs);
                     if cleaned > 0 {
@@ -314,7 +328,7 @@ mod ebpf_enhanced {
 
             // Update protocol statistics
             {
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write().expect("stats lock poisoned");
                 stats.total_lookups += 1;
 
                 // Track IP version
@@ -336,11 +350,14 @@ mod ebpf_enhanced {
 
             // Try cache first
             {
-                let cache = self.unified_cache.read().unwrap();
+                let cache = self
+                    .unified_cache
+                    .read()
+                    .expect("unified_cache lock poisoned");
                 if cache.last_refresh.elapsed() < Duration::from_secs(2)
                     && let Some(process_info) = cache.lookup.get(&key)
                 {
-                    let mut stats = self.stats.write().unwrap();
+                    let mut stats = self.stats.write().expect("stats lock poisoned");
                     stats.cache_hits += 1;
                     return Some(process_info.clone());
                 }
@@ -350,16 +367,19 @@ mod ebpf_enhanced {
             if let Some(result) = self.lookup_process_enhanced(conn) {
                 // Update cache with the result
                 {
-                    let mut cache = self.unified_cache.write().unwrap();
+                    let mut cache = self
+                        .unified_cache
+                        .write()
+                        .expect("unified_cache lock poisoned");
                     cache.lookup.insert(key, result.clone());
 
-                    let mut stats = self.stats.write().unwrap();
+                    let mut stats = self.stats.write().expect("stats lock poisoned");
                     stats.cache_entries = cache.lookup.len() as u64;
                 }
                 Some(result)
             } else {
                 // Track failed lookups
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write().expect("stats lock poisoned");
                 stats.failed_lookups += 1;
                 None
             }
@@ -371,7 +391,10 @@ mod ebpf_enhanced {
 
             // Update our cache timestamp
             {
-                let mut cache = self.unified_cache.write().unwrap();
+                let mut cache = self
+                    .unified_cache
+                    .write()
+                    .expect("unified_cache lock poisoned");
                 cache.last_refresh = Instant::now();
                 // Optionally clear cache to force fresh lookups
                 cache.lookup.clear();
@@ -538,7 +561,7 @@ mod procfs_only {
 
             // Update protocol statistics
             {
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write().expect("stats lock poisoned");
                 stats.total_lookups += 1;
 
                 // Track IP version
@@ -560,11 +583,14 @@ mod procfs_only {
 
             // Try cache first
             {
-                let cache = self.unified_cache.read().unwrap();
+                let cache = self
+                    .unified_cache
+                    .read()
+                    .expect("unified_cache lock poisoned");
                 if cache.last_refresh.elapsed() < Duration::from_secs(2)
                     && let Some(process_info) = cache.lookup.get(&key)
                 {
-                    let mut stats = self.stats.write().unwrap();
+                    let mut stats = self.stats.write().expect("stats lock poisoned");
                     stats.cache_hits += 1;
                     return Some(process_info.clone());
                 }
@@ -574,17 +600,20 @@ mod procfs_only {
             if let Some(result) = self.procfs_lookup.get_process_for_connection(conn) {
                 // Update cache with the result
                 {
-                    let mut cache = self.unified_cache.write().unwrap();
+                    let mut cache = self
+                        .unified_cache
+                        .write()
+                        .expect("unified_cache lock poisoned");
                     cache.lookup.insert(key, result.clone());
 
-                    let mut stats = self.stats.write().unwrap();
+                    let mut stats = self.stats.write().expect("stats lock poisoned");
                     stats.cache_entries = cache.lookup.len() as u64;
                     stats.procfs_hits += 1;
                 }
                 Some(result)
             } else {
                 // Track failed lookups
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write().expect("stats lock poisoned");
                 stats.failed_lookups += 1;
                 None
             }
@@ -596,7 +625,10 @@ mod procfs_only {
 
             // Update our cache timestamp
             {
-                let mut cache = self.unified_cache.write().unwrap();
+                let mut cache = self
+                    .unified_cache
+                    .write()
+                    .expect("unified_cache lock poisoned");
                 cache.last_refresh = Instant::now();
                 // Optionally clear cache to force fresh lookups
                 cache.lookup.clear();

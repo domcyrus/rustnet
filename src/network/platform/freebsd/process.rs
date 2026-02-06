@@ -179,14 +179,14 @@ impl ProcessLookup for FreeBSDProcessLookup {
 
         // Simple cache lookup with no refresh on cache miss.
         // The enrichment thread handles periodic refresh.
-        let cache = self.cache.read().unwrap();
+        let cache = self.cache.read().expect("cache lock poisoned");
         cache.lookup.get(&key).cloned()
     }
 
     fn refresh(&self) -> Result<()> {
         let process_map = Self::build_process_map()?;
 
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self.cache.write().expect("cache lock poisoned");
         cache.lookup = process_map;
         cache.last_refresh = Instant::now();
 
