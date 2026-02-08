@@ -109,6 +109,13 @@ NETWORK PACKET CAPTURE PERMISSIONS:
   For more information, see the documentation at:
     %{_docdir}/%{name}/README.md
 
+GEOIP (OPTIONAL):
+  To show country codes for remote IPs, install GeoLite2 databases:
+    sudo dnf install geoipupdate
+  Edit /etc/GeoIP.conf with your free MaxMind credentials, then run:
+    sudo geoipupdate
+  See: https://github.com/domcyrus/rustnet/blob/main/INSTALL.md#geoip-databases-optional
+
 USAGE:
   rustnet              # Start network monitoring
   rustnet --help       # Show all options

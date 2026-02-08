@@ -122,7 +122,7 @@ The experimental eBPF support provides efficient process identification but has 
   - Parent process information
 - [ ] **Configuration File**: Support for persistent configuration (filters, UI preferences)
 - [ ] **Connection Alerts**: Notifications for new connections or suspicious activity
-- [ ] **GeoIP Integration**: Maybe add geographical location of remote IPs
+- [x] **GeoIP Integration**: Geographical location of remote IPs
 - [ ] **Protocol Statistics**: Summary view of protocol distribution
 - [ ] **Rate Limiting Detection**: Identify connections with unusual traffic patterns
 

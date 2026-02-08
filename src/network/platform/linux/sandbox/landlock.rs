@@ -14,6 +14,7 @@
 //! # What We Restrict
 //!
 //! - Filesystem: Only allow read access to `/proc` (needed for process lookup)
+//! - Filesystem: Only allow read access to specified paths (e.g., GeoIP databases)
 //! - Filesystem: Only allow write access to specified paths (logs)
 //! - Network: Block TCP bind and connect (RustNet is passive)
 
@@ -103,6 +104,15 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
     // This is required for process identification via procfs
     if let Err(e) = add_path_rule(&mut ruleset_created, "/proc", read_access) {
         log::warn!("Could not add /proc rule: {}", e);
+    }
+
+    // Add rules for read-only paths (e.g., GeoIP databases)
+    for path in &config.read_paths {
+        if path.exists()
+            && let Err(e) = add_path_rule(&mut ruleset_created, path, read_access)
+        {
+            log::warn!("Could not add read rule for {:?}: {}", path, e);
+        }
     }
 
     // Add rules for write paths (logs, etc.)
@@ -202,6 +212,7 @@ mod tests {
         let config = SandboxConfig {
             mode: SandboxMode::Disabled,
             block_network: true,
+            read_paths: vec![],
             write_paths: vec![],
         };
         let result = apply_landlock(&config).unwrap();

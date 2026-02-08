@@ -99,6 +99,22 @@ fn main() -> Result<()> {
         ui::set_no_color(true);
     }
 
+    // GeoIP configuration
+    if matches.get_flag("no-geoip") {
+        config.disable_geoip = true;
+        info!("GeoIP lookups disabled");
+    }
+
+    if let Some(country_path) = matches.get_one::<String>("geoip-country") {
+        config.geoip_country_path = Some(country_path.to_string());
+        info!("Using GeoIP Country database: {}", country_path);
+    }
+
+    if let Some(asn_path) = matches.get_one::<String>("geoip-asn") {
+        config.geoip_asn_path = Some(asn_path.to_string());
+        info!("Using GeoIP ASN database: {}", asn_path);
+    }
+
     // Set up terminal
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;
@@ -125,6 +141,7 @@ fn main() -> Result<()> {
     // - Log files need to be created first
     #[cfg(all(target_os = "linux", feature = "landlock"))]
     {
+        use network::geoip::GeoIpResolver;
         use network::platform::sandbox::{
             SandboxConfig, SandboxMode, SandboxStatus, apply_sandbox,
         };
@@ -137,6 +154,12 @@ fn main() -> Result<()> {
         } else {
             SandboxMode::BestEffort
         };
+
+        // Collect read paths (GeoIP databases)
+        let read_paths: Vec<PathBuf> = GeoIpResolver::get_search_paths()
+            .into_iter()
+            .filter(|p| p.exists())
+            .collect();
 
         let mut write_paths = Vec::new();
 
@@ -159,6 +182,7 @@ fn main() -> Result<()> {
         let sandbox_config = SandboxConfig {
             mode: sandbox_mode,
             block_network: true, // RustNet is passive, doesn't need TCP
+            read_paths,
             write_paths,
         };
 
@@ -291,6 +315,20 @@ fn sort_connections(
 
             SortColumn::State => a.state().cmp(&b.state()),
 
+            SortColumn::Location => {
+                let a_loc = a
+                    .geoip_info
+                    .as_ref()
+                    .and_then(|g| g.country_code.as_deref())
+                    .unwrap_or("");
+                let b_loc = b
+                    .geoip_info
+                    .as_ref()
+                    .and_then(|g| g.country_code.as_deref())
+                    .unwrap_or("");
+                a_loc.cmp(b_loc)
+            }
+
             SortColumn::Protocol => a.protocol.to_string().cmp(&b.protocol.to_string()),
         };
 
@@ -312,6 +350,8 @@ where
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = std::time::Instant::now();
     let mut ui_state = ui::UIState::default();
+    let (has_country_db, _) = app.get_geoip_status();
+    ui_state.has_geoip = has_country_db;
 
     loop {
         // Get current connections and stats

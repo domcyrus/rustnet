@@ -8,7 +8,8 @@
 //! # Security Model
 //!
 //! After sandboxing is applied:
-//! - Filesystem: Only `/proc` readable, specified write paths writable
+//! - Filesystem: Only `/proc` and specified read paths (e.g., GeoIP databases) readable
+//! - Filesystem: Only specified write paths writable (e.g., logs, exports)
 //! - Network: TCP bind/connect blocked (kernel 6.4+)
 //! - Capabilities: CAP_NET_RAW dropped (cannot create new raw sockets)
 //!
@@ -44,6 +45,8 @@ pub struct SandboxConfig {
     pub mode: SandboxMode,
     /// Block TCP bind/connect (recommended for passive monitors)
     pub block_network: bool,
+    /// Paths that need read access (e.g., GeoIP databases)
+    pub read_paths: Vec<PathBuf>,
     /// Paths that need write access (e.g., log files)
     pub write_paths: Vec<PathBuf>,
 }

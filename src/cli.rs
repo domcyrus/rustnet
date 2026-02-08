@@ -101,6 +101,31 @@ pub fn build_cli() -> Command {
                 .long("no-color")
                 .help("Disable all colors in the UI (also respects NO_COLOR env var)")
                 .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("geoip-country")
+                .long("geoip-country")
+                .value_name("PATH")
+                .help(
+                    "Path to GeoLite2-Country.mmdb database. \
+                     Auto-discovered from: ./resources/geoip2, $XDG_DATA_HOME/rustnet/geoip, \
+                     ~/.local/share/rustnet/geoip, /usr/share/GeoIP, /usr/local/share/GeoIP, \
+                     /opt/homebrew/share/GeoIP, /var/lib/GeoIP",
+                )
+                .required(false),
+        )
+        .arg(
+            Arg::new("geoip-asn")
+                .long("geoip-asn")
+                .value_name("PATH")
+                .help("Path to GeoLite2-ASN.mmdb database (same search paths as --geoip-country)")
+                .required(false),
+        )
+        .arg(
+            Arg::new("no-geoip")
+                .long("no-geoip")
+                .help("Disable GeoIP lookups entirely")
+                .action(clap::ArgAction::SetTrue),
         );
 
     #[cfg(target_os = "linux")]

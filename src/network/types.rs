@@ -1578,6 +1578,9 @@ pub struct Connection {
 
     // Initial RTT measurement (from SYN-ACK timing)
     pub initial_rtt: Option<std::time::Duration>,
+
+    // GeoIP information for remote address
+    pub geoip_info: Option<crate::network::geoip::GeoIpInfo>,
 }
 
 impl Connection {
@@ -1617,6 +1620,7 @@ impl Connection {
             current_outgoing_rate_bps: 0.0,
             tcp_analytics,
             initial_rtt: None,
+            geoip_info: None,
         }
     }
 
