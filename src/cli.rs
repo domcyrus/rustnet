@@ -106,14 +106,19 @@ pub fn build_cli() -> Command {
             Arg::new("geoip-country")
                 .long("geoip-country")
                 .value_name("PATH")
-                .help("Path to GeoLite2-Country.mmdb database (auto-discovered if not specified)")
+                .help(
+                    "Path to GeoLite2-Country.mmdb database. \
+                     Auto-discovered from: ./resources/geoip2, $XDG_DATA_HOME/rustnet/geoip, \
+                     ~/.local/share/rustnet/geoip, /usr/share/GeoIP, /usr/local/share/GeoIP, \
+                     /opt/homebrew/share/GeoIP, /var/lib/GeoIP",
+                )
                 .required(false),
         )
         .arg(
             Arg::new("geoip-asn")
                 .long("geoip-asn")
                 .value_name("PATH")
-                .help("Path to GeoLite2-ASN.mmdb database (auto-discovered if not specified)")
+                .help("Path to GeoLite2-ASN.mmdb database (same search paths as --geoip-country)")
                 .required(false),
         )
         .arg(

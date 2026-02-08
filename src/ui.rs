@@ -192,6 +192,7 @@ pub enum SortColumn {
     Process,
     LocalAddress,
     RemoteAddress,
+    Location, // GeoIP country code (only in cycle when GeoIP is active)
     Application,
     Service,
     State,
@@ -199,18 +200,26 @@ pub enum SortColumn {
 }
 
 impl SortColumn {
-    /// Get the next sort column in the cycle (follows left-to-right visual order)
-    pub fn next(self) -> Self {
+    /// Get the next sort column in the cycle (follows left-to-right visual order).
+    /// When `has_location` is true, Location is included between Remote Address and State.
+    pub fn next(self, has_location: bool) -> Self {
         match self {
             Self::CreatedAt => Self::Protocol,         // Column 1: Pro
             Self::Protocol => Self::LocalAddress,      // Column 2: Local Address
             Self::LocalAddress => Self::RemoteAddress, // Column 3: Remote Address
-            Self::RemoteAddress => Self::State,        // Column 4: State
-            Self::State => Self::Service,              // Column 5: Service
-            Self::Service => Self::Application,        // Column 6: Application / Host
-            Self::Application => Self::BandwidthTotal, // Column 7: Down/Up (combined total)
-            Self::BandwidthTotal => Self::Process,     // Column 8: Process
-            Self::Process => Self::CreatedAt,          // Back to default
+            Self::RemoteAddress => {
+                if has_location {
+                    Self::Location // Column 4: Loc (GeoIP)
+                } else {
+                    Self::State
+                }
+            }
+            Self::Location => Self::State,      // Column 5: State
+            Self::State => Self::Service,       // Column 6: Service
+            Self::Service => Self::Application, // Column 7: Application / Host
+            Self::Application => Self::BandwidthTotal, // Column 8: Down/Up (combined total)
+            Self::BandwidthTotal => Self::Process, // Column 9: Process
+            Self::Process => Self::CreatedAt,   // Back to default
         }
     }
 
@@ -224,6 +233,7 @@ impl SortColumn {
             Self::Process => true,
             Self::LocalAddress => true,
             Self::RemoteAddress => true,
+            Self::Location => true,
             Self::Application => true,
             Self::Service => true,
             Self::State => true,
@@ -240,6 +250,7 @@ impl SortColumn {
             Self::Process => "Process",
             Self::LocalAddress => "Local Addr",
             Self::RemoteAddress => "Remote Addr",
+            Self::Location => "Location",
             Self::Application => "Application",
             Self::Service => "Service",
             Self::State => "State",
@@ -329,6 +340,8 @@ pub struct UIState {
     pub expanded_groups: HashSet<String>,
     /// Selected group name when in grouped view (for group-level selection)
     pub selected_group: Option<String>,
+    /// Whether GeoIP country database is available (enables Location sort column)
+    pub has_geoip: bool,
 }
 
 impl Default for UIState {
@@ -350,6 +363,7 @@ impl Default for UIState {
             grouping_enabled: false,
             expanded_groups: HashSet::new(),
             selected_group: None,
+            has_geoip: false,
         }
     }
 }
@@ -565,7 +579,7 @@ impl UIState {
 
     /// Cycle to the next sort column
     pub fn cycle_sort_column(&mut self) {
-        self.sort_column = self.sort_column.next();
+        self.sort_column = self.sort_column.next(self.has_geoip);
         // Reset to the default direction for the new column
         self.sort_ascending = self.sort_column.default_direction();
     }
@@ -927,8 +941,6 @@ fn draw_overview(
                 rows,
                 chunks[0],
                 dns_resolver.as_deref(),
-                ui_state.sort_column,
-                ui_state.sort_ascending,
                 has_country_db,
             );
         }
@@ -1016,7 +1028,7 @@ fn draw_connections_list(
         add_sort_indicator("Remote Address", &[SortColumn::RemoteAddress]),
     ];
     if show_location {
-        header_labels.push("Loc".to_string());
+        header_labels.push(add_sort_indicator("Loc", &[SortColumn::Location]));
     }
     header_labels.extend([
         add_sort_indicator("State", &[SortColumn::State]),
@@ -1039,7 +1051,7 @@ fn draw_connections_list(
             0 => ui_state.sort_column == SortColumn::Protocol,
             1 => ui_state.sort_column == SortColumn::LocalAddress,
             2 => ui_state.sort_column == SortColumn::RemoteAddress,
-            i if show_location && i == 3 => false, // Loc column - not sortable
+            i if show_location && i == 3 => ui_state.sort_column == SortColumn::Location,
             i if i == state_idx => ui_state.sort_column == SortColumn::State,
             i if i == service_idx => ui_state.sort_column == SortColumn::Service,
             i if i == app_idx => ui_state.sort_column == SortColumn::Application,
@@ -1226,8 +1238,6 @@ fn draw_grouped_connections_list(
     grouped_rows: &[GroupedRow],
     area: Rect,
     dns_resolver: Option<&DnsResolver>,
-    sort_column: SortColumn,
-    sort_ascending: bool,
     show_location: bool,
 ) {
     // Column layout for grouped view:
@@ -1417,11 +1427,15 @@ fn draw_grouped_connections_list(
     }
 
     // Build title showing both group sort (A-Z) and connection sort within groups
-    let table_title = if sort_column != SortColumn::CreatedAt {
-        let direction = if sort_ascending { "↑" } else { "↓" };
+    let table_title = if ui_state.sort_column != SortColumn::CreatedAt {
+        let direction = if ui_state.sort_ascending {
+            "↑"
+        } else {
+            "↓"
+        };
         format!(
             "Grouped by Process (A-Z) │ Connections: {} {}",
-            sort_column.display_name(),
+            ui_state.sort_column.display_name(),
             direction
         )
     } else {
@@ -3410,19 +3424,31 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_column_cycle() {
+    fn test_sort_column_cycle_without_location() {
         use SortColumn::*;
 
-        // Test the complete cycle (follows left-to-right visual order)
-        assert_eq!(CreatedAt.next(), Protocol);
-        assert_eq!(Protocol.next(), LocalAddress);
-        assert_eq!(LocalAddress.next(), RemoteAddress);
-        assert_eq!(RemoteAddress.next(), State);
-        assert_eq!(State.next(), Service);
-        assert_eq!(Service.next(), Application);
-        assert_eq!(Application.next(), BandwidthTotal);
-        assert_eq!(BandwidthTotal.next(), Process);
-        assert_eq!(Process.next(), CreatedAt); // Cycles back
+        // Test the complete cycle without GeoIP (follows left-to-right visual order)
+        assert_eq!(CreatedAt.next(false), Protocol);
+        assert_eq!(Protocol.next(false), LocalAddress);
+        assert_eq!(LocalAddress.next(false), RemoteAddress);
+        assert_eq!(RemoteAddress.next(false), State); // Skips Location
+        assert_eq!(State.next(false), Service);
+        assert_eq!(Service.next(false), Application);
+        assert_eq!(Application.next(false), BandwidthTotal);
+        assert_eq!(BandwidthTotal.next(false), Process);
+        assert_eq!(Process.next(false), CreatedAt); // Cycles back
+    }
+
+    #[test]
+    fn test_sort_column_cycle_with_location() {
+        use SortColumn::*;
+
+        // With GeoIP, Location appears between RemoteAddress and State
+        assert_eq!(RemoteAddress.next(true), Location);
+        assert_eq!(Location.next(true), State);
+        // Other transitions unchanged
+        assert_eq!(CreatedAt.next(true), Protocol);
+        assert_eq!(State.next(true), Service);
     }
 
     #[test]
@@ -3436,6 +3462,7 @@ mod tests {
         assert!(Process.default_direction());
         assert!(LocalAddress.default_direction());
         assert!(RemoteAddress.default_direction());
+        assert!(Location.default_direction());
         assert!(Application.default_direction());
         assert!(Service.default_direction());
         assert!(State.default_direction());
@@ -3505,6 +3532,7 @@ mod tests {
         assert_eq!(Process.display_name(), "Process");
         assert_eq!(LocalAddress.display_name(), "Local Addr");
         assert_eq!(RemoteAddress.display_name(), "Remote Addr");
+        assert_eq!(Location.display_name(), "Location");
         assert_eq!(Application.display_name(), "Application");
         assert_eq!(Service.display_name(), "Service");
         assert_eq!(State.display_name(), "State");

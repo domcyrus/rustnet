@@ -166,7 +166,7 @@ impl GeoIpResolver {
         let mut paths = Vec::new();
 
         // Current directory / resources
-        paths.push(PathBuf::from("resources/geoip"));
+        paths.push(PathBuf::from("resources/geoip2"));
         paths.push(PathBuf::from("."));
 
         // XDG data directory
@@ -185,6 +185,7 @@ impl GeoIpResolver {
         // System paths
         paths.push(PathBuf::from("/usr/share/GeoIP"));
         paths.push(PathBuf::from("/usr/local/share/GeoIP"));
+        paths.push(PathBuf::from("/opt/homebrew/share/GeoIP"));
         paths.push(PathBuf::from("/var/lib/GeoIP"));
 
         // Windows paths
@@ -274,9 +275,11 @@ impl GeoIpResolver {
 
         let mut entries: Vec<_> = self.cache.iter().map(|e| (*e.key(), e.cached_at)).collect();
 
-        entries.sort_by_key(|(_, time)| *time);
-
         let to_remove = self.cache.len().saturating_sub(target_size);
+        if to_remove == 0 {
+            return;
+        }
+        entries.select_nth_unstable_by_key(to_remove - 1, |(_, time)| *time);
         for (ip, _) in entries.into_iter().take(to_remove) {
             self.cache.remove(&ip);
         }

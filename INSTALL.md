@@ -15,6 +15,7 @@ This guide covers all installation methods for RustNet across different platform
 - [Using Docker](#using-docker)
 - [Prerequisites](#prerequisites)
 - [Permissions Setup](#permissions-setup)
+- [GeoIP Databases (Optional)](#geoip-databases-optional)
 - [Troubleshooting](#troubleshooting)
 
 ## Installing from Release Packages
@@ -685,6 +686,71 @@ getcap $(which rustnet)
 # Test without sudo
 rustnet --help
 ```
+
+## GeoIP Databases (Optional)
+
+RustNet supports GeoIP lookups to show country codes for remote IPs. To enable this, install the [GeoLite2](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) databases using MaxMind's `geoipupdate` tool (requires a free [MaxMind account](https://www.maxmind.com/en/geolite2/signup)):
+
+### macOS (Homebrew)
+
+```bash
+brew install geoipupdate
+# Edit the config with your MaxMind account credentials:
+#   $(brew --prefix)/etc/GeoIP.conf
+geoipupdate
+```
+
+Databases are installed to `$(brew --prefix)/share/GeoIP/`.
+
+### Ubuntu/Debian
+
+```bash
+sudo apt-get install geoipupdate
+# Edit /etc/GeoIP.conf with your MaxMind account credentials
+sudo geoipupdate
+```
+
+Databases are installed to `/usr/share/GeoIP/`.
+
+### Fedora/RHEL
+
+```bash
+sudo dnf install geoipupdate
+# Edit /etc/GeoIP.conf with your MaxMind account credentials
+sudo geoipupdate
+```
+
+Databases are installed to `/usr/share/GeoIP/`.
+
+### Arch Linux
+
+```bash
+sudo pacman -S geoipupdate
+# Edit /etc/GeoIP.conf with your MaxMind account credentials
+sudo geoipupdate
+```
+
+Databases are installed to `/usr/share/GeoIP/`.
+
+### FreeBSD
+
+```bash
+pkg install geoipupdate
+# Edit /usr/local/etc/GeoIP.conf with your MaxMind account credentials
+sudo geoipupdate
+```
+
+Databases are installed to `/usr/local/share/GeoIP/`.
+
+### Manual Specification
+
+If your databases are in a non-standard location, specify them directly:
+
+```bash
+rustnet --geoip-country /path/to/GeoLite2-Country.mmdb --geoip-asn /path/to/GeoLite2-ASN.mmdb
+```
+
+RustNet auto-discovers databases from standard locations. Run `rustnet --help` to see the full search path list.
 
 ## Troubleshooting
 

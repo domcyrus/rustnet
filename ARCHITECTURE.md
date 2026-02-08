@@ -356,7 +356,7 @@ netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
 | **Bandwidth per connection** | Yes | Yes | Yes | Yes | No | No | No |
 | **Connection filtering** | Yes | No | Yes | Yes | No | Yes | Yes (BPF) |
 | **DNS reverse lookup** | Yes | Yes | Yes | Yes | No | No | Yes |
-| **GeoIP lookup** | No | No | Yes | No | No | No | Yes |
+| **GeoIP lookup** | Yes | No | Yes | No | No | No | Yes |
 | **Notifications** | No | No | Yes | No | No | No | No |
 | **i18n (translations)** | No | No | Yes | No | No | No | No |
 | **Cross-platform** | Linux, macOS, Windows, FreeBSD | Linux, macOS | Linux, macOS, Windows | Linux, macOS, BSD | All | Linux | All |

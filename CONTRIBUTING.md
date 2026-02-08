@@ -25,6 +25,7 @@ Before submitting a PR, please ensure:
   ```bash
   cargo clippy --all-targets --all-features -- -D warnings
   ```
+- **No clippy suppression**: Do not use `#[allow(clippy::...)]` to suppress warnings. Fix the underlying issue instead (e.g., reduce arguments, refactor code). If a suppression is truly unavoidable, discuss it in the PR.
 - **Formatting**: Run the formatter
   ```bash
   cargo fmt

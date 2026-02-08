@@ -315,6 +315,20 @@ fn sort_connections(
 
             SortColumn::State => a.state().cmp(&b.state()),
 
+            SortColumn::Location => {
+                let a_loc = a
+                    .geoip_info
+                    .as_ref()
+                    .and_then(|g| g.country_code.as_deref())
+                    .unwrap_or("");
+                let b_loc = b
+                    .geoip_info
+                    .as_ref()
+                    .and_then(|g| g.country_code.as_deref())
+                    .unwrap_or("");
+                a_loc.cmp(b_loc)
+            }
+
             SortColumn::Protocol => a.protocol.to_string().cmp(&b.protocol.to_string()),
         };
 
@@ -336,6 +350,8 @@ where
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = std::time::Instant::now();
     let mut ui_state = ui::UIState::default();
+    let (has_country_db, _) = app.get_geoip_status();
+    ui_state.has_geoip = has_country_db;
 
     loop {
         // Get current connections and stats

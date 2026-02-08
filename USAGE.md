@@ -86,6 +86,10 @@ Options:
   -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
       --json-log <FILE>                  Enable JSON logging of connection events to specified file
       --pcap-export <FILE>               Export captured packets to PCAP file for Wireshark analysis
+      --no-color                         Disable all colors in the UI (also respects NO_COLOR env var)
+      --geoip-country <PATH>             Path to GeoLite2-Country.mmdb (auto-discovered if not specified)
+      --geoip-asn <PATH>                 Path to GeoLite2-ASN.mmdb (auto-discovered if not specified)
+      --no-geoip                         Disable GeoIP lookups entirely
   -f, --bpf-filter <FILTER>              BPF filter expression for packet capture
       --no-sandbox                       Disable Landlock sandboxing (Linux only)
       --sandbox-strict                   Require full sandbox enforcement or exit (Linux only)
@@ -384,6 +388,7 @@ Press `s` to cycle through columns in left-to-right order:
 | **Protocol** | ↑ Ascending | Sort by protocol type (TCP, UDP, ICMP, etc.) |
 | **Local Address** | ↑ Ascending | Sort by local IP:port (useful for multi-interface systems) |
 | **Remote Address** | ↑ Ascending | Sort by remote IP:port |
+| **Location** | ↑ Ascending | Sort by country code (requires GeoIP database) |
 | **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
 | **Service** | ↑ Ascending | Sort by service name or port number |
 | **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.) |

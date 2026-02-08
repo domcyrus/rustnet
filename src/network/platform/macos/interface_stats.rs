@@ -57,34 +57,34 @@ impl InterfaceStatsProvider for MacOSStatsProvider {
 
             while let Some(ifa) = current.as_ref() {
                 // Only process AF_LINK entries (data link layer)
-                if let Some(addr) = ifa.ifa_addr.as_ref() {
-                    if addr.sa_family as i32 == libc::AF_LINK {
-                        let name = CStr::from_ptr(ifa.ifa_name).to_string_lossy().to_string();
+                if let Some(addr) = ifa.ifa_addr.as_ref()
+                    && addr.sa_family as i32 == libc::AF_LINK
+                {
+                    let name = CStr::from_ptr(ifa.ifa_name).to_string_lossy().to_string();
 
-                        // Get if_data from ifa_data
-                        if let Some(if_data) = (ifa.ifa_data as *const libc::if_data).as_ref() {
-                            // Calculate total packets for validation
-                            let total_rx_packets = if_data.ifi_ipackets;
-                            let total_tx_packets = if_data.ifi_opackets;
+                    // Get if_data from ifa_data
+                    if let Some(if_data) = (ifa.ifa_data as *const libc::if_data).as_ref() {
+                        // Calculate total packets for validation
+                        let total_rx_packets = if_data.ifi_ipackets;
+                        let total_tx_packets = if_data.ifi_opackets;
 
-                            stats.push(InterfaceStats {
-                                interface_name: name,
-                                rx_bytes: if_data.ifi_ibytes as u64,
-                                tx_bytes: if_data.ifi_obytes as u64,
-                                rx_packets: total_rx_packets as u64,
-                                tx_packets: total_tx_packets as u64,
-                                // Sanitize error and drop counters (may contain garbage on virtual interfaces)
-                                rx_errors: sanitize_counter(if_data.ifi_ierrors, total_rx_packets),
-                                tx_errors: sanitize_counter(if_data.ifi_oerrors, total_tx_packets),
-                                rx_dropped: sanitize_counter(if_data.ifi_iqdrops, total_rx_packets),
-                                tx_dropped: 0, // Limited on macOS
-                                collisions: sanitize_counter(
-                                    if_data.ifi_collisions,
-                                    total_rx_packets + total_tx_packets,
-                                ),
-                                timestamp: SystemTime::now(),
-                            });
-                        }
+                        stats.push(InterfaceStats {
+                            interface_name: name,
+                            rx_bytes: if_data.ifi_ibytes as u64,
+                            tx_bytes: if_data.ifi_obytes as u64,
+                            rx_packets: total_rx_packets as u64,
+                            tx_packets: total_tx_packets as u64,
+                            // Sanitize error and drop counters (may contain garbage on virtual interfaces)
+                            rx_errors: sanitize_counter(if_data.ifi_ierrors, total_rx_packets),
+                            tx_errors: sanitize_counter(if_data.ifi_oerrors, total_tx_packets),
+                            rx_dropped: sanitize_counter(if_data.ifi_iqdrops, total_rx_packets),
+                            tx_dropped: 0, // Limited on macOS
+                            collisions: sanitize_counter(
+                                if_data.ifi_collisions,
+                                total_rx_packets + total_tx_packets,
+                            ),
+                            timestamp: SystemTime::now(),
+                        });
                     }
                 }
 
