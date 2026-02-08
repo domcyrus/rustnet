@@ -249,18 +249,18 @@ impl GeoIpResolver {
 
         // Country lookup
         if let Some(ref reader) = self.country_reader
-            && let Ok(country) = reader.lookup::<geoip2::Country>(ip)
-            && let Some(c) = country.country
+            && let Ok(Some(country)) = reader
+                .lookup(ip)
+                .and_then(|r| r.decode::<geoip2::Country>())
         {
+            let c = &country.country;
             info.country_code = c.iso_code.map(|s| s.to_string());
-            if let Some(names) = c.names {
-                info.country_name = names.get("en").map(|s| s.to_string());
-            }
+            info.country_name = c.names.english.map(|s| s.to_string());
         }
 
         // ASN lookup
         if let Some(ref reader) = self.asn_reader
-            && let Ok(asn) = reader.lookup::<geoip2::Asn>(ip)
+            && let Ok(Some(asn)) = reader.lookup(ip).and_then(|r| r.decode::<geoip2::Asn>())
         {
             info.asn = asn.autonomous_system_number;
             info.as_org = asn.autonomous_system_organization.map(|s| s.to_string());
