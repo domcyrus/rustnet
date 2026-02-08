@@ -108,10 +108,10 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
 
     // Add rules for read-only paths (e.g., GeoIP databases)
     for path in &config.read_paths {
-        if path.exists() {
-            if let Err(e) = add_path_rule(&mut ruleset_created, path, read_access) {
-                log::warn!("Could not add read rule for {:?}: {}", path, e);
-            }
+        if path.exists()
+            && let Err(e) = add_path_rule(&mut ruleset_created, path, read_access)
+        {
+            log::warn!("Could not add read rule for {:?}: {}", path, e);
         }
     }
 
