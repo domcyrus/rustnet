@@ -45,9 +45,11 @@ jobs:
       - name: Build static binary
         env:
           CFLAGS: "-mno-outline-atomics"
-          RUSTFLAGS: "-C target-feature=+crt-static -C link-arg=-lgcc"
+          CXXFLAGS: "-mno-outline-atomics"
+          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
         run: |
           cargo build --release
+          file target/release/rustnet
           file target/release/rustnet | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
 
@@ -57,7 +59,6 @@ jobs:
           staging="rustnet-${VERSION}-aarch64-unknown-linux-musl"
           mkdir -p "$staging/assets"
           cp target/release/rustnet "$staging/"
-          strip "$staging/rustnet"
           cp assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true
