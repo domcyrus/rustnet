@@ -27,6 +27,9 @@ on:
 
 permissions:
   contents: write
+  packages: write
+  attestations: write
+  id-token: write
 
 env:
   RUST_BACKTRACE: 1
@@ -460,3 +463,27 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload ${{ github.ref_name }} "Rustnet_Windows_${{ matrix.arch }}.msi" --clobber
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: create-release
+    uses: ./.github/workflows/publish.yml
+    secrets: inherit
+
+  publish-docker:
+    name: Publish Docker image
+    needs: create-release
+    uses: ./.github/workflows/docker.yml
+    secrets: inherit
+
+  update-copr:
+    name: Update COPR spec
+    needs: create-release
+    uses: ./.github/workflows/copr-update-spec.yml
+    secrets: inherit
+
+  release-ppa:
+    name: Release to PPA
+    needs: create-release
+    uses: ./.github/workflows/ppa-release.yml
+    secrets: inherit
