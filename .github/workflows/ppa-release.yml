@@ -1,6 +1,13 @@
 name: Release to Ubuntu PPA
 
 on:
+  workflow_call:
+    inputs:
+      tarball_suffix:
+        description: 'Tarball suffix (e.g., ds1, ds2)'
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       ubuntu_release:
@@ -16,9 +23,6 @@ on:
         required: false
         default: ''
         type: string
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: read
@@ -76,7 +80,7 @@ jobs:
           VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
 
           # Add tarball suffix if provided (e.g., +ds1, +ds2)
-          TARBALL_SUFFIX="${{ github.event.inputs.tarball_suffix }}"
+          TARBALL_SUFFIX="${{ inputs.tarball_suffix }}"
           if [ -n "$TARBALL_SUFFIX" ]; then
             TARBALL_VERSION="${VERSION}+${TARBALL_SUFFIX}"
             echo "version=$TARBALL_VERSION" >> $GITHUB_OUTPUT
