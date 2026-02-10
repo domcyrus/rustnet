@@ -168,6 +168,7 @@ jobs:
         if: matrix.arch == 'aarch64'
         run: |
           apk add --no-cache git
+          git config --global --add safe.directory /__w/rustnet/rustnet
           git clone --depth 1 https://github.com/${{ github.repository }}.git .
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             git fetch --depth 1 origin tag "${{ github.ref_name }}"
