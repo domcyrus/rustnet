@@ -20,7 +20,7 @@ on:
         default: ''
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   RUST_BACKTRACE: 1
@@ -232,10 +232,23 @@ jobs:
           tar czf "$staging.tar.gz" "$staging"
 
       - name: Upload release archive
-        if: ${{ inputs.create-archives }}
-        continue-on-error: ${{ matrix.arch == 'aarch64' }}
+        if: ${{ inputs.create-archives && matrix.arch == 'x86_64' }}
         uses: actions/upload-artifact@v6
         with:
           name: build-${{ matrix.target }}
           path: rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
+
+      # aarch64: JS actions don't work in Alpine containers on ARM runners,
+      # so upload directly to the GitHub release instead of using artifacts
+      - name: Upload release archive (ARM direct)
+        if: ${{ inputs.create-archives && matrix.arch == 'aarch64' }}
+        run: |
+          apk add --no-cache github-cli || apk add --no-cache curl
+          ARCHIVE="rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz"
+          if [ -f "$ARCHIVE" ]; then
+            gh release upload "${{ inputs.version }}" "$ARCHIVE" --clobber || \
+              echo "::warning::Direct release upload failed (release may not exist yet for test builds)"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
