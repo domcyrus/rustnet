@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-02-09
+
+### Added
+- **GeoIP Location Support**: Show country codes for remote IPs using GeoLite2 databases with auto-discovery (#151)
+- **PCAP Export with Process Attribution**: Export captured packets to PCAP files with a process attribution JSONL sidecar for Wireshark enrichment (#137)
+- **eBPF-based ICMP PID Tracking**: Track process IDs for ICMP connections using eBPF on Linux (#136)
+- **Process Detection Degradation Warnings**: Show warnings in the UI when process detection falls back to a less accurate method (#128)
+- **ARM64 Musl Static Builds**: CI now produces arm64 musl static Linux builds with eBPF support
+
+### Fixed
+- **Service Name Precedence**: Corrected ordering when multiple service name sources conflict (#150)
+- **Pointer Dereference Safety**: Use `as_ref()` for safer pointer dereference in macOS/FreeBSD interface stats (#147)
+- **Clippy Warnings**: Resolve `unnecessary_unwrap` errors flagged by clippy (#144)
+- **ICMP Dead Code**: Remove dead code warning in ICMP handling (#138)
+- **GitHub Actions Permissions**: Add explicit permissions to all GitHub Actions workflows (#131)
+- **Logging Initialization**: Set up logging level before privileges check for earlier diagnostic output (#143)
+
+### Changed
+- **SSH Heuristic Tightened**: Tighten SSH packet structure heuristic to reduce false positives (#135)
+- **CI Reusable Workflows**: Share build logic via reusable workflow, remove redundant test-static-builds workflow
+- **Chocolatey Automation**: Trigger Chocolatey package publish on release automatically
+- **Code Alignment**: Refactoring and code alignment improvements (#149)
+- **Dependencies**: Updated libbpf-rs to 0.26, bumped clap, time, zip, lru, and libc
+- **Documentation**: Clarified RustNet vs Wireshark positioning, added PowerShell font troubleshooting, added JSON logging to feature comparison, added bandwhich to acknowledgments (#129, #130, #132, #133)
+
 ## [0.18.0] - 2026-01-07
 
 ### Added
@@ -352,7 +377,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/domcyrus/rustnet/compare/v0.18.0...v1.0.0
 [0.18.0]: https://github.com/domcyrus/rustnet/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/domcyrus/rustnet/compare/v0.16.1...v0.17.0
 [0.16.1]: https://github.com/domcyrus/rustnet/compare/v0.15.0...v0.16.1

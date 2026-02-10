@@ -2188,7 +2188,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-monitor"
-version = "0.18.0"
+version = "1.0.0"
 dependencies = [
  "aes",
  "anyhow",
