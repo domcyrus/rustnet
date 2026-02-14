@@ -2341,7 +2341,6 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
                 TcpState::LastAck => "LAST_ACK",
                 TcpState::Closing => "CLOSING",
                 TcpState::Closed => "CLOSED",
-                TcpState::Listen => "LISTEN",
                 TcpState::Unknown => "UNKNOWN",
             };
             *state_counts.entry(state_name).or_insert(0) += 1;

@@ -10,19 +10,6 @@ use std::time::SystemTime;
 pub struct FreeBSDStatsProvider;
 
 impl InterfaceStatsProvider for FreeBSDStatsProvider {
-    fn get_stats(&self, interface: &str) -> Result<InterfaceStats, io::Error> {
-        let all_stats = self.get_all_stats()?;
-        all_stats
-            .into_iter()
-            .find(|s| s.interface_name == interface)
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("Interface {} not found", interface),
-                )
-            })
-    }
-
     fn get_all_stats(&self) -> Result<Vec<InterfaceStats>, io::Error> {
         unsafe {
             let mut ifap: *mut libc::ifaddrs = ptr::null_mut();

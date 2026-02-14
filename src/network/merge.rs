@@ -35,8 +35,6 @@ fn update_tcp_state(current_state: TcpState, flags: &TcpFlags, is_outgoing: bool
         // Connection establishment - three-way handshake
         (TcpState::Unknown, true, false, false, false) if !is_outgoing => TcpState::SynReceived,
         (TcpState::Unknown, true, false, false, false) if is_outgoing => TcpState::SynSent,
-        (TcpState::Listen, true, false, false, false) if !is_outgoing => TcpState::SynReceived,
-        (TcpState::Listen, true, false, false, false) if is_outgoing => TcpState::SynSent,
         (TcpState::SynSent, true, true, false, false) if !is_outgoing => TcpState::Established,
         (TcpState::SynReceived, false, true, false, false) if is_outgoing => TcpState::Established,
 

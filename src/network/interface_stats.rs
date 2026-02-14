@@ -48,10 +48,6 @@ pub struct InterfaceRates {
 
 /// Trait for platform-specific interface statistics providers
 pub trait InterfaceStatsProvider: Send + Sync {
-    /// Get statistics for a specific interface
-    #[allow(dead_code)]
-    fn get_stats(&self, interface: &str) -> Result<InterfaceStats, io::Error>;
-
     /// Get statistics for all available interfaces
     fn get_all_stats(&self) -> Result<Vec<InterfaceStats>, io::Error>;
 }

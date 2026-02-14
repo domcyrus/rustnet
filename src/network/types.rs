@@ -126,9 +126,6 @@ impl std::fmt::Display for ApplicationProtocol {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TcpState {
-    /// Never constructed — included for TCP state machine completeness.
-    #[allow(dead_code)]
-    Listen,
     SynSent,
     SynReceived,
     Established,
@@ -145,7 +142,6 @@ pub enum TcpState {
 impl fmt::Display for TcpState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
-            TcpState::Listen => "LISTEN",
             TcpState::SynSent => "SYN_SENT",
             TcpState::SynReceived => "SYN_RECV",
             TcpState::Established => "ESTABLISHED",
@@ -286,8 +282,6 @@ impl TlsInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlsVersion {
-    #[allow(dead_code)]
-    Ssl3,
     Tls10,
     Tls11,
     Tls12,
@@ -297,7 +291,6 @@ pub enum TlsVersion {
 impl fmt::Display for TlsVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            TlsVersion::Ssl3 => write!(f, "SSL 3.0"),
             TlsVersion::Tls10 => write!(f, "TLS 1.0"),
             TlsVersion::Tls11 => write!(f, "TLS 1.1"),
             TlsVersion::Tls12 => write!(f, "TLS 1.2"),
@@ -1826,7 +1819,6 @@ impl Connection {
             TcpState::CloseWait | TcpState::LastAck => Duration::from_secs(60),
             TcpState::SynSent | TcpState::SynReceived => Duration::from_secs(60), // Connection establishment
             TcpState::Closing => Duration::from_secs(30),
-            TcpState::Listen => Duration::from_secs(300), // Listening sockets persist
             TcpState::Unknown => Duration::from_secs(120),
         }
     }
@@ -2458,7 +2450,6 @@ mod tests {
 
     #[test]
     fn test_tcp_state_display() {
-        assert_eq!(TcpState::Listen.to_string(), "LISTEN");
         assert_eq!(TcpState::SynSent.to_string(), "SYN_SENT");
         assert_eq!(TcpState::SynReceived.to_string(), "SYN_RECV");
         assert_eq!(TcpState::Established.to_string(), "ESTABLISHED");
