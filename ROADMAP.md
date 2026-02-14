@@ -61,6 +61,8 @@ The experimental eBPF support provides efficient process identification but has 
   - QUIC protocol with CONNECTION_CLOSE frame detection and RFC 9000 compliance
 - [ ] **DPI Enhancements**: Improve deep packet inspection capabilities:
   - Support more protocols (e.g. FTP, SMTP, IMAP, etc.)
+  - CDP/LLDP (network device discovery protocols)
+  - LACP (Link Aggregation Control Protocol)
   - More accurate SNI detection for QUIC/HTTPS
 - [x] **Connection Lifecycle Management**: Smart protocol-aware timeouts with visual staleness indicators (yellow at 75%, red at 90%)
 - [x] **Process Identification**: Associate network connections with running processes (with experimental eBPF support on Linux)
@@ -68,6 +70,9 @@ The experimental eBPF support provides efficient process identification but has 
 - [x] **Cross-platform Support**: Works on Linux, macOS, Windows, and FreeBSD
 - [x] **DNS Reverse Lookup**: Add optional hostname resolution (toggle between IP and hostname display) - `--resolve-dns` flag with `d` key toggle
 - [ ] **IPv6 Support**: Full IPv6 connection tracking and display, including DNS resolution (needs testing)
+- [ ] **VLAN Tag Detection**: Parse 802.1Q VLAN tags from packet headers to identify VLAN configurations
+- [ ] **Passive Host Discovery**: Infer local network hosts from observed ARP requests/replies and other broadcast traffic without active scanning
+- [ ] **MAC Vendor Lookup (OUI)**: Resolve MAC addresses to hardware vendor names using a local OUI database (e.g. "Apple", "Intel", "Ubiquiti")
 
 ### Filtering & Search
 
@@ -120,11 +125,20 @@ The experimental eBPF support provides efficient process identification but has 
   - Working directory
   - User/UID information
   - Parent process information
-- [ ] **Configuration File**: Support for persistent configuration (filters, UI preferences)
+- [ ] **Configuration File**: Support for persistent configuration:
+  - Custom color themes and UI styling
+  - Default filters and sort preferences
+  - Per-interface settings
+  - Keybinding customization
 - [ ] **Connection Alerts**: Notifications for new connections or suspicious activity
 - [x] **GeoIP Integration**: Geographical location of remote IPs
+- [ ] **GeoIP City-Level Resolution**: Extend GeoIP to include city-level location data using GeoLite2-City database
 - [ ] **Protocol Statistics**: Summary view of protocol distribution
 - [ ] **Rate Limiting Detection**: Identify connections with unusual traffic patterns
+- [ ] **Bufferbloat Detection**: Measure latency under load to identify bufferbloat issues on the network
+- [ ] **PCAP Import/Replay**: Load a PCAP file (with optional JSON process attribution sidecar) and replay it in the TUI for offline analysis. Enables remote monitoring workflows: capture on a remote host with `--pcap-export`, transfer files, and replay locally with full process-attributed view
+- [ ] **Route Table Display**: Show the system routing table in a user-friendly view within the TUI
+- [ ] **Privacy/Redact Mode**: Obfuscate sensitive information (IPs, MACs, hostnames) in the TUI for safe screenshots and sharing. Include option to export connection details from the details view to a text file with privacy redaction applied
 
 ## UI Improvements
 
