@@ -32,8 +32,8 @@ Copy the long hex string (e.g., `ABC123...`)
 
 ```bash
 # Create and push a test tag
-git tag v0.14.0-test
-git push origin v0.14.0-test
+git tag v1.0.0-test
+git push origin v1.0.0-test
 ```
 
 Check: **Actions** tab in GitHub → **Release to Ubuntu PPA**
@@ -41,8 +41,8 @@ Check: **Actions** tab in GitHub → **Release to Ubuntu PPA**
 ## Remove Test Tag (if needed)
 
 ```bash
-git tag -d v0.14.0-test
-git push origin :refs/tags/v0.14.0-test
+git tag -d v1.0.0-test
+git push origin :refs/tags/v1.0.0-test
 ```
 
 ## Done!

@@ -292,13 +292,15 @@ RustNet is built with the following key dependencies:
 
 - **dashmap** - Concurrent hashmap with fine-grained locking
 - **crossbeam** - Multi-threading utilities and lock-free channels
-- **parking_lot** - Efficient synchronization primitives (RwLock, Mutex)
 
 ### Networking & Protocols
 
 - **dns-lookup** - DNS resolution capabilities
-- **etherparse** - Ethernet, IP, TCP, UDP packet parsing
-- **trust-dns-proto** - DNS protocol parsing (for DPI)
+- **maxminddb** - GeoIP database lookups (GeoLite2)
+
+### Serialization
+
+- **serde** / **serde_json** - JSON serialization for event logging and PCAP sidecar
 
 ### Command-line & Logging
 
@@ -311,16 +313,17 @@ RustNet is built with the following key dependencies:
 
 - **procfs** (Linux) - Process information from /proc filesystem (runtime fallback)
 - **libbpf-rs** (Linux) - eBPF program loading and management
-- **libbpf-sys** (Linux) - Low-level libbpf bindings for eBPF
-- **windows-sys** (Windows) - Windows API bindings for IP Helper API
+- **landlock** (Linux) - Filesystem and network sandboxing
+- **caps** (Linux) - Linux capability management
+- **windows** (Windows) - Windows API bindings for IP Helper API
 
 ### Utilities
 
 - **arboard** - Clipboard access for copying addresses
-- **num_cpus** - CPU core detection for threading
 - **chrono** - Date and time handling
 - **ring** - Cryptographic operations (for TLS/SNI parsing)
 - **aes** - AES encryption support (for protocol detection)
+- **libc** - Low-level C bindings
 
 ## Security
 

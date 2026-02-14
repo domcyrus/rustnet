@@ -312,7 +312,6 @@ Use keyword filters for targeted searches:
 | `dst:` | Destinations | `dst:github.com` matches github.com |
 | `process:` | Process names | `process:ssh` matches ssh, sshd |
 | `sni:` | SNI hostnames (HTTPS) | `sni:api` matches api.example.com |
-| `ssh:` | SSH version/software | `ssh:openssh` matches OpenSSH connections |
 | `state:` | Protocol states | `state:established` matches established connections |
 | `proto:` | Protocol type | `proto:tcp` matches TCP connections |
 
@@ -353,8 +352,8 @@ dport:443 sni:google.com            # HTTPS connections to Google
 sport:443 state:syn_recv            # Half-open connections to port 443 (SYN flood detection)
 proto:tcp state:established         # All established TCP connections
 process:firefox state:quic_connected # Active QUIC connections from Firefox
-dport:22 ssh:openssh                # SSH connections using OpenSSH
-state:established ssh:openssh       # Established SSH connections using OpenSSH
+dport:22 app:openssh                # SSH connections using OpenSSH
+state:established app:ssh           # Established SSH connections
 ```
 
 ### Clearing Filters
@@ -774,15 +773,12 @@ RustNet adjusts connection timeouts based on the protocol and detected applicati
 - **SYN_SENT, FIN_WAIT, etc.**: 30-60 seconds
 
 #### UDP Connections
-- **HTTP/3 (QUIC with HTTP)**: **10 minutes** - connection reuse
-- **HTTPS/3 (QUIC with HTTPS)**: **10 minutes** - connection reuse
 - **SSH over UDP**: **30 minutes** - long-lived sessions
 - **DNS**: **30 seconds** - short-lived queries
 - **Regular UDP**: **60 seconds** - standard timeout
 
 #### QUIC Connections (Detected State)
-- **Connected (active)** (< 1 min idle): **10 minutes**
-- **Connected (idle)** (> 1 min idle): **5 minutes**
+- **Connected**: **3 minutes** default (or uses idle timeout from transport parameters if available)
 - **With CONNECTION_CLOSE frame**: 1-10 seconds (based on close type)
 - **Initial/Handshaking**: 60 seconds - allow connection establishment
 - **Draining**: 10 seconds - RFC 9000 draining period

@@ -429,7 +429,6 @@ fn parse_supported_versions_resilient(data: &[u8], is_client_hello: bool) -> Opt
 
 fn version_to_priority(version: TlsVersion) -> u8 {
     match version {
-        TlsVersion::Ssl3 => 0,
         TlsVersion::Tls10 => 1,
         TlsVersion::Tls11 => 2,
         TlsVersion::Tls12 => 3,

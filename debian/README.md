@@ -7,11 +7,11 @@ RustNet uses GitHub Actions to automatically build and upload packages to Ubuntu
 Push a git tag to trigger automatic PPA release:
 
 ```bash
-git tag v0.15.0
-git push origin v0.15.0
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
-This automatically builds and uploads to Ubuntu 25.04 (Questing) which has Rust 1.85 for edition 2024 support.
+This automatically builds and uploads to Ubuntu 25.10+ which has Rust 1.88+ for edition 2024 support.
 
 ## GitHub Secrets Setup
 
@@ -49,7 +49,7 @@ sudo apt install rustnet
 - **Binary**: rustnet
 - **Maintainer**: Marco Cadetg <cadetg@gmail.com>
 - **PPA**: https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet
-- **Supported**: Ubuntu 24.04 LTS (Noble) and later
+- **Supported**: Ubuntu 25.10 and later
 - **Architectures**: amd64, arm64, armhf
 
 ## Workflow

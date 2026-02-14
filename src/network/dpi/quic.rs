@@ -140,9 +140,6 @@ pub fn is_partial_sni(sni: &str) -> bool {
 struct SniHeader {
     /// Server name list length
     list_len: u16,
-    /// Name type (should be 0x00 for hostname) - validated but not stored
-    #[allow(dead_code)]
-    _name_type: u8,
     /// Hostname length
     name_len: u16,
 }
@@ -174,11 +171,7 @@ fn parse_sni_header(data: &[u8]) -> Option<SniHeader> {
         return None;
     }
 
-    Some(SniHeader {
-        list_len,
-        _name_type: name_type,
-        name_len,
-    })
+    Some(SniHeader { list_len, name_len })
 }
 
 // ============================================================================

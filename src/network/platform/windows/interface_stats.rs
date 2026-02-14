@@ -14,19 +14,6 @@ use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 pub struct WindowsStatsProvider;
 
 impl InterfaceStatsProvider for WindowsStatsProvider {
-    fn get_stats(&self, interface: &str) -> Result<InterfaceStats, io::Error> {
-        let all_stats = self.get_all_stats()?;
-        all_stats
-            .into_iter()
-            .find(|s| s.interface_name == interface || s.interface_name.contains(interface))
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("Interface {} not found", interface),
-                )
-            })
-    }
-
     #[cfg(target_os = "windows")]
     fn get_all_stats(&self) -> Result<Vec<InterfaceStats>, io::Error> {
         unsafe {

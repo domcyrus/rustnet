@@ -8,8 +8,8 @@ use std::time::SystemTime;
 /// Linux-specific implementation using sysfs
 pub struct LinuxStatsProvider;
 
-impl InterfaceStatsProvider for LinuxStatsProvider {
-    fn get_stats(&self, interface: &str) -> Result<InterfaceStats, io::Error> {
+impl LinuxStatsProvider {
+    pub fn get_stats(&self, interface: &str) -> Result<InterfaceStats, io::Error> {
         let base_path = format!("/sys/class/net/{}/statistics", interface);
 
         // Check if interface exists
@@ -34,7 +34,9 @@ impl InterfaceStatsProvider for LinuxStatsProvider {
             timestamp: SystemTime::now(),
         })
     }
+}
 
+impl InterfaceStatsProvider for LinuxStatsProvider {
     fn get_all_stats(&self) -> Result<Vec<InterfaceStats>, io::Error> {
         let mut stats = Vec::new();
 

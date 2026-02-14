@@ -176,7 +176,8 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `s` `S` | Cycle sort columns / toggle direction |
 | `a` | Toggle process grouping |
 | `Space` | Expand/collapse process group |
-| `←/→` | Collapse/expand group |
+| `←/→` or `h/l` | Collapse/expand group |
+| `PageUp/PageDown` | Page navigation (10 items) |
 | `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |
 | `h` | Toggle help |
