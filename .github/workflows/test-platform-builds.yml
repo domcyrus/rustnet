@@ -2,13 +2,16 @@ name: Test Platform Builds
 
 # Test builds on all supported platforms.
 # Uses the shared build-platforms workflow.
+# Also triggers a FreeBSD test build in the rustnet-bsd repo.
 
 on:
   workflow_dispatch:
   pull_request:
     paths:
       - 'Cargo.toml'
+      - 'Cargo.lock'
       - 'build.rs'
+      - 'Cross.toml'
       - 'src/**'
       - '.github/workflows/test-platform-builds.yml'
       - '.github/workflows/build-platforms.yml'
@@ -23,3 +26,25 @@ jobs:
     with:
       create-archives: false
       strip-symbols: false
+
+  trigger-freebsd-build:
+    name: trigger-freebsd-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger FreeBSD test build
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            REF="${{ github.event.pull_request.head.sha }}"
+            TAG="pr-${{ github.event.pull_request.number }}"
+          else
+            REF="${{ github.sha }}"
+            TAG="test-$(date +%Y%m%d-%H%M%S)"
+          fi
+
+          gh api repos/domcyrus/rustnet-bsd/dispatches \
+            -f event_type=freebsd-build \
+            -f "client_payload[tag]=$TAG" \
+            -f "client_payload[rustnet_ref]=$REF" \
+            -f "client_payload[create_release]=false"
+        env:
+          GH_TOKEN: ${{ secrets.BSD_DISPATCH_TOKEN }}
