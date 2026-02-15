@@ -137,6 +137,15 @@ impl std::fmt::Display for ApplicationProtocol {
                 }
                 BitTorrentType::Utp => write!(f, "BT uTP"),
             },
+            ApplicationProtocol::Mqtt(info) => {
+                if let Some(topic) = &info.topic {
+                    write!(f, "MQTT {} ({})", info.packet_type, topic)
+                } else if let Some(client_id) = &info.client_id {
+                    write!(f, "MQTT {} ({})", info.packet_type, client_id)
+                } else {
+                    write!(f, "MQTT {}", info.packet_type)
+                }
+            }
         }
     }
 }
@@ -250,6 +259,65 @@ pub struct BitTorrentInfo {
     pub supports_fast: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MqttPacketType {
+    Connect,
+    Connack,
+    Publish,
+    Puback,
+    Subscribe,
+    Suback,
+    Unsubscribe,
+    Unsuback,
+    Pingreq,
+    Pingresp,
+    Disconnect,
+}
+
+impl fmt::Display for MqttPacketType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MqttPacketType::Connect => write!(f, "CONNECT"),
+            MqttPacketType::Connack => write!(f, "CONNACK"),
+            MqttPacketType::Publish => write!(f, "PUBLISH"),
+            MqttPacketType::Puback => write!(f, "PUBACK"),
+            MqttPacketType::Subscribe => write!(f, "SUBSCRIBE"),
+            MqttPacketType::Suback => write!(f, "SUBACK"),
+            MqttPacketType::Unsubscribe => write!(f, "UNSUBSCRIBE"),
+            MqttPacketType::Unsuback => write!(f, "UNSUBACK"),
+            MqttPacketType::Pingreq => write!(f, "PINGREQ"),
+            MqttPacketType::Pingresp => write!(f, "PINGRESP"),
+            MqttPacketType::Disconnect => write!(f, "DISCONNECT"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MqttVersion {
+    V31,
+    V311,
+    V50,
+}
+
+impl fmt::Display for MqttVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MqttVersion::V31 => write!(f, "3.1"),
+            MqttVersion::V311 => write!(f, "3.1.1"),
+            MqttVersion::V50 => write!(f, "5.0"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MqttInfo {
+    pub version: Option<MqttVersion>,
+    pub packet_type: MqttPacketType,
+    pub client_id: Option<String>,
+    pub topic: Option<String>,
+    pub qos: Option<u8>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ApplicationProtocol {
     Http(HttpInfo),
@@ -265,6 +333,7 @@ pub enum ApplicationProtocol {
     Ssdp(SsdpInfo),
     NetBios(NetBiosInfo),
     BitTorrent(BitTorrentInfo),
+    Mqtt(MqttInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -1299,7 +1368,8 @@ impl AppProtocolDistribution {
                     | ApplicationProtocol::Snmp(_)
                     | ApplicationProtocol::Ssdp(_)
                     | ApplicationProtocol::NetBios(_)
-                    | ApplicationProtocol::BitTorrent(_) => dist.other_count += 1,
+                    | ApplicationProtocol::BitTorrent(_)
+                    | ApplicationProtocol::Mqtt(_) => dist.other_count += 1,
                 }
             } else {
                 dist.other_count += 1;
@@ -1750,6 +1820,7 @@ impl Connection {
                             format!("NETBIOS_{}", info.service)
                         }
                         ApplicationProtocol::BitTorrent(_) => "BT_UDP".to_string(),
+                        ApplicationProtocol::Mqtt(_) => "MQTT_UDP".to_string(),
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -1826,6 +1897,7 @@ impl Connection {
                         ApplicationProtocol::Ssdp(_) => Duration::from_secs(30),
                         ApplicationProtocol::NetBios(_) => Duration::from_secs(60),
                         ApplicationProtocol::BitTorrent(_) => Duration::from_secs(60),
+                        ApplicationProtocol::Mqtt(_) => Duration::from_secs(120),
                     }
                 } else {
                     // Regular UDP without DPI classification

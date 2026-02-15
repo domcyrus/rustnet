@@ -2841,6 +2841,36 @@ fn draw_connection_details(
                         ]));
                     }
                 }
+                crate::network::types::ApplicationProtocol::Mqtt(info) => {
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Packet Type: ", theme::fg(theme::label())),
+                        Span::raw(info.packet_type.to_string()),
+                    ]));
+                    if let Some(version) = &info.version {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Version: ", theme::fg(theme::label())),
+                            Span::raw(version.to_string()),
+                        ]));
+                    }
+                    if let Some(client_id) = &info.client_id {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Client ID: ", theme::fg(theme::label())),
+                            Span::raw(client_id.clone()),
+                        ]));
+                    }
+                    if let Some(topic) = &info.topic {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Topic: ", theme::fg(theme::label())),
+                            Span::raw(topic.clone()),
+                        ]));
+                    }
+                    if let Some(qos) = info.qos {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  QoS: ", theme::fg(theme::label())),
+                            Span::raw(qos.to_string()),
+                        ]));
+                    }
+                }
             }
         }
         None => {

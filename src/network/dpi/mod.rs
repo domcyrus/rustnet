@@ -9,6 +9,7 @@ mod http;
 mod https;
 mod llmnr;
 mod mdns;
+mod mqtt;
 mod netbios;
 mod ntp;
 mod quic;
@@ -30,6 +31,7 @@ const PORT_NETBIOS_DGM: u16 = 138;
 const PORT_SNMP: u16 = 161;
 const PORT_SNMP_TRAP: u16 = 162;
 const PORT_HTTPS: u16 = 443;
+const PORT_MQTT: u16 = 1883;
 const PORT_SSDP: u16 = 1900;
 const PORT_MDNS: u16 = 5353;
 const PORT_LLMNR: u16 = 5355;
@@ -78,7 +80,16 @@ pub fn analyze_tcp_packet(
         });
     }
 
-    // 4. Check for SSH (port 22 or SSH banner)
+    // 4. Check for MQTT (port 1883 or MQTT signature)
+    if (local_port == PORT_MQTT || remote_port == PORT_MQTT || mqtt::is_mqtt_packet(payload))
+        && let Some(mqtt_result) = mqtt::analyze_mqtt(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Mqtt(mqtt_result),
+        });
+    }
+
+    // 5. Check for SSH (port 22 or SSH banner)
     if (local_port == PORT_SSH || remote_port == PORT_SSH || ssh::is_likely_ssh(payload))
         && let Some(ssh_result) = ssh::analyze_ssh(payload, _is_outgoing)
     {
