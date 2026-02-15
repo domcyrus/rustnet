@@ -476,6 +476,19 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     merge_ssh_info(old_info, new_info);
                 }
 
+                // BitTorrent - merge peer info
+                (
+                    ApplicationProtocol::BitTorrent(old_info),
+                    ApplicationProtocol::BitTorrent(new_info),
+                ) => {
+                    if old_info.client.is_none() {
+                        old_info.client.clone_from(&new_info.client);
+                    }
+                    if old_info.info_hash.is_none() {
+                        old_info.info_hash.clone_from(&new_info.info_hash);
+                    }
+                }
+
                 _ => {
                     // Keep existing protocol
                 }

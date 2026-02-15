@@ -120,6 +120,23 @@ impl std::fmt::Display for ApplicationProtocol {
                     write!(f, "NetBIOS {}", info.service)
                 }
             }
+            ApplicationProtocol::BitTorrent(info) => match info.protocol_type {
+                BitTorrentType::Peer => {
+                    if let Some(client) = &info.client {
+                        write!(f, "BitTorrent ({})", client)
+                    } else {
+                        write!(f, "BitTorrent")
+                    }
+                }
+                BitTorrentType::Dht => {
+                    if let Some(method) = &info.dht_method {
+                        write!(f, "BT DHT ({})", method)
+                    } else {
+                        write!(f, "BT DHT")
+                    }
+                }
+                BitTorrentType::Utp => write!(f, "BT uTP"),
+            },
         }
     }
 }
@@ -205,6 +222,34 @@ pub enum SshVersion {
     V2,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BitTorrentType {
+    Peer,
+    Dht,
+    Utp,
+}
+
+impl fmt::Display for BitTorrentType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BitTorrentType::Peer => write!(f, "Peer"),
+            BitTorrentType::Dht => write!(f, "DHT"),
+            BitTorrentType::Utp => write!(f, "uTP"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BitTorrentInfo {
+    pub protocol_type: BitTorrentType,
+    pub info_hash: Option<String>,
+    pub client: Option<String>,
+    pub dht_method: Option<String>,
+    pub supports_dht: bool,
+    pub supports_extension: bool,
+    pub supports_fast: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum ApplicationProtocol {
     Http(HttpInfo),
@@ -219,6 +264,7 @@ pub enum ApplicationProtocol {
     Snmp(SnmpInfo),
     Ssdp(SsdpInfo),
     NetBios(NetBiosInfo),
+    BitTorrent(BitTorrentInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -1252,7 +1298,8 @@ impl AppProtocolDistribution {
                     | ApplicationProtocol::Dhcp(_)
                     | ApplicationProtocol::Snmp(_)
                     | ApplicationProtocol::Ssdp(_)
-                    | ApplicationProtocol::NetBios(_) => dist.other_count += 1,
+                    | ApplicationProtocol::NetBios(_)
+                    | ApplicationProtocol::BitTorrent(_) => dist.other_count += 1,
                 }
             } else {
                 dist.other_count += 1;
@@ -1702,6 +1749,7 @@ impl Connection {
                         ApplicationProtocol::NetBios(info) => {
                             format!("NETBIOS_{}", info.service)
                         }
+                        ApplicationProtocol::BitTorrent(_) => "BT_UDP".to_string(),
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -1777,6 +1825,7 @@ impl Connection {
                         ApplicationProtocol::Snmp(_) => Duration::from_secs(60),
                         ApplicationProtocol::Ssdp(_) => Duration::from_secs(30),
                         ApplicationProtocol::NetBios(_) => Duration::from_secs(60),
+                        ApplicationProtocol::BitTorrent(_) => Duration::from_secs(60),
                     }
                 } else {
                     // Regular UDP without DPI classification

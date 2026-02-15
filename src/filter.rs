@@ -390,6 +390,16 @@ impl ConnectionFilter {
                     return true;
                 }
             }
+            ApplicationProtocol::BitTorrent(info) => {
+                if "bittorrent".contains(text) {
+                    return true;
+                }
+                if let Some(ref client) = info.client
+                    && client.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+            }
         }
 
         false
