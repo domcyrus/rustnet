@@ -137,6 +137,17 @@ impl std::fmt::Display for ApplicationProtocol {
                 }
                 BitTorrentType::Utp => write!(f, "BT uTP"),
             },
+            ApplicationProtocol::Stun(info) => {
+                if let Some(software) = &info.software {
+                    write!(
+                        f,
+                        "STUN {} {} ({})",
+                        info.method, info.message_class, software
+                    )
+                } else {
+                    write!(f, "STUN {} {}", info.method, info.message_class)
+                }
+            }
         }
     }
 }
@@ -265,6 +276,7 @@ pub enum ApplicationProtocol {
     Ssdp(SsdpInfo),
     NetBios(NetBiosInfo),
     BitTorrent(BitTorrentInfo),
+    Stun(StunInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -634,6 +646,49 @@ impl std::fmt::Display for NetBiosOpcode {
             NetBiosOpcode::Refresh => write!(f, "Refresh"),
             NetBiosOpcode::Response => write!(f, "Response"),
             NetBiosOpcode::Unknown(v) => write!(f, "Unknown({})", v),
+        }
+    }
+}
+
+// STUN-specific types
+#[derive(Debug, Clone)]
+pub struct StunInfo {
+    pub message_class: StunMessageClass,
+    pub method: StunMethod,
+    pub transaction_id: [u8; 12],
+    pub software: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StunMessageClass {
+    Request,
+    Indication,
+    SuccessResponse,
+    ErrorResponse,
+}
+
+impl std::fmt::Display for StunMessageClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StunMessageClass::Request => write!(f, "Request"),
+            StunMessageClass::Indication => write!(f, "Indication"),
+            StunMessageClass::SuccessResponse => write!(f, "Success"),
+            StunMessageClass::ErrorResponse => write!(f, "Error"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StunMethod {
+    Binding,
+    Unknown(u16),
+}
+
+impl std::fmt::Display for StunMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StunMethod::Binding => write!(f, "Binding"),
+            StunMethod::Unknown(v) => write!(f, "Unknown(0x{:04x})", v),
         }
     }
 }
@@ -1299,7 +1354,8 @@ impl AppProtocolDistribution {
                     | ApplicationProtocol::Snmp(_)
                     | ApplicationProtocol::Ssdp(_)
                     | ApplicationProtocol::NetBios(_)
-                    | ApplicationProtocol::BitTorrent(_) => dist.other_count += 1,
+                    | ApplicationProtocol::BitTorrent(_)
+                    | ApplicationProtocol::Stun(_) => dist.other_count += 1,
                 }
             } else {
                 dist.other_count += 1;
@@ -1750,6 +1806,9 @@ impl Connection {
                             format!("NETBIOS_{}", info.service)
                         }
                         ApplicationProtocol::BitTorrent(_) => "BT_UDP".to_string(),
+                        ApplicationProtocol::Stun(info) => {
+                            format!("STUN_{}", info.message_class)
+                        }
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -1826,6 +1885,7 @@ impl Connection {
                         ApplicationProtocol::Ssdp(_) => Duration::from_secs(30),
                         ApplicationProtocol::NetBios(_) => Duration::from_secs(60),
                         ApplicationProtocol::BitTorrent(_) => Duration::from_secs(60),
+                        ApplicationProtocol::Stun(_) => Duration::from_secs(30),
                     }
                 } else {
                     // Regular UDP without DPI classification
