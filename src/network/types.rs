@@ -120,25 +120,23 @@ impl std::fmt::Display for ApplicationProtocol {
                     write!(f, "NetBIOS {}", info.service)
                 }
             }
-            ApplicationProtocol::BitTorrent(info) => {
-                match info.protocol_type {
-                    BitTorrentType::Peer => {
-                        if let Some(client) = &info.client {
-                            write!(f, "BitTorrent ({})", client)
-                        } else {
-                            write!(f, "BitTorrent")
-                        }
+            ApplicationProtocol::BitTorrent(info) => match info.protocol_type {
+                BitTorrentType::Peer => {
+                    if let Some(client) = &info.client {
+                        write!(f, "BitTorrent ({})", client)
+                    } else {
+                        write!(f, "BitTorrent")
                     }
-                    BitTorrentType::Dht => {
-                        if let Some(method) = &info.dht_method {
-                            write!(f, "BT DHT ({})", method)
-                        } else {
-                            write!(f, "BT DHT")
-                        }
-                    }
-                    BitTorrentType::Utp => write!(f, "BT uTP"),
                 }
-            }
+                BitTorrentType::Dht => {
+                    if let Some(method) = &info.dht_method {
+                        write!(f, "BT DHT ({})", method)
+                    } else {
+                        write!(f, "BT DHT")
+                    }
+                }
+                BitTorrentType::Utp => write!(f, "BT uTP"),
+            },
         }
     }
 }
