@@ -2801,6 +2801,46 @@ fn draw_connection_details(
                         ]));
                     }
                 }
+                crate::network::types::ApplicationProtocol::BitTorrent(info) => {
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Type: ", theme::fg(theme::label())),
+                        Span::raw(info.protocol_type.to_string()),
+                    ]));
+                    if let Some(client) = &info.client {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Client: ", theme::fg(theme::label())),
+                            Span::raw(client.clone()),
+                        ]));
+                    }
+                    if let Some(info_hash) = &info.info_hash {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Info Hash: ", theme::fg(theme::label())),
+                            Span::raw(info_hash.clone()),
+                        ]));
+                    }
+                    if let Some(method) = &info.dht_method {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  DHT Method: ", theme::fg(theme::label())),
+                            Span::raw(method.clone()),
+                        ]));
+                    }
+                    let mut extensions = Vec::new();
+                    if info.supports_dht {
+                        extensions.push("DHT");
+                    }
+                    if info.supports_extension {
+                        extensions.push("Extension Protocol");
+                    }
+                    if info.supports_fast {
+                        extensions.push("Fast");
+                    }
+                    if !extensions.is_empty() {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Extensions: ", theme::fg(theme::label())),
+                            Span::raw(extensions.join(", ")),
+                        ]));
+                    }
+                }
             }
         }
         None => {

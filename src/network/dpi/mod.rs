@@ -1,6 +1,7 @@
 use crate::network::types::{ApplicationProtocol, QuicInfo};
 use log::{debug, warn};
 
+mod bittorrent;
 mod cipher_suites;
 mod dhcp;
 mod dns;
@@ -68,7 +69,16 @@ pub fn analyze_tcp_packet(
         });
     }
 
-    // 3. Check for SSH (port 22 or SSH banner)
+    // 3. Check for BitTorrent (handshake signature \x13BitTorrent protocol)
+    if bittorrent::is_bittorrent_handshake(payload)
+        && let Some(bt_result) = bittorrent::analyze_bittorrent(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::BitTorrent(bt_result),
+        });
+    }
+
+    // 4. Check for SSH (port 22 or SSH banner)
     if (local_port == PORT_SSH || remote_port == PORT_SSH || ssh::is_likely_ssh(payload))
         && let Some(ssh_result) = ssh::analyze_ssh(payload, _is_outgoing)
     {
@@ -196,6 +206,13 @@ pub fn analyze_udp_packet(
     {
         return Some(DpiResult {
             application: ApplicationProtocol::Snmp(snmp_result),
+        });
+    }
+
+    // 11. BitTorrent DHT / uTP (no port gating — signature-based)
+    if let Some(bt_result) = bittorrent::analyze_udp_bittorrent(payload) {
+        return Some(DpiResult {
+            application: ApplicationProtocol::BitTorrent(bt_result),
         });
     }
 
