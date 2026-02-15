@@ -148,6 +148,15 @@ impl std::fmt::Display for ApplicationProtocol {
                     write!(f, "STUN {} {}", info.method, info.message_class)
                 }
             }
+            ApplicationProtocol::Mqtt(info) => {
+                if let Some(topic) = &info.topic {
+                    write!(f, "MQTT {} ({})", info.packet_type, topic)
+                } else if let Some(client_id) = &info.client_id {
+                    write!(f, "MQTT {} ({})", info.packet_type, client_id)
+                } else {
+                    write!(f, "MQTT {}", info.packet_type)
+                }
+            }
         }
     }
 }
@@ -261,6 +270,65 @@ pub struct BitTorrentInfo {
     pub supports_fast: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MqttPacketType {
+    Connect,
+    Connack,
+    Publish,
+    Puback,
+    Subscribe,
+    Suback,
+    Unsubscribe,
+    Unsuback,
+    Pingreq,
+    Pingresp,
+    Disconnect,
+}
+
+impl fmt::Display for MqttPacketType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MqttPacketType::Connect => write!(f, "CONNECT"),
+            MqttPacketType::Connack => write!(f, "CONNACK"),
+            MqttPacketType::Publish => write!(f, "PUBLISH"),
+            MqttPacketType::Puback => write!(f, "PUBACK"),
+            MqttPacketType::Subscribe => write!(f, "SUBSCRIBE"),
+            MqttPacketType::Suback => write!(f, "SUBACK"),
+            MqttPacketType::Unsubscribe => write!(f, "UNSUBSCRIBE"),
+            MqttPacketType::Unsuback => write!(f, "UNSUBACK"),
+            MqttPacketType::Pingreq => write!(f, "PINGREQ"),
+            MqttPacketType::Pingresp => write!(f, "PINGRESP"),
+            MqttPacketType::Disconnect => write!(f, "DISCONNECT"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MqttVersion {
+    V31,
+    V311,
+    V50,
+}
+
+impl fmt::Display for MqttVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MqttVersion::V31 => write!(f, "3.1"),
+            MqttVersion::V311 => write!(f, "3.1.1"),
+            MqttVersion::V50 => write!(f, "5.0"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MqttInfo {
+    pub version: Option<MqttVersion>,
+    pub packet_type: MqttPacketType,
+    pub client_id: Option<String>,
+    pub topic: Option<String>,
+    pub qos: Option<u8>,
+}
+
 #[derive(Debug, Clone)]
 pub enum ApplicationProtocol {
     Http(HttpInfo),
@@ -277,6 +345,7 @@ pub enum ApplicationProtocol {
     NetBios(NetBiosInfo),
     BitTorrent(BitTorrentInfo),
     Stun(StunInfo),
+    Mqtt(MqttInfo),
 }
 
 #[derive(Debug, Clone)]
@@ -1355,7 +1424,8 @@ impl AppProtocolDistribution {
                     | ApplicationProtocol::Ssdp(_)
                     | ApplicationProtocol::NetBios(_)
                     | ApplicationProtocol::BitTorrent(_)
-                    | ApplicationProtocol::Stun(_) => dist.other_count += 1,
+                    | ApplicationProtocol::Stun(_)
+                    | ApplicationProtocol::Mqtt(_) => dist.other_count += 1,
                 }
             } else {
                 dist.other_count += 1;
@@ -1809,6 +1879,7 @@ impl Connection {
                         ApplicationProtocol::Stun(info) => {
                             format!("STUN_{}", info.message_class)
                         }
+                        ApplicationProtocol::Mqtt(_) => "MQTT_UDP".to_string(),
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -1886,6 +1957,7 @@ impl Connection {
                         ApplicationProtocol::NetBios(_) => Duration::from_secs(60),
                         ApplicationProtocol::BitTorrent(_) => Duration::from_secs(60),
                         ApplicationProtocol::Stun(_) => Duration::from_secs(30),
+                        ApplicationProtocol::Mqtt(_) => Duration::from_secs(120),
                     }
                 } else {
                     // Regular UDP without DPI classification

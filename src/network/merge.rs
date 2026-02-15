@@ -6,8 +6,8 @@ use std::time::{Instant, SystemTime};
 use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reassembler};
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
-    ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, ProtocolState,
-    QuicConnectionState, QuicInfo, SshInfo, TcpState,
+    ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, MqttInfo,
+    ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState,
 };
 
 /// Get the priority of a QUIC connection state for proper state progression
@@ -489,6 +489,11 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     }
                 }
 
+                // MQTT - merge client_id and topic from subsequent packets
+                (ApplicationProtocol::Mqtt(old_info), ApplicationProtocol::Mqtt(new_info)) => {
+                    merge_mqtt_info(old_info, new_info);
+                }
+
                 _ => {
                     // Keep existing protocol
                 }
@@ -851,6 +856,24 @@ fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
     if old_info.auth_method.is_none() && new_info.auth_method.is_some() {
         old_info.auth_method = new_info.auth_method.clone();
     }
+}
+
+/// Merge MQTT information
+fn merge_mqtt_info(old_info: &mut MqttInfo, new_info: &MqttInfo) {
+    if old_info.version.is_none() && new_info.version.is_some() {
+        old_info.version = new_info.version;
+    }
+    if old_info.client_id.is_none() && new_info.client_id.is_some() {
+        old_info.client_id.clone_from(&new_info.client_id);
+    }
+    if old_info.topic.is_none() && new_info.topic.is_some() {
+        old_info.topic.clone_from(&new_info.topic);
+    }
+    if old_info.qos.is_none() && new_info.qos.is_some() {
+        old_info.qos = new_info.qos;
+    }
+    // Always update packet_type to show the latest activity
+    old_info.packet_type = new_info.packet_type;
 }
 
 /// Update connection rate calculations using sliding window

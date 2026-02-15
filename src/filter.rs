@@ -410,6 +410,21 @@ impl ConnectionFilter {
                     return true;
                 }
             }
+            ApplicationProtocol::Mqtt(info) => {
+                if "mqtt".contains(text) {
+                    return true;
+                }
+                if let Some(ref client_id) = info.client_id
+                    && client_id.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+                if let Some(ref topic) = info.topic
+                    && topic.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+            }
         }
 
         false
