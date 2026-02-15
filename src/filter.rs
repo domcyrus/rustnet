@@ -400,6 +400,16 @@ impl ConnectionFilter {
                     return true;
                 }
             }
+            ApplicationProtocol::Stun(info) => {
+                if "stun".contains(text) {
+                    return true;
+                }
+                if let Some(ref software) = info.software
+                    && software.to_lowercase().contains(text)
+                {
+                    return true;
+                }
+            }
             ApplicationProtocol::Mqtt(info) => {
                 if "mqtt".contains(text) {
                     return true;

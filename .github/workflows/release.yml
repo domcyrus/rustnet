@@ -112,6 +112,64 @@ jobs:
             gh release upload ${{ github.ref_name }} "$artifact" --clobber
           done
 
+  # aarch64 static: JS actions don't work in Alpine containers on ARM runners,
+  # so the reusable workflow can't upload artifacts. Build and upload here instead,
+  # where we have contents: write from the workflow-level permissions.
+  upload-arm-static:
+    name: upload-arm-static
+    runs-on: ubuntu-24.04-arm
+    needs: create-release
+    container:
+      image: rust:alpine
+    steps:
+      - name: Checkout repository (ARM workaround)
+        run: |
+          apk add --no-cache git
+          git config --global --add safe.directory /__w/rustnet/rustnet
+          git clone --depth 1 https://github.com/${{ github.repository }}.git .
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            git fetch --depth 1 origin tag "${{ github.ref_name }}"
+            git checkout "${{ github.ref_name }}"
+          fi
+
+      - name: Install dependencies
+        run: |
+          apk add --no-cache \
+            musl-dev libpcap-dev pkgconfig build-base perl \
+            elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
+            clang llvm linux-headers
+          rustup component add rustfmt
+
+      - name: Build static binary
+        env:
+          CFLAGS: "-mno-outline-atomics"
+          CXXFLAGS: "-mno-outline-atomics"
+          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
+        run: cargo build --release
+
+      - name: Verify static linking
+        run: |
+          file target/release/rustnet
+          file target/release/rustnet | grep -q "static.* linked" || \
+            (echo "ERROR: Binary is not statically linked" && exit 1)
+
+      - name: Create and upload release archive
+        run: |
+          staging="rustnet-${{ github.ref_name }}-aarch64-unknown-linux-musl"
+          mkdir -p "$staging/assets"
+
+          cp target/release/rustnet "$staging/"
+          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+
+          tar czf "$staging.tar.gz" "$staging"
+
+          apk add --no-cache github-cli
+          gh release upload "${{ github.ref_name }}" "$staging.tar.gz" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   trigger-bsd-build:
     name: trigger-bsd-build
     runs-on: ubuntu-latest

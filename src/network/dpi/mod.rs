@@ -16,6 +16,7 @@ mod quic;
 mod snmp;
 mod ssdp;
 mod ssh;
+mod stun;
 
 pub use cipher_suites::{format_cipher_suite, is_secure_cipher_suite};
 pub use quic::{is_partial_sni, try_extract_tls_from_reassembler};
@@ -34,6 +35,8 @@ const PORT_HTTPS: u16 = 443;
 const PORT_MQTT: u16 = 1883;
 const PORT_SSDP: u16 = 1900;
 const PORT_MDNS: u16 = 5353;
+const PORT_STUN: u16 = 3478;
+const PORT_STUN_TLS: u16 = 5349;
 const PORT_LLMNR: u16 = 5355;
 
 /// Result of DPI analysis
@@ -220,7 +223,20 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 11. BitTorrent DHT / uTP (no port gating — signature-based)
+    // 11. STUN (port 3478/5349 or magic cookie detection for non-standard ports)
+    if (local_port == PORT_STUN
+        || remote_port == PORT_STUN
+        || local_port == PORT_STUN_TLS
+        || remote_port == PORT_STUN_TLS
+        || stun::is_likely_stun(payload))
+        && let Some(stun_result) = stun::analyze_stun(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Stun(stun_result),
+        });
+    }
+
+    // 12. BitTorrent DHT / uTP (no port gating — signature-based)
     if let Some(bt_result) = bittorrent::analyze_udp_bittorrent(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::BitTorrent(bt_result),
