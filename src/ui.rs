@@ -2841,6 +2841,31 @@ fn draw_connection_details(
                         ]));
                     }
                 }
+                crate::network::types::ApplicationProtocol::Stun(info) => {
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Method: ", theme::fg(theme::label())),
+                        Span::raw(info.method.to_string()),
+                    ]));
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Class: ", theme::fg(theme::label())),
+                        Span::raw(info.message_class.to_string()),
+                    ]));
+                    details_text.push(Line::from(vec![
+                        Span::styled("  Transaction ID: ", theme::fg(theme::label())),
+                        Span::raw(
+                            info.transaction_id
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .collect::<String>(),
+                        ),
+                    ]));
+                    if let Some(software) = &info.software {
+                        details_text.push(Line::from(vec![
+                            Span::styled("  Software: ", theme::fg(theme::label())),
+                            Span::raw(software.clone()),
+                        ]));
+                    }
+                }
             }
         }
         None => {
