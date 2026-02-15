@@ -25,6 +25,8 @@ env:
 
 jobs:
   build:
+    permissions:
+      contents: read
     name: build-${{ matrix.build }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -140,6 +142,8 @@ jobs:
           if-no-files-found: error
 
   build-static:
+    permissions:
+      contents: write
     name: build-linux-static-${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
     strategy:
