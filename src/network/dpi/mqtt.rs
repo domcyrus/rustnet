@@ -500,7 +500,9 @@ mod tests {
         assert!(!is_mqtt_packet(&[0xA2, 0x05, 0x00, 0x01, 0x00, 0x01, 0x00]));
 
         // Bytes resembling MQTT PUBLISH
-        assert!(!is_mqtt_packet(&[0x30, 0x0A, 0x00, 0x04, b't', b'e', b's', b't']));
+        assert!(!is_mqtt_packet(&[
+            0x30, 0x0A, 0x00, 0x04, b't', b'e', b's', b't'
+        ]));
 
         // Bytes resembling MQTT DISCONNECT
         assert!(!is_mqtt_packet(&[0xE0, 0x00]));
