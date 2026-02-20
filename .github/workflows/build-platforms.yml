@@ -156,6 +156,11 @@ jobs:
           - arch: aarch64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+            features: '--features default'
+          - arch: aarch64-android
+            runner: ubuntu-24.04-arm
+            target: aarch64-linux-android-musl # Note: it's not a real rust target but we rename the artifact
+            features: '--no-default-features'
     container:
       image: rust:alpine
     steps:
@@ -192,14 +197,14 @@ jobs:
           rustup component add rustfmt
 
       - name: Build static binary (ARM)
-        if: matrix.arch == 'aarch64'
+        if: matrix.arch == 'aarch64' || matrix.arch == 'aarch64-android'
         env:
           # -mno-outline-atomics: Prevent GCC from generating calls to __aarch64_ldadd4_sync etc.
           # which aren't in Alpine's libatomic. Uses inline atomics instead.
           CFLAGS: "-mno-outline-atomics"
           CXXFLAGS: "-mno-outline-atomics"
           RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-        run: cargo build --release
+        run: cargo build --release ${{ matrix.features }}
 
       - name: Verify static linking (ARM)
         if: matrix.arch == 'aarch64'
