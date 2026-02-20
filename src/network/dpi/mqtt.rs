@@ -44,12 +44,12 @@ pub fn is_mqtt_packet(payload: &[u8]) -> bool {
         return false;
     }
 
-    // For CONNECT packets, verify protocol name
-    if packet_type == 1 {
-        return has_mqtt_protocol_name(payload);
-    }
-
-    true
+    // Only CONNECT packets have a strong enough signature for port-independent detection
+    // (they contain "MQTT" or "MQIsdp" protocol name string).
+    // All other types (PINGREQ, UNSUBSCRIBE, etc.) have weak 2-byte signatures that
+    // easily match random binary data (e.g. BitTorrent file transfers).
+    // Those types are still detected via port-based matching (port 1883) in the caller.
+    packet_type == 1 && has_mqtt_protocol_name(payload)
 }
 
 /// Full MQTT packet analysis.
@@ -349,8 +349,10 @@ mod tests {
     #[test]
     fn test_connack() {
         // CONNACK: type 2, remaining length 2, session present=0, return code=0
+        // Not detected by is_mqtt_packet (only CONNECT has strong signature),
+        // but analyze_mqtt still parses it (used via port-based detection path)
         let pkt = vec![0x20, 0x02, 0x00, 0x00];
-        assert!(is_mqtt_packet(&pkt));
+        assert!(!is_mqtt_packet(&pkt));
 
         let info = analyze_mqtt(&pkt).unwrap();
         assert_eq!(info.packet_type, MqttPacketType::Connack);
@@ -395,7 +397,7 @@ mod tests {
     #[test]
     fn test_pingreq() {
         let pkt = vec![0xC0, 0x00];
-        assert!(is_mqtt_packet(&pkt));
+        assert!(!is_mqtt_packet(&pkt));
 
         let info = analyze_mqtt(&pkt).unwrap();
         assert_eq!(info.packet_type, MqttPacketType::Pingreq);
@@ -404,7 +406,7 @@ mod tests {
     #[test]
     fn test_pingresp() {
         let pkt = vec![0xD0, 0x00];
-        assert!(is_mqtt_packet(&pkt));
+        assert!(!is_mqtt_packet(&pkt));
 
         let info = analyze_mqtt(&pkt).unwrap();
         assert_eq!(info.packet_type, MqttPacketType::Pingresp);
@@ -448,18 +450,23 @@ mod tests {
     }
 
     #[test]
-    fn test_non_connect_no_name_check() {
-        // CONNACK doesn't require protocol name verification
-        let pkt = vec![0x20, 0x02, 0x00, 0x00];
-        assert!(is_mqtt_packet(&pkt));
+    fn test_non_connect_not_detected_by_signature() {
+        // Non-CONNECT packets are not detected by is_mqtt_packet (signature-based).
+        // They are only detected via port 1883 matching in the caller.
+        let pkt = vec![0x20, 0x02, 0x00, 0x00]; // CONNACK
+        assert!(!is_mqtt_packet(&pkt));
     }
 
     #[test]
     fn test_multibyte_remaining_length() {
-        // Remaining length = 200 requires 2 bytes: 0xC8, 0x01
-        let mut pkt = vec![0xC0, 0xC8, 0x01]; // PINGREQ with 200-byte remaining (unusual but valid encoding test)
+        // Non-CONNECT with multi-byte length should NOT be detected by signature
+        let mut pkt = vec![0xC0, 0xC8, 0x01]; // PINGREQ with 200-byte remaining
         pkt.extend(vec![0; 200]);
-        assert!(is_mqtt_packet(&pkt));
+        assert!(!is_mqtt_packet(&pkt));
+
+        // Multi-byte remaining length decoding is still exercised via analyze_mqtt
+        let info = analyze_mqtt(&pkt).unwrap();
+        assert_eq!(info.packet_type, MqttPacketType::Pingreq);
     }
 
     #[test]
@@ -481,5 +488,23 @@ mod tests {
     fn test_http_not_mqtt() {
         let payload = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
         assert!(!is_mqtt_packet(payload));
+    }
+
+    #[test]
+    fn test_binary_data_not_false_positive_mqtt() {
+        // Bytes resembling MQTT PINGREQ from random BitTorrent file transfer data
+        assert!(!is_mqtt_packet(&[0xC0, 0x00]));
+        assert!(!is_mqtt_packet(&[0xC0, 0x00, 0xDE, 0xAD, 0xBE, 0xEF]));
+
+        // Bytes resembling MQTT UNSUBSCRIBE
+        assert!(!is_mqtt_packet(&[0xA2, 0x05, 0x00, 0x01, 0x00, 0x01, 0x00]));
+
+        // Bytes resembling MQTT PUBLISH
+        assert!(!is_mqtt_packet(&[
+            0x30, 0x0A, 0x00, 0x04, b't', b'e', b's', b't'
+        ]));
+
+        // Bytes resembling MQTT DISCONNECT
+        assert!(!is_mqtt_packet(&[0xE0, 0x00]));
     }
 }
