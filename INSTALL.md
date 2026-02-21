@@ -10,6 +10,7 @@ This guide covers all installation methods for RustNet across different platform
   - [Windows Chocolatey Installation](#windows-chocolatey-installation)
   - [Linux Package Installation](#linux-package-installation)
   - [FreeBSD Installation](#freebsd-installation)
+  - [Android (Termux) Installation](#android-termux-installation)
 - [Install via Cargo](#install-via-cargo)
 - [Building from Source](#building-from-source)
 - [Using Docker](#using-docker)
@@ -343,6 +344,46 @@ ls -la /dev/bpf*
 # Test without sudo
 rustnet --help
 ```
+
+### Android (Termux) Installation
+
+RustNet can run on Android devices via [Termux](https://termux.dev/en/), provided the device is rooted.
+
+Because Android strictly controls network and process information, RustNet requires `root` access (`su`) to capture packets and identify processes. A specialized Android build is provided that statically links dependencies and disables Linux-specific features (like eBPF and Landlock) that are incompatible with Android's kernel environment.
+
+#### Prerequisites
+1. **Rooted** Android device (e.g., via Magisk or KernelSU)
+2. **Termux** installed (from F-Droid or GitHub, *not* Google Play)
+
+#### Installation Steps
+
+1. **Install required packages in Termux:**
+   ```bash
+   pkg update
+   pkg install tsu wget tar
+   ```
+
+2. **Download the Android binary:**
+   ```bash
+   # Download the Android-specific static binary from GitHub Releases
+   wget https://github.com/domcyrus/rustnet/releases/download/vX.Y.Z/rustnet-vX.Y.Z-aarch64-linux-android-musl.tar.gz
+   ```
+
+3. **Extract and install:**
+   ```bash
+   tar xzf rustnet-vX.Y.Z-aarch64-linux-android-musl.tar.gz
+   
+   # Move it to a directory in your PATH
+   mv rustnet-vX.Y.Z-aarch64-linux-android-musl/rustnet $PREFIX/bin/
+   chmod +x $PREFIX/bin/rustnet
+   ```
+
+4. **Run RustNet as root:**
+   ```bash
+   # You must run RustNet with root privileges for it to function on Android
+   sudo rustnet
+   ```
+   *Note: On first run, your root manager (e.g., Magisk) will prompt you to grant Superuser access to Termux.*
 
 ## Install via Cargo
 

@@ -156,6 +156,11 @@ jobs:
           - arch: aarch64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
+            features: '--features default'
+          - arch: aarch64-android
+            runner: ubuntu-24.04-arm
+            target: aarch64-linux-android-musl # Note: it's not a real rust target but we rename the artifact
+            features: '--no-default-features'
     container:
       image: rust:alpine
     steps:
@@ -166,7 +171,7 @@ jobs:
 
       # aarch64: JS actions don't work in Alpine containers on ARM runners
       - name: Checkout repository (ARM workaround)
-        if: matrix.arch == 'aarch64'
+        if: contains(matrix.arch, 'aarch64')
         run: |
           apk add --no-cache git
           git config --global --add safe.directory /__w/rustnet/rustnet
@@ -183,7 +188,7 @@ jobs:
 
       # aarch64: inline build (composite actions don't work with ARM workaround)
       - name: Install dependencies (ARM)
-        if: matrix.arch == 'aarch64'
+        if: contains(matrix.arch, 'aarch64')
         run: |
           apk add --no-cache \
             musl-dev libpcap-dev pkgconfig build-base perl \
@@ -192,17 +197,17 @@ jobs:
           rustup component add rustfmt
 
       - name: Build static binary (ARM)
-        if: matrix.arch == 'aarch64'
+        if: contains(matrix.arch, 'aarch64')
         env:
           # -mno-outline-atomics: Prevent GCC from generating calls to __aarch64_ldadd4_sync etc.
           # which aren't in Alpine's libatomic. Uses inline atomics instead.
           CFLAGS: "-mno-outline-atomics"
           CXXFLAGS: "-mno-outline-atomics"
           RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-        run: cargo build --release
+        run: cargo build --release ${{ matrix.features }}
 
       - name: Verify static linking (ARM)
-        if: matrix.arch == 'aarch64'
+        if: contains(matrix.arch, 'aarch64')
         run: |
           file target/release/rustnet
           file target/release/rustnet | grep -q "static.* linked" || \
@@ -211,7 +216,7 @@ jobs:
       # For test builds: upload raw binary
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
-        continue-on-error: ${{ matrix.arch == 'aarch64' }}
+        continue-on-error: ${{ contains(matrix.arch, 'aarch64') }}
         uses: actions/upload-artifact@v6
         with:
           name: rustnet-linux-static-${{ matrix.arch }}
