@@ -35,9 +35,9 @@ jobs:
 
       - name: Install dependencies
         run: |
-          apk add --no-cache 
-            musl-dev libpcap-dev pkgconfig build-base perl 
-            elfutils-dev zlib-dev zlib-static zstd-dev zstd-static 
+          apk add --no-cache \
+            musl-dev libpcap-dev pkgconfig build-base perl \
+            elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
             clang llvm linux-headers github-cli
           rustup component add rustfmt
 
