@@ -1,0 +1,73 @@
+name: Build Android ARM64 Musl Static
+
+# One-off workflow to build and upload aarch64 android musl static binary
+# to an existing release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release tag (e.g., v1.0.0)'
+        required: true
+      ref:
+        description: 'Git ref to build from (default: tag)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build-android-arm64:
+    name: build-aarch64-android-static
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: rust:alpine
+    steps:
+      - name: Checkout repository
+        run: |
+          apk add --no-cache git
+          git config --global --add safe.directory /__w/rustnet/rustnet
+          REF="${{ inputs.ref || inputs.version }}"
+          git clone --depth 1 https://github.com/${{ github.repository }}.git .
+          git fetch --depth 1 origin tag "${{ inputs.version }}"
+          git checkout "${{ inputs.version }}"
+
+      - name: Install dependencies
+        run: |
+          apk add --no-cache 
+            musl-dev libpcap-dev pkgconfig build-base perl 
+            elfutils-dev zlib-dev zlib-static zstd-dev zstd-static 
+            clang llvm linux-headers github-cli
+          rustup component add rustfmt
+
+      - name: Build static binary
+        env:
+          CFLAGS: "-mno-outline-atomics"
+          CXXFLAGS: "-mno-outline-atomics"
+          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
+        run: |
+          cargo build --release --no-default-features
+          file target/release/rustnet
+          file target/release/rustnet | grep -q "static.* linked" || 
+            (echo "ERROR: Binary is not statically linked" && exit 1)
+
+      - name: Create release archive
+        run: |
+          VERSION="${{ inputs.version }}"
+          # Use the android musl naming
+          staging="rustnet-${VERSION}-aarch64-linux-android-musl"
+          mkdir -p "$staging/assets"
+          cp target/release/rustnet "$staging/"
+          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+          tar czf "$staging.tar.gz" "$staging"
+
+      - name: Upload to release
+        run: |
+          VERSION="${{ inputs.version }}"
+          ARCHIVE="rustnet-${VERSION}-aarch64-linux-android-musl.tar.gz"
+          gh release upload "$VERSION" "$ARCHIVE" --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
