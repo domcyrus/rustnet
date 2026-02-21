@@ -122,6 +122,16 @@ pub fn build_cli() -> Command {
                 .required(false),
         )
         .arg(
+            Arg::new("geoip-city")
+                .long("geoip-city")
+                .value_name("PATH")
+                .help(
+                    "Path to GeoLite2-City.mmdb database (same search paths as --geoip-country; \
+                     superset of Country — provides city name and postal code in addition to country)",
+                )
+                .required(false),
+        )
+        .arg(
             Arg::new("no-geoip")
                 .long("no-geoip")
                 .help("Disable GeoIP lookups entirely")

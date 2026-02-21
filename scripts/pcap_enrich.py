@@ -86,6 +86,8 @@ def load_connections(jsonl_path: Path) -> dict:
                         "geoip_country_name": c.get("geoip_country_name"),
                         "geoip_asn": c.get("geoip_asn"),
                         "geoip_as_org": c.get("geoip_as_org"),
+                        "geoip_city": c.get("geoip_city"),
+                        "geoip_postal_code": c.get("geoip_postal_code"),
                     }
 
                     # Store both directions, as a list to handle port reuse
@@ -186,6 +188,8 @@ def enrich_packets(pcap_path: Path, lookup: dict, slack: float):
                 "pid": None,
                 "process": None,
                 "country": None,
+                "city": None,
+                "postal_code": None,
                 "asn": None,
                 "as_org": None,
             }
@@ -205,6 +209,8 @@ def enrich_packets(pcap_path: Path, lookup: dict, slack: float):
             "bytes_sent": info.get("bytes_sent"),
             "bytes_received": info.get("bytes_received"),
             "country": info.get("geoip_country_code"),
+            "city": info.get("geoip_city"),
+            "postal_code": info.get("geoip_postal_code"),
             "asn": info.get("geoip_asn"),
             "as_org": info.get("geoip_as_org"),
         }
@@ -212,8 +218,8 @@ def enrich_packets(pcap_path: Path, lookup: dict, slack: float):
 
 def print_table(packets: list):
     """Print enriched packets as a formatted table."""
-    print(f"{'Frame':>6} {'Proto':<5} {'Source':<22} {'Destination':<22} {'Loc':<4} {'ASN':>8} {'PID':>7} {'Process':<15}")
-    print("-" * 100)
+    print(f"{'Frame':>6} {'Proto':<5} {'Source':<22} {'Destination':<22} {'Loc':<4} {'City':<15} {'ASN':>8} {'PID':>7} {'Process':<15}")
+    print("-" * 116)
 
     for p in packets:
         pid_str = str(p["pid"]) if p["pid"] else "-"
@@ -221,17 +227,20 @@ def print_table(packets: list):
         if len(proc_str) > 15:
             proc_str = proc_str[:12] + "..."
         loc_str = p["country"] or "-"
+        city_str = p["city"] or "-"
+        if len(city_str) > 15:
+            city_str = city_str[:12] + "..."
         asn_str = f"AS{p['asn']}" if p["asn"] else "-"
         src_str = p["src"][:22] if len(p["src"]) > 22 else p["src"]
         dst_str = p["dst"][:22] if len(p["dst"]) > 22 else p["dst"]
-        print(f"{p['frame']:>6} {p['proto']:<5} {src_str:<22} {dst_str:<22} {loc_str:<4} {asn_str:>8} {pid_str:>7} {proc_str:<15}")
+        print(f"{p['frame']:>6} {p['proto']:<5} {src_str:<22} {dst_str:<22} {loc_str:<4} {city_str:<15} {asn_str:>8} {pid_str:>7} {proc_str:<15}")
 
 
 def print_tsv(packets: list):
     """Print enriched packets as TSV."""
-    print("frame\ttime\tproto\tsrc\tdst\tcountry\tasn\tas_org\tpid\tprocess")
+    print("frame\ttime\tproto\tsrc\tdst\tcountry\tcity\tpostal_code\tasn\tas_org\tpid\tprocess")
     for p in packets:
-        print(f"{p['frame']}\t{p['time']:.6f}\t{p['proto']}\t{p['src']}\t{p['dst']}\t{p['country'] or ''}\t{p['asn'] or ''}\t{p['as_org'] or ''}\t{p['pid'] or ''}\t{p['process'] or ''}")
+        print(f"{p['frame']}\t{p['time']:.6f}\t{p['proto']}\t{p['src']}\t{p['dst']}\t{p['country'] or ''}\t{p['city'] or ''}\t{p['postal_code'] or ''}\t{p['asn'] or ''}\t{p['as_org'] or ''}\t{p['pid'] or ''}\t{p['process'] or ''}")
 
 
 def print_json(packets: list):
@@ -258,10 +267,14 @@ def create_pcapng(pcap_path: Path, packets: list, output_path: Path):
     # editcap -a "frame:comment" format
     annotations = []
     for p in packets:
-        if p["pid"] or p["process"] or p["country"] or p["asn"]:
+        if p["pid"] or p["process"] or p["country"] or p["city"] or p["postal_code"] or p["asn"]:
             comment_parts = []
             if p["country"]:
                 comment_parts.append(f"Loc:{p['country']}")
+            if p["city"]:
+                comment_parts.append(f"City:{p['city']}")
+            if p["postal_code"]:
+                comment_parts.append(f"ZIP:{p['postal_code']}")
             if p["asn"]:
                 comment_parts.append(f"AS{p['asn']}")
             if p["pid"]:

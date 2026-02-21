@@ -196,6 +196,12 @@ fn log_connection_event(
         if let Some(ref org) = geoip.as_org {
             event["geoip_as_org"] = json!(org);
         }
+        if let Some(ref city) = geoip.city {
+            event["geoip_city"] = json!(city);
+        }
+        if let Some(ref postal) = geoip.postal_code {
+            event["geoip_postal_code"] = json!(postal);
+        }
     }
 
     // Add connection statistics for closed events
@@ -251,6 +257,12 @@ fn log_pcap_connection(pcap_path: &str, conn: &Connection) {
         if let Some(ref org) = geoip.as_org {
             event["geoip_as_org"] = json!(org);
         }
+        if let Some(ref postal) = geoip.postal_code {
+            event["geoip_postal_code"] = json!(postal);
+        }
+        if let Some(ref city) = geoip.city {
+            event["geoip_city"] = json!(city);
+        }
     }
 
     if let Ok(mut file) = OpenOptions::new()
@@ -288,6 +300,8 @@ pub struct Config {
     pub geoip_country_path: Option<String>,
     /// Path to GeoLite2-ASN.mmdb database (None for auto-discovery)
     pub geoip_asn_path: Option<String>,
+    /// Path to GeoLite2-City.mmdb database (None for auto-discovery)
+    pub geoip_city_path: Option<String>,
     /// Disable GeoIP lookups entirely
     pub disable_geoip: bool,
 }
@@ -306,6 +320,7 @@ impl Default for Config {
             show_ptr_lookups: false,
             geoip_country_path: None,
             geoip_asn_path: None,
+            geoip_city_path: None,
             disable_geoip: false,
         }
     }
@@ -417,7 +432,10 @@ impl App {
         let geoip_resolver = if config.disable_geoip {
             info!("GeoIP resolution disabled by configuration");
             None
-        } else if config.geoip_country_path.is_some() || config.geoip_asn_path.is_some() {
+        } else if config.geoip_country_path.is_some()
+            || config.geoip_asn_path.is_some()
+            || config.geoip_city_path.is_some()
+        {
             // Use explicit paths from config
             let geoip_config = GeoIpConfig {
                 country_db_path: config
@@ -425,14 +443,18 @@ impl App {
                     .as_ref()
                     .map(std::path::PathBuf::from),
                 asn_db_path: config.geoip_asn_path.as_ref().map(std::path::PathBuf::from),
+                city_db_path: config
+                    .geoip_city_path
+                    .as_ref()
+                    .map(std::path::PathBuf::from),
                 ..Default::default()
             };
             let resolver = GeoIpResolver::new(geoip_config);
             if resolver.is_available() {
-                let (has_country, has_asn) = resolver.get_status();
+                let (has_country, has_asn, has_city) = resolver.get_status();
                 info!(
-                    "GeoIP resolution enabled - Country: {}, ASN: {}",
-                    has_country, has_asn
+                    "GeoIP resolution enabled - Country: {}, ASN: {}, City: {}",
+                    has_country, has_asn, has_city
                 );
                 Some(Arc::new(resolver))
             } else {
@@ -443,10 +465,10 @@ impl App {
             // Auto-discover databases
             let resolver = GeoIpResolver::with_auto_discovery();
             if resolver.is_available() {
-                let (has_country, has_asn) = resolver.get_status();
+                let (has_country, has_asn, has_city) = resolver.get_status();
                 info!(
-                    "GeoIP resolution enabled - Country: {}, ASN: {}",
-                    has_country, has_asn
+                    "GeoIP resolution enabled - Country: {}, ASN: {}, City: {}",
+                    has_country, has_asn, has_city
                 );
                 Some(Arc::new(resolver))
             } else {
@@ -1545,12 +1567,13 @@ impl App {
         self.dns_resolver.is_some()
     }
 
-    /// Get GeoIP database availability status
-    /// Returns (has_country, has_asn) - true if the respective database is loaded
-    pub fn get_geoip_status(&self) -> (bool, bool) {
+    /// Get GeoIP database availability status.
+    /// Returns (has_location, has_asn, has_city) where has_location is true when
+    /// either the country or city database is loaded.
+    pub fn get_geoip_status(&self) -> (bool, bool, bool) {
         match &self.geoip_resolver {
             Some(resolver) => resolver.get_status(),
-            None => (false, false),
+            None => (false, false, false),
         }
     }
 
