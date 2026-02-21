@@ -132,7 +132,7 @@ The experimental eBPF support provides efficient process identification but has 
   - Keybinding customization
 - [ ] **Connection Alerts**: Notifications for new connections or suspicious activity
 - [x] **GeoIP Integration**: Geographical location of remote IPs
-- [ ] **GeoIP City-Level Resolution**: Extend GeoIP to include city-level location data using GeoLite2-City database
+- [x] **GeoIP City-Level Resolution**: Extend GeoIP to include city-level location data using GeoLite2-City database
 - [ ] **Protocol Statistics**: Summary view of protocol distribution
 - [ ] **Rate Limiting Detection**: Identify connections with unusual traffic patterns
 - [ ] **Bufferbloat Detection**: Measure latency under load to identify bufferbloat issues on the network

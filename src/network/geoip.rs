@@ -22,12 +22,16 @@ pub struct GeoIpInfo {
     pub asn: Option<u32>,
     /// AS Organization name (e.g., "GOOGLE")
     pub as_org: Option<String>,
+    /// postal code (e.g., "94043")
+    pub postal_code: Option<String>,
+    /// city name (e.g., "Mountain View")
+    pub city: Option<String>,
 }
 
 impl GeoIpInfo {
     /// Check if any GeoIP data is available
     pub fn has_data(&self) -> bool {
-        self.country_code.is_some() || self.asn.is_some()
+        self.country_code.is_some() || self.asn.is_some() || self.city.is_some()
     }
 
     /// Get just the country code or "-" if unavailable
@@ -52,6 +56,8 @@ pub struct GeoIpConfig {
     pub country_db_path: Option<PathBuf>,
     /// Path to GeoLite2-ASN.mmdb database
     pub asn_db_path: Option<PathBuf>,
+    /// Path to GeoLite2-City.mmdb database
+    pub city_db_path: Option<PathBuf>,
     /// Cache TTL (default: 1 hour - GeoIP data rarely changes)
     pub cache_ttl: Duration,
     /// Maximum cache size (default: 50000 entries)
@@ -63,6 +69,7 @@ impl Default for GeoIpConfig {
         Self {
             country_db_path: None,
             asn_db_path: None,
+            city_db_path: None,
             cache_ttl: Duration::from_secs(3600), // 1 hour
             max_cache_size: 50000,
         }
@@ -75,6 +82,8 @@ pub struct GeoIpResolver {
     country_reader: Option<Reader<Vec<u8>>>,
     /// ASN database reader
     asn_reader: Option<Reader<Vec<u8>>>,
+    /// City database reader
+    city_reader: Option<Reader<Vec<u8>>>,
     /// Cache: IP -> CachedGeoIp
     cache: Arc<DashMap<IpAddr, CachedGeoIp>>,
     /// Configuration
@@ -117,9 +126,25 @@ impl GeoIpResolver {
                     }
                 });
 
+        let city_reader =
+            config
+                .city_db_path
+                .as_ref()
+                .and_then(|path| match Reader::open_readfile(path) {
+                    Ok(reader) => {
+                        info!("Loaded GeoIP City database from: {:?}", path);
+                        Some(reader)
+                    }
+                    Err(e) => {
+                        warn!("Failed to load GeoIP City database from {:?}: {}", path, e);
+                        None
+                    }
+                });
+
         Self {
             country_reader,
             asn_reader,
+            city_reader,
             cache: Arc::new(DashMap::new()),
             config,
         }
@@ -149,8 +174,19 @@ impl GeoIpResolver {
                 }
             }
 
-            // Stop if both found
-            if config.country_db_path.is_some() && config.asn_db_path.is_some() {
+            // Try City database
+            if config.city_db_path.is_none() {
+                let city_path = base_path.join("GeoLite2-City.mmdb");
+                if city_path.exists() {
+                    config.city_db_path = Some(city_path);
+                }
+            }
+
+            // Stop if all three found
+            if config.country_db_path.is_some()
+                && config.asn_db_path.is_some()
+                && config.city_db_path.is_some()
+            {
                 break;
             }
         }
@@ -201,12 +237,19 @@ impl GeoIpResolver {
 
     /// Check if the resolver has any databases loaded
     pub fn is_available(&self) -> bool {
-        self.country_reader.is_some() || self.asn_reader.is_some()
+        self.country_reader.is_some() || self.asn_reader.is_some() || self.city_reader.is_some()
     }
 
-    /// Check which databases are available
-    pub fn get_status(&self) -> (bool, bool) {
-        (self.country_reader.is_some(), self.asn_reader.is_some())
+    /// Check which databases are available.
+    /// Returns (has_location, has_asn, has_city) where has_location is true when
+    /// either the country or city database is loaded (city DB is a superset of country).
+    pub fn get_status(&self) -> (bool, bool, bool) {
+        let has_location = self.country_reader.is_some() || self.city_reader.is_some();
+        (
+            has_location,
+            self.asn_reader.is_some(),
+            self.city_reader.is_some(),
+        )
     }
 
     /// Lookup GeoIP information for an IP address
@@ -264,6 +307,20 @@ impl GeoIpResolver {
         {
             info.asn = asn.autonomous_system_number;
             info.as_org = asn.autonomous_system_organization.map(|s| s.to_string());
+        }
+
+        // City lookup (City DB is a superset of Country — also fills country fields as fallback)
+        if let Some(ref reader) = self.city_reader
+            && let Ok(Some(city)) = reader.lookup(ip).and_then(|r| r.decode::<geoip2::City>())
+        {
+            info.postal_code = city.postal.code.map(|s| s.to_string());
+            // NOTE: City names can be in multiple languages, we take English if available
+            info.city = city.city.names.english.map(|s| s.to_string());
+            // Fall back to country info from City DB if Country DB was not loaded
+            if info.country_code.is_none() {
+                info.country_code = city.country.iso_code.map(|s| s.to_string());
+                info.country_name = city.country.names.english.map(|s| s.to_string());
+            }
         }
 
         info
@@ -327,6 +384,8 @@ mod tests {
             country_name: Some("United States".to_string()),
             asn: Some(15169),
             as_org: Some("GOOGLE".to_string()),
+            postal_code: Some("94043".to_string()),
+            city: Some("Mountain View".to_string()),
         };
 
         assert!(info.has_data());
@@ -340,6 +399,8 @@ mod tests {
             country_name: Some("Germany".to_string()),
             asn: None,
             as_org: None,
+            postal_code: None,
+            city: None,
         };
 
         assert!(info.has_data());
@@ -353,6 +414,8 @@ mod tests {
             country_name: None,
             asn: Some(13335),
             as_org: Some("CLOUDFLARENET".to_string()),
+            postal_code: None,
+            city: None,
         };
 
         assert!(info.has_data());

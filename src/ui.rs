@@ -930,7 +930,7 @@ fn draw_overview(
     let dns_resolver = app.get_dns_resolver();
 
     // Get GeoIP status - only show Loc column if country DB is loaded
-    let (has_country_db, _has_asn_db) = app.get_geoip_status();
+    let (has_country_db, _has_asn_db, _has_city_db) = app.get_geoip_status();
 
     // Use grouped view if grouping is enabled
     if ui_state.grouping_enabled {
@@ -2511,7 +2511,7 @@ fn draw_connection_details(
 
     // Add GeoIP information if available
     if let Some(ref geoip) = conn.geoip_info
-        && (geoip.country_code.is_some() || geoip.asn.is_some())
+        && (geoip.country_code.is_some() || geoip.asn.is_some() || geoip.city.is_some())
     {
         details_text.push(Line::from("")); // Empty line separator
         if let Some(ref country_name) = geoip.country_name {
@@ -2528,6 +2528,12 @@ fn draw_connection_details(
             details_text.push(Line::from(vec![
                 Span::styled("Country: ", Style::default().fg(Color::Yellow)),
                 Span::raw(cc.clone()),
+            ]));
+        }
+        if let Some(ref city) = geoip.city {
+            details_text.push(Line::from(vec![
+                Span::styled("City: ", Style::default().fg(Color::Yellow)),
+                Span::raw(city.clone()),
             ]));
         }
         if let Some(asn) = geoip.asn {

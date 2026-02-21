@@ -115,6 +115,11 @@ fn main() -> Result<()> {
         info!("Using GeoIP ASN database: {}", asn_path);
     }
 
+    if let Some(city_path) = matches.get_one::<String>("geoip-city") {
+        config.geoip_city_path = Some(city_path.to_string());
+        info!("Using GeoIP City database: {}", city_path);
+    }
+
     // Set up terminal
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;
@@ -350,7 +355,7 @@ where
     let tick_rate = Duration::from_millis(200);
     let mut last_tick = std::time::Instant::now();
     let mut ui_state = ui::UIState::default();
-    let (has_country_db, _) = app.get_geoip_status();
+    let (has_country_db, _, _) = app.get_geoip_status();
     ui_state.has_geoip = has_country_db;
 
     loop {

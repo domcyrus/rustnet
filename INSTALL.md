@@ -689,13 +689,38 @@ rustnet --help
 
 ## GeoIP Databases (Optional)
 
-RustNet supports GeoIP lookups to show country codes for remote IPs. To enable this, install the [GeoLite2](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) databases using MaxMind's `geoipupdate` tool (requires a free [MaxMind account](https://www.maxmind.com/en/geolite2/signup)):
+RustNet supports GeoIP lookups to show country codes, city names, and ASN information for remote IPs. To enable this, install the [GeoLite2](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) databases using MaxMind's `geoipupdate` tool (requires a free [MaxMind account](https://www.maxmind.com/en/geolite2/signup)).
+
+**Available databases:**
+
+| Database | Provides | Flag |
+|---|---|---|
+| `GeoLite2-Country.mmdb` | Country code and name | *(auto-discovered)* |
+| `GeoLite2-ASN.mmdb` | ASN number and organization | *(auto-discovered)* |
+| `GeoLite2-City.mmdb` | City name, postal code, **and** country | *(auto-discovered)* |
+
+> **Tip:** `GeoLite2-City` is a superset of `GeoLite2-Country`. If you install the City database you do not need to also install the Country database.
+
+### Configuring which databases to download
+
+In your `GeoIP.conf`, set `EditionIDs` to include the databases you want:
+
+```
+# Country + ASN only:
+EditionIDs GeoLite2-Country GeoLite2-ASN
+
+# City + ASN (City includes country data):
+EditionIDs GeoLite2-City GeoLite2-ASN
+
+# All three:
+EditionIDs GeoLite2-Country GeoLite2-ASN GeoLite2-City
+```
 
 ### macOS (Homebrew)
 
 ```bash
 brew install geoipupdate
-# Edit the config with your MaxMind account credentials:
+# Edit the config with your MaxMind account credentials and EditionIDs:
 #   $(brew --prefix)/etc/GeoIP.conf
 geoipupdate
 ```
@@ -706,7 +731,7 @@ Databases are installed to `$(brew --prefix)/share/GeoIP/`.
 
 ```bash
 sudo apt-get install geoipupdate
-# Edit /etc/GeoIP.conf with your MaxMind account credentials
+# Edit /etc/GeoIP.conf with your MaxMind account credentials and EditionIDs
 sudo geoipupdate
 ```
 
@@ -716,7 +741,7 @@ Databases are installed to `/usr/share/GeoIP/`.
 
 ```bash
 sudo dnf install geoipupdate
-# Edit /etc/GeoIP.conf with your MaxMind account credentials
+# Edit /etc/GeoIP.conf with your MaxMind account credentials and EditionIDs
 sudo geoipupdate
 ```
 
@@ -726,7 +751,7 @@ Databases are installed to `/usr/share/GeoIP/`.
 
 ```bash
 sudo pacman -S geoipupdate
-# Edit /etc/GeoIP.conf with your MaxMind account credentials
+# Edit /etc/GeoIP.conf with your MaxMind account credentials and EditionIDs
 sudo geoipupdate
 ```
 
@@ -736,7 +761,7 @@ Databases are installed to `/usr/share/GeoIP/`.
 
 ```bash
 pkg install geoipupdate
-# Edit /usr/local/etc/GeoIP.conf with your MaxMind account credentials
+# Edit /usr/local/etc/GeoIP.conf with your MaxMind account credentials and EditionIDs
 sudo geoipupdate
 ```
 
@@ -747,7 +772,11 @@ Databases are installed to `/usr/local/share/GeoIP/`.
 If your databases are in a non-standard location, specify them directly:
 
 ```bash
+# Country + ASN:
 rustnet --geoip-country /path/to/GeoLite2-Country.mmdb --geoip-asn /path/to/GeoLite2-ASN.mmdb
+
+# City + ASN (City includes country data):
+rustnet --geoip-city /path/to/GeoLite2-City.mmdb --geoip-asn /path/to/GeoLite2-ASN.mmdb
 ```
 
 RustNet auto-discovers databases from standard locations. Run `rustnet --help` to see the full search path list.
