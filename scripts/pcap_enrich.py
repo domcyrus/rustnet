@@ -267,12 +267,14 @@ def create_pcapng(pcap_path: Path, packets: list, output_path: Path):
     # editcap -a "frame:comment" format
     annotations = []
     for p in packets:
-        if p["pid"] or p["process"] or p["country"] or p["city"] or p["asn"]:
+        if p["pid"] or p["process"] or p["country"] or p["city"] or p["postal_code"] or p["asn"]:
             comment_parts = []
             if p["country"]:
                 comment_parts.append(f"Loc:{p['country']}")
             if p["city"]:
                 comment_parts.append(f"City:{p['city']}")
+            if p["postal_code"]:
+                comment_parts.append(f"ZIP:{p['postal_code']}")
             if p["asn"]:
                 comment_parts.append(f"AS{p['asn']}")
             if p["pid"]:
