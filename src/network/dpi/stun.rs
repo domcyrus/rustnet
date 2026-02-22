@@ -185,6 +185,16 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_payload_safe() {
+        assert!(analyze_stun(&[]).is_none());
+    }
+
+    #[test]
+    fn test_short_payload_safe() {
+        assert!(analyze_stun(&[0x00, 0x01]).is_none());
+    }
+
+    #[test]
     fn test_binding_request() {
         let packet = build_stun_packet(0, 0x0001, &[]);
         let info = analyze_stun(&packet).expect("should parse");

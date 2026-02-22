@@ -1,6 +1,10 @@
 use crate::network::types::{HttpsInfo, TlsInfo, TlsVersion};
 use log::debug;
 
+/// Maximum TLS extensions to parse. Defense-in-depth against crafted packets
+/// with many zero-length extensions designed to waste CPU.
+const MAX_TLS_EXTENSIONS: usize = 100;
+
 pub fn is_tls_handshake(payload: &[u8]) -> bool {
     if payload.len() < 5 {
         return false;
@@ -252,8 +256,13 @@ fn parse_server_hello(data: &[u8], info: &mut TlsInfo) {
 
 fn parse_extensions(data: &[u8], info: &mut TlsInfo, is_client_hello: bool) {
     let mut offset = 0;
+    let mut extensions_parsed = 0;
 
     while offset + 4 <= data.len() {
+        extensions_parsed += 1;
+        if extensions_parsed > MAX_TLS_EXTENSIONS {
+            break;
+        }
         let ext_type = u16::from_be_bytes([data[offset], data[offset + 1]]);
         let ext_len = u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
 

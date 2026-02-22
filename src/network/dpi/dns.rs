@@ -1,5 +1,8 @@
 use crate::network::types::{DnsInfo, DnsQueryType};
 
+/// Maximum DNS name length per RFC 1035 section 2.3.4
+const MAX_DNS_NAME_LEN: usize = 253;
+
 pub fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
     if payload.len() < 12 {
         return None;
@@ -48,6 +51,11 @@ pub fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
 
             if let Ok(label) = std::str::from_utf8(&payload[offset + 1..offset + 1 + label_len]) {
                 name.push_str(label);
+            }
+
+            // Enforce RFC 1035 maximum name length
+            if name.len() > MAX_DNS_NAME_LEN {
+                break;
             }
 
             offset += 1 + label_len;
@@ -114,4 +122,62 @@ pub fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
     }
 
     Some(info)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_empty_payload_safe() {
+        assert!(analyze_dns(&[]).is_none());
+    }
+
+    #[test]
+    fn test_short_payload_safe() {
+        assert!(analyze_dns(&[0; 5]).is_none());
+    }
+
+    #[test]
+    fn test_dns_name_length_limit() {
+        // Build a DNS packet with many 63-byte labels (exceeding 253 chars)
+        let mut payload = vec![0u8; 12]; // DNS header
+        // Set qdcount = 1
+        payload[5] = 1;
+        // Add 10 labels of 63 bytes each (630+ chars total, exceeds 253)
+        for _ in 0..10 {
+            payload.push(63); // label length
+            payload.extend_from_slice(&[b'a'; 63]);
+        }
+        payload.push(0); // null terminator
+        payload.extend_from_slice(&[0, 1, 0, 1]); // QTYPE A, QCLASS IN
+
+        let info = analyze_dns(&payload).unwrap();
+        if let Some(name) = &info.query_name {
+            // Name should be truncated near the RFC limit, not the full 630+ chars
+            assert!(name.len() <= MAX_DNS_NAME_LEN + 63 + 1);
+        }
+    }
+
+    #[test]
+    fn test_normal_dns_query() {
+        // Build a simple query for "example.com"
+        let mut payload = vec![0u8; 12]; // DNS header
+        payload[5] = 1; // qdcount = 1
+        // "example" label
+        payload.push(7);
+        payload.extend_from_slice(b"example");
+        // "com" label
+        payload.push(3);
+        payload.extend_from_slice(b"com");
+        // null terminator
+        payload.push(0);
+        // QTYPE A (1), QCLASS IN (1)
+        payload.extend_from_slice(&[0, 1, 0, 1]);
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.query_name, Some("example.com".to_string()));
+        assert_eq!(info.query_type, Some(DnsQueryType::A));
+        assert!(!info.is_response);
+    }
 }
