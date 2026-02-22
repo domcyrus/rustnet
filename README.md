@@ -127,6 +127,7 @@ cargo install rustnet-monitor
 **Windows (Chocolatey):**
 ```powershell
 # Run in Administrator PowerShell
+# Requires Npcap (https://npcap.com) installed with "WinPcap API-compatible Mode" enabled
 choco install rustnet
 ```
 
