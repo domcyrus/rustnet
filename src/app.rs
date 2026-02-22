@@ -711,9 +711,7 @@ impl App {
                                 match packet_tx.try_send(packet) {
                                     Ok(()) => {}
                                     Err(crossbeam::channel::TrySendError::Full(_)) => {
-                                        stats
-                                            .packets_dropped
-                                            .fetch_add(1, Ordering::Relaxed);
+                                        stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
                                     }
                                     Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
                                         warn!("Packet channel closed");
@@ -810,7 +808,10 @@ impl App {
             {
                 if let Err(e) = crate::network::platform::sandbox::capabilities::drop_cap_net_raw()
                 {
-                    warn!("Failed to drop CAP_NET_RAW in processor thread {}: {}", id, e);
+                    warn!(
+                        "Failed to drop CAP_NET_RAW in processor thread {}: {}",
+                        id, e
+                    );
                 } else {
                     debug!("Dropped CAP_NET_RAW in processor thread {}", id);
                 }

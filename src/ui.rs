@@ -1552,14 +1552,8 @@ fn draw_stats_panel(
             if dropped > 0 {
                 Line::from(vec![
                     Span::raw("Packets Dropped: "),
-                    Span::styled(
-                        format!("{}", dropped),
-                        theme::fg(theme::warn()),
-                    ),
-                    Span::styled(
-                        " (backpressure)",
-                        theme::fg(theme::muted()),
-                    ),
+                    Span::styled(format!("{}", dropped), theme::fg(theme::warn())),
+                    Span::styled(" (backpressure)", theme::fg(theme::muted())),
                 ])
             } else {
                 Line::from(format!("Packets Dropped: {}", dropped))
