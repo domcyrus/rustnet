@@ -7,6 +7,7 @@ This guide covers detailed usage of RustNet, including command-line options, key
 - [Running RustNet](#running-rustnet)
 - [Command-line Options](#command-line-options)
 - [Keyboard Controls](#keyboard-controls)
+- [Mouse Controls](#mouse-controls)
 - [Filtering](#filtering)
 - [Sorting](#sorting)
 - [Process Grouping](#process-grouping)
@@ -284,6 +285,39 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 
 - `q` - Quit the application (press twice to confirm)
 - `Ctrl+C` - Quit immediately
+
+## Mouse Controls
+
+RustNet has full mouse support. Mouse capture is enabled automatically — all interactions described below work out of the box.
+
+### Overview Tab
+
+| Action | Effect |
+|--------|--------|
+| **Click** on a connection row | Select that connection |
+| **Double-click** a connection row | Open the Details tab for that connection |
+| **Scroll wheel** over the connection list | Navigate up/down through connections |
+| **Click** on a tab name | Switch to that tab |
+
+### Grouped View (press `a` to enable)
+
+| Action | Effect |
+|--------|--------|
+| **Click** on a group header (`[+]`/`[-]`) | Select the group |
+| **Double-click** a group header | Expand or collapse the process group |
+| **Click** on a connection within an expanded group | Select that connection |
+| **Double-click** a connection within an expanded group | Open the Details tab for that connection |
+| **Scroll wheel** | Navigate through groups and connections |
+
+### Details Tab
+
+| Action | Effect |
+|--------|--------|
+| **Click** on any field line | Copy the field value to the system clipboard |
+
+Clicking a field copies just the value (not the label). For example, clicking the "Remote Address: 142.250.80.46:443" line copies `142.250.80.46:443` to your clipboard. A confirmation message appears in the status bar for 3 seconds.
+
+Both the "Connection Information" and "Traffic Statistics" panels support click-to-copy.
 
 ## Filtering
 

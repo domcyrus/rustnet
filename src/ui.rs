@@ -318,6 +318,52 @@ where
     Ok(())
 }
 
+/// Represents an action that can be triggered by clicking a screen region.
+#[derive(Debug, Clone)]
+pub enum ClickAction {
+    /// Switch to a specific tab (index 0-4)
+    SwitchTab(usize),
+    /// Select a connection by index in the current sorted/filtered list
+    SelectConnection(usize),
+    /// Copy a field value to clipboard (label for feedback, value for clipboard)
+    CopyField { label: String, value: String },
+}
+
+/// Registry of clickable screen regions, rebuilt every frame during render.
+/// The event handler reads from this to determine what a mouse click means.
+#[derive(Debug, Default)]
+pub struct ClickableRegions {
+    regions: Vec<(Rect, ClickAction)>,
+    /// The area of the connections table, used for scroll event targeting
+    pub scroll_area: Option<Rect>,
+}
+
+impl ClickableRegions {
+    pub fn clear(&mut self) {
+        self.regions.clear();
+        self.scroll_area = None;
+    }
+
+    pub fn register(&mut self, area: Rect, action: ClickAction) {
+        self.regions.push((area, action));
+    }
+
+    /// Find the action for a click at (column, row).
+    /// Returns the last registered matching region (later registrations take priority).
+    pub fn hit_test(&self, column: u16, row: u16) -> Option<&ClickAction> {
+        self.regions
+            .iter()
+            .rev()
+            .find(|(rect, _)| {
+                column >= rect.x
+                    && column < rect.x + rect.width
+                    && row >= rect.y
+                    && row < rect.y + rect.height
+            })
+            .map(|(_, action)| action)
+    }
+}
+
 /// UI state for managing the interface
 pub struct UIState {
     pub selected_tab: usize,
@@ -342,6 +388,8 @@ pub struct UIState {
     pub selected_group: Option<String>,
     /// Whether GeoIP country database is available (enables Location sort column)
     pub has_geoip: bool,
+    /// Last mouse click position and time, for double-click detection
+    pub last_click: Option<(u16, u16, std::time::Instant)>,
 }
 
 impl Default for UIState {
@@ -364,6 +412,7 @@ impl Default for UIState {
             expanded_groups: HashSet::new(),
             selected_group: None,
             has_geoip: false,
+            last_click: None,
         }
     }
 }
@@ -809,7 +858,10 @@ pub fn draw(
     ui_state: &UIState,
     connections: &[Connection],
     stats: &AppStats,
+    click_regions: &mut ClickableRegions,
 ) -> Result<()> {
+    click_regions.clear();
+
     // If still loading, show loading screen
     if app.is_loading() {
         draw_loading_screen(f);
@@ -837,7 +889,7 @@ pub fn draw(
             .split(f.area())
     };
 
-    draw_tabs(f, ui_state, chunks[0]);
+    draw_tabs(f, ui_state, chunks[0], click_regions);
 
     let content_area = chunks[1];
     let (filter_area, status_area) = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
@@ -862,6 +914,7 @@ pub fn draw(
             app,
             content_area,
             grouped_rows.as_deref(),
+            click_regions,
         )?,
         1 => {
             let dns_resolver = app.get_dns_resolver();
@@ -871,6 +924,7 @@ pub fn draw(
                 connections,
                 content_area,
                 dns_resolver.as_deref(),
+                click_regions,
             )?
         }
         2 => draw_interface_stats(f, app, content_area)?,
@@ -889,7 +943,7 @@ pub fn draw(
 }
 
 /// Draw mode tabs
-fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect) {
+fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect, click_regions: &mut ClickableRegions) {
     let titles = vec![
         Span::styled("Overview", theme::fg(theme::ok())),
         Span::styled("Details", theme::fg(theme::ok())),
@@ -909,9 +963,26 @@ fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect) {
         .highlight_style(theme::bold_fg(theme::heading()));
 
     f.render_widget(tabs, area);
+
+    // Register clickable tab regions
+    // The Tabs widget renders inside the block's inner area (1px border each side)
+    let inner = area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let tab_titles = ["Overview", "Details", "Interfaces", "Graph", "Help"];
+    let divider_width = 3_u16; // " | " separator between tabs
+    let mut x_offset = inner.x;
+    for (i, title) in tab_titles.iter().enumerate() {
+        let title_width = title.len() as u16;
+        let tab_rect = Rect::new(x_offset, inner.y, title_width, inner.height);
+        click_regions.register(tab_rect, ClickAction::SwitchTab(i));
+        x_offset += title_width + divider_width;
+    }
 }
 
 /// Draw the overview mode
+#[allow(clippy::too_many_arguments)]
 fn draw_overview(
     f: &mut Frame,
     ui_state: &UIState,
@@ -920,6 +991,7 @@ fn draw_overview(
     app: &App,
     area: Rect,
     grouped_rows: Option<&[GroupedRow]>,
+    click_regions: &mut ClickableRegions,
 ) -> Result<()> {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -942,6 +1014,7 @@ fn draw_overview(
                 chunks[0],
                 dns_resolver.as_deref(),
                 has_country_db,
+                click_regions,
             );
         }
     } else {
@@ -952,6 +1025,7 @@ fn draw_overview(
             chunks[0],
             dns_resolver.as_deref(),
             has_country_db,
+            click_regions,
         );
     }
 
@@ -968,6 +1042,7 @@ fn draw_connections_list(
     area: Rect,
     dns_resolver: Option<&DnsResolver>,
     show_location: bool,
+    click_regions: &mut ClickableRegions,
 ) {
     // When DNS resolution is enabled, we need more space for hostnames
     let remote_addr_width = if dns_resolver.is_some() && ui_state.show_hostnames {
@@ -1229,6 +1304,27 @@ fn draw_connections_list(
         .highlight_symbol("> ");
 
     f.render_stateful_widget(connections_table, area, &mut state);
+
+    // Register click regions for visible connection rows
+    click_regions.scroll_area = Some(area);
+    let inner = area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let header_height = 2_u16; // header row (1) + bottom_margin (1)
+    let scroll_offset = state.offset();
+    let visible_start_y = inner.y + header_height;
+    let max_visible_rows = inner.height.saturating_sub(header_height) as usize;
+
+    for i in 0..max_visible_rows {
+        let conn_idx = scroll_offset + i;
+        if conn_idx >= connections.len() {
+            break;
+        }
+        let row_y = visible_start_y + i as u16;
+        let row_rect = Rect::new(inner.x, row_y, inner.width, 1);
+        click_regions.register(row_rect, ClickAction::SelectConnection(conn_idx));
+    }
 }
 
 /// Draw grouped connections list (grouped by process)
@@ -1239,6 +1335,7 @@ fn draw_grouped_connections_list(
     area: Rect,
     dns_resolver: Option<&DnsResolver>,
     show_location: bool,
+    click_regions: &mut ClickableRegions,
 ) {
     // Column layout for grouped view:
     // - First column shows expand/collapse indicator + process name or tree prefix + protocol
@@ -1449,6 +1546,27 @@ fn draw_grouped_connections_list(
         .highlight_symbol("> ");
 
     f.render_stateful_widget(connections_table, area, &mut state);
+
+    // Register click regions for visible grouped rows
+    click_regions.scroll_area = Some(area);
+    let inner = area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    let header_height = 2_u16;
+    let scroll_offset = state.offset();
+    let visible_start_y = inner.y + header_height;
+    let max_visible_rows = inner.height.saturating_sub(header_height) as usize;
+
+    for i in 0..max_visible_rows {
+        let row_idx = scroll_offset + i;
+        if row_idx >= grouped_rows.len() {
+            break;
+        }
+        let row_y = visible_start_y + i as u16;
+        let row_rect = Rect::new(inner.x, row_y, inner.width, 1);
+        click_regions.register(row_rect, ClickAction::SelectConnection(row_idx));
+    }
 }
 
 /// Draw stats panel
@@ -2431,12 +2549,53 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
 }
 
 /// Draw connection details view
+/// Push a label-value line to both the display text and the field registry for click-to-copy.
+fn push_detail_field<'a>(
+    lines: &mut Vec<Line<'a>>,
+    fields: &mut Vec<Option<(String, String)>>,
+    label: &str,
+    value: String,
+    label_style: Style,
+) {
+    lines.push(Line::from(vec![
+        Span::styled(format!("{}: ", label), label_style),
+        Span::raw(value.clone()),
+    ]));
+    fields.push(Some((label.to_string(), value)));
+}
+
+/// Push a label-value line with a custom-styled value span.
+fn push_detail_field_styled<'a>(
+    lines: &mut Vec<Line<'a>>,
+    fields: &mut Vec<Option<(String, String)>>,
+    label: &str,
+    value: String,
+    label_style: Style,
+    value_style: Style,
+) {
+    lines.push(Line::from(vec![
+        Span::styled(format!("{}: ", label), label_style),
+        Span::styled(value.clone(), value_style),
+    ]));
+    fields.push(Some((label.to_string(), value)));
+}
+
+/// Push an empty separator line.
+fn push_detail_separator<'a>(
+    lines: &mut Vec<Line<'a>>,
+    fields: &mut Vec<Option<(String, String)>>,
+) {
+    lines.push(Line::from(""));
+    fields.push(None);
+}
+
 fn draw_connection_details(
     f: &mut Frame,
     ui_state: &UIState,
     connections: &[Connection],
     area: Rect,
     dns_resolver: Option<&DnsResolver>,
+    click_regions: &mut ClickableRegions,
 ) -> Result<()> {
     if connections.is_empty() {
         let text = Paragraph::new("No connections available")
@@ -2459,49 +2618,67 @@ fn draw_connection_details(
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    // Connection details
-    let mut details_text: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("Protocol: ", theme::fg(theme::label())),
-            Span::raw(conn.protocol.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("Local Address: ", theme::fg(theme::label())),
-            Span::raw(conn.local_addr.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("Remote Address: ", theme::fg(theme::label())),
-            Span::raw(conn.remote_addr.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("State: ", theme::fg(theme::label())),
-            Span::raw(conn.state()),
-        ]),
-        Line::from(vec![
-            Span::styled("Process: ", theme::fg(theme::label())),
-            Span::raw(
-                conn.process_name
-                    .clone()
-                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("PID: ", theme::fg(theme::label())),
-            Span::raw(
-                conn.pid
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Service: ", theme::fg(theme::label())),
-            Span::raw(
-                conn.service_name
-                    .clone()
-                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            ),
-        ]),
-    ];
+    // Connection details - build lines and field entries in parallel for click-to-copy
+    let label_style = theme::fg(theme::label());
+    let geoip_label_style = Style::default().fg(Color::Yellow);
+    let mut details_text: Vec<Line> = Vec::new();
+    let mut detail_fields: Vec<Option<(String, String)>> = Vec::new();
+
+    push_detail_field(
+        &mut details_text,
+        &mut detail_fields,
+        "Protocol",
+        conn.protocol.to_string(),
+        label_style,
+    );
+    push_detail_field(
+        &mut details_text,
+        &mut detail_fields,
+        "Local Address",
+        conn.local_addr.to_string(),
+        label_style,
+    );
+    push_detail_field(
+        &mut details_text,
+        &mut detail_fields,
+        "Remote Address",
+        conn.remote_addr.to_string(),
+        label_style,
+    );
+    push_detail_field(
+        &mut details_text,
+        &mut detail_fields,
+        "State",
+        conn.state(),
+        label_style,
+    );
+    push_detail_field(
+        &mut details_text,
+        &mut detail_fields,
+        "Process",
+        conn.process_name
+            .clone()
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+    );
+    push_detail_field(
+        &mut details_text,
+        &mut detail_fields,
+        "PID",
+        conn.pid
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+    );
+    push_detail_field(
+        &mut details_text,
+        &mut detail_fields,
+        "Service",
+        conn.service_name
+            .clone()
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+    );
 
     // Add reverse DNS hostnames if available
     if let Some(resolver) = dns_resolver {
@@ -2509,15 +2686,21 @@ fn draw_connection_details(
         let remote_hostname = resolver.get_hostname(&conn.remote_addr.ip());
 
         if local_hostname.is_some() || remote_hostname.is_some() {
-            details_text.push(Line::from("")); // Empty line separator
-            details_text.push(Line::from(vec![
-                Span::styled("Local Hostname: ", theme::fg(theme::label())),
-                Span::raw(local_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string())),
-            ]));
-            details_text.push(Line::from(vec![
-                Span::styled("Remote Hostname: ", theme::fg(theme::label())),
-                Span::raw(remote_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string())),
-            ]));
+            push_detail_separator(&mut details_text, &mut detail_fields);
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Local Hostname",
+                local_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+                label_style,
+            );
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Remote Hostname",
+                remote_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+                label_style,
+            );
         }
     }
 
@@ -2525,28 +2708,37 @@ fn draw_connection_details(
     if let Some(ref geoip) = conn.geoip_info
         && (geoip.country_code.is_some() || geoip.asn.is_some() || geoip.city.is_some())
     {
-        details_text.push(Line::from("")); // Empty line separator
+        push_detail_separator(&mut details_text, &mut detail_fields);
         if let Some(ref country_name) = geoip.country_name {
             let country_display = if let Some(ref cc) = geoip.country_code {
                 format!("{} ({})", country_name, cc)
             } else {
                 country_name.clone()
             };
-            details_text.push(Line::from(vec![
-                Span::styled("Country: ", Style::default().fg(Color::Yellow)),
-                Span::raw(country_display),
-            ]));
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Country",
+                country_display,
+                geoip_label_style,
+            );
         } else if let Some(ref cc) = geoip.country_code {
-            details_text.push(Line::from(vec![
-                Span::styled("Country: ", Style::default().fg(Color::Yellow)),
-                Span::raw(cc.clone()),
-            ]));
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Country",
+                cc.clone(),
+                geoip_label_style,
+            );
         }
         if let Some(ref city) = geoip.city {
-            details_text.push(Line::from(vec![
-                Span::styled("City: ", Style::default().fg(Color::Yellow)),
-                Span::raw(city.clone()),
-            ]));
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "City",
+                city.clone(),
+                geoip_label_style,
+            );
         }
         if let Some(asn) = geoip.asn {
             let asn_display = if let Some(ref org) = geoip.as_org {
@@ -2554,62 +2746,86 @@ fn draw_connection_details(
             } else {
                 format!("AS{}", asn)
             };
-            details_text.push(Line::from(vec![
-                Span::styled("ASN: ", Style::default().fg(Color::Yellow)),
-                Span::raw(asn_display),
-            ]));
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "ASN",
+                asn_display,
+                geoip_label_style,
+            );
         }
     }
 
     // Add DPI information
     match &conn.dpi_info {
         Some(dpi) => {
-            details_text.push(Line::from(vec![
-                Span::styled("Application: ", theme::fg(theme::label())),
-                Span::raw(dpi.application.to_string()),
-            ]));
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Application",
+                dpi.application.to_string(),
+                label_style,
+            );
 
             // Add protocol-specific details
             match &dpi.application {
                 crate::network::types::ApplicationProtocol::Http(info) => {
                     if let Some(method) = &info.method {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  HTTP Method: ", theme::fg(theme::label())),
-                            Span::raw(method.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  HTTP Method",
+                            method.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(path) = &info.path {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  HTTP Path: ", theme::fg(theme::label())),
-                            Span::raw(path.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  HTTP Path",
+                            path.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(status) = info.status_code {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  HTTP Status: ", theme::fg(theme::label())),
-                            Span::raw(status.to_string()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  HTTP Status",
+                            status.to_string(),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::Https(info) => {
                     if let Some(tls_info) = &info.tls_info {
                         if let Some(sni) = &tls_info.sni {
-                            details_text.push(Line::from(vec![
-                                Span::styled("  SNI: ", theme::fg(theme::label())),
-                                Span::raw(sni.clone()),
-                            ]));
+                            push_detail_field(
+                                &mut details_text,
+                                &mut detail_fields,
+                                "  SNI",
+                                sni.clone(),
+                                label_style,
+                            );
                         }
                         if !tls_info.alpn.is_empty() {
-                            details_text.push(Line::from(vec![
-                                Span::styled("  ALPN: ", theme::fg(theme::label())),
-                                Span::raw(tls_info.alpn.join(", ")),
-                            ]));
+                            push_detail_field(
+                                &mut details_text,
+                                &mut detail_fields,
+                                "  ALPN",
+                                tls_info.alpn.join(", "),
+                                label_style,
+                            );
                         }
                         if let Some(version) = &tls_info.version {
-                            details_text.push(Line::from(vec![
-                                Span::styled("  TLS Version: ", theme::fg(theme::label())),
-                                Span::raw(version.to_string()),
-                            ]));
+                            push_detail_field(
+                                &mut details_text,
+                                &mut detail_fields,
+                                "  TLS Version",
+                                version.to_string(),
+                                label_style,
+                            );
                         }
                         if let Some(formatted_cipher) = tls_info.format_cipher_suite() {
                             let cipher_color = if tls_info.is_cipher_suite_secure().unwrap_or(false)
@@ -2618,25 +2834,35 @@ fn draw_connection_details(
                             } else {
                                 theme::warn()
                             };
-                            details_text.push(Line::from(vec![
-                                Span::styled("  Cipher Suite: ", theme::fg(theme::label())),
-                                Span::styled(formatted_cipher, theme::fg(cipher_color)),
-                            ]));
+                            push_detail_field_styled(
+                                &mut details_text,
+                                &mut detail_fields,
+                                "  Cipher Suite",
+                                formatted_cipher,
+                                label_style,
+                                theme::fg(cipher_color),
+                            );
                         }
                     }
                 }
                 crate::network::types::ApplicationProtocol::Dns(info) => {
                     if let Some(query_type) = &info.query_type {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  DNS Type: ", theme::fg(theme::label())),
-                            Span::raw(format!("{:?}", query_type)),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  DNS Type",
+                            format!("{:?}", query_type),
+                            label_style,
+                        );
                     }
                     if !info.response_ips.is_empty() {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  DNS Response IPs: ", theme::fg(theme::label())),
-                            Span::raw(format!("{:?}", info.response_ips)),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  DNS Response IPs",
+                            format!("{:?}", info.response_ips),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::Quic(info) => {
@@ -2645,202 +2871,301 @@ fn draw_connection_details(
                             .sni
                             .clone()
                             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
-                        details_text.push(Line::from(vec![
-                            Span::styled("  QUIC SNI: ", theme::fg(theme::label())),
-                            Span::raw(sni),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  QUIC SNI",
+                            sni,
+                            label_style,
+                        );
                         let alpn = tls_info.alpn.join(", ");
-                        details_text.push(Line::from(vec![
-                            Span::styled("  QUIC ALPN: ", theme::fg(theme::label())),
-                            Span::raw(alpn),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  QUIC ALPN",
+                            alpn,
+                            label_style,
+                        );
                     }
                     if let Some(version) = info.version_string.as_ref() {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  QUIC Version: ", theme::fg(theme::label())),
-                            Span::raw(version.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  QUIC Version",
+                            version.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(connection_id) = &info.connection_id_hex {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Connection ID: ", theme::fg(theme::label())),
-                            Span::raw(connection_id.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Connection ID",
+                            connection_id.clone(),
+                            label_style,
+                        );
                     }
-
-                    let packet_type = info.packet_type.to_string();
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Packet Type: ", theme::fg(theme::label())),
-                        Span::raw(packet_type),
-                    ]));
-                    let connection_state = info.connection_state.to_string();
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Connection State: ", theme::fg(theme::label())),
-                        Span::raw(connection_state),
-                    ]));
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Packet Type",
+                        info.packet_type.to_string(),
+                        label_style,
+                    );
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Connection State",
+                        info.connection_state.to_string(),
+                        label_style,
+                    );
                 }
                 crate::network::types::ApplicationProtocol::Ssh(info) => {
                     if let Some(version) = &info.version {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  SSH Version: ", theme::fg(theme::label())),
-                            Span::raw(format!("{:?}", version)),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  SSH Version",
+                            format!("{:?}", version),
+                            label_style,
+                        );
                     }
                     if let Some(server_software) = &info.server_software {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Server Software: ", theme::fg(theme::label())),
-                            Span::raw(server_software.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Server Software",
+                            server_software.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(client_software) = &info.client_software {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Client Software: ", theme::fg(theme::label())),
-                            Span::raw(client_software.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Client Software",
+                            client_software.clone(),
+                            label_style,
+                        );
                     }
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Connection State: ", theme::fg(theme::label())),
-                        Span::raw(format!("{:?}", info.connection_state)),
-                    ]));
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Connection State",
+                        format!("{:?}", info.connection_state),
+                        label_style,
+                    );
                     if !info.algorithms.is_empty() {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Algorithms: ", theme::fg(theme::label())),
-                            Span::raw(info.algorithms.join(", ")),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Algorithms",
+                            info.algorithms.join(", "),
+                            label_style,
+                        );
                     }
                     if let Some(auth_method) = &info.auth_method {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Auth Method: ", theme::fg(theme::label())),
-                            Span::raw(auth_method.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Auth Method",
+                            auth_method.clone(),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::Ntp(info) => {
-                    details_text.push(Line::from(vec![
-                        Span::styled("  NTP Version: ", theme::fg(theme::label())),
-                        Span::raw(format!("{}", info.version)),
-                    ]));
-                    details_text.push(Line::from(vec![
-                        Span::styled("  NTP Mode: ", theme::fg(theme::label())),
-                        Span::raw(info.mode.to_string()),
-                    ]));
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Stratum: ", theme::fg(theme::label())),
-                        Span::raw(format!("{}", info.stratum)),
-                    ]));
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  NTP Version",
+                        format!("{}", info.version),
+                        label_style,
+                    );
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  NTP Mode",
+                        info.mode.to_string(),
+                        label_style,
+                    );
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Stratum",
+                        format!("{}", info.stratum),
+                        label_style,
+                    );
                 }
                 crate::network::types::ApplicationProtocol::Mdns(info) => {
                     if let Some(query_name) = &info.query_name {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Query Name: ", theme::fg(theme::label())),
-                            Span::raw(query_name.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Query Name",
+                            query_name.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(query_type) = &info.query_type {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Query Type: ", theme::fg(theme::label())),
-                            Span::raw(format!("{:?}", query_type)),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Query Type",
+                            format!("{:?}", query_type),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::Llmnr(info) => {
                     if let Some(query_name) = &info.query_name {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Query Name: ", theme::fg(theme::label())),
-                            Span::raw(query_name.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Query Name",
+                            query_name.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(query_type) = &info.query_type {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Query Type: ", theme::fg(theme::label())),
-                            Span::raw(format!("{:?}", query_type)),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Query Type",
+                            format!("{:?}", query_type),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::Dhcp(info) => {
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Message Type: ", theme::fg(theme::label())),
-                        Span::raw(info.message_type.to_string()),
-                    ]));
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Message Type",
+                        info.message_type.to_string(),
+                        label_style,
+                    );
                     if let Some(hostname) = &info.hostname {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Hostname: ", theme::fg(theme::label())),
-                            Span::raw(hostname.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Hostname",
+                            hostname.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(client_mac) = &info.client_mac {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Client MAC: ", theme::fg(theme::label())),
-                            Span::raw(client_mac.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Client MAC",
+                            client_mac.clone(),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::Snmp(info) => {
-                    details_text.push(Line::from(vec![
-                        Span::styled("  SNMP Version: ", theme::fg(theme::label())),
-                        Span::raw(info.version.to_string()),
-                    ]));
-                    details_text.push(Line::from(vec![
-                        Span::styled("  PDU Type: ", theme::fg(theme::label())),
-                        Span::raw(info.pdu_type.to_string()),
-                    ]));
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  SNMP Version",
+                        info.version.to_string(),
+                        label_style,
+                    );
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  PDU Type",
+                        info.pdu_type.to_string(),
+                        label_style,
+                    );
                     if let Some(community) = &info.community {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Community: ", theme::fg(theme::label())),
-                            Span::raw(community.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Community",
+                            community.clone(),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::Ssdp(info) => {
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Method: ", theme::fg(theme::label())),
-                        Span::raw(info.method.to_string()),
-                    ]));
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Method",
+                        info.method.to_string(),
+                        label_style,
+                    );
                     if let Some(service_type) = &info.service_type {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Service Type: ", theme::fg(theme::label())),
-                            Span::raw(service_type.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Service Type",
+                            service_type.clone(),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::NetBios(info) => {
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Service: ", theme::fg(theme::label())),
-                        Span::raw(info.service.to_string()),
-                    ]));
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Opcode: ", theme::fg(theme::label())),
-                        Span::raw(info.opcode.to_string()),
-                    ]));
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Service",
+                        info.service.to_string(),
+                        label_style,
+                    );
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Opcode",
+                        info.opcode.to_string(),
+                        label_style,
+                    );
                     if let Some(name) = &info.name {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Name: ", theme::fg(theme::label())),
-                            Span::raw(name.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Name",
+                            name.clone(),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::BitTorrent(info) => {
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Type: ", theme::fg(theme::label())),
-                        Span::raw(info.protocol_type.to_string()),
-                    ]));
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Type",
+                        info.protocol_type.to_string(),
+                        label_style,
+                    );
                     if let Some(client) = &info.client {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Client: ", theme::fg(theme::label())),
-                            Span::raw(client.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Client",
+                            client.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(info_hash) = &info.info_hash {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Info Hash: ", theme::fg(theme::label())),
-                            Span::raw(info_hash.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Info Hash",
+                            info_hash.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(method) = &info.dht_method {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  DHT Method: ", theme::fg(theme::label())),
-                            Span::raw(method.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  DHT Method",
+                            method.clone(),
+                            label_style,
+                        );
                     }
                     let mut extensions = Vec::new();
                     if info.supports_dht {
@@ -2853,121 +3178,181 @@ fn draw_connection_details(
                         extensions.push("Fast");
                     }
                     if !extensions.is_empty() {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Extensions: ", theme::fg(theme::label())),
-                            Span::raw(extensions.join(", ")),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Extensions",
+                            extensions.join(", "),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::Stun(info) => {
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Method: ", theme::fg(theme::label())),
-                        Span::raw(info.method.to_string()),
-                    ]));
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Class: ", theme::fg(theme::label())),
-                        Span::raw(info.message_class.to_string()),
-                    ]));
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Transaction ID: ", theme::fg(theme::label())),
-                        Span::raw(
-                            info.transaction_id
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<String>(),
-                        ),
-                    ]));
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Method",
+                        info.method.to_string(),
+                        label_style,
+                    );
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Class",
+                        info.message_class.to_string(),
+                        label_style,
+                    );
+                    let txn_id = info
+                        .transaction_id
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<String>();
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Transaction ID",
+                        txn_id,
+                        label_style,
+                    );
                     if let Some(software) = &info.software {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Software: ", theme::fg(theme::label())),
-                            Span::raw(software.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Software",
+                            software.clone(),
+                            label_style,
+                        );
                     }
                 }
                 crate::network::types::ApplicationProtocol::Mqtt(info) => {
-                    details_text.push(Line::from(vec![
-                        Span::styled("  Packet Type: ", theme::fg(theme::label())),
-                        Span::raw(info.packet_type.to_string()),
-                    ]));
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "  Packet Type",
+                        info.packet_type.to_string(),
+                        label_style,
+                    );
                     if let Some(version) = &info.version {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Version: ", theme::fg(theme::label())),
-                            Span::raw(version.to_string()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Version",
+                            version.to_string(),
+                            label_style,
+                        );
                     }
                     if let Some(client_id) = &info.client_id {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Client ID: ", theme::fg(theme::label())),
-                            Span::raw(client_id.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Client ID",
+                            client_id.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(topic) = &info.topic {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  Topic: ", theme::fg(theme::label())),
-                            Span::raw(topic.clone()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  Topic",
+                            topic.clone(),
+                            label_style,
+                        );
                     }
                     if let Some(qos) = info.qos {
-                        details_text.push(Line::from(vec![
-                            Span::styled("  QoS: ", theme::fg(theme::label())),
-                            Span::raw(qos.to_string()),
-                        ]));
+                        push_detail_field(
+                            &mut details_text,
+                            &mut detail_fields,
+                            "  QoS",
+                            qos.to_string(),
+                            label_style,
+                        );
                     }
                 }
             }
         }
         None => {
-            details_text.push(Line::from(vec![
-                Span::styled("Application: ", theme::fg(theme::label())),
-                Span::raw(NONE_PLACEHOLDER.to_string()),
-            ]));
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Application",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
         }
     }
 
     // Add ARP details if this is an ARP connection
     if let ProtocolState::Arp(arp_info) = &conn.protocol_state {
-        details_text.push(Line::from(""));
-        details_text.push(Line::from(vec![
-            Span::styled("Sender MAC: ", theme::fg(theme::label())),
-            Span::raw(arp_info.sender_mac.clone()),
-        ]));
-        details_text.push(Line::from(vec![
-            Span::styled("Sender IP: ", theme::fg(theme::label())),
-            Span::raw(arp_info.sender_ip.to_string()),
-        ]));
-        details_text.push(Line::from(vec![
-            Span::styled("Target MAC: ", theme::fg(theme::label())),
-            Span::raw(arp_info.target_mac.clone()),
-        ]));
-        details_text.push(Line::from(vec![
-            Span::styled("Target IP: ", theme::fg(theme::label())),
-            Span::raw(arp_info.target_ip.to_string()),
-        ]));
+        push_detail_separator(&mut details_text, &mut detail_fields);
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Sender MAC",
+            arp_info.sender_mac.clone(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Sender IP",
+            arp_info.sender_ip.to_string(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Target MAC",
+            arp_info.target_mac.clone(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Target IP",
+            arp_info.target_ip.to_string(),
+            label_style,
+        );
     }
 
     // Add TCP analytics if available
     if let Some(analytics) = &conn.tcp_analytics {
-        details_text.push(Line::from(""));
-        details_text.push(Line::from(vec![
-            Span::styled("TCP Retransmits: ", theme::fg(theme::label())),
-            Span::raw(analytics.retransmit_count.to_string()),
-        ]));
-        details_text.push(Line::from(vec![
-            Span::styled("Out-of-Order Packets: ", theme::fg(theme::label())),
-            Span::raw(analytics.out_of_order_count.to_string()),
-        ]));
-        details_text.push(Line::from(vec![
-            Span::styled("Duplicate ACKs: ", theme::fg(theme::label())),
-            Span::raw(analytics.duplicate_ack_count.to_string()),
-        ]));
-        details_text.push(Line::from(vec![
-            Span::styled("Fast Retransmits: ", theme::fg(theme::label())),
-            Span::raw(analytics.fast_retransmit_count.to_string()),
-        ]));
-        details_text.push(Line::from(vec![
-            Span::styled("Window Size: ", theme::fg(theme::label())),
-            Span::raw(analytics.last_window_size.to_string()),
-        ]));
+        push_detail_separator(&mut details_text, &mut detail_fields);
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "TCP Retransmits",
+            analytics.retransmit_count.to_string(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Out-of-Order Packets",
+            analytics.out_of_order_count.to_string(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Duplicate ACKs",
+            analytics.duplicate_ack_count.to_string(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Fast Retransmits",
+            analytics.fast_retransmit_count.to_string(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Window Size",
+            analytics.last_window_size.to_string(),
+            label_style,
+        );
     }
 
     // Add initial RTT measurement if available
@@ -2980,61 +3365,131 @@ fn draw_connection_details(
         } else {
             theme::err()
         };
-        details_text.push(Line::from(vec![
-            Span::styled("Initial RTT: ", theme::fg(theme::label())),
-            Span::styled(format!("{:.1}ms", rtt_ms), theme::fg(rtt_color)),
-        ]));
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Initial RTT",
+            format!("{:.1}ms", rtt_ms),
+            label_style,
+            theme::fg(rtt_color),
+        );
     }
 
     let details = Paragraph::new(details_text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Connection Information"),
+                .title("Connection Information (click to copy)"),
         )
         .style(Style::default())
         .wrap(Wrap { trim: true });
 
     f.render_widget(details, chunks[0]);
 
-    // Traffic details
-    let traffic_text: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("Bytes Sent: ", theme::fg(theme::label())),
-            Span::raw(format_bytes(conn.bytes_sent)),
-        ]),
-        Line::from(vec![
-            Span::styled("Bytes Received: ", theme::fg(theme::label())),
-            Span::raw(format_bytes(conn.bytes_received)),
-        ]),
-        Line::from(vec![
-            Span::styled("Packets Sent: ", theme::fg(theme::label())),
-            Span::raw(conn.packets_sent.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("Packets Received: ", theme::fg(theme::label())),
-            Span::raw(conn.packets_received.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("Current Rate (In): ", theme::fg(theme::label())),
-            Span::raw(format_rate(conn.current_incoming_rate_bps)),
-        ]),
-        Line::from(vec![
-            Span::styled("Current Rate (Out): ", theme::fg(theme::label())),
-            Span::raw(format_rate(conn.current_outgoing_rate_bps)),
-        ]),
-    ];
+    // Register click regions for each copyable field in the Connection Information panel
+    let inner = chunks[0].inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    for (line_idx, entry) in detail_fields.iter().enumerate() {
+        if let Some((label, value)) = entry {
+            if value == NONE_PLACEHOLDER || value.is_empty() {
+                continue;
+            }
+            let row_y = inner.y + line_idx as u16;
+            if row_y >= inner.y + inner.height {
+                break;
+            }
+            let line_rect = Rect::new(inner.x, row_y, inner.width, 1);
+            click_regions.register(
+                line_rect,
+                ClickAction::CopyField {
+                    label: label.clone(),
+                    value: value.clone(),
+                },
+            );
+        }
+    }
+
+    // Traffic details - also track fields for click-to-copy
+    let mut traffic_text: Vec<Line> = Vec::new();
+    let mut traffic_fields: Vec<Option<(String, String)>> = Vec::new();
+
+    push_detail_field(
+        &mut traffic_text,
+        &mut traffic_fields,
+        "Bytes Sent",
+        format_bytes(conn.bytes_sent),
+        label_style,
+    );
+    push_detail_field(
+        &mut traffic_text,
+        &mut traffic_fields,
+        "Bytes Received",
+        format_bytes(conn.bytes_received),
+        label_style,
+    );
+    push_detail_field(
+        &mut traffic_text,
+        &mut traffic_fields,
+        "Packets Sent",
+        conn.packets_sent.to_string(),
+        label_style,
+    );
+    push_detail_field(
+        &mut traffic_text,
+        &mut traffic_fields,
+        "Packets Received",
+        conn.packets_received.to_string(),
+        label_style,
+    );
+    push_detail_field(
+        &mut traffic_text,
+        &mut traffic_fields,
+        "Current Rate (In)",
+        format_rate(conn.current_incoming_rate_bps),
+        label_style,
+    );
+    push_detail_field(
+        &mut traffic_text,
+        &mut traffic_fields,
+        "Current Rate (Out)",
+        format_rate(conn.current_outgoing_rate_bps),
+        label_style,
+    );
 
     let traffic = Paragraph::new(traffic_text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Traffic Statistics"),
+                .title("Traffic Statistics (click to copy)"),
         )
         .style(Style::default())
         .wrap(Wrap { trim: true });
 
     f.render_widget(traffic, chunks[1]);
+
+    // Register click regions for traffic statistics fields
+    let traffic_inner = chunks[1].inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+    for (line_idx, entry) in traffic_fields.iter().enumerate() {
+        if let Some((label, value)) = entry {
+            let row_y = traffic_inner.y + line_idx as u16;
+            if row_y >= traffic_inner.y + traffic_inner.height {
+                break;
+            }
+            let line_rect = Rect::new(traffic_inner.x, row_y, traffic_inner.width, 1);
+            click_regions.register(
+                line_rect,
+                ClickAction::CopyField {
+                    label: label.clone(),
+                    value: value.clone(),
+                },
+            );
+        }
+    }
 
     Ok(())
 }
@@ -3152,6 +3607,35 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         Line::from(vec![
             Span::styled("  Help ", theme::fg(theme::ok())),
             Span::raw("This help screen"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Mouse Controls:",
+            theme::bold_fg(theme::accent()),
+        )]),
+        Line::from(vec![
+            Span::styled("  Click tab ", theme::fg(theme::key())),
+            Span::raw("Switch between tabs"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Click row ", theme::fg(theme::key())),
+            Span::raw("Select connection"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Scroll wheel ", theme::fg(theme::key())),
+            Span::raw("Navigate connection list"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Double-click row ", theme::fg(theme::key())),
+            Span::raw("Open connection details"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Double-click group ", theme::fg(theme::key())),
+            Span::raw("Expand/collapse process group"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Click field (Details) ", theme::fg(theme::key())),
+            Span::raw("Copy field value to clipboard"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -3384,6 +3868,8 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
             " 'h' help | Tab/Shift+Tab switch tabs | Showing {} filtered connections (Esc to clear) ",
             connection_count
         )
+    } else if ui_state.selected_tab == 1 {
+        " Click any field to copy | 'c' copy remote addr | Tab switch tabs | Esc back ".to_string()
     } else {
         " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 'c' copy ".to_string()
     };
