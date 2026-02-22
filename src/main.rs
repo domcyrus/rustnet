@@ -352,6 +352,53 @@ fn sort_connections(
     });
 }
 
+/// Copy text to the system clipboard and update UI state with feedback.
+fn copy_to_clipboard(text: &str, display_msg: &str, ui_state: &mut ui::UIState, app: &app::App) {
+    let result = Clipboard::new().and_then(|mut cb| cb.set_text(text));
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    let result = result.or_else(|_| {
+        std::process::Command::new("wl-copy")
+            .arg(text)
+            .status()
+            .map_err(|e| arboard::Error::Unknown {
+                description: e.to_string(),
+            })
+            .and_then(|s| {
+                if s.success() {
+                    Ok(())
+                } else {
+                    Err(arboard::Error::Unknown {
+                        description: "wl-copy failed".to_string(),
+                    })
+                }
+            })
+    });
+
+    match result {
+        Ok(()) => {
+            info!("Copied to clipboard: {}", display_msg);
+            ui_state.clipboard_message = Some((
+                format!("Copied: {}", display_msg),
+                std::time::Instant::now(),
+            ));
+        }
+        Err(e) => {
+            #[cfg(target_os = "linux")]
+            let msg = if app.get_sandbox_info().fs_restricted {
+                "Clipboard unavailable (sandbox active). Use --no-sandbox to enable.".to_string()
+            } else {
+                format!("Clipboard error: {}", e)
+            };
+            #[cfg(not(target_os = "linux"))]
+            let msg = format!("Clipboard error: {}", e);
+
+            error!("{}", msg);
+            ui_state.clipboard_message = Some((msg, std::time::Instant::now()));
+        }
+    }
+}
+
 fn run_ui_loop<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,
     app: &app::App,
@@ -364,6 +411,7 @@ where
     let mut ui_state = ui::UIState::default();
     let (has_country_db, _, _) = app.get_geoip_status();
     ui_state.has_geoip = has_country_db;
+    let mut click_regions = ui::ClickableRegions::default();
 
     loop {
         // Get current connections and stats
@@ -401,7 +449,8 @@ where
 
         // Draw the UI
         terminal.draw(|f| {
-            if let Err(err) = ui::draw(f, app, &ui_state, &connections, &stats) {
+            if let Err(err) = ui::draw(f, app, &ui_state, &connections, &stats, &mut click_regions)
+            {
                 error!("UI draw error: {}", err);
             }
         })?;
@@ -424,483 +473,543 @@ where
         }
 
         // Handle input events
-        if crossterm::event::poll(timeout)?
-            && let crossterm::event::Event::Key(key) = crossterm::event::read()?
-        {
-            use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+        if crossterm::event::poll(timeout)? {
+            let event = crossterm::event::read()?;
+            match event {
+                crossterm::event::Event::Mouse(mouse) => {
+                    use crossterm::event::{MouseButton, MouseEventKind};
 
-            // On Windows, crossterm reports both Press and Release events
-            // On Linux/macOS, only Press events are reported
-            // Filter to only handle Press events for consistent cross-platform behavior
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
+                    match mouse.kind {
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            ui_state.quit_confirmation = false;
+                            ui_state.clear_confirmation = false;
 
-            if ui_state.filter_mode {
-                // Handle input in filter mode
-                match key.code {
-                    KeyCode::Enter => {
-                        // Apply filter and exit input mode (now optional)
-                        debug!("Exiting filter mode. Filter: '{}'", ui_state.filter_query);
-                        ui_state.exit_filter_mode();
-                        debug!("Filter mode now: {}", ui_state.filter_mode);
-                    }
-                    KeyCode::Esc => {
-                        // Clear filter and exit filter mode
-                        ui_state.clear_filter();
-                    }
-                    KeyCode::Backspace => {
-                        ui_state.filter_backspace();
-                    }
-                    KeyCode::Delete => {
-                        // Handle delete key (remove character after cursor)
-                        if ui_state.filter_cursor_position < ui_state.filter_query.len() {
-                            ui_state
-                                .filter_query
-                                .remove(ui_state.filter_cursor_position);
+                            // Detect double-click (two clicks within 400ms at the same row)
+                            let is_double_click =
+                                if let Some((_, prev_row, prev_time)) = ui_state.last_click {
+                                    prev_row == mouse.row && prev_time.elapsed().as_millis() < 400
+                                } else {
+                                    false
+                                };
+                            ui_state.last_click =
+                                Some((mouse.column, mouse.row, std::time::Instant::now()));
+
+                            if let Some(action) = click_regions.hit_test(mouse.column, mouse.row) {
+                                match action.clone() {
+                                    ui::ClickAction::SwitchTab(tab_idx) => {
+                                        ui_state.selected_tab = tab_idx;
+                                    }
+                                    ui::ClickAction::SelectConnection(conn_idx) => {
+                                        if ui_state.grouping_enabled {
+                                            ui_state.set_selected_grouped_by_index(
+                                                &grouped_rows,
+                                                conn_idx,
+                                            );
+                                            if is_double_click
+                                                && let Some(row) = grouped_rows.get(conn_idx)
+                                            {
+                                                match row {
+                                                    ui::GroupedRow::Group { .. } => {
+                                                        // Double-click group header: toggle expand/collapse
+                                                        ui_state.toggle_group_expansion();
+                                                    }
+                                                    ui::GroupedRow::Connection { .. } => {
+                                                        // Double-click connection: open Details tab
+                                                        ui_state.selected_tab = 1;
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            ui_state.set_selected_by_index(&connections, conn_idx);
+                                            if is_double_click {
+                                                // Double-click connection in flat view: open Details tab
+                                                ui_state.selected_tab = 1;
+                                            }
+                                        }
+                                    }
+                                    ui::ClickAction::CopyField { label, value } => {
+                                        copy_to_clipboard(
+                                            &value,
+                                            &format!("{}: {}", label, value),
+                                            &mut ui_state,
+                                            app,
+                                        );
+                                    }
+                                }
+                            }
                         }
-                    }
-                    KeyCode::Left => {
-                        ui_state.filter_cursor_left();
-                    }
-                    KeyCode::Right => {
-                        ui_state.filter_cursor_right();
-                    }
-                    KeyCode::Home => {
-                        ui_state.filter_cursor_position = 0;
-                    }
-                    KeyCode::End => {
-                        ui_state.filter_cursor_position = ui_state.filter_query.len();
-                    }
-                    // Allow navigation while in filter mode!
-                    KeyCode::Up => {
-                        // Use the SAME sorted connections list from the main loop
-                        // to ensure index consistency with the displayed table
-                        debug!(
-                            "Filter mode navigation UP: {} connections available",
-                            connections.len()
-                        );
-                        ui_state.move_selection_up(&connections);
-                    }
-                    KeyCode::Down => {
-                        // Use the SAME sorted connections list from the main loop
-                        // to ensure index consistency with the displayed table
-                        debug!(
-                            "Filter mode navigation DOWN: {} connections available",
-                            connections.len()
-                        );
-                        ui_state.move_selection_down(&connections);
-                    }
-                    KeyCode::Char(c) => {
-                        // Handle Ctrl+H as backspace for SecureCRT compatibility
-                        if c == 'h' && key.modifiers.contains(KeyModifiers::CONTROL) {
-                            ui_state.filter_backspace();
-                            return Ok(());
+                        MouseEventKind::ScrollUp => {
+                            if let Some(scroll_area) = click_regions.scroll_area
+                                && mouse.column >= scroll_area.x
+                                && mouse.column < scroll_area.x + scroll_area.width
+                                && mouse.row >= scroll_area.y
+                                && mouse.row < scroll_area.y + scroll_area.height
+                                && ui_state.selected_tab == 0
+                            {
+                                if ui_state.grouping_enabled {
+                                    ui_state.move_selection_up_grouped(&grouped_rows);
+                                } else {
+                                    ui_state.move_selection_up(&connections);
+                                }
+                            }
                         }
+                        MouseEventKind::ScrollDown => {
+                            if let Some(scroll_area) = click_regions.scroll_area
+                                && mouse.column >= scroll_area.x
+                                && mouse.column < scroll_area.x + scroll_area.width
+                                && mouse.row >= scroll_area.y
+                                && mouse.row < scroll_area.y + scroll_area.height
+                                && ui_state.selected_tab == 0
+                            {
+                                if ui_state.grouping_enabled {
+                                    ui_state.move_selection_down_grouped(&grouped_rows);
+                                } else {
+                                    ui_state.move_selection_down(&connections);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                crossterm::event::Event::Key(key) => {
+                    use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
-                        // Handle navigation keys (j/k) and text input
-                        match c {
-                            'k' => {
-                                // Vim-style up navigation while filtering
+                    // On Windows, crossterm reports both Press and Release events
+                    // On Linux/macOS, only Press events are reported
+                    // Filter to only handle Press events for consistent cross-platform behavior
+                    if key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+
+                    if ui_state.filter_mode {
+                        // Handle input in filter mode
+                        match key.code {
+                            KeyCode::Enter => {
+                                // Apply filter and exit input mode (now optional)
+                                debug!("Exiting filter mode. Filter: '{}'", ui_state.filter_query);
+                                ui_state.exit_filter_mode();
+                                debug!("Filter mode now: {}", ui_state.filter_mode);
+                            }
+                            KeyCode::Esc => {
+                                // Clear filter and exit filter mode
+                                ui_state.clear_filter();
+                            }
+                            KeyCode::Backspace => {
+                                ui_state.filter_backspace();
+                            }
+                            KeyCode::Delete => {
+                                // Handle delete key (remove character after cursor)
+                                if ui_state.filter_cursor_position < ui_state.filter_query.len() {
+                                    ui_state
+                                        .filter_query
+                                        .remove(ui_state.filter_cursor_position);
+                                }
+                            }
+                            KeyCode::Left => {
+                                ui_state.filter_cursor_left();
+                            }
+                            KeyCode::Right => {
+                                ui_state.filter_cursor_right();
+                            }
+                            KeyCode::Home => {
+                                ui_state.filter_cursor_position = 0;
+                            }
+                            KeyCode::End => {
+                                ui_state.filter_cursor_position = ui_state.filter_query.len();
+                            }
+                            // Allow navigation while in filter mode!
+                            KeyCode::Up => {
                                 // Use the SAME sorted connections list from the main loop
+                                // to ensure index consistency with the displayed table
                                 debug!(
-                                    "Filter mode navigation UP (k): {} connections available",
+                                    "Filter mode navigation UP: {} connections available",
                                     connections.len()
                                 );
                                 ui_state.move_selection_up(&connections);
                             }
-                            'j' => {
-                                // Vim-style down navigation while filtering
+                            KeyCode::Down => {
                                 // Use the SAME sorted connections list from the main loop
+                                // to ensure index consistency with the displayed table
                                 debug!(
-                                    "Filter mode navigation DOWN (j): {} connections available",
+                                    "Filter mode navigation DOWN: {} connections available",
                                     connections.len()
                                 );
                                 ui_state.move_selection_down(&connections);
                             }
-                            _ => {
-                                // Regular character input for filter
-                                ui_state.filter_add_char(c);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            } else {
-                // Handle input in normal mode
-                match (key.code, key.modifiers) {
-                    // Enter filter mode with '/'
-                    (KeyCode::Char('/'), _) => {
-                        ui_state.quit_confirmation = false;
-                        debug!("Entering filter mode");
-                        ui_state.enter_filter_mode();
-                        debug!("Filter mode now: {}", ui_state.filter_mode);
-                    }
-
-                    // Quit with confirmation
-                    (KeyCode::Char('q'), _) => {
-                        if ui_state.quit_confirmation {
-                            info!("User confirmed application exit");
-                            break;
-                        } else {
-                            info!("User requested quit - showing confirmation");
-                            ui_state.quit_confirmation = true;
-                        }
-                    }
-
-                    // Ctrl+C always quits immediately
-                    (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-                        info!("User requested immediate exit with Ctrl+C");
-                        break;
-                    }
-
-                    // Tab navigation (forward)
-                    (KeyCode::Tab, KeyModifiers::NONE) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        ui_state.selected_tab = (ui_state.selected_tab + 1) % 5;
-                    }
-
-                    // Shift+Tab navigation (backward)
-                    (KeyCode::BackTab, _) | (KeyCode::Tab, KeyModifiers::SHIFT) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        ui_state.selected_tab = if ui_state.selected_tab == 0 {
-                            4 // Wrap to last tab
-                        } else {
-                            ui_state.selected_tab - 1
-                        };
-                    }
-
-                    // Help toggle
-                    (KeyCode::Char('h'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        ui_state.show_help = !ui_state.show_help;
-                        if ui_state.show_help {
-                            ui_state.selected_tab = 4; // Switch to help tab
-                        } else {
-                            ui_state.selected_tab = 0; // Back to overview
-                        }
-                    }
-
-                    // Interface stats toggle (shortcut to Interface tab)
-                    (KeyCode::Char('i'), _) | (KeyCode::Char('I'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        if ui_state.selected_tab == 2 {
-                            ui_state.selected_tab = 0; // Back to overview
-                        } else {
-                            ui_state.selected_tab = 2; // Switch to interfaces tab
-                        }
-                    }
-
-                    // Navigation in connection list
-                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        if ui_state.grouping_enabled {
-                            debug!(
-                                "Navigation UP (grouped): {} rows available",
-                                grouped_rows.len()
-                            );
-                            ui_state.move_selection_up_grouped(&grouped_rows);
-                        } else {
-                            debug!("Navigation UP: {} connections available", connections.len());
-                            ui_state.move_selection_up(&connections);
-                        }
-                    }
-
-                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        if ui_state.grouping_enabled {
-                            debug!(
-                                "Navigation DOWN (grouped): {} rows available",
-                                grouped_rows.len()
-                            );
-                            ui_state.move_selection_down_grouped(&grouped_rows);
-                        } else {
-                            debug!(
-                                "Navigation DOWN: {} connections available",
-                                connections.len()
-                            );
-                            ui_state.move_selection_down(&connections);
-                        }
-                    }
-
-                    // Page Up/Down navigation
-                    (KeyCode::PageUp, _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        // Use the SAME sorted connections list from the main loop
-                        // Move up by roughly 10 items (or adjust based on terminal height)
-                        ui_state.move_selection_page_up(&connections, 10);
-                    }
-
-                    (KeyCode::PageDown, _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        // Use the SAME sorted connections list from the main loop
-                        // Move down by roughly 10 items (or adjust based on terminal height)
-                        ui_state.move_selection_page_down(&connections, 10);
-                    }
-
-                    // Vim-style jump to first/last (g/G)
-                    (KeyCode::Char('g'), KeyModifiers::NONE) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        // Jump to first connection (vim-style 'g')
-                        ui_state.move_selection_to_first(&connections);
-                    }
-
-                    (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        // Jump to last connection (vim-style 'G')
-                        ui_state.move_selection_to_last(&connections);
-                    }
-
-                    // Enter to view details (only works on connections, not group headers)
-                    (KeyCode::Enter, _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        if ui_state.selected_tab == 0
-                            && !connections.is_empty()
-                            && !(ui_state.grouping_enabled && ui_state.is_group_selected())
-                        {
-                            // Switch to details view when on a connection (not a group header)
-                            ui_state.selected_tab = 1;
-                        }
-                    }
-
-                    // Space to toggle group expansion
-                    (KeyCode::Char(' '), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        if ui_state.selected_tab == 0
-                            && ui_state.grouping_enabled
-                            && ui_state.is_group_selected()
-                        {
-                            ui_state.toggle_group_expansion();
-                        }
-                    }
-
-                    // Left arrow to collapse group
-                    (KeyCode::Left, _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
-                            ui_state.collapse_selected_group();
-                        }
-                    }
-
-                    // Right arrow to expand group
-                    (KeyCode::Right, _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
-                            ui_state.expand_selected_group();
-                        }
-                    }
-
-                    // 'l' to expand group (vim-style, in addition to right arrow)
-                    (KeyCode::Char('l'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
-                            ui_state.expand_selected_group();
-                        }
-                    }
-
-                    // 'a' to toggle grouping (aggregate) mode
-                    (KeyCode::Char('a'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        ui_state.toggle_grouping();
-                        info!(
-                            "Grouping mode: {}",
-                            if ui_state.grouping_enabled {
-                                "enabled (grouped by process)"
-                            } else {
-                                "disabled (flat list)"
-                            }
-                        );
-                    }
-
-                    // 'r' to reset all view settings (grouping, sort, filter)
-                    (KeyCode::Char('r'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        ui_state.reset_view();
-                        info!("Reset view settings to defaults");
-                    }
-
-                    // Toggle port number display
-                    (KeyCode::Char('p'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        ui_state.show_port_numbers = !ui_state.show_port_numbers;
-                        info!(
-                            "Toggled port display: {}",
-                            if ui_state.show_port_numbers {
-                                "showing port numbers"
-                            } else {
-                                "showing service names"
-                            }
-                        );
-                    }
-
-                    // Toggle hostname display (when DNS resolution is enabled)
-                    (KeyCode::Char('d'), _) => {
-                        if app.is_dns_resolution_enabled() {
-                            ui_state.quit_confirmation = false;
-                            ui_state.clear_confirmation = false;
-                            ui_state.show_hostnames = !ui_state.show_hostnames;
-                            info!(
-                                "Toggled hostname display: {}",
-                                if ui_state.show_hostnames {
-                                    "showing hostnames"
-                                } else {
-                                    "showing IP addresses"
+                            KeyCode::Char(c) => {
+                                // Handle Ctrl+H as backspace for SecureCRT compatibility
+                                if c == 'h' && key.modifiers.contains(KeyModifiers::CONTROL) {
+                                    ui_state.filter_backspace();
+                                    return Ok(());
                                 }
-                            );
-                        }
-                    }
 
-                    // Cycle sort column with 's'
-                    (KeyCode::Char('s'), KeyModifiers::NONE) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        ui_state.cycle_sort_column();
-                        info!(
-                            "Sort column: {} ({})",
-                            ui_state.sort_column.display_name(),
-                            if ui_state.sort_ascending {
-                                "ascending"
-                            } else {
-                                "descending"
+                                // Handle navigation keys (j/k) and text input
+                                match c {
+                                    'k' => {
+                                        // Vim-style up navigation while filtering
+                                        // Use the SAME sorted connections list from the main loop
+                                        debug!(
+                                            "Filter mode navigation UP (k): {} connections available",
+                                            connections.len()
+                                        );
+                                        ui_state.move_selection_up(&connections);
+                                    }
+                                    'j' => {
+                                        // Vim-style down navigation while filtering
+                                        // Use the SAME sorted connections list from the main loop
+                                        debug!(
+                                            "Filter mode navigation DOWN (j): {} connections available",
+                                            connections.len()
+                                        );
+                                        ui_state.move_selection_down(&connections);
+                                    }
+                                    _ => {
+                                        // Regular character input for filter
+                                        ui_state.filter_add_char(c);
+                                    }
+                                }
                             }
-                        );
-                    }
+                            _ => {}
+                        }
+                    } else {
+                        // Handle input in normal mode
+                        match (key.code, key.modifiers) {
+                            // Enter filter mode with '/'
+                            (KeyCode::Char('/'), _) => {
+                                ui_state.quit_confirmation = false;
+                                debug!("Entering filter mode");
+                                ui_state.enter_filter_mode();
+                                debug!("Filter mode now: {}", ui_state.filter_mode);
+                            }
 
-                    // Toggle sort direction with 'S' (Shift+s)
-                    (KeyCode::Char('S'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        ui_state.toggle_sort_direction();
-                        info!(
-                            "Sort direction: {} ({})",
-                            if ui_state.sort_ascending {
-                                "ascending"
-                            } else {
-                                "descending"
-                            },
-                            ui_state.sort_column.display_name()
-                        );
-                    }
+                            // Quit with confirmation
+                            (KeyCode::Char('q'), _) => {
+                                if ui_state.quit_confirmation {
+                                    info!("User confirmed application exit");
+                                    break;
+                                } else {
+                                    info!("User requested quit - showing confirmation");
+                                    ui_state.quit_confirmation = true;
+                                }
+                            }
 
-                    // Copy remote address to clipboard
-                    (KeyCode::Char('c'), _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        if let Some(selected_idx) = ui_state.get_selected_index(&connections)
-                            && let Some(conn) = connections.get(selected_idx)
-                        {
-                            let remote_addr = conn.remote_addr.to_string();
+                            // Ctrl+C always quits immediately
+                            (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+                                info!("User requested immediate exit with Ctrl+C");
+                                break;
+                            }
 
-                            // Try arboard first, fall back to wl-copy for Wayland (GNOME doesn't
-                            // support the wlr-data-control protocol that arboard relies on)
-                            let result =
-                                Clipboard::new().and_then(|mut cb| cb.set_text(&remote_addr));
+                            // Tab navigation (forward)
+                            (KeyCode::Tab, KeyModifiers::NONE) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                ui_state.selected_tab = (ui_state.selected_tab + 1) % 5;
+                            }
 
-                            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                            let result = result.or_else(|_| {
-                                std::process::Command::new("wl-copy")
-                                    .arg(&remote_addr)
-                                    .status()
-                                    .map_err(|e| arboard::Error::Unknown {
-                                        description: e.to_string(),
-                                    })
-                                    .and_then(|s| {
-                                        if s.success() {
-                                            Ok(())
+                            // Shift+Tab navigation (backward)
+                            (KeyCode::BackTab, _) | (KeyCode::Tab, KeyModifiers::SHIFT) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                ui_state.selected_tab = if ui_state.selected_tab == 0 {
+                                    4 // Wrap to last tab
+                                } else {
+                                    ui_state.selected_tab - 1
+                                };
+                            }
+
+                            // Help toggle
+                            (KeyCode::Char('h'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                ui_state.show_help = !ui_state.show_help;
+                                if ui_state.show_help {
+                                    ui_state.selected_tab = 4; // Switch to help tab
+                                } else {
+                                    ui_state.selected_tab = 0; // Back to overview
+                                }
+                            }
+
+                            // Interface stats toggle (shortcut to Interface tab)
+                            (KeyCode::Char('i'), _) | (KeyCode::Char('I'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                if ui_state.selected_tab == 2 {
+                                    ui_state.selected_tab = 0; // Back to overview
+                                } else {
+                                    ui_state.selected_tab = 2; // Switch to interfaces tab
+                                }
+                            }
+
+                            // Navigation in connection list
+                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                if ui_state.grouping_enabled {
+                                    debug!(
+                                        "Navigation UP (grouped): {} rows available",
+                                        grouped_rows.len()
+                                    );
+                                    ui_state.move_selection_up_grouped(&grouped_rows);
+                                } else {
+                                    debug!(
+                                        "Navigation UP: {} connections available",
+                                        connections.len()
+                                    );
+                                    ui_state.move_selection_up(&connections);
+                                }
+                            }
+
+                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                if ui_state.grouping_enabled {
+                                    debug!(
+                                        "Navigation DOWN (grouped): {} rows available",
+                                        grouped_rows.len()
+                                    );
+                                    ui_state.move_selection_down_grouped(&grouped_rows);
+                                } else {
+                                    debug!(
+                                        "Navigation DOWN: {} connections available",
+                                        connections.len()
+                                    );
+                                    ui_state.move_selection_down(&connections);
+                                }
+                            }
+
+                            // Page Up/Down navigation
+                            (KeyCode::PageUp, _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                // Use the SAME sorted connections list from the main loop
+                                // Move up by roughly 10 items (or adjust based on terminal height)
+                                ui_state.move_selection_page_up(&connections, 10);
+                            }
+
+                            (KeyCode::PageDown, _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                // Use the SAME sorted connections list from the main loop
+                                // Move down by roughly 10 items (or adjust based on terminal height)
+                                ui_state.move_selection_page_down(&connections, 10);
+                            }
+
+                            // Vim-style jump to first/last (g/G)
+                            (KeyCode::Char('g'), KeyModifiers::NONE) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                // Jump to first connection (vim-style 'g')
+                                ui_state.move_selection_to_first(&connections);
+                            }
+
+                            (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                // Jump to last connection (vim-style 'G')
+                                ui_state.move_selection_to_last(&connections);
+                            }
+
+                            // Enter to view details (only works on connections, not group headers)
+                            (KeyCode::Enter, _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                if ui_state.selected_tab == 0
+                                    && !connections.is_empty()
+                                    && !(ui_state.grouping_enabled && ui_state.is_group_selected())
+                                {
+                                    // Switch to details view when on a connection (not a group header)
+                                    ui_state.selected_tab = 1;
+                                }
+                            }
+
+                            // Space to toggle group expansion
+                            (KeyCode::Char(' '), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                if ui_state.selected_tab == 0
+                                    && ui_state.grouping_enabled
+                                    && ui_state.is_group_selected()
+                                {
+                                    ui_state.toggle_group_expansion();
+                                }
+                            }
+
+                            // Left arrow to collapse group
+                            (KeyCode::Left, _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
+                                    ui_state.collapse_selected_group();
+                                }
+                            }
+
+                            // Right arrow to expand group
+                            (KeyCode::Right, _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
+                                    ui_state.expand_selected_group();
+                                }
+                            }
+
+                            // 'l' to expand group (vim-style, in addition to right arrow)
+                            (KeyCode::Char('l'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
+                                    ui_state.expand_selected_group();
+                                }
+                            }
+
+                            // 'a' to toggle grouping (aggregate) mode
+                            (KeyCode::Char('a'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                ui_state.toggle_grouping();
+                                info!(
+                                    "Grouping mode: {}",
+                                    if ui_state.grouping_enabled {
+                                        "enabled (grouped by process)"
+                                    } else {
+                                        "disabled (flat list)"
+                                    }
+                                );
+                            }
+
+                            // 'r' to reset all view settings (grouping, sort, filter)
+                            (KeyCode::Char('r'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                ui_state.reset_view();
+                                info!("Reset view settings to defaults");
+                            }
+
+                            // Toggle port number display
+                            (KeyCode::Char('p'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                ui_state.show_port_numbers = !ui_state.show_port_numbers;
+                                info!(
+                                    "Toggled port display: {}",
+                                    if ui_state.show_port_numbers {
+                                        "showing port numbers"
+                                    } else {
+                                        "showing service names"
+                                    }
+                                );
+                            }
+
+                            // Toggle hostname display (when DNS resolution is enabled)
+                            (KeyCode::Char('d'), _) => {
+                                if app.is_dns_resolution_enabled() {
+                                    ui_state.quit_confirmation = false;
+                                    ui_state.clear_confirmation = false;
+                                    ui_state.show_hostnames = !ui_state.show_hostnames;
+                                    info!(
+                                        "Toggled hostname display: {}",
+                                        if ui_state.show_hostnames {
+                                            "showing hostnames"
                                         } else {
-                                            Err(arboard::Error::Unknown {
-                                                description: "wl-copy failed".to_string(),
-                                            })
+                                            "showing IP addresses"
                                         }
-                                    })
-                            });
+                                    );
+                                }
+                            }
 
-                            match result {
-                                Ok(()) => {
-                                    info!("Copied {} to clipboard", remote_addr);
+                            // Cycle sort column with 's'
+                            (KeyCode::Char('s'), KeyModifiers::NONE) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                ui_state.cycle_sort_column();
+                                info!(
+                                    "Sort column: {} ({})",
+                                    ui_state.sort_column.display_name(),
+                                    if ui_state.sort_ascending {
+                                        "ascending"
+                                    } else {
+                                        "descending"
+                                    }
+                                );
+                            }
+
+                            // Toggle sort direction with 'S' (Shift+s)
+                            (KeyCode::Char('S'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                ui_state.toggle_sort_direction();
+                                info!(
+                                    "Sort direction: {} ({})",
+                                    if ui_state.sort_ascending {
+                                        "ascending"
+                                    } else {
+                                        "descending"
+                                    },
+                                    ui_state.sort_column.display_name()
+                                );
+                            }
+
+                            // Copy remote address to clipboard
+                            (KeyCode::Char('c'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                if let Some(selected_idx) =
+                                    ui_state.get_selected_index(&connections)
+                                    && let Some(conn) = connections.get(selected_idx)
+                                {
+                                    let remote_addr = conn.remote_addr.to_string();
+                                    copy_to_clipboard(
+                                        &remote_addr,
+                                        &remote_addr,
+                                        &mut ui_state,
+                                        app,
+                                    );
+                                }
+                            }
+
+                            // Clear all connections with confirmation
+                            (KeyCode::Char('x'), _) => {
+                                ui_state.quit_confirmation = false;
+                                if ui_state.clear_confirmation {
+                                    info!("User confirmed clear all connections");
+                                    app.clear_all_connections();
+                                    ui_state.clear_confirmation = false;
+                                    ui_state.selected_connection_key = None;
                                     ui_state.clipboard_message = Some((
-                                        format!("Copied {} to clipboard", remote_addr),
+                                        "All connections cleared".to_string(),
                                         std::time::Instant::now(),
                                     ));
+                                } else {
+                                    info!("User requested clear - showing confirmation");
+                                    ui_state.clear_confirmation = true;
                                 }
-                                Err(e) => {
-                                    // Check if sandbox might be blocking clipboard access
-                                    #[cfg(target_os = "linux")]
-                                    let msg = if app.get_sandbox_info().fs_restricted {
-                                        "Clipboard unavailable (sandbox active). Use --no-sandbox to enable.".to_string()
-                                    } else {
-                                        format!("Clipboard error: {}", e)
-                                    };
-                                    #[cfg(not(target_os = "linux"))]
-                                    let msg = format!("Clipboard error: {}", e);
+                            }
 
-                                    error!("{}", msg);
-                                    ui_state.clipboard_message =
-                                        Some((msg, std::time::Instant::now()));
+                            // Escape to go back or clear filter
+                            (KeyCode::Esc, _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                if !ui_state.filter_query.is_empty() {
+                                    // Clear filter if one is active
+                                    ui_state.clear_filter();
+                                } else if ui_state.selected_tab == 1 {
+                                    ui_state.selected_tab = 0; // Back to overview
+                                } else if ui_state.selected_tab == 2 {
+                                    ui_state.selected_tab = 0; // Back to overview from help
                                 }
+                            }
+
+                            // Any other key resets confirmations
+                            _ => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
                             }
                         }
                     }
-
-                    // Clear all connections with confirmation
-                    (KeyCode::Char('x'), _) => {
-                        ui_state.quit_confirmation = false;
-                        if ui_state.clear_confirmation {
-                            info!("User confirmed clear all connections");
-                            app.clear_all_connections();
-                            ui_state.clear_confirmation = false;
-                            ui_state.selected_connection_key = None;
-                            ui_state.clipboard_message = Some((
-                                "All connections cleared".to_string(),
-                                std::time::Instant::now(),
-                            ));
-                        } else {
-                            info!("User requested clear - showing confirmation");
-                            ui_state.clear_confirmation = true;
-                        }
-                    }
-
-                    // Escape to go back or clear filter
-                    (KeyCode::Esc, _) => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                        if !ui_state.filter_query.is_empty() {
-                            // Clear filter if one is active
-                            ui_state.clear_filter();
-                        } else if ui_state.selected_tab == 1 {
-                            ui_state.selected_tab = 0; // Back to overview
-                        } else if ui_state.selected_tab == 2 {
-                            ui_state.selected_tab = 0; // Back to overview from help
-                        }
-                    }
-
-                    // Any other key resets confirmations
-                    _ => {
-                        ui_state.quit_confirmation = false;
-                        ui_state.clear_confirmation = false;
-                    }
-                }
-            }
-        }
-    }
+                } // end Event::Key
+                _ => {} // ignore resize, focus, paste, etc.
+            } // end match event
+        } // end if poll
+    } // end loop
 
     Ok(())
 }
