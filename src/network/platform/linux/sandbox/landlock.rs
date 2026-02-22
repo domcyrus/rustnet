@@ -66,8 +66,13 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
     // We need read access to /proc for process identification
     let read_access = AccessFs::from_read(abi);
 
-    // Build filesystem access rights for writing
-    let write_access = AccessFs::from_all(abi);
+    // Build filesystem access rights for writing (principle of least privilege)
+    // RustNet only needs to create regular files, write/append to them, and traverse dirs.
+    let write_access = AccessFs::WriteFile
+        | AccessFs::ReadFile
+        | AccessFs::ReadDir
+        | AccessFs::MakeReg
+        | AccessFs::Truncate;
 
     // Start building the ruleset
     let ruleset = Ruleset::default()

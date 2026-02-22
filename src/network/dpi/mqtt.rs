@@ -292,6 +292,13 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_payload_safe() {
+        // This simulates a potential DoS attack with an empty packet
+        // Should return None, not panic
+        assert!(analyze_mqtt(&[]).is_none());
+    }
+
+    #[test]
     fn test_connect_v311() {
         let pkt = build_connect(b"MQTT", 4, "my-client");
         assert!(is_mqtt_packet(&pkt));

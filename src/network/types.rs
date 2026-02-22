@@ -1041,6 +1041,7 @@ pub struct TrafficSample {
     pub tx_bytes_per_sec: u64,
     pub connection_count: usize,
     // Network health metrics
+    pub packets_per_sec: u64,
     pub packet_loss_pct: f32,
     pub avg_rtt_ms: Option<f64>,
 }
@@ -1081,6 +1082,7 @@ impl TrafficHistory {
             rx_bytes_per_sec,
             tx_bytes_per_sec,
             connection_count,
+            packets_per_sec: total_packets,
             packet_loss_pct,
             avg_rtt_ms,
         };
@@ -1089,6 +1091,11 @@ impl TrafficHistory {
             self.samples.pop_front();
         }
         self.samples.push_back(sample);
+    }
+
+    /// Get the latest packets/sec value, or 0 if no samples
+    pub fn get_latest_packets_per_sec(&self) -> u64 {
+        self.samples.back().map(|s| s.packets_per_sec).unwrap_or(0)
     }
 
     /// Get RX bytes/sec values for sparkline (newest last), smoothed with moving average

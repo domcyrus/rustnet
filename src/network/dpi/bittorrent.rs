@@ -14,6 +14,10 @@ const EXTENSION_BIT_BYTE: usize = 5; // Byte 5, bit 0x10
 /// uTP header size (BEP 29)
 const UTP_HEADER_LEN: usize = 20;
 
+/// Maximum DHT method name length. Standard methods are short
+/// (e.g., "ping", "find_node", "get_peers", "announce_peer").
+const MAX_DHT_METHOD_LEN: usize = 64;
+
 // --- TCP: Peer Handshake ---
 
 /// Check if the payload starts with a BitTorrent peer handshake.
@@ -135,6 +139,9 @@ fn extract_dht_method(payload: &[u8]) -> Option<String> {
 
     let len_str = std::str::from_utf8(&payload[after..len_end]).ok()?;
     let str_len: usize = len_str.parse().ok()?;
+    if str_len > MAX_DHT_METHOD_LEN {
+        return None;
+    }
     let str_start = len_end + 1;
     let str_end = str_start + str_len;
     if str_end > payload.len() {

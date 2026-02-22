@@ -4,7 +4,7 @@ use crossbeam::channel::{self, Receiver, Sender};
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
 use serde_json::json;
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -100,6 +100,30 @@ impl ProcessDetectionStatus {
 /// This allows tracking QUIC connections across connection ID changes
 static QUIC_CONNECTION_MAPPING: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Maximum QUIC connection ID mappings to prevent unbounded growth.
+const MAX_QUIC_MAPPINGS: usize = 10_000;
+
+/// Maximum queued packets before backpressure drops packets.
+/// At ~1500 bytes per packet, 10,000 packets ≈ 15 MB of buffer.
+const MAX_PACKET_QUEUE: usize = 10_000;
+
+/// Maximum tracked connections to prevent memory exhaustion from port scans
+/// or connection floods.
+const MAX_CONNECTIONS: usize = 50_000;
+
+/// Open or create a file for appending with restrictive permissions (0o600 on Unix).
+///
+/// Ensures log files containing connection metadata are not world-readable.
+fn open_log_file(path: &str) -> std::io::Result<File> {
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(file)
+}
 
 /// Helper function to log connection events as JSON
 fn log_connection_event(
@@ -213,11 +237,8 @@ fn log_connection_event(
         }
     }
 
-    // Write to file
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(json_log_path)
+    // Write to file (restrictive permissions: 0o600 on Unix)
+    if let Ok(mut file) = open_log_file(json_log_path)
         && let Ok(json_str) = serde_json::to_string(&event)
     {
         let _ = writeln!(file, "{}", json_str);
@@ -265,10 +286,7 @@ fn log_pcap_connection(pcap_path: &str, conn: &Connection) {
         }
     }
 
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&json_path)
+    if let Ok(mut file) = open_log_file(&json_path)
         && let Ok(json_str) = serde_json::to_string(&event)
     {
         let _ = writeln!(file, "{}", json_str);
@@ -549,7 +567,7 @@ impl App {
         connections: Arc<DashMap<String, Connection>>,
     ) -> Result<()> {
         // Create packet channel
-        let (packet_tx, packet_rx) = channel::unbounded();
+        let (packet_tx, packet_rx) = channel::bounded(MAX_PACKET_QUEUE);
 
         // Start capture thread
         self.start_capture_thread(packet_tx)?;
@@ -591,6 +609,18 @@ impl App {
                     // Store the actual interface name and linktype being used
                     *current_interface.write().unwrap() = Some(device_name.clone());
                     *linktype_storage.write().unwrap() = Some(linktype);
+
+                    // Drop CAP_NET_RAW now that the socket is open (Linux only)
+                    #[cfg(all(target_os = "linux", feature = "landlock"))]
+                    {
+                        if let Err(e) =
+                            crate::network::platform::sandbox::capabilities::drop_cap_net_raw()
+                        {
+                            warn!("Failed to drop CAP_NET_RAW in capture thread: {}", e);
+                        } else {
+                            debug!("Dropped CAP_NET_RAW in capture thread");
+                        }
+                    }
 
                     // Check if PKTAP is active (linktype 149 or 258)
                     #[cfg(target_os = "macos")]
@@ -678,9 +708,17 @@ impl App {
                                     });
                                 }
 
-                                if packet_tx.send(packet).is_err() {
-                                    warn!("Packet channel closed");
-                                    break;
+                                match packet_tx.try_send(packet) {
+                                    Ok(()) => {}
+                                    Err(crossbeam::channel::TrySendError::Full(_)) => {
+                                        stats
+                                            .packets_dropped
+                                            .fetch_add(1, Ordering::Relaxed);
+                                    }
+                                    Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                                        warn!("Packet channel closed");
+                                        break;
+                                    }
                                 }
                             }
                             Ok(None) => {
@@ -766,6 +804,17 @@ impl App {
 
         thread::spawn(move || {
             info!("Packet processor {} started", id);
+
+            // Drop CAP_NET_RAW immediately as this thread doesn't need it (Linux only)
+            #[cfg(all(target_os = "linux", feature = "landlock"))]
+            {
+                if let Err(e) = crate::network::platform::sandbox::capabilities::drop_cap_net_raw()
+                {
+                    warn!("Failed to drop CAP_NET_RAW in processor thread {}: {}", id, e);
+                } else {
+                    debug!("Dropped CAP_NET_RAW in processor thread {}", id);
+                }
+            }
 
             // Wait for linktype to be available
             let parser = loop {
@@ -1403,7 +1452,7 @@ impl App {
                     );
                 }
 
-                thread::sleep(Duration::from_secs(10));
+                thread::sleep(Duration::from_secs(5));
             }
         });
 
@@ -1696,6 +1745,11 @@ fn update_connection(
                 key, conn_id_hex
             );
         } else {
+            // Prevent unbounded growth of QUIC connection ID mappings
+            if mapping.len() >= MAX_QUIC_MAPPINGS {
+                debug!("QUIC mapping limit reached, clearing old entries");
+                mapping.clear();
+            }
             // New QUIC connection ID, create mapping
             mapping.insert(conn_id_hex.clone(), key.clone());
             debug!(
@@ -1703,6 +1757,16 @@ fn update_connection(
                 conn_id_hex, key, conn_id_hex
             );
         }
+    }
+
+    // Prevent unbounded growth from port scans or connection floods.
+    // Only limit new connections; existing ones always get updated.
+    if !connections.contains_key(&key) && connections.len() >= MAX_CONNECTIONS {
+        debug!(
+            "Connection limit reached ({}), dropping new connection: {}",
+            MAX_CONNECTIONS, key
+        );
+        return;
     }
 
     connections

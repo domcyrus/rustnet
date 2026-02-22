@@ -20,7 +20,7 @@
 //! - Older kernels: Graceful degradation (sandbox not applied)
 
 #[cfg(feature = "landlock")]
-mod capabilities;
+pub mod capabilities;
 #[cfg(feature = "landlock")]
 mod landlock;
 

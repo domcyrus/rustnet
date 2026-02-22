@@ -1462,7 +1462,7 @@ fn draw_stats_panel(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(10), // Connection stats (increased for interface line)
+            Constraint::Length(14), // Connection stats (11 lines + 2 borders + 1 for degradation warning)
             Constraint::Length(7),  // Network stats (TCP analytics + header)
             Constraint::Length(4),  // Security stats (sandbox)
             Constraint::Min(0),     // Interface stats (with traffic graph)
@@ -1542,11 +1542,29 @@ fn draw_stats_panel(
                 .load(std::sync::atomic::Ordering::Relaxed)
         )),
         Line::from(format!(
-            "Packets Dropped: {}",
-            stats
-                .packets_dropped
-                .load(std::sync::atomic::Ordering::Relaxed)
+            "Packets/sec: {}",
+            app.get_traffic_history().get_latest_packets_per_sec()
         )),
+        {
+            let dropped = stats
+                .packets_dropped
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if dropped > 0 {
+                Line::from(vec![
+                    Span::raw("Packets Dropped: "),
+                    Span::styled(
+                        format!("{}", dropped),
+                        theme::fg(theme::warn()),
+                    ),
+                    Span::styled(
+                        " (backpressure)",
+                        theme::fg(theme::muted()),
+                    ),
+                ])
+            } else {
+                Line::from(format!("Packets Dropped: {}", dropped))
+            }
+        },
     ]);
 
     let conn_stats = Paragraph::new(conn_stats_text)

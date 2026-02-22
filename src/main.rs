@@ -134,7 +134,14 @@ fn main() -> Result<()> {
     // This must be done BEFORE Landlock is applied so the file exists when adding rules
     if let Some(ref pcap_path) = config.pcap_export_file {
         let jsonl_path = format!("{}.connections.jsonl", pcap_path);
-        if let Err(e) = std::fs::File::create(&jsonl_path) {
+        if let Err(e) = std::fs::File::create(&jsonl_path).and_then(|f| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            }
+            Ok(f)
+        }) {
             warn!("Failed to pre-create sidecar JSONL file: {}", e);
         }
     }
