@@ -71,56 +71,61 @@ jobs:
         run: |
           apk add --no-cache \
             musl-dev pkgconfig build-base perl \
-            zlib-dev zlib-static zstd-dev zstd-static \
-            clang llvm linux-headers github-cli wget
+            zlib-dev zlib-static \
+            clang llvm linux-headers github-cli curl
           rustup component add rustfmt
 
-      # aarch64/x86_64: libpcap-dev provides a native static libpcap
+      # aarch64/x86_64: libpcap-dev provides a native static libpcap.
+      # zstd-static is required because Alpine's libpcap-dev links against zstd.
       - name: Install libpcap (native)
         if: matrix.arch == 'aarch64' || matrix.arch == 'x86_64'
-        run: apk add --no-cache libpcap-dev elfutils-dev
+        run: apk add --no-cache libpcap-dev elfutils-dev zstd-dev zstd-static
 
-      # armv7: download musl.cc armv7l cross-toolchain and cross-compile libpcap
+      # armv7: download musl.cc armv7l cross-toolchain and cross-compile libpcap from source.
+      # libpcap is built without zstd (zstd-dev not in sysroot), so no -l:libzstd.a needed.
       - name: Install cross-compiler and libpcap (armv7)
         if: matrix.arch == 'armv7'
         run: |
-          apk add --no-cache autoconf automake
           rustup target add armv7-unknown-linux-musleabihf
 
-          wget -q -t 3 https://musl.cc/armv7l-linux-musleabihf-cross.tgz
-          tar xzf armv7l-linux-musleabihf-cross.tgz -C /
+          curl -fsSL --retry 3 --retry-delay 5 \
+            -o armv7-cross.tgz https://musl.cc/armv7l-linux-musleabihf-cross.tgz
+          tar xzf armv7-cross.tgz -C /
           export PATH="/armv7l-linux-musleabihf-cross/bin:$PATH"
 
-          wget -q -t 3 https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
-          tar xzf libpcap-1.10.5.tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 \
+            -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          tar xzf libpcap.tar.gz
           cd libpcap-1.10.5
           CC=armv7l-linux-musleabihf-gcc \
             ./configure --host=armv7l-linux-musleabihf \
               --disable-shared --enable-static \
-              --disable-usb --disable-dbus --disable-bluetooth \
+              --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
               --prefix=/arm-sysroot
           make -j$(nproc) && make install
           cd ..
 
-      # x86: download musl.cc i686 cross-toolchain and cross-compile libpcap
+      # x86: download musl.cc i686 cross-toolchain and cross-compile libpcap from source.
+      # libpcap is built without zstd (zstd-dev not in sysroot), so no -l:libzstd.a needed.
       - name: Install cross-compiler and libpcap (x86/i686)
         if: matrix.arch == 'x86'
         run: |
-          apk add --no-cache autoconf automake
           rustup target add i686-unknown-linux-musl
 
-          wget -q -t 3 https://musl.cc/i686-linux-musl-cross.tgz
-          tar xzf i686-linux-musl-cross.tgz -C /
+          curl -fsSL --retry 3 --retry-delay 5 \
+            -o x86-cross.tgz https://musl.cc/i686-linux-musl-cross.tgz
+          tar xzf x86-cross.tgz -C /
           echo "/i686-linux-musl-cross/bin" >> $GITHUB_PATH
           export PATH="/i686-linux-musl-cross/bin:$PATH"
 
-          wget -q -t 3 https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
-          tar xzf libpcap-1.10.5.tar.gz
+          curl -fsSL --retry 3 --retry-delay 5 \
+            -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          tar xzf libpcap.tar.gz
           cd libpcap-1.10.5
           CC=i686-linux-musl-gcc \
             ./configure --host=i686-linux-musl \
               --disable-shared --enable-static \
-              --disable-usb --disable-dbus --disable-bluetooth \
+              --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
               --prefix=/x86-sysroot
           make -j$(nproc) && make install
           cd ..
@@ -144,7 +149,7 @@ jobs:
         env:
           CFLAGS: "-mno-outline-atomics"
           CXXFLAGS: "-mno-outline-atomics"
-          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
+          RUSTFLAGS: "-C strip=symbols"
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: armv7l-linux-musleabihf-gcc
           PKG_CONFIG_PATH: /arm-sysroot/lib/pkgconfig
           PKG_CONFIG_SYSROOT_DIR: /arm-sysroot
@@ -156,7 +161,7 @@ jobs:
       - name: Build static binary (x86/i686)
         if: matrix.arch == 'x86'
         env:
-          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
+          RUSTFLAGS: "-C strip=symbols"
           CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_LINKER: i686-linux-musl-gcc
           PKG_CONFIG_PATH: /x86-sysroot/lib/pkgconfig
           PKG_CONFIG_SYSROOT_DIR: /x86-sysroot
