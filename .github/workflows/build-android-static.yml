@@ -6,7 +6,7 @@ name: Build Android Musl Static
 # Supported architectures:
 #   aarch64 - native on ARM runner (existing)
 #   x86_64  - native on x86_64 runner
-#   armv7   - cross-compiled on x86_64 using Alpine's arm-linux-musleabihf toolchain
+#   armv7   - cross-compiled on x86_64 using musl.cc armv7l-linux-musleabihf toolchain
 #   x86     - cross-compiled on x86_64 using musl.cc i686-linux-musl toolchain
 
 on:
@@ -80,18 +80,22 @@ jobs:
         if: matrix.arch == 'aarch64' || matrix.arch == 'x86_64'
         run: apk add --no-cache libpcap-dev elfutils-dev
 
-      # armv7: cross-compile libpcap for arm-linux-musleabihf
+      # armv7: download musl.cc armv7l cross-toolchain and cross-compile libpcap
       - name: Install cross-compiler and libpcap (armv7)
         if: matrix.arch == 'armv7'
         run: |
-          apk add --no-cache gcc-arm-linux-musleabihf binutils-arm-linux-musleabihf autoconf automake
+          apk add --no-cache autoconf automake
           rustup target add armv7-unknown-linux-musleabihf
 
-          wget -q https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          wget -q -t 3 https://musl.cc/armv7l-linux-musleabihf-cross.tgz
+          tar xzf armv7l-linux-musleabihf-cross.tgz -C /
+          export PATH="/armv7l-linux-musleabihf-cross/bin:$PATH"
+
+          wget -q -t 3 https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
           tar xzf libpcap-1.10.5.tar.gz
           cd libpcap-1.10.5
-          CC=arm-linux-musleabihf-gcc \
-            ./configure --host=arm-linux-musleabihf \
+          CC=armv7l-linux-musleabihf-gcc \
+            ./configure --host=armv7l-linux-musleabihf \
               --disable-shared --enable-static \
               --disable-usb --disable-dbus --disable-bluetooth \
               --prefix=/arm-sysroot
@@ -105,12 +109,12 @@ jobs:
           apk add --no-cache autoconf automake
           rustup target add i686-unknown-linux-musl
 
-          wget -q https://musl.cc/i686-linux-musl-cross.tgz
+          wget -q -t 3 https://musl.cc/i686-linux-musl-cross.tgz
           tar xzf i686-linux-musl-cross.tgz -C /
           echo "/i686-linux-musl-cross/bin" >> $GITHUB_PATH
           export PATH="/i686-linux-musl-cross/bin:$PATH"
 
-          wget -q https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          wget -q -t 3 https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
           tar xzf libpcap-1.10.5.tar.gz
           cd libpcap-1.10.5
           CC=i686-linux-musl-gcc \
@@ -141,11 +145,13 @@ jobs:
           CFLAGS: "-mno-outline-atomics"
           CXXFLAGS: "-mno-outline-atomics"
           RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: arm-linux-musleabihf-gcc
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: armv7l-linux-musleabihf-gcc
           PKG_CONFIG_PATH: /arm-sysroot/lib/pkgconfig
           PKG_CONFIG_SYSROOT_DIR: /arm-sysroot
           PKG_CONFIG_ALLOW_CROSS: "1"
-        run: cargo build --release --target armv7-unknown-linux-musleabihf --no-default-features
+        run: |
+          export PATH="/armv7l-linux-musleabihf-cross/bin:$PATH"
+          cargo build --release --target armv7-unknown-linux-musleabihf --no-default-features
 
       - name: Build static binary (x86/i686)
         if: matrix.arch == 'x86'
@@ -189,6 +195,6 @@ jobs:
         run: |
           VERSION="${{ inputs.version }}"
           ARCHIVE="rustnet-${VERSION}-${{ matrix.artifact }}.tar.gz"
-          gh release upload "$VERSION" "$ARCHIVE" --clobber
+          gh release upload "$VERSION" "$ARCHIVE" --repo "${{ github.repository }}" --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
