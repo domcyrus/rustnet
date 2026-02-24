@@ -72,7 +72,7 @@ clap_mangen = "0.2"
 
 [target.'cfg(windows)'.build-dependencies]
 http_req = "0.14"
-zip = "8.0"
+zip = "8.1"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
