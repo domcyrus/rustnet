@@ -89,7 +89,7 @@ jobs:
           rustup target add armv7-unknown-linux-musleabihf
 
           curl -4 -fsSL --retry 3 --retry-delay 5 \
-            -o armv7-cross.tgz https://musl.cc/armv7l-linux-musleabihf-cross.tgz
+            -o armv7-cross.tgz http://musl.cc/armv7l-linux-musleabihf-cross.tgz
           tar xzf armv7-cross.tgz -C /
           export PATH="/armv7l-linux-musleabihf-cross/bin:$PATH"
 
@@ -113,7 +113,7 @@ jobs:
           rustup target add i686-unknown-linux-musl
 
           curl -4 -fsSL --retry 3 --retry-delay 5 \
-            -o x86-cross.tgz https://musl.cc/i686-linux-musl-cross.tgz
+            -o x86-cross.tgz http://musl.cc/i686-linux-musl-cross.tgz
           tar xzf x86-cross.tgz -C /
           echo "/i686-linux-musl-cross/bin" >> $GITHUB_PATH
           export PATH="/i686-linux-musl-cross/bin:$PATH"
