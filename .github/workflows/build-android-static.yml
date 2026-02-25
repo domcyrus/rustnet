@@ -87,10 +87,17 @@ jobs:
         if: matrix.arch == 'armv7'
         run: |
           rustup target add armv7-unknown-linux-musleabihf
-          apk add zig flex bison
+          apk add zig flex bison bash
 
-          # zig cc wrapper named arm-linux-musleabihf-gcc so cc-rs (ring, etc.) finds it
-          printf '#!/bin/sh\nexec zig cc -target arm-linux-musleabihf "$@"\n' \
+          # zig cc wrapper: cc-rs detects it as clang and passes --target=armv7-*
+          # which zig rejects (zig uses 'arm' not 'armv7'). Filter those args out.
+          printf '%s\n' \
+            '#!/bin/bash' \
+            'args=()' \
+            'for arg in "$@"; do' \
+            '  case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac' \
+            'done' \
+            'exec zig cc -target arm-linux-musleabihf "${args[@]}"' \
             > /usr/local/bin/arm-linux-musleabihf-gcc
           chmod +x /usr/local/bin/arm-linux-musleabihf-gcc
 
