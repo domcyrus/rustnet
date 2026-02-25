@@ -113,18 +113,25 @@ jobs:
           make -j$(nproc) && make install
           cd ..
 
-      # x86: download musl.cc i686 cross-toolchain and cross-compile libpcap from source.
-      # libpcap is built without zstd (zstd-dev not in sysroot), so no -l:libzstd.a needed.
+      # x86: use zig cc as the cross-compiler (no external toolchain download needed).
+      # zig bundles musl libc for all targets, so no -l:libzstd.a needed.
       - name: Install cross-compiler and libpcap (x86/i686)
         if: matrix.arch == 'x86'
         run: |
           rustup target add i686-unknown-linux-musl
+          apk add zig flex bison bash
 
-          curl -fsSL --retry 3 --retry-delay 5 \
-            -o x86-cross.tgz https://musl.cc/i686-linux-musl-cross.tgz
-          tar xzf x86-cross.tgz -C /
-          echo "/i686-linux-musl-cross/bin" >> $GITHUB_PATH
-          export PATH="/i686-linux-musl-cross/bin:$PATH"
+          # zig cc wrapper: cc-rs passes --target=i686-* which zig doesn't accept;
+          # filter those args and use -target x86-linux-musl instead.
+          printf '%s\n' \
+            '#!/bin/bash' \
+            'args=()' \
+            'for arg in "$@"; do' \
+            '  case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac' \
+            'done' \
+            'exec zig cc -target x86-linux-musl "${args[@]}"' \
+            > /usr/local/bin/i686-linux-musl-gcc
+          chmod +x /usr/local/bin/i686-linux-musl-gcc
 
           curl -fsSL --retry 3 --retry-delay 5 \
             -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
@@ -167,14 +174,12 @@ jobs:
       - name: Build static binary (x86/i686)
         if: matrix.arch == 'x86'
         env:
-          RUSTFLAGS: "-C strip=symbols"
+          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
           CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_LINKER: i686-linux-musl-gcc
           PKG_CONFIG_PATH: /x86-sysroot/lib/pkgconfig
           PKG_CONFIG_SYSROOT_DIR: /x86-sysroot
           PKG_CONFIG_ALLOW_CROSS: "1"
-        run: |
-          export PATH="/i686-linux-musl-cross/bin:$PATH"
-          cargo build --release --target i686-unknown-linux-musl --no-default-features
+        run: cargo build --release --target i686-unknown-linux-musl --no-default-features
 
       - name: Verify static linking
         run: |
