@@ -155,7 +155,9 @@ jobs:
       - name: Build static binary (armv7)
         if: matrix.arch == 'armv7'
         env:
-          RUSTFLAGS: "-C strip=symbols"
+          # link-self-contained=no: let zig provide musl CRT (avoid duplicate _start
+          # when both Rust's self-contained crt1.o and zig's crt1.o are linked)
+          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
           CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: arm-linux-musleabihf-gcc
           PKG_CONFIG_PATH: /arm-sysroot/lib/pkgconfig
           PKG_CONFIG_SYSROOT_DIR: /arm-sysroot
