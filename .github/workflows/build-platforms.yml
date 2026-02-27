@@ -246,7 +246,7 @@ jobs:
             '#!/bin/bash' \
             'args=()' \
             'for arg in "$@"; do' \
-            '  case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac' \
+            '  case "$arg" in --target=*) ;; -Wl,-melf_i386) ;; *) args+=("$arg") ;; esac' \
             'done' \
             'exec zig cc -target x86-linux-musl "${args[@]}"' \
             > /usr/local/bin/i686-linux-musl-gcc
@@ -264,13 +264,19 @@ jobs:
           make -j$(nproc) && make install
           cd ..
 
-      - name: Build static binary (ARM/x86_64 Android)
-        if: matrix.arch == 'aarch64' || matrix.arch == 'aarch64-android' || matrix.arch == 'x86_64-android'
+      - name: Build static binary (AArch64 / AArch64 Android)
+        if: matrix.arch == 'aarch64' || matrix.arch == 'aarch64-android'
         env:
           # -mno-outline-atomics: Prevent GCC from generating calls to __aarch64_ldadd4_sync etc.
           # which aren't in Alpine's libatomic. Uses inline atomics instead.
           CFLAGS: "-mno-outline-atomics"
           CXXFLAGS: "-mno-outline-atomics"
+          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
+        run: cargo build --release ${{ matrix.features }}
+
+      - name: Build static binary (x86_64 Android)
+        if: matrix.arch == 'x86_64-android'
+        env:
           RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
         run: cargo build --release ${{ matrix.features }}
 

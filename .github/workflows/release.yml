@@ -270,7 +270,7 @@ jobs:
             '#!/bin/bash' \
             'args=()' \
             'for arg in "$@"; do' \
-            '  case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac' \
+            '  case "$arg" in --target=*) ;; -Wl,-melf_i386) ;; *) args+=("$arg") ;; esac' \
             'done' \
             'exec zig cc -target x86-linux-musl "${args[@]}"' \
             > /usr/local/bin/i686-linux-musl-gcc
