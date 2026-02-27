@@ -99,7 +99,7 @@ jobs:
       # For test builds: upload raw binary
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: rustnet-${{ matrix.build }}
           path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
@@ -135,7 +135,7 @@ jobs:
 
       - name: Upload release archive
         if: ${{ inputs.create-archives }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: build-${{ matrix.target }}
           path: ${{ env.ASSET }}
@@ -217,7 +217,7 @@ jobs:
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
         continue-on-error: ${{ contains(matrix.arch, 'aarch64') }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: rustnet-linux-static-${{ matrix.arch }}
           path: target/release/rustnet
@@ -239,7 +239,7 @@ jobs:
 
       - name: Upload release archive
         if: ${{ inputs.create-archives && matrix.arch == 'x86_64' }}
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: build-${{ matrix.target }}
           path: rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz
