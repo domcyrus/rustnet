@@ -184,7 +184,7 @@ jobs:
           dput ${{ env.PPA }} ${CHANGES_FILE}
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ppa-source-${{ matrix.ubuntu_release }}
           path: |
