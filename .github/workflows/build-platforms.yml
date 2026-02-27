@@ -161,12 +161,24 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-linux-android-musl # Note: it's not a real rust target but we rename the artifact
             features: '--no-default-features'
+          - arch: x86_64-android
+            runner: ubuntu-latest
+            target: x86_64-linux-android-musl
+            features: '--no-default-features'
+          - arch: armv7-android
+            runner: ubuntu-latest
+            target: armv7-linux-android-musl
+            features: '--no-default-features'
+          - arch: x86-android
+            runner: ubuntu-latest
+            target: i686-linux-android-musl
+            features: '--no-default-features'
     container:
       image: rust:alpine
     steps:
       # x86_64: use standard checkout action
       - name: Checkout repository
-        if: matrix.arch == 'x86_64'
+        if: matrix.arch == 'x86_64' || matrix.arch == 'x86_64-android' || matrix.arch == 'armv7-android' || matrix.arch == 'x86-android'
         uses: actions/checkout@v6
 
       # aarch64: JS actions don't work in Alpine containers on ARM runners
@@ -186,18 +198,74 @@ jobs:
         if: matrix.arch == 'x86_64'
         uses: ./.github/actions/build-static
 
-      # aarch64: inline build (composite actions don't work with ARM workaround)
-      - name: Install dependencies (ARM)
-        if: contains(matrix.arch, 'aarch64')
+      # aarch64 & android: inline build (composite actions don't work with ARM workaround/zig wrapper easily here)
+      - name: Install dependencies (ARM & Android)
+        if: matrix.arch != 'x86_64'
         run: |
           apk add --no-cache \
             musl-dev libpcap-dev pkgconfig build-base perl \
             elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
-            clang llvm linux-headers
+            clang llvm linux-headers curl github-cli
           rustup component add rustfmt
 
-      - name: Build static binary (ARM)
-        if: contains(matrix.arch, 'aarch64')
+      - name: Install cross-compiler and libpcap (armv7)
+        if: matrix.arch == 'armv7-android'
+        run: |
+          rustup target add armv7-unknown-linux-musleabihf
+          apk add zig flex bison bash
+
+          printf '%s\n' \
+            '#!/bin/bash' \
+            'args=()' \
+            'for arg in "$@"; do' \
+            '  case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac' \
+            'done' \
+            'exec zig cc -target arm-linux-musleabihf "${args[@]}"' \
+            > /usr/local/bin/arm-linux-musleabihf-gcc
+          chmod +x /usr/local/bin/arm-linux-musleabihf-gcc
+
+          curl -fsSL --retry 3 --retry-delay 5 \
+            -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          tar xzf libpcap.tar.gz
+          cd libpcap-1.10.5
+          CC=arm-linux-musleabihf-gcc \
+            ./configure --host=arm-linux-musleabihf \
+              --disable-shared --enable-static \
+              --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
+              --prefix=/arm-sysroot
+          make -j$(nproc) && make install
+          cd ..
+
+      - name: Install cross-compiler and libpcap (x86/i686)
+        if: matrix.arch == 'x86-android'
+        run: |
+          rustup target add i686-unknown-linux-musl
+          apk add zig flex bison bash
+
+          printf '%s\n' \
+            '#!/bin/bash' \
+            'args=()' \
+            'for arg in "$@"; do' \
+            '  case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac' \
+            'done' \
+            'exec zig cc -target x86-linux-musl "${args[@]}"' \
+            > /usr/local/bin/i686-linux-musl-gcc
+          chmod +x /usr/local/bin/i686-linux-musl-gcc
+
+          curl -fsSL --retry 3 --retry-delay 5 \
+            -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          tar xzf libpcap.tar.gz
+          cd libpcap-1.10.5
+          CC=i686-linux-musl-gcc \
+            ./configure --host=i686-linux-musl \
+              --disable-shared --enable-static \
+              --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
+              --prefix=/x86-sysroot
+          make -j$(nproc) && make install
+          cd ..
+
+      - name: Build static binary (ARM/x86_64 Android)
+        if: matrix.arch == 'aarch64' || matrix.arch == 'aarch64-android' || matrix.arch == 'x86_64-android'
         env:
           # -mno-outline-atomics: Prevent GCC from generating calls to __aarch64_ldadd4_sync etc.
           # which aren't in Alpine's libatomic. Uses inline atomics instead.
@@ -206,31 +274,54 @@ jobs:
           RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
         run: cargo build --release ${{ matrix.features }}
 
-      - name: Verify static linking (ARM)
-        if: contains(matrix.arch, 'aarch64')
+      - name: Build static binary (armv7-android)
+        if: matrix.arch == 'armv7-android'
+        env:
+          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: arm-linux-musleabihf-gcc
+          PKG_CONFIG_PATH: /arm-sysroot/lib/pkgconfig
+          PKG_CONFIG_SYSROOT_DIR: /arm-sysroot
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: cargo build --release --target armv7-unknown-linux-musleabihf ${{ matrix.features }}
+
+      - name: Build static binary (x86-android)
+        if: matrix.arch == 'x86-android'
+        env:
+          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
+          CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_LINKER: i686-linux-musl-gcc
+          PKG_CONFIG_PATH: /x86-sysroot/lib/pkgconfig
+          PKG_CONFIG_SYSROOT_DIR: /x86-sysroot
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: cargo build --release --target i686-unknown-linux-musl ${{ matrix.features }}
+
+      - name: Verify static linking (ARM & Android)
+        if: matrix.arch != 'x86_64'
         run: |
-          file target/release/rustnet
-          file target/release/rustnet | grep -q "static.* linked" || \
+          BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
+          file "$BIN"
+          file "$BIN" | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
 
       # For test builds: upload raw binary
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
-        continue-on-error: ${{ contains(matrix.arch, 'aarch64') }}
+        continue-on-error: ${{ matrix.arch != 'x86_64' }}
         uses: actions/upload-artifact@v7
         with:
           name: rustnet-linux-static-${{ matrix.arch }}
-          path: target/release/rustnet
+          path: ${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}
           if-no-files-found: error
 
       # For release builds: create archive
       - name: Create release archive
         if: ${{ inputs.create-archives }}
         run: |
+          BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
+
           staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
           mkdir -p "$staging/assets"
 
-          cp target/release/rustnet "$staging/"
+          cp "$BIN" "$staging/rustnet"
           cp assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true
@@ -238,7 +329,7 @@ jobs:
           tar czf "$staging.tar.gz" "$staging"
 
       - name: Upload release archive
-        if: ${{ inputs.create-archives && matrix.arch == 'x86_64' }}
+        if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@v7
         with:
           name: build-${{ matrix.target }}
