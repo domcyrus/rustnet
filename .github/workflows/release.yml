@@ -170,6 +170,194 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  upload-android-static:
+    name: upload-${{ matrix.arch }}-android-static
+    runs-on: ${{ matrix.runner }}
+    needs: create-release
+    container:
+      image: rust:alpine
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            artifact: aarch64-linux-android-musl
+          - arch: x86_64
+            runner: ubuntu-latest
+            artifact: x86_64-linux-android-musl
+          - arch: armv7
+            runner: ubuntu-latest
+            artifact: armv7-linux-android-musl
+          - arch: x86
+            runner: ubuntu-latest
+            artifact: i686-linux-android-musl
+
+    steps:
+      # aarch64: JS actions don't work in Alpine containers on ARM runners
+      - name: Checkout repository (aarch64 workaround)
+        if: matrix.arch == 'aarch64'
+        run: |
+          apk add --no-cache git
+          git config --global --add safe.directory /__w/rustnet/rustnet
+          git clone --depth 1 https://github.com/${{ github.repository }}.git .
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            git fetch --depth 1 origin tag "${{ github.ref_name }}"
+            git checkout "${{ github.ref_name }}"
+          fi
+
+      - name: Checkout repository
+        if: matrix.arch != 'aarch64'
+        uses: actions/checkout@v6
+
+      - name: Install common dependencies
+        run: |
+          apk add --no-cache \
+            musl-dev pkgconfig build-base perl \
+            zlib-dev zlib-static \
+            clang llvm linux-headers github-cli curl
+          rustup component add rustfmt
+
+      # aarch64/x86_64: libpcap-dev provides a native static libpcap.
+      # zstd-static is required because Alpine's libpcap-dev links against zstd.
+      - name: Install libpcap (native)
+        if: matrix.arch == 'aarch64' || matrix.arch == 'x86_64'
+        run: apk add --no-cache libpcap-dev elfutils-dev zstd-dev zstd-static
+
+      # armv7: use zig cc as the cross-compiler (no external toolchain download needed).
+      # zig bundles musl libc for all targets, so no -l:libzstd.a needed.
+      - name: Install cross-compiler and libpcap (armv7)
+        if: matrix.arch == 'armv7'
+        run: |
+          rustup target add armv7-unknown-linux-musleabihf
+          apk add zig flex bison bash
+
+          # zig cc wrapper: cc-rs detects it as clang and passes --target=armv7-*
+          # which zig rejects (zig uses 'arm' not 'armv7'). Filter those args out.
+          printf '%s\n' \
+            '#!/bin/bash' \
+            'args=()' \
+            'for arg in "$@"; do' \
+            '  case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac' \
+            'done' \
+            'exec zig cc -target arm-linux-musleabihf "${args[@]}"' \
+            > /usr/local/bin/arm-linux-musleabihf-gcc
+          chmod +x /usr/local/bin/arm-linux-musleabihf-gcc
+
+          curl -fsSL --retry 3 --retry-delay 5 \
+            -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          tar xzf libpcap.tar.gz
+          cd libpcap-1.10.5
+          CC=arm-linux-musleabihf-gcc \
+            ./configure --host=arm-linux-musleabihf \
+              --disable-shared --enable-static \
+              --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
+              --prefix=/arm-sysroot
+          make -j$(nproc) && make install
+          cd ..
+
+      # x86: use zig cc as the cross-compiler (no external toolchain download needed).
+      # zig bundles musl libc for all targets, so no -l:libzstd.a needed.
+      - name: Install cross-compiler and libpcap (x86/i686)
+        if: matrix.arch == 'x86'
+        run: |
+          rustup target add i686-unknown-linux-musl
+          apk add zig flex bison bash
+
+          # zig cc wrapper: cc-rs passes --target=i686-* which zig doesn't accept;
+          # filter those args and use -target x86-linux-musl instead.
+          printf '%s\n' \
+            '#!/bin/bash' \
+            'args=()' \
+            'for arg in "$@"; do' \
+            '  case "$arg" in --target=*) ;; -Wl,-melf_i386) ;; *) args+=("$arg") ;; esac' \
+            'done' \
+            'exec zig cc -target x86-linux-musl "${args[@]}"' \
+            > /usr/local/bin/i686-linux-musl-gcc
+          chmod +x /usr/local/bin/i686-linux-musl-gcc
+
+          curl -fsSL --retry 3 --retry-delay 5 \
+            -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          tar xzf libpcap.tar.gz
+          cd libpcap-1.10.5
+          CC=i686-linux-musl-gcc \
+            ./configure --host=i686-linux-musl \
+              --disable-shared --enable-static \
+              --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
+              --prefix=/x86-sysroot
+          make -j$(nproc) && make install
+          cd ..
+
+      - name: Build static binary (aarch64)
+        if: matrix.arch == 'aarch64'
+        env:
+          CFLAGS: "-mno-outline-atomics"
+          CXXFLAGS: "-mno-outline-atomics"
+          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
+        run: cargo build --release --no-default-features
+
+      - name: Build static binary (x86_64)
+        if: matrix.arch == 'x86_64'
+        env:
+          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
+        run: cargo build --release --no-default-features
+
+      - name: Build static binary (armv7)
+        if: matrix.arch == 'armv7'
+        env:
+          # link-self-contained=no: let zig provide musl CRT (avoid duplicate _start
+          # when both Rust's self-contained crt1.o and zig's crt1.o are linked)
+          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: arm-linux-musleabihf-gcc
+          PKG_CONFIG_PATH: /arm-sysroot/lib/pkgconfig
+          PKG_CONFIG_SYSROOT_DIR: /arm-sysroot
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: cargo build --release --target armv7-unknown-linux-musleabihf --no-default-features
+
+      - name: Build static binary (x86/i686)
+        if: matrix.arch == 'x86'
+        env:
+          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
+          CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_LINKER: i686-linux-musl-gcc
+          PKG_CONFIG_PATH: /x86-sysroot/lib/pkgconfig
+          PKG_CONFIG_SYSROOT_DIR: /x86-sysroot
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: cargo build --release --target i686-unknown-linux-musl --no-default-features
+
+      - name: Verify static linking
+        run: |
+          BIN="${{ (matrix.arch == 'armv7' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
+          file "$BIN"
+          file "$BIN" | grep -q "static.* linked" || \
+            (echo "ERROR: Binary is not statically linked" && exit 1)
+
+      - name: Create release archive
+        run: |
+          VERSION="${{ github.ref_name }}"
+          ARTIFACT="${{ matrix.artifact }}"
+
+          case "${{ matrix.arch }}" in
+            armv7) BIN="target/armv7-unknown-linux-musleabihf/release/rustnet" ;;
+            x86)   BIN="target/i686-unknown-linux-musl/release/rustnet" ;;
+            *)     BIN="target/release/rustnet" ;;
+          esac
+
+          staging="rustnet-${VERSION}-${ARTIFACT}"
+          mkdir -p "$staging/assets"
+          cp "$BIN" "$staging/rustnet"
+          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+          tar czf "$staging.tar.gz" "$staging"
+
+      - name: Upload to release
+        run: |
+          VERSION="${{ github.ref_name }}"
+          ARCHIVE="rustnet-${VERSION}-${{ matrix.artifact }}.tar.gz"
+          gh release upload "$VERSION" "$ARCHIVE" --repo "${{ github.repository }}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
   trigger-bsd-build:
     name: trigger-bsd-build
     runs-on: ubuntu-latest
