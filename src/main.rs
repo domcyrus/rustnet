@@ -354,6 +354,8 @@ fn sort_connections(
 
 /// Copy text to the system clipboard and update UI state with feedback.
 fn copy_to_clipboard(text: &str, display_msg: &str, ui_state: &mut ui::UIState, app: &app::App) {
+    // Used conditionally on Linux/FreeBSD for sandbox-aware error messages
+    let _ = app;
     let result = Clipboard::new().and_then(|mut cb| cb.set_text(text));
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
