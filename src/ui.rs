@@ -151,6 +151,15 @@ mod theme {
         Style::default().fg(info()).add_modifier(Modifier::REVERSED)
     }
 
+    pub fn row_highlight() -> Style {
+        if super::NO_COLOR.load(super::Ordering::Relaxed) {
+            return Style::default().add_modifier(Modifier::REVERSED);
+        }
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+    }
+
     // --- Style builders (NO_COLOR-aware) ---
 
     /// Apply a foreground color, respecting NO_COLOR.
@@ -1300,7 +1309,7 @@ fn draw_connections_list(
     let connections_table = Table::new(rows, &widths)
         .header(header)
         .block(Block::default().borders(Borders::ALL).title(table_title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .row_highlight_style(theme::row_highlight())
         .highlight_symbol("> ");
 
     f.render_stateful_widget(connections_table, area, &mut state);
@@ -1542,7 +1551,7 @@ fn draw_grouped_connections_list(
     let connections_table = Table::new(rows, &widths)
         .header(header)
         .block(Block::default().borders(Borders::ALL).title(table_title))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .row_highlight_style(theme::row_highlight())
         .highlight_symbol("> ");
 
     f.render_stateful_widget(connections_table, area, &mut state);
