@@ -1,4 +1,4 @@
-use crate::network::types::{ApplicationProtocol, Connection};
+use crate::network::types::{ApplicationProtocol, Connection, ProtocolState};
 
 #[derive(Debug, Clone)]
 pub enum FilterCriteria {
@@ -203,6 +203,20 @@ impl ConnectionFilter {
             && self.matches_dpi_general(&dpi_info.application, text)
         {
             return true;
+        }
+
+        // Check ARP vendor names
+        if let ProtocolState::Arp(ref arp_info) = connection.protocol_state {
+            if let Some(ref vendor) = arp_info.sender_vendor
+                && vendor.to_lowercase().contains(text)
+            {
+                return true;
+            }
+            if let Some(ref vendor) = arp_info.target_vendor
+                && vendor.to_lowercase().contains(text)
+            {
+                return true;
+            }
         }
 
         false

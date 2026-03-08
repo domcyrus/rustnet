@@ -210,6 +210,8 @@ pub struct ArpInfo {
     pub sender_ip: std::net::IpAddr,
     pub target_mac: String,
     pub target_ip: std::net::IpAddr,
+    pub sender_vendor: Option<String>,
+    pub target_vendor: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1915,8 +1917,20 @@ impl Connection {
                 _ => "ICMP_OTHER".to_string(),
             },
             ProtocolState::Arp(info) => match info.operation {
-                ArpOperation::Request => format!("ARP_WHO_HAS {}", info.target_ip),
-                ArpOperation::Reply => format!("ARP_IS_AT {}", info.sender_mac),
+                ArpOperation::Request => {
+                    if let Some(ref vendor) = info.sender_vendor {
+                        format!("ARP_WHO_HAS {} ({})", info.target_ip, vendor)
+                    } else {
+                        format!("ARP_WHO_HAS {}", info.target_ip)
+                    }
+                }
+                ArpOperation::Reply => {
+                    if let Some(ref vendor) = info.sender_vendor {
+                        format!("ARP_IS_AT {} ({})", info.sender_mac, vendor)
+                    } else {
+                        format!("ARP_IS_AT {}", info.sender_mac)
+                    }
+                }
             },
         }
     }
@@ -2956,6 +2970,8 @@ mod tests {
             sender_ip: "192.168.1.100".parse().unwrap(),
             target_mac: "00:00:00:00:00:00".to_string(),
             target_ip: "192.168.1.1".parse().unwrap(),
+            sender_vendor: None,
+            target_vendor: None,
         });
         assert_eq!(conn.state(), "ARP_WHO_HAS 192.168.1.1");
         assert_eq!(conn.get_timeout(), Duration::from_secs(30));

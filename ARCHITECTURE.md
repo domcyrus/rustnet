@@ -323,7 +323,22 @@ RustNet is built with the following key dependencies:
 - **chrono** - Date and time handling
 - **ring** - Cryptographic operations (for TLS/SNI parsing)
 - **aes** - AES encryption support (for protocol detection)
+- **flate2** - Gzip decompression (for compressed embedded data)
 - **libc** - Low-level C bindings
+
+## Embedded Data Files
+
+RustNet embeds static lookup databases at compile time, avoiding runtime file dependencies. Both follow the same pattern: embed the file, parse into a `HashMap` at startup, expose a `lookup()` method.
+
+### Service Lookup (`assets/services`)
+
+Port-to-service-name mappings (e.g., 80/tcp -> http). Loaded by `ServiceLookup` in `src/network/services.rs` using `include_str!`.
+
+### OUI Vendor Database (`assets/oui.gz`)
+
+IEEE MA-L OUI prefix-to-vendor mappings for MAC address vendor resolution (e.g., `00:1B:63` -> Apple). Gzip-compressed to reduce binary size (~400KB compressed vs ~1.2MB raw). Decompressed at startup by `OuiLookup` in `src/network/oui.rs` using `include_bytes!` + `flate2`. Currently used for ARP connections only.
+
+A GitHub Action (`.github/workflows/update-oui.yml`) updates this file monthly from the [IEEE public database](https://standards-oui.ieee.org/oui/oui.txt) and opens a PR if there are changes.
 
 ## Security
 

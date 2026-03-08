@@ -3292,6 +3292,15 @@ fn draw_connection_details(
             arp_info.sender_mac.clone(),
             label_style,
         );
+        if let Some(ref vendor) = arp_info.sender_vendor {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Sender Vendor",
+                vendor.clone(),
+                label_style,
+            );
+        }
         push_detail_field(
             &mut details_text,
             &mut detail_fields,
@@ -3306,6 +3315,15 @@ fn draw_connection_details(
             arp_info.target_mac.clone(),
             label_style,
         );
+        if let Some(ref vendor) = arp_info.target_vendor {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Target Vendor",
+                vendor.clone(),
+                label_style,
+            );
+        }
         push_detail_field(
             &mut details_text,
             &mut detail_fields,
