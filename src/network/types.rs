@@ -1754,6 +1754,10 @@ pub struct Connection {
 
     // GeoIP information for remote address
     pub geoip_info: Option<crate::network::geoip::GeoIpInfo>,
+
+    // Historic connection tracking
+    pub is_historic: bool,
+    pub closed_at: Option<SystemTime>,
 }
 
 impl Connection {
@@ -1794,15 +1798,31 @@ impl Connection {
             tcp_analytics,
             initial_rtt: None,
             geoip_info: None,
+            is_historic: false,
+            closed_at: None,
         }
     }
 
-    /// Generate a unique key for this connection
+    /// Generate a unique key for this connection.
+    /// Historic connections include `created_at` to disambiguate multiple
+    /// closed connections that shared the same 4-tuple.
     pub fn key(&self) -> String {
-        format!(
-            "{:?}:{}-{:?}:{}",
-            self.protocol, self.local_addr, self.protocol, self.remote_addr
-        )
+        if self.is_historic {
+            let created_nanos = self
+                .created_at
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            format!(
+                "{:?}:{}-{:?}:{}:h:{}",
+                self.protocol, self.local_addr, self.protocol, self.remote_addr, created_nanos
+            )
+        } else {
+            format!(
+                "{:?}:{}-{:?}:{}",
+                self.protocol, self.local_addr, self.protocol, self.remote_addr
+            )
+        }
     }
 
     /// Check if connection is active (had activity in the last minute)

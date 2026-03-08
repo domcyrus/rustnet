@@ -878,11 +878,15 @@ where
                                 );
                             }
 
-                            // 'r' to reset all view settings (grouping, sort, filter)
+                            // 'r' to reset all view settings (grouping, sort, filter, historic)
                             (KeyCode::Char('r'), _) => {
                                 ui_state.quit_confirmation = false;
                                 ui_state.clear_confirmation = false;
+                                let was_historic = ui_state.show_historic;
                                 ui_state.reset_view();
+                                if was_historic {
+                                    app.set_show_historic(false);
+                                }
                                 info!("Reset view settings to defaults");
                             }
 
@@ -916,6 +920,22 @@ where
                                         }
                                     );
                                 }
+                            }
+
+                            // Toggle historic connections display
+                            (KeyCode::Char('t'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                ui_state.show_historic = !ui_state.show_historic;
+                                app.toggle_show_historic();
+                                info!(
+                                    "Historic connections: {}",
+                                    if ui_state.show_historic {
+                                        "showing"
+                                    } else {
+                                        "hidden"
+                                    }
+                                );
                             }
 
                             // Cycle sort column with 's'
@@ -975,6 +995,7 @@ where
                                     info!("User confirmed clear all connections");
                                     app.clear_all_connections();
                                     ui_state.clear_confirmation = false;
+                                    ui_state.show_historic = false;
                                     ui_state.selected_connection_key = None;
                                     ui_state.clipboard_message = Some((
                                         "All connections cleared".to_string(),

@@ -399,6 +399,8 @@ pub struct UIState {
     pub has_geoip: bool,
     /// Last mouse click position and time, for double-click detection
     pub last_click: Option<(u16, u16, std::time::Instant)>,
+    /// Whether to show historic (closed) connections
+    pub show_historic: bool,
 }
 
 impl Default for UIState {
@@ -422,6 +424,7 @@ impl Default for UIState {
             selected_group: None,
             has_geoip: false,
             last_click: None,
+            show_historic: false,
         }
     }
 }
@@ -647,7 +650,7 @@ impl UIState {
         self.sort_ascending = !self.sort_ascending;
     }
 
-    /// Reset all view settings to defaults (grouping, sort, filter)
+    /// Reset all view settings to defaults (grouping, sort, filter, historic)
     pub fn reset_view(&mut self) {
         self.grouping_enabled = false;
         self.expanded_groups.clear();
@@ -657,6 +660,7 @@ impl UIState {
         self.filter_query.clear();
         self.filter_mode = false;
         self.filter_cursor_position = 0;
+        self.show_historic = false;
     }
 
     /// Toggle grouping mode
@@ -820,12 +824,17 @@ pub fn compute_grouped_rows(
     let mut group_stats: Vec<(String, ProcessGroupStats, Vec<&Connection>)> = groups
         .into_iter()
         .map(|(name, conns)| {
+            let active_conns = || conns.iter().filter(|c| !c.is_historic);
             let stats = ProcessGroupStats {
-                connection_count: conns.len(),
-                tcp_count: conns.iter().filter(|c| c.protocol == Protocol::TCP).count(),
-                udp_count: conns.iter().filter(|c| c.protocol == Protocol::UDP).count(),
-                total_incoming_rate_bps: conns.iter().map(|c| c.current_incoming_rate_bps).sum(),
-                total_outgoing_rate_bps: conns.iter().map(|c| c.current_outgoing_rate_bps).sum(),
+                connection_count: active_conns().count(),
+                tcp_count: active_conns()
+                    .filter(|c| c.protocol == Protocol::TCP)
+                    .count(),
+                udp_count: active_conns()
+                    .filter(|c| c.protocol == Protocol::UDP)
+                    .count(),
+                total_incoming_rate_bps: active_conns().map(|c| c.current_incoming_rate_bps).sum(),
+                total_outgoing_rate_bps: active_conns().map(|c| c.current_outgoing_rate_bps).sum(),
             };
             (name, stats, conns)
         })
@@ -1221,7 +1230,11 @@ fn draw_connections_list(
             // - Yellow: approaching timeout (75-90% of timeout)
             // - Red: very close to timeout (> 90% of timeout)
             let staleness = conn.staleness_ratio();
-            let row_style = if staleness >= 0.90 {
+            let row_style = if conn.is_historic {
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM)
+            } else if staleness >= 0.90 {
                 // Critical: > 90% of timeout - will be cleaned up very soon
                 theme::fg(theme::err())
             } else if staleness >= 0.75 {
@@ -1291,6 +1304,11 @@ fn draw_connections_list(
     }
 
     // Build dynamic title with sort information
+    let base_title = if ui_state.show_historic {
+        "Active + Historic Connections"
+    } else {
+        "Active Connections"
+    };
     let table_title = if ui_state.sort_column != SortColumn::CreatedAt {
         let direction = if ui_state.sort_ascending {
             "↑"
@@ -1298,12 +1316,13 @@ fn draw_connections_list(
             "↓"
         };
         format!(
-            "Active Connections (Sort: {} {})",
+            "{} (Sort: {} {})",
+            base_title,
             ui_state.sort_column.display_name(),
             direction
         )
     } else {
-        "Active Connections".to_string()
+        base_title.to_string()
     };
 
     let connections_table = Table::new(rows, &widths)
@@ -1498,7 +1517,11 @@ fn draw_grouped_connections_list(
 
                 // Row color based on staleness
                 let staleness = connection.staleness_ratio();
-                let row_style = if staleness >= 0.90 {
+                let row_style = if connection.is_historic {
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM)
+                } else if staleness >= 0.90 {
                     theme::fg(theme::err())
                 } else if staleness >= 0.75 {
                     theme::fg(theme::warn())
@@ -1533,6 +1556,11 @@ fn draw_grouped_connections_list(
     }
 
     // Build title showing both group sort (A-Z) and connection sort within groups
+    let history_suffix = if ui_state.show_historic {
+        " + Historic"
+    } else {
+        ""
+    };
     let table_title = if ui_state.sort_column != SortColumn::CreatedAt {
         let direction = if ui_state.sort_ascending {
             "↑"
@@ -1540,12 +1568,16 @@ fn draw_grouped_connections_list(
             "↓"
         };
         format!(
-            "Grouped by Process (A-Z) │ Connections: {} {}",
+            "Grouped by Process (A-Z){} │ Connections: {} {}",
+            history_suffix,
             ui_state.sort_column.display_name(),
             direction
         )
     } else {
-        "Grouped by Process (A-Z) │ Connections: Time ↑".to_string()
+        format!(
+            "Grouped by Process (A-Z){} │ Connections: Time ↑",
+            history_suffix
+        )
     };
 
     let connections_table = Table::new(rows, &widths)
@@ -1596,15 +1628,17 @@ fn draw_stats_panel(
         ])
         .split(area);
 
-    // Connection statistics
+    // Connection statistics (only count active connections, not historic)
     let tcp_count = connections
         .iter()
-        .filter(|c| c.protocol == Protocol::TCP)
+        .filter(|c| !c.is_historic && c.protocol == Protocol::TCP)
         .count();
     let udp_count = connections
         .iter()
-        .filter(|c| c.protocol == Protocol::UDP)
+        .filter(|c| !c.is_historic && c.protocol == Protocol::UDP)
         .count();
+    let active_count = connections.iter().filter(|c| !c.is_historic).count();
+    let historic_count = connections.iter().filter(|c| c.is_historic).count();
 
     let interface_name = app
         .get_current_interface()
@@ -1660,7 +1694,15 @@ fn draw_stats_panel(
         Line::from(""),
         Line::from(format!("TCP Connections: {}", tcp_count)),
         Line::from(format!("UDP Connections: {}", udp_count)),
-        Line::from(format!("Total Connections: {}", connections.len())),
+        Line::from(format!("Total Connections: {}", active_count)),
+    ]);
+    if historic_count > 0 {
+        conn_stats_text.push(Line::from(Span::styled(
+            format!("Historic: {}", historic_count),
+            theme::fg(theme::muted()),
+        )));
+    }
+    conn_stats_text.extend([
         Line::from(""),
         Line::from(format!(
             "Packets Processed: {}",
@@ -2640,6 +2682,26 @@ fn draw_connection_details(
         conn.protocol.to_string(),
         label_style,
     );
+    if conn.is_historic {
+        let closed_display = if let Some(closed_at) = conn.closed_at {
+            let ago = closed_at.elapsed().unwrap_or_default();
+            if ago.as_secs() < 60 {
+                format!("Closed ({}s ago)", ago.as_secs())
+            } else {
+                format!("Closed ({}m ago)", ago.as_secs() / 60)
+            }
+        } else {
+            "Closed".to_string()
+        };
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Status",
+            closed_display,
+            label_style,
+            theme::fg(theme::muted()),
+        );
+    }
     push_detail_field(
         &mut details_text,
         &mut detail_fields,
@@ -3384,12 +3446,13 @@ fn draw_connection_details(
         );
     }
 
+    let detail_title = if conn.is_historic {
+        "Historic Connection (click to copy)"
+    } else {
+        "Connection Information (click to copy)"
+    };
     let details = Paragraph::new(details_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Connection Information (click to copy)"),
-        )
+        .block(Block::default().borders(Borders::ALL).title(detail_title))
         .style(Style::default())
         .wrap(Wrap { trim: true });
 
@@ -3570,6 +3633,10 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         Line::from(vec![
             Span::styled("←/→ ", theme::fg(theme::key())),
             Span::raw("Collapse/expand group"),
+        ]),
+        Line::from(vec![
+            Span::styled("t ", theme::fg(theme::key())),
+            Span::raw("Toggle display of historic (closed) connections"),
         ]),
         Line::from(vec![
             Span::styled("r ", theme::fg(theme::key())),
@@ -3870,7 +3937,7 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
         if time.elapsed().as_secs() < 3 {
             format!(" {} ", msg)
         } else {
-            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 'c' copy ".to_string()
+            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 't' history | 'c' copy".to_string()
         }
     } else if !ui_state.filter_query.is_empty() {
         format!(
@@ -3880,7 +3947,8 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
     } else if ui_state.selected_tab == 1 {
         " Click any field to copy | 'c' copy remote addr | Tab switch tabs | Esc back ".to_string()
     } else {
-        " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 'c' copy ".to_string()
+        " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 't' history | 'c' copy"
+            .to_string()
     };
 
     let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {
