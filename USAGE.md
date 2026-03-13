@@ -249,8 +249,8 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 - `↓` or `j` - Navigate down in connection list
 - `g` - Jump to first connection (vim-style)
 - `G` (Shift+g) - Jump to last connection (vim-style)
-- `PageUp` - Move up by 10 items
-- `PageDown` - Move down by 10 items
+- `PageUp` or `Ctrl+B` - Move up by one page
+- `PageDown` or `Ctrl+F` - Move down by one page
 
 ### Views and Tabs
 
@@ -267,7 +267,8 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 - `d` - Toggle between hostnames and IP addresses (requires `--resolve-dns`)
 - `/` - Enter filter mode (vim-style search with real-time results)
 - `x` - Clear all connections and reset statistics (press twice to confirm)
-- `r` - Reset view to defaults (clears grouping, sort, and filter)
+- `t` - Toggle display of historic (closed) connections
+- `r` - Reset view to defaults (clears grouping, sort, filter, and historic)
 
 ### Process Grouping
 
@@ -833,6 +834,39 @@ A connection is removed when:
 3. **Explicit close frames** detected (QUIC CONNECTION_CLOSE)
 
 **Note**: Rate indicators (bandwidth display) show *decaying* traffic based on recent activity. A connection may show declining bandwidth (yellow bars) but remain in the list until it exceeds its idle timeout. This is intentional - the visual decay gives you time to see the connection winding down before it's removed.
+
+### Historic Connections
+
+By default, connections disappear from the list once they time out or close. Press `t` to toggle **historic connections** mode, which keeps closed connections visible alongside active ones.
+
+**How it works:**
+
+When a connection is cleaned up, it is archived into a historic connections pool (up to 5,000 entries; oldest are evicted first). Pressing `t` toggles their visibility:
+
+- **Active connections** display normally with standard color indicators
+- **Historic connections** appear in **dim gray** to clearly distinguish them from active connections
+- The table title changes to **"Active + Historic Connections"** when historic mode is on
+
+**Details view:**
+
+Selecting a historic connection and pressing `Enter` shows the usual connection details, plus a **Status** field displaying how long ago the connection was closed (e.g., "Closed (5m ago)").
+
+**Stats panel:**
+
+When historic connections are present, the stats panel shows a separate **"Historic: N"** count below the total active connections.
+
+**Grouped view:**
+
+In process grouping mode (`a`), group headers show the historic connection count separately from the active count when historic mode is enabled.
+
+**Graph tab:**
+
+The graph tab always shows only active connections, even when historic mode is on.
+
+**Resetting:**
+
+- Press `r` to reset all view settings, which also hides historic connections
+- Press `x` twice to clear all connections, which also clears the historic pool
 
 ## Logging
 

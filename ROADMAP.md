@@ -114,7 +114,7 @@ The experimental eBPF support provides efficient process identification but has 
 ### Future Enhancements
 
 - [ ] **Internationalization (i18n)**: Support for multiple languages in the UI
-- [ ] **Connection History**: Store and display historical connection data
+- [x] **Connection History**: Store and display historical connection data (toggle with `t` key, up to 5,000 archived connections)
 - [x] **PCAP Export**: Export packets to PCAP file with process attribution sidecar (`--pcap-export`)
   - Standard PCAP format compatible with Wireshark/tcpdump
   - Streaming JSONL sidecar with PID, process name, timestamps
