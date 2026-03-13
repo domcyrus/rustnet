@@ -112,6 +112,9 @@ const MAX_PACKET_QUEUE: usize = 10_000;
 /// or connection floods.
 const MAX_CONNECTIONS: usize = 50_000;
 
+/// Maximum historic (closed) connections retained for display.
+const MAX_HISTORIC_CONNECTIONS: usize = 5_000;
+
 /// Open or create a file for appending with restrictive permissions (0o600 on Unix).
 ///
 /// Ensures log files containing connection metadata are not world-readable.
@@ -385,6 +388,12 @@ pub struct App {
     /// Current connections snapshot for UI
     connections_snapshot: Arc<RwLock<Vec<Connection>>>,
 
+    /// Historic (closed) connections for optional display
+    historic_connections: Arc<DashMap<String, Connection>>,
+
+    /// Whether to include historic connections in the snapshot
+    show_historic: Arc<AtomicBool>,
+
     /// Service name lookup
     service_lookup: Arc<ServiceLookup>,
 
@@ -500,6 +509,8 @@ impl App {
             should_stop: Arc::new(AtomicBool::new(false)),
             connections: Arc::new(DashMap::new()),
             connections_snapshot: Arc::new(RwLock::new(Vec::new())),
+            historic_connections: Arc::new(DashMap::new()),
+            show_historic: Arc::new(AtomicBool::new(false)),
             service_lookup: Arc::new(service_lookup),
             stats: Arc::new(AppStats::default()),
             is_loading: Arc::new(AtomicBool::new(true)),
@@ -537,10 +548,10 @@ impl App {
         self.start_geoip_enrichment_thread(connections.clone())?;
 
         // Start snapshot provider for UI
-        self.start_snapshot_provider(connections.clone())?;
+        self.start_snapshot_provider(connections.clone(), Arc::clone(&self.historic_connections))?;
 
         // Start cleanup thread
-        self.start_cleanup_thread(connections.clone())?;
+        self.start_cleanup_thread(connections.clone(), Arc::clone(&self.historic_connections))?;
 
         // Start rate refresh thread
         self.start_rate_refresh_thread(connections)?;
@@ -1079,13 +1090,43 @@ impl App {
     }
 
     /// Start snapshot provider thread for UI updates
-    fn start_snapshot_provider(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
+    fn start_snapshot_provider(
+        &self,
+        connections: Arc<DashMap<String, Connection>>,
+        historic_connections: Arc<DashMap<String, Connection>>,
+    ) -> Result<()> {
         let snapshot = Arc::clone(&self.connections_snapshot);
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let service_lookup = Arc::clone(&self.service_lookup);
+        let show_historic = Arc::clone(&self.show_historic);
         let filter_localhost = self.config.filter_localhost;
         let refresh_interval = Duration::from_millis(self.config.refresh_interval);
+
+        let enrich_and_filter = move |conn: &mut Connection,
+                                      service_lookup: &ServiceLookup,
+                                      filter_localhost: bool|
+              -> bool {
+            // Enrich with service name
+            if conn.service_name.is_none() {
+                if let Some(service) = service_lookup.lookup(conn.remote_addr.port(), conn.protocol)
+                {
+                    conn.service_name = Some(service.to_string());
+                } else if let Some(service) =
+                    service_lookup.lookup(conn.local_addr.port(), conn.protocol)
+                {
+                    conn.service_name = Some(service.to_string());
+                }
+            }
+            // Apply localhost filter
+            if filter_localhost
+                && conn.local_addr.ip().is_loopback()
+                && conn.remote_addr.ip().is_loopback()
+            {
+                return false;
+            }
+            true
+        };
 
         thread::spawn(move || {
             info!("Snapshot provider thread started");
@@ -1102,37 +1143,33 @@ impl App {
 
                 let mut snapshot_data: Vec<Connection> = connections
                     .iter()
-                    .map(|entry| {
+                    .filter_map(|entry| {
                         let mut conn = entry.value().clone();
-
-                        // Enrich with service name (prefer remote port, which is
-                        // typically the server/well-known port, over the local
-                        // ephemeral port)
-                        if conn.service_name.is_none() {
-                            if let Some(service) =
-                                service_lookup.lookup(conn.remote_addr.port(), conn.protocol)
-                            {
-                                conn.service_name = Some(service.to_string());
-                            } else if let Some(service) =
-                                service_lookup.lookup(conn.local_addr.port(), conn.protocol)
-                            {
-                                conn.service_name = Some(service.to_string());
-                            }
-                        }
-
-                        conn
-                    })
-                    .filter(|conn| {
-                        // Apply filters
-                        if filter_localhost {
-                            !(conn.local_addr.ip().is_loopback()
-                                && conn.remote_addr.ip().is_loopback())
+                        if enrich_and_filter(&mut conn, &service_lookup, filter_localhost)
+                            && conn.is_active()
+                        {
+                            Some(conn)
                         } else {
-                            true
+                            None
                         }
                     })
-                    .filter(|conn| conn.is_active())
                     .collect();
+
+                // Append historic connections when toggle is on
+                if show_historic.load(Ordering::Relaxed) {
+                    let historic: Vec<Connection> = historic_connections
+                        .iter()
+                        .filter_map(|entry| {
+                            let mut conn = entry.value().clone();
+                            if enrich_and_filter(&mut conn, &service_lookup, filter_localhost) {
+                                Some(conn)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    snapshot_data.extend(historic);
+                }
 
                 // Sort by creation time (oldest first, newest last for maximum stability)
                 snapshot_data.sort_by(|a, b| a.created_at.cmp(&b.created_at));
@@ -1142,7 +1179,7 @@ impl App {
                 // Update snapshot
                 *snapshot.write().unwrap() = snapshot_data;
 
-                // Update stats
+                // Update stats (only count active connections)
                 stats
                     .connections_tracked
                     .store(total_connections as u64, Ordering::Relaxed);
@@ -1275,10 +1312,10 @@ impl App {
                             )
                         });
 
-                // Get connection count from snapshot
+                // Get active connection count from snapshot (excludes historic)
                 let connection_count = connections_snapshot
                     .read()
-                    .map(|snap| snap.len())
+                    .map(|snap| snap.iter().filter(|c| !c.is_historic).count())
                     .unwrap_or(0);
 
                 // Get packet and retransmit counts (calculate deltas)
@@ -1367,7 +1404,11 @@ impl App {
     }
 
     /// Start cleanup thread to remove old connections
-    fn start_cleanup_thread(&self, connections: Arc<DashMap<String, Connection>>) -> Result<()> {
+    fn start_cleanup_thread(
+        &self,
+        connections: Arc<DashMap<String, Connection>>,
+        historic_connections: Arc<DashMap<String, Connection>>,
+    ) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
         let json_log_path = self.config.json_log_file.clone();
         let pcap_export_path = self.config.pcap_export_file.clone();
@@ -1388,6 +1429,8 @@ impl App {
 
                 // Collect keys of connections to be removed
                 let mut removed_keys = Vec::new();
+                // Collect connections to archive as historic
+                let mut to_archive: Vec<(String, Connection)> = Vec::new();
 
                 connections.retain(|key, conn| {
                     // Use dynamic timeout based on connection type and state
@@ -1396,6 +1439,22 @@ impl App {
                     if !should_keep {
                         removed += 1;
                         removed_keys.push(key.clone());
+
+                        // Archive to historic connections (key includes created_at
+                        // so multiple closed connections with the same 4-tuple
+                        // don't overwrite each other)
+                        let mut historic = conn.clone();
+                        historic.is_historic = true;
+                        historic.closed_at = Some(now);
+                        let historic_key = format!(
+                            "{}:{}",
+                            key,
+                            conn.created_at
+                                .duration_since(SystemTime::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_nanos()
+                        );
+                        to_archive.push((historic_key, historic));
 
                         // Calculate connection duration
                         let duration_secs = now
@@ -1434,6 +1493,28 @@ impl App {
 
                     should_keep
                 });
+
+                // Insert archived connections into historic map
+                for (key, conn) in to_archive {
+                    historic_connections.insert(key, conn);
+                }
+
+                // Enforce MAX_HISTORIC_CONNECTIONS by evicting oldest-closed first
+                if historic_connections.len() > MAX_HISTORIC_CONNECTIONS {
+                    let mut entries: Vec<(String, SystemTime)> = historic_connections
+                        .iter()
+                        .map(|entry| {
+                            let closed =
+                                entry.value().closed_at.unwrap_or(entry.value().created_at);
+                            (entry.key().clone(), closed)
+                        })
+                        .collect();
+                    entries.sort_by_key(|(_, closed)| *closed);
+                    let to_remove = historic_connections.len() - MAX_HISTORIC_CONNECTIONS;
+                    for (key, _) in entries.into_iter().take(to_remove) {
+                        historic_connections.remove(&key);
+                    }
+                }
 
                 // Clean up QUIC connection ID mappings for removed connections
                 if !removed_keys.is_empty()
@@ -1627,6 +1708,17 @@ impl App {
         }
     }
 
+    /// Toggle the show_historic flag
+    pub fn toggle_show_historic(&self) {
+        let prev = self.show_historic.load(Ordering::Relaxed);
+        self.show_historic.store(!prev, Ordering::Relaxed);
+    }
+
+    /// Set the show_historic flag directly
+    pub fn set_show_historic(&self, value: bool) {
+        self.show_historic.store(value, Ordering::Relaxed);
+    }
+
     /// Clear all connections and related data, starting fresh
     /// This clears:
     /// - All tracked connections
@@ -1639,6 +1731,10 @@ impl App {
 
         // Clear the main connections map
         self.connections.clear();
+
+        // Clear historic connections and reset toggle
+        self.historic_connections.clear();
+        self.show_historic.store(false, Ordering::Relaxed);
 
         // Clear the UI snapshot
         if let Ok(mut snapshot) = self.connections_snapshot.write() {

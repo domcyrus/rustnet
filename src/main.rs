@@ -445,8 +445,26 @@ where
         // Ensure we have a valid selection (handles connection removals)
         if ui_state.grouping_enabled {
             ui_state.ensure_valid_grouped_selection(&grouped_rows);
+            // Update scroll offset for grouped view
+            let selected_idx = ui_state
+                .get_selected_grouped_index(&grouped_rows)
+                .unwrap_or(0);
+            ui_state.grouped_scroll_offset = ui::compute_scroll_offset(
+                selected_idx,
+                ui_state.grouped_scroll_offset,
+                ui_state.visible_rows,
+                grouped_rows.len(),
+            );
         } else {
             ui_state.ensure_valid_selection(&connections);
+            // Update scroll offset for flat view
+            let selected_idx = ui_state.get_selected_index(&connections).unwrap_or(0);
+            ui_state.scroll_offset = ui::compute_scroll_offset(
+                selected_idx,
+                ui_state.scroll_offset,
+                ui_state.visible_rows,
+                connections.len(),
+            );
         }
 
         // Draw the UI
@@ -456,6 +474,17 @@ where
                 error!("UI draw error: {}", err);
             }
         })?;
+
+        // Update visible rows for page navigation based on terminal height
+        if let Ok(size) = terminal.size() {
+            // Subtract chrome: tabs(3) + status(1) + borders(2) + header+margin(2)
+            let chrome = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
+                11 // extra 3 for filter bar
+            } else {
+                8
+            };
+            ui_state.visible_rows = (size.height as usize).saturating_sub(chrome);
+        }
 
         // Handle timeout for periodic updates
         let timeout = tick_rate
@@ -780,20 +809,29 @@ where
                             }
 
                             // Page Up/Down navigation
-                            (KeyCode::PageUp, _) => {
+                            (KeyCode::PageUp, _) | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
                                 ui_state.quit_confirmation = false;
                                 ui_state.clear_confirmation = false;
-                                // Use the SAME sorted connections list from the main loop
-                                // Move up by roughly 10 items (or adjust based on terminal height)
-                                ui_state.move_selection_page_up(&connections, 10);
+                                let page_size = ui_state.visible_rows.max(1);
+                                if ui_state.grouping_enabled {
+                                    ui_state
+                                        .move_selection_page_up_grouped(&grouped_rows, page_size);
+                                } else {
+                                    ui_state.move_selection_page_up(&connections, page_size);
+                                }
                             }
 
-                            (KeyCode::PageDown, _) => {
+                            (KeyCode::PageDown, _)
+                            | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
                                 ui_state.quit_confirmation = false;
                                 ui_state.clear_confirmation = false;
-                                // Use the SAME sorted connections list from the main loop
-                                // Move down by roughly 10 items (or adjust based on terminal height)
-                                ui_state.move_selection_page_down(&connections, 10);
+                                let page_size = ui_state.visible_rows.max(1);
+                                if ui_state.grouping_enabled {
+                                    ui_state
+                                        .move_selection_page_down_grouped(&grouped_rows, page_size);
+                                } else {
+                                    ui_state.move_selection_page_down(&connections, page_size);
+                                }
                             }
 
                             // Vim-style jump to first/last (g/G)
@@ -878,11 +916,15 @@ where
                                 );
                             }
 
-                            // 'r' to reset all view settings (grouping, sort, filter)
+                            // 'r' to reset all view settings (grouping, sort, filter, historic)
                             (KeyCode::Char('r'), _) => {
                                 ui_state.quit_confirmation = false;
                                 ui_state.clear_confirmation = false;
+                                let was_historic = ui_state.show_historic;
                                 ui_state.reset_view();
+                                if was_historic {
+                                    app.set_show_historic(false);
+                                }
                                 info!("Reset view settings to defaults");
                             }
 
@@ -916,6 +958,24 @@ where
                                         }
                                     );
                                 }
+                            }
+
+                            // Toggle historic connections display
+                            (KeyCode::Char('t'), _) => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                                ui_state.show_historic = !ui_state.show_historic;
+                                ui_state.scroll_offset = 0;
+                                ui_state.grouped_scroll_offset = 0;
+                                app.toggle_show_historic();
+                                info!(
+                                    "Historic connections: {}",
+                                    if ui_state.show_historic {
+                                        "showing"
+                                    } else {
+                                        "hidden"
+                                    }
+                                );
                             }
 
                             // Cycle sort column with 's'
@@ -975,6 +1035,7 @@ where
                                     info!("User confirmed clear all connections");
                                     app.clear_all_connections();
                                     ui_state.clear_confirmation = false;
+                                    ui_state.show_historic = false;
                                     ui_state.selected_connection_key = None;
                                     ui_state.clipboard_message = Some((
                                         "All connections cleared".to_string(),

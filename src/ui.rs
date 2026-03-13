@@ -272,6 +272,7 @@ impl SortColumn {
 #[derive(Debug, Clone, Default)]
 pub struct ProcessGroupStats {
     pub connection_count: usize,
+    pub historic_count: usize,
     pub tcp_count: usize,
     pub udp_count: usize,
     pub total_incoming_rate_bps: f64,
@@ -399,6 +400,14 @@ pub struct UIState {
     pub has_geoip: bool,
     /// Last mouse click position and time, for double-click detection
     pub last_click: Option<(u16, u16, std::time::Instant)>,
+    /// Whether to show historic (closed) connections
+    pub show_historic: bool,
+    /// Number of visible rows in the connections table (updated after rendering)
+    pub visible_rows: usize,
+    /// Scroll offset for flat connection list (persisted for stable scrolling)
+    pub scroll_offset: usize,
+    /// Scroll offset for grouped connection list (persisted for stable scrolling)
+    pub grouped_scroll_offset: usize,
 }
 
 impl Default for UIState {
@@ -422,8 +431,37 @@ impl Default for UIState {
             selected_group: None,
             has_geoip: false,
             last_click: None,
+            show_historic: false,
+            visible_rows: 10,
+            scroll_offset: 0,
+            grouped_scroll_offset: 0,
         }
     }
+}
+
+/// Compute a stable scroll offset that only adjusts when selection goes out of bounds.
+pub fn compute_scroll_offset(
+    selected_index: usize,
+    current_offset: usize,
+    visible_rows: usize,
+    total_rows: usize,
+) -> usize {
+    if total_rows == 0 || visible_rows == 0 {
+        return 0;
+    }
+    let max_offset = total_rows.saturating_sub(visible_rows);
+    let mut offset = current_offset.min(max_offset);
+
+    // Scroll up if selection is above viewport
+    if selected_index < offset {
+        offset = selected_index;
+    }
+    // Scroll down if selection is below viewport
+    if selected_index >= offset + visible_rows {
+        offset = selected_index - visible_rows + 1;
+    }
+
+    offset.min(max_offset)
 }
 
 impl UIState {
@@ -647,7 +685,7 @@ impl UIState {
         self.sort_ascending = !self.sort_ascending;
     }
 
-    /// Reset all view settings to defaults (grouping, sort, filter)
+    /// Reset all view settings to defaults (grouping, sort, filter, historic)
     pub fn reset_view(&mut self) {
         self.grouping_enabled = false;
         self.expanded_groups.clear();
@@ -657,6 +695,9 @@ impl UIState {
         self.filter_query.clear();
         self.filter_mode = false;
         self.filter_cursor_position = 0;
+        self.show_historic = false;
+        self.scroll_offset = 0;
+        self.grouped_scroll_offset = 0;
     }
 
     /// Toggle grouping mode
@@ -665,6 +706,9 @@ impl UIState {
         // When toggling grouping on, clear group selection to start fresh
         if self.grouping_enabled {
             self.selected_group = None;
+            self.grouped_scroll_offset = 0;
+        } else {
+            self.scroll_offset = 0;
         }
     }
 
@@ -775,6 +819,36 @@ impl UIState {
         self.set_selected_grouped_by_index(grouped_rows, new_index);
     }
 
+    /// Move selection up by one page in grouped view
+    pub fn move_selection_page_up_grouped(
+        &mut self,
+        grouped_rows: &[GroupedRow],
+        page_size: usize,
+    ) {
+        if grouped_rows.is_empty() {
+            return;
+        }
+
+        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
+        let new_index = current_index.saturating_sub(page_size);
+        self.set_selected_grouped_by_index(grouped_rows, new_index);
+    }
+
+    /// Move selection down by one page in grouped view
+    pub fn move_selection_page_down_grouped(
+        &mut self,
+        grouped_rows: &[GroupedRow],
+        page_size: usize,
+    ) {
+        if grouped_rows.is_empty() {
+            return;
+        }
+
+        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
+        let new_index = (current_index + page_size).min(grouped_rows.len() - 1);
+        self.set_selected_grouped_by_index(grouped_rows, new_index);
+    }
+
     /// Ensure valid selection in grouped view
     pub fn ensure_valid_grouped_selection(&mut self, grouped_rows: &[GroupedRow]) {
         if grouped_rows.is_empty() {
@@ -820,12 +894,18 @@ pub fn compute_grouped_rows(
     let mut group_stats: Vec<(String, ProcessGroupStats, Vec<&Connection>)> = groups
         .into_iter()
         .map(|(name, conns)| {
+            let active_conns = || conns.iter().filter(|c| !c.is_historic);
             let stats = ProcessGroupStats {
-                connection_count: conns.len(),
-                tcp_count: conns.iter().filter(|c| c.protocol == Protocol::TCP).count(),
-                udp_count: conns.iter().filter(|c| c.protocol == Protocol::UDP).count(),
-                total_incoming_rate_bps: conns.iter().map(|c| c.current_incoming_rate_bps).sum(),
-                total_outgoing_rate_bps: conns.iter().map(|c| c.current_outgoing_rate_bps).sum(),
+                connection_count: active_conns().count(),
+                historic_count: conns.iter().filter(|c| c.is_historic).count(),
+                tcp_count: active_conns()
+                    .filter(|c| c.protocol == Protocol::TCP)
+                    .count(),
+                udp_count: active_conns()
+                    .filter(|c| c.protocol == Protocol::UDP)
+                    .count(),
+                total_incoming_rate_bps: active_conns().map(|c| c.current_incoming_rate_bps).sum(),
+                total_outgoing_rate_bps: active_conns().map(|c| c.current_outgoing_rate_bps).sum(),
             };
             (name, stats, conns)
         })
@@ -1156,7 +1236,13 @@ fn draw_connections_list(
     });
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
-    let rows: Vec<Row> = connections
+    // Virtualization: only build Row objects for the visible window
+    let scroll_offset = ui_state.scroll_offset;
+    let visible_rows = ui_state.visible_rows.max(1);
+    let window_end = (scroll_offset + visible_rows + 1).min(connections.len());
+    let visible_connections = &connections[scroll_offset.min(connections.len())..window_end];
+
+    let rows: Vec<Row> = visible_connections
         .iter()
         .map(|conn| {
             let pid_str = conn
@@ -1221,7 +1307,11 @@ fn draw_connections_list(
             // - Yellow: approaching timeout (75-90% of timeout)
             // - Red: very close to timeout (> 90% of timeout)
             let staleness = conn.staleness_ratio();
-            let row_style = if staleness >= 0.90 {
+            let row_style = if conn.is_historic {
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM)
+            } else if staleness >= 0.90 {
                 // Critical: > 90% of timeout - will be cleaned up very soon
                 theme::fg(theme::err())
             } else if staleness >= 0.75 {
@@ -1284,13 +1374,18 @@ fn draw_connections_list(
         })
         .collect();
 
-    // Create table state with current selection
+    // Create table state with selection adjusted to windowed slice
     let mut state = ratatui::widgets::TableState::default();
     if let Some(selected_index) = ui_state.get_selected_index(connections) {
-        state.select(Some(selected_index));
+        state.select(Some(selected_index.saturating_sub(scroll_offset)));
     }
 
     // Build dynamic title with sort information
+    let base_title = if ui_state.show_historic {
+        "Active + Historic Connections"
+    } else {
+        "Active Connections"
+    };
     let table_title = if ui_state.sort_column != SortColumn::CreatedAt {
         let direction = if ui_state.sort_ascending {
             "↑"
@@ -1298,12 +1393,13 @@ fn draw_connections_list(
             "↓"
         };
         format!(
-            "Active Connections (Sort: {} {})",
+            "{} (Sort: {} {})",
+            base_title,
             ui_state.sort_column.display_name(),
             direction
         )
     } else {
-        "Active Connections".to_string()
+        base_title.to_string()
     };
 
     let connections_table = Table::new(rows, &widths)
@@ -1321,7 +1417,6 @@ fn draw_connections_list(
         vertical: 1,
     });
     let header_height = 2_u16; // header row (1) + bottom_margin (1)
-    let scroll_offset = state.offset();
     let visible_start_y = inner.y + header_height;
     let max_visible_rows = inner.height.saturating_sub(header_height) as usize;
 
@@ -1390,7 +1485,13 @@ fn draw_grouped_connections_list(
     ]);
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
-    let rows: Vec<Row> = grouped_rows
+    // Virtualization: only build Row objects for the visible window
+    let scroll_offset = ui_state.grouped_scroll_offset;
+    let visible_rows = ui_state.visible_rows.max(1);
+    let window_end = (scroll_offset + visible_rows + 1).min(grouped_rows.len());
+    let visible_grouped = &grouped_rows[scroll_offset.min(grouped_rows.len())..window_end];
+
+    let rows: Vec<Row> = visible_grouped
         .iter()
         .map(|row| match row {
             GroupedRow::Group {
@@ -1399,10 +1500,32 @@ fn draw_grouped_connections_list(
                 expanded,
             } => {
                 let expand_indicator = if *expanded { "[-]" } else { "[+]" };
-                let process_cell = format!(
-                    "{} {} ({})",
-                    expand_indicator, process_name, stats.connection_count
-                );
+                let process_cell = if ui_state.show_historic && stats.historic_count > 0 {
+                    Line::from(vec![
+                        Span::styled(
+                            format!(
+                                "{} {} ({}, ",
+                                expand_indicator, process_name, stats.connection_count
+                            ),
+                            theme::bold_fg(theme::accent()),
+                        ),
+                        Span::styled(
+                            format!("{}", stats.historic_count),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::DIM | Modifier::BOLD),
+                        ),
+                        Span::styled(")".to_string(), theme::bold_fg(theme::accent())),
+                    ])
+                } else {
+                    Line::from(Span::styled(
+                        format!(
+                            "{} {} ({})",
+                            expand_indicator, process_name, stats.connection_count
+                        ),
+                        theme::bold_fg(theme::accent()),
+                    ))
+                };
 
                 // Protocol breakdown
                 let proto_breakdown = format!("TCP:{} UDP:{}", stats.tcp_count, stats.udp_count);
@@ -1413,11 +1536,7 @@ fn draw_grouped_connections_list(
                 let bandwidth = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
 
                 // Build cells dynamically
-                let mut cells = vec![
-                    Cell::from(process_cell).style(theme::bold_fg(theme::accent())),
-                    Cell::from(""),
-                    Cell::from(""),
-                ];
+                let mut cells = vec![Cell::from(process_cell), Cell::from(""), Cell::from("")];
                 if show_location {
                     cells.push(Cell::from("")); // Loc (empty for group header)
                 }
@@ -1498,7 +1617,11 @@ fn draw_grouped_connections_list(
 
                 // Row color based on staleness
                 let staleness = connection.staleness_ratio();
-                let row_style = if staleness >= 0.90 {
+                let row_style = if connection.is_historic {
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM)
+                } else if staleness >= 0.90 {
                     theme::fg(theme::err())
                 } else if staleness >= 0.75 {
                     theme::fg(theme::warn())
@@ -1526,13 +1649,18 @@ fn draw_grouped_connections_list(
         })
         .collect();
 
-    // Create table state with current selection
+    // Create table state with selection adjusted to windowed slice
     let mut state = ratatui::widgets::TableState::default();
     if let Some(selected_index) = ui_state.get_selected_grouped_index(grouped_rows) {
-        state.select(Some(selected_index));
+        state.select(Some(selected_index.saturating_sub(scroll_offset)));
     }
 
     // Build title showing both group sort (A-Z) and connection sort within groups
+    let history_suffix = if ui_state.show_historic {
+        " + Historic"
+    } else {
+        ""
+    };
     let table_title = if ui_state.sort_column != SortColumn::CreatedAt {
         let direction = if ui_state.sort_ascending {
             "↑"
@@ -1540,12 +1668,16 @@ fn draw_grouped_connections_list(
             "↓"
         };
         format!(
-            "Grouped by Process (A-Z) │ Connections: {} {}",
+            "Grouped by Process (A-Z){} │ Connections: {} {}",
+            history_suffix,
             ui_state.sort_column.display_name(),
             direction
         )
     } else {
-        "Grouped by Process (A-Z) │ Connections: Time ↑".to_string()
+        format!(
+            "Grouped by Process (A-Z){} │ Connections: Time ↑",
+            history_suffix
+        )
     };
 
     let connections_table = Table::new(rows, &widths)
@@ -1563,7 +1695,6 @@ fn draw_grouped_connections_list(
         vertical: 1,
     });
     let header_height = 2_u16;
-    let scroll_offset = state.offset();
     let visible_start_y = inner.y + header_height;
     let max_visible_rows = inner.height.saturating_sub(header_height) as usize;
 
@@ -1596,15 +1727,17 @@ fn draw_stats_panel(
         ])
         .split(area);
 
-    // Connection statistics
+    // Connection statistics (only count active connections, not historic)
     let tcp_count = connections
         .iter()
-        .filter(|c| c.protocol == Protocol::TCP)
+        .filter(|c| !c.is_historic && c.protocol == Protocol::TCP)
         .count();
     let udp_count = connections
         .iter()
-        .filter(|c| c.protocol == Protocol::UDP)
+        .filter(|c| !c.is_historic && c.protocol == Protocol::UDP)
         .count();
+    let active_count = connections.iter().filter(|c| !c.is_historic).count();
+    let historic_count = connections.iter().filter(|c| c.is_historic).count();
 
     let interface_name = app
         .get_current_interface()
@@ -1660,7 +1793,15 @@ fn draw_stats_panel(
         Line::from(""),
         Line::from(format!("TCP Connections: {}", tcp_count)),
         Line::from(format!("UDP Connections: {}", udp_count)),
-        Line::from(format!("Total Connections: {}", connections.len())),
+        Line::from(format!("Total Connections: {}", active_count)),
+    ]);
+    if historic_count > 0 {
+        conn_stats_text.push(Line::from(Span::styled(
+            format!("Historic: {}", historic_count),
+            theme::fg(theme::muted()),
+        )));
+    }
+    conn_stats_text.extend([
         Line::from(""),
         Line::from(format!(
             "Packets Processed: {}",
@@ -2009,6 +2150,14 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
 
 /// Draw the Graph tab with traffic visualization
 fn draw_graph_tab(f: &mut Frame, app: &App, connections: &[Connection], area: Rect) -> Result<()> {
+    // Filter out historic connections — graph should only show alive connections
+    let active_connections: Vec<Connection> = connections
+        .iter()
+        .filter(|c| !c.is_historic)
+        .cloned()
+        .collect();
+    let connections = &active_connections;
+
     let traffic_history = app.get_traffic_history();
 
     // Main layout: traffic chart, health chart, legend, bottom row
@@ -2151,9 +2300,9 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
         .style(theme::fg(theme::accent()));
     f.render_widget(sparkline, chunks[0]);
 
-    // Current connection count label
+    // Current connection count label (active connections only)
     let current_count = conn_data.last().copied().unwrap_or(0);
-    let label = Paragraph::new(format!("{} connections", current_count));
+    let label = Paragraph::new(format!("{} active connections", current_count));
     f.render_widget(label, chunks[1]);
 }
 
@@ -2640,6 +2789,26 @@ fn draw_connection_details(
         conn.protocol.to_string(),
         label_style,
     );
+    if conn.is_historic {
+        let closed_display = if let Some(closed_at) = conn.closed_at {
+            let ago = closed_at.elapsed().unwrap_or_default();
+            if ago.as_secs() < 60 {
+                format!("Closed ({}s ago)", ago.as_secs())
+            } else {
+                format!("Closed ({}m ago)", ago.as_secs() / 60)
+            }
+        } else {
+            "Closed".to_string()
+        };
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Status",
+            closed_display,
+            label_style,
+            theme::fg(theme::muted()),
+        );
+    }
     push_detail_field(
         &mut details_text,
         &mut detail_fields,
@@ -3384,12 +3553,13 @@ fn draw_connection_details(
         );
     }
 
+    let detail_title = if conn.is_historic {
+        "Historic Connection (click to copy)"
+    } else {
+        "Connection Information (click to copy)"
+    };
     let details = Paragraph::new(details_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Connection Information (click to copy)"),
-        )
+        .block(Block::default().borders(Borders::ALL).title(detail_title))
         .style(Style::default())
         .wrap(Wrap { trim: true });
 
@@ -3536,7 +3706,7 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Jump to first/last connection (vim-style)"),
         ]),
         Line::from(vec![
-            Span::styled("Page Up/Down ", theme::fg(theme::key())),
+            Span::styled("Page Up/Down, Ctrl+B/F ", theme::fg(theme::key())),
             Span::raw("Navigate connections by page"),
         ]),
         Line::from(vec![
@@ -3570,6 +3740,10 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         Line::from(vec![
             Span::styled("←/→ ", theme::fg(theme::key())),
             Span::raw("Collapse/expand group"),
+        ]),
+        Line::from(vec![
+            Span::styled("t ", theme::fg(theme::key())),
+            Span::raw("Toggle display of historic (closed) connections"),
         ]),
         Line::from(vec![
             Span::styled("r ", theme::fg(theme::key())),
@@ -3870,7 +4044,7 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
         if time.elapsed().as_secs() < 3 {
             format!(" {} ", msg)
         } else {
-            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 'c' copy ".to_string()
+            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 't' history | 'c' copy".to_string()
         }
     } else if !ui_state.filter_query.is_empty() {
         format!(
@@ -3880,7 +4054,8 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
     } else if ui_state.selected_tab == 1 {
         " Click any field to copy | 'c' copy remote addr | Tab switch tabs | Esc back ".to_string()
     } else {
-        " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 'c' copy ".to_string()
+        " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 't' history | 'c' copy"
+            .to_string()
     };
 
     let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {
