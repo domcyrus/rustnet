@@ -272,6 +272,7 @@ impl SortColumn {
 #[derive(Debug, Clone, Default)]
 pub struct ProcessGroupStats {
     pub connection_count: usize,
+    pub historic_count: usize,
     pub tcp_count: usize,
     pub udp_count: usize,
     pub total_incoming_rate_bps: f64,
@@ -401,6 +402,12 @@ pub struct UIState {
     pub last_click: Option<(u16, u16, std::time::Instant)>,
     /// Whether to show historic (closed) connections
     pub show_historic: bool,
+    /// Number of visible rows in the connections table (updated after rendering)
+    pub visible_rows: usize,
+    /// Scroll offset for flat connection list (persisted for stable scrolling)
+    pub scroll_offset: usize,
+    /// Scroll offset for grouped connection list (persisted for stable scrolling)
+    pub grouped_scroll_offset: usize,
 }
 
 impl Default for UIState {
@@ -425,8 +432,36 @@ impl Default for UIState {
             has_geoip: false,
             last_click: None,
             show_historic: false,
+            visible_rows: 10,
+            scroll_offset: 0,
+            grouped_scroll_offset: 0,
         }
     }
+}
+
+/// Compute a stable scroll offset that only adjusts when selection goes out of bounds.
+pub fn compute_scroll_offset(
+    selected_index: usize,
+    current_offset: usize,
+    visible_rows: usize,
+    total_rows: usize,
+) -> usize {
+    if total_rows == 0 || visible_rows == 0 {
+        return 0;
+    }
+    let max_offset = total_rows.saturating_sub(visible_rows);
+    let mut offset = current_offset.min(max_offset);
+
+    // Scroll up if selection is above viewport
+    if selected_index < offset {
+        offset = selected_index;
+    }
+    // Scroll down if selection is below viewport
+    if selected_index >= offset + visible_rows {
+        offset = selected_index - visible_rows + 1;
+    }
+
+    offset.min(max_offset)
 }
 
 impl UIState {
@@ -661,6 +696,8 @@ impl UIState {
         self.filter_mode = false;
         self.filter_cursor_position = 0;
         self.show_historic = false;
+        self.scroll_offset = 0;
+        self.grouped_scroll_offset = 0;
     }
 
     /// Toggle grouping mode
@@ -669,6 +706,9 @@ impl UIState {
         // When toggling grouping on, clear group selection to start fresh
         if self.grouping_enabled {
             self.selected_group = None;
+            self.grouped_scroll_offset = 0;
+        } else {
+            self.scroll_offset = 0;
         }
     }
 
@@ -779,6 +819,36 @@ impl UIState {
         self.set_selected_grouped_by_index(grouped_rows, new_index);
     }
 
+    /// Move selection up by one page in grouped view
+    pub fn move_selection_page_up_grouped(
+        &mut self,
+        grouped_rows: &[GroupedRow],
+        page_size: usize,
+    ) {
+        if grouped_rows.is_empty() {
+            return;
+        }
+
+        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
+        let new_index = current_index.saturating_sub(page_size);
+        self.set_selected_grouped_by_index(grouped_rows, new_index);
+    }
+
+    /// Move selection down by one page in grouped view
+    pub fn move_selection_page_down_grouped(
+        &mut self,
+        grouped_rows: &[GroupedRow],
+        page_size: usize,
+    ) {
+        if grouped_rows.is_empty() {
+            return;
+        }
+
+        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
+        let new_index = (current_index + page_size).min(grouped_rows.len() - 1);
+        self.set_selected_grouped_by_index(grouped_rows, new_index);
+    }
+
     /// Ensure valid selection in grouped view
     pub fn ensure_valid_grouped_selection(&mut self, grouped_rows: &[GroupedRow]) {
         if grouped_rows.is_empty() {
@@ -827,6 +897,7 @@ pub fn compute_grouped_rows(
             let active_conns = || conns.iter().filter(|c| !c.is_historic);
             let stats = ProcessGroupStats {
                 connection_count: active_conns().count(),
+                historic_count: conns.iter().filter(|c| c.is_historic).count(),
                 tcp_count: active_conns()
                     .filter(|c| c.protocol == Protocol::TCP)
                     .count(),
@@ -1165,7 +1236,13 @@ fn draw_connections_list(
     });
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
-    let rows: Vec<Row> = connections
+    // Virtualization: only build Row objects for the visible window
+    let scroll_offset = ui_state.scroll_offset;
+    let visible_rows = ui_state.visible_rows.max(1);
+    let window_end = (scroll_offset + visible_rows + 1).min(connections.len());
+    let visible_connections = &connections[scroll_offset.min(connections.len())..window_end];
+
+    let rows: Vec<Row> = visible_connections
         .iter()
         .map(|conn| {
             let pid_str = conn
@@ -1297,10 +1374,10 @@ fn draw_connections_list(
         })
         .collect();
 
-    // Create table state with current selection
+    // Create table state with selection adjusted to windowed slice
     let mut state = ratatui::widgets::TableState::default();
     if let Some(selected_index) = ui_state.get_selected_index(connections) {
-        state.select(Some(selected_index));
+        state.select(Some(selected_index.saturating_sub(scroll_offset)));
     }
 
     // Build dynamic title with sort information
@@ -1340,7 +1417,6 @@ fn draw_connections_list(
         vertical: 1,
     });
     let header_height = 2_u16; // header row (1) + bottom_margin (1)
-    let scroll_offset = state.offset();
     let visible_start_y = inner.y + header_height;
     let max_visible_rows = inner.height.saturating_sub(header_height) as usize;
 
@@ -1409,7 +1485,13 @@ fn draw_grouped_connections_list(
     ]);
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
-    let rows: Vec<Row> = grouped_rows
+    // Virtualization: only build Row objects for the visible window
+    let scroll_offset = ui_state.grouped_scroll_offset;
+    let visible_rows = ui_state.visible_rows.max(1);
+    let window_end = (scroll_offset + visible_rows + 1).min(grouped_rows.len());
+    let visible_grouped = &grouped_rows[scroll_offset.min(grouped_rows.len())..window_end];
+
+    let rows: Vec<Row> = visible_grouped
         .iter()
         .map(|row| match row {
             GroupedRow::Group {
@@ -1418,10 +1500,32 @@ fn draw_grouped_connections_list(
                 expanded,
             } => {
                 let expand_indicator = if *expanded { "[-]" } else { "[+]" };
-                let process_cell = format!(
-                    "{} {} ({})",
-                    expand_indicator, process_name, stats.connection_count
-                );
+                let process_cell = if ui_state.show_historic && stats.historic_count > 0 {
+                    Line::from(vec![
+                        Span::styled(
+                            format!(
+                                "{} {} ({}, ",
+                                expand_indicator, process_name, stats.connection_count
+                            ),
+                            theme::bold_fg(theme::accent()),
+                        ),
+                        Span::styled(
+                            format!("{}", stats.historic_count),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::DIM | Modifier::BOLD),
+                        ),
+                        Span::styled(")".to_string(), theme::bold_fg(theme::accent())),
+                    ])
+                } else {
+                    Line::from(Span::styled(
+                        format!(
+                            "{} {} ({})",
+                            expand_indicator, process_name, stats.connection_count
+                        ),
+                        theme::bold_fg(theme::accent()),
+                    ))
+                };
 
                 // Protocol breakdown
                 let proto_breakdown = format!("TCP:{} UDP:{}", stats.tcp_count, stats.udp_count);
@@ -1432,11 +1536,7 @@ fn draw_grouped_connections_list(
                 let bandwidth = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
 
                 // Build cells dynamically
-                let mut cells = vec![
-                    Cell::from(process_cell).style(theme::bold_fg(theme::accent())),
-                    Cell::from(""),
-                    Cell::from(""),
-                ];
+                let mut cells = vec![Cell::from(process_cell), Cell::from(""), Cell::from("")];
                 if show_location {
                     cells.push(Cell::from("")); // Loc (empty for group header)
                 }
@@ -1549,10 +1649,10 @@ fn draw_grouped_connections_list(
         })
         .collect();
 
-    // Create table state with current selection
+    // Create table state with selection adjusted to windowed slice
     let mut state = ratatui::widgets::TableState::default();
     if let Some(selected_index) = ui_state.get_selected_grouped_index(grouped_rows) {
-        state.select(Some(selected_index));
+        state.select(Some(selected_index.saturating_sub(scroll_offset)));
     }
 
     // Build title showing both group sort (A-Z) and connection sort within groups
@@ -1595,7 +1695,6 @@ fn draw_grouped_connections_list(
         vertical: 1,
     });
     let header_height = 2_u16;
-    let scroll_offset = state.offset();
     let visible_start_y = inner.y + header_height;
     let max_visible_rows = inner.height.saturating_sub(header_height) as usize;
 
@@ -2051,6 +2150,14 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
 
 /// Draw the Graph tab with traffic visualization
 fn draw_graph_tab(f: &mut Frame, app: &App, connections: &[Connection], area: Rect) -> Result<()> {
+    // Filter out historic connections — graph should only show alive connections
+    let active_connections: Vec<Connection> = connections
+        .iter()
+        .filter(|c| !c.is_historic)
+        .cloned()
+        .collect();
+    let connections = &active_connections;
+
     let traffic_history = app.get_traffic_history();
 
     // Main layout: traffic chart, health chart, legend, bottom row
@@ -2193,9 +2300,9 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
         .style(theme::fg(theme::accent()));
     f.render_widget(sparkline, chunks[0]);
 
-    // Current connection count label
+    // Current connection count label (active connections only)
     let current_count = conn_data.last().copied().unwrap_or(0);
-    let label = Paragraph::new(format!("{} connections", current_count));
+    let label = Paragraph::new(format!("{} active connections", current_count));
     f.render_widget(label, chunks[1]);
 }
 
@@ -3599,7 +3706,7 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Jump to first/last connection (vim-style)"),
         ]),
         Line::from(vec![
-            Span::styled("Page Up/Down ", theme::fg(theme::key())),
+            Span::styled("Page Up/Down, Ctrl+B/F ", theme::fg(theme::key())),
             Span::raw("Navigate connections by page"),
         ]),
         Line::from(vec![

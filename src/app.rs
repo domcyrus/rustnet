@@ -1312,10 +1312,10 @@ impl App {
                             )
                         });
 
-                // Get connection count from snapshot
+                // Get active connection count from snapshot (excludes historic)
                 let connection_count = connections_snapshot
                     .read()
-                    .map(|snap| snap.len())
+                    .map(|snap| snap.iter().filter(|c| !c.is_historic).count())
                     .unwrap_or(0);
 
                 // Get packet and retransmit counts (calculate deltas)

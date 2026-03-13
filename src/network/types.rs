@@ -1128,7 +1128,7 @@ impl TrafficHistory {
         Self::smooth_data(&raw, 3)
     }
 
-    /// Get connection count values for sparkline (newest last)
+    /// Get active connection count values for sparkline (newest last)
     pub fn get_connection_sparkline_data(&self, count: usize) -> Vec<u64> {
         self.samples
             .iter()
