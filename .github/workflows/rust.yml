@@ -8,6 +8,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'assets/services'
+      - 'assets/oui.gz'
       - 'build.rs'
       - '.github/workflows/rust.yml'
   pull_request:
@@ -17,6 +18,7 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'assets/services'
+      - 'assets/oui.gz'
       - 'build.rs'
       - '.github/workflows/rust.yml'
   workflow_dispatch:

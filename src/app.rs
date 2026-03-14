@@ -19,6 +19,7 @@ use crate::network::{
     geoip::{GeoIpConfig, GeoIpResolver},
     interface_stats::{InterfaceRates, InterfaceStats, InterfaceStatsProvider},
     merge::{create_connection_from_packet, merge_packet_into_connection},
+    oui::OuiLookup,
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
     services::ServiceLookup,
@@ -397,6 +398,9 @@ pub struct App {
     /// Service name lookup
     service_lookup: Arc<ServiceLookup>,
 
+    /// OUI vendor lookup for MAC addresses
+    oui_lookup: Option<Arc<OuiLookup>>,
+
     /// Application statistics
     stats: Arc<AppStats>,
 
@@ -446,6 +450,15 @@ impl App {
             warn!("Failed to load embedded services: {}, using defaults", e);
             ServiceLookup::with_defaults()
         });
+
+        // Load OUI vendor database
+        let oui_lookup = match OuiLookup::from_embedded() {
+            Ok(oui) => Some(Arc::new(oui)),
+            Err(e) => {
+                warn!("Failed to load OUI vendor database: {}", e);
+                None
+            }
+        };
 
         // Initialize DNS resolver if enabled
         let dns_resolver = if config.resolve_dns {
@@ -512,6 +525,7 @@ impl App {
             historic_connections: Arc::new(DashMap::new()),
             show_historic: Arc::new(AtomicBool::new(false)),
             service_lookup: Arc::new(service_lookup),
+            oui_lookup,
             stats: Arc::new(AppStats::default()),
             is_loading: Arc::new(AtomicBool::new(true)),
             current_interface: Arc::new(RwLock::new(None)),
@@ -806,6 +820,7 @@ impl App {
         let json_log_path = self.config.json_log_file.clone();
         let rtt_tracker = Arc::clone(&self.rtt_tracker);
         let dns_resolver = self.dns_resolver.clone();
+        let oui_lookup = self.oui_lookup.clone();
         let parser_config = ParserConfig {
             enable_dpi: self.config.enable_dpi,
             ..Default::default()
@@ -831,7 +846,12 @@ impl App {
             // Wait for linktype to be available
             let parser = loop {
                 if let Some(linktype) = *linktype_storage.read().unwrap() {
-                    break PacketParser::with_config(parser_config.clone()).with_linktype(linktype);
+                    let mut parser =
+                        PacketParser::with_config(parser_config.clone()).with_linktype(linktype);
+                    if let Some(ref oui) = oui_lookup {
+                        parser = parser.with_oui_lookup((**oui).clone());
+                    }
+                    break parser;
                 }
                 thread::sleep(Duration::from_millis(10));
             };

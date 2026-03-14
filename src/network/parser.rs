@@ -3,6 +3,7 @@ use crate::network::dpi::DpiResult;
 use crate::network::link_layer;
 #[cfg(target_os = "macos")]
 use crate::network::link_layer::pktap;
+use crate::network::oui::OuiLookup;
 use crate::network::protocol;
 use crate::network::protocol::TransportParams;
 use crate::network::types::*;
@@ -110,6 +111,7 @@ pub struct PacketParser {
     local_ips: std::collections::HashSet<IpAddr>,
     config: ParserConfig,
     linktype: Option<i32>, // DLT linktype - 149 means PKTAP on macOS
+    oui_lookup: Option<OuiLookup>,
 }
 
 impl Default for PacketParser {
@@ -132,6 +134,7 @@ impl PacketParser {
             local_ips,
             config: ParserConfig::default(),
             linktype: None,
+            oui_lookup: None,
         }
     }
 
@@ -146,7 +149,14 @@ impl PacketParser {
             local_ips,
             config,
             linktype: None,
+            oui_lookup: None,
         }
+    }
+
+    /// Set the OUI lookup for MAC vendor resolution
+    pub fn with_oui_lookup(mut self, oui_lookup: OuiLookup) -> Self {
+        self.oui_lookup = Some(oui_lookup);
+        self
     }
 
     /// Set the linktype for this parser (needed for PKTAP detection)
@@ -436,12 +446,23 @@ impl PacketParser {
             _ => return None,
         };
 
+        let sender_vendor = self
+            .oui_lookup
+            .as_ref()
+            .and_then(|oui| oui.lookup(&sender_mac).map(String::from));
+        let target_vendor = self
+            .oui_lookup
+            .as_ref()
+            .and_then(|oui| oui.lookup(&target_mac).map(String::from));
+
         let arp_info = ArpInfo {
             operation,
             sender_mac,
             sender_ip,
             target_mac,
             target_ip,
+            sender_vendor,
+            target_vendor,
         };
 
         let is_outgoing = self.local_ips.contains(&sender_ip);

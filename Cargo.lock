@@ -2186,6 +2186,7 @@ dependencies = [
  "crossterm",
  "dashmap",
  "dns-lookup",
+ "flate2",
  "http_req",
  "landlock",
  "libbpf-cargo",

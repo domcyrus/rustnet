@@ -1,0 +1,50 @@
+name: Update OUI Database
+
+on:
+  schedule:
+    - cron: '0 6 1 * *' # 1st of every month at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-oui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download latest IEEE OUI database
+        run: |
+          curl -fsSL 'https://standards-oui.ieee.org/oui/oui.txt' -o oui-raw.txt
+          grep '(base 16)' oui-raw.txt | sed 's/[[:space:]]*(base 16)[[:space:]]*/\t/' > oui-clean.txt
+          gzip -9 -c oui-clean.txt > assets/oui.gz
+          rm oui-raw.txt oui-clean.txt
+
+      - name: Create pull request if changed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet assets/oui.gz; then
+            echo "OUI database is already up to date."
+            exit 0
+          fi
+
+          BRANCH="update-oui-db"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add assets/oui.gz
+          git commit -m "Update OUI vendor database"
+          git push -f origin "$BRANCH"
+
+          # Only create PR if one doesn't already exist for this branch
+          if ! gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' | grep -q .; then
+            gh pr create \
+              --title "Update OUI vendor database" \
+              --body "Automated monthly update of the IEEE OUI (MAC vendor) database.
+
+          Source: https://standards-oui.ieee.org/oui/oui.txt" \
+              --label dependencies
+          fi
