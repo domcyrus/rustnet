@@ -90,7 +90,10 @@ impl EbpfLoader {
             }
         }
 
-        // Convert to 'static lifetime by boxing
+        // SAFETY: SocketTrackerSkel borrows from open_object via the reference
+        // passed to skel_builder.open(). We extend the lifetime to 'static because
+        // _open_object is stored alongside skel in EbpfLoader and will not be
+        // dropped before skel. The Box ensures a stable address.
         let skel_static: SocketTrackerSkel<'static> = unsafe { std::mem::transmute(skel) };
 
         Ok(Self {

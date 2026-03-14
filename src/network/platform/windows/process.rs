@@ -147,7 +147,7 @@ impl WindowsProcessLookup {
                 );
 
                 let key = ConnectionKey {
-                    protocol: Protocol::TCP,
+                    protocol: Protocol::Tcp,
                     local_addr,
                     remote_addr,
                 };
@@ -259,7 +259,7 @@ impl WindowsProcessLookup {
                 );
 
                 let key = ConnectionKey {
-                    protocol: Protocol::TCP,
+                    protocol: Protocol::Tcp,
                     local_addr,
                     remote_addr,
                 };
@@ -380,7 +380,7 @@ impl WindowsProcessLookup {
                 let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0);
 
                 let key = ConnectionKey {
-                    protocol: Protocol::UDP,
+                    protocol: Protocol::Udp,
                     local_addr,
                     remote_addr,
                 };

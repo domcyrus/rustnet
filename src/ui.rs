@@ -899,10 +899,10 @@ pub fn compute_grouped_rows(
                 connection_count: active_conns().count(),
                 historic_count: conns.iter().filter(|c| c.is_historic).count(),
                 tcp_count: active_conns()
-                    .filter(|c| c.protocol == Protocol::TCP)
+                    .filter(|c| c.protocol == Protocol::Tcp)
                     .count(),
                 udp_count: active_conns()
-                    .filter(|c| c.protocol == Protocol::UDP)
+                    .filter(|c| c.protocol == Protocol::Udp)
                     .count(),
                 total_incoming_rate_bps: active_conns().map(|c| c.current_incoming_rate_bps).sum(),
                 total_outgoing_rate_bps: active_conns().map(|c| c.current_outgoing_rate_bps).sum(),
@@ -995,16 +995,16 @@ pub fn draw(
     };
 
     match ui_state.selected_tab {
-        0 => draw_overview(
-            f,
-            ui_state,
-            connections,
-            stats,
-            app,
-            content_area,
-            grouped_rows.as_deref(),
-            click_regions,
-        )?,
+        0 => {
+            let ctx = DrawContext {
+                ui_state,
+                connections,
+                stats,
+                app,
+                grouped_rows: grouped_rows.as_deref(),
+            };
+            draw_overview(f, &ctx, content_area, click_regions)?;
+        }
         1 => {
             let dns_resolver = app.get_dns_resolver();
             draw_connection_details(
@@ -1070,16 +1070,20 @@ fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect, click_regions: &mut 
     }
 }
 
+/// Bundles read-only rendering context for overview drawing.
+struct DrawContext<'a> {
+    ui_state: &'a UIState,
+    connections: &'a [Connection],
+    stats: &'a AppStats,
+    app: &'a App,
+    grouped_rows: Option<&'a [GroupedRow]>,
+}
+
 /// Draw the overview mode
-#[allow(clippy::too_many_arguments)]
 fn draw_overview(
     f: &mut Frame,
-    ui_state: &UIState,
-    connections: &[Connection],
-    stats: &AppStats,
-    app: &App,
+    ctx: &DrawContext,
     area: Rect,
-    grouped_rows: Option<&[GroupedRow]>,
     click_regions: &mut ClickableRegions,
 ) -> Result<()> {
     let chunks = Layout::default()
@@ -1088,17 +1092,17 @@ fn draw_overview(
         .split(area);
 
     // Get DNS resolver from app if enabled
-    let dns_resolver = app.get_dns_resolver();
+    let dns_resolver = ctx.app.get_dns_resolver();
 
     // Get GeoIP status - only show Loc column if country DB is loaded
-    let (has_country_db, _has_asn_db, _has_city_db) = app.get_geoip_status();
+    let (has_country_db, _has_asn_db, _has_city_db) = ctx.app.get_geoip_status();
 
     // Use grouped view if grouping is enabled
-    if ui_state.grouping_enabled {
-        if let Some(rows) = grouped_rows {
+    if ctx.ui_state.grouping_enabled {
+        if let Some(rows) = ctx.grouped_rows {
             draw_grouped_connections_list(
                 f,
-                ui_state,
+                ctx.ui_state,
                 rows,
                 chunks[0],
                 dns_resolver.as_deref(),
@@ -1109,8 +1113,8 @@ fn draw_overview(
     } else {
         draw_connections_list(
             f,
-            ui_state,
-            connections,
+            ctx.ui_state,
+            ctx.connections,
             chunks[0],
             dns_resolver.as_deref(),
             has_country_db,
@@ -1118,7 +1122,7 @@ fn draw_overview(
         );
     }
 
-    draw_stats_panel(f, connections, stats, app, chunks[1])?;
+    draw_stats_panel(f, ctx.connections, ctx.stats, ctx.app, chunks[1])?;
 
     Ok(())
 }
@@ -1730,11 +1734,11 @@ fn draw_stats_panel(
     // Connection statistics (only count active connections, not historic)
     let tcp_count = connections
         .iter()
-        .filter(|c| !c.is_historic && c.protocol == Protocol::TCP)
+        .filter(|c| !c.is_historic && c.protocol == Protocol::Tcp)
         .count();
     let udp_count = connections
         .iter()
-        .filter(|c| !c.is_historic && c.protocol == Protocol::UDP)
+        .filter(|c| !c.is_historic && c.protocol == Protocol::Udp)
         .count();
     let active_count = connections.iter().filter(|c| !c.is_historic).count();
     let historic_count = connections.iter().filter(|c| c.is_historic).count();
@@ -2615,7 +2619,7 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
     // Count TCP states
     let mut state_counts: HashMap<&str, usize> = HashMap::new();
     for conn in connections {
-        if conn.protocol == Protocol::TCP
+        if conn.protocol == Protocol::Tcp
             && let ProtocolState::Tcp(tcp_state) = &conn.protocol_state
         {
             let state_name = match tcp_state {
@@ -3029,7 +3033,7 @@ fn draw_connection_details(
                             &mut details_text,
                             &mut detail_fields,
                             "  DNS Type",
-                            format!("{:?}", query_type),
+                            format!("{}", query_type),
                             label_style,
                         );
                     }
@@ -3190,7 +3194,7 @@ fn draw_connection_details(
                             &mut details_text,
                             &mut detail_fields,
                             "  Query Type",
-                            format!("{:?}", query_type),
+                            format!("{}", query_type),
                             label_style,
                         );
                     }
@@ -3210,7 +3214,7 @@ fn draw_connection_details(
                             &mut details_text,
                             &mut detail_fields,
                             "  Query Type",
-                            format!("{:?}", query_type),
+                            format!("{}", query_type),
                             label_style,
                         );
                     }
@@ -4375,19 +4379,19 @@ mod tests {
         // Create test connections with different process names for sorting
         let mut connections = vec![
             Connection::new(
-                Protocol::TCP,
+                Protocol::Tcp,
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8080),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 443),
                 ProtocolState::Tcp(crate::network::types::TcpState::Established),
             ),
             Connection::new(
-                Protocol::TCP,
+                Protocol::Tcp,
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8081),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 443),
                 ProtocolState::Tcp(crate::network::types::TcpState::Established),
             ),
             Connection::new(
-                Protocol::TCP,
+                Protocol::Tcp,
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8082),
                 SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 3)), 443),
                 ProtocolState::Tcp(crate::network::types::TcpState::Established),

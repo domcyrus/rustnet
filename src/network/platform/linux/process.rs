@@ -63,25 +63,25 @@ impl LinuxProcessLookup {
         // Then, parse network files to map connections -> inodes -> processes
         Self::parse_and_map(
             "/proc/net/tcp",
-            Protocol::TCP,
+            Protocol::Tcp,
             &inode_to_process,
             &mut process_map,
         )?;
         Self::parse_and_map(
             "/proc/net/tcp6",
-            Protocol::TCP,
+            Protocol::Tcp,
             &inode_to_process,
             &mut process_map,
         )?;
         Self::parse_and_map(
             "/proc/net/udp",
-            Protocol::UDP,
+            Protocol::Udp,
             &inode_to_process,
             &mut process_map,
         )?;
         Self::parse_and_map(
             "/proc/net/udp6",
-            Protocol::UDP,
+            Protocol::Udp,
             &inode_to_process,
             &mut process_map,
         )?;

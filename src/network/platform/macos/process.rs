@@ -86,11 +86,11 @@ impl MacOSProcessLookup {
                         // Need to look at NODE field for protocol
                         if parts.len() > 7 && (parts[7] == "TCP" || parts[7].contains("TCP")) {
                             debug!("  Detected TCP from NODE field: {}", parts[7]);
-                            Some(Protocol::TCP)
+                            Some(Protocol::Tcp)
                         } else if parts.len() > 7 && (parts[7] == "UDP" || parts[7].contains("UDP"))
                         {
                             debug!("  Detected UDP from NODE field: {}", parts[7]);
-                            Some(Protocol::UDP)
+                            Some(Protocol::Udp)
                         } else {
                             debug!(
                                 "  No protocol detected from NODE field: {}",
@@ -231,7 +231,7 @@ fn parse_lsof_connection_with_hint(
         let remote = parse_socket_addr(parts[1])?;
 
         // Use hint if available, otherwise assume TCP for established connections
-        let protocol = protocol_hint.unwrap_or(Protocol::TCP);
+        let protocol = protocol_hint.unwrap_or(Protocol::Tcp);
         debug!(
             "    Success: {:?} {}:{} -> {}:{}",
             protocol,
@@ -253,7 +253,7 @@ fn parse_lsof_connection_with_hint(
         };
 
         // Use hint if available, otherwise assume UDP for single address
-        let protocol = protocol_hint.unwrap_or(Protocol::UDP);
+        let protocol = protocol_hint.unwrap_or(Protocol::Udp);
         debug!(
             "    Success: {:?} {}:{} (listening/UDP)",
             protocol,

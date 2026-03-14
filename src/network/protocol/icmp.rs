@@ -42,7 +42,7 @@ pub fn parse(
 
     Some(ParsedPacket {
         connection_key: format!("ICMP:{}-ICMP:{}", local_addr, remote_addr),
-        protocol: Protocol::ICMP,
+        protocol: Protocol::Icmp,
         local_addr,
         remote_addr,
         tcp_header: None,
@@ -91,7 +91,7 @@ pub fn parse_v6(
 
     Some(ParsedPacket {
         connection_key: format!("ICMP:{}-ICMP:{}", local_addr, remote_addr),
-        protocol: Protocol::ICMP,
+        protocol: Protocol::Icmp,
         local_addr,
         remote_addr,
         tcp_header: None,

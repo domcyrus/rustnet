@@ -64,9 +64,9 @@ impl FreeBSDProcessLookup {
 
         // Determine protocol type
         let protocol = if proto.starts_with("tcp") {
-            Protocol::TCP
+            Protocol::Tcp
         } else {
-            Protocol::UDP
+            Protocol::Udp
         };
 
         // Run sockstat command

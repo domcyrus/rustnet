@@ -255,7 +255,7 @@ fn log_pcap_connection(pcap_path: &str, conn: &Connection) {
     // Build base event without GeoIP fields
     let mut event = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
-        "protocol": format!("{:?}", conn.protocol),
+        "protocol": conn.protocol.to_string(),
         "local_addr": conn.local_addr.to_string(),
         "remote_addr": conn.remote_addr.to_string(),
         "pid": conn.pid,
@@ -1262,8 +1262,9 @@ impl App {
                             }
 
                             // Store current stats
-                            interface_stats.insert(stat.interface_name.clone(), stat.clone());
-                            previous_stats.insert(stat.interface_name.clone(), stat);
+                            let name = stat.interface_name.clone();
+                            interface_stats.insert(name.clone(), stat.clone());
+                            previous_stats.insert(name, stat);
                         }
                     }
                     Err(e) => {
@@ -1810,7 +1811,7 @@ fn update_connection(
 
     // Track RTT for TCP connections using SYN/SYN-ACK timing
     let mut measured_rtt: Option<std::time::Duration> = None;
-    if parsed.protocol == Protocol::TCP
+    if parsed.protocol == Protocol::Tcp
         && let Some(tcp_header) = &parsed.tcp_header
     {
         let conn_key = ConnectionKey::new(parsed.local_addr, parsed.remote_addr);
@@ -1829,7 +1830,7 @@ fn update_connection(
     }
 
     // For QUIC packets, check if we have a connection ID mapping
-    if parsed.protocol == Protocol::UDP
+    if parsed.protocol == Protocol::Udp
         && let Some(dpi_result) = &parsed.dpi_result
         && let ApplicationProtocol::Quic(quic_info) = &dpi_result.application
         && let Some(conn_id_hex) = &quic_info.connection_id_hex

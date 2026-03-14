@@ -133,7 +133,7 @@ pub fn parse(
 
     Some(ParsedPacket {
         connection_key: format!("TCP:{}-TCP:{}", local_addr, remote_addr),
-        protocol: Protocol::TCP,
+        protocol: Protocol::Tcp,
         local_addr,
         remote_addr,
         tcp_header: Some(tcp_header),

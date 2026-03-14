@@ -37,8 +37,8 @@ impl PktapHeader {
             return None;
         }
 
-        // Parse the header (assuming little-endian for now)
-        // TODO: Handle endianness properly based on system
+        // Parse the header as little-endian. PKTAP is macOS-only (Apple's DLT_PKTAP),
+        // and all macOS platforms (x86_64 and ARM64) are little-endian.
         let length = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
 
         // Sanity check the length field
@@ -51,20 +51,19 @@ impl PktapHeader {
             return None;
         }
 
-        // Parse the full header
-        unsafe {
-            let header_ptr = data.as_ptr() as *const PktapHeader;
-            let mut header = (*header_ptr).clone();
+        // SAFETY: We verified data.len() >= size_of::<PktapHeader>() above.
+        // Using read_unaligned because data (&[u8]) may not satisfy PktapHeader's
+        // alignment requirement from its u32 fields.
+        let mut header = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const PktapHeader) };
 
-            // Convert from network byte order if needed
-            header.pth_length = u32::from_le_bytes(header.pth_length.to_le_bytes());
-            header.pth_type_next = u32::from_le_bytes(header.pth_type_next.to_le_bytes());
-            header.pth_dlt = u32::from_le_bytes(header.pth_dlt.to_le_bytes());
-            header.pth_pid = u32::from_le_bytes(header.pth_pid.to_le_bytes());
-            header.pth_epid = u32::from_le_bytes(header.pth_epid.to_le_bytes());
+        // Convert from network byte order if needed
+        header.pth_length = u32::from_le_bytes(header.pth_length.to_le_bytes());
+        header.pth_type_next = u32::from_le_bytes(header.pth_type_next.to_le_bytes());
+        header.pth_dlt = u32::from_le_bytes(header.pth_dlt.to_le_bytes());
+        header.pth_pid = u32::from_le_bytes(header.pth_pid.to_le_bytes());
+        header.pth_epid = u32::from_le_bytes(header.pth_epid.to_le_bytes());
 
-            Some(header)
-        }
+        Some(header)
     }
 
     /// Extract process information from the header using the correct offsets
