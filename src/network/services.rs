@@ -53,8 +53,8 @@ impl ServiceLookup {
             };
 
             let protocol = match port_parts[1].to_lowercase().as_str() {
-                "tcp" => Protocol::TCP,
-                "udp" => Protocol::UDP,
+                "tcp" => Protocol::Tcp,
+                "udp" => Protocol::Udp,
                 _ => continue,
             };
 
@@ -76,41 +76,41 @@ impl ServiceLookup {
         let mut lookup = Self::new();
 
         // Common TCP services
-        lookup.add_service(20, Protocol::TCP, "ftp-data");
-        lookup.add_service(21, Protocol::TCP, "ftp");
-        lookup.add_service(22, Protocol::TCP, "ssh");
-        lookup.add_service(23, Protocol::TCP, "telnet");
-        lookup.add_service(25, Protocol::TCP, "smtp");
-        lookup.add_service(53, Protocol::TCP, "dns");
-        lookup.add_service(80, Protocol::TCP, "http");
-        lookup.add_service(110, Protocol::TCP, "pop3");
-        lookup.add_service(143, Protocol::TCP, "imap");
-        lookup.add_service(443, Protocol::TCP, "https");
-        lookup.add_service(445, Protocol::TCP, "microsoft-ds");
-        lookup.add_service(587, Protocol::TCP, "submission");
-        lookup.add_service(993, Protocol::TCP, "imaps");
-        lookup.add_service(995, Protocol::TCP, "pop3s");
-        lookup.add_service(1433, Protocol::TCP, "mssql");
-        lookup.add_service(3306, Protocol::TCP, "mysql");
-        lookup.add_service(3389, Protocol::TCP, "rdp");
-        lookup.add_service(5432, Protocol::TCP, "postgresql");
-        lookup.add_service(5900, Protocol::TCP, "vnc");
-        lookup.add_service(6379, Protocol::TCP, "redis");
-        lookup.add_service(8080, Protocol::TCP, "http-alt");
-        lookup.add_service(8443, Protocol::TCP, "https-alt");
-        lookup.add_service(27017, Protocol::TCP, "mongodb");
+        lookup.add_service(20, Protocol::Tcp, "ftp-data");
+        lookup.add_service(21, Protocol::Tcp, "ftp");
+        lookup.add_service(22, Protocol::Tcp, "ssh");
+        lookup.add_service(23, Protocol::Tcp, "telnet");
+        lookup.add_service(25, Protocol::Tcp, "smtp");
+        lookup.add_service(53, Protocol::Tcp, "dns");
+        lookup.add_service(80, Protocol::Tcp, "http");
+        lookup.add_service(110, Protocol::Tcp, "pop3");
+        lookup.add_service(143, Protocol::Tcp, "imap");
+        lookup.add_service(443, Protocol::Tcp, "https");
+        lookup.add_service(445, Protocol::Tcp, "microsoft-ds");
+        lookup.add_service(587, Protocol::Tcp, "submission");
+        lookup.add_service(993, Protocol::Tcp, "imaps");
+        lookup.add_service(995, Protocol::Tcp, "pop3s");
+        lookup.add_service(1433, Protocol::Tcp, "mssql");
+        lookup.add_service(3306, Protocol::Tcp, "mysql");
+        lookup.add_service(3389, Protocol::Tcp, "rdp");
+        lookup.add_service(5432, Protocol::Tcp, "postgresql");
+        lookup.add_service(5900, Protocol::Tcp, "vnc");
+        lookup.add_service(6379, Protocol::Tcp, "redis");
+        lookup.add_service(8080, Protocol::Tcp, "http-alt");
+        lookup.add_service(8443, Protocol::Tcp, "https-alt");
+        lookup.add_service(27017, Protocol::Tcp, "mongodb");
 
         // Common UDP services
-        lookup.add_service(53, Protocol::UDP, "dns");
-        lookup.add_service(67, Protocol::UDP, "dhcp-server");
-        lookup.add_service(68, Protocol::UDP, "dhcp-client");
-        lookup.add_service(123, Protocol::UDP, "ntp");
-        lookup.add_service(161, Protocol::UDP, "snmp");
-        lookup.add_service(443, Protocol::UDP, "https"); // QUIC
-        lookup.add_service(500, Protocol::UDP, "isakmp");
-        lookup.add_service(1194, Protocol::UDP, "openvpn");
-        lookup.add_service(4500, Protocol::UDP, "ipsec-nat");
-        lookup.add_service(5060, Protocol::UDP, "sip");
+        lookup.add_service(53, Protocol::Udp, "dns");
+        lookup.add_service(67, Protocol::Udp, "dhcp-server");
+        lookup.add_service(68, Protocol::Udp, "dhcp-client");
+        lookup.add_service(123, Protocol::Udp, "ntp");
+        lookup.add_service(161, Protocol::Udp, "snmp");
+        lookup.add_service(443, Protocol::Udp, "https"); // QUIC
+        lookup.add_service(500, Protocol::Udp, "isakmp");
+        lookup.add_service(1194, Protocol::Udp, "openvpn");
+        lookup.add_service(4500, Protocol::Udp, "ipsec-nat");
+        lookup.add_service(5060, Protocol::Udp, "sip");
 
         lookup
     }
@@ -140,9 +140,9 @@ mod tests {
     fn test_default_services() {
         let lookup = ServiceLookup::with_defaults();
 
-        assert_eq!(lookup.lookup(80, Protocol::TCP), Some("http"));
-        assert_eq!(lookup.lookup(443, Protocol::TCP), Some("https"));
-        assert_eq!(lookup.lookup(22, Protocol::TCP), Some("ssh"));
-        assert_eq!(lookup.lookup(53, Protocol::UDP), Some("dns"));
+        assert_eq!(lookup.lookup(80, Protocol::Tcp), Some("http"));
+        assert_eq!(lookup.lookup(443, Protocol::Tcp), Some("https"));
+        assert_eq!(lookup.lookup(22, Protocol::Tcp), Some("ssh"));
+        assert_eq!(lookup.lookup(53, Protocol::Udp), Some("dns"));
     }
 }

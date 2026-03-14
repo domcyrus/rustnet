@@ -505,7 +505,7 @@ mod tests {
 
         // Create a test connection in ESTABLISHED state
         let mut conn = Connection::new(
-            Protocol::TCP,
+            Protocol::Tcp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
             ProtocolState::Tcp(TcpState::Established),
@@ -540,7 +540,7 @@ mod tests {
 
         // Create a fresh UDP connection (should show as UDP_ACTIVE)
         let conn = Connection::new(
-            Protocol::UDP,
+            Protocol::Udp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
             ProtocolState::Udp,
@@ -559,7 +559,7 @@ mod tests {
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         let conn = Connection::new(
-            Protocol::TCP,
+            Protocol::Tcp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 443),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321),
             ProtocolState::Tcp(TcpState::SynReceived),
@@ -583,7 +583,7 @@ mod tests {
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         let conn = Connection::new(
-            Protocol::TCP,
+            Protocol::Tcp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
             ProtocolState::Tcp(TcpState::Established),

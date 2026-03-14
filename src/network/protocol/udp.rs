@@ -45,7 +45,7 @@ pub fn parse(
 
     Some(ParsedPacket {
         connection_key: format!("UDP:{}-UDP:{}", local_addr, remote_addr),
-        protocol: Protocol::UDP,
+        protocol: Protocol::Udp,
         local_addr,
         remote_addr,
         tcp_header: None,

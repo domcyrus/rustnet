@@ -4,21 +4,20 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[allow(clippy::upper_case_acronyms)] // Protocol names are standardized
 pub enum Protocol {
-    TCP,
-    UDP,
-    ICMP,
-    ARP,
+    Tcp,
+    Udp,
+    Icmp,
+    Arp,
 }
 
 impl std::fmt::Display for Protocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Protocol::TCP => write!(f, "TCP"),
-            Protocol::UDP => write!(f, "UDP"),
-            Protocol::ICMP => write!(f, "ICMP"),
-            Protocol::ARP => write!(f, "ARP"),
+            Protocol::Tcp => write!(f, "TCP"),
+            Protocol::Udp => write!(f, "UDP"),
+            Protocol::Icmp => write!(f, "ICMP"),
+            Protocol::Arp => write!(f, "ARP"),
         }
     }
 }
@@ -435,7 +434,9 @@ pub struct DnsInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::upper_case_acronyms)] // DNS record types are standardized protocol names
+// DNS record type names are standardized uppercase abbreviations per RFC 1035 et al.
+// Renaming e.g. AAAA to Aaaa or CNAME to Cname would be semantically incorrect.
+#[allow(clippy::upper_case_acronyms)]
 pub enum DnsQueryType {
     A,          // 1
     NS,         // 2
@@ -485,6 +486,15 @@ pub enum DnsQueryType {
     TA,         // 32768
     DLV,        // 32769
     Other(u16), // For any other type
+}
+
+impl std::fmt::Display for DnsQueryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DnsQueryType::Other(n) => write!(f, "TYPE{}", n),
+            _ => write!(f, "{:?}", self),
+        }
+    }
 }
 
 // NTP-specific types
@@ -1770,7 +1780,7 @@ impl Connection {
     ) -> Self {
         let now = SystemTime::now();
         // Initialize TCP analytics for TCP connections
-        let tcp_analytics = if protocol == Protocol::TCP {
+        let tcp_analytics = if protocol == Protocol::Tcp {
             Some(TcpAnalytics::new())
         } else {
             None
@@ -2091,7 +2101,7 @@ mod tests {
 
     fn create_test_connection() -> Connection {
         Connection::new(
-            Protocol::TCP,
+            Protocol::Tcp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
             ProtocolState::Tcp(TcpState::Established),
@@ -2674,7 +2684,7 @@ mod tests {
     #[test]
     fn test_enhanced_state_display_quic() {
         let mut conn = Connection::new(
-            Protocol::UDP,
+            Protocol::Udp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),
             ProtocolState::Udp,
@@ -2714,7 +2724,7 @@ mod tests {
     #[test]
     fn test_enhanced_state_display_dns() {
         let mut conn = Connection::new(
-            Protocol::UDP,
+            Protocol::Udp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
             ProtocolState::Udp,
@@ -2752,7 +2762,7 @@ mod tests {
     #[test]
     fn test_enhanced_state_display_regular_udp() {
         let mut conn = Connection::new(
-            Protocol::UDP,
+            Protocol::Udp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080),
             ProtocolState::Udp,
@@ -2793,7 +2803,7 @@ mod tests {
     #[test]
     fn test_dynamic_timeout_quic() {
         let mut conn = Connection::new(
-            Protocol::UDP,
+            Protocol::Udp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),
             ProtocolState::Udp,
@@ -2831,7 +2841,7 @@ mod tests {
     #[test]
     fn test_dynamic_timeout_dns() {
         let mut conn = Connection::new(
-            Protocol::UDP,
+            Protocol::Udp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
             ProtocolState::Udp,
@@ -2956,7 +2966,7 @@ mod tests {
     fn test_icmp_and_arp_states() {
         // Test ICMP states
         let mut conn = Connection::new(
-            Protocol::ICMP,
+            Protocol::Icmp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
             ProtocolState::Icmp {
@@ -2969,7 +2979,7 @@ mod tests {
         assert_eq!(conn.get_timeout(), Duration::from_secs(10));
 
         // Test ARP states
-        conn.protocol = Protocol::ARP;
+        conn.protocol = Protocol::Arp;
         conn.protocol_state = ProtocolState::Arp(ArpInfo {
             operation: ArpOperation::Request,
             sender_mac: "aa:bb:cc:dd:ee:ff".to_string(),

@@ -453,7 +453,7 @@ impl PacketParser {
 
         Some(ParsedPacket {
             connection_key: format!("ARP:{}-ARP:{}", local_addr, remote_addr),
-            protocol: Protocol::ARP,
+            protocol: Protocol::Arp,
             local_addr,
             remote_addr,
             tcp_header: None,
@@ -717,7 +717,7 @@ mod tests {
         );
 
         let p = parsed.unwrap();
-        assert_eq!(p.protocol, Protocol::TCP);
+        assert_eq!(p.protocol, Protocol::Tcp);
         // Source is 192.168.1.100:1234, Dest is 93.184.216.34:80
         // Since source is local IP, local_addr should be source, remote should be dest
         assert_eq!(p.local_addr.port(), 1234, "Local port should be 1234");
@@ -735,7 +735,7 @@ mod tests {
         assert!(parsed.is_some());
 
         let p = parsed.unwrap();
-        assert_eq!(p.protocol, Protocol::UDP);
+        assert_eq!(p.protocol, Protocol::Udp);
         // Source: 192.168.1.100:1234, Dest: 8.8.8.8:53
         assert_eq!(p.local_addr.port(), 1234);
         assert_eq!(p.remote_addr.port(), 53, "Should detect DNS port");
@@ -750,7 +750,7 @@ mod tests {
         assert!(parsed.is_some(), "Should parse IPv6 packets");
 
         let p = parsed.unwrap();
-        assert_eq!(p.protocol, Protocol::TCP);
+        assert_eq!(p.protocol, Protocol::Tcp);
         assert!(matches!(p.local_addr.ip(), IpAddr::V6(_)), "Should be IPv6");
     }
 
@@ -786,7 +786,7 @@ mod tests {
         assert!(parsed.is_some(), "Should parse Linux SLL packets");
 
         let p = parsed.unwrap();
-        assert_eq!(p.protocol, Protocol::TCP);
+        assert_eq!(p.protocol, Protocol::Tcp);
         assert_eq!(p.local_addr.port(), 1234);
         assert_eq!(p.remote_addr.port(), 80);
     }
@@ -811,7 +811,7 @@ mod tests {
         assert!(parsed.is_some(), "Should parse Linux SLL2 packets");
 
         let p = parsed.unwrap();
-        assert_eq!(p.protocol, Protocol::UDP);
+        assert_eq!(p.protocol, Protocol::Udp);
         assert_eq!(p.local_addr.port(), 1234);
         assert_eq!(p.remote_addr.port(), 53);
     }

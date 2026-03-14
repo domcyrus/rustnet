@@ -70,8 +70,8 @@ impl ConnKey {
                 }
             }
             _ => {
-                // Mixed IPv4/IPv6 - shouldn't happen in practice
-                panic!("Mixed IPv4/IPv6 addresses not supported");
+                // Callers use new_v4(Ipv4, Ipv4) or new_v6(Ipv6, Ipv6), so mixed types are impossible
+                unreachable!("Mixed IPv4/IPv6 addresses not supported");
             }
         }
 
@@ -157,8 +157,8 @@ impl ConnKey {
                 }
             }
             _ => {
-                // Mixed IPv4/IPv6 - shouldn't happen in practice
-                panic!("Mixed IPv4/IPv6 addresses not supported");
+                // Callers use new_icmp with addresses from a single connection (always same family)
+                unreachable!("Mixed IPv4/IPv6 addresses not supported");
             }
         }
 
@@ -167,6 +167,8 @@ impl ConnKey {
 
     /// Convert to bytes for map lookup
     pub fn as_bytes(&self) -> [u8; 38] {
+        // SAFETY: ConnKey is #[repr(C, packed)] with no padding (4×u32 + 4×u32 +
+        // u16 + u16 + u8 + u8 = 38 bytes). All bit patterns are valid u8 values.
         unsafe { std::mem::transmute(*self) }
     }
 }
@@ -204,6 +206,9 @@ impl MapReader {
 
                 let mut info_bytes = [0u8; 32];
                 info_bytes.copy_from_slice(&value_bytes);
+                // SAFETY: ConnInfo is #[repr(C, packed)] with size 32 bytes
+                // (u32 + u32 + [u8; 16] + u64). All field types accept arbitrary
+                // bit patterns, so any 32 bytes constitute a valid ConnInfo.
                 let conn_info: ConnInfo = unsafe { std::mem::transmute(info_bytes) };
                 Ok(Some(conn_info.into()))
             }

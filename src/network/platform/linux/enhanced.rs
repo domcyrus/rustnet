@@ -113,7 +113,7 @@ mod ebpf_enhanced {
         fn lookup_process_enhanced(&self, conn: &Connection) -> Option<(u32, String)> {
             // Try eBPF first for TCP/UDP/ICMP connections
             match conn.protocol {
-                Protocol::TCP | Protocol::UDP => {
+                Protocol::Tcp | Protocol::Udp => {
                     debug!(
                         "Enhanced lookup: Trying eBPF for {}:{} -> {}:{} ({})",
                         conn.local_addr.ip(),
@@ -121,8 +121,8 @@ mod ebpf_enhanced {
                         conn.remote_addr.ip(),
                         conn.remote_addr.port(),
                         match conn.protocol {
-                            Protocol::TCP => "TCP",
-                            Protocol::UDP => "UDP",
+                            Protocol::Tcp => "TCP",
+                            Protocol::Udp => "UDP",
                             _ => "Unknown",
                         }
                     );
@@ -139,7 +139,7 @@ mod ebpf_enhanced {
                         debug!("Enhanced lookup: eBPF miss, falling back to procfs");
                     }
                 }
-                Protocol::ICMP => {
+                Protocol::Icmp => {
                     // Try eBPF lookup for ICMP using the echo ID
                     if let ProtocolState::Icmp {
                         icmp_id: Some(id), ..
@@ -194,7 +194,7 @@ mod ebpf_enhanced {
                 }
             };
 
-            let is_tcp = matches!(conn.protocol, Protocol::TCP);
+            let is_tcp = matches!(conn.protocol, Protocol::Tcp);
 
             match tracker.lookup(
                 conn.local_addr.ip(),
@@ -339,8 +339,8 @@ mod ebpf_enhanced {
 
                 // Track protocol type
                 match conn.protocol {
-                    Protocol::TCP => stats.tcp_lookups += 1,
-                    Protocol::UDP => stats.udp_lookups += 1,
+                    Protocol::Tcp => stats.tcp_lookups += 1,
+                    Protocol::Udp => stats.udp_lookups += 1,
                     _ => {}
                 }
 
@@ -572,8 +572,8 @@ mod procfs_only {
 
                 // Track protocol type
                 match conn.protocol {
-                    Protocol::TCP => stats.tcp_lookups += 1,
-                    Protocol::UDP => stats.udp_lookups += 1,
+                    Protocol::Tcp => stats.tcp_lookups += 1,
+                    Protocol::Udp => stats.udp_lookups += 1,
                     _ => {}
                 }
 
