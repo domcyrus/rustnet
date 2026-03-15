@@ -488,9 +488,15 @@ where
             } else {
                 None
             };
-            if let Err(err) =
-                ui::draw(f, app, &ui_state, &connections, grouped, &stats, &mut click_regions)
-            {
+            if let Err(err) = ui::draw(
+                f,
+                app,
+                &ui_state,
+                &connections,
+                grouped,
+                &stats,
+                &mut click_regions,
+            ) {
                 error!("UI draw error: {}", err);
             }
         })?;

@@ -24,7 +24,8 @@ fn populate_connections(n: usize) -> DashMap<String, Connection> {
         conn.bytes_received = 15000;
         conn.packets_sent = 10;
         conn.packets_received = 30;
-        conn.rate_tracker.update(conn.bytes_sent, conn.bytes_received);
+        conn.rate_tracker
+            .update(conn.bytes_sent, conn.bytes_received);
         map.insert(key, conn);
     }
     map

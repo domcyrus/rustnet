@@ -933,8 +933,7 @@ mod tests {
         let mut conn = create_test_connection();
         let packet = create_test_packet(true, false);
 
-        let _tcp_events =
-            merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
+        let _tcp_events = merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
 
         assert_eq!(conn.packets_sent, 1);
         assert_eq!(conn.bytes_sent, 100);
@@ -963,8 +962,7 @@ mod tests {
 
         // Now simulate merging another packet
         let packet2 = create_test_packet(true, false);
-        let _tcp_events =
-            merge_packet_into_connection(&mut conn, &packet2, SystemTime::now());
+        let _tcp_events = merge_packet_into_connection(&mut conn, &packet2, SystemTime::now());
 
         // Bytes should have increased
         assert_eq!(conn.bytes_sent, 200);

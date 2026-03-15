@@ -9,13 +9,19 @@ use std::time::SystemTime;
 fn make_connection_with_samples(n_samples: usize) -> Connection {
     let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321);
     let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
-    let mut conn = Connection::new(Protocol::Tcp, local, remote, ProtocolState::Tcp(TcpState::Established));
+    let mut conn = Connection::new(
+        Protocol::Tcp,
+        local,
+        remote,
+        ProtocolState::Tcp(TcpState::Established),
+    );
 
     // Simulate rate tracker updates to fill it with samples
     for _ in 0..n_samples {
         conn.bytes_sent += 100;
         conn.bytes_received += 200;
-        conn.rate_tracker.update(conn.bytes_sent, conn.bytes_received);
+        conn.rate_tracker
+            .update(conn.bytes_sent, conn.bytes_received);
         conn.packets_sent += 1;
         conn.packets_received += 1;
     }
@@ -65,9 +71,7 @@ fn bench_merge(c: &mut Criterion) {
             &n_samples,
             |b, &n| {
                 let mut conn = make_connection_with_samples(n);
-                b.iter(|| {
-                    merge_packet_into_connection(&mut conn, &parsed, now)
-                });
+                b.iter(|| merge_packet_into_connection(&mut conn, &parsed, now));
             },
         );
 

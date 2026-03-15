@@ -3154,18 +3154,54 @@ mod tests {
         use crate::network::parser::ParsedPacket;
 
         println!("=== Struct Size Report (stack-resident bytes) ===");
-        println!("Connection:            {} bytes", std::mem::size_of::<Connection>());
-        println!("RateTracker:           {} bytes", std::mem::size_of::<RateTracker>());
-        println!("RateSample:            {} bytes", std::mem::size_of::<RateSample>());
-        println!("DpiInfo:               {} bytes", std::mem::size_of::<DpiInfo>());
-        println!("ApplicationProtocol:   {} bytes", std::mem::size_of::<ApplicationProtocol>());
-        println!("TcpAnalytics:          {} bytes", std::mem::size_of::<TcpAnalytics>());
-        println!("ProtocolState:         {} bytes", std::mem::size_of::<ProtocolState>());
-        println!("GeoIpInfo:             {} bytes", std::mem::size_of::<GeoIpInfo>());
-        println!("ParsedPacket:          {} bytes", std::mem::size_of::<ParsedPacket>());
-        println!("CryptoFrameReassembler:{} bytes", std::mem::size_of::<CryptoFrameReassembler>());
-        println!("TrafficHistory:        {} bytes", std::mem::size_of::<TrafficHistory>());
-        println!("Protocol:              {} bytes", std::mem::size_of::<Protocol>());
+        println!(
+            "Connection:            {} bytes",
+            std::mem::size_of::<Connection>()
+        );
+        println!(
+            "RateTracker:           {} bytes",
+            std::mem::size_of::<RateTracker>()
+        );
+        println!(
+            "RateSample:            {} bytes",
+            std::mem::size_of::<RateSample>()
+        );
+        println!(
+            "DpiInfo:               {} bytes",
+            std::mem::size_of::<DpiInfo>()
+        );
+        println!(
+            "ApplicationProtocol:   {} bytes",
+            std::mem::size_of::<ApplicationProtocol>()
+        );
+        println!(
+            "TcpAnalytics:          {} bytes",
+            std::mem::size_of::<TcpAnalytics>()
+        );
+        println!(
+            "ProtocolState:         {} bytes",
+            std::mem::size_of::<ProtocolState>()
+        );
+        println!(
+            "GeoIpInfo:             {} bytes",
+            std::mem::size_of::<GeoIpInfo>()
+        );
+        println!(
+            "ParsedPacket:          {} bytes",
+            std::mem::size_of::<ParsedPacket>()
+        );
+        println!(
+            "CryptoFrameReassembler:{} bytes",
+            std::mem::size_of::<CryptoFrameReassembler>()
+        );
+        println!(
+            "TrafficHistory:        {} bytes",
+            std::mem::size_of::<TrafficHistory>()
+        );
+        println!(
+            "Protocol:              {} bytes",
+            std::mem::size_of::<Protocol>()
+        );
         println!("=================================================");
 
         // Sanity: Connection should be reasonable (flag if it balloons)

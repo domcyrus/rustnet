@@ -1322,9 +1322,7 @@ fn draw_connections_list(
 
             // Format addresses - use hostnames when DNS resolution is enabled and show_hostnames is true
             let local_addr_display = conn.local_addr.to_string();
-            let remote_addr_display = if ui_state.show_hostnames
-                && conn.protocol != Protocol::Arp
-            {
+            let remote_addr_display = if ui_state.show_hostnames && conn.protocol != Protocol::Arp {
                 if let Some(resolver) = dns_resolver {
                     if let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip()) {
                         // Truncate hostname if too long, but always show port
