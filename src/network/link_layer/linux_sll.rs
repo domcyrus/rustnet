@@ -42,6 +42,11 @@ pub fn parse_sll(
             let ip_data = &data[16..];
             parser.parse_raw_ipv6_packet(ip_data, process_name, process_id)
         }
+        0x0806 => {
+            // ARP - payload starts at byte 16
+            log::trace!("Linux SLL: ARP packet detected");
+            parser.parse_arp_packet_with_offset(data, 16, process_name, process_id)
+        }
         _ => {
             log::debug!("Linux SLL: Unknown protocol: 0x{:04x}", protocol);
             None
@@ -87,6 +92,11 @@ pub fn parse_sll2(
             log::trace!("Linux SLL2: IPv6 packet detected");
             let ip_data = &data[20..];
             parser.parse_raw_ipv6_packet(ip_data, process_name, process_id)
+        }
+        0x0806 => {
+            // ARP - payload starts at byte 20
+            log::trace!("Linux SLL2: ARP packet detected");
+            parser.parse_arp_packet_with_offset(data, 20, process_name, process_id)
         }
         _ => {
             log::debug!("Linux SLL2: Unknown protocol: 0x{:04x}", protocol);

@@ -414,7 +414,17 @@ impl PacketParser {
         process_name: Option<String>,
         process_id: Option<u32>,
     ) -> Option<ParsedPacket> {
-        let arp_data = &data[14..];
+        self.parse_arp_packet_with_offset(data, 14, process_name, process_id)
+    }
+
+    pub fn parse_arp_packet_with_offset(
+        &self,
+        data: &[u8],
+        header_len: usize,
+        process_name: Option<String>,
+        process_id: Option<u32>,
+    ) -> Option<ParsedPacket> {
+        let arp_data = &data[header_len..];
         if arp_data.len() < 28 {
             return None;
         }

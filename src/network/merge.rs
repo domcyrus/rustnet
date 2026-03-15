@@ -164,13 +164,13 @@ fn analyze_tcp_segment(
     (new_retransmits, new_out_of_order, new_fast_retransmits)
 }
 
-/// Merge a parsed packet into an existing connection
-/// Returns (updated_connection, (new_retransmits, new_out_of_order, new_fast_retransmits))
+/// Merge a parsed packet into an existing connection, mutating it in place.
+/// Returns (new_retransmits, new_out_of_order, new_fast_retransmits).
 pub fn merge_packet_into_connection(
-    mut conn: Connection,
+    conn: &mut Connection,
     parsed: &ParsedPacket,
     now: SystemTime,
-) -> (Connection, (u64, u64, u64)) {
+) -> (u64, u64, u64) {
     let mut tcp_events = (0, 0, 0); // (retransmits, out_of_order, fast_retransmits)
     // Update timing
     conn.last_activity = now;
@@ -240,7 +240,7 @@ pub fn merge_packet_into_connection(
 
     // Update DPI info if available
     if let Some(dpi_result) = &parsed.dpi_result {
-        merge_dpi_info(&mut conn, dpi_result);
+        merge_dpi_info(conn, dpi_result);
     }
 
     // Update PKTAP process metadata if available
@@ -322,9 +322,9 @@ pub fn merge_packet_into_connection(
     }
 
     // Update rate calculations
-    update_connection_rates(&mut conn);
+    update_connection_rates(conn);
 
-    (conn, tcp_events)
+    tcp_events
 }
 
 /// Create a new connection from a parsed packet
@@ -933,9 +933,7 @@ mod tests {
         let mut conn = create_test_connection();
         let packet = create_test_packet(true, false);
 
-        let (updated_conn, _tcp_events) =
-            merge_packet_into_connection(conn, &packet, SystemTime::now());
-        conn = updated_conn;
+        let _tcp_events = merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
 
         assert_eq!(conn.packets_sent, 1);
         assert_eq!(conn.bytes_sent, 100);
@@ -956,7 +954,7 @@ mod tests {
     fn test_new_connection_rate_tracker_initialization() {
         // Test that the rate tracker is properly initialized for new connections
         let packet = create_test_packet(true, false);
-        let conn = create_connection_from_packet(&packet, SystemTime::now());
+        let mut conn = create_connection_from_packet(&packet, SystemTime::now());
 
         // The connection should have initial bytes
         assert_eq!(conn.bytes_sent, 100);
@@ -964,20 +962,19 @@ mod tests {
 
         // Now simulate merging another packet
         let packet2 = create_test_packet(true, false);
-        let (mut updated_conn, _tcp_events) =
-            merge_packet_into_connection(conn, &packet2, SystemTime::now());
+        let _tcp_events = merge_packet_into_connection(&mut conn, &packet2, SystemTime::now());
 
         // Bytes should have increased
-        assert_eq!(updated_conn.bytes_sent, 200);
-        assert_eq!(updated_conn.bytes_received, 0);
+        assert_eq!(conn.bytes_sent, 200);
+        assert_eq!(conn.bytes_received, 0);
 
         // Update rates - this should not cause a huge spike
-        updated_conn.update_rates();
+        conn.update_rates();
 
         // The rate should be reasonable (not include the initial 100 bytes as a spike)
         // Since we just added 100 bytes, the rate should be based on that delta
         // not on the full 200 bytes
-        assert!(updated_conn.current_outgoing_rate_bps >= 0.0);
+        assert!(conn.current_outgoing_rate_bps >= 0.0);
     }
 
     #[test]
