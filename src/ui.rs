@@ -1328,7 +1328,9 @@ fn draw_connections_list(
 
             // Format addresses - use hostnames when DNS resolution is enabled and show_hostnames is true
             let local_addr_display = conn.local_addr.to_string();
-            let remote_addr_display = if ui_state.show_hostnames {
+            let remote_addr_display = if ui_state.show_hostnames
+                && conn.protocol != Protocol::Arp
+            {
                 if let Some(resolver) = dns_resolver {
                     if let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip()) {
                         // Truncate hostname if too long, but always show port
@@ -1567,7 +1569,9 @@ fn draw_grouped_connections_list(
 
                 // Format addresses
                 let local_addr_display = connection.local_addr.to_string();
-                let remote_addr_display = if ui_state.show_hostnames {
+                let remote_addr_display = if ui_state.show_hostnames
+                    && connection.protocol != Protocol::Arp
+                {
                     if let Some(resolver) = dns_resolver {
                         if let Some(hostname) = resolver.get_hostname(&connection.remote_addr.ip())
                         {
@@ -2862,8 +2866,8 @@ fn draw_connection_details(
         label_style,
     );
 
-    // Add reverse DNS hostnames if available
-    if let Some(resolver) = dns_resolver {
+    // Add reverse DNS hostnames if available (skip ARP to avoid feedback loop)
+    if let Some(resolver) = dns_resolver.filter(|_| conn.protocol != Protocol::Arp) {
         let local_hostname = resolver.get_hostname(&conn.local_addr.ip());
         let remote_hostname = resolver.get_hostname(&conn.remote_addr.ip());
 

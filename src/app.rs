@@ -149,7 +149,8 @@ fn log_connection_event(
     });
 
     // Add hostname fields if DNS resolution is enabled and hostnames are resolved
-    if let Some(resolver) = dns_resolver {
+    // Skip ARP connections to avoid feedback loop (DNS lookups generate ARP traffic)
+    if let Some(resolver) = dns_resolver.filter(|_| conn.protocol != Protocol::Arp) {
         if let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip()) {
             event["destination_hostname"] = json!(hostname);
         }
