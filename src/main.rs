@@ -415,37 +415,52 @@ where
     ui_state.has_geoip = has_country_db;
     let mut click_regions = ui::ClickableRegions::default();
 
+    // Data state persists across loop iterations — only refreshed on timer tick
+    // or when an event changes the underlying data (filter, sort, historic toggle, etc.)
+    let mut connections: Vec<network::types::Connection> = Vec::new();
+    let mut grouped_rows: Vec<ui::GroupedRow<'_>> = Vec::new();
+    let mut stats = app.get_stats();
+    let mut needs_data_refresh = true;
+    let mut needs_regroup = false;
+
     loop {
-        // Get current connections and stats
-        // IMPORTANT: Fetch connections ONCE per iteration to ensure consistency
-        // between display, navigation, and selection operations
-        let mut connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
-            app.get_connections()
-        } else {
-            app.get_filtered_connections(&ui_state.filter_query)
-        };
-
-        // Apply sorting (after filtering)
-        // This sorted list MUST be used for all operations (display + navigation)
-        sort_connections(
-            &mut connections,
-            ui_state.sort_column,
-            ui_state.sort_ascending,
-        );
-
-        // Compute grouped rows if grouping is enabled
-        let grouped_rows = if ui_state.grouping_enabled {
-            ui::compute_grouped_rows(&connections, &ui_state.expanded_groups)
-        } else {
-            Vec::new()
-        };
-
-        let stats = app.get_stats();
+        // Refresh connection data only when needed:
+        // - On timer tick (every 200ms) for live updates
+        // - When an event changes filter, sort, or data source
+        if needs_data_refresh || last_tick.elapsed() >= tick_rate {
+            connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
+                app.get_connections()
+            } else {
+                app.get_filtered_connections(&ui_state.filter_query)
+            };
+            sort_connections(
+                &mut connections,
+                ui_state.sort_column,
+                ui_state.sort_ascending,
+            );
+            grouped_rows = if ui_state.grouping_enabled {
+                ui::compute_grouped_rows(&connections, &ui_state.expanded_groups)
+            } else {
+                Vec::new()
+            };
+            stats = app.get_stats();
+            last_tick = std::time::Instant::now();
+            needs_data_refresh = false;
+            needs_regroup = false;
+        } else if needs_regroup {
+            // Only rebuild grouped rows from existing connections
+            // (e.g., after expand/collapse or grouping toggle)
+            grouped_rows = if ui_state.grouping_enabled {
+                ui::compute_grouped_rows(&connections, &ui_state.expanded_groups)
+            } else {
+                Vec::new()
+            };
+            needs_regroup = false;
+        }
 
         // Ensure we have a valid selection (handles connection removals)
         if ui_state.grouping_enabled {
             ui_state.ensure_valid_grouped_selection(&grouped_rows);
-            // Update scroll offset for grouped view
             let selected_idx = ui_state
                 .get_selected_grouped_index(&grouped_rows)
                 .unwrap_or(0);
@@ -457,7 +472,6 @@ where
             );
         } else {
             ui_state.ensure_valid_selection(&connections);
-            // Update scroll offset for flat view
             let selected_idx = ui_state.get_selected_index(&connections).unwrap_or(0);
             ui_state.scroll_offset = ui::compute_scroll_offset(
                 selected_idx,
@@ -469,7 +483,13 @@ where
 
         // Draw the UI
         terminal.draw(|f| {
-            if let Err(err) = ui::draw(f, app, &ui_state, &connections, &stats, &mut click_regions)
+            let grouped = if ui_state.grouping_enabled {
+                Some(grouped_rows.as_slice())
+            } else {
+                None
+            };
+            if let Err(err) =
+                ui::draw(f, app, &ui_state, &connections, grouped, &stats, &mut click_regions)
             {
                 error!("UI draw error: {}", err);
             }
@@ -477,9 +497,8 @@ where
 
         // Update visible rows for page navigation based on terminal height
         if let Ok(size) = terminal.size() {
-            // Subtract chrome: tabs(3) + status(1) + borders(2) + header+margin(2)
             let chrome = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
-                11 // extra 3 for filter bar
+                11
             } else {
                 8
             };
@@ -490,11 +509,6 @@ where
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
             .unwrap_or(Duration::from_secs(0));
-
-        // Check if we should tick
-        if last_tick.elapsed() >= tick_rate {
-            last_tick = std::time::Instant::now();
-        }
 
         // Clear clipboard message after timeout
         if let Some((_, time)) = &ui_state.clipboard_message
@@ -543,6 +557,7 @@ where
                                                     ui::GroupedRow::Group { .. } => {
                                                         // Double-click group header: toggle expand/collapse
                                                         ui_state.toggle_group_expansion();
+                                                        needs_regroup = true;
                                                     }
                                                     ui::GroupedRow::Connection { .. } => {
                                                         // Double-click connection: open Details tab
@@ -619,14 +634,17 @@ where
                                 // Apply filter and exit input mode (now optional)
                                 debug!("Exiting filter mode. Filter: '{}'", ui_state.filter_query);
                                 ui_state.exit_filter_mode();
+                                needs_data_refresh = true;
                                 debug!("Filter mode now: {}", ui_state.filter_mode);
                             }
                             KeyCode::Esc => {
                                 // Clear filter and exit filter mode
                                 ui_state.clear_filter();
+                                needs_data_refresh = true;
                             }
                             KeyCode::Backspace => {
                                 ui_state.filter_backspace();
+                                needs_data_refresh = true;
                             }
                             KeyCode::Delete => {
                                 // Handle delete key (remove character after cursor)
@@ -634,6 +652,7 @@ where
                                     ui_state
                                         .filter_query
                                         .remove(ui_state.filter_cursor_position);
+                                    needs_data_refresh = true;
                                 }
                             }
                             KeyCode::Left => {
@@ -697,6 +716,7 @@ where
                                     _ => {
                                         // Regular character input for filter
                                         ui_state.filter_add_char(c);
+                                        needs_data_refresh = true;
                                     }
                                 }
                             }
@@ -871,6 +891,7 @@ where
                                     && ui_state.is_group_selected()
                                 {
                                     ui_state.toggle_group_expansion();
+                                    needs_regroup = true;
                                 }
                             }
 
@@ -880,6 +901,7 @@ where
                                 ui_state.clear_confirmation = false;
                                 if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
                                     ui_state.collapse_selected_group();
+                                    needs_regroup = true;
                                 }
                             }
 
@@ -889,6 +911,7 @@ where
                                 ui_state.clear_confirmation = false;
                                 if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
                                     ui_state.expand_selected_group();
+                                    needs_regroup = true;
                                 }
                             }
 
@@ -898,6 +921,7 @@ where
                                 ui_state.clear_confirmation = false;
                                 if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
                                     ui_state.expand_selected_group();
+                                    needs_regroup = true;
                                 }
                             }
 
@@ -906,6 +930,7 @@ where
                                 ui_state.quit_confirmation = false;
                                 ui_state.clear_confirmation = false;
                                 ui_state.toggle_grouping();
+                                needs_regroup = true;
                                 info!(
                                     "Grouping mode: {}",
                                     if ui_state.grouping_enabled {
@@ -925,6 +950,7 @@ where
                                 if was_historic {
                                     app.set_show_historic(false);
                                 }
+                                needs_data_refresh = true;
                                 info!("Reset view settings to defaults");
                             }
 
@@ -968,6 +994,7 @@ where
                                 ui_state.scroll_offset = 0;
                                 ui_state.grouped_scroll_offset = 0;
                                 app.toggle_show_historic();
+                                needs_data_refresh = true;
                                 info!(
                                     "Historic connections: {}",
                                     if ui_state.show_historic {
@@ -983,6 +1010,7 @@ where
                                 ui_state.quit_confirmation = false;
                                 ui_state.clear_confirmation = false;
                                 ui_state.cycle_sort_column();
+                                needs_data_refresh = true;
                                 info!(
                                     "Sort column: {} ({})",
                                     ui_state.sort_column.display_name(),
@@ -999,6 +1027,7 @@ where
                                 ui_state.quit_confirmation = false;
                                 ui_state.clear_confirmation = false;
                                 ui_state.toggle_sort_direction();
+                                needs_data_refresh = true;
                                 info!(
                                     "Sort direction: {} ({})",
                                     if ui_state.sort_ascending {
@@ -1041,6 +1070,7 @@ where
                                         "All connections cleared".to_string(),
                                         std::time::Instant::now(),
                                     ));
+                                    needs_data_refresh = true;
                                 } else {
                                     info!("User requested clear - showing confirmation");
                                     ui_state.clear_confirmation = true;
@@ -1054,6 +1084,7 @@ where
                                 if !ui_state.filter_query.is_empty() {
                                     // Clear filter if one is active
                                     ui_state.clear_filter();
+                                    needs_data_refresh = true;
                                 } else if ui_state.selected_tab == 1 {
                                     ui_state.selected_tab = 0; // Back to overview
                                 } else if ui_state.selected_tab == 2 {

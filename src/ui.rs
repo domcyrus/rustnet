@@ -281,7 +281,7 @@ pub struct ProcessGroupStats {
 
 /// A row in the grouped display (either a group header or a connection)
 #[derive(Debug, Clone)]
-pub enum GroupedRow {
+pub enum GroupedRow<'a> {
     /// A collapsed or expanded group header
     Group {
         process_name: String,
@@ -291,7 +291,7 @@ pub enum GroupedRow {
     /// An individual connection within an expanded group
     Connection {
         process_name: String,
-        connection: Box<Connection>,
+        connection: &'a Connection,
         is_last_in_group: bool,
     },
 }
@@ -874,10 +874,10 @@ impl UIState {
 }
 
 /// Compute grouped rows from a list of connections
-pub fn compute_grouped_rows(
-    connections: &[Connection],
+pub fn compute_grouped_rows<'a>(
+    connections: &'a [Connection],
     expanded_groups: &HashSet<String>,
-) -> Vec<GroupedRow> {
+) -> Vec<GroupedRow<'a>> {
     use std::collections::HashMap;
 
     // Group connections by process name
@@ -930,7 +930,7 @@ pub fn compute_grouped_rows(
             for (idx, conn) in conns.into_iter().enumerate() {
                 rows.push(GroupedRow::Connection {
                     process_name: name.clone(),
-                    connection: Box::new(conn.clone()),
+                    connection: conn,
                     is_last_in_group: idx == conn_count - 1,
                 });
             }
@@ -946,6 +946,7 @@ pub fn draw(
     app: &App,
     ui_state: &UIState,
     connections: &[Connection],
+    grouped_rows: Option<&[GroupedRow]>,
     stats: &AppStats,
     click_regions: &mut ClickableRegions,
 ) -> Result<()> {
@@ -987,13 +988,6 @@ pub fn draw(
         (None, chunks[2])
     };
 
-    // Compute grouped rows if grouping is enabled
-    let grouped_rows = if ui_state.grouping_enabled {
-        Some(compute_grouped_rows(connections, &ui_state.expanded_groups))
-    } else {
-        None
-    };
-
     match ui_state.selected_tab {
         0 => {
             let ctx = DrawContext {
@@ -1001,7 +995,7 @@ pub fn draw(
                 connections,
                 stats,
                 app,
-                grouped_rows: grouped_rows.as_deref(),
+                grouped_rows,
             };
             draw_overview(f, &ctx, content_area, click_regions)?;
         }
@@ -1076,7 +1070,7 @@ struct DrawContext<'a> {
     connections: &'a [Connection],
     stats: &'a AppStats,
     app: &'a App,
-    grouped_rows: Option<&'a [GroupedRow]>,
+    grouped_rows: Option<&'a [GroupedRow<'a>]>,
 }
 
 /// Draw the overview mode

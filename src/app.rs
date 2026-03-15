@@ -1891,18 +1891,16 @@ fn update_connection(
     connections
         .entry(key.clone())
         .and_modify(|conn| {
-            let (mut updated_conn, (new_retransmits, new_out_of_order, new_fast_retransmits)) =
-                merge_packet_into_connection(conn.clone(), &parsed, now);
+            let (new_retransmits, new_out_of_order, new_fast_retransmits) =
+                merge_packet_into_connection(conn, &parsed, now);
 
             // Store RTT measurement if we got one from SYN-ACK
             if let Some(rtt) = measured_rtt
-                && updated_conn.initial_rtt.is_none()
+                && conn.initial_rtt.is_none()
             {
-                updated_conn.initial_rtt = Some(rtt);
+                conn.initial_rtt = Some(rtt);
                 debug!("RTT measured for {}: {:?}", key, rtt);
             }
-
-            *conn = updated_conn;
 
             // Update global statistics
             if new_retransmits > 0 {
