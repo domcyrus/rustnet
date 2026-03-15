@@ -83,7 +83,21 @@ Common hot spots:
 - `clone`: If excessive, reduce unnecessary cloning
 - System calls (`read`, `write`, `ioctl`): Filesystem or network I/O overhead
 
-## Benchmarking
+## Criterion Benchmarks
+
+Microbenchmarks for core operations live in `benches/`. Run them with:
+
+| Benchmark | Command |
+|-----------|---------|
+| Packet parsing | `cargo bench --bench packet_parsing` |
+| Connection merge | `cargo bench --bench connection_merge` |
+| Snapshot creation | `cargo bench --bench snapshot` |
+| All benchmarks | `cargo bench` |
+| Struct sizes | `cargo test --lib struct_sizes -- --nocapture` |
+
+Criterion produces HTML reports in `target/criterion/` with statistical comparison between runs.
+
+## Ad-hoc Benchmarking
 
 For consistent benchmarks:
 
