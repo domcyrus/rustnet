@@ -178,7 +178,8 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `a` | Toggle process grouping |
 | `Space` | Expand/collapse process group |
 | `←/→` or `h/l` | Collapse/expand group |
-| `PageUp/PageDown` | Page navigation (10 items) |
+| `PageUp/PageDown` or `Ctrl+B/F` | Page navigation |
+| `t` | Toggle historic (closed) connections |
 | `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |
 | `h` | Toggle help |
