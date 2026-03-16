@@ -90,6 +90,7 @@ Options:
       --no-color                         Disable all colors in the UI (also respects NO_COLOR env var)
       --geoip-country <PATH>             Path to GeoLite2-Country.mmdb (auto-discovered if not specified)
       --geoip-asn <PATH>                 Path to GeoLite2-ASN.mmdb (auto-discovered if not specified)
+      --geoip-city <PATH>                Path to GeoLite2-City.mmdb (auto-discovered if not specified)
       --no-geoip                         Disable GeoIP lookups entirely
   -f, --bpf-filter <FILTER>              BPF filter expression for packet capture
       --no-sandbox                       Disable Landlock sandboxing (Linux only)
@@ -254,7 +255,8 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 
 ### Views and Tabs
 
-- `Tab` - Switch between tabs (Overview, Details, Help)
+- `Tab` - Switch between tabs (Overview, Details, Interfaces, Graph, Help)
+- `Shift+Tab` - Switch between tabs in reverse order
 - `i` - Toggle Interface Statistics view
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
@@ -338,17 +340,19 @@ Simply type any text to search across all connection fields:
 
 Use keyword filters for targeted searches:
 
-| Keyword | Description | Example |
-|---------|-------------|---------|
-| `port:` | Ports containing pattern | `port:44` matches 443, 8080, 4433 |
-| `sport:` | Source ports | `sport:80` matches source port 80 |
-| `dport:` | Destination ports | `dport:443` matches destination port 443 |
-| `src:` | Source IPs/hostnames | `src:192.168` matches 192.168.x.x |
-| `dst:` | Destinations | `dst:github.com` matches github.com |
-| `process:` | Process names | `process:ssh` matches ssh, sshd |
-| `sni:` | SNI hostnames (HTTPS) | `sni:api` matches api.example.com |
-| `state:` | Protocol states | `state:established` matches established connections |
-| `proto:` | Protocol type | `proto:tcp` matches TCP connections |
+| Keyword | Aliases | Description | Example |
+|---------|---------|-------------|---------|
+| `port:` | | Ports containing pattern | `port:44` matches 443, 8080, 4433 |
+| `sport:` | `srcport:`, `source-port:` | Source ports | `sport:80` matches source port 80 |
+| `dport:` | `dstport:`, `dest-port:`, `destination-port:` | Destination ports | `dport:443` matches destination port 443 |
+| `src:` | `source:` | Source IPs/hostnames | `src:192.168` matches 192.168.x.x |
+| `dst:` | `dest:`, `destination:` | Destinations | `dst:github.com` matches github.com |
+| `process:` | `proc:` | Process names | `process:ssh` matches ssh, sshd |
+| `sni:` | `host:`, `hostname:` | SNI hostnames (HTTPS) | `sni:api` matches api.example.com |
+| `service:` | `svc:` | Service names | `service:https` matches HTTPS service |
+| `app:` | `application:` | Detected application protocol | `app:ssh` matches SSH connections |
+| `state:` | | Protocol states | `state:established` matches established connections |
+| `proto:` | `protocol:` | Protocol type | `proto:tcp` matches TCP connections |
 
 ### State Filtering
 
