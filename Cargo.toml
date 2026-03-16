@@ -172,7 +172,7 @@ license = false
 eula = false
 
 [dev-dependencies]
-criterion = { version = "0.6", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]
 name = "packet_parsing"
