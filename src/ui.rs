@@ -3756,7 +3756,7 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Expand/collapse group (when grouping enabled)"),
         ]),
         Line::from(vec![
-            Span::styled("←/→ ", theme::fg(theme::key())),
+            Span::styled("←/→ or h/l ", theme::fg(theme::key())),
             Span::raw("Collapse/expand group"),
         ]),
         Line::from(vec![

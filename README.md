@@ -214,7 +214,7 @@ See [USAGE.md](USAGE.md) for complete filtering syntax and sorting guide.
 - `dst:github.com` - Destinations containing "github.com"
 - `process:ssh` - Process names containing "ssh"
 - `sni:api` - SNI hostnames containing "api"
-- `ssh:openssh` - SSH connections using OpenSSH
+- `app:openssh` - SSH connections using OpenSSH
 - `state:established` - Filter by protocol state
 - `proto:tcp` - Filter by protocol type
 
@@ -228,7 +228,7 @@ See [USAGE.md](USAGE.md) for complete filtering syntax and sorting guide.
 - `sport:80 process:nginx` - Nginx connections from port 80
 - `dport:443 sni:google.com` - HTTPS to Google
 - `process:firefox state:quic_connected` - Firefox QUIC connections
-- `dport:22 ssh:openssh state:established` - Established OpenSSH connections
+- `dport:22 app:openssh state:established` - Established OpenSSH connections
 
 </details>
 

@@ -128,6 +128,8 @@ The experimental eBPF support provides efficient process identification but has 
 - [ ] **Configuration File**: Support for persistent configuration:
   - Custom color themes and UI styling
   - Default filters and sort preferences
+  - Default process grouping (start with `group: true` in config)
+  - Color mode preference (disable colors via config, complementing `--no-color` flag)
   - Per-interface settings
   - Keybinding customization
 - [ ] **Connection Alerts**: Notifications for new connections or suspicious activity
