@@ -5,7 +5,32 @@ All notable changes to RustNet will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-03-16
+
+### Added
+- **OUI Vendor Lookup for ARP**: Display MAC vendor names for ARP connections using IEEE OUI database (#183)
+- **Historic Connections Toggle**: Toggle to show/hide historic (closed) connections (#184)
+- **Mouse Support**: Mouse interaction support for TUI navigation (#170)
+- **Security Hardening & Packet Stats**: Enhanced security hardening and packet statistics display in TUI (#169)
+- **GeoIP City Lookup**: Show city-level geolocation for remote IPs using GeoLite2 City database (#168)
+- **Android Build Support**: Native Android builds with static musl linking (#167)
+- **Multi-Arch Android Builds**: Added armv7, x86_64, and x86 Android static build targets
+- **MQTT Protocol Detection**: Deep packet inspection for MQTT protocol traffic (#161)
+- **STUN Traffic Detection**: Detect STUN protocol traffic per RFC 5389/8489 (#160)
+- **BitTorrent Traffic Detection**: Detect BitTorrent protocol traffic (#159)
+- **ARP Performance Benchmarks**: Added criterion benchmarks for ARP-related operations (#188)
+
+### Fixed
+- **Undefined Behavior Fix**: Fix UB issues, remove clippy suppressions, add safety documentation (#187)
+- **Light Terminal Readability**: Fix selection highlight unreadable on light terminal themes (#182)
+- **Clipboard Warning**: Fix unused variable warning in copy_to_clipboard across platforms (#178)
+- **Android Cross-Compilation**: Fix cross-compilation and release upload issues for Android targets (#174)
+- **MQTT Detection Accuracy**: Restrict MQTT signature detection to CONNECT packets only (#164)
+
+### Changed
+- **Documentation**: Synced docs with implementation, added missing keyboard shortcuts (#190, #157)
+- **CI/CD**: Staged release pipeline so downstream jobs wait for builds (#154), added FreeBSD coverage to PR builds (#158)
+- **Dependencies**: Bumped chrono, http_req, zip, and various rust-dependencies groups
 
 ## [1.0.0] - 2026-02-09
 
@@ -377,7 +402,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/domcyrus/rustnet/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/domcyrus/rustnet/compare/v0.18.0...v1.0.0
 [0.18.0]: https://github.com/domcyrus/rustnet/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/domcyrus/rustnet/compare/v0.16.1...v0.17.0
