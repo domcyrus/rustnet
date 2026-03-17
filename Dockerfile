@@ -29,6 +29,7 @@ COPY resources/ebpf/vmlinux ./resources/ebpf/vmlinux
 
 # Copy source code
 COPY src ./src
+COPY benches ./benches
 COPY assets/services ./assets/services
 
 # Build the application in release mode (eBPF is enabled by default on Linux)
