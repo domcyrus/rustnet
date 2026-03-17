@@ -79,15 +79,17 @@ git push origin v0.3.0
 - Extract release notes from CHANGELOG.md
 - Create a draft GitHub release with all artifacts attached
 - Upload all binaries and installers to the release
+- **Publish the release** (un-draft) once all assets are uploaded
+- Trigger downstream package updates (Homebrew, Chocolatey, FreeBSD, PPA, COPR, AUR, Docker, crates.io)
 
-### 6. Finalize the Release
+### 6. Verify the Release
 
 Once the GitHub Actions workflow completes (~15-20 minutes):
 
 1. Go to the [GitHub repository releases page](https://github.com/domcyrus/rustnet/releases)
-2. Find the draft release for your tag (e.g., `v0.3.0`)
+2. Verify the release is published (no longer a draft) with all assets
 3. Review the automatically extracted release notes
-4. Publish the release (it will be created as a draft)
+4. Check downstream package updates completed (Homebrew, Chocolatey, etc.)
 
 ## Automated Release Workflow
 
@@ -133,11 +135,14 @@ Before pushing the tag, ensure:
 
 After GitHub Actions completes:
 
+- [ ] Verify release is published (automatically un-drafted after all assets uploaded)
 - [ ] Verify all platform binaries built successfully
 - [ ] Verify all installer packages created (DEB, RPM, DMG, MSI)
+- [ ] Verify Docker image pushed to ghcr.io
 - [ ] Review automatically extracted release notes
-- [ ] Publish the draft release on GitHub
-- [ ] Homebrew formula at https://github.com/domcyrus/homebrew-rustnet will get automatically updated (runs hourly via GitHub Actions or can be triggered manually)
+- [ ] Verify Homebrew formula updated at https://github.com/domcyrus/homebrew-rustnet
+- [ ] Verify Chocolatey package updated at https://github.com/domcyrus/rustnet-chocolatey
+- [ ] Verify FreeBSD build at https://github.com/domcyrus/rustnet-bsd
 - [ ] Announce release (if applicable)
 
 ## Versioning
