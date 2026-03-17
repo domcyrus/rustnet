@@ -33,7 +33,7 @@ dns-lookup = "3.0"
 log = "0.4"
 pcap = "2.4.0"
 pnet_datalink = "0.35"
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 simplelog = "0.12"
 chrono = "0.4"
 ratatui = { version = "0.30", features = ["all-widgets"] }
@@ -67,8 +67,8 @@ windows = { version = "0.62", features = [
 
 [build-dependencies]
 anyhow = "1.0"
-clap = { version = "4.5", features = ["derive"] }
-clap_complete = "4.5"
+clap = { version = "4.6", features = ["derive"] }
+clap_complete = "4.6"
 clap_mangen = "0.2"
 
 [target.'cfg(windows)'.build-dependencies]
