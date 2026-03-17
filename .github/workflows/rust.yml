@@ -10,6 +10,8 @@ on:
       - 'assets/services'
       - 'assets/oui.gz'
       - 'build.rs'
+      - 'benches/**'
+      - 'Dockerfile'
       - '.github/workflows/rust.yml'
   pull_request:
     branches: [ "main" ]
@@ -20,6 +22,8 @@ on:
       - 'assets/services'
       - 'assets/oui.gz'
       - 'build.rs'
+      - 'benches/**'
+      - 'Dockerfile'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -48,3 +52,19 @@ jobs:
       run: cargo install cargo-audit --locked
     - name: Run security audit
       run: cargo audit
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+    - name: Build Docker image
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        push: false
+        load: true
+        tags: rustnet:ci-test
+    - name: Verify Docker image
+      run: docker run --rm rustnet:ci-test --version

@@ -4,9 +4,20 @@ This document is for maintainers releasing new versions of RustNet.
 
 ## Creating a New Release
 
-### 1. Test Platform Builds
+### 1. Run Pre-Release Checks
 
-Before making any release changes, verify all platform builds succeed on the current main branch:
+After updating versions and changelog, run the pre-release validation script:
+
+```bash
+./scripts/pre-release-check.sh 1.2.0
+```
+
+This validates version consistency, changelog entries, code quality (fmt/clippy/test),
+Dockerfile correctness, and git status. Fix any errors before proceeding.
+
+### 2. Test Platform Builds
+
+Before tagging, verify all platform builds succeed on the current main branch:
 
 ```bash
 # Ensure you're on the main branch with latest changes
@@ -21,7 +32,7 @@ git pull origin main
 
 This catches cross-platform and static linking issues before you invest time in release prep.
 
-### 2. Prepare the Release
+### 3. Prepare the Release
 
 Update version in `Cargo.toml`, `rpm/rustnet.spec`, and update `CHANGELOG.md` with release notes:
 
@@ -35,7 +46,7 @@ cargo build --release
 cargo test
 ```
 
-### 3. Commit Release Changes
+### 4. Commit Release Changes
 
 ```bash
 # Stage and commit the version and changelog changes
@@ -47,7 +58,7 @@ git commit -m "Release v0.3.0
 - And more changes"
 ```
 
-### 4. Create and Push Git Tag
+### 5. Create and Push Git Tag
 
 ```bash
 # Create an annotated tag matching the version in Cargo.toml
@@ -69,7 +80,7 @@ git push origin v0.3.0
 - Create a draft GitHub release with all artifacts attached
 - Upload all binaries and installers to the release
 
-### 5. Finalize the Release
+### 6. Finalize the Release
 
 Once the GitHub Actions workflow completes (~15-20 minutes):
 
@@ -110,6 +121,7 @@ The release process is fully automated via [`.github/workflows/release.yml`](.gi
 
 Before pushing the tag, ensure:
 
+- [ ] Pre-release checks pass: `./scripts/pre-release-check.sh x.y.z`
 - [ ] Test Platform Builds workflow passes for all platforms (including static)
 - [ ] Version number updated in `Cargo.toml`
 - [ ] Version number updated in `rpm/rustnet.spec` (line 5: `Version: x.y.z`)

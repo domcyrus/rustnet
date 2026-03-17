@@ -358,6 +358,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  # Publish the release (un-draft) after all assets are uploaded.
+  # This ensures downstream jobs (Homebrew, Chocolatey) can download assets.
+  publish-release:
+    name: publish-release
+    runs-on: ubuntu-latest
+    needs:
+      - create-release
+      - upload-arm-static
+      - upload-android-static
+      - package-installers
+      - package-macos
+      - package-windows
+    if: always() && needs.create-release.result == 'success'
+    steps:
+      - name: Publish release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit ${{ github.ref_name }} --draft=false --repo ${{ github.repository }}
+
   trigger-bsd-build:
     name: trigger-bsd-build
     runs-on: ubuntu-latest
@@ -375,7 +394,7 @@ jobs:
   trigger-homebrew-update:
     name: trigger-homebrew-update
     runs-on: ubuntu-latest
-    needs: create-release
+    needs: publish-release
     steps:
       - name: Trigger Homebrew formula update
         run: |
@@ -388,7 +407,7 @@ jobs:
   trigger-chocolatey-update:
     name: trigger-chocolatey-update
     runs-on: ubuntu-latest
-    needs: create-release
+    needs: publish-release
     steps:
       - name: Trigger Chocolatey package update
         run: |
