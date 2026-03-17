@@ -31,6 +31,7 @@ COPY resources/ebpf/vmlinux ./resources/ebpf/vmlinux
 COPY src ./src
 COPY benches ./benches
 COPY assets/services ./assets/services
+COPY assets/oui.gz ./assets/oui.gz
 
 # Build the application in release mode (eBPF is enabled by default on Linux)
 RUN cargo build --release

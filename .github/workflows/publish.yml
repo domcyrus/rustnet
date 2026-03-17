@@ -26,4 +26,12 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-        run: cargo publish
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
+          # Check if this version already exists on crates.io
+          if cargo search "$NAME" --limit 1 | grep -q "\"$VERSION\""; then
+            echo "⚠️  $NAME@$VERSION already published to crates.io, skipping"
+          else
+            cargo publish
+          fi
