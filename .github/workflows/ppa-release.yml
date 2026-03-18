@@ -16,6 +16,7 @@ on:
         default: 'oracular'
         type: choice
         options:
+          - questing # 25.04
           - oracular # 24.10 with Rust 1.81
           - noble # 24.04 LTS with Rust 1.82
       tarball_suffix:
