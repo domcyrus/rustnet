@@ -180,30 +180,6 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
     Ok(PrivilegeStatus::insufficient(missing, instructions))
 }
 
-/// Check if running as root user (UID 0) by reading /proc/self/status
-#[cfg(target_os = "linux")]
-fn is_root_user() -> Result<bool> {
-    use std::fs;
-
-    let status = fs::read_to_string("/proc/self/status")
-        .map_err(|e| anyhow!("Failed to read /proc/self/status: {}", e))?;
-
-    // Look for "Uid:" line which contains Real, Effective, Saved Set, and Filesystem UIDs
-    // Format: "Uid:    1000    1000    1000    1000"
-    let is_root = status
-        .lines()
-        .find(|line| line.starts_with("Uid:"))
-        .and_then(|line| {
-            // Get the effective UID (second field)
-            line.split_whitespace().nth(2)
-        })
-        .and_then(|uid| uid.parse::<u32>().ok())
-        .map(|uid| uid == 0)
-        .unwrap_or(false);
-
-    Ok(is_root)
-}
-
 /// Detect if running inside a container
 #[cfg(target_os = "linux")]
 fn is_running_in_container() -> bool {
@@ -281,30 +257,6 @@ fn check_macos_privileges() -> Result<PrivilegeStatus> {
     ];
 
     Ok(PrivilegeStatus::insufficient(missing, instructions))
-}
-
-/// Check if running as root user on macOS
-#[cfg(target_os = "macos")]
-fn is_root_user() -> Result<bool> {
-    use std::process::Command;
-
-    // Use `id -u` command to get effective UID safely
-    let output = Command::new("id")
-        .arg("-u")
-        .output()
-        .map_err(|e| anyhow!("Failed to run 'id -u': {}", e))?;
-
-    if !output.status.success() {
-        return Err(anyhow!("'id -u' command failed"));
-    }
-
-    let uid_str = String::from_utf8_lossy(&output.stdout);
-    let uid = uid_str
-        .trim()
-        .parse::<u32>()
-        .map_err(|e| anyhow!("Failed to parse UID: {}", e))?;
-
-    Ok(uid == 0)
 }
 
 #[cfg(target_os = "windows")]
@@ -411,28 +363,10 @@ fn check_freebsd_privileges() -> Result<PrivilegeStatus> {
     Ok(PrivilegeStatus::insufficient(missing, instructions))
 }
 
-/// Check if running as root user on FreeBSD
-#[cfg(target_os = "freebsd")]
+/// Check if running as root user on Unix systems
+#[cfg(unix)]
 fn is_root_user() -> Result<bool> {
-    use std::process::Command;
-
-    // Use `id -u` command to get effective UID safely
-    let output = Command::new("id")
-        .arg("-u")
-        .output()
-        .map_err(|e| anyhow!("Failed to run 'id -u': {}", e))?;
-
-    if !output.status.success() {
-        return Err(anyhow!("'id -u' command failed"));
-    }
-
-    let uid_str = String::from_utf8_lossy(&output.stdout);
-    let uid = uid_str
-        .trim()
-        .parse::<u32>()
-        .map_err(|e| anyhow!("Failed to parse UID: {}", e))?;
-
-    Ok(uid == 0)
+    Ok(unsafe { libc::geteuid() == 0 })
 }
 
 #[cfg(test)]
