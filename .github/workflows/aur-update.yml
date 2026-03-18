@@ -66,6 +66,46 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      - name: Verify checksums match release assets
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          EXPECTED_X64="${{ steps.checksums.outputs.x64_checksum }}"
+          EXPECTED_ARM64="${{ steps.checksums.outputs.arm64_checksum }}"
+          FAILED=0
+
+          echo "Re-downloading assets to verify checksums are stable..."
+
+          ASSET_X64="rustnet-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          ASSET_ARM64="rustnet-${TAG}-aarch64-unknown-linux-gnu.tar.gz"
+
+          gh release download "$TAG" -p "$ASSET_X64" -p "$ASSET_ARM64" -D /tmp/verify
+
+          ACTUAL_X64=$(sha256sum "/tmp/verify/$ASSET_X64" | awk '{print $1}')
+          ACTUAL_ARM64=$(sha256sum "/tmp/verify/$ASSET_ARM64" | awk '{print $1}')
+          rm -rf /tmp/verify
+
+          if [ "$ACTUAL_X64" != "$EXPECTED_X64" ]; then
+            echo "::error::x86_64 checksum mismatch: expected $EXPECTED_X64, got $ACTUAL_X64"
+            FAILED=1
+          else
+            echo "  ✓ x86_64 checksum verified"
+          fi
+
+          if [ "$ACTUAL_ARM64" != "$EXPECTED_ARM64" ]; then
+            echo "::error::aarch64 checksum mismatch: expected $EXPECTED_ARM64, got $ACTUAL_ARM64"
+            FAILED=1
+          else
+            echo "  ✓ aarch64 checksum verified"
+          fi
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::Checksum verification failed — aborting to prevent pushing stale checksums to AUR"
+            exit 1
+          fi
+          echo "All checksums verified successfully"
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Setup SSH for AUR
         run: |
           mkdir -p ~/.ssh
