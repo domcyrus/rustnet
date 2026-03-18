@@ -119,6 +119,18 @@ The release process is fully automated via [`.github/workflows/release.yml`](.gi
    - Attaches all binaries and installer packages
    - Uses extracted changelog content as release notes
 
+## Important: Never Move a Tag After Release
+
+**Never force-push or move a tag after the release pipeline has started.** Moving a tag
+causes GitHub to regenerate source tarballs with different SHA checksums, which breaks
+every downstream package manager that already cached the original checksums:
+
+- **AUR/Homebrew/Chocolatey**: checksum verification failures for end users
+- **Launchpad PPA**: rejects uploads with the same version but different file contents
+- **crates.io**: already published and cannot be re-published with the same version
+
+If a fix is needed after tagging, **create a patch release** (e.g., `v1.1.1`) instead.
+
 ## Release Checklist
 
 Before pushing the tag, ensure:

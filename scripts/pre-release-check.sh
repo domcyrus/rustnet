@@ -68,7 +68,7 @@ else
   fail "CHANGELOG.md missing comparison link for $VERSION"
 fi
 
-UNRELEASED_CONTENT=$(awk '/^## \[Unreleased\]/{found=1; next} /^## \[/{found=0} found{print}' CHANGELOG.md | grep -v '^$' | head -1)
+UNRELEASED_CONTENT=$(awk '/^## \[Unreleased\]/{found=1; next} /^## \[/{found=0} found{print}' CHANGELOG.md | grep -v '^$' | head -1 || true)
 if [ -z "$UNRELEASED_CONTENT" ]; then
   pass "[Unreleased] section is empty (content moved to $VERSION)"
 else
@@ -112,10 +112,10 @@ if [ "$CARGO_BENCHES" -gt 0 ]; then
   fi
 fi
 
-# Check that all include!() / assets referenced at compile time are in Dockerfile
+# Check that all include_bytes!() assets referenced at compile time are in Dockerfile
 for asset in $(grep -roh 'include_bytes!("[^"]*")' src/ 2>/dev/null | sed 's/include_bytes!("//;s/")//' | sort -u); do
-  # Resolve relative paths from src/
-  resolved=$(cd src && realpath --relative-to=.. "$asset" 2>/dev/null || echo "$asset")
+  # Resolve relative paths from src/ (portable, no GNU realpath needed)
+  resolved=$(cd src && python3 -c "import os.path; print(os.path.relpath(os.path.abspath('$asset'), '..'))" 2>/dev/null || echo "$asset")
   if grep -q "$resolved\|$(basename "$resolved")" Dockerfile; then
     pass "Dockerfile includes compile-time asset: $resolved"
   else
