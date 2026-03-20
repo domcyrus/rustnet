@@ -81,8 +81,8 @@ The experimental eBPF support provides efficient process identification but has 
   - Fuzzy search across all connection fields including DPI data
   - Keyword filters: `port:`, `src:`, `dst:`, `sni:`, `process:`, `sport:`, `dport:`, `ssh:`, `state:`
   - State filtering for all protocol states
-- [ ] **Search/Filter Enhancements**:
-  - Regular expression support
+  - Exact port matching by default (`port:22` matches only port 22)
+  - Regular expression support via `/pattern/` syntax on any filter value
 
 ### Sorting & Display
 
