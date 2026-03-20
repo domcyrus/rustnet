@@ -80,7 +80,7 @@ jobs:
           # Check if we extracted any content
           if [ ! -s release_notes.md ]; then
             echo "⚠️  No changelog entry found for $VERSION, will use auto-generated notes"
-            echo "USE_GENERATED_NOTES=true" >> $GITHUB_ENV
+            echo "USE_GENERATED_NOTES=true" >> "$GITHUB_ENV"
           else
             echo "✅ Extracted changelog content for $VERSION"
             cat release_notes.md
@@ -126,7 +126,8 @@ jobs:
         run: |
           apk add --no-cache git
           git config --global --add safe.directory /__w/rustnet/rustnet
-          git clone --depth 1 https://github.com/${{ github.repository }}.git .
+          git clone --depth 1 "https://github.com/${{ github.repository }}.git" .
+          # shellcheck disable=SC2193
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             git fetch --depth 1 origin tag "${{ github.ref_name }}"
             git checkout "${{ github.ref_name }}"
@@ -200,7 +201,8 @@ jobs:
         run: |
           apk add --no-cache git
           git config --global --add safe.directory /__w/rustnet/rustnet
-          git clone --depth 1 https://github.com/${{ github.repository }}.git .
+          git clone --depth 1 "https://github.com/${{ github.repository }}.git" .
+          # shellcheck disable=SC2193
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
             git fetch --depth 1 origin tag "${{ github.ref_name }}"
             git checkout "${{ github.ref_name }}"
@@ -234,6 +236,7 @@ jobs:
 
           # zig cc wrapper: cc-rs detects it as clang and passes --target=armv7-*
           # which zig rejects (zig uses 'arm' not 'armv7'). Filter those args out.
+          # shellcheck disable=SC2016
           printf '%s\n' \
             '#!/bin/bash' \
             'args=()' \
@@ -253,7 +256,7 @@ jobs:
               --disable-shared --enable-static \
               --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
               --prefix=/arm-sysroot
-          make -j$(nproc) && make install
+          make -j"$(nproc)" && make install
           cd ..
 
       # x86: use zig cc as the cross-compiler (no external toolchain download needed).
@@ -266,6 +269,7 @@ jobs:
 
           # zig cc wrapper: cc-rs passes --target=i686-* which zig doesn't accept;
           # filter those args and use -target x86-linux-musl instead.
+          # shellcheck disable=SC2016
           printf '%s\n' \
             '#!/bin/bash' \
             'args=()' \
@@ -285,7 +289,7 @@ jobs:
               --disable-shared --enable-static \
               --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
               --prefix=/x86-sysroot
-          make -j$(nproc) && make install
+          make -j"$(nproc)" && make install
           cd ..
 
       - name: Build static binary (aarch64)
@@ -380,7 +384,7 @@ jobs:
   trigger-bsd-build:
     name: trigger-bsd-build
     runs-on: ubuntu-latest
-    needs: create-release
+    needs: publish-release
     steps:
       - name: Trigger FreeBSD build
         run: |
@@ -417,6 +421,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CHOCOLATEY_PAT }}
 
+  trigger-aur-update:
+    name: trigger-aur-update
+    runs-on: ubuntu-latest
+    needs: publish-release
+    steps:
+      - name: Trigger AUR package update
+        run: |
+          gh workflow run aur-update.yml \
+            --repo domcyrus/rustnet
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   package-installers:
     name: package-installers
     runs-on: ubuntu-22.04
@@ -447,7 +463,7 @@ jobs:
         run: |
           mkdir -p installers
           for arch in amd64 arm64 armhf; do
-            case $arch in
+            case "$arch" in
               amd64) target="x86_64-unknown-linux-gnu" ;;
               arm64) target="aarch64-unknown-linux-gnu" ;;
               armhf) target="armv7-unknown-linux-gnueabihf" ;;
@@ -465,7 +481,7 @@ jobs:
             fi
 
             # Create deb package
-            cargo deb --no-build --no-strip --target $target
+            cargo deb --no-build --no-strip --target "$target"
             mv "target/$target/debian"/*.deb "installers/Rustnet_LinuxDEB_$arch.deb"
 
             # Clean up for next iteration
@@ -492,7 +508,7 @@ jobs:
             patchelf --replace-needed libpcap.so.0.8 libpcap.so.1 "target/$target/release/rustnet" 2>/dev/null || true
 
             # Create rpm package
-            cargo generate-rpm --target $target
+            cargo generate-rpm --target "$target"
             mv "target/$target/generate-rpm"/*.rpm "installers/Rustnet_LinuxRPM_$arch.rpm"
 
             # Clean up for next iteration
@@ -565,7 +581,7 @@ jobs:
           if [ -z "$APPLE_CERTIFICATE_P12" ]; then
             echo "⚠️  Code signing secrets not configured. DMG will be unsigned."
             echo "⚠️  Users will need to use 'Open Anyway' in System Settings > Privacy & Security"
-            echo "SKIP_SIGNING=true" >> $GITHUB_ENV
+            echo "SKIP_SIGNING=true" >> "$GITHUB_ENV"
             exit 0
           fi
 
@@ -731,24 +747,24 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    needs: create-release
+    needs: publish-release
     uses: ./.github/workflows/publish.yml
     secrets: inherit
 
   publish-docker:
     name: Publish Docker image
-    needs: create-release
+    needs: publish-release
     uses: ./.github/workflows/docker.yml
     secrets: inherit
 
   update-copr:
     name: Update COPR spec
-    needs: create-release
+    needs: publish-release
     uses: ./.github/workflows/copr-update-spec.yml
     secrets: inherit
 
   release-ppa:
     name: Release to PPA
-    needs: create-release
+    needs: publish-release
     uses: ./.github/workflows/ppa-release.yml
     secrets: inherit
