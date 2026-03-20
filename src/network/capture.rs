@@ -377,14 +377,13 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                 .map(|addr| addr.ip())
             {
                 log::info!("Found active routed IP: {}", active_ip);
-                if let Ok(devices) = Device::list() {
-                    if let Some(device) = devices
+                if let Ok(devices) = Device::list()
+                    && let Some(device) = devices
                         .into_iter()
                         .find(|d| d.addresses.iter().any(|a| a.addr == active_ip))
-                    {
-                        log::info!("Selected interface {} based on active route", device.name);
-                        return Ok(device);
-                    }
+                {
+                    log::info!("Selected interface {} based on active route", device.name);
+                    return Ok(device);
                 }
             }
             log::info!("Fallback: using libpcap default device logic");
