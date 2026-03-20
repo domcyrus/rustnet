@@ -378,7 +378,10 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
             {
                 log::info!("Found active routed IP: {}", active_ip);
                 if let Ok(devices) = Device::list() {
-                    if let Some(device) = devices.into_iter().find(|d| d.addresses.iter().any(|a| a.addr == active_ip)) {
+                    if let Some(device) = devices
+                        .into_iter()
+                        .find(|d| d.addresses.iter().any(|a| a.addr == active_ip))
+                    {
                         log::info!("Selected interface {} based on active route", device.name);
                         return Ok(device);
                     }
@@ -524,8 +527,14 @@ mod tests {
         if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
             if socket.connect("8.8.8.8:53").is_ok() {
                 if let Ok(addr) = socket.local_addr() {
-                    assert!(!addr.ip().is_loopback(), "Active routed IP should not be loopback");
-                    assert!(!addr.ip().is_unspecified(), "Active routed IP should not be unspecified");
+                    assert!(
+                        !addr.ip().is_loopback(),
+                        "Active routed IP should not be loopback"
+                    );
+                    assert!(
+                        !addr.ip().is_unspecified(),
+                        "Active routed IP should not be unspecified"
+                    );
                 }
             }
         }
