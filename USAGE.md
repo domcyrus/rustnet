@@ -342,9 +342,9 @@ Use keyword filters for targeted searches:
 
 | Keyword | Aliases | Description | Example |
 |---------|---------|-------------|---------|
-| `port:` | | Ports containing pattern | `port:44` matches 443, 8080, 4433 |
-| `sport:` | `srcport:`, `source-port:` | Source ports | `sport:80` matches source port 80 |
-| `dport:` | `dstport:`, `dest-port:`, `destination-port:` | Destination ports | `dport:443` matches destination port 443 |
+| `port:` | | Exact port match; use `/pattern/` for regex | `port:22` matches only 22; `port:/22/` matches 22, 220, 5522 |
+| `sport:` | `srcport:`, `source-port:` | Source port (exact or regex) | `sport:80` matches only source port 80 |
+| `dport:` | `dstport:`, `dest-port:`, `destination-port:` | Destination port (exact or regex) | `dport:443` matches only destination port 443 |
 | `src:` | `source:` | Source IPs/hostnames | `src:192.168` matches 192.168.x.x |
 | `dst:` | `dest:`, `destination:` | Destinations | `dst:github.com` matches github.com |
 | `process:` | `proc:` | Process names | `process:ssh` matches ssh, sshd |
@@ -380,6 +380,19 @@ state:udp_active     # Show active UDP connections
 | **DNS** | `DNS_QUERY`, `DNS_RESPONSE` |
 | **SSH** | `BANNER`, `KEYEXCHANGE`, `AUTHENTICATION`, `ESTABLISHED` ⚠️ *Note: Based on packet inspection* |
 | **Other** | `ECHO_REQUEST`, `ECHO_REPLY`, `ARP_REQUEST`, `ARP_REPLY` |
+
+### Regex Filters
+
+Wrap any filter value in `/pattern/` to use a regular expression (case-insensitive). Regexes use standard syntax supported by the `regex-lite` crate.
+
+```
+/192\.168\.[0-9]+/         # General regex across all fields
+port:/22/                  # Ports containing "22" (22, 220, 2200, 5522 …)
+sni:/.*github\..*/         # SNI matching github.com, api.github.com, etc.
+process:/chrom(e|ium)/     # Chrome or Chromium
+```
+
+> **Port matching**: `port:443` is an **exact** match (only port 443). Use `port:/443/` if you want substring/regex behaviour.
 
 ### Combining Filters
 

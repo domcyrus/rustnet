@@ -3865,8 +3865,12 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Search for 'google' in all fields"),
         ]),
         Line::from(vec![
-            Span::styled("  /port:44 ", theme::fg(theme::ok())),
-            Span::raw("Filter ports containing '44' (443, 8080, etc.)"),
+            Span::styled("  /port:22 ", theme::fg(theme::ok())),
+            Span::raw("Exact port match (only port 22, not 2223 or 5522)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  /port:/22/ ", theme::fg(theme::ok())),
+            Span::raw("Regex port match (22, 220, 5522, etc.)"),
         ]),
         Line::from(vec![
             Span::styled("  /src:192.168 ", theme::fg(theme::ok())),
@@ -3877,8 +3881,8 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Filter by destination"),
         ]),
         Line::from(vec![
-            Span::styled("  /sni:example.com ", theme::fg(theme::ok())),
-            Span::raw("Filter by SNI hostname"),
+            Span::styled("  /sni:/.*github.*/ ", theme::fg(theme::ok())),
+            Span::raw("Regex SNI match (wrap value in /…/ for regex)"),
         ]),
         Line::from(vec![
             Span::styled("  /process:firefox ", theme::fg(theme::ok())),

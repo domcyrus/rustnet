@@ -4,7 +4,7 @@
 //! network packets on different platforms (Linux, macOS, Windows).
 
 use anyhow::Result;
-#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+#[cfg(target_os = "linux")]
 use anyhow::anyhow;
 #[cfg(any(
     not(any(
