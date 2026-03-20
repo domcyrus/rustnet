@@ -367,6 +367,27 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
         None => {
             log::info!("No interface specified, using default");
 
+            // Resolve active interface via OS routing table by creating a connectionless UDP socket
+            if let Some(active_ip) = std::net::UdpSocket::bind("0.0.0.0:0")
+                .and_then(|s| {
+                    let _ = s.connect("8.8.8.8:53");
+                    s.local_addr()
+                })
+                .ok()
+                .map(|addr| addr.ip())
+            {
+                log::info!("Found active routed IP: {}", active_ip);
+                if let Ok(devices) = Device::list()
+                    && let Some(device) = devices
+                        .into_iter()
+                        .find(|d| d.addresses.iter().any(|a| a.addr == active_ip))
+                {
+                    log::info!("Selected interface {} based on active route", device.name);
+                    return Ok(device);
+                }
+            }
+            log::info!("Fallback: using libpcap default device logic");
+
             // Try to get default device
             match Device::lookup() {
                 Ok(Some(device)) => {
@@ -496,5 +517,25 @@ mod tests {
         let config = CaptureConfig::default();
         assert_eq!(config.snaplen, 1514);
         assert!(config.filter.is_none()); // Default starts without filter
+    }
+
+    #[test]
+    fn test_udp_routing_resolution_can_execute() {
+        // Sanity-check test to ensure the OS handles UDP metric routing cleanly.
+        // It's perfectly fine if this fails in hermetic CI environments without outbound routes.
+        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            if socket.connect("8.8.8.8:53").is_ok() {
+                if let Ok(addr) = socket.local_addr() {
+                    assert!(
+                        !addr.ip().is_loopback(),
+                        "Active routed IP should not be loopback"
+                    );
+                    assert!(
+                        !addr.ip().is_unspecified(),
+                        "Active routed IP should not be unspecified"
+                    );
+                }
+            }
+        }
     }
 }

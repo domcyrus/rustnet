@@ -12,6 +12,7 @@ We would like to thank these people for their valuable contributions:
 
 - **DeepChirp** ([@DeepChirp](https://github.com/DeepChirp)) - Code contributions
 - **Conor O'Callaghan** ([@Conor0Callaghan](https://github.com/Conor0Callaghan)) - JSON/SIEM logging research and design input
+- **Ken Tobias** ([@l1a](https://github.com/l1a)) - Code contributions
 
 ## Contributing
 
