@@ -43,19 +43,30 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 
 /// Sandbox status information for UI display
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "macos-sandbox")
+))]
 #[derive(Debug, Clone, Default)]
 pub struct SandboxInfo {
     /// Overall status description
     pub status: String,
+    /// Whether network connections are blocked
+    pub net_restricted: bool,
+    // Linux-specific fields (Landlock)
     /// Whether CAP_NET_RAW was dropped
+    #[cfg(target_os = "linux")]
     pub cap_dropped: bool,
     /// Whether Landlock is available on this kernel
+    #[cfg(target_os = "linux")]
     pub landlock_available: bool,
     /// Whether Landlock filesystem restrictions are applied
+    #[cfg(target_os = "linux")]
     pub fs_restricted: bool,
-    /// Whether Landlock network restrictions are applied
-    pub net_restricted: bool,
+    // macOS-specific fields (Seatbelt)
+    /// Whether Seatbelt sandbox was applied
+    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+    pub seatbelt_applied: bool,
 }
 
 /// Process detection status information for UI display
@@ -438,8 +449,11 @@ pub struct App {
     /// GeoIP resolver for location/ASN lookups
     geoip_resolver: Option<Arc<GeoIpResolver>>,
 
-    /// Sandbox status (Linux Landlock)
-    #[cfg(target_os = "linux")]
+    /// Sandbox status (Linux Landlock / macOS Seatbelt)
+    #[cfg(any(
+        target_os = "linux",
+        all(target_os = "macos", feature = "macos-sandbox")
+    ))]
     sandbox_info: Arc<RwLock<SandboxInfo>>,
 }
 
@@ -541,7 +555,10 @@ impl App {
             rtt_tracker: Arc::new(Mutex::new(RttTracker::new())),
             dns_resolver,
             geoip_resolver,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(
+                target_os = "linux",
+                all(target_os = "macos", feature = "macos-sandbox")
+            ))]
             sandbox_info: Arc::new(RwLock::new(SandboxInfo::default())),
         })
     }
@@ -1670,7 +1687,10 @@ impl App {
     }
 
     /// Get sandbox status information
-    #[cfg(target_os = "linux")]
+    #[cfg(any(
+        target_os = "linux",
+        all(target_os = "macos", feature = "macos-sandbox")
+    ))]
     pub fn get_sandbox_info(&self) -> SandboxInfo {
         self.sandbox_info
             .read()
@@ -1679,7 +1699,10 @@ impl App {
     }
 
     /// Set sandbox status information
-    #[cfg(target_os = "linux")]
+    #[cfg(any(
+        target_os = "linux",
+        all(target_os = "macos", feature = "macos-sandbox")
+    ))]
     pub fn set_sandbox_info(&self, info: SandboxInfo) {
         if let Ok(mut guard) = self.sandbox_info.write() {
             *guard = info;
