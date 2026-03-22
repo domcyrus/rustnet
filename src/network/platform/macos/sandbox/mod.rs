@@ -55,6 +55,10 @@ pub struct SandboxResult {
     pub message: String,
     /// Whether Seatbelt was successfully applied
     pub seatbelt_applied: bool,
+    /// Whether filesystem write restrictions were applied
+    pub fs_restricted: bool,
+    /// Whether outbound network connections were blocked
+    pub net_blocked: bool,
 }
 
 /// Status of sandbox application
@@ -85,6 +89,8 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
             status: SandboxStatus::NotApplied,
             message: "Sandbox disabled by configuration".to_string(),
             seatbelt_applied: false,
+            fs_restricted: false,
+            net_blocked: false,
         });
     }
 
@@ -102,6 +108,8 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
                 status,
                 message: result.message,
                 seatbelt_applied: result.applied,
+                fs_restricted: result.fs_restricted,
+                net_blocked: result.net_blocked,
             })
         }
         Err(e) => {
@@ -116,6 +124,8 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
                 status: SandboxStatus::NotApplied,
                 message: msg,
                 seatbelt_applied: false,
+                fs_restricted: false,
+                net_blocked: false,
             })
         }
     }

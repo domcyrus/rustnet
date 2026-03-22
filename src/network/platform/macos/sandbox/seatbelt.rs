@@ -28,7 +28,7 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::PathBuf;
 
-use super::{SandboxConfig, SandboxMode};
+use super::SandboxConfig;
 
 /// Result of Seatbelt application
 pub struct SeatbeltResult {
@@ -36,6 +36,10 @@ pub struct SeatbeltResult {
     pub applied: bool,
     /// Human-readable message
     pub message: String,
+    /// Whether filesystem write restrictions were applied
+    pub fs_restricted: bool,
+    /// Whether outbound network connections were blocked
+    pub net_blocked: bool,
 }
 
 // macOS Seatbelt private API — stable since macOS 10.5, present through macOS 15+
@@ -58,32 +62,15 @@ const PARAM_JSON_LOG_PATH: &str = "JSON_LOG_PATH";
 const PARAM_PCAP_PATH: &str = "PCAP_PATH";
 const PARAM_PCAP_JSONL_PATH: &str = "PCAP_JSONL_PATH";
 
-/// SBPL profile template
-///
-/// Allow-default base with targeted denies:
-/// 1. Block all outbound TCP/UDP (RustNet is passive, never initiates)
-/// 2. Block writes to all user home directories (/Users, /var/root)
-/// 3. Allow writes only to configured log and PCAP paths (more specific
-///    paths take precedence over the broad deny rules per SBPL specificity)
-/// 4. Allow spawning lsof (needed for process lookup fallback)
+/// Base SBPL profile: allow-default with filesystem restrictions.
 ///
 /// Note: `home-subpath` is not used because it is only valid inside the
 /// App Sandbox context and fails with `sandbox_init_with_parameters`.
 /// Instead we hardcode the macOS-specific home directory prefixes.
-const SBPL_PROFILE: &str = r#"(version 1)
+const SBPL_PROFILE_BASE: &str = r#"(version 1)
 
 ;; Allow-default: everything permitted unless explicitly denied
 (allow default)
-
-;; Block outbound TCP and UDP connections
-;; RustNet only reads from BPF/PKTAP — already-open fds are unaffected
-(deny network-outbound
-    (remote tcp)
-    (remote udp))
-
-;; Allow Unix domain socket IPC (required for threading, Mach port bridge)
-(allow network-outbound
-    (remote unix-socket))
 
 ;; Block writes to user home directories
 ;; Regular user homes on macOS are under /Users; root's home is /var/root.
@@ -110,16 +97,38 @@ const SBPL_PROFILE: &str = r#"(version 1)
     (literal "/usr/sbin/lsof"))
 "#;
 
-/// Apply Seatbelt restrictions based on configuration
-pub fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
-    if config.mode == SandboxMode::Disabled {
-        return Ok(SeatbeltResult {
-            applied: false,
-            message: "Sandbox disabled".to_string(),
-        });
-    }
+/// Network deny SBPL section, appended when `block_network` is true.
+///
+/// Blocks outbound TCP/UDP connections. Unix domain sockets are explicitly
+/// allowed for Mach IPC. Already-open BPF/PKTAP file descriptors are unaffected.
+const SBPL_NETWORK_DENY: &str = r#"
+;; Block outbound TCP and UDP connections
+;; RustNet only reads from BPF/PKTAP — already-open fds are unaffected
+(deny network-outbound
+    (remote tcp)
+    (remote udp))
 
-    let profile_cstr = CString::new(SBPL_PROFILE).context("Profile contains null byte")?;
+;; Allow Unix domain socket IPC (required for threading, Mach port bridge)
+(allow network-outbound
+    (remote unix-socket))
+"#;
+
+/// Build the complete SBPL profile string based on configuration.
+fn build_sbpl_profile(block_network: bool) -> String {
+    if block_network {
+        format!("{}{}", SBPL_PROFILE_BASE, SBPL_NETWORK_DENY)
+    } else {
+        SBPL_PROFILE_BASE.to_string()
+    }
+}
+
+/// Apply Seatbelt restrictions based on configuration.
+///
+/// The caller (`apply_sandbox` in mod.rs) handles the `Disabled` mode check,
+/// so this function assumes sandboxing is requested.
+pub fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
+    let profile = build_sbpl_profile(config.block_network);
+    let profile_cstr = CString::new(profile).context("Profile contains null byte")?;
     let params = build_parameters(config).context("Failed to build sandbox parameters")?;
 
     // Build null-terminated array of *const c_char for the FFI call.
@@ -165,13 +174,22 @@ pub fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
     }
 
     log::info!(
-        "Seatbelt sandbox applied (block_network={})",
+        "Seatbelt sandbox applied (fs_restricted=true, net_blocked={})",
         config.block_network
     );
 
     Ok(SeatbeltResult {
         applied: true,
-        message: "Seatbelt applied".to_string(),
+        message: format!(
+            "Seatbelt applied (fs restricted, net {})",
+            if config.block_network {
+                "blocked"
+            } else {
+                "allowed"
+            }
+        ),
+        fs_restricted: true,
+        net_blocked: config.block_network,
     })
 }
 
@@ -254,20 +272,7 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_disabled_mode_returns_not_applied() {
-        let config = SandboxConfig {
-            mode: SandboxMode::Disabled,
-            block_network: true,
-            log_dir: None,
-            json_log_path: None,
-            pcap_export_path: None,
-        };
-        let result = apply_seatbelt(&config).unwrap();
-        assert!(!result.applied);
-        assert!(result.message.contains("disabled"));
-    }
+    use crate::network::platform::sandbox::SandboxMode;
 
     #[test]
     fn test_build_parameters_uses_devnull_for_none() {
@@ -328,8 +333,28 @@ mod tests {
     }
 
     #[test]
-    fn test_profile_is_valid_cstring() {
-        // Verify the profile string contains no embedded null bytes
-        CString::new(SBPL_PROFILE).expect("SBPL_PROFILE must not contain null bytes");
+    fn test_profile_variants_are_valid_cstrings() {
+        CString::new(SBPL_PROFILE_BASE).expect("SBPL_PROFILE_BASE must not contain null bytes");
+        CString::new(build_sbpl_profile(true)).expect("full profile must not contain null bytes");
+        CString::new(build_sbpl_profile(false))
+            .expect("base-only profile must not contain null bytes");
+    }
+
+    #[test]
+    fn test_profile_includes_network_deny_when_block_network_true() {
+        let profile = build_sbpl_profile(true);
+        assert!(
+            profile.contains("deny network-outbound"),
+            "Expected network deny in profile when block_network=true"
+        );
+    }
+
+    #[test]
+    fn test_profile_excludes_network_deny_when_block_network_false() {
+        let profile = build_sbpl_profile(false);
+        assert!(
+            !profile.contains("deny network-outbound"),
+            "Expected no network deny in profile when block_network=false"
+        );
     }
 }

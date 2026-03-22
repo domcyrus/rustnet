@@ -1942,7 +1942,6 @@ fn draw_stats_panel(
         let sandbox_info = app.get_sandbox_info();
         let status_style = match sandbox_info.status.as_str() {
             "Fully enforced" => theme::fg(theme::ok()),
-            "Partially enforced" => theme::fg(theme::warn()),
             "Not applied" | "Error" => theme::fg(theme::err()),
             _ => Style::default(),
         };
@@ -1950,6 +1949,9 @@ fn draw_stats_panel(
         let mut features = Vec::new();
         if sandbox_info.seatbelt_applied {
             features.push("Seatbelt applied");
+        }
+        if sandbox_info.fs_restricted {
+            features.push("FS restricted");
         }
         if sandbox_info.net_restricted {
             features.push("Net blocked");

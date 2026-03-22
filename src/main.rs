@@ -288,7 +288,8 @@ fn main() -> Result<()> {
                 app.set_sandbox_info(app::SandboxInfo {
                     status: status_str.to_string(),
                     seatbelt_applied: result.seatbelt_applied,
-                    net_restricted: result.seatbelt_applied && sandbox_config.block_network,
+                    fs_restricted: result.fs_restricted,
+                    net_restricted: result.net_blocked,
                 });
             }
             Err(e) => {
@@ -299,6 +300,7 @@ fn main() -> Result<()> {
                 app.set_sandbox_info(app::SandboxInfo {
                     status: "Error".to_string(),
                     seatbelt_applied: false,
+                    fs_restricted: false,
                     net_restricted: false,
                 });
             }
