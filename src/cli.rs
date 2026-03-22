@@ -138,12 +138,15 @@ pub fn build_cli() -> Command {
                 .action(clap::ArgAction::SetTrue),
         );
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(
+        target_os = "linux",
+        all(target_os = "macos", feature = "macos-sandbox")
+    ))]
     let cmd = cmd
         .arg(
             Arg::new("no-sandbox")
                 .long("no-sandbox")
-                .help("Disable Landlock sandboxing")
+                .help("Disable sandboxing")
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(

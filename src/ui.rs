@@ -1936,8 +1936,50 @@ fn draw_stats_panel(
         ]
     };
 
-    // Non-Linux platforms: show privilege info without mentioning Landlock
-    #[cfg(all(unix, not(target_os = "linux")))]
+    // macOS with Seatbelt sandbox: show sandbox status
+    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+    let security_text: Vec<Line> = {
+        let sandbox_info = app.get_sandbox_info();
+        let status_style = match sandbox_info.status.as_str() {
+            "Fully enforced" => theme::fg(theme::ok()),
+            "Not applied" | "Error" => theme::fg(theme::err()),
+            _ => Style::default(),
+        };
+
+        let mut features = Vec::new();
+        if sandbox_info.seatbelt_applied {
+            features.push("Seatbelt applied");
+        }
+        if sandbox_info.fs_restricted {
+            features.push("FS restricted");
+        }
+        if sandbox_info.net_restricted {
+            features.push("Net blocked");
+        }
+
+        vec![
+            Line::from(vec![
+                Span::raw("Seatbelt: "),
+                Span::styled(sandbox_info.status.clone(), status_style),
+            ]),
+            Line::from(Span::styled(
+                if features.is_empty() {
+                    "No restrictions active".to_string()
+                } else {
+                    features.join(", ")
+                },
+                theme::fg(theme::muted()),
+            )),
+        ]
+    };
+
+    // Non-Linux/non-macOS unix (FreeBSD) or macOS without macos-sandbox feature:
+    // show privilege info
+    #[cfg(all(
+        unix,
+        not(target_os = "linux"),
+        not(all(target_os = "macos", feature = "macos-sandbox"))
+    ))]
     let security_text: Vec<Line> = {
         let uid = unsafe { libc::geteuid() };
         let is_root = uid == 0;

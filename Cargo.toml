@@ -93,10 +93,12 @@ libbpf-cargo = { version = "0.26", optional = true }
 # On non-Linux platforms, this feature has no effect as all eBPF code
 # and dependencies are Linux-specific (guarded by target_os checks).
 # Landlock provides security sandboxing on Linux 5.13+.
-default = ["ebpf", "landlock"]
+# macos-sandbox provides Seatbelt sandboxing on macOS 10.5+ (no extra deps).
+default = ["ebpf", "landlock", "macos-sandbox"]
 linux-default = ["ebpf"]  # Deprecated: kept for backwards compatibility
 ebpf = ["libbpf-rs", "dep:libbpf-cargo"]
 landlock = ["dep:landlock", "dep:caps"]
+macos-sandbox = []
 
 # Minimal cross configuration to override dependency conflicts
 [workspace.metadata.cross.build.env]

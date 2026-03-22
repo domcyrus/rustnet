@@ -240,6 +240,73 @@ fn main() -> Result<()> {
         }
     }
 
+    // Apply Seatbelt sandbox (macOS only)
+    // This must be done AFTER app.start() because:
+    // - Packet capture handles need to be opened first (BPF/PKTAP fds survive the sandbox)
+    // - Log files need to be created first
+    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+    {
+        use network::platform::sandbox::{
+            SandboxConfig, SandboxMode, SandboxStatus, apply_sandbox,
+        };
+
+        let sandbox_mode = if matches.get_flag("no-sandbox") {
+            SandboxMode::Disabled
+        } else if matches.get_flag("sandbox-strict") {
+            SandboxMode::Strict
+        } else {
+            SandboxMode::BestEffort
+        };
+
+        let log_dir = if matches.get_one::<String>("log-level").is_some() {
+            Some("logs".to_string())
+        } else {
+            None
+        };
+
+        let sandbox_config = SandboxConfig {
+            mode: sandbox_mode,
+            block_network: true, // RustNet is passive, doesn't need TCP
+            log_dir,
+            json_log_path: config.json_log_file.clone(),
+            pcap_export_path: config.pcap_export_file.clone(),
+        };
+
+        match apply_sandbox(&sandbox_config) {
+            Ok(result) => {
+                let status_str = match result.status {
+                    SandboxStatus::FullyEnforced => {
+                        info!("Seatbelt sandbox fully enforced: {}", result.message);
+                        "Fully enforced"
+                    }
+                    SandboxStatus::NotApplied => {
+                        debug!("Seatbelt sandbox not applied: {}", result.message);
+                        "Not applied"
+                    }
+                };
+
+                app.set_sandbox_info(app::SandboxInfo {
+                    status: status_str.to_string(),
+                    seatbelt_applied: result.seatbelt_applied,
+                    fs_restricted: result.fs_restricted,
+                    net_restricted: result.net_blocked,
+                });
+            }
+            Err(e) => {
+                if sandbox_mode == SandboxMode::Strict {
+                    return Err(e.context("Seatbelt sandbox enforcement required but failed"));
+                }
+                info!("Seatbelt sandbox error (non-strict mode): {}", e);
+                app.set_sandbox_info(app::SandboxInfo {
+                    status: "Error".to_string(),
+                    seatbelt_applied: false,
+                    fs_restricted: false,
+                    net_restricted: false,
+                });
+            }
+        }
+    }
+
     // Run the UI loop
     let res = run_ui_loop(&mut terminal, &app);
 
