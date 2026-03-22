@@ -1722,7 +1722,7 @@ fn draw_stats_panel(
         .constraints([
             Constraint::Length(14), // Connection stats (11 lines + 2 borders + 1 for degradation warning)
             Constraint::Length(7),  // Network stats (TCP analytics + header)
-            Constraint::Length(4),  // Security stats (sandbox)
+            Constraint::Length(5),  // Security stats (sandbox + privilege)
             Constraint::Min(0),     // Interface stats (with traffic graph)
         ])
         .split(area);
@@ -1919,6 +1919,16 @@ fn draw_stats_panel(
             Span::styled(" [kernel unsupported]", theme::fg(theme::muted()))
         };
 
+        let uid = crate::network::privileges::effective_uid();
+        let (priv_label, priv_style) = if uid == 0 {
+            (
+                "Process: running as root".to_string(),
+                theme::fg(theme::warn()),
+            )
+        } else {
+            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
+        };
+
         vec![
             Line::from(vec![
                 Span::raw("Landlock: "),
@@ -1933,6 +1943,7 @@ fn draw_stats_panel(
                 },
                 theme::fg(theme::muted()),
             )),
+            Line::from(Span::styled(priv_label, priv_style)),
         ]
     };
 
@@ -1957,6 +1968,16 @@ fn draw_stats_panel(
             features.push("Net blocked");
         }
 
+        let uid = crate::network::privileges::effective_uid();
+        let (priv_label, priv_style) = if uid == 0 {
+            (
+                "Process: running as root".to_string(),
+                theme::fg(theme::warn()),
+            )
+        } else {
+            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
+        };
+
         vec![
             Line::from(vec![
                 Span::raw("Seatbelt: "),
@@ -1970,6 +1991,7 @@ fn draw_stats_panel(
                 },
                 theme::fg(theme::muted()),
             )),
+            Line::from(Span::styled(priv_label, priv_style)),
         ]
     };
 
@@ -1981,16 +2003,15 @@ fn draw_stats_panel(
         not(all(target_os = "macos", feature = "macos-sandbox"))
     ))]
     let security_text: Vec<Line> = {
-        let uid = unsafe { libc::geteuid() };
-        let is_root = uid == 0;
-        if is_root {
+        let uid = crate::network::privileges::effective_uid();
+        if uid == 0 {
             vec![Line::from(Span::styled(
                 "Running as root (UID 0)",
                 theme::fg(theme::warn()),
             ))]
         } else {
             vec![Line::from(Span::styled(
-                format!("Running as UID {}", uid),
+                format!("Running as UID {uid}"),
                 theme::fg(theme::ok()),
             ))]
         }

@@ -122,7 +122,7 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
     use std::fs;
 
     // Check if running as root by reading /proc/self/status
-    let is_root = is_root_user()?;
+    let is_root = is_root_user();
 
     if is_root {
         info!("Running as root - all privileges available");
@@ -205,7 +205,7 @@ fn check_macos_privileges() -> Result<PrivilegeStatus> {
     use std::fs;
 
     // Check if running as root by reading effective UID from process
-    let is_root = is_root_user()?;
+    let is_root = is_root_user();
 
     if is_root {
         info!("Running as root - all privileges available");
@@ -308,7 +308,7 @@ fn check_freebsd_privileges() -> Result<PrivilegeStatus> {
     use std::fs;
 
     // Check if running as root by reading effective UID from process
-    let is_root = is_root_user()?;
+    let is_root = is_root_user();
 
     if is_root {
         info!("Running as root - all privileges available");
@@ -365,8 +365,14 @@ fn check_freebsd_privileges() -> Result<PrivilegeStatus> {
 
 /// Check if running as root user on Unix systems
 #[cfg(unix)]
-fn is_root_user() -> Result<bool> {
-    Ok(unsafe { libc::geteuid() == 0 })
+fn is_root_user() -> bool {
+    effective_uid() == 0
+}
+
+/// Return the effective UID of the current process on Unix systems
+#[cfg(unix)]
+pub fn effective_uid() -> u32 {
+    unsafe { libc::geteuid() }
 }
 
 #[cfg(test)]
