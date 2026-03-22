@@ -5,6 +5,7 @@ RustNet processes untrusted network data, making defense-in-depth security criti
 ## Table of Contents
 
 - [Landlock Sandboxing (Linux)](#landlock-sandboxing-linux)
+- [Seatbelt Sandboxing (macOS)](#seatbelt-sandboxing-macos)
 - [Privilege Requirements](#privilege-requirements)
 - [Read-Only Operation](#read-only-operation)
 - [No External Communication](#no-external-communication)
@@ -54,6 +55,58 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 - **Kernel 5.13-6.3**: Filesystem restrictions only
 - **Kernel 6.4+**: Full filesystem + network restrictions
 - **Docker**: May be blocked by seccomp; app continues normally
+
+## Seatbelt Sandboxing (macOS)
+
+On macOS 10.5+, RustNet uses [Seatbelt](https://theapplewiki.com/wiki/Dev:Seatbelt) (`sandbox_init_with_parameters`) to restrict its own capabilities after initialization. This limits the damage if a vulnerability in packet parsing is exploited.
+
+### What Gets Restricted
+
+| Restriction | Description |
+|-------------|-------------|
+| Outbound network | TCP/UDP outbound blocked; Unix sockets (Mach IPC) allowed |
+| Filesystem writes | All user home directories blocked (`/Users`, `/var/root`) |
+| Filesystem writes | Only configured log and PCAP export paths writable |
+
+### How It Works
+
+1. **Initialization phase**: RustNet opens packet capture handles (BPF/PKTAP) and creates log files
+2. **Pre-create**: PCAP sidecar file (`.connections.jsonl`) is created before the sandbox so its path is already a valid allow target
+3. **Sandbox application**: `sandbox_init_with_parameters` is called — already-open file descriptors survive unchanged, only future operations are restricted
+
+### Profile Strategy
+
+RustNet uses an **allow-default** SBPL profile with targeted denies. A deny-default profile would require explicitly whitelisting all system libraries, Mach ports, locale data, fonts, and other OS internals — fragile and error-prone. Allow-default covers the primary threats (outbound exfiltration, credential theft) without operational risk.
+
+### Output File Support
+
+`--json-log` and `--pcap-export` paths are passed to the SBPL profile as runtime parameters (`JSON_LOG_PATH`, `PCAP_PATH`, `PCAP_JSONL_PATH`). The profile grants an explicit `allow file-write*` rule on each path, which takes precedence over the broader `/Users` deny rule via SBPL specificity. Unused parameters default to `/dev/null`.
+
+Both flags work normally within the sandbox.
+
+### Security Benefits
+
+If an attacker exploits a vulnerability in DPI/packet parsing:
+- Cannot write to SSH keys, AWS credentials, browser profiles, or other credential files
+- Cannot make outbound TCP/UDP connections (data exfiltration blocked)
+- Cannot open new raw network sockets
+
+### CLI Options
+
+```
+--no-sandbox        Disable Seatbelt sandboxing
+--sandbox-strict    Require full sandbox enforcement or exit
+```
+
+### Why BestEffort is Default
+
+`sandbox_init_with_parameters` is a private (undocumented) macOS API. It has been stable since macOS 10.5 and is used by Chromium, Firefox, and Safari for process sandboxing, but it could theoretically change without notice. BestEffort degrades gracefully if the API behaves unexpectedly rather than preventing the app from running. Use `--sandbox-strict` to require sandboxing or abort.
+
+### Clipboard Behavior
+
+Unlike Linux Landlock, clipboard copy (`c` key) works normally under Seatbelt. macOS clipboard uses NSPasteboard, which communicates via Mach IPC over Unix domain sockets — the SBPL profile explicitly allows `(network-outbound (remote unix-socket))`.
+
+On Linux, clipboard requires access to Wayland sockets (`/run/user/UID/wayland-0`) or X11 sockets (`/tmp/.X11-unix/`). Landlock's deny-default model blocks these because they are not in the write-path allowlist, so clipboard is unavailable when Landlock is active.
 
 ## Privilege Requirements
 
@@ -136,7 +189,7 @@ When using eBPF for enhanced process detection (default on Linux):
 **What RustNet protects against:**
 - Unauthorized users cannot capture packets without proper permissions
 - Capability-based permissions limit blast radius of compromise
-- Landlock sandbox contains potential exploitation
+- Landlock (Linux) and Seatbelt (macOS) sandboxes contain potential exploitation
 
 **What RustNet does NOT protect against:**
 - Users with packet capture permissions can see all unencrypted traffic

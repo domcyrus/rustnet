@@ -1921,7 +1921,10 @@ fn draw_stats_panel(
 
         let uid = crate::network::privileges::effective_uid();
         let (priv_label, priv_style) = if uid == 0 {
-            ("Process: running as root".to_string(), theme::fg(theme::warn()))
+            (
+                "Process: running as root".to_string(),
+                theme::fg(theme::warn()),
+            )
         } else {
             (format!("Process: UID {uid}"), theme::fg(theme::ok()))
         };
@@ -1944,8 +1947,61 @@ fn draw_stats_panel(
         ]
     };
 
-    // Non-Linux unix (macOS, FreeBSD): show privilege info
-    #[cfg(all(unix, not(target_os = "linux")))]
+    // macOS with Seatbelt sandbox: show sandbox status
+    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+    let security_text: Vec<Line> = {
+        let sandbox_info = app.get_sandbox_info();
+        let status_style = match sandbox_info.status.as_str() {
+            "Fully enforced" => theme::fg(theme::ok()),
+            "Not applied" | "Error" => theme::fg(theme::err()),
+            _ => Style::default(),
+        };
+
+        let mut features = Vec::new();
+        if sandbox_info.seatbelt_applied {
+            features.push("Seatbelt applied");
+        }
+        if sandbox_info.fs_restricted {
+            features.push("FS restricted");
+        }
+        if sandbox_info.net_restricted {
+            features.push("Net blocked");
+        }
+
+        let uid = crate::network::privileges::effective_uid();
+        let (priv_label, priv_style) = if uid == 0 {
+            (
+                "Process: running as root".to_string(),
+                theme::fg(theme::warn()),
+            )
+        } else {
+            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
+        };
+
+        vec![
+            Line::from(vec![
+                Span::raw("Seatbelt: "),
+                Span::styled(sandbox_info.status.clone(), status_style),
+            ]),
+            Line::from(Span::styled(
+                if features.is_empty() {
+                    "No restrictions active".to_string()
+                } else {
+                    features.join(", ")
+                },
+                theme::fg(theme::muted()),
+            )),
+            Line::from(Span::styled(priv_label, priv_style)),
+        ]
+    };
+
+    // Non-Linux/non-macOS unix (FreeBSD) or macOS without macos-sandbox feature:
+    // show privilege info
+    #[cfg(all(
+        unix,
+        not(target_os = "linux"),
+        not(all(target_os = "macos", feature = "macos-sandbox"))
+    ))]
     let security_text: Vec<Line> = {
         let uid = crate::network::privileges::effective_uid();
         if uid == 0 {

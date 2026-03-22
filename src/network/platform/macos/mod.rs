@@ -2,6 +2,8 @@
 
 mod interface_stats;
 mod process;
+#[cfg(feature = "macos-sandbox")]
+pub mod sandbox;
 
 pub use interface_stats::MacOSStatsProvider;
 pub use process::MacOSProcessLookup;

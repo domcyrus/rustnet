@@ -109,6 +109,8 @@ pub use freebsd::{FreeBSDProcessLookup, FreeBSDStatsProvider, create_process_loo
 pub use linux::sandbox;
 #[cfg(target_os = "linux")]
 pub use linux::{LinuxStatsProvider, create_process_lookup};
+#[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+pub use macos::sandbox;
 #[cfg(target_os = "macos")]
 pub use macos::{MacOSStatsProvider, create_process_lookup};
 #[cfg(target_os = "windows")]
