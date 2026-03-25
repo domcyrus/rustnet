@@ -29,17 +29,13 @@ jobs:
 
   trigger-freebsd-build:
     name: trigger-freebsd-build
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Trigger FreeBSD test build
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            REF="${{ github.event.pull_request.head.sha }}"
-            TAG="pr-${{ github.event.pull_request.number }}"
-          else
-            REF="${{ github.sha }}"
-            TAG="test-$(date +%Y%m%d-%H%M%S)"
-          fi
+          REF="${{ github.sha }}"
+          TAG="test-$(date +%Y%m%d-%H%M%S)"
 
           gh api repos/domcyrus/rustnet-bsd/dispatches \
             -f event_type=freebsd-build \
