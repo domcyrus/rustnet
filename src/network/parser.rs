@@ -258,9 +258,9 @@ impl PacketParser {
                 }
                 let ethertype = u16::from_be_bytes([payload[12], payload[13]]);
                 match ethertype {
-                    0x0800 => self.parse_ipv4_packet_inner(payload, process_name, process_id),
-                    0x86dd => self.parse_ipv6_packet_inner(payload, process_name, process_id),
-                    0x0806 => self.parse_arp_packet_inner(payload, process_name, process_id),
+                    0x0800 => self.parse_ipv4_packet_inner(payload, 14, process_name, process_id),
+                    0x86dd => self.parse_ipv6_packet_inner(payload, 14, process_name, process_id),
+                    0x0806 => self.parse_arp_packet_inner(payload, 14, process_name, process_id),
                     _ => None,
                 }
             }
@@ -288,10 +288,11 @@ impl PacketParser {
     pub fn parse_ipv4_packet_inner(
         &self,
         data: &[u8],
+        offset: usize,
         process_name: Option<String>,
         process_id: Option<u32>,
     ) -> Option<ParsedPacket> {
-        let ip_data = &data[14..];
+        let ip_data = &data[offset..];
         if ip_data.len() < 20 {
             return None;
         }
@@ -303,8 +304,8 @@ impl PacketParser {
 
         // Extract actual packet length from IP header (bytes 2-3: Total Length field)
         let ip_total_length = u16::from_be_bytes([ip_data[2], ip_data[3]]) as usize;
-        // Actual packet size = Ethernet header (14 bytes) + IP total length
-        let actual_packet_len = 14 + ip_total_length;
+        // Actual packet size = link-layer header (offset bytes) + IP total length
+        let actual_packet_len = offset + ip_total_length;
 
         let protocol_num = ip_data[9];
         let src_ip = IpAddr::V4(Ipv4Addr::new(
@@ -341,14 +342,15 @@ impl PacketParser {
     }
 
     /// Parse an IPv6 packet from Ethernet frame data
-    /// (data includes the 14-byte Ethernet header)
+    /// (data includes the link-layer header of `offset` bytes)
     pub fn parse_ipv6_packet_inner(
         &self,
         data: &[u8],
+        offset: usize,
         process_name: Option<String>,
         process_id: Option<u32>,
     ) -> Option<ParsedPacket> {
-        let ip_data = &data[14..];
+        let ip_data = &data[offset..];
         if ip_data.len() < 40 {
             return None;
         }
@@ -360,8 +362,8 @@ impl PacketParser {
 
         // Extract actual packet length from IPv6 header (bytes 4-5: Payload Length field)
         let ipv6_payload_length = u16::from_be_bytes([ip_data[4], ip_data[5]]) as usize;
-        // Actual packet size = Ethernet header (14 bytes) + IPv6 header (40 bytes) + payload length
-        let actual_packet_len = 14 + 40 + ipv6_payload_length;
+        // Actual packet size = link-layer header (offset bytes) + IPv6 header (40 bytes) + payload length
+        let actual_packet_len = offset + 40 + ipv6_payload_length;
 
         let next_header = ip_data[6];
 
@@ -407,14 +409,15 @@ impl PacketParser {
     }
 
     /// Parse an ARP packet from Ethernet frame data
-    /// (data includes the 14-byte Ethernet header)
+    /// (data includes the link-layer header of `offset` bytes)
     pub fn parse_arp_packet_inner(
         &self,
         data: &[u8],
+        offset: usize,
         process_name: Option<String>,
         process_id: Option<u32>,
     ) -> Option<ParsedPacket> {
-        self.parse_arp_packet_with_offset(data, 14, process_name, process_id)
+        self.parse_arp_packet_with_offset(data, offset, process_name, process_id)
     }
 
     pub fn parse_arp_packet_with_offset(
