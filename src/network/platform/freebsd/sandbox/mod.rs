@@ -10,12 +10,17 @@
 //! After sandboxing is applied:
 //! - Output file FDs: restricted to write-only (no reading sensitive data)
 //!
+//! **Note:** This is FD-level hardening only, not full Capsicum capability
+//! mode (`cap_enter()`). A compromised process can still open new files and
+//! sockets. See `capsicum.rs` for details and the rationale.
+//!
 //! # Why cap_rights_limit Instead of cap_enter
 //!
 //! RustNet on FreeBSD uses `sockstat` subprocess for process identification.
 //! `cap_enter()` would block fork/exec, breaking this. We use per-FD
 //! restrictions instead, which provide meaningful hardening without
-//! disrupting runtime behavior.
+//! disrupting runtime behavior. A future switch to `libprocstat(3)` would
+//! eliminate the fork/exec dependency and enable full capability mode.
 
 mod capsicum;
 

@@ -130,6 +130,8 @@ On FreeBSD, RustNet uses [Capsicum](https://wiki.freebsd.org/Capsicum) to restri
 
 RustNet on FreeBSD uses `sockstat` subprocess calls for process-to-connection mapping. `cap_enter()` would block `fork()`/`execve()`, breaking this functionality. Using `cap_rights_limit()` on individual FDs provides meaningful hardening without disrupting runtime behavior.
 
+> **Known limitation:** Without `cap_enter()`, a compromised process can still `open()` new files, `socket()` new connections, and `execve()` arbitrary programs. The per-FD restrictions only prevent misuse of the *specific restricted FDs*. A future improvement is to switch from the `sockstat` subprocess to `libprocstat(3)` library calls, which would eliminate the fork/exec dependency and allow full capability mode via `cap_enter()`.
+
 ### Security Benefits
 
 If an attacker exploits a vulnerability in DPI/packet parsing:

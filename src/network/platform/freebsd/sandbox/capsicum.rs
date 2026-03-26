@@ -11,15 +11,28 @@
 //! - Output file FDs (logs, PCAP exports): restricted to write/append only
 //! - Prevents repurposing output FDs for reading sensitive data
 //!
+//! # Security Limitation: No cap_enter()
+//!
+//! **Important:** Without `cap_enter()`, a compromised process can still call
+//! `open()`, `socket()`, and `execve()` to access arbitrary files, create
+//! network connections, or run programs. The per-FD restrictions from
+//! `cap_rights_limit()` only prevent misuse of the *specific restricted FDs*
+//! — they do not prevent opening new ones.
+//!
+//! This means the current sandbox is **FD-level hardening only**, not full
+//! capability mode. It defends against a specific attack vector (repurposing
+//! output FDs for reads) but does not provide comprehensive confinement.
+//!
 //! # Why Not cap_enter()
 //!
 //! RustNet uses `sockstat` subprocess for process identification on FreeBSD.
 //! `cap_enter()` would block `fork()`/`execve()`, breaking this functionality.
-//! Using `cap_rights_limit()` on individual FDs provides meaningful hardening
-//! without breaking runtime behavior.
+//!
+//! TODO: Switch from sockstat subprocess to `libprocstat(3)` library calls.
+//! This would avoid fork/exec and allow `cap_enter()` for full capability mode.
 
 use anyhow::{Context, Result};
-use std::os::unix::io::AsRawFd;
+use std::os::unix::io::{AsRawFd, IntoRawFd};
 use std::path::Path;
 
 /// Result of Capsicum sandbox application
@@ -56,6 +69,12 @@ fn restrict_write_fd(path: &Path) -> Result<()> {
     let fd = file.as_raw_fd();
 
     // Build cap_rights for write-only access
+    //
+    // SAFETY: `__cap_rights_init` is a variadic C function from FreeBSD libc.
+    // The 0u64 terminator is required — it signals the end of the capability
+    // list (matching FreeBSD's own usage in cap_rights_init(3)). All arguments
+    // are u64 capability flags. Variadic FFI argument passing is architecture-
+    // dependent; this pattern is tested on FreeBSD/amd64 and aarch64.
     unsafe {
         let mut rights = std::mem::MaybeUninit::<libc::cap_rights_t>::uninit();
         libc::__cap_rights_init(
@@ -82,12 +101,11 @@ fn restrict_write_fd(path: &Path) -> Result<()> {
         }
     }
 
-    // Intentionally leak the File — we don't want to close the FD.
-    // The restriction persists on the FD even after the File is dropped,
-    // but closing the FD would make the restriction meaningless.
-    // The actual writes happen through different file handles in the app,
-    // and cap_rights_limit affects the FD globally (all handles).
-    std::mem::forget(file);
+    // Transfer ownership of the raw FD out of the File, preventing Drop
+    // from closing it. The restriction persists on the FD, and the actual
+    // writes happen through different file handles in the app (cap_rights_limit
+    // affects the FD globally across all handles).
+    let _ = file.into_raw_fd();
 
     log::debug!("Capsicum: restricted FD for {:?} to write-only", path);
     Ok(())
