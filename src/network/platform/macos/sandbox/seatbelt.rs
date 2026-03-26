@@ -61,8 +61,11 @@ const PARAM_LOG_DIR: &str = "LOG_DIR";
 const PARAM_JSON_LOG_PATH: &str = "JSON_LOG_PATH";
 const PARAM_PCAP_PATH: &str = "PCAP_PATH";
 const PARAM_PCAP_JSONL_PATH: &str = "PCAP_JSONL_PATH";
+const PARAM_GEOIP_PATH_1: &str = "GEOIP_PATH_1";
+const PARAM_GEOIP_PATH_2: &str = "GEOIP_PATH_2";
+const PARAM_GEOIP_PATH_3: &str = "GEOIP_PATH_3";
 
-/// Base SBPL profile: allow-default with filesystem restrictions.
+/// Base SBPL profile: allow-default with filesystem and process restrictions.
 ///
 /// Note: `home-subpath` is not used because it is only valid inside the
 /// App Sandbox context and fails with `sandbox_init_with_parameters`.
@@ -72,6 +75,15 @@ const SBPL_PROFILE_BASE: &str = r#"(version 1)
 ;; Allow-default: everything permitted unless explicitly denied
 (allow default)
 
+;; Block reads from user home directories
+;; Prevents reading SSH keys, AWS credentials, browser profiles, cookies, etc.
+;; if a vulnerability in DPI/packet parsing is exploited.
+;; SBPL specificity: more specific allow rules for GeoIP paths below
+;; will take precedence over these broader deny rules.
+(deny file-read-data
+    (subpath "/Users")
+    (subpath "/var/root"))
+
 ;; Block writes to user home directories
 ;; Regular user homes on macOS are under /Users; root's home is /var/root.
 ;; Protects SSH keys, AWS credentials, GPG keys, browser profiles, etc.
@@ -80,6 +92,16 @@ const SBPL_PROFILE_BASE: &str = r#"(version 1)
 (deny file-write*
     (subpath "/Users")
     (subpath "/var/root"))
+
+;; Allow reads from configured GeoIP database paths
+;; These may reside under /Users (e.g., ~/.local/share/GeoIP)
+(allow file-read-data
+    (literal (param "GEOIP_PATH_1"))
+    (subpath (param "GEOIP_PATH_1"))
+    (literal (param "GEOIP_PATH_2"))
+    (subpath (param "GEOIP_PATH_2"))
+    (literal (param "GEOIP_PATH_3"))
+    (subpath (param "GEOIP_PATH_3")))
 
 ;; Allow writes to configured output paths (log files, PCAP exports)
 ;; These use more specific subpaths that take precedence over the deny rules
@@ -91,8 +113,10 @@ const SBPL_PROFILE_BASE: &str = r#"(version 1)
     (literal (param "PCAP_PATH"))
     (literal (param "PCAP_JSONL_PATH")))
 
-;; Allow lsof subprocess for process-to-connection mapping
-;; (needed when PKTAP is unavailable as a fallback)
+;; Block execution of all binaries except lsof
+;; Prevents shell escapes (/bin/sh, /usr/bin/curl, etc.) if code execution
+;; is achieved through a DPI parsing vulnerability.
+(deny process-exec)
 (allow process-exec
     (literal "/usr/sbin/lsof"))
 "#;
@@ -193,13 +217,21 @@ pub fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
     })
 }
 
-/// Resolve a path to an absolute path for use in SBPL rules.
+/// Resolve a path to a canonical absolute path for use in SBPL rules.
 ///
-/// Sandbox path rules require absolute paths. Relative paths are resolved
-/// against the current working directory at the time of sandbox application.
-/// Falls back to the original path string if resolution fails.
+/// Seatbelt evaluates paths against their canonical (symlink-resolved) form.
+/// On macOS, `/tmp` is a symlink to `/private/tmp`, so non-canonical paths
+/// would silently fail to match. We use `std::fs::canonicalize()` when possible,
+/// falling back to simple absolute resolution if the path doesn't exist yet.
 fn resolve_to_absolute(path: &str) -> String {
     let p = PathBuf::from(path);
+
+    // Try full canonicalization first (resolves symlinks)
+    if let Ok(canonical) = std::fs::canonicalize(&p) {
+        return canonical.to_string_lossy().into_owned();
+    }
+
+    // Path doesn't exist yet — make it absolute without symlink resolution
     if p.is_absolute() {
         path.to_string()
     } else {
@@ -207,6 +239,14 @@ fn resolve_to_absolute(path: &str) -> String {
             .map(|cwd| cwd.join(&p).to_string_lossy().into_owned())
             .unwrap_or_else(|_| path.to_string())
     }
+}
+
+/// Escape a path string for safe embedding in an SBPL profile.
+///
+/// SBPL uses S-expression syntax where `"` and `\` have special meaning.
+/// While rare in filesystem paths, a crafted path could break SBPL parsing.
+fn escape_sbpl_path(path: &str) -> String {
+    path.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Build the flat key/value parameter array for `sandbox_init_with_parameters`.
@@ -217,10 +257,13 @@ fn resolve_to_absolute(path: &str) -> String {
 fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
     let devnull = CString::new("/dev/null").unwrap();
 
+    // Helper: resolve path and escape for SBPL safety
+    let resolve = |p: &str| escape_sbpl_path(&resolve_to_absolute(p));
+
     let log_dir = config
         .log_dir
         .as_deref()
-        .map(resolve_to_absolute)
+        .map(resolve)
         .map(CString::new)
         .transpose()
         .context("log_dir contains null byte")?
@@ -229,7 +272,7 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
     let json_log = config
         .json_log_path
         .as_deref()
-        .map(resolve_to_absolute)
+        .map(resolve)
         .map(CString::new)
         .transpose()
         .context("json_log_path contains null byte")?
@@ -238,7 +281,7 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
     let pcap = config
         .pcap_export_path
         .as_deref()
-        .map(resolve_to_absolute)
+        .map(resolve)
         .map(CString::new)
         .transpose()
         .context("pcap_export_path contains null byte")?
@@ -247,12 +290,34 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
     let pcap_jsonl_str = config
         .pcap_export_path
         .as_deref()
-        .map(|p| format!("{}.connections.jsonl", resolve_to_absolute(p)));
+        .map(|p| format!("{}.connections.jsonl", resolve(p)));
     let pcap_jsonl = pcap_jsonl_str
         .as_deref()
         .map(CString::new)
         .transpose()
         .context("pcap_jsonl path contains null byte")?
+        .unwrap_or_else(|| devnull.clone());
+
+    // GeoIP database paths (up to 3 user-specified or auto-discovered paths)
+    let geoip_paths: Vec<CString> = config
+        .geoip_paths
+        .iter()
+        .take(3)
+        .map(|p| resolve_to_absolute(p))
+        .map(CString::new)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .context("geoip path contains null byte")?;
+    let geoip_1 = geoip_paths
+        .first()
+        .cloned()
+        .unwrap_or_else(|| devnull.clone());
+    let geoip_2 = geoip_paths
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| devnull.clone());
+    let geoip_3 = geoip_paths
+        .get(2)
+        .cloned()
         .unwrap_or_else(|| devnull.clone());
 
     // Flat key/value pairs: [KEY0, VAL0, KEY1, VAL1, ...]
@@ -266,6 +331,12 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
         pcap,
         CString::new(PARAM_PCAP_JSONL_PATH).unwrap(),
         pcap_jsonl,
+        CString::new(PARAM_GEOIP_PATH_1).unwrap(),
+        geoip_1,
+        CString::new(PARAM_GEOIP_PATH_2).unwrap(),
+        geoip_2,
+        CString::new(PARAM_GEOIP_PATH_3).unwrap(),
+        geoip_3,
     ])
 }
 
@@ -282,6 +353,7 @@ mod tests {
             log_dir: None,
             json_log_path: None,
             pcap_export_path: None,
+            geoip_paths: vec![],
         };
         let params = build_parameters(&config).unwrap();
         // Values at odd indices should all be /dev/null
@@ -289,6 +361,10 @@ mod tests {
         assert_eq!(params[3].to_str().unwrap(), "/dev/null");
         assert_eq!(params[5].to_str().unwrap(), "/dev/null");
         assert_eq!(params[7].to_str().unwrap(), "/dev/null");
+        // GeoIP paths should also be /dev/null
+        assert_eq!(params[9].to_str().unwrap(), "/dev/null");
+        assert_eq!(params[11].to_str().unwrap(), "/dev/null");
+        assert_eq!(params[13].to_str().unwrap(), "/dev/null");
     }
 
     #[test]
@@ -299,6 +375,7 @@ mod tests {
             log_dir: Some("/tmp/rustnet/logs".to_string()),
             json_log_path: Some("/tmp/rustnet/events.jsonl".to_string()),
             pcap_export_path: Some("/tmp/rustnet/capture.pcap".to_string()),
+            geoip_paths: vec![],
         };
         let params = build_parameters(&config).unwrap();
         // Keys
@@ -317,6 +394,29 @@ mod tests {
     }
 
     #[test]
+    fn test_build_parameters_with_geoip_paths() {
+        let config = SandboxConfig {
+            mode: SandboxMode::BestEffort,
+            block_network: true,
+            log_dir: None,
+            json_log_path: None,
+            pcap_export_path: None,
+            geoip_paths: vec![
+                "/usr/share/GeoIP".to_string(),
+                "/opt/homebrew/share/GeoIP".to_string(),
+            ],
+        };
+        let params = build_parameters(&config).unwrap();
+        assert_eq!(params[8].to_str().unwrap(), PARAM_GEOIP_PATH_1);
+        assert_eq!(params[9].to_str().unwrap(), "/usr/share/GeoIP");
+        assert_eq!(params[10].to_str().unwrap(), PARAM_GEOIP_PATH_2);
+        assert_eq!(params[11].to_str().unwrap(), "/opt/homebrew/share/GeoIP");
+        // Third slot defaults to /dev/null
+        assert_eq!(params[12].to_str().unwrap(), PARAM_GEOIP_PATH_3);
+        assert_eq!(params[13].to_str().unwrap(), "/dev/null");
+    }
+
+    #[test]
     fn test_relative_path_is_resolved_to_absolute() {
         let abs = resolve_to_absolute("logs");
         assert!(abs.starts_with('/'), "Expected absolute path, got: {}", abs);
@@ -328,8 +428,35 @@ mod tests {
     }
 
     #[test]
-    fn test_absolute_path_is_unchanged() {
+    fn test_absolute_nonexistent_path_is_unchanged() {
+        // /tmp/foo doesn't exist, so canonicalize fails and we fall back to returning it as-is
         assert_eq!(resolve_to_absolute("/tmp/foo"), "/tmp/foo");
+    }
+
+    #[test]
+    fn test_symlink_resolved_by_canonicalize() {
+        // On macOS, /tmp is a symlink to /private/tmp.
+        // resolve_to_absolute should canonicalize existing paths,
+        // ensuring Seatbelt rules match the real filesystem location.
+        let resolved = resolve_to_absolute("/tmp");
+        assert_eq!(
+            resolved, "/private/tmp",
+            "Expected /tmp to resolve to /private/tmp via canonicalize, got: {}",
+            resolved
+        );
+    }
+
+    #[test]
+    fn test_escape_sbpl_path_no_special_chars() {
+        assert_eq!(escape_sbpl_path("/tmp/rustnet/logs"), "/tmp/rustnet/logs");
+    }
+
+    #[test]
+    fn test_escape_sbpl_path_with_quotes_and_backslashes() {
+        assert_eq!(
+            escape_sbpl_path(r#"/tmp/path"with\special"#),
+            r#"/tmp/path\"with\\special"#
+        );
     }
 
     #[test]
@@ -355,6 +482,57 @@ mod tests {
         assert!(
             !profile.contains("deny network-outbound"),
             "Expected no network deny in profile when block_network=false"
+        );
+    }
+
+    #[test]
+    fn test_profile_includes_file_read_deny() {
+        let profile = build_sbpl_profile(false);
+        assert!(
+            profile.contains("deny file-read-data"),
+            "Expected file-read-data deny in profile"
+        );
+        assert!(
+            profile.contains(r#"(subpath "/Users")"#),
+            "Expected /Users in file-read-data deny"
+        );
+        assert!(
+            profile.contains(r#"(subpath "/var/root")"#),
+            "Expected /var/root in file-read-data deny"
+        );
+    }
+
+    #[test]
+    fn test_profile_includes_process_exec_deny() {
+        let profile = build_sbpl_profile(false);
+        assert!(
+            profile.contains("(deny process-exec)"),
+            "Expected process-exec deny in profile"
+        );
+        assert!(
+            profile.contains(r#"(allow process-exec"#),
+            "Expected process-exec allow for lsof"
+        );
+        assert!(
+            profile.contains(r#"(literal "/usr/sbin/lsof")"#),
+            "Expected lsof in process-exec allow"
+        );
+    }
+
+    #[test]
+    fn test_profile_includes_geoip_read_allow() {
+        let profile = build_sbpl_profile(false);
+        assert!(
+            profile.contains(r#"(param "GEOIP_PATH_1")"#),
+            "Expected GEOIP_PATH_1 parameter in profile"
+        );
+        assert!(
+            profile.contains(r#"(param "GEOIP_PATH_2")"#),
+            "Expected GEOIP_PATH_2 parameter in profile"
+        );
+        assert!(
+            profile.contains(r#"(param "GEOIP_PATH_3")"#),
+            "Expected GEOIP_PATH_3 parameter in profile"
         );
     }
 }

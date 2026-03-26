@@ -65,8 +65,10 @@ On macOS 10.5+, RustNet uses [Seatbelt](https://theapplewiki.com/wiki/Dev:Seatbe
 | Restriction | Description |
 |-------------|-------------|
 | Outbound network | TCP/UDP outbound blocked; Unix sockets (Mach IPC) allowed |
+| Filesystem reads | User home directories blocked (`/Users`, `/var/root`); GeoIP paths explicitly allowed |
 | Filesystem writes | All user home directories blocked (`/Users`, `/var/root`) |
 | Filesystem writes | Only configured log and PCAP export paths writable |
+| Process execution | All binaries blocked except `/usr/sbin/lsof` |
 
 ### How It Works
 
@@ -76,7 +78,7 @@ On macOS 10.5+, RustNet uses [Seatbelt](https://theapplewiki.com/wiki/Dev:Seatbe
 
 ### Profile Strategy
 
-RustNet uses an **allow-default** SBPL profile with targeted denies. A deny-default profile would require explicitly whitelisting all system libraries, Mach ports, locale data, fonts, and other OS internals — fragile and error-prone. Allow-default covers the primary threats (outbound exfiltration, credential theft) without operational risk.
+RustNet uses an **allow-default** SBPL profile with targeted denies. A deny-default profile would require explicitly whitelisting all system libraries, Mach ports, locale data, fonts, and other OS internals — fragile and error-prone. Allow-default with targeted denies covers the primary threats (credential theft, data exfiltration, shell escapes) without operational risk. Specific deny rules block file reads/writes under user home directories, outbound network connections, and execution of all binaries except `/usr/sbin/lsof`.
 
 ### Output File Support
 
@@ -87,9 +89,11 @@ Both flags work normally within the sandbox.
 ### Security Benefits
 
 If an attacker exploits a vulnerability in DPI/packet parsing:
+- Cannot read SSH keys, AWS credentials, browser profiles, or other credential files under `/Users`
 - Cannot write to SSH keys, AWS credentials, browser profiles, or other credential files
 - Cannot make outbound TCP/UDP connections (data exfiltration blocked)
 - Cannot open new raw network sockets
+- Cannot execute binaries (no shell escapes via `/bin/sh`, `/usr/bin/curl`, etc.)
 
 ### CLI Options
 

@@ -264,12 +264,40 @@ fn main() -> Result<()> {
             None
         };
 
+        // Collect GeoIP paths that may need read access through the sandbox.
+        // User-specified paths take priority; otherwise include auto-discovery
+        // search paths so the file-read deny on /Users doesn't block them.
+        let geoip_paths: Vec<String> = {
+            use network::geoip::GeoIpResolver;
+            let mut paths = Vec::new();
+            if let Some(ref p) = config.geoip_country_path {
+                paths.push(p.clone());
+            }
+            if let Some(ref p) = config.geoip_asn_path {
+                paths.push(p.clone());
+            }
+            if let Some(ref p) = config.geoip_city_path {
+                paths.push(p.clone());
+            }
+            if paths.is_empty() && !config.disable_geoip {
+                // Use auto-discovery search paths (directories, not individual files)
+                paths.extend(
+                    GeoIpResolver::get_search_paths()
+                        .into_iter()
+                        .filter(|p| p.exists())
+                        .map(|p| p.to_string_lossy().into_owned()),
+                );
+            }
+            paths
+        };
+
         let sandbox_config = SandboxConfig {
             mode: sandbox_mode,
             block_network: true, // RustNet is passive, doesn't need TCP
             log_dir,
             json_log_path: config.json_log_file.clone(),
             pcap_export_path: config.pcap_export_file.clone(),
+            geoip_paths,
         };
 
         match apply_sandbox(&sandbox_config) {
@@ -280,7 +308,7 @@ fn main() -> Result<()> {
                         "Fully enforced"
                     }
                     SandboxStatus::NotApplied => {
-                        debug!("Seatbelt sandbox not applied: {}", result.message);
+                        warn!("Seatbelt sandbox not applied: {}", result.message);
                         "Not applied"
                     }
                 };
