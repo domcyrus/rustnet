@@ -2,6 +2,8 @@
 use crate::network::dpi::DpiResult;
 use crate::network::link_layer;
 #[cfg(target_os = "macos")]
+use crate::network::link_layer::ethernet;
+#[cfg(target_os = "macos")]
 use crate::network::link_layer::pktap;
 use crate::network::oui::OuiLookup;
 use crate::network::protocol;
@@ -253,16 +255,11 @@ impl PacketParser {
         match pktap_header.inner_dlt() {
             1 => {
                 // DLT_EN10MB - Ethernet frame
-                if payload.len() < 14 {
-                    return None;
-                }
-                let ethertype = u16::from_be_bytes([payload[12], payload[13]]);
-                match ethertype {
-                    0x0800 => self.parse_ipv4_packet_inner(payload, 14, process_name, process_id),
-                    0x86dd => self.parse_ipv6_packet_inner(payload, 14, process_name, process_id),
-                    0x0806 => self.parse_arp_packet_inner(payload, 14, process_name, process_id),
-                    _ => None,
-                }
+                // Note: macOS/XNU strips 802.1Q VLAN tags in ether_demux() before
+                // packets reach PKTAP, and libpcap on macOS does not reconstruct them.
+                // VLAN-tagged frames will never have EtherType 0x8100 here, but we
+                // delegate to ethernet::parse() to avoid duplicating the parsing logic.
+                ethernet::parse(payload, self, process_name, process_id)
             }
             12 => {
                 // DLT_RAW - Raw IP packet
