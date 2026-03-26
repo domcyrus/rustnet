@@ -83,7 +83,8 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
     // This will be ignored on kernels that don't support it (< 6.4)
     // Note: Landlock ABI V4 only supports TCP restrictions (BindTcp, ConnectTcp).
     // UDP blocking is under active kernel development (ABI V5+) but not available yet.
-    // UDP exfiltration is mitigated by the seccomp AF_UNIX-only socket filter instead.
+    // UDP exfiltration risk is accepted as low: Landlock restricts file reads,
+    // limiting what an attacker could exfiltrate even with UDP socket access.
     let ruleset = if config.block_network {
         // Try to handle network access - ignore errors for older kernels
         match ruleset
@@ -237,7 +238,6 @@ mod tests {
             block_network: true,
             read_paths: vec![],
             write_paths: vec![],
-            enable_seccomp: false,
         };
         let result = apply_landlock(&config).unwrap();
         assert!(!result.fs_applied);

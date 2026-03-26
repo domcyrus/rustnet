@@ -12,14 +12,12 @@
 //! - Filesystem: Only specified write paths writable (e.g., logs, exports)
 //! - Network: TCP bind/connect blocked (kernel 6.4+)
 //! - Capabilities: CAP_NET_RAW, CAP_BPF, CAP_PERFMON dropped
-//! - Syscalls: Only allowed syscalls permitted (seccomp-bpf)
 //! - Privileges: PR_SET_NO_NEW_PRIVS set (no privilege escalation via execve)
 //!
 //! # Application Order
 //!
 //! 1. Drop capabilities (CAP_NET_RAW, CAP_BPF, CAP_PERFMON)
 //! 2. Apply Landlock (filesystem + network restrictions)
-//! 3. Apply seccomp-bpf (syscall filtering) — final layer
 //!
 //! # Compatibility
 //!
@@ -31,9 +29,6 @@
 pub mod capabilities;
 #[cfg(feature = "landlock")]
 mod landlock;
-#[cfg(feature = "seccomp")]
-mod seccomp;
-
 use std::path::PathBuf;
 
 /// Sandbox enforcement mode
@@ -59,8 +54,6 @@ pub struct SandboxConfig {
     pub read_paths: Vec<PathBuf>,
     /// Paths that need write access (e.g., log files)
     pub write_paths: Vec<PathBuf>,
-    /// Whether to apply seccomp-bpf syscall filtering
-    pub enable_seccomp: bool,
 }
 
 /// Result of sandbox application
@@ -80,8 +73,6 @@ pub struct SandboxResult {
     pub landlock_fs_applied: bool,
     /// Whether Landlock network restrictions were applied
     pub landlock_net_applied: bool,
-    /// Whether seccomp-bpf filter was applied
-    pub seccomp_applied: bool,
 }
 
 /// Status of sandbox application
@@ -124,7 +115,6 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
             landlock_available,
             landlock_fs_applied: false,
             landlock_net_applied: false,
-            seccomp_applied: false,
         });
     }
 
@@ -136,7 +126,6 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         landlock_available,
         landlock_fs_applied: false,
         landlock_net_applied: false,
-        seccomp_applied: false,
     };
 
     let mut messages = Vec::new();
@@ -242,36 +231,8 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         }
     }
 
-    // Step 4: Apply seccomp-bpf syscall filter (final layer)
-    // This must be last because it restricts what syscalls are available.
-    // PR_SET_NO_NEW_PRIVS is set automatically by seccompiler.
-    #[cfg(feature = "seccomp")]
-    if config.enable_seccomp {
-        match seccomp::apply_seccomp_filter() {
-            Ok(()) => {
-                result.seccomp_applied = true;
-                messages.push("Seccomp-BPF filter applied".to_string());
-            }
-            Err(e) => {
-                let msg = format!("Seccomp application failed: {}", e);
-                log::warn!("{}", msg);
-                messages.push(msg);
-                if config.mode == SandboxMode::Strict {
-                    return Err(e).context("Strict mode requires seccomp");
-                }
-                if result.status == SandboxStatus::FullyEnforced {
-                    result.status = SandboxStatus::PartiallyEnforced;
-                }
-            }
-        }
-    }
-
     // Determine final status
-    if !result.cap_net_raw_dropped
-        && !result.landlock_fs_applied
-        && !result.landlock_net_applied
-        && !result.seccomp_applied
-    {
+    if !result.cap_net_raw_dropped && !result.landlock_fs_applied && !result.landlock_net_applied {
         result.status = SandboxStatus::NotApplied;
     }
 
@@ -305,6 +266,5 @@ pub fn apply_sandbox(_config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         landlock_available: false,
         landlock_fs_applied: false,
         landlock_net_applied: false,
-        seccomp_applied: false,
     })
 }

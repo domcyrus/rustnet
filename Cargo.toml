@@ -50,7 +50,6 @@ procfs = "0.18"
 libbpf-rs = { version = "0.26", optional = true }
 landlock = { version = "0.4", optional = true }
 caps = { version = "0.5", optional = true }
-seccompiler = { version = "0.5", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -95,11 +94,10 @@ libbpf-cargo = { version = "0.26", optional = true }
 # and dependencies are Linux-specific (guarded by target_os checks).
 # Landlock provides security sandboxing on Linux 5.13+.
 # macos-sandbox provides Seatbelt sandboxing on macOS 10.5+ (no extra deps).
-default = ["ebpf", "landlock", "seccomp", "macos-sandbox"]
+default = ["ebpf", "landlock", "macos-sandbox"]
 linux-default = ["ebpf"]  # Deprecated: kept for backwards compatibility
 ebpf = ["libbpf-rs", "dep:libbpf-cargo"]
 landlock = ["dep:landlock", "dep:caps"]
-seccomp = ["dep:seccompiler"]
 macos-sandbox = []
 
 # Minimal cross configuration to override dependency conflicts

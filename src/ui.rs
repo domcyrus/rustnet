@@ -1891,7 +1891,7 @@ fn draw_stats_panel(
         .style(Style::default());
     f.render_widget(network_stats, chunks[1]);
 
-    // Security statistics (sandbox) - Linux shows Landlock + seccomp info
+    // Security statistics (sandbox) - Linux shows Landlock + capabilities info
     #[cfg(target_os = "linux")]
     let security_text: Vec<Line> = {
         let sandbox_info = app.get_sandbox_info();
@@ -1915,10 +1915,6 @@ fn draw_stats_panel(
         if sandbox_info.net_restricted {
             features.push("Net blocked");
         }
-        if sandbox_info.seccomp_applied {
-            features.push("Seccomp active");
-        }
-
         let features_style = if features.is_empty() {
             theme::fg(theme::warn())
         } else {

@@ -191,17 +191,11 @@ fn main() -> Result<()> {
             write_paths.push(PathBuf::from(format!("{}.connections.jsonl", pcap_path)));
         }
 
-        #[cfg(feature = "seccomp")]
-        let enable_seccomp = !matches.get_flag("no-seccomp");
-        #[cfg(not(feature = "seccomp"))]
-        let enable_seccomp = false;
-
         let sandbox_config = SandboxConfig {
             mode: sandbox_mode,
             block_network: true, // RustNet is passive, doesn't need TCP
             read_paths,
             write_paths,
-            enable_seccomp,
         };
 
         match apply_sandbox(&sandbox_config) {
@@ -220,7 +214,6 @@ fn main() -> Result<()> {
                     landlock_available: result.landlock_available,
                     fs_restricted: result.landlock_fs_applied,
                     net_restricted: result.landlock_net_applied,
-                    seccomp_applied: result.seccomp_applied,
                 });
             }
             Err(e) => {
@@ -235,7 +228,6 @@ fn main() -> Result<()> {
                     landlock_available: false,
                     fs_restricted: false,
                     net_restricted: false,
-                    seccomp_applied: false,
                 });
             }
         }
