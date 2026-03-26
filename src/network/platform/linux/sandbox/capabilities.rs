@@ -99,6 +99,18 @@ pub fn drop_ebpf_caps() -> Result<u32> {
     Ok(dropped)
 }
 
+/// Clear all ambient capabilities
+///
+/// Ambient capabilities survive `execve()` of non-privileged programs.
+/// Clearing them prevents child processes from inheriting any capabilities
+/// that were held by the parent. This is standard practice in container
+/// runtimes (Docker, systemd) and security-sensitive daemons.
+pub fn clear_ambient_caps() -> Result<()> {
+    caps::clear(None, CapSet::Ambient).context("Failed to clear ambient capability set")?;
+    log::debug!("Cleared ambient capability set");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

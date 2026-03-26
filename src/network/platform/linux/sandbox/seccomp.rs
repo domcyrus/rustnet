@@ -26,7 +26,10 @@
 //! `prctl(PR_SET_NO_NEW_PRIVS)` before installing the filter.
 
 use anyhow::{Context, Result};
-use seccompiler::{BpfProgram, SeccompAction, SeccompFilter, SeccompRule};
+use seccompiler::{
+    BpfProgram, SeccompAction, SeccompCmpArgLen, SeccompCmpOp, SeccompCondition, SeccompFilter,
+    SeccompRule,
+};
 use std::collections::HashMap;
 use std::convert::TryInto;
 
@@ -59,6 +62,27 @@ fn build_filter() -> Result<BpfProgram> {
     for syscall in allowed_syscalls() {
         rules.insert(syscall, vec![]);
     }
+
+    // Override SYS_socket with argument filter: only allow AF_UNIX (domain=1)
+    // This prevents creating AF_INET/AF_INET6 sockets for data exfiltration
+    // while still allowing Unix domain sockets needed for clipboard (wayland/X11).
+    // Note: Landlock cannot block UDP yet (pending kernel ABI V5+), so this
+    // seccomp rule is the primary defense against UDP exfiltration.
+    rules.insert(
+        libc::SYS_socket,
+        vec![
+            SeccompRule::new(vec![
+                SeccompCondition::new(
+                    0, // arg0 = domain
+                    SeccompCmpArgLen::Dword,
+                    SeccompCmpOp::Eq,
+                    libc::AF_UNIX as u64,
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to create socket filter condition: {}", e))?,
+            ])
+            .map_err(|e| anyhow::anyhow!("Failed to create socket filter rule: {}", e))?,
+        ],
+    );
 
     let filter = SeccompFilter::new(
         rules.into_iter().collect(),
@@ -169,7 +193,8 @@ fn allowed_syscalls() -> Vec<i64> {
         // === Clipboard (wayland/X11 via arboard) ===
         // Note: clipboard may not work under Landlock anyway (socket paths blocked),
         // but we allow the syscalls so failures are clean EACCES not EPERM.
-        libc::SYS_socket,   // arboard creates Unix sockets for wayland
+        // SYS_socket is NOT listed here — it has an arg filter (AF_UNIX only)
+        // applied separately in build_filter() to block AF_INET/AF_INET6.
         libc::SYS_connect,  // arboard connects to wayland/X11
         libc::SYS_sendmsg,  // wayland protocol
         libc::SYS_shutdown, // socket cleanup
@@ -217,5 +242,16 @@ mod tests {
         assert!(!syscalls.contains(&libc::SYS_init_module));
         assert!(!syscalls.contains(&libc::SYS_pivot_root));
         assert!(!syscalls.contains(&libc::SYS_chroot));
+    }
+
+    #[test]
+    fn test_socket_not_in_unconditional_allowlist() {
+        // SYS_socket should NOT be in the unconditional allowlist —
+        // it has an AF_UNIX-only arg filter applied in build_filter()
+        let syscalls = allowed_syscalls();
+        assert!(
+            !syscalls.contains(&libc::SYS_socket),
+            "SYS_socket should be filtered by argument, not unconditionally allowed"
+        );
     }
 }

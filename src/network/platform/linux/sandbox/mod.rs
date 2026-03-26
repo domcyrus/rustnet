@@ -141,6 +141,13 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
 
     let mut messages = Vec::new();
 
+    // Step 0: Clear ambient capability set
+    // Ambient caps survive execve() — clearing prevents child processes
+    // from inheriting any capabilities if fork/exec somehow succeeds.
+    if let Err(e) = capabilities::clear_ambient_caps() {
+        log::debug!("Could not clear ambient capabilities: {}", e);
+    }
+
     // Step 1: Drop CAP_NET_RAW capability
     // This prevents creating new raw sockets for exfiltration
     match capabilities::drop_cap_net_raw() {
