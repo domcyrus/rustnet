@@ -39,7 +39,15 @@ use std::convert::TryInto;
 /// This function handles the widening cleanly without triggering
 /// clippy lints on either architecture.
 fn syscall(nr: libc::c_long) -> i64 {
-    nr as i64
+    // c_long is i64 on 64-bit, i32 on 32-bit
+    #[cfg(target_pointer_width = "64")]
+    {
+        nr
+    }
+    #[cfg(target_pointer_width = "32")]
+    {
+        i64::from(nr)
+    }
 }
 
 /// Apply seccomp-bpf syscall filter to all threads in the process.
