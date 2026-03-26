@@ -1951,10 +1951,11 @@ fn draw_stats_panel(
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
     let security_text: Vec<Line> = {
         let sandbox_info = app.get_sandbox_info();
-        let status_style = match sandbox_info.status.as_str() {
-            "Fully enforced" => theme::fg(theme::ok()),
-            "Not applied" | "Error" => theme::fg(theme::err()),
-            _ => Style::default(),
+        let is_enforced = sandbox_info.status.as_str() == "Fully enforced";
+        let status_style = if is_enforced {
+            theme::fg(theme::ok())
+        } else {
+            theme::fg(theme::err())
         };
 
         let mut features = Vec::new();
@@ -1967,6 +1968,12 @@ fn draw_stats_panel(
         if sandbox_info.net_restricted {
             features.push("Net blocked");
         }
+
+        let features_style = if features.is_empty() {
+            theme::fg(theme::warn())
+        } else {
+            theme::fg(theme::muted())
+        };
 
         let uid = crate::network::privileges::effective_uid();
         let (priv_label, priv_style) = if uid == 0 {
@@ -1989,7 +1996,7 @@ fn draw_stats_panel(
                 } else {
                     features.join(", ")
                 },
-                theme::fg(theme::muted()),
+                features_style,
             )),
             Line::from(Span::styled(priv_label, priv_style)),
         ]
