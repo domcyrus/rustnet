@@ -2,6 +2,7 @@
 
 mod interface_stats;
 mod process;
+pub mod sandbox;
 
 pub use interface_stats::FreeBSDStatsProvider;
 pub use process::FreeBSDProcessLookup;

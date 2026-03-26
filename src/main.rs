@@ -307,6 +307,90 @@ fn main() -> Result<()> {
         }
     }
 
+    // Apply Capsicum sandbox (FreeBSD only)
+    // This must be done AFTER app.start() because:
+    // - Packet capture handles need to be opened first
+    // - Log files need to be created first
+    #[cfg(target_os = "freebsd")]
+    {
+        use network::platform::sandbox::{
+            SandboxConfig, SandboxMode, SandboxStatus, apply_sandbox,
+        };
+        use std::path::PathBuf;
+
+        let sandbox_mode = if matches.get_flag("no-sandbox") {
+            SandboxMode::Disabled
+        } else if matches.get_flag("sandbox-strict") {
+            SandboxMode::Strict
+        } else {
+            SandboxMode::BestEffort
+        };
+
+        let mut write_paths = Vec::new();
+
+        // Add JSON log path if specified
+        if let Some(json_log_path) = &config.json_log_file {
+            write_paths.push(json_log_path.clone());
+        }
+
+        // Add PCAP export path if specified
+        if let Some(pcap_path) = &config.pcap_export_file {
+            write_paths.push(pcap_path.clone());
+            write_paths.push(format!("{}.connections.jsonl", pcap_path));
+        }
+
+        // Add log directory if logging is enabled
+        if matches.get_one::<String>("log-level").is_some() {
+            // Find the most recent log file in the logs directory
+            if let Ok(entries) = std::fs::read_dir("logs") {
+                for entry in entries.flatten() {
+                    if entry.path().extension().map_or(false, |e| e == "log") {
+                        write_paths.push(entry.path().to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+
+        let sandbox_config = SandboxConfig {
+            mode: sandbox_mode,
+            write_paths,
+        };
+
+        match apply_sandbox(&sandbox_config) {
+            Ok(result) => {
+                let status_str = match result.status {
+                    SandboxStatus::FullyEnforced => {
+                        info!("Capsicum sandbox fully enforced: {}", result.message);
+                        "Fully enforced"
+                    }
+                    SandboxStatus::NotApplied => {
+                        warn!("Capsicum sandbox not applied: {}", result.message);
+                        "Not applied"
+                    }
+                };
+
+                app.set_sandbox_info(app::SandboxInfo {
+                    status: status_str.to_string(),
+                    capsicum_applied: result.capsicum_applied,
+                    fds_restricted: result.fds_restricted,
+                    net_restricted: false,
+                });
+            }
+            Err(e) => {
+                if sandbox_mode == SandboxMode::Strict {
+                    return Err(e.context("Capsicum sandbox enforcement required but failed"));
+                }
+                warn!("Capsicum sandbox error (non-strict mode): {}", e);
+                app.set_sandbox_info(app::SandboxInfo {
+                    status: "Error".to_string(),
+                    capsicum_applied: false,
+                    fds_restricted: 0,
+                    net_restricted: false,
+                });
+            }
+        }
+    }
+
     // Run the UI loop
     let res = run_ui_loop(&mut terminal, &app);
 
