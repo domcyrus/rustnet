@@ -191,50 +191,51 @@ fn main() -> Result<()> {
             write_paths.push(PathBuf::from(format!("{}.connections.jsonl", pcap_path)));
         }
 
+        #[cfg(feature = "seccomp")]
+        let enable_seccomp = !matches.get_flag("no-seccomp");
+        #[cfg(not(feature = "seccomp"))]
+        let enable_seccomp = false;
+
         let sandbox_config = SandboxConfig {
             mode: sandbox_mode,
             block_network: true, // RustNet is passive, doesn't need TCP
             read_paths,
             write_paths,
+            enable_seccomp,
         };
 
         match apply_sandbox(&sandbox_config) {
             Ok(result) => {
                 // Update UI with sandbox status
                 let status_str = match result.status {
-                    SandboxStatus::FullyEnforced => {
-                        info!("Sandbox fully enforced: {}", result.message);
-                        "Fully enforced"
-                    }
-                    SandboxStatus::PartiallyEnforced => {
-                        info!("Sandbox partially enforced: {}", result.message);
-                        "Partially enforced"
-                    }
-                    SandboxStatus::NotApplied => {
-                        debug!("Sandbox not applied: {}", result.message);
-                        "Not applied"
-                    }
+                    SandboxStatus::FullyEnforced => "Fully enforced",
+                    SandboxStatus::PartiallyEnforced => "Partially enforced",
+                    SandboxStatus::NotApplied => "Not applied",
                 };
 
                 app.set_sandbox_info(app::SandboxInfo {
                     status: status_str.to_string(),
                     cap_dropped: result.cap_net_raw_dropped,
+                    ebpf_caps_dropped: result.ebpf_caps_dropped,
                     landlock_available: result.landlock_available,
                     fs_restricted: result.landlock_fs_applied,
                     net_restricted: result.landlock_net_applied,
+                    seccomp_applied: result.seccomp_applied,
                 });
             }
             Err(e) => {
                 if sandbox_mode == SandboxMode::Strict {
                     return Err(e.context("Sandbox enforcement required but failed"));
                 }
-                info!("Sandbox application error (non-strict mode): {}", e);
+                warn!("Sandbox application error (non-strict mode): {}", e);
                 app.set_sandbox_info(app::SandboxInfo {
                     status: "Error".to_string(),
                     cap_dropped: false,
+                    ebpf_caps_dropped: false,
                     landlock_available: false,
                     fs_restricted: false,
                     net_restricted: false,
+                    seccomp_applied: false,
                 });
             }
         }

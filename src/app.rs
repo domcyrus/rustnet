@@ -53,16 +53,22 @@ pub struct SandboxInfo {
     pub status: String,
     /// Whether network connections are blocked
     pub net_restricted: bool,
-    // Linux-specific fields (Landlock)
+    // Linux-specific fields (Landlock + seccomp)
     /// Whether CAP_NET_RAW was dropped
     #[cfg(target_os = "linux")]
     pub cap_dropped: bool,
+    /// Whether CAP_BPF/CAP_PERFMON were dropped
+    #[cfg(target_os = "linux")]
+    pub ebpf_caps_dropped: bool,
     /// Whether Landlock is available on this kernel
     #[cfg(target_os = "linux")]
     pub landlock_available: bool,
     /// Whether Landlock filesystem restrictions are applied
     #[cfg(target_os = "linux")]
     pub fs_restricted: bool,
+    /// Whether seccomp-bpf filter is applied
+    #[cfg(target_os = "linux")]
+    pub seccomp_applied: bool,
     // macOS-specific fields (Seatbelt)
     /// Whether Seatbelt sandbox was applied
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]

@@ -219,6 +219,7 @@ mod tests {
             block_network: true,
             read_paths: vec![],
             write_paths: vec![],
+            enable_seccomp: false,
         };
         let result = apply_landlock(&config).unwrap();
         assert!(!result.fs_applied);

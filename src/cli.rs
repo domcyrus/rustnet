@@ -157,5 +157,13 @@ pub fn build_cli() -> Command {
                 .conflicts_with("no-sandbox"),
         );
 
+    #[cfg(all(target_os = "linux", feature = "seccomp"))]
+    let cmd = cmd.arg(
+        Arg::new("no-seccomp")
+            .long("no-seccomp")
+            .help("Disable seccomp-bpf syscall filtering (Landlock still applies)")
+            .action(clap::ArgAction::SetTrue),
+    );
+
     cmd
 }

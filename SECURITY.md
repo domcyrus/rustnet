@@ -26,12 +26,16 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 | Filesystem | 5.13+ | Only `/proc` readable (for process identification) |
 | Network | 6.4+ | TCP bind/connect blocked (RustNet is passive) |
 | Capabilities | Any | `CAP_NET_RAW` dropped after pcap socket opened |
+| Capabilities | Any | `CAP_BPF`, `CAP_PERFMON` dropped after eBPF programs loaded |
+| Syscalls | Any | Seccomp-BPF restricts to only needed syscalls |
+| Privileges | Any | `PR_SET_NO_NEW_PRIVS` prevents privilege escalation via setuid binaries |
 
 ### How It Works
 
 1. **Initialization phase**: RustNet loads eBPF programs, opens packet capture handles, and creates log files
-2. **Sandbox application**: After init, Landlock restricts filesystem and network access
-3. **Capability drop**: `CAP_NET_RAW` is removed from the process (existing pcap socket remains valid)
+2. **Capability drop**: `CAP_NET_RAW`, `CAP_BPF`, and `CAP_PERFMON` are removed from the process
+3. **Landlock**: Restricts filesystem and network access
+4. **Seccomp-BPF**: Restricts available syscalls to a minimal allowlist (final layer)
 
 ### Security Benefits
 
@@ -41,11 +45,15 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 - Cannot make outbound TCP connections (data exfiltration blocked)
 - Cannot bind TCP ports (reverse shell blocked)
 - Cannot create new raw sockets (capability dropped)
+- Cannot execute binaries — `execve` blocked by seccomp (no shell escapes)
+- Cannot use `ptrace`, `mount`, `reboot`, or other dangerous syscalls
+- Cannot escalate privileges via setuid binaries (`PR_SET_NO_NEW_PRIVS`)
 
 ### CLI Options
 
 ```
---no-sandbox        Disable Landlock sandboxing
+--no-sandbox        Disable Landlock sandboxing and capability dropping
+--no-seccomp        Disable seccomp-bpf syscall filtering (Landlock still applies)
 --sandbox-strict    Require full sandbox enforcement or exit
 ```
 
