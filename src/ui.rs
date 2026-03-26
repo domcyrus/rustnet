@@ -2034,18 +2034,54 @@ fn draw_stats_panel(
 
     #[cfg(target_os = "windows")]
     let security_text: Vec<Line> = {
-        let is_elevated = crate::is_admin();
-        if is_elevated {
-            vec![Line::from(Span::styled(
-                "Running as Administrator",
-                theme::fg(theme::warn()),
-            ))]
-        } else {
-            vec![Line::from(Span::styled(
-                "Running as standard user",
-                theme::fg(theme::ok()),
-            ))]
+        let sandbox_info = app.get_sandbox_info();
+        let status_style = match sandbox_info.status.as_str() {
+            "Fully enforced" => theme::fg(theme::ok()),
+            "Partially enforced" => theme::fg(theme::warn()),
+            "Not applied" | "Error" => theme::fg(theme::err()),
+            _ => Style::default(),
+        };
+
+        let mut features = Vec::new();
+        if sandbox_info.privileges_removed {
+            features.push(format!(
+                "{} privilege(s) removed",
+                sandbox_info.privileges_removed_count
+            ));
         }
+        if sandbox_info.job_object_applied {
+            features.push("No child processes".to_string());
+        }
+
+        let is_elevated = crate::is_admin();
+        let (priv_label, priv_style) = if is_elevated {
+            (
+                "Process: running as Administrator".to_string(),
+                theme::fg(theme::warn()),
+            )
+        } else {
+            ("Process: standard user".to_string(), theme::fg(theme::ok()))
+        };
+
+        vec![
+            Line::from(vec![
+                Span::raw("Sandbox: "),
+                Span::styled(sandbox_info.status.clone(), status_style),
+            ]),
+            Line::from(Span::styled(
+                if features.is_empty() {
+                    "No restrictions active".to_string()
+                } else {
+                    features.join(", ")
+                },
+                if features.is_empty() {
+                    theme::fg(theme::warn())
+                } else {
+                    theme::fg(theme::muted())
+                },
+            )),
+            Line::from(Span::styled(priv_label, priv_style)),
+        ]
     };
 
     let security_stats = Paragraph::new(security_text)

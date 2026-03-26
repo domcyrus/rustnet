@@ -45,6 +45,7 @@ use std::sync::{LazyLock, Mutex};
 /// Sandbox status information for UI display
 #[cfg(any(
     target_os = "linux",
+    target_os = "windows",
     all(target_os = "macos", feature = "macos-sandbox")
 ))]
 #[derive(Debug, Clone, Default)]
@@ -73,6 +74,16 @@ pub struct SandboxInfo {
     /// Whether filesystem write restrictions are applied
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
     pub fs_restricted: bool,
+    // Windows-specific fields (Restricted token + Job Object)
+    /// Whether dangerous privileges were removed
+    #[cfg(target_os = "windows")]
+    pub privileges_removed: bool,
+    /// Number of privileges removed
+    #[cfg(target_os = "windows")]
+    pub privileges_removed_count: u32,
+    /// Whether job object was applied
+    #[cfg(target_os = "windows")]
+    pub job_object_applied: bool,
 }
 
 /// Process detection status information for UI display
@@ -455,9 +466,10 @@ pub struct App {
     /// GeoIP resolver for location/ASN lookups
     geoip_resolver: Option<Arc<GeoIpResolver>>,
 
-    /// Sandbox status (Linux Landlock / macOS Seatbelt)
+    /// Sandbox status (Linux Landlock / macOS Seatbelt / Windows restricted token)
     #[cfg(any(
         target_os = "linux",
+        target_os = "windows",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     sandbox_info: Arc<RwLock<SandboxInfo>>,
@@ -563,6 +575,7 @@ impl App {
             geoip_resolver,
             #[cfg(any(
                 target_os = "linux",
+                target_os = "windows",
                 all(target_os = "macos", feature = "macos-sandbox")
             ))]
             sandbox_info: Arc::new(RwLock::new(SandboxInfo::default())),
@@ -1767,6 +1780,7 @@ impl App {
     /// Get sandbox status information
     #[cfg(any(
         target_os = "linux",
+        target_os = "windows",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     pub fn get_sandbox_info(&self) -> SandboxInfo {
@@ -1779,6 +1793,7 @@ impl App {
     /// Set sandbox status information
     #[cfg(any(
         target_os = "linux",
+        target_os = "windows",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     pub fn set_sandbox_info(&self, info: SandboxInfo) {

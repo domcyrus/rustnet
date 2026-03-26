@@ -342,6 +342,67 @@ fn main() -> Result<()> {
         }
     }
 
+    // Apply restricted token sandbox (Windows only)
+    // This must be done AFTER app.start() because:
+    // - Npcap handles need to be opened first
+    // - Log files need to be created first
+    #[cfg(target_os = "windows")]
+    {
+        use network::platform::sandbox::{
+            SandboxConfig, SandboxMode, SandboxStatus, apply_sandbox,
+        };
+
+        let sandbox_mode = if matches.get_flag("no-sandbox") {
+            SandboxMode::Disabled
+        } else if matches.get_flag("sandbox-strict") {
+            SandboxMode::Strict
+        } else {
+            SandboxMode::BestEffort
+        };
+
+        let sandbox_config = SandboxConfig { mode: sandbox_mode };
+
+        match apply_sandbox(&sandbox_config) {
+            Ok(result) => {
+                let status_str = match result.status {
+                    SandboxStatus::FullyEnforced => {
+                        info!("Windows sandbox fully enforced: {}", result.message);
+                        "Fully enforced"
+                    }
+                    SandboxStatus::PartiallyEnforced => {
+                        warn!("Windows sandbox partially enforced: {}", result.message);
+                        "Partially enforced"
+                    }
+                    SandboxStatus::NotApplied => {
+                        warn!("Windows sandbox not applied: {}", result.message);
+                        "Not applied"
+                    }
+                };
+
+                app.set_sandbox_info(app::SandboxInfo {
+                    status: status_str.to_string(),
+                    privileges_removed: result.privileges_removed,
+                    privileges_removed_count: result.privileges_removed_count,
+                    job_object_applied: result.job_object_applied,
+                    net_restricted: false,
+                });
+            }
+            Err(e) => {
+                if sandbox_mode == SandboxMode::Strict {
+                    return Err(e.context("Windows sandbox enforcement required but failed"));
+                }
+                warn!("Windows sandbox error (non-strict mode): {}", e);
+                app.set_sandbox_info(app::SandboxInfo {
+                    status: "Error".to_string(),
+                    privileges_removed: false,
+                    privileges_removed_count: 0,
+                    job_object_applied: false,
+                    net_restricted: false,
+                });
+            }
+        }
+    }
+
     // Run the UI loop
     let res = run_ui_loop(&mut terminal, &app);
 

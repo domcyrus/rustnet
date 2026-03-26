@@ -2,6 +2,7 @@
 
 mod interface_stats;
 mod process;
+pub mod sandbox;
 
 pub use interface_stats::WindowsStatsProvider;
 pub use process::WindowsProcessLookup;
