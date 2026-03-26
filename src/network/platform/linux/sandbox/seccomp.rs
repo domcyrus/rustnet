@@ -33,6 +33,15 @@ use seccompiler::{
 use std::collections::HashMap;
 use std::convert::TryInto;
 
+/// Convert a libc syscall number to the i64 expected by seccompiler.
+///
+/// `libc::SYS_*` is `c_long`: i64 on 64-bit targets, i32 on 32-bit.
+/// This function handles the widening cleanly without triggering
+/// clippy lints on either architecture.
+fn syscall(nr: libc::c_long) -> i64 {
+    nr as i64
+}
+
 /// Apply seccomp-bpf syscall filter to all threads in the process.
 ///
 /// This restricts the process to only the syscalls needed for normal
@@ -69,7 +78,7 @@ fn build_filter() -> Result<BpfProgram> {
     // Note: Landlock cannot block UDP yet (pending kernel ABI V5+), so this
     // seccomp rule is the primary defense against UDP exfiltration.
     rules.insert(
-        libc::SYS_socket.into(),
+        syscall(libc::SYS_socket),
         vec![
             SeccompRule::new(vec![
                 SeccompCondition::new(
@@ -112,120 +121,120 @@ fn build_filter() -> Result<BpfProgram> {
 fn allowed_syscalls() -> Vec<i64> {
     let mut syscalls: Vec<i64> = vec![
         // === I/O ===
-        libc::SYS_read.into(),
-        libc::SYS_write.into(),
-        libc::SYS_readv.into(),
-        libc::SYS_writev.into(),
-        libc::SYS_close.into(),
-        libc::SYS_ioctl.into(), // pcap uses ioctl on BPF fd
-        libc::SYS_recvfrom.into(),
-        libc::SYS_sendto.into(),
-        libc::SYS_recvmsg.into(),
+        syscall(libc::SYS_read),
+        syscall(libc::SYS_write),
+        syscall(libc::SYS_readv),
+        syscall(libc::SYS_writev),
+        syscall(libc::SYS_close),
+        syscall(libc::SYS_ioctl), // pcap uses ioctl on BPF fd
+        syscall(libc::SYS_recvfrom),
+        syscall(libc::SYS_sendto),
+        syscall(libc::SYS_recvmsg),
         // === Polling / event loop ===
-        libc::SYS_ppoll.into(),
-        libc::SYS_epoll_create1.into(),
-        libc::SYS_epoll_ctl.into(),
-        libc::SYS_epoll_pwait.into(),
-        libc::SYS_pselect6.into(),
+        syscall(libc::SYS_ppoll),
+        syscall(libc::SYS_epoll_create1),
+        syscall(libc::SYS_epoll_ctl),
+        syscall(libc::SYS_epoll_pwait),
+        syscall(libc::SYS_pselect6),
         // === Memory management ===
-        libc::SYS_munmap.into(),
-        libc::SYS_mprotect.into(),
-        libc::SYS_brk.into(),
-        libc::SYS_madvise.into(),
-        libc::SYS_mremap.into(),
+        syscall(libc::SYS_munmap),
+        syscall(libc::SYS_mprotect),
+        syscall(libc::SYS_brk),
+        syscall(libc::SYS_madvise),
+        syscall(libc::SYS_mremap),
         // === File operations (for /proc reads, log writes) ===
-        libc::SYS_openat.into(),
-        libc::SYS_statx.into(),
-        libc::SYS_lseek.into(),
-        libc::SYS_getdents64.into(),
-        libc::SYS_fcntl.into(),
-        libc::SYS_ftruncate.into(),
-        libc::SYS_readlinkat.into(),
-        libc::SYS_faccessat2.into(),
+        syscall(libc::SYS_openat),
+        syscall(libc::SYS_statx),
+        syscall(libc::SYS_lseek),
+        syscall(libc::SYS_getdents64),
+        syscall(libc::SYS_fcntl),
+        syscall(libc::SYS_ftruncate),
+        syscall(libc::SYS_readlinkat),
+        syscall(libc::SYS_faccessat2),
         // === Signals ===
-        libc::SYS_rt_sigaction.into(),
-        libc::SYS_rt_sigprocmask.into(),
-        libc::SYS_rt_sigreturn.into(),
-        libc::SYS_sigaltstack.into(),
+        syscall(libc::SYS_rt_sigaction),
+        syscall(libc::SYS_rt_sigprocmask),
+        syscall(libc::SYS_rt_sigreturn),
+        syscall(libc::SYS_sigaltstack),
         // === Threading ===
-        libc::SYS_futex.into(),
-        libc::SYS_clone3.into(),
-        libc::SYS_set_robust_list.into(),
-        libc::SYS_rseq.into(),
-        libc::SYS_sched_yield.into(),
-        libc::SYS_sched_getaffinity.into(),
+        syscall(libc::SYS_futex),
+        syscall(libc::SYS_clone3),
+        syscall(libc::SYS_set_robust_list),
+        syscall(libc::SYS_rseq),
+        syscall(libc::SYS_sched_yield),
+        syscall(libc::SYS_sched_getaffinity),
         // === Time ===
-        libc::SYS_clock_gettime.into(),
-        libc::SYS_clock_nanosleep.into(),
-        libc::SYS_nanosleep.into(),
+        syscall(libc::SYS_clock_gettime),
+        syscall(libc::SYS_clock_nanosleep),
+        syscall(libc::SYS_nanosleep),
         // === Process info ===
-        libc::SYS_getpid.into(),
-        libc::SYS_gettid.into(),
-        libc::SYS_getuid.into(),
-        libc::SYS_geteuid.into(),
-        libc::SYS_getgid.into(),
-        libc::SYS_getegid.into(),
+        syscall(libc::SYS_getpid),
+        syscall(libc::SYS_gettid),
+        syscall(libc::SYS_getuid),
+        syscall(libc::SYS_geteuid),
+        syscall(libc::SYS_getgid),
+        syscall(libc::SYS_getegid),
         // === Random ===
-        libc::SYS_getrandom.into(),
+        syscall(libc::SYS_getrandom),
         // === Exit ===
-        libc::SYS_exit.into(),
-        libc::SYS_exit_group.into(),
+        syscall(libc::SYS_exit),
+        syscall(libc::SYS_exit_group),
         // === Pipes (used by crossbeam channels internally) ===
-        libc::SYS_pipe2.into(),
-        libc::SYS_eventfd2.into(),
+        syscall(libc::SYS_pipe2),
+        syscall(libc::SYS_eventfd2),
         // === Misc ===
-        libc::SYS_prctl.into(),           // needed for seccomp itself
-        libc::SYS_seccomp.into(),         // needed for TSYNC
-        libc::SYS_prlimit64.into(),       // resource limits
-        libc::SYS_sysinfo.into(),         // system info queries
-        libc::SYS_uname.into(),           // used by various libs
-        libc::SYS_tgkill.into(),          // thread signaling
-        libc::SYS_restart_syscall.into(), // after signal interruption
+        syscall(libc::SYS_prctl),           // needed for seccomp itself
+        syscall(libc::SYS_seccomp),         // needed for TSYNC
+        syscall(libc::SYS_prlimit64),       // resource limits
+        syscall(libc::SYS_sysinfo),         // system info queries
+        syscall(libc::SYS_uname),           // used by various libs
+        syscall(libc::SYS_tgkill),          // thread signaling
+        syscall(libc::SYS_restart_syscall), // after signal interruption
         // === Clipboard (wayland/X11 via arboard) ===
         // Note: clipboard may not work under Landlock anyway (socket paths blocked),
         // but we allow the syscalls so failures are clean EACCES not EPERM.
         // SYS_socket is NOT listed here — it has an arg filter (AF_UNIX only)
         // applied separately in build_filter() to block AF_INET/AF_INET6.
-        libc::SYS_connect.into(),  // arboard connects to wayland/X11
-        libc::SYS_sendmsg.into(),  // wayland protocol
-        libc::SYS_shutdown.into(), // socket cleanup
+        syscall(libc::SYS_connect),  // arboard connects to wayland/X11
+        syscall(libc::SYS_sendmsg),  // wayland protocol
+        syscall(libc::SYS_shutdown), // socket cleanup
         // === eBPF ring buffer reads (post-init) ===
-        libc::SYS_perf_event_open.into(), // eBPF perf buffer polling
-        libc::SYS_bpf.into(),             // eBPF map lookups at runtime
+        syscall(libc::SYS_perf_event_open), // eBPF perf buffer polling
+        syscall(libc::SYS_bpf),             // eBPF map lookups at runtime
     ];
 
     // === Arch-specific syscalls ===
 
     // mmap: x86_64/aarch64 have SYS_mmap; 32-bit ARM uses SYS_mmap2
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    syscalls.push(libc::SYS_mmap.into());
+    syscalls.push(syscall(libc::SYS_mmap));
     #[cfg(target_arch = "arm")]
-    syscalls.push(libc::SYS_mmap2.into());
+    syscalls.push(syscall(libc::SYS_mmap2));
 
     // fstat: x86_64/aarch64 have SYS_newfstatat; 32-bit ARM uses SYS_fstatat64
     #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    syscalls.push(libc::SYS_newfstatat.into());
+    syscalls.push(syscall(libc::SYS_newfstatat));
     #[cfg(target_arch = "arm")]
-    syscalls.push(libc::SYS_fstatat64.into());
+    syscalls.push(syscall(libc::SYS_fstatat64));
 
     // gettimeofday: not available on aarch64 (uses clock_gettime via vDSO)
     #[cfg(any(target_arch = "x86_64", target_arch = "arm"))]
-    syscalls.push(libc::SYS_gettimeofday.into());
+    syscalls.push(syscall(libc::SYS_gettimeofday));
 
     // x86_64-only legacy syscalls (aarch64/arm use ppoll, pselect6, epoll_pwait)
     #[cfg(target_arch = "x86_64")]
     {
-        syscalls.push(libc::SYS_poll.into());
-        syscalls.push(libc::SYS_epoll_wait.into());
-        syscalls.push(libc::SYS_select.into());
+        syscalls.push(syscall(libc::SYS_poll));
+        syscalls.push(syscall(libc::SYS_epoll_wait));
+        syscalls.push(syscall(libc::SYS_select));
     }
 
     // 32-bit ARM needs additional syscalls for 64-bit file operations
     #[cfg(target_arch = "arm")]
     {
-        syscalls.push(libc::SYS_fcntl64.into());
-        syscalls.push(libc::SYS_ftruncate64.into());
-        syscalls.push(libc::SYS__llseek.into());
+        syscalls.push(syscall(libc::SYS_fcntl64));
+        syscalls.push(syscall(libc::SYS_ftruncate64));
+        syscalls.push(syscall(libc::SYS__llseek));
     }
 
     syscalls
@@ -260,15 +269,15 @@ mod tests {
     fn test_dangerous_syscalls_not_in_allowlist() {
         let syscalls = allowed_syscalls();
         // These should never be in the allowlist
-        assert!(!syscalls.contains(&i64::from(libc::SYS_execve)));
-        assert!(!syscalls.contains(&i64::from(libc::SYS_execveat)));
-        assert!(!syscalls.contains(&i64::from(libc::SYS_ptrace)));
-        assert!(!syscalls.contains(&i64::from(libc::SYS_mount)));
-        assert!(!syscalls.contains(&i64::from(libc::SYS_umount2)));
-        assert!(!syscalls.contains(&i64::from(libc::SYS_reboot)));
-        assert!(!syscalls.contains(&i64::from(libc::SYS_init_module)));
-        assert!(!syscalls.contains(&i64::from(libc::SYS_pivot_root)));
-        assert!(!syscalls.contains(&i64::from(libc::SYS_chroot)));
+        assert!(!syscalls.contains(&syscall(libc::SYS_execve)));
+        assert!(!syscalls.contains(&syscall(libc::SYS_execveat)));
+        assert!(!syscalls.contains(&syscall(libc::SYS_ptrace)));
+        assert!(!syscalls.contains(&syscall(libc::SYS_mount)));
+        assert!(!syscalls.contains(&syscall(libc::SYS_umount2)));
+        assert!(!syscalls.contains(&syscall(libc::SYS_reboot)));
+        assert!(!syscalls.contains(&syscall(libc::SYS_init_module)));
+        assert!(!syscalls.contains(&syscall(libc::SYS_pivot_root)));
+        assert!(!syscalls.contains(&syscall(libc::SYS_chroot)));
     }
 
     #[test]
@@ -277,7 +286,7 @@ mod tests {
         // it has an AF_UNIX-only arg filter applied in build_filter()
         let syscalls = allowed_syscalls();
         assert!(
-            !syscalls.contains(&i64::from(libc::SYS_socket)),
+            !syscalls.contains(&syscall(libc::SYS_socket)),
             "SYS_socket should be filtered by argument, not unconditionally allowed"
         );
     }
