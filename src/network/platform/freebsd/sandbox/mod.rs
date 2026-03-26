@@ -24,6 +24,7 @@
 
 mod capsicum;
 
+use anyhow::Context;
 use std::path::Path;
 
 /// Sandbox enforcement mode
