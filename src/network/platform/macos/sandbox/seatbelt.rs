@@ -193,13 +193,21 @@ pub fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
     })
 }
 
-/// Resolve a path to an absolute path for use in SBPL rules.
+/// Resolve a path to a canonical absolute path for use in SBPL rules.
 ///
-/// Sandbox path rules require absolute paths. Relative paths are resolved
-/// against the current working directory at the time of sandbox application.
-/// Falls back to the original path string if resolution fails.
+/// Seatbelt evaluates paths against their canonical (symlink-resolved) form.
+/// On macOS, `/tmp` is a symlink to `/private/tmp`, so non-canonical paths
+/// would silently fail to match. We use `std::fs::canonicalize()` when possible,
+/// falling back to simple absolute resolution if the path doesn't exist yet.
 fn resolve_to_absolute(path: &str) -> String {
     let p = PathBuf::from(path);
+
+    // Try full canonicalization first (resolves symlinks)
+    if let Ok(canonical) = std::fs::canonicalize(&p) {
+        return canonical.to_string_lossy().into_owned();
+    }
+
+    // Path doesn't exist yet — make it absolute without symlink resolution
     if p.is_absolute() {
         path.to_string()
     } else {
@@ -207,6 +215,14 @@ fn resolve_to_absolute(path: &str) -> String {
             .map(|cwd| cwd.join(&p).to_string_lossy().into_owned())
             .unwrap_or_else(|_| path.to_string())
     }
+}
+
+/// Escape a path string for safe embedding in an SBPL profile.
+///
+/// SBPL uses S-expression syntax where `"` and `\` have special meaning.
+/// While rare in filesystem paths, a crafted path could break SBPL parsing.
+fn escape_sbpl_path(path: &str) -> String {
+    path.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Build the flat key/value parameter array for `sandbox_init_with_parameters`.
@@ -217,10 +233,13 @@ fn resolve_to_absolute(path: &str) -> String {
 fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
     let devnull = CString::new("/dev/null").unwrap();
 
+    // Helper: resolve path and escape for SBPL safety
+    let resolve = |p: &str| escape_sbpl_path(&resolve_to_absolute(p));
+
     let log_dir = config
         .log_dir
         .as_deref()
-        .map(resolve_to_absolute)
+        .map(resolve)
         .map(CString::new)
         .transpose()
         .context("log_dir contains null byte")?
@@ -229,7 +248,7 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
     let json_log = config
         .json_log_path
         .as_deref()
-        .map(resolve_to_absolute)
+        .map(resolve)
         .map(CString::new)
         .transpose()
         .context("json_log_path contains null byte")?
@@ -238,7 +257,7 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
     let pcap = config
         .pcap_export_path
         .as_deref()
-        .map(resolve_to_absolute)
+        .map(resolve)
         .map(CString::new)
         .transpose()
         .context("pcap_export_path contains null byte")?
@@ -247,7 +266,7 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
     let pcap_jsonl_str = config
         .pcap_export_path
         .as_deref()
-        .map(|p| format!("{}.connections.jsonl", resolve_to_absolute(p)));
+        .map(|p| format!("{}.connections.jsonl", resolve(p)));
     let pcap_jsonl = pcap_jsonl_str
         .as_deref()
         .map(CString::new)
@@ -328,8 +347,35 @@ mod tests {
     }
 
     #[test]
-    fn test_absolute_path_is_unchanged() {
+    fn test_absolute_nonexistent_path_is_unchanged() {
+        // /tmp/foo doesn't exist, so canonicalize fails and we fall back to returning it as-is
         assert_eq!(resolve_to_absolute("/tmp/foo"), "/tmp/foo");
+    }
+
+    #[test]
+    fn test_symlink_resolved_by_canonicalize() {
+        // On macOS, /tmp is a symlink to /private/tmp.
+        // resolve_to_absolute should canonicalize existing paths,
+        // ensuring Seatbelt rules match the real filesystem location.
+        let resolved = resolve_to_absolute("/tmp");
+        assert_eq!(
+            resolved, "/private/tmp",
+            "Expected /tmp to resolve to /private/tmp via canonicalize, got: {}",
+            resolved
+        );
+    }
+
+    #[test]
+    fn test_escape_sbpl_path_no_special_chars() {
+        assert_eq!(escape_sbpl_path("/tmp/rustnet/logs"), "/tmp/rustnet/logs");
+    }
+
+    #[test]
+    fn test_escape_sbpl_path_with_quotes_and_backslashes() {
+        assert_eq!(
+            escape_sbpl_path(r#"/tmp/path"with\special"#),
+            r#"/tmp/path\"with\\special"#
+        );
     }
 
     #[test]
