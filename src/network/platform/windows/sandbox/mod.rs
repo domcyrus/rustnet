@@ -122,9 +122,9 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         SandboxStatus::NotApplied
     };
 
-    if config.mode == SandboxMode::Strict && status == SandboxStatus::NotApplied {
+    if config.mode == SandboxMode::Strict && status != SandboxStatus::FullyEnforced {
         return Err(anyhow::anyhow!(
-            "Strict mode requires sandbox enforcement: {}",
+            "Strict mode requires full sandbox enforcement: {}",
             messages.join("; ")
         ));
     }

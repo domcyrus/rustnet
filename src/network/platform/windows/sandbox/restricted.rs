@@ -24,6 +24,10 @@ use windows::Win32::System::JobObjects::{
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+/// Win32 error code returned by `AdjustTokenPrivileges` when the token
+/// did not hold the requested privilege (success, but nothing was changed).
+const ERROR_NOT_ALL_ASSIGNED: u32 = 1300;
+
 /// Privileges to remove from the process token after initialization.
 ///
 /// These are the most dangerous privileges an attacker could abuse:
@@ -152,8 +156,7 @@ unsafe fn remove_single_privilege(token: HANDLE, privilege_name: &str) -> Result
     // Check GetLastError — AdjustTokenPrivileges returns success even if
     // the privilege wasn't held (ERROR_NOT_ALL_ASSIGNED = 1300)
     let last_error = windows::Win32::Foundation::GetLastError();
-    if last_error.0 == 1300 {
-        // ERROR_NOT_ALL_ASSIGNED — privilege not held
+    if last_error.0 == ERROR_NOT_ALL_ASSIGNED {
         return Ok(false);
     }
 
@@ -187,7 +190,10 @@ pub fn apply_job_object() -> Result<JobObjectResult> {
         )
         .context("Failed to set job object limits")?;
 
-        // Assign current process to the job
+        // Assign current process to the job.
+        // On Windows 8+ nested jobs are supported, so this succeeds even if the
+        // process is already in a job (e.g., launched from Task Scheduler or a
+        // container). On Windows 7 (unsupported) it would fail with ACCESS_DENIED.
         AssignProcessToJobObject(job, GetCurrentProcess())
             .context("Failed to assign process to job object")?;
 
