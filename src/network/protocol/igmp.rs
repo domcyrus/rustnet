@@ -15,7 +15,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 ///
 /// IGMPv3 Membership Report (type 0x22) layout:
 /// - Byte 0: Type
-/// - Byte 1: Reserved
+/// - Byte 1: Max Response Time
 /// - Bytes 2–3: Checksum
 /// - Bytes 4–5: Reserved
 /// - Bytes 6–7: Number of Group Records
