@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install dependencies
         run: |
@@ -21,7 +21,7 @@ jobs:
           sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
 
       - name: Publish to crates.io
         env:
