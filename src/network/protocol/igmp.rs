@@ -89,13 +89,7 @@ mod tests {
     }
 
     fn params(src: Ipv4Addr, dst: Ipv4Addr) -> TransportParams {
-        TransportParams::new(
-            IpAddr::V4(src),
-            IpAddr::V4(dst),
-            64,
-            None,
-            None,
-        )
+        TransportParams::new(IpAddr::V4(src), IpAddr::V4(dst), 64, None, None)
     }
 
     // IGMPv1 Membership Report (type 0x12)
@@ -112,7 +106,10 @@ mod tests {
         assert_eq!(packet.protocol, Protocol::Igmp);
         assert!(packet.is_outgoing);
         match packet.protocol_state {
-            ProtocolState::Igmp { igmp_type, group_addr } => {
+            ProtocolState::Igmp {
+                igmp_type,
+                group_addr,
+            } => {
                 assert_eq!(igmp_type, 0x12);
                 assert_eq!(group_addr, Some(group));
             }
@@ -132,7 +129,10 @@ mod tests {
         assert_eq!(packet.protocol, Protocol::Igmp);
         assert!(packet.is_outgoing);
         match packet.protocol_state {
-            ProtocolState::Igmp { igmp_type, group_addr } => {
+            ProtocolState::Igmp {
+                igmp_type,
+                group_addr,
+            } => {
                 assert_eq!(igmp_type, 0x11);
                 assert_eq!(group_addr, Some(Ipv4Addr::new(0, 0, 0, 0)));
             }
@@ -151,7 +151,10 @@ mod tests {
         let packet = parse(data, params(src, dst), &local_ips(src)).unwrap();
 
         match packet.protocol_state {
-            ProtocolState::Igmp { igmp_type, group_addr } => {
+            ProtocolState::Igmp {
+                igmp_type,
+                group_addr,
+            } => {
                 assert_eq!(igmp_type, 0x11);
                 assert_eq!(group_addr, Some(group));
             }
@@ -171,7 +174,10 @@ mod tests {
 
         assert!(packet.is_outgoing);
         match packet.protocol_state {
-            ProtocolState::Igmp { igmp_type, group_addr } => {
+            ProtocolState::Igmp {
+                igmp_type,
+                group_addr,
+            } => {
                 assert_eq!(igmp_type, 0x16);
                 assert_eq!(group_addr, Some(group));
             }
@@ -190,7 +196,10 @@ mod tests {
         let packet = parse(data, params(src, dst), &local_ips(src)).unwrap();
 
         match packet.protocol_state {
-            ProtocolState::Igmp { igmp_type, group_addr } => {
+            ProtocolState::Igmp {
+                igmp_type,
+                group_addr,
+            } => {
                 assert_eq!(igmp_type, 0x17);
                 assert_eq!(group_addr, Some(group));
             }
@@ -211,7 +220,10 @@ mod tests {
 
         assert!(packet.is_outgoing);
         match packet.protocol_state {
-            ProtocolState::Igmp { igmp_type, group_addr } => {
+            ProtocolState::Igmp {
+                igmp_type,
+                group_addr,
+            } => {
                 assert_eq!(igmp_type, 0x22);
                 assert_eq!(group_addr, None);
             }
@@ -252,7 +264,10 @@ mod tests {
         let packet = parse(data, params(src, dst), &local_ips(src)).unwrap();
 
         match packet.protocol_state {
-            ProtocolState::Igmp { igmp_type, group_addr } => {
+            ProtocolState::Igmp {
+                igmp_type,
+                group_addr,
+            } => {
                 assert_eq!(igmp_type, 0x16);
                 assert_eq!(group_addr, None);
             }

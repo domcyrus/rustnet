@@ -200,8 +200,14 @@ impl fmt::Display for TcpState {
 pub enum ProtocolState {
     Tcp(TcpState),
     Udp,
-    Icmp { icmp_type: u8, icmp_id: Option<u16> },
-    Igmp { igmp_type: u8, group_addr: Option<std::net::Ipv4Addr> },
+    Icmp {
+        icmp_type: u8,
+        icmp_id: Option<u16>,
+    },
+    Igmp {
+        igmp_type: u8,
+        group_addr: Option<std::net::Ipv4Addr>,
+    },
     Arp(ArpInfo),
 }
 
@@ -1949,7 +1955,10 @@ impl Connection {
                 11 => "TIME_EXCEEDED".to_string(),
                 _ => "ICMP_OTHER".to_string(),
             },
-            ProtocolState::Igmp { igmp_type, group_addr } => {
+            ProtocolState::Igmp {
+                igmp_type,
+                group_addr,
+            } => {
                 let type_str = match igmp_type {
                     0x11 => "QUERY",
                     0x12 => "REPORT_V1",
