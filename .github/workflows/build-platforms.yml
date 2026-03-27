@@ -68,14 +68,14 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
         uses: ./.github/actions/setup-linux-deps
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
         with:
           targets: ${{ matrix.target }}
           components: rustfmt
@@ -99,7 +99,7 @@ jobs:
       # For test builds: upload raw binary
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: rustnet-${{ matrix.build }}
           path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
@@ -135,7 +135,7 @@ jobs:
 
       - name: Upload release archive
         if: ${{ inputs.create-archives }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: build-${{ matrix.target }}
           path: ${{ env.ASSET }}
@@ -179,7 +179,7 @@ jobs:
       # x86_64: use standard checkout action
       - name: Checkout repository
         if: matrix.arch == 'x86_64' || matrix.arch == 'x86_64-android' || matrix.arch == 'armv7-android' || matrix.arch == 'x86-android'
-        uses: actions/checkout@v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       # aarch64: JS actions don't work in Alpine containers on ARM runners
       - name: Checkout repository (ARM workaround)
@@ -312,7 +312,7 @@ jobs:
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
         continue-on-error: ${{ matrix.arch != 'x86_64' }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: rustnet-linux-static-${{ matrix.arch }}
           path: ${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}
@@ -339,7 +339,7 @@ jobs:
         # JS actions don't work in Alpine containers on ARM runners;
         # release.yml has dedicated upload-arm-static/upload-android-static jobs as fallback
         continue-on-error: ${{ contains(matrix.arch, 'aarch64') }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: build-${{ matrix.target }}
           path: rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz

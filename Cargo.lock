@@ -2365,6 +2365,7 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
+ "sha2",
  "simplelog",
  "windows",
  "zip",

@@ -12,6 +12,7 @@ RustNet processes untrusted network data, making defense-in-depth security criti
 - [Log File Privacy](#log-file-privacy)
 - [eBPF Security](#ebpf-security)
 - [Threat Model](#threat-model)
+- [Supply Chain Security](#supply-chain-security)
 - [Audit and Compliance](#audit-and-compliance)
 - [Reporting Security Issues](#reporting-security-issues)
 
@@ -200,6 +201,35 @@ When using eBPF for enhanced process detection (default on Linux):
 - Root/Administrator users can modify RustNet or capture packets directly
 - Physical access to the machine enables packet capture
 - Network-level attacks (RustNet is a monitoring tool, not a security appliance)
+
+### Sandboxing as Root
+
+Both Landlock (Linux) and Seatbelt (macOS) enforce restrictions even when RustNet runs as root (UID 0). Once applied, the sandbox cannot be reversed from within the process — Landlock sets `PR_SET_NO_NEW_PRIVS` which is irreversible per-process.
+
+However, sandboxing does **not** protect against supply chain attacks. A compromised binary would simply not apply the sandbox. Root can also:
+- Pass `--no-sandbox` to skip sandboxing entirely
+- Unload the Landlock LSM kernel module
+- Disable SIP on macOS (which controls sandbox enforcement)
+- Use `ptrace` to modify a running process
+
+For this reason, running with fine-grained capabilities (`setcap cap_net_raw=eip`) is strongly preferred over running as root.
+
+## Supply Chain Security
+
+RustNet takes the following measures to protect against supply chain attacks:
+
+- **Dependency lockfile**: `Cargo.lock` is committed to the repository, pinning all transitive dependency versions and recording source checksums. This prevents silent version upgrades.
+- **Security audit**: `cargo audit` runs in CI on every push and pull request, checking dependencies against the RustSec Advisory Database.
+- **CI action pinning**: All GitHub Actions are pinned by commit SHA (not tags), preventing tag-rewriting attacks on upstream actions.
+- **Conservative dependency policy**: New dependencies require justification and are reviewed for maintenance status and security track record (see `CONTRIBUTING.md`).
+- **Build-time integrity**: The Windows Npcap SDK download in `build.rs` is verified against a hardcoded SHA256 checksum.
+- **Code signing**: macOS releases are signed with an Apple Developer certificate and notarized.
+- **Checksum verification**: All packaging workflows (Homebrew, Chocolatey, AUR) calculate and double-verify SHA256 checksums before publishing.
+
+### Limitations
+
+- `cargo install rustnet` fetches the latest compatible versions from crates.io and does **not** use `Cargo.lock`. Users building from source should verify the source tarball checksum.
+- Build scripts (`build.rs`) and proc-macros execute arbitrary code at compile time. While all current dependencies are well-established crates, this is an inherent risk of the Rust build model.
 
 ## Audit and Compliance
 

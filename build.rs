@@ -80,6 +80,7 @@ fn generate_assets() -> Result<()> {
 
 #[cfg(target_os = "windows")]
 fn download_windows_npcap_sdk() -> Result<()> {
+    use sha2::{Digest, Sha256};
     use std::{
         fs,
         io::{self, Write},
@@ -89,15 +90,18 @@ fn download_windows_npcap_sdk() -> Result<()> {
 
     // get npcap SDK
     const NPCAP_SDK: &str = "npcap-sdk-1.15.zip";
+    const NPCAP_SDK_SHA256: &str =
+        "52c7b9fb4abee3ad9fe739bb545c3efe77b731c8e127122bdf328eafdae3ed4f";
 
     let npcap_sdk_download_url = format!("https://npcap.com/dist/{NPCAP_SDK}");
     let cache_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?).join("target");
     let npcap_sdk_cache_path = cache_dir.join(NPCAP_SDK);
 
     let npcap_zip = match fs::read(&npcap_sdk_cache_path) {
-        // use cached
+        // use cached (verify checksum)
         Ok(zip_data) => {
             eprintln!("Found cached npcap SDK");
+            verify_npcap_checksum(&zip_data)?;
             zip_data
         }
         // download SDK
@@ -108,6 +112,9 @@ fn download_windows_npcap_sdk() -> Result<()> {
             let mut zip_data = vec![];
             let _res = http_req::request::get(npcap_sdk_download_url, &mut zip_data)?;
 
+            // verify checksum before caching
+            verify_npcap_checksum(&zip_data)?;
+
             // write cache
             fs::create_dir_all(cache_dir)?;
             let mut cache = fs::File::create(npcap_sdk_cache_path)?;
@@ -116,6 +123,21 @@ fn download_windows_npcap_sdk() -> Result<()> {
             zip_data
         }
     };
+
+    fn verify_npcap_checksum(data: &[u8]) -> Result<()> {
+        let hash = Sha256::digest(data);
+        let actual = hash.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        if actual != NPCAP_SDK_SHA256 {
+            anyhow::bail!(
+                "Npcap SDK checksum mismatch!\n  Expected: {}\n  Actual:   {}\n\
+                 The downloaded file may be corrupted or tampered with.",
+                NPCAP_SDK_SHA256,
+                actual
+            );
+        }
+        eprintln!("Npcap SDK checksum verified: {actual}");
+        Ok(())
+    }
 
     // extract libraries based on target architecture
     let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
