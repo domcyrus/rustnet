@@ -8,6 +8,7 @@ pub enum Protocol {
     Tcp,
     Udp,
     Icmp,
+    Igmp,
     Arp,
 }
 
@@ -17,6 +18,7 @@ impl std::fmt::Display for Protocol {
             Protocol::Tcp => write!(f, "TCP"),
             Protocol::Udp => write!(f, "UDP"),
             Protocol::Icmp => write!(f, "ICMP"),
+            Protocol::Igmp => write!(f, "IGMP"),
             Protocol::Arp => write!(f, "ARP"),
         }
     }
@@ -199,6 +201,7 @@ pub enum ProtocolState {
     Tcp(TcpState),
     Udp,
     Icmp { icmp_type: u8, icmp_id: Option<u16> },
+    Igmp { igmp_type: u8, group_addr: Option<std::net::Ipv4Addr> },
     Arp(ArpInfo),
 }
 
@@ -1946,6 +1949,21 @@ impl Connection {
                 11 => "TIME_EXCEEDED".to_string(),
                 _ => "ICMP_OTHER".to_string(),
             },
+            ProtocolState::Igmp { igmp_type, group_addr } => {
+                let type_str = match igmp_type {
+                    0x11 => "QUERY",
+                    0x12 => "REPORT_V1",
+                    0x16 => "REPORT_V2",
+                    0x22 => "REPORT_V3",
+                    0x17 => "LEAVE_GROUP",
+                    _ => "IGMP_OTHER",
+                };
+                if let Some(addr) = group_addr {
+                    format!("{}({})", type_str, addr)
+                } else {
+                    type_str.to_string()
+                }
+            }
             ProtocolState::Arp(info) => match info.operation {
                 ArpOperation::Request => {
                     if let Some(ref vendor) = info.sender_vendor {
@@ -2016,6 +2034,7 @@ impl Connection {
                 }
             }
             ProtocolState::Icmp { .. } => Duration::from_secs(10),
+            ProtocolState::Igmp { .. } => Duration::from_secs(10),
             ProtocolState::Arp(_) => Duration::from_secs(30),
         }
     }

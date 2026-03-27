@@ -5,8 +5,10 @@
 //! - UDP (User Datagram Protocol)
 //! - ICMP (Internet Control Message Protocol)
 //! - ICMPv6 (Internet Control Message Protocol for IPv6)
+//! - IGMP (Internet Group Management Protocol)
 
 pub mod icmp;
+pub mod igmp;
 pub mod tcp;
 pub mod udp;
 
