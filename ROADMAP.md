@@ -159,6 +159,44 @@ The experimental eBPF support provides efficient process identification but has 
 - [ ] **Mouse Support**: Click to select connections
 - [ ] **Split Pane View**: Show multiple views simultaneously
 
+## Architecture
+
+### Workspace Split
+
+Restructure the single crate into a Cargo workspace (same GitHub repo) with clear separation of concerns:
+
+- **rustnet** (binary): CLI, TUI, app event loop -- the user-facing application
+- **rustnet-net** (library): Packet parsing, protocol types, DPI, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups -- reusable by other tools
+- **rustnet-capture** (library): Raw BPF ioctls, fd passing, pktap device management -- no libpcap, no C dependencies, just `libc`
+- **rustnet-helper** (binary): Minimal suid helper for macOS pktap privilege separation (~100 lines)
+
+Benefits:
+- Clean dependency boundaries (helper has zero C dependencies)
+- `rustnet-net` becomes independently useful as a Rust network analysis library
+- Compile times improve (parallel crate compilation)
+- `cargo install rustnet` continues to work unchanged
+
+### macOS Privilege Separation (pktap without root)
+
+Currently pktap requires root because the macOS kernel enforces a root check (`SIOCIFCREATE` ioctl) when creating the pktap pseudo-interface. This is independent of BPF device permissions (ChmodBPF). The goal is to run the main RustNet process as a regular user while only the minimal helper runs privileged.
+
+**Approach**: Small suid helper binary that:
+1. Opens `/dev/bpf*` and creates the pktap interface (requires root)
+2. Configures BPF device (bind interface, set buffer size, immediate mode)
+3. Locks the device with `BIOCLOCK` (prevents further configuration changes)
+4. Passes the BPF file descriptor to the unprivileged RustNet process via Unix socket (`SCM_RIGHTS`)
+5. Drops privileges and exits
+
+The main RustNet process reads packets directly from the received BPF fd using `read()` -- no libpcap needed on this path. The existing pktap header parser (`link_layer/pktap.rs`) already handles the packet format. BPF filter compilation is not needed since BPF filters are already incompatible with pktap.
+
+On Linux/Windows/FreeBSD, nothing changes -- libpcap is used as today, with the existing capability-based privilege model on Linux.
+
+Security properties:
+- Helper is tiny (~100 lines of Rust, no C code) -- minimal attack surface as root
+- `BIOCLOCK` prevents the unprivileged process from reconfiguring the capture device
+- Seatbelt sandbox can still be applied to the main process after fd handoff
+- Similar pattern to Wireshark's `dumpcap` but with a smaller privileged surface (no libpcap in the helper)
+
 ## Development
 
 - [x] **Unit Tests**: Basic unit tests in 12+ source modules (DPI protocols, filtering, services, network capture, etc.)
