@@ -599,10 +599,13 @@ impl App {
 
         // Mark loading as complete after a short delay
         let is_loading = Arc::clone(&self.is_loading);
-        thread::spawn(move || {
-            thread::sleep(Duration::from_millis(500));
-            is_loading.store(false, Ordering::Relaxed);
-        });
+        thread::Builder::new()
+            .name("startup_flag".to_string())
+            .spawn(move || {
+                thread::sleep(Duration::from_millis(500));
+                is_loading.store(false, Ordering::Relaxed);
+            })
+            .expect("Failed to spawn startup_flag thread");
 
         Ok(())
     }
@@ -649,7 +652,9 @@ impl App {
         let _pktap_active = Arc::clone(&self.pktap_active);
         let pcap_export_file = self.config.pcap_export_file.clone();
 
-        thread::spawn(move || {
+        thread::Builder::new()
+            .name("pcap_tx".to_string())
+            .spawn(move || {
             match setup_packet_capture(capture_config) {
                 Ok((capture, device_name, linktype)) => {
                     // Store the actual interface name and linktype being used
@@ -823,7 +828,8 @@ impl App {
                     warn!("Application will run in process-only mode");
                 }
             }
-        });
+        })
+        .expect("Failed to spawn pcap_tx thread");
 
         Ok(())
     }
@@ -847,96 +853,100 @@ impl App {
             ..Default::default()
         };
 
-        thread::spawn(move || {
-            info!("Packet processor {} started", id);
+        thread::Builder::new()
+            .name(format!("pcap_rx_{}", id))
+            .spawn(move || {
+                info!("Packet processor {} started", id);
 
-            // Drop CAP_NET_RAW immediately as this thread doesn't need it (Linux only)
-            #[cfg(all(target_os = "linux", feature = "landlock"))]
-            {
-                if let Err(e) = crate::network::platform::sandbox::capabilities::drop_cap_net_raw()
+                // Drop CAP_NET_RAW immediately as this thread doesn't need it (Linux only)
+                #[cfg(all(target_os = "linux", feature = "landlock"))]
                 {
-                    warn!(
-                        "Failed to drop CAP_NET_RAW in processor thread {}: {}",
-                        id, e
-                    );
-                } else {
-                    debug!("Dropped CAP_NET_RAW in processor thread {}", id);
-                }
-            }
-
-            // Wait for linktype to be available
-            let parser = loop {
-                if let Some(linktype) = *linktype_storage.read().unwrap() {
-                    let mut parser =
-                        PacketParser::with_config(parser_config.clone()).with_linktype(linktype);
-                    if let Some(ref oui) = oui_lookup {
-                        parser = parser.with_oui_lookup((**oui).clone());
-                    }
-                    break parser;
-                }
-                thread::sleep(Duration::from_millis(10));
-            };
-            let mut batch = Vec::new();
-            let mut total_processed = 0u64;
-            let mut last_log = Instant::now();
-
-            loop {
-                if should_stop.load(Ordering::Relaxed) {
-                    info!("Packet processor {} stopping", id);
-                    break;
-                }
-
-                // Collect packets in batches
-                batch.clear();
-                let deadline = Instant::now() + Duration::from_millis(10);
-
-                while batch.len() < 100 && Instant::now() < deadline {
-                    match packet_rx.recv_timeout(Duration::from_millis(1)) {
-                        Ok(packet) => batch.push(packet),
-                        Err(_) => break,
-                    }
-                }
-
-                // Process batch
-                let mut parsed_count = 0;
-                for packet_data in &batch {
-                    if let Some(parsed) = parser.parse_packet(packet_data) {
-                        update_connection(
-                            &connections,
-                            parsed,
-                            &stats,
-                            &json_log_path,
-                            &rtt_tracker,
-                            dns_resolver.as_deref(),
-                        );
-                        parsed_count += 1;
-                    }
-                }
-
-                if !batch.is_empty() {
-                    total_processed += batch.len() as u64;
-                    stats
-                        .packets_processed
-                        .fetch_add(batch.len() as u64, Ordering::Relaxed);
-
-                    // Log progress
-                    if total_processed.is_multiple_of(10000)
-                        || last_log.elapsed() > Duration::from_secs(5)
+                    if let Err(e) =
+                        crate::network::platform::sandbox::capabilities::drop_cap_net_raw()
                     {
-                        debug!(
-                            "Processor {}: {} packets processed ({} parsed)",
-                            id, total_processed, parsed_count
+                        warn!(
+                            "Failed to drop CAP_NET_RAW in processor thread {}: {}",
+                            id, e
                         );
-                        last_log = Instant::now();
+                    } else {
+                        debug!("Dropped CAP_NET_RAW in processor thread {}", id);
                     }
                 }
-            }
 
-            info!(
-                "Packet processor {} exiting, total processed: {}",
-                id, total_processed
-            );
-        });
+                // Wait for linktype to be available
+                let parser = loop {
+                    if let Some(linktype) = *linktype_storage.read().unwrap() {
+                        let mut parser = PacketParser::with_config(parser_config.clone())
+                            .with_linktype(linktype);
+                        if let Some(ref oui) = oui_lookup {
+                            parser = parser.with_oui_lookup((**oui).clone());
+                        }
+                        break parser;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                };
+                let mut batch = Vec::new();
+                let mut total_processed = 0u64;
+                let mut last_log = Instant::now();
+
+                loop {
+                    if should_stop.load(Ordering::Relaxed) {
+                        info!("Packet processor {} stopping", id);
+                        break;
+                    }
+
+                    // Collect packets in batches
+                    batch.clear();
+                    let deadline = Instant::now() + Duration::from_millis(10);
+
+                    while batch.len() < 100 && Instant::now() < deadline {
+                        match packet_rx.recv_timeout(Duration::from_millis(1)) {
+                            Ok(packet) => batch.push(packet),
+                            Err(_) => break,
+                        }
+                    }
+
+                    // Process batch
+                    let mut parsed_count = 0;
+                    for packet_data in &batch {
+                        if let Some(parsed) = parser.parse_packet(packet_data) {
+                            update_connection(
+                                &connections,
+                                parsed,
+                                &stats,
+                                &json_log_path,
+                                &rtt_tracker,
+                                dns_resolver.as_deref(),
+                            );
+                            parsed_count += 1;
+                        }
+                    }
+
+                    if !batch.is_empty() {
+                        total_processed += batch.len() as u64;
+                        stats
+                            .packets_processed
+                            .fetch_add(batch.len() as u64, Ordering::Relaxed);
+
+                        // Log progress
+                        if total_processed.is_multiple_of(10000)
+                            || last_log.elapsed() > Duration::from_secs(5)
+                        {
+                            debug!(
+                                "Processor {}: {} packets processed ({} parsed)",
+                                id, total_processed, parsed_count
+                            );
+                            last_log = Instant::now();
+                        }
+                    }
+                }
+
+                info!(
+                    "Packet processor {} exiting, total processed: {}",
+                    id, total_processed
+                );
+            })
+            .unwrap_or_else(|_| panic!("Failed to spawn pcap_rx_{} thread", id));
     }
 
     /// Start process enrichment thread conditionally based on PKTAP status
@@ -948,7 +958,9 @@ impl App {
         let should_stop = Arc::clone(&self.should_stop);
         let process_detection_status = Arc::clone(&self.process_detection_status);
 
-        thread::spawn(move || {
+        thread::Builder::new()
+            .name("process-enrichment".to_string())
+            .spawn(move || {
             // On macOS, wait for PKTAP detection to avoid unnecessary lsof calls
             #[cfg(target_os = "macos")]
             {
@@ -998,7 +1010,8 @@ impl App {
             ) {
                 error!("Process enrichment thread failed: {}", e);
             }
-        });
+        })
+        .expect("Failed to spawn process-enrichment thread");
 
         Ok(())
     }
@@ -1169,73 +1182,76 @@ impl App {
             true
         };
 
-        thread::spawn(move || {
-            info!("Snapshot provider thread started");
+        thread::Builder::new()
+            .name("snapshot_ui".to_string())
+            .spawn(move || {
+                info!("Snapshot provider thread started");
 
-            loop {
-                if should_stop.load(Ordering::Relaxed) {
-                    info!("Snapshot provider thread stopping");
-                    break;
-                }
+                loop {
+                    if should_stop.load(Ordering::Relaxed) {
+                        info!("Snapshot provider thread stopping");
+                        break;
+                    }
 
-                // Create snapshot
-                let start = Instant::now();
-                let total_connections = connections.len();
+                    // Create snapshot
+                    let start = Instant::now();
+                    let total_connections = connections.len();
 
-                let mut snapshot_data: Vec<Connection> = connections
-                    .iter()
-                    .filter_map(|entry| {
-                        let mut conn = entry.value().clone();
-                        if enrich_and_filter(&mut conn, &service_lookup, filter_localhost)
-                            && conn.is_active()
-                        {
-                            Some(conn)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                // Append historic connections when toggle is on
-                if show_historic.load(Ordering::Relaxed) {
-                    let historic: Vec<Connection> = historic_connections
+                    let mut snapshot_data: Vec<Connection> = connections
                         .iter()
                         .filter_map(|entry| {
                             let mut conn = entry.value().clone();
-                            if enrich_and_filter(&mut conn, &service_lookup, filter_localhost) {
+                            if enrich_and_filter(&mut conn, &service_lookup, filter_localhost)
+                                && conn.is_active()
+                            {
                                 Some(conn)
                             } else {
                                 None
                             }
                         })
                         .collect();
-                    snapshot_data.extend(historic);
+
+                    // Append historic connections when toggle is on
+                    if show_historic.load(Ordering::Relaxed) {
+                        let historic: Vec<Connection> = historic_connections
+                            .iter()
+                            .filter_map(|entry| {
+                                let mut conn = entry.value().clone();
+                                if enrich_and_filter(&mut conn, &service_lookup, filter_localhost) {
+                                    Some(conn)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        snapshot_data.extend(historic);
+                    }
+
+                    // Sort by creation time (oldest first, newest last for maximum stability)
+                    snapshot_data.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+
+                    let filtered_count = snapshot_data.len();
+
+                    // Update snapshot
+                    *snapshot.write().unwrap() = snapshot_data;
+
+                    // Update stats (only count active connections)
+                    stats
+                        .connections_tracked
+                        .store(total_connections as u64, Ordering::Relaxed);
+                    *stats.last_update.write().unwrap() = Instant::now();
+
+                    debug!(
+                        "Snapshot updated in {:?} - Total: {}, Filtered: {}",
+                        start.elapsed(),
+                        total_connections,
+                        filtered_count
+                    );
+
+                    thread::sleep(refresh_interval);
                 }
-
-                // Sort by creation time (oldest first, newest last for maximum stability)
-                snapshot_data.sort_by(|a, b| a.created_at.cmp(&b.created_at));
-
-                let filtered_count = snapshot_data.len();
-
-                // Update snapshot
-                *snapshot.write().unwrap() = snapshot_data;
-
-                // Update stats (only count active connections)
-                stats
-                    .connections_tracked
-                    .store(total_connections as u64, Ordering::Relaxed);
-                *stats.last_update.write().unwrap() = Instant::now();
-
-                debug!(
-                    "Snapshot updated in {:?} - Total: {}, Filtered: {}",
-                    start.elapsed(),
-                    total_connections,
-                    filtered_count
-                );
-
-                thread::sleep(refresh_interval);
-            }
-        });
+            })
+            .expect("Failed to spawn snapshot_ui thread");
 
         Ok(())
     }
@@ -1247,25 +1263,28 @@ impl App {
     ) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
 
-        thread::spawn(move || {
-            info!("Rate refresh thread started");
+        thread::Builder::new()
+            .name("state_refresh".to_string())
+            .spawn(move || {
+                info!("Rate refresh thread started");
 
-            loop {
-                if should_stop.load(Ordering::Relaxed) {
-                    info!("Rate refresh thread stopping");
-                    break;
+                loop {
+                    if should_stop.load(Ordering::Relaxed) {
+                        info!("Rate refresh thread stopping");
+                        break;
+                    }
+
+                    // Refresh rates for all connections
+                    // This ensures rates decay to zero for idle connections
+                    for mut entry in connections.iter_mut() {
+                        entry.value_mut().refresh_rates();
+                    }
+
+                    // Run every 1 second to balance responsiveness with performance
+                    thread::sleep(Duration::from_secs(1));
                 }
-
-                // Refresh rates for all connections
-                // This ensures rates decay to zero for idle connections
-                for mut entry in connections.iter_mut() {
-                    entry.value_mut().refresh_rates();
-                }
-
-                // Run every 1 second to balance responsiveness with performance
-                thread::sleep(Duration::from_secs(1));
-            }
-        });
+            })
+            .expect("Failed to spawn state_refresh thread");
 
         Ok(())
     }
@@ -1276,47 +1295,50 @@ impl App {
         let interface_stats = Arc::clone(&self.interface_stats);
         let interface_rates = Arc::clone(&self.interface_rates);
 
-        thread::spawn(move || {
-            info!("Interface stats collection thread started");
+        thread::Builder::new()
+            .name("ifstats_poll".to_string())
+            .spawn(move || {
+                info!("Interface stats collection thread started");
 
-            let provider = PlatformStatsProvider;
-            let mut previous_stats: HashMap<String, InterfaceStats> = HashMap::new();
+                let provider = PlatformStatsProvider;
+                let mut previous_stats: HashMap<String, InterfaceStats> = HashMap::new();
 
-            loop {
-                if should_stop.load(Ordering::Relaxed) {
-                    info!("Interface stats thread stopping");
-                    break;
-                }
+                loop {
+                    if should_stop.load(Ordering::Relaxed) {
+                        info!("Interface stats thread stopping");
+                        break;
+                    }
 
-                // Collect stats from all interfaces
-                match provider.get_all_stats() {
-                    Ok(stats_vec) => {
-                        // Clear old entries
-                        interface_stats.clear();
-                        interface_rates.clear();
+                    // Collect stats from all interfaces
+                    match provider.get_all_stats() {
+                        Ok(stats_vec) => {
+                            // Clear old entries
+                            interface_stats.clear();
+                            interface_rates.clear();
 
-                        for stat in stats_vec {
-                            // Calculate rates if we have previous data
-                            if let Some(prev) = previous_stats.get(&stat.interface_name) {
-                                let rates = stat.calculate_rates(prev);
-                                interface_rates.insert(stat.interface_name.clone(), rates);
+                            for stat in stats_vec {
+                                // Calculate rates if we have previous data
+                                if let Some(prev) = previous_stats.get(&stat.interface_name) {
+                                    let rates = stat.calculate_rates(prev);
+                                    interface_rates.insert(stat.interface_name.clone(), rates);
+                                }
+
+                                // Store current stats
+                                let name = stat.interface_name.clone();
+                                interface_stats.insert(name.clone(), stat.clone());
+                                previous_stats.insert(name, stat);
                             }
-
-                            // Store current stats
-                            let name = stat.interface_name.clone();
-                            interface_stats.insert(name.clone(), stat.clone());
-                            previous_stats.insert(name, stat);
+                        }
+                        Err(e) => {
+                            debug!("Failed to collect interface stats: {}", e);
                         }
                     }
-                    Err(e) => {
-                        debug!("Failed to collect interface stats: {}", e);
-                    }
-                }
 
-                // Refresh every 2 seconds
-                thread::sleep(Duration::from_secs(2));
-            }
-        });
+                    // Refresh every 2 seconds
+                    thread::sleep(Duration::from_secs(2));
+                }
+            })
+            .expect("Failed to spawn ifstats_poll thread");
 
         Ok(())
     }
@@ -1330,68 +1352,71 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let rtt_tracker = Arc::clone(&self.rtt_tracker);
 
-        thread::spawn(move || {
-            info!("Traffic history thread started");
+        thread::Builder::new()
+            .name("graph_ui".to_string())
+            .spawn(move || {
+                info!("Traffic history thread started");
 
-            // Track previous values for delta calculation
-            let mut prev_packets: u64 = 0;
-            let mut prev_retransmits: u64 = 0;
+                // Track previous values for delta calculation
+                let mut prev_packets: u64 = 0;
+                let mut prev_retransmits: u64 = 0;
 
-            loop {
-                if should_stop.load(Ordering::Relaxed) {
-                    info!("Traffic history thread stopping");
-                    break;
+                loop {
+                    if should_stop.load(Ordering::Relaxed) {
+                        info!("Traffic history thread stopping");
+                        break;
+                    }
+
+                    // Aggregate rates from all interfaces
+                    let (total_rx, total_tx) =
+                        interface_rates
+                            .iter()
+                            .fold((0u64, 0u64), |(rx, tx), entry| {
+                                (
+                                    rx + entry.value().rx_bytes_per_sec,
+                                    tx + entry.value().tx_bytes_per_sec,
+                                )
+                            });
+
+                    // Get active connection count from snapshot (excludes historic)
+                    let connection_count = connections_snapshot
+                        .read()
+                        .map(|snap| snap.iter().filter(|c| !c.is_historic).count())
+                        .unwrap_or(0);
+
+                    // Get packet and retransmit counts (calculate deltas)
+                    let current_packets = stats.packets_processed.load(Ordering::Relaxed);
+                    let current_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
+
+                    let packets_delta = current_packets.saturating_sub(prev_packets);
+                    let retransmits_delta = current_retransmits.saturating_sub(prev_retransmits);
+
+                    prev_packets = current_packets;
+                    prev_retransmits = current_retransmits;
+
+                    // Get average RTT from tracker (last 1 second window)
+                    let avg_rtt_ms = rtt_tracker
+                        .lock()
+                        .ok()
+                        .and_then(|mut tracker| tracker.take_average_rtt(1));
+
+                    // Add sample to traffic history
+                    if let Ok(mut history) = traffic_history.write() {
+                        history.add_sample(
+                            total_rx,
+                            total_tx,
+                            connection_count,
+                            packets_delta,
+                            retransmits_delta,
+                            avg_rtt_ms,
+                        );
+                    }
+
+                    // Update every 1 second
+                    thread::sleep(Duration::from_secs(1));
                 }
-
-                // Aggregate rates from all interfaces
-                let (total_rx, total_tx) =
-                    interface_rates
-                        .iter()
-                        .fold((0u64, 0u64), |(rx, tx), entry| {
-                            (
-                                rx + entry.value().rx_bytes_per_sec,
-                                tx + entry.value().tx_bytes_per_sec,
-                            )
-                        });
-
-                // Get active connection count from snapshot (excludes historic)
-                let connection_count = connections_snapshot
-                    .read()
-                    .map(|snap| snap.iter().filter(|c| !c.is_historic).count())
-                    .unwrap_or(0);
-
-                // Get packet and retransmit counts (calculate deltas)
-                let current_packets = stats.packets_processed.load(Ordering::Relaxed);
-                let current_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
-
-                let packets_delta = current_packets.saturating_sub(prev_packets);
-                let retransmits_delta = current_retransmits.saturating_sub(prev_retransmits);
-
-                prev_packets = current_packets;
-                prev_retransmits = current_retransmits;
-
-                // Get average RTT from tracker (last 1 second window)
-                let avg_rtt_ms = rtt_tracker
-                    .lock()
-                    .ok()
-                    .and_then(|mut tracker| tracker.take_average_rtt(1));
-
-                // Add sample to traffic history
-                if let Ok(mut history) = traffic_history.write() {
-                    history.add_sample(
-                        total_rx,
-                        total_tx,
-                        connection_count,
-                        packets_delta,
-                        retransmits_delta,
-                        avg_rtt_ms,
-                    );
-                }
-
-                // Update every 1 second
-                thread::sleep(Duration::from_secs(1));
-            }
-        });
+            })
+            .expect("Failed to spawn graph_ui thread");
 
         Ok(())
     }
@@ -1456,7 +1481,9 @@ impl App {
         let pcap_export_path = self.config.pcap_export_file.clone();
         let dns_resolver = self.dns_resolver.clone();
 
-        thread::spawn(move || {
+        thread::Builder::new()
+            .name("cleanup_thread".to_string())
+            .spawn(move || {
             info!("Cleanup thread started");
 
             loop {
@@ -1578,7 +1605,8 @@ impl App {
 
                 thread::sleep(Duration::from_secs(5));
             }
-        });
+        })
+        .expect("Failed to spawn cleanup_thread");
 
         Ok(())
     }
