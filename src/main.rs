@@ -127,7 +127,7 @@ fn main() -> Result<()> {
 
     // Create and start the application
     let mut app = app::App::new(config.clone())?;
-    app.start()?;
+    let process_ready_rx = app.start()?;
     info!("Application started");
 
     // Pre-create sidecar JSONL file for PCAP export (needed for Landlock permissions)
@@ -146,9 +146,23 @@ fn main() -> Result<()> {
         }
     }
 
+    // Wait for process detection (including eBPF loading) to complete before
+    // applying the sandbox, which drops CAP_BPF and CAP_PERFMON.
+    // Without this synchronization, the sandbox could drop these capabilities
+    // before the background thread has finished loading eBPF programs.
+    match process_ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(()) => info!("Process detection initialized, safe to apply sandbox"),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            warn!("Timed out waiting for process detection init, applying sandbox anyway");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            warn!("Process detection thread exited early, applying sandbox anyway");
+        }
+    }
+
     // Apply Landlock sandbox (Linux only)
-    // This must be done AFTER app.start() because:
-    // - eBPF programs need to be loaded first (access to /sys/kernel/btf)
+    // This must be done AFTER process detection is initialized because:
+    // - eBPF programs need to be loaded first (requires CAP_BPF + CAP_PERFMON)
     // - Packet capture handles need to be opened first (access to /dev)
     // - Log files need to be created first
     #[cfg(all(target_os = "linux", feature = "landlock"))]

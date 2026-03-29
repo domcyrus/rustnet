@@ -134,13 +134,13 @@ Instead of running as root, grant only the required capabilities:
 
 ```bash
 # Modern Linux (5.8+): packet capture + eBPF
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)
 
 # Legacy Linux (pre-5.8): packet capture + eBPF
-sudo setcap 'cap_net_raw,cap_sys_admin=eip' $(which rustnet)
+sudo setcap 'cap_net_raw,cap_sys_admin+eip' $(which rustnet)
 
 # Packet capture only (no eBPF process detection)
-sudo setcap cap_net_raw=eip $(which rustnet)
+sudo setcap cap_net_raw+eip $(which rustnet)
 ```
 
 After sandbox application, `CAP_NET_RAW` is dropped - the process retains only the minimum privileges needed.

@@ -162,9 +162,9 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
     // Build instructions for gaining privileges
     let mut instructions = vec![
         "Run with sudo: sudo rustnet".to_string(),
-        "Set capabilities (modern Linux 5.8+, with eBPF): sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)".to_string(),
-        "Set capabilities (legacy/older kernels, with eBPF): sudo setcap 'cap_net_raw,cap_sys_admin=eip' $(which rustnet)".to_string(),
-        "Set capabilities (packet capture only, no eBPF): sudo setcap 'cap_net_raw=eip' $(which rustnet)".to_string(),
+        "Set capabilities (modern Linux 5.8+, with eBPF): sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)".to_string(),
+        "Set capabilities (legacy/older kernels, with eBPF): sudo setcap 'cap_net_raw,cap_sys_admin+eip' $(which rustnet)".to_string(),
+        "Set capabilities (packet capture only, no eBPF): sudo setcap 'cap_net_raw+eip' $(which rustnet)".to_string(),
     ];
 
     // Add Docker-specific instructions if it looks like we're in a container
