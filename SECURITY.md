@@ -27,12 +27,14 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 | Filesystem | 5.13+ | Only `/proc` readable (for process identification) |
 | Network | 6.4+ | TCP bind/connect blocked (RustNet is passive) |
 | Capabilities | Any | `CAP_NET_RAW` dropped after pcap socket opened |
+| Capabilities | Any | `CAP_BPF`, `CAP_PERFMON` dropped after eBPF programs loaded |
+| Privileges | Any | `PR_SET_NO_NEW_PRIVS` prevents privilege escalation via setuid binaries |
 
 ### How It Works
 
 1. **Initialization phase**: RustNet loads eBPF programs, opens packet capture handles, and creates log files
-2. **Sandbox application**: After init, Landlock restricts filesystem and network access
-3. **Capability drop**: `CAP_NET_RAW` is removed from the process (existing pcap socket remains valid)
+2. **Capability drop**: `CAP_NET_RAW`, `CAP_BPF`, and `CAP_PERFMON` are removed from the process
+3. **Landlock**: Restricts filesystem and network access
 
 ### Security Benefits
 
@@ -42,11 +44,12 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 - Cannot make outbound TCP connections (data exfiltration blocked)
 - Cannot bind TCP ports (reverse shell blocked)
 - Cannot create new raw sockets (capability dropped)
+- Cannot escalate privileges via setuid binaries (`PR_SET_NO_NEW_PRIVS`)
 
 ### CLI Options
 
 ```
---no-sandbox        Disable Landlock sandboxing
+--no-sandbox        Disable Landlock sandboxing and capability dropping
 --sandbox-strict    Require full sandbox enforcement or exit
 ```
 
@@ -55,7 +58,7 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 - **Kernel < 5.13**: Sandboxing skipped, warning logged
 - **Kernel 5.13-6.3**: Filesystem restrictions only
 - **Kernel 6.4+**: Full filesystem + network restrictions
-- **Docker**: May be blocked by seccomp; app continues normally
+- **Docker**: Landlock may be restricted; app continues normally
 
 ## Seatbelt Sandboxing (macOS)
 
@@ -136,13 +139,13 @@ Instead of running as root, grant only the required capabilities:
 
 ```bash
 # Modern Linux (5.8+): packet capture + eBPF
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)
 
 # Legacy Linux (pre-5.8): packet capture + eBPF
-sudo setcap 'cap_net_raw,cap_sys_admin=eip' $(which rustnet)
+sudo setcap 'cap_net_raw,cap_sys_admin+eip' $(which rustnet)
 
 # Packet capture only (no eBPF process detection)
-sudo setcap cap_net_raw=eip $(which rustnet)
+sudo setcap cap_net_raw+eip $(which rustnet)
 ```
 
 After sandbox application, `CAP_NET_RAW` is dropped - the process retains only the minimum privileges needed.

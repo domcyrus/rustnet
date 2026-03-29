@@ -1891,7 +1891,7 @@ fn draw_stats_panel(
         .style(Style::default());
     f.render_widget(network_stats, chunks[1]);
 
-    // Security statistics (sandbox) - Linux only shows Landlock info
+    // Security statistics (sandbox) - Linux shows Landlock + capabilities info
     #[cfg(target_os = "linux")]
     let security_text: Vec<Line> = {
         let sandbox_info = app.get_sandbox_info();
@@ -1906,12 +1906,20 @@ fn draw_stats_panel(
         if sandbox_info.cap_dropped {
             features.push("CAP_NET_RAW dropped");
         }
+        if sandbox_info.ebpf_caps_dropped {
+            features.push("eBPF caps dropped");
+        }
         if sandbox_info.fs_restricted {
             features.push("FS restricted");
         }
         if sandbox_info.net_restricted {
             features.push("Net blocked");
         }
+        let features_style = if features.is_empty() {
+            theme::fg(theme::warn())
+        } else {
+            theme::fg(theme::muted())
+        };
 
         let available_indicator = if sandbox_info.landlock_available {
             Span::styled(" [kernel supported]", theme::fg(theme::muted()))
@@ -1931,7 +1939,7 @@ fn draw_stats_panel(
 
         vec![
             Line::from(vec![
-                Span::raw("Landlock: "),
+                Span::raw("Sandbox: "),
                 Span::styled(sandbox_info.status.clone(), status_style),
                 available_indicator,
             ]),
@@ -1941,7 +1949,7 @@ fn draw_stats_panel(
                 } else {
                     features.join(", ")
                 },
-                theme::fg(theme::muted()),
+                features_style,
             )),
             Line::from(Span::styled(priv_label, priv_style)),
         ]

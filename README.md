@@ -144,7 +144,7 @@ Packet capture requires elevated privileges:
 sudo rustnet
 
 # Linux: Grant capabilities to run without sudo (recommended)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)
 rustnet
 ```
 

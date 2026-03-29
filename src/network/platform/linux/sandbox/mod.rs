@@ -1,6 +1,6 @@
 //! Linux sandboxing support
 //!
-//! Provides Landlock-based sandboxing for restricting process capabilities
+//! Provides multi-layered sandboxing for restricting process capabilities
 //! after initialization is complete. This is a defense-in-depth measure
 //! that limits damage if the application (processing untrusted network data)
 //! is compromised.
@@ -11,7 +11,13 @@
 //! - Filesystem: Only `/proc` and specified read paths (e.g., GeoIP databases) readable
 //! - Filesystem: Only specified write paths writable (e.g., logs, exports)
 //! - Network: TCP bind/connect blocked (kernel 6.4+)
-//! - Capabilities: CAP_NET_RAW dropped (cannot create new raw sockets)
+//! - Capabilities: CAP_NET_RAW, CAP_BPF, CAP_PERFMON dropped
+//! - Privileges: PR_SET_NO_NEW_PRIVS set (no privilege escalation via execve)
+//!
+//! # Application Order
+//!
+//! 1. Drop capabilities (CAP_NET_RAW, CAP_BPF, CAP_PERFMON)
+//! 2. Apply Landlock (filesystem + network restrictions)
 //!
 //! # Compatibility
 //!
@@ -23,7 +29,6 @@
 pub mod capabilities;
 #[cfg(feature = "landlock")]
 mod landlock;
-
 use std::path::PathBuf;
 
 /// Sandbox enforcement mode
@@ -60,6 +65,8 @@ pub struct SandboxResult {
     pub message: String,
     /// Whether CAP_NET_RAW was dropped
     pub cap_net_raw_dropped: bool,
+    /// Whether CAP_BPF/CAP_PERFMON were dropped
+    pub ebpf_caps_dropped: bool,
     /// Whether Landlock is available on this kernel
     pub landlock_available: bool,
     /// Whether Landlock filesystem restrictions were applied
@@ -104,6 +111,7 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
             status: SandboxStatus::NotApplied,
             message: "Sandbox disabled by configuration".to_string(),
             cap_net_raw_dropped: false,
+            ebpf_caps_dropped: false,
             landlock_available,
             landlock_fs_applied: false,
             landlock_net_applied: false,
@@ -114,12 +122,20 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         status: SandboxStatus::FullyEnforced,
         message: String::new(),
         cap_net_raw_dropped: false,
+        ebpf_caps_dropped: false,
         landlock_available,
         landlock_fs_applied: false,
         landlock_net_applied: false,
     };
 
     let mut messages = Vec::new();
+
+    // Step 0: Clear ambient capability set
+    // Ambient caps survive execve() — clearing prevents child processes
+    // from inheriting any capabilities if fork/exec somehow succeeds.
+    if let Err(e) = capabilities::clear_ambient_caps() {
+        log::debug!("Could not clear ambient capabilities: {}", e);
+    }
 
     // Step 1: Drop CAP_NET_RAW capability
     // This prevents creating new raw sockets for exfiltration
@@ -152,7 +168,29 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         }
     }
 
-    // Step 2: Apply Landlock restrictions
+    // Step 2: Drop CAP_BPF and CAP_PERFMON
+    // These are only needed for loading eBPF programs (already done)
+    match capabilities::drop_ebpf_caps() {
+        Ok(count) => {
+            if count > 0 {
+                result.ebpf_caps_dropped = true;
+                messages.push(format!("eBPF capabilities dropped ({})", count));
+                log::info!("Dropped {} eBPF capabilities", count);
+            } else {
+                log::debug!("No eBPF capabilities were held");
+            }
+        }
+        Err(e) => {
+            let msg = format!("Failed to drop eBPF capabilities: {}", e);
+            log::warn!("{}", msg);
+            messages.push(msg);
+            if config.mode == SandboxMode::Strict {
+                return Err(e).context("Strict mode requires eBPF capabilities to be droppable");
+            }
+        }
+    }
+
+    // Step 3: Apply Landlock restrictions
     match landlock::apply_landlock(config) {
         Ok(ll_result) => {
             result.landlock_fs_applied = ll_result.fs_applied;
@@ -198,8 +236,20 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         result.status = SandboxStatus::NotApplied;
     }
 
+    // Use appropriate log level based on status
+    match result.status {
+        SandboxStatus::FullyEnforced => {
+            log::info!("Sandbox fully enforced: {}", messages.join("; "));
+        }
+        SandboxStatus::PartiallyEnforced => {
+            log::warn!("Sandbox partially enforced: {}", messages.join("; "));
+        }
+        SandboxStatus::NotApplied => {
+            log::warn!("Sandbox not applied: {}", messages.join("; "));
+        }
+    }
+
     result.message = messages.join("; ");
-    log::info!("Sandbox result: {:?} - {}", result.status, result.message);
 
     Ok(result)
 }
@@ -207,11 +257,12 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
 /// Stub implementation when Landlock feature is disabled
 #[cfg(not(feature = "landlock"))]
 pub fn apply_sandbox(_config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
-    log::debug!("Landlock feature not compiled in");
+    log::warn!("Landlock feature not compiled in");
     Ok(SandboxResult {
         status: SandboxStatus::NotApplied,
         message: "Landlock feature not compiled in".to_string(),
         cap_net_raw_dropped: false,
+        ebpf_caps_dropped: false,
         landlock_available: false,
         landlock_fs_applied: false,
         landlock_net_applied: false,

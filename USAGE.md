@@ -28,7 +28,7 @@ sudo rustnet
 
 # Or grant capabilities to run without sudo (see INSTALL.md for details)
 # Linux example (modern kernel 5.8+):
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /path/to/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /path/to/rustnet
 rustnet
 ```
 

@@ -81,6 +81,10 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
 
     // Add network handling if requested
     // This will be ignored on kernels that don't support it (< 6.4)
+    // Note: Landlock ABI V4 only supports TCP restrictions (BindTcp, ConnectTcp).
+    // UDP blocking is under active kernel development (ABI V5+) but not available yet.
+    // UDP exfiltration risk is accepted as low: Landlock restricts file reads,
+    // limiting what an attacker could exfiltrate even with UDP socket access.
     let ruleset = if config.block_network {
         // Try to handle network access - ignore errors for older kernels
         match ruleset
@@ -106,7 +110,12 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
         .context("Failed to create Landlock ruleset")?;
 
     // Add rule for /proc (read-only)
-    // This is required for process identification via procfs
+    // This is required for process identification via procfs. We grant read
+    // access to all of /proc because Landlock PathBeneath rules apply to
+    // entire subtrees, and we need to enumerate PIDs via read_dir("/proc")
+    // and then access per-PID files (/proc/<pid>/comm, /proc/<pid>/fd/).
+    // Landlock's ptrace domain restrictions provide automatic protection
+    // against reading sensitive /proc files of processes outside our domain.
     if let Err(e) = add_path_rule(&mut ruleset_created, "/proc", read_access) {
         log::warn!("Could not add /proc rule: {}", e);
     }
@@ -127,12 +136,22 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
                 log::warn!("Could not add write rule for {:?}: {}", path, e);
             }
         } else {
-            // For paths that don't exist yet, try to add rule for parent directory
+            // For paths that don't exist yet, fall back to the parent directory.
+            // Landlock requires an open FD (PathFd) to create rules, so non-existent
+            // paths can't be directly referenced. This grants write access to the
+            // entire parent directory, which is broader than ideal — callers should
+            // pre-create output files before applying the sandbox when possible.
             if let Some(parent) = path.parent()
                 && parent.exists()
-                && let Err(e) = add_path_rule(&mut ruleset_created, parent, write_access)
             {
-                log::warn!("Could not add write rule for parent {:?}: {}", parent, e);
+                log::warn!(
+                    "Write path {:?} does not exist; granting write to parent {:?}",
+                    path,
+                    parent
+                );
+                if let Err(e) = add_path_rule(&mut ruleset_created, parent, write_access) {
+                    log::warn!("Could not add write rule for parent {:?}: {}", parent, e);
+                }
             }
         }
     }

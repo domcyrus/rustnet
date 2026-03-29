@@ -107,7 +107,7 @@ sudo apt install rustnet
 sudo rustnet
 
 # Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /usr/bin/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
@@ -196,7 +196,7 @@ sudo dnf install rustnet
 sudo rustnet
 
 # Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /usr/bin/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
@@ -217,7 +217,7 @@ brew install rustnet
 brew install domcyrus/rustnet/rustnet
 
 # Grant capabilities to the Homebrew-installed binary (modern kernel 5.8+)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(brew --prefix)/bin/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(brew --prefix)/bin/rustnet
 
 # Run without sudo
 rustnet
@@ -239,7 +239,7 @@ tar xzf rustnet-vX.Y.Z-x86_64-unknown-linux-musl.tar.gz
 sudo mv rustnet-vX.Y.Z-x86_64-unknown-linux-musl/rustnet /usr/local/bin/
 
 # Grant capabilities (modern kernel 5.8+)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /usr/local/bin/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/local/bin/rustnet
 
 # Run without sudo
 rustnet
@@ -618,7 +618,7 @@ Grant specific network capabilities to the binary without full root privileges:
 cargo build --release
 
 # Grant capabilities to the binary (modern kernel 5.8+, with eBPF support)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' ./target/release/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
 
 # Now run without sudo
 ./target/release/rustnet
@@ -628,7 +628,7 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' ./target/release/rustnet
 
 ```bash
 # If installed via cargo install rustnet-monitor (modern kernel 5.8+)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' ~/.cargo/bin/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' ~/.cargo/bin/rustnet
 
 # Now run without sudo
 rustnet
@@ -643,11 +643,11 @@ eBPF is enabled by default on Linux and provides lower-overhead process identifi
 cargo build --release
 
 # Modern Linux (5.8+) - works with just these three capabilities:
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' ./target/release/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
 ./target/release/rustnet
 
 # Legacy Linux (older kernels without CAP_BPF) - use CAP_SYS_ADMIN as fallback:
-sudo setcap 'cap_net_raw,cap_sys_admin=eip' ./target/release/rustnet
+sudo setcap 'cap_net_raw,cap_sys_admin+eip' ./target/release/rustnet
 ./target/release/rustnet
 
 # Check TUI Statistics panel - should show "Process Detection: eBPF + procfs"
@@ -679,7 +679,7 @@ sudo setcap 'cap_net_raw,cap_sys_admin=eip' ./target/release/rustnet
 
 ```bash
 # If installed via package manager or copied to /usr/local/bin (modern kernel 5.8+)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' /usr/local/bin/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/local/bin/rustnet
 rustnet
 ```
 
@@ -721,8 +721,8 @@ getcap ~/.cargo/bin/rustnet
 # For system-wide installations:
 getcap $(which rustnet)
 
-# Modern (5.8+): Should show cap_net_raw,cap_bpf,cap_perfmon=eip
-# Legacy: Should show cap_net_raw,cap_sys_admin=eip
+# Modern (5.8+): Should show cap_net_raw,cap_bpf,cap_perfmon+eip
+# Legacy: Should show cap_net_raw,cap_sys_admin+eip
 
 # Test without sudo
 rustnet --help
@@ -852,7 +852,7 @@ RustNet auto-discovers databases from standard locations. Run `rustnet --help` t
 #### Operation Not Permitted (with capabilities set)
 
 - Capabilities may have been removed by system updates
-- Re-apply capabilities (modern): `sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon=eip' $(which rustnet)`
+- Re-apply capabilities (modern): `sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)`
 - Some filesystems don't support extended attributes (capabilities)
 - Try copying the binary to a different filesystem (e.g., from NFS to local disk)
 

@@ -127,7 +127,7 @@ fn main() -> Result<()> {
 
     // Create and start the application
     let mut app = app::App::new(config.clone())?;
-    app.start()?;
+    let process_ready_rx = app.start()?;
     info!("Application started");
 
     // Pre-create sidecar JSONL file for PCAP export (needed for Landlock permissions)
@@ -146,9 +146,23 @@ fn main() -> Result<()> {
         }
     }
 
+    // Wait for process detection (including eBPF loading) to complete before
+    // applying the sandbox, which drops CAP_BPF and CAP_PERFMON.
+    // Without this synchronization, the sandbox could drop these capabilities
+    // before the background thread has finished loading eBPF programs.
+    match process_ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(()) => info!("Process detection initialized, safe to apply sandbox"),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            warn!("Timed out waiting for process detection init, applying sandbox anyway");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            warn!("Process detection thread exited early, applying sandbox anyway");
+        }
+    }
+
     // Apply Landlock sandbox (Linux only)
-    // This must be done AFTER app.start() because:
-    // - eBPF programs need to be loaded first (access to /sys/kernel/btf)
+    // This must be done AFTER process detection is initialized because:
+    // - eBPF programs need to be loaded first (requires CAP_BPF + CAP_PERFMON)
     // - Packet capture handles need to be opened first (access to /dev)
     // - Log files need to be created first
     #[cfg(all(target_os = "linux", feature = "landlock"))]
@@ -202,23 +216,15 @@ fn main() -> Result<()> {
             Ok(result) => {
                 // Update UI with sandbox status
                 let status_str = match result.status {
-                    SandboxStatus::FullyEnforced => {
-                        info!("Sandbox fully enforced: {}", result.message);
-                        "Fully enforced"
-                    }
-                    SandboxStatus::PartiallyEnforced => {
-                        info!("Sandbox partially enforced: {}", result.message);
-                        "Partially enforced"
-                    }
-                    SandboxStatus::NotApplied => {
-                        debug!("Sandbox not applied: {}", result.message);
-                        "Not applied"
-                    }
+                    SandboxStatus::FullyEnforced => "Fully enforced",
+                    SandboxStatus::PartiallyEnforced => "Partially enforced",
+                    SandboxStatus::NotApplied => "Not applied",
                 };
 
                 app.set_sandbox_info(app::SandboxInfo {
                     status: status_str.to_string(),
                     cap_dropped: result.cap_net_raw_dropped,
+                    ebpf_caps_dropped: result.ebpf_caps_dropped,
                     landlock_available: result.landlock_available,
                     fs_restricted: result.landlock_fs_applied,
                     net_restricted: result.landlock_net_applied,
@@ -228,10 +234,11 @@ fn main() -> Result<()> {
                 if sandbox_mode == SandboxMode::Strict {
                     return Err(e.context("Sandbox enforcement required but failed"));
                 }
-                info!("Sandbox application error (non-strict mode): {}", e);
+                warn!("Sandbox application error (non-strict mode): {}", e);
                 app.set_sandbox_info(app::SandboxInfo {
                     status: "Error".to_string(),
                     cap_dropped: false,
+                    ebpf_caps_dropped: false,
                     landlock_available: false,
                     fs_restricted: false,
                     net_restricted: false,

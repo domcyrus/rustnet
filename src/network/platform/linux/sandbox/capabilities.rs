@@ -62,6 +62,55 @@ pub fn has_cap_net_raw() -> bool {
     caps::has_cap(None, CapSet::Effective, Capability::CAP_NET_RAW).unwrap_or(false)
 }
 
+/// Drop CAP_BPF and CAP_PERFMON from the current process
+///
+/// These capabilities are required for loading eBPF programs but are no
+/// longer needed once the programs are loaded. Dropping them limits the
+/// blast radius if the process is compromised.
+///
+/// # Returns
+///
+/// - `Ok(count)` where count is how many capabilities were dropped (0-2)
+/// - `Err` if dropping failed
+pub fn drop_ebpf_caps() -> Result<u32> {
+    let mut dropped = 0;
+
+    for cap in [Capability::CAP_BPF, Capability::CAP_PERFMON] {
+        let has_effective = caps::has_cap(None, CapSet::Effective, cap).unwrap_or(false);
+
+        if !has_effective {
+            continue;
+        }
+
+        caps::drop(None, CapSet::Effective, cap)
+            .with_context(|| format!("Failed to drop {:?} from effective set", cap))?;
+
+        // Also drop from permitted set to prevent re-acquiring
+        if caps::has_cap(None, CapSet::Permitted, cap).unwrap_or(false)
+            && let Err(e) = caps::drop(None, CapSet::Permitted, cap)
+        {
+            log::warn!("Could not drop {:?} from permitted set: {}", cap, e);
+        }
+
+        log::debug!("Dropped {:?}", cap);
+        dropped += 1;
+    }
+
+    Ok(dropped)
+}
+
+/// Clear all ambient capabilities
+///
+/// Ambient capabilities survive `execve()` of non-privileged programs.
+/// Clearing them prevents child processes from inheriting any capabilities
+/// that were held by the parent. This is standard practice in container
+/// runtimes (Docker, systemd) and security-sensitive daemons.
+pub fn clear_ambient_caps() -> Result<()> {
+    caps::clear(None, CapSet::Ambient).context("Failed to clear ambient capability set")?;
+    log::debug!("Cleared ambient capability set");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +127,13 @@ mod tests {
         // This test may behave differently depending on test environment
         let result = drop_cap_net_raw();
         // Should not error, just return whether it was dropped
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_drop_ebpf_caps_does_not_panic() {
+        // Should not panic regardless of capabilities held
+        let result = drop_ebpf_caps();
         assert!(result.is_ok());
     }
 }

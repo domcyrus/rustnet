@@ -53,10 +53,13 @@ pub struct SandboxInfo {
     pub status: String,
     /// Whether network connections are blocked
     pub net_restricted: bool,
-    // Linux-specific fields (Landlock)
+    // Linux-specific fields (Landlock + capabilities)
     /// Whether CAP_NET_RAW was dropped
     #[cfg(target_os = "linux")]
     pub cap_dropped: bool,
+    /// Whether CAP_BPF/CAP_PERFMON were dropped
+    #[cfg(target_os = "linux")]
+    pub ebpf_caps_dropped: bool,
     /// Whether Landlock is available on this kernel
     #[cfg(target_os = "linux")]
     pub landlock_available: bool,
@@ -567,7 +570,11 @@ impl App {
     }
 
     /// Start all background threads
-    pub fn start(&mut self) -> Result<()> {
+    ///
+    /// Returns a receiver that signals when process detection initialization is complete
+    /// (including eBPF loading). The caller should wait on this before dropping
+    /// eBPF capabilities to avoid a race condition.
+    pub fn start(&mut self) -> Result<std::sync::mpsc::Receiver<()>> {
         info!("Starting network monitor application");
 
         // Use stored connection map
@@ -576,8 +583,11 @@ impl App {
         // Start packet capture pipeline
         self.start_packet_capture_pipeline(connections.clone())?;
 
+        // Create channel to signal when process detection (incl. eBPF) is ready
+        let (process_ready_tx, process_ready_rx) = std::sync::mpsc::sync_channel(1);
+
         // Start process enrichment thread (but delay for PKTAP detection on macOS)
-        self.start_process_enrichment_conditional(connections.clone())?;
+        self.start_process_enrichment_conditional(connections.clone(), process_ready_tx)?;
 
         // Start GeoIP enrichment thread
         self.start_geoip_enrichment_thread(connections.clone())?;
@@ -607,7 +617,7 @@ impl App {
             })
             .expect("Failed to spawn startup_flag thread");
 
-        Ok(())
+        Ok(process_ready_rx)
     }
 
     /// Start packet capture and processing pipeline
@@ -953,6 +963,7 @@ impl App {
     fn start_process_enrichment_conditional(
         &self,
         connections: Arc<DashMap<String, Connection>>,
+        process_ready_tx: std::sync::mpsc::SyncSender<()>,
     ) -> Result<()> {
         let pktap_active = Arc::clone(&self.pktap_active);
         let should_stop = Arc::clone(&self.should_stop);
@@ -976,6 +987,7 @@ impl App {
                         if let Ok(mut status) = process_detection_status.write() {
                             *status = ProcessDetectionStatus::with_method("pktap");
                         }
+                        let _ = process_ready_tx.send(());
                         return;
                     }
                     // Check more frequently for faster detection
@@ -990,6 +1002,7 @@ impl App {
                     if let Ok(mut status) = process_detection_status.write() {
                         *status = ProcessDetectionStatus::with_method("pktap");
                     }
+                    let _ = process_ready_tx.send(());
                     return;
                 } else {
                     info!(
@@ -1007,6 +1020,7 @@ impl App {
                 should_stop,
                 pktap_active,
                 process_detection_status,
+                process_ready_tx,
             ) {
                 error!("Process enrichment thread failed: {}", e);
             }
@@ -1022,6 +1036,7 @@ impl App {
         should_stop: Arc<AtomicBool>,
         pktap_active: Arc<AtomicBool>,
         process_detection_status: Arc<RwLock<ProcessDetectionStatus>>,
+        process_ready_tx: std::sync::mpsc::SyncSender<()>,
     ) -> Result<()> {
         use crate::network::platform::DegradationReason;
 
@@ -1029,6 +1044,10 @@ impl App {
         let use_pktap = pktap_active.load(Ordering::Relaxed);
 
         let process_lookup = create_process_lookup(use_pktap)?;
+
+        // Signal that process detection (including eBPF loading) is complete.
+        // The main thread waits for this before dropping eBPF capabilities.
+        let _ = process_ready_tx.send(());
         let interval = Duration::from_secs(2); // Use default interval
 
         // Build and set the detection status from the process lookup implementation
