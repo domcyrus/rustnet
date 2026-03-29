@@ -775,8 +775,8 @@ impl App {
                                         stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
                                     }
                                     Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
-                                        info!("try_send: channel disconnected, exiting capture thread");
-                                        return;
+                                        warn!("Packet channel closed");
+                                        break;
                                     }
                                 }
                             }
