@@ -775,8 +775,8 @@ impl App {
                                         stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
                                     }
                                     Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
-                                        warn!("Packet channel closed");
-                                        break;
+                                        info!("try_send: channel disconnected, exiting capture thread");
+                                        return;
                                     }
                                 }
                             }
@@ -907,12 +907,28 @@ impl App {
 
                     // Collect packets in batches
                     batch.clear();
-                    let deadline = Instant::now() + Duration::from_millis(10);
+                    let deadline = Instant::now() + Duration::from_millis(100);
 
-                    while batch.len() < 100 && Instant::now() < deadline {
-                        match packet_rx.recv_timeout(Duration::from_millis(1)) {
-                            Ok(packet) => batch.push(packet),
-                            Err(_) => break,
+                    // Block until first packet arrives or deadline (no CPU spin when idle)
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    match packet_rx.recv_timeout(remaining) {
+                        Ok(packet) => {
+                            batch.push(packet);
+                            // Drain remaining packets using len() - pure atomic read, no syscall
+                            let available = packet_rx.len().min(99);
+                            for _ in 0..available {
+                                match packet_rx.try_recv() {
+                                    Ok(p) => batch.push(p),
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                        Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
+                            debug!("recv_timeout [pcap_rx_{}]: timeout (idle)", id);
+                        }
+                        Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
+                            info!("recv_timeout [pcap_rx_{}]: channel disconnected, exiting", id);
+                            return;
                         }
                     }
 
