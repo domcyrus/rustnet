@@ -927,7 +927,10 @@ impl App {
                             debug!("recv_timeout [pcap_rx_{}]: timeout (idle)", id);
                         }
                         Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
-                            info!("recv_timeout [pcap_rx_{}]: channel disconnected, exiting", id);
+                            info!(
+                                "recv_timeout [pcap_rx_{}]: channel disconnected, exiting",
+                                id
+                            );
                             return;
                         }
                     }
