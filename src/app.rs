@@ -625,8 +625,8 @@ impl App {
         &self,
         connections: Arc<DashMap<String, Connection>>,
     ) -> Result<()> {
-        // Create packet channel
-        let (packet_tx, packet_rx) = channel::bounded(MAX_PACKET_QUEUE);
+        // Create packet channel — sender batches packets, receiver gets Vec<Vec<u8>> per batch
+        let (packet_tx, packet_rx) = channel::bounded::<Vec<Vec<u8>>>(MAX_PACKET_QUEUE);
 
         // Start capture thread
         self.start_capture_thread(packet_tx)?;
@@ -645,7 +645,7 @@ impl App {
     }
 
     /// Start packet capture thread
-    fn start_capture_thread(&self, packet_tx: Sender<Vec<u8>>) -> Result<()> {
+    fn start_capture_thread(&self, packet_tx: Sender<Vec<Vec<u8>>>) -> Result<()> {
         // Validate interface exists before spawning thread (fail fast)
         crate::network::capture::validate_interface(&self.config.interface)?;
 
@@ -718,6 +718,8 @@ impl App {
                     let mut packets_read = 0u64;
                     let mut last_log = Instant::now();
                     let mut last_stats_check = Instant::now();
+                    let mut batch: Vec<Vec<u8>> = Vec::with_capacity(100);
+                    let mut batch_deadline = Instant::now() + Duration::from_millis(100);
 
                     loop {
                         if should_stop.load(Ordering::Relaxed) {
@@ -769,19 +771,44 @@ impl App {
                                     });
                                 }
 
-                                match packet_tx.try_send(packet) {
-                                    Ok(()) => {}
-                                    Err(crossbeam::channel::TrySendError::Full(_)) => {
-                                        stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
+                                batch.push(packet);
+
+                                // Send batch when full or deadline reached
+                                if batch.len() >= 100 || Instant::now() >= batch_deadline {
+                                    let to_send = std::mem::replace(&mut batch, Vec::with_capacity(100));
+                                    debug!("try_send: sending batch of {} packets", to_send.len());
+                                    match packet_tx.try_send(to_send) {
+                                        Ok(()) => {}
+                                        Err(crossbeam::channel::TrySendError::Full(_)) => {
+                                            stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                                            warn!("Packet channel closed");
+                                            break;
+                                        }
                                     }
-                                    Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
-                                        warn!("Packet channel closed");
-                                        break;
-                                    }
+                                    batch_deadline = Instant::now() + Duration::from_millis(100);
                                 }
                             }
                             Ok(None) => {
-                                // Timeout - check stats every second
+                                // Timeout - flush partial batch if deadline reached
+                                if !batch.is_empty() && Instant::now() >= batch_deadline {
+                                    let to_send = std::mem::replace(&mut batch, Vec::with_capacity(100));
+                                    debug!("try_send: flushing partial batch of {} packets", to_send.len());
+                                    match packet_tx.try_send(to_send) {
+                                        Ok(()) => {}
+                                        Err(crossbeam::channel::TrySendError::Full(_)) => {
+                                            stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                                            warn!("Packet channel closed");
+                                            break;
+                                        }
+                                    }
+                                    batch_deadline = Instant::now() + Duration::from_millis(100);
+                                }
+
+                                // Check stats every second
                                 if last_stats_check.elapsed() > Duration::from_secs(1) {
                                     if let Ok(capture_stats) = reader.stats() {
                                         if capture_stats.received > 0 {
@@ -848,7 +875,7 @@ impl App {
     fn start_packet_processor(
         &self,
         id: usize,
-        packet_rx: Receiver<Vec<u8>>,
+        packet_rx: Receiver<Vec<Vec<u8>>>,
         connections: Arc<DashMap<String, Connection>>,
     ) {
         let should_stop = Arc::clone(&self.should_stop);
@@ -895,7 +922,6 @@ impl App {
                     }
                     thread::sleep(Duration::from_millis(10));
                 };
-                let mut batch = Vec::new();
                 let mut total_processed = 0u64;
                 let mut last_log = Instant::now();
 
@@ -905,35 +931,18 @@ impl App {
                         break;
                     }
 
-                    // Collect packets in batches
-                    batch.clear();
-                    let deadline = Instant::now() + Duration::from_millis(100);
-
-                    // Block until first packet arrives or deadline (no CPU spin when idle)
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    match packet_rx.recv_timeout(remaining) {
-                        Ok(packet) => {
-                            batch.push(packet);
-                            // Drain remaining packets using len() - pure atomic read, no syscall
-                            let available = packet_rx.len().min(99);
-                            for _ in 0..available {
-                                match packet_rx.try_recv() {
-                                    Ok(p) => batch.push(p),
-                                    Err(_) => break,
-                                }
-                            }
+                    // Block until sender delivers a full batch (no spin, no polling)
+                    let batch = match packet_rx.recv_timeout(Duration::from_millis(100)) {
+                        Ok(batch) => {
+                            debug!("pcap_rx_{}: received batch of {} packets", id, batch.len());
+                            batch
                         }
-                        Err(crossbeam::channel::RecvTimeoutError::Timeout) => {
-                            debug!("recv_timeout [pcap_rx_{}]: timeout (idle)", id);
-                        }
+                        Err(crossbeam::channel::RecvTimeoutError::Timeout) => continue,
                         Err(crossbeam::channel::RecvTimeoutError::Disconnected) => {
-                            info!(
-                                "recv_timeout [pcap_rx_{}]: channel disconnected, exiting",
-                                id
-                            );
+                            info!("pcap_rx_{}: channel disconnected, exiting", id);
                             return;
                         }
-                    }
+                    };
 
                     // Process batch
                     let mut parsed_count = 0;
@@ -951,22 +960,20 @@ impl App {
                         }
                     }
 
-                    if !batch.is_empty() {
-                        total_processed += batch.len() as u64;
-                        stats
-                            .packets_processed
-                            .fetch_add(batch.len() as u64, Ordering::Relaxed);
+                    total_processed += batch.len() as u64;
+                    stats
+                        .packets_processed
+                        .fetch_add(batch.len() as u64, Ordering::Relaxed);
 
-                        // Log progress
-                        if total_processed.is_multiple_of(10000)
-                            || last_log.elapsed() > Duration::from_secs(5)
-                        {
-                            debug!(
-                                "Processor {}: {} packets processed ({} parsed)",
-                                id, total_processed, parsed_count
-                            );
-                            last_log = Instant::now();
-                        }
+                    // Log progress
+                    if total_processed.is_multiple_of(10000)
+                        || last_log.elapsed() > Duration::from_secs(5)
+                    {
+                        debug!(
+                            "Processor {}: {} packets processed ({} parsed)",
+                            id, total_processed, parsed_count
+                        );
+                        last_log = Instant::now();
                     }
                 }
 
