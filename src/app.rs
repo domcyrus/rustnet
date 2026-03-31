@@ -776,11 +776,12 @@ impl App {
                                 // Send batch when full or deadline reached
                                 if batch.len() >= 100 || Instant::now() >= batch_deadline {
                                     let to_send = std::mem::replace(&mut batch, Vec::with_capacity(100));
-                                    debug!("try_send: sending batch of {} packets", to_send.len());
+                                    let batch_size = to_send.len() as u64;
+                                    debug!("try_send: sending batch of {} packets", batch_size);
                                     match packet_tx.try_send(to_send) {
                                         Ok(()) => {}
                                         Err(crossbeam::channel::TrySendError::Full(_)) => {
-                                            stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
+                                            stats.packets_dropped.fetch_add(batch_size, Ordering::Relaxed);
                                         }
                                         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
                                             warn!("Packet channel closed");
@@ -794,11 +795,12 @@ impl App {
                                 // Timeout - flush partial batch if deadline reached
                                 if !batch.is_empty() && Instant::now() >= batch_deadline {
                                     let to_send = std::mem::replace(&mut batch, Vec::with_capacity(100));
-                                    debug!("try_send: flushing partial batch of {} packets", to_send.len());
+                                    let batch_size = to_send.len() as u64;
+                                    debug!("try_send: flushing partial batch of {} packets", batch_size);
                                     match packet_tx.try_send(to_send) {
                                         Ok(()) => {}
                                         Err(crossbeam::channel::TrySendError::Full(_)) => {
-                                            stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
+                                            stats.packets_dropped.fetch_add(batch_size, Ordering::Relaxed);
                                         }
                                         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
                                             warn!("Packet channel closed");
