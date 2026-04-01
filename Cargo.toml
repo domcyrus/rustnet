@@ -70,7 +70,7 @@ windows = { version = "0.62", features = [
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
 clap_complete = "4.6"
-clap_mangen = "0.2"
+clap_mangen = "0.3"
 
 [target.'cfg(windows)'.build-dependencies]
 http_req = "0.14"
