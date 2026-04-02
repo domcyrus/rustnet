@@ -232,15 +232,13 @@ impl ProcessLookup for LinuxProcessLookup {
         let cache = self.cache.read().expect("process cache lock poisoned");
 
         // Fast path: exact 4-tuple match (always works for TCP).
-        let result = if let Some(entry) = cache.lookup.get(&key) {
+        if let Some(entry) = cache.lookup.get(&key) {
             Some(entry.clone())
         } else {
             // Fallback: /proc/net may store sockets with wildcard addresses.
             // Progressively relax the key until we find a match.
             fallback_lookup(&cache.lookup, &key)
-        };
-
-        result
+        }
     }
 
     fn refresh(&self) -> Result<()> {
@@ -254,7 +252,6 @@ impl ProcessLookup for LinuxProcessLookup {
 
         Ok(())
     }
-
 
     fn get_detection_method(&self) -> &str {
         "procfs"
@@ -273,10 +270,7 @@ impl ProcessLookup for LinuxProcessLookup {
 ///   3. wildcard local:     local=0:0      remote=IP:port
 ///   4. wildcard remote IP: local=IP:port  remote=0:port
 ///   5. wildcard both IPs:  local=0:port   remote=0:0
-fn fallback_lookup(
-    map: &ConnectionProcessMap,
-    key: &ConnectionKey,
-) -> Option<(u32, String)> {
+fn fallback_lookup(map: &ConnectionProcessMap, key: &ConnectionKey) -> Option<(u32, String)> {
     let zero = |addr: SocketAddr| -> IpAddr {
         match addr {
             SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
@@ -284,19 +278,19 @@ fn fallback_lookup(
         }
     };
 
-    let lip  = key.local_addr.ip();
+    let lip = key.local_addr.ip();
     let lport = key.local_addr.port();
-    let rip  = key.remote_addr.ip();
+    let rip = key.remote_addr.ip();
     let rport = key.remote_addr.port();
     let zlip = zero(key.local_addr);
     let zrip = zero(key.remote_addr);
 
     let candidates: [(IpAddr, u16, IpAddr, u16); 5] = [
-        (zlip, lport, rip,  rport), // 1. wildcard local IP
-        (lip,  lport, zrip, 0    ), // 2. wildcard remote
-        (zlip, 0,     rip,  rport), // 3. wildcard local
-        (lip,  lport, zrip, rport), // 4. wildcard remote IP
-        (zlip, lport, zrip, 0    ), // 5. wildcard both IPs
+        (zlip, lport, rip, rport), // 1. wildcard local IP
+        (lip, lport, zrip, 0),     // 2. wildcard remote
+        (zlip, 0, rip, rport),     // 3. wildcard local
+        (lip, lport, zrip, rport), // 4. wildcard remote IP
+        (zlip, lport, zrip, 0),    // 5. wildcard both IPs
     ];
 
     for (l_ip, l_port, r_ip, r_port) in candidates {
