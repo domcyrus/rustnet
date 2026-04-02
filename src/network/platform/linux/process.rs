@@ -85,6 +85,18 @@ impl LinuxProcessLookup {
             &inode_to_process,
             &mut process_map,
         )?;
+        Self::parse_and_map(
+            "/proc/net/udplite",
+            Protocol::UdpLite,
+            &inode_to_process,
+            &mut process_map,
+        )?;
+        Self::parse_and_map(
+            "/proc/net/udplite6",
+            Protocol::UdpLite,
+            &inode_to_process,
+            &mut process_map,
+        )?;
 
         Ok((process_map, pid_names))
     }

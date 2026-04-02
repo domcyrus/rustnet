@@ -113,7 +113,7 @@ mod ebpf_enhanced {
         fn lookup_process_enhanced(&self, conn: &Connection) -> Option<(u32, String)> {
             // Try eBPF first for TCP/UDP/ICMP connections
             match conn.protocol {
-                Protocol::Tcp | Protocol::Udp => {
+                Protocol::Tcp | Protocol::Udp | Protocol::UdpLite => {
                     debug!(
                         "Enhanced lookup: Trying eBPF for {}:{} -> {}:{} ({})",
                         conn.local_addr.ip(),
@@ -123,6 +123,7 @@ mod ebpf_enhanced {
                         match conn.protocol {
                             Protocol::Tcp => "TCP",
                             Protocol::Udp => "UDP",
+                            Protocol::UdpLite => "UDP-Lite",
                             _ => "Unknown",
                         }
                     );

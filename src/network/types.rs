@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 pub enum Protocol {
     Tcp,
     Udp,
+    UdpLite,
     Icmp,
     Igmp,
     Arp,
@@ -17,6 +18,7 @@ impl std::fmt::Display for Protocol {
         match self {
             Protocol::Tcp => write!(f, "TCP"),
             Protocol::Udp => write!(f, "UDP"),
+            Protocol::UdpLite => write!(f, "UDP-Lite"),
             Protocol::Icmp => write!(f, "ICMP"),
             Protocol::Igmp => write!(f, "IGMP"),
             Protocol::Arp => write!(f, "ARP"),
@@ -200,6 +202,7 @@ impl fmt::Display for TcpState {
 pub enum ProtocolState {
     Tcp(TcpState),
     Udp,
+    UdpLite,
     Icmp {
         icmp_type: u8,
         icmp_id: Option<u16>,
@@ -1942,6 +1945,16 @@ impl Connection {
                     }
                 }
             }
+            ProtocolState::UdpLite => {
+                let idle_time = self.idle_time();
+                if idle_time > Duration::from_secs(60) {
+                    "UDPLITE_STALE".to_string()
+                } else if idle_time > Duration::from_secs(30) {
+                    "UDPLITE_IDLE".to_string()
+                } else {
+                    "UDPLITE_ACTIVE".to_string()
+                }
+            }
             ProtocolState::Icmp { icmp_type, icmp_id } => match icmp_type {
                 8 => match icmp_id {
                     Some(id) => format!("ECHO_REQ({})", id),
@@ -2042,6 +2055,7 @@ impl Connection {
                     Duration::from_secs(60)
                 }
             }
+            ProtocolState::UdpLite => Duration::from_secs(60),
             ProtocolState::Icmp { .. } => Duration::from_secs(10),
             ProtocolState::Igmp { .. } => Duration::from_secs(10),
             ProtocolState::Arp(_) => Duration::from_secs(30),

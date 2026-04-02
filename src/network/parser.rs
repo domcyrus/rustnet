@@ -335,6 +335,7 @@ impl PacketParser {
             2 => protocol::igmp::parse(transport_data, params, &self.local_ips),
             6 => protocol::tcp::parse(transport_data, params, &self.config, &self.local_ips),
             17 => protocol::udp::parse(transport_data, params, &self.config, &self.local_ips),
+            136 => protocol::udp_lite::parse(transport_data, params, &self.config, &self.local_ips),
             _ => None,
         }
     }
@@ -402,6 +403,7 @@ impl PacketParser {
             58 => protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips),
             6 => protocol::tcp::parse(final_transport_data, params, &self.config, &self.local_ips),
             17 => protocol::udp::parse(final_transport_data, params, &self.config, &self.local_ips),
+            136 => protocol::udp_lite::parse(final_transport_data, params, &self.config, &self.local_ips),
             _ => None,
         }
     }
@@ -540,6 +542,7 @@ impl PacketParser {
             2 => protocol::igmp::parse(transport_data, params, &self.local_ips),
             6 => protocol::tcp::parse(transport_data, params, &self.config, &self.local_ips),
             17 => protocol::udp::parse(transport_data, params, &self.config, &self.local_ips),
+            136 => protocol::udp_lite::parse(transport_data, params, &self.config, &self.local_ips),
             _ => None,
         }
     }
@@ -605,6 +608,7 @@ impl PacketParser {
             58 => protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips),
             6 => protocol::tcp::parse(final_transport_data, params, &self.config, &self.local_ips),
             17 => protocol::udp::parse(final_transport_data, params, &self.config, &self.local_ips),
+            136 => protocol::udp_lite::parse(final_transport_data, params, &self.config, &self.local_ips),
             _ => None,
         }
     }

@@ -11,6 +11,7 @@ pub mod icmp;
 pub mod igmp;
 pub mod tcp;
 pub mod udp;
+pub mod udp_lite;
 
 use std::net::IpAddr;
 
