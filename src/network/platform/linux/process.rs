@@ -219,71 +219,6 @@ impl LinuxProcessLookup {
             None
         }
     }
-
-    /// Fallback lookup that progressively relaxes the connection key to handle how the
-    /// kernel stores sockets in /proc/net:
-    ///
-    ///  - Sockets bound to INADDR_ANY appear with local_ip = 0.0.0.0
-    ///  - Unconnected sockets appear with remote = 0.0.0.0:0
-    ///
-    /// Candidates tried in order (most specific → least specific):
-    ///   1. wildcard local IP:  local=0:port   remote=IP:port
-    ///   2. wildcard remote:    local=IP:port  remote=0:0
-    ///   3. wildcard local:     local=0:0      remote=IP:port
-    ///   4. wildcard remote IP: local=IP:port  remote=0:port
-    ///   5. wildcard both IPs:  local=0:port   remote=0:0
-    fn fallback_lookup(
-        map: &ConnectionProcessMap,
-        key: &ConnectionKey,
-    ) -> Option<(u32, String)> {
-        // Only TCP, UDP, and UDP-Lite sockets appear in /proc/net with wildcard addresses.
-        // Other protocols (ICMP, IGMP, ARP) have no /proc/net entries to fall back to.
-        if !matches!(key.protocol, Protocol::Tcp | Protocol::Udp | Protocol::UdpLite) {
-            return None;
-        }
-
-        let zero = |addr: SocketAddr| -> IpAddr {
-            match addr {
-                SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-                SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-            }
-        };
-
-        let lip   = key.local_addr.ip();
-        let lport = key.local_addr.port();
-        let rip   = key.remote_addr.ip();
-        let rport = key.remote_addr.port();
-        let zlip  = zero(key.local_addr);
-        let zrip  = zero(key.remote_addr);
-
-        let candidates: [(IpAddr, u16, IpAddr, u16); 5] = [
-            (zlip, lport, rip,  rport), // 1. wildcard local IP
-            (lip,  lport, zrip, 0    ), // 2. wildcard remote
-            (zlip, 0,     rip,  rport), // 3. wildcard local
-            (lip,  lport, zrip, rport), // 4. wildcard remote IP
-            (zlip, lport, zrip, 0    ), // 5. wildcard both IPs
-        ];
-
-        // Collect all matches across every candidate. If two candidates resolve to
-        // different processes the result is ambiguous — return nothing to avoid
-        // attributing traffic to the wrong process.
-        let mut found: Option<(u32, String)> = None;
-        for (l_ip, l_port, r_ip, r_port) in candidates {
-            let candidate = ConnectionKey {
-                protocol: key.protocol,
-                local_addr: SocketAddr::new(l_ip, l_port),
-                remote_addr: SocketAddr::new(r_ip, r_port),
-            };
-            if let Some(entry) = map.get(&candidate) {
-                match &found {
-                    None => found = Some(entry.clone()),
-                    Some(existing) if existing == entry => {} // same result, no conflict
-                    Some(_) => return None,                   // two different processes → ambiguous
-                }
-            }
-        }
-        found
-    }
 }
 
 impl ProcessLookup for LinuxProcessLookup {
@@ -303,9 +238,7 @@ impl ProcessLookup for LinuxProcessLookup {
             // Fallback: /proc/net may store sockets with wildcard addresses.
             // Progressively relax the key until we find a match.
             Self::fallback_lookup(&cache.lookup, &key)
-        };
-
-        result
+        }
     }
 
     fn refresh(&self) -> Result<()> {
@@ -324,55 +257,3 @@ impl ProcessLookup for LinuxProcessLookup {
         "procfs"
     }
 }
-
-<<<<<<< HEAD
-/// Fallback lookup that progressively relaxes the connection key to handle how the
-/// kernel stores sockets in /proc/net:
-///
-///  - Sockets bound to INADDR_ANY appear with local_ip = 0.0.0.0
-///  - Unconnected sockets appear with remote = 0.0.0.0:0
-///
-/// Candidates tried in order (most specific → least specific):
-///   1. wildcard local IP:  local=0:port   remote=IP:port
-///   2. wildcard remote:    local=IP:port  remote=0:0
-///   3. wildcard local:     local=0:0      remote=IP:port
-///   4. wildcard remote IP: local=IP:port  remote=0:port
-///   5. wildcard both IPs:  local=0:port   remote=0:0
-fn fallback_lookup(map: &ConnectionProcessMap, key: &ConnectionKey) -> Option<(u32, String)> {
-    let zero = |addr: SocketAddr| -> IpAddr {
-        match addr {
-            SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-        }
-    };
-
-    let lip = key.local_addr.ip();
-    let lport = key.local_addr.port();
-    let rip = key.remote_addr.ip();
-    let rport = key.remote_addr.port();
-    let zlip = zero(key.local_addr);
-    let zrip = zero(key.remote_addr);
-
-    let candidates: [(IpAddr, u16, IpAddr, u16); 5] = [
-        (zlip, lport, rip, rport), // 1. wildcard local IP
-        (lip, lport, zrip, 0),     // 2. wildcard remote
-        (zlip, 0, rip, rport),     // 3. wildcard local
-        (lip, lport, zrip, rport), // 4. wildcard remote IP
-        (zlip, lport, zrip, 0),    // 5. wildcard both IPs
-    ];
-
-    for (l_ip, l_port, r_ip, r_port) in candidates {
-        let candidate = ConnectionKey {
-            protocol: key.protocol,
-            local_addr: SocketAddr::new(l_ip, l_port),
-            remote_addr: SocketAddr::new(r_ip, r_port),
-        };
-        if let Some(entry) = map.get(&candidate) {
-            return Some(entry.clone());
-        }
-    }
-
-    None
-}
-=======
->>>>>>> e4b3289 (move fallback under linux process impl)

@@ -426,18 +426,22 @@ impl ProcessLookup for WindowsProcessLookup {
                 }
             };
 
-            if cache.last_refresh.elapsed() < Duration::from_secs(2)
-                && let Some(process_info) = cache.lookup.get(&key)
-            {
-                log::trace!(
-                    "✓ Cache hit: {:?} {} -> {} => {:?}",
-                    key.protocol,
-                    key.local_addr,
-                    key.remote_addr,
-                    process_info
-                );
-                return Some(process_info.clone());
-            } else {
+            if cache.last_refresh.elapsed() < Duration::from_secs(2) {
+                if let Some(process_info) = cache.lookup.get(&key) {
+                    log::trace!(
+                        "✓ Cache hit: {:?} {} -> {} => {:?}",
+                        key.protocol,
+                        key.local_addr,
+                        key.remote_addr,
+                        process_info
+                    );
+                    return Some(process_info.clone());
+                }
+                // Exact match missed — try wildcard fallback before declaring a miss
+                if let Some(result) = Self::fallback_lookup(&cache.lookup, &key) {
+                    log::trace!("✓ Fallback hit (cache): {:?} => {:?}", key, result);
+                    return Some(result);
+                }
                 log::trace!(
                     "✗ Cache miss: {:?} {} -> {} (cache: {} entries, age: {}s)",
                     key.protocol,
@@ -458,7 +462,11 @@ impl ProcessLookup for WindowsProcessLookup {
                     poisoned.into_inner()
                 }
             };
-            let result = cache.lookup.get(&key).cloned();
+            let result = cache
+                .lookup
+                .get(&key)
+                .cloned()
+                .or_else(|| Self::fallback_lookup(&cache.lookup, &key));
             if result.is_some() {
                 log::trace!("✓ Found after refresh: {:?} => {:?}", key, result);
             } else {
