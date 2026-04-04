@@ -2565,6 +2565,7 @@ mod tests {
 
         // Rate should be consistent: 10 deltas of 100KB over 1 second = 1MB/s
         let check_time = start + Duration::from_millis(4000);
+        tracker.prune();
         let outgoing_rate = tracker.get_outgoing_rate_at(check_time);
         let incoming_rate = tracker.get_incoming_rate_at(check_time);
 
