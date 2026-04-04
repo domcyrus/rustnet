@@ -161,10 +161,10 @@ impl ProcessLookup for MacOSProcessLookup {
     fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
         let key = ConnectionKey::from_connection(conn);
         let cache = self.cache.read().expect("cache lock poisoned");
-        let result = cache.get(&key).cloned();
 
-        if result.is_some() {
+        if let Some(result) = cache.get(&key).cloned() {
             debug!("Found process info for connection {:?}: {:?}", key, result);
+            Some(result)
         } else {
             debug!("No process info found for connection {:?}", key);
             debug!("Available keys in cache:");
@@ -174,9 +174,8 @@ impl ProcessLookup for MacOSProcessLookup {
             if cache.len() > 10 {
                 debug!("  ... and {} more entries", cache.len() - 10);
             }
+            Self::fallback_lookup(&cache, &key)
         }
-
-        result
     }
 
     fn refresh(&self) -> Result<()> {

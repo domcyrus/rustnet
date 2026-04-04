@@ -7,7 +7,8 @@
 
 use crate::network::types::{Connection, Protocol};
 use anyhow::Result;
-use std::net::SocketAddr;
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// Reasons why process detection may be degraded from optimal
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -134,6 +135,70 @@ pub trait ProcessLookup: Send + Sync {
     /// Returns DegradationReason::None if using optimal detection method
     fn get_degradation_reason(&self) -> DegradationReason {
         DegradationReason::None // Default: no degradation
+    }
+
+    /// Fallback lookup that relaxes the connection key to handle sockets stored with
+    /// wildcard addresses in OS-level tables.
+    ///
+    /// Three shapes that actually appear in OS socket tables:
+    ///   1. (lip:lport, 0:0)      — listening on a specific local IP
+    ///   2. (0:lport,  rip:rport) — INADDR_ANY socket connected to a known remote
+    ///   3. (0:lport,  0:0)       — listening on INADDR_ANY
+    ///
+    /// If two candidates resolve to different processes the result is ambiguous and
+    /// `None` is returned to avoid mis-attribution.
+    fn fallback_lookup(
+        map: &HashMap<ConnectionKey, (u32, String)>,
+        key: &ConnectionKey,
+    ) -> Option<(u32, String)>
+    where
+        Self: Sized,
+    {
+        // Only TCP and UDP sockets appear in OS network tables with wildcard
+        // addresses. Other protocols (ICMP, IGMP, ARP) have no entries to fall back to.
+        if !matches!(key.protocol, Protocol::Tcp | Protocol::Udp) {
+            return None;
+        }
+
+        let zero = |addr: SocketAddr| -> IpAddr {
+            match addr {
+                SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            }
+        };
+
+        let lip = key.local_addr.ip();
+        let lport = key.local_addr.port();
+        let rip = key.remote_addr.ip();
+        let rport = key.remote_addr.port();
+        let zlip = zero(key.local_addr);
+        let zrip = zero(key.remote_addr);
+
+        let candidates: [(IpAddr, u16, IpAddr, u16); 3] = [
+            (lip, lport, zrip, 0),     // 1. listening on specific local IP
+            (zlip, lport, rip, rport), // 2. INADDR_ANY with known remote
+            (zlip, lport, zrip, 0),    // 3. INADDR_ANY listener
+        ];
+
+        // Collect all matches across every candidate. If two candidates resolve to
+        // different processes the result is ambiguous — return nothing to avoid
+        // attributing traffic to the wrong process.
+        let mut found: Option<(u32, String)> = None;
+        for (l_ip, l_port, r_ip, r_port) in candidates {
+            let candidate = ConnectionKey {
+                protocol: key.protocol,
+                local_addr: SocketAddr::new(l_ip, l_port),
+                remote_addr: SocketAddr::new(r_ip, r_port),
+            };
+            if let Some(entry) = map.get(&candidate) {
+                match &found {
+                    None => found = Some(entry.clone()),
+                    Some(existing) if existing == entry => {} // same result, no conflict
+                    Some(_) => return None,                   // two different processes → ambiguous
+                }
+            }
+        }
+        found
     }
 }
 

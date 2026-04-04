@@ -230,7 +230,15 @@ impl ProcessLookup for LinuxProcessLookup {
         // IMPORTANT: Do NOT refresh here as it caused high CPU usage when called for every
         // connection without process info (flamegraph showed this was the main bottleneck).
         let cache = self.cache.read().expect("process cache lock poisoned");
-        cache.lookup.get(&key).cloned()
+
+        // Fast path: exact 4-tuple match (always works for TCP).
+        if let Some(entry) = cache.lookup.get(&key) {
+            Some(entry.clone())
+        } else {
+            // Fallback: /proc/net may store sockets with wildcard addresses.
+            // Progressively relax the key until we find a match.
+            Self::fallback_lookup(&cache.lookup, &key)
+        }
     }
 
     fn refresh(&self) -> Result<()> {

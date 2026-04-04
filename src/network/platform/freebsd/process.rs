@@ -180,7 +180,14 @@ impl ProcessLookup for FreeBSDProcessLookup {
         // Simple cache lookup with no refresh on cache miss.
         // The enrichment thread handles periodic refresh.
         let cache = self.cache.read().expect("cache lock poisoned");
-        cache.lookup.get(&key).cloned()
+
+        // Fast path: exact 4-tuple match.
+        if let Some(entry) = cache.lookup.get(&key) {
+            Some(entry.clone())
+        } else {
+            // Fallback: sockstat may store sockets with wildcard addresses.
+            Self::fallback_lookup(&cache.lookup, &key)
+        }
     }
 
     fn refresh(&self) -> Result<()> {
