@@ -1556,7 +1556,8 @@ impl RateTracker {
         self.update_at(Instant::now(), bytes_sent, bytes_received);
     }
 
-    /// Update the rate tracker with new byte counts at a specific timestamp
+    /// Update the rate tracker with new byte counts at a specific timestamp.
+    /// Only pushes a sample — pruning is deferred to `prune()`.
     fn update_at(&mut self, now: Instant, bytes_sent: u64, bytes_received: u64) {
         // Calculate deltas since last update
         let delta_sent = bytes_sent.saturating_sub(self.last_bytes_sent);
@@ -1573,18 +1574,11 @@ impl RateTracker {
         self.last_bytes_sent = bytes_sent;
         self.last_bytes_received = bytes_received;
         self.last_update = now;
-
-        // Remove samples outside the window
-        self.prune_old_samples();
-
-        // Limit total samples to prevent memory bloat
-        while self.samples.len() > self.max_samples {
-            self.samples.pop_front();
-        }
     }
 
-    /// Remove samples older than the window duration
-    fn prune_old_samples(&mut self) {
+    /// Remove samples older than the window duration and enforce the sample cap.
+    /// Called periodically (via `refresh_rates`) rather than per-packet.
+    pub fn prune(&mut self) {
         let cutoff_time = self.last_update - self.window_duration;
 
         while let Some(oldest) = self.samples.front() {
@@ -1593,6 +1587,11 @@ impl RateTracker {
             } else {
                 break;
             }
+        }
+
+        // Limit total samples to prevent memory bloat
+        while self.samples.len() > self.max_samples {
+            self.samples.pop_front();
         }
     }
 
@@ -1992,22 +1991,18 @@ impl Connection {
         }
     }
 
-    /// Update transfer rates using sliding window calculation
+    /// Push a rate sample for the current byte counts (called per-packet).
+    /// Pruning and rate recalculation are deferred to `refresh_rates`.
     pub fn update_rates(&mut self) {
-        // Update the rate tracker with current byte counts
         self.rate_tracker
             .update(self.bytes_sent, self.bytes_received);
-
-        // Update backward compatibility fields with smoothed rates
-        self.current_incoming_rate_bps = self.rate_tracker.get_incoming_rate_bps();
-        self.current_outgoing_rate_bps = self.rate_tracker.get_outgoing_rate_bps();
     }
 
-    /// Refresh rates without adding new data - useful for idle connections
-    /// This ensures rates decay to zero when no traffic is flowing
+    /// Prune stale samples and recalculate cached rates.
+    /// Called periodically (e.g. every 1s). Pushing new samples happens per-packet
+    /// via `update_rates`, keeping the hot path free of pruning/recalculation.
     pub fn refresh_rates(&mut self) {
-        // Just recalculate rates based on current time
-        // The calculate_rate_from_deltas method now checks sample age
+        self.rate_tracker.prune();
         self.current_incoming_rate_bps = self.rate_tracker.get_incoming_rate_bps();
         self.current_outgoing_rate_bps = self.rate_tracker.get_outgoing_rate_bps();
     }
