@@ -107,13 +107,9 @@ fn bench_connection_clone(c: &mut Criterion) {
 
     for n_samples in [0, 100, 1000, 5000, 10000] {
         let conn = make_connection_with_samples(n_samples);
-        group.bench_with_input(
-            BenchmarkId::new("clone", n_samples),
-            &conn,
-            |b, conn| {
-                b.iter(|| conn.clone());
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("clone", n_samples), &conn, |b, conn| {
+            b.iter(|| conn.clone());
+        });
     }
 
     group.finish();
@@ -141,8 +137,7 @@ fn bench_snapshot_then_update(c: &mut Criterion) {
                     || connections.clone(),
                     |mut conns| {
                         // Step 1: snapshot clone (simulates UI snapshot)
-                        let _snapshot: Vec<Connection> =
-                            conns.iter().map(|c| c.clone()).collect();
+                        let _snapshot: Vec<Connection> = conns.iter().map(|c| c.clone()).collect();
                         // Step 2: mutate originals (simulates incoming packets)
                         for conn in &mut conns {
                             conn.bytes_sent += 100;
