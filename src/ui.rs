@@ -1995,61 +1995,11 @@ fn draw_stats_panel(
         ]
     };
 
-    // FreeBSD with Capsicum sandbox: show sandbox status
-    #[cfg(target_os = "freebsd")]
-    let security_text: Vec<Line> = {
-        let sandbox_info = app.get_sandbox_info();
-        let status_style = match sandbox_info.status.as_str() {
-            "Fully enforced" => theme::fg(theme::ok()),
-            "Not applied" | "Error" => theme::fg(theme::err()),
-            _ => Style::default(),
-        };
-
-        let mut features = Vec::new();
-        if sandbox_info.capsicum_applied {
-            features.push(format!(
-                "Capsicum: {} FD(s) restricted",
-                sandbox_info.fds_restricted
-            ));
-        }
-
-        let uid = crate::network::privileges::effective_uid();
-        let (priv_label, priv_style) = if uid == 0 {
-            (
-                "Process: running as root".to_string(),
-                theme::fg(theme::warn()),
-            )
-        } else {
-            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
-        };
-
-        vec![
-            Line::from(vec![
-                Span::raw("Capsicum: "),
-                Span::styled(sandbox_info.status.clone(), status_style),
-            ]),
-            Line::from(Span::styled(
-                if features.is_empty() {
-                    "No restrictions active".to_string()
-                } else {
-                    features.join(", ")
-                },
-                if features.is_empty() {
-                    theme::fg(theme::warn())
-                } else {
-                    theme::fg(theme::muted())
-                },
-            )),
-            Line::from(Span::styled(priv_label, priv_style)),
-        ]
-    };
-
-    // Other unix platforms (macOS without macos-sandbox feature, etc.):
+    // Other unix platforms (FreeBSD, macOS without macos-sandbox feature, etc.):
     // show privilege info only
     #[cfg(all(
         unix,
         not(target_os = "linux"),
-        not(target_os = "freebsd"),
         not(all(target_os = "macos", feature = "macos-sandbox"))
     ))]
     let security_text: Vec<Line> = {

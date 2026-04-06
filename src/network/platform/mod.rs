@@ -104,8 +104,6 @@ mod windows;
 
 // Re-export factory functions and types from platform modules
 #[cfg(target_os = "freebsd")]
-pub use freebsd::sandbox;
-#[cfg(target_os = "freebsd")]
 pub use freebsd::{FreeBSDStatsProvider, create_process_lookup};
 #[cfg(all(target_os = "linux", feature = "landlock"))]
 pub use linux::sandbox;

@@ -19,6 +19,12 @@ This document outlines the planned features and improvements for RustNet.
   - BPF device access and permissions setup
   - Native libpcap packet capture
   - Cross-compilation support from Linux
+- [ ] **FreeBSD Capsicum Full Sandbox** (`cap_enter()`): Replace per-FD `cap_rights_limit()` with full capability mode to prevent file access and data exfiltration. Requires:
+  - Switch from `sockstat` subprocess to `libprocstat(3)` library calls for process lookup (eliminates `fork()`/`execve()` dependency)
+  - Integrate `libcasper` for privileged sysctl access from inside capability mode (`kern.proc.filedesc` is blocked in `cap_enter()`)
+  - Architecture: pre-fork a Casper service before `cap_enter()`, communicate over socket pair at runtime
+  - Write FFI bindings for `libprocstat` and `libcasper` (no Rust crate exists)
+  - Link against `-lprocstat -lcasper -lcap_sysctl` (system libraries on FreeBSD 10+)
 - [ ] **OpenBSD and NetBSD Support**: Future platforms to support
 - [x] **Linux Process Identification**: **Experimental eBPF Support Implemented** - Basic eBPF-based process identification now available with `--features ebpf`. Provides efficient kernel-level process-to-connection mapping with lower overhead than procfs. Currently has limitations (see eBPF Improvements section below).
 

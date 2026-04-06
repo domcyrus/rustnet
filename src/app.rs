@@ -45,7 +45,6 @@ use std::sync::{LazyLock, Mutex};
 /// Sandbox status information for UI display
 #[cfg(any(
     target_os = "linux",
-    target_os = "freebsd",
     all(target_os = "macos", feature = "macos-sandbox")
 ))]
 #[derive(Debug, Clone, Default)]
@@ -53,7 +52,6 @@ pub struct SandboxInfo {
     /// Overall status description
     pub status: String,
     /// Whether network connections are blocked
-    #[cfg(not(target_os = "freebsd"))]
     pub net_restricted: bool,
     // Linux-specific fields (Landlock)
     /// Whether CAP_NET_RAW was dropped
@@ -72,13 +70,6 @@ pub struct SandboxInfo {
     /// Whether filesystem write restrictions are applied
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
     pub fs_restricted: bool,
-    // FreeBSD-specific fields (Capsicum)
-    /// Whether Capsicum FD restrictions were applied
-    #[cfg(target_os = "freebsd")]
-    pub capsicum_applied: bool,
-    /// Number of FDs restricted
-    #[cfg(target_os = "freebsd")]
-    pub fds_restricted: u32,
 }
 
 /// Process detection status information for UI display
@@ -461,10 +452,9 @@ pub struct App {
     /// GeoIP resolver for location/ASN lookups
     geoip_resolver: Option<Arc<GeoIpResolver>>,
 
-    /// Sandbox status (Linux Landlock / macOS Seatbelt / FreeBSD Capsicum)
+    /// Sandbox status (Linux Landlock / macOS Seatbelt)
     #[cfg(any(
         target_os = "linux",
-        target_os = "freebsd",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     sandbox_info: Arc<RwLock<SandboxInfo>>,
@@ -1703,7 +1693,6 @@ impl App {
     /// Get sandbox status information
     #[cfg(any(
         target_os = "linux",
-        target_os = "freebsd",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     pub fn get_sandbox_info(&self) -> SandboxInfo {
@@ -1716,7 +1705,6 @@ impl App {
     /// Set sandbox status information
     #[cfg(any(
         target_os = "linux",
-        target_os = "freebsd",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     pub fn set_sandbox_info(&self, info: SandboxInfo) {

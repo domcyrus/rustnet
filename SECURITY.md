@@ -6,7 +6,7 @@ RustNet processes untrusted network data, making defense-in-depth security criti
 
 - [Landlock Sandboxing (Linux)](#landlock-sandboxing-linux)
 - [Seatbelt Sandboxing (macOS)](#seatbelt-sandboxing-macos)
-- [Capsicum Sandboxing (FreeBSD)](#capsicum-sandboxing-freebsd)
+- [FreeBSD Sandboxing](#freebsd-sandboxing)
 - [Privilege Requirements](#privilege-requirements)
 - [Read-Only Operation](#read-only-operation)
 - [No External Communication](#no-external-communication)
@@ -109,41 +109,9 @@ Unlike Linux Landlock, clipboard copy (`c` key) works normally under Seatbelt. m
 
 On Linux, clipboard requires access to Wayland sockets (`/run/user/UID/wayland-0`) or X11 sockets (`/tmp/.X11-unix/`). Landlock's deny-default model blocks these because they are not in the write-path allowlist, so clipboard is unavailable when Landlock is active.
 
-## Capsicum Sandboxing (FreeBSD)
+## FreeBSD Sandboxing
 
-On FreeBSD, RustNet uses [Capsicum](https://wiki.freebsd.org/Capsicum) to restrict file descriptor capabilities after initialization. This limits the damage if a vulnerability in packet parsing is exploited.
-
-### What Gets Restricted
-
-| Restriction | Description |
-|-------------|-------------|
-| Output FDs | Log and PCAP export file descriptors restricted to write-only |
-| Read prevention | Output FDs cannot be repurposed for reading sensitive data |
-
-### How It Works
-
-1. **Initialization phase**: RustNet opens packet capture handles, creates log files, and starts the process lookup subsystem
-2. **FD restriction**: `cap_rights_limit()` restricts each output file FD to write/seek/fstat only
-3. **Runtime**: Process identification via `sockstat` subprocess continues working (not affected by per-FD restrictions)
-
-### Why cap_rights_limit Instead of cap_enter
-
-RustNet on FreeBSD uses `sockstat` subprocess calls for process-to-connection mapping. `cap_enter()` would block `fork()`/`execve()`, breaking this functionality. Using `cap_rights_limit()` on individual FDs provides meaningful hardening without disrupting runtime behavior.
-
-> **Known limitation:** Without `cap_enter()`, a compromised process can still `open()` new files, `socket()` new connections, and `execve()` arbitrary programs. The per-FD restrictions only prevent misuse of the *specific restricted FDs*. A future improvement is to switch from the `sockstat` subprocess to `libprocstat(3)` library calls, which would eliminate the fork/exec dependency and allow full capability mode via `cap_enter()`.
-
-### Security Benefits
-
-If an attacker exploits a vulnerability in DPI/packet parsing:
-- Cannot repurpose output file descriptors to read sensitive data
-- Output FDs are locked to write/append operations only
-
-### CLI Options
-
-```
---no-sandbox        Disable Capsicum sandboxing
---sandbox-strict    Require full sandbox enforcement or exit
-```
+FreeBSD does not currently have sandboxing enabled. A full Capsicum sandbox using `cap_enter()` with `libcasper` for privileged process lookup is planned — see [ROADMAP.md](ROADMAP.md) for details.
 
 ## Privilege Requirements
 
