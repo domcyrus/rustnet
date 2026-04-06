@@ -2010,8 +2010,8 @@ fn draw_stats_panel(
         ]
     };
 
-    // Non-Linux/non-macOS unix (FreeBSD) or macOS without macos-sandbox feature:
-    // show privilege info
+    // Other unix platforms (FreeBSD, macOS without macos-sandbox feature, etc.):
+    // show privilege info only
     #[cfg(all(
         unix,
         not(target_os = "linux"),

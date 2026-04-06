@@ -6,6 +6,7 @@ RustNet processes untrusted network data, making defense-in-depth security criti
 
 - [Landlock Sandboxing (Linux)](#landlock-sandboxing-linux)
 - [Seatbelt Sandboxing (macOS)](#seatbelt-sandboxing-macos)
+- [FreeBSD Sandboxing](#freebsd-sandboxing)
 - [Privilege Requirements](#privilege-requirements)
 - [Read-Only Operation](#read-only-operation)
 - [No External Communication](#no-external-communication)
@@ -115,6 +116,10 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 Unlike Linux Landlock, clipboard copy (`c` key) works normally under Seatbelt. macOS clipboard uses NSPasteboard, which communicates via Mach IPC over Unix domain sockets — the SBPL profile explicitly allows `(network-outbound (remote unix-socket))`.
 
 On Linux, clipboard requires access to Wayland sockets (`/run/user/UID/wayland-0`) or X11 sockets (`/tmp/.X11-unix/`). Landlock's deny-default model blocks these because they are not in the write-path allowlist, so clipboard is unavailable when Landlock is active.
+
+## FreeBSD Sandboxing
+
+FreeBSD does not currently have sandboxing enabled. A full Capsicum sandbox using `cap_enter()` with `libcasper` for privileged process lookup is planned — see [ROADMAP.md](ROADMAP.md) for details.
 
 ## Privilege Requirements
 
