@@ -560,7 +560,6 @@ impl App {
             geoip_resolver,
             #[cfg(any(
                 target_os = "linux",
-                target_os = "freebsd",
                 all(target_os = "macos", feature = "macos-sandbox")
             ))]
             sandbox_info: Arc::new(RwLock::new(SandboxInfo::default())),
