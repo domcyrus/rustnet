@@ -106,7 +106,7 @@ mod windows;
 #[cfg(target_os = "freebsd")]
 pub use freebsd::sandbox;
 #[cfg(target_os = "freebsd")]
-pub use freebsd::{FreeBSDProcessLookup, FreeBSDStatsProvider, create_process_lookup};
+pub use freebsd::{FreeBSDStatsProvider, create_process_lookup};
 #[cfg(all(target_os = "linux", feature = "landlock"))]
 pub use linux::sandbox;
 #[cfg(target_os = "linux")]

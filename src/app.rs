@@ -53,6 +53,7 @@ pub struct SandboxInfo {
     /// Overall status description
     pub status: String,
     /// Whether network connections are blocked
+    #[cfg(not(target_os = "freebsd"))]
     pub net_restricted: bool,
     // Linux-specific fields (Landlock)
     /// Whether CAP_NET_RAW was dropped

@@ -316,7 +316,6 @@ fn main() -> Result<()> {
         use network::platform::sandbox::{
             SandboxConfig, SandboxMode, SandboxStatus, apply_sandbox,
         };
-        use std::path::PathBuf;
 
         let sandbox_mode = if matches.get_flag("no-sandbox") {
             SandboxMode::Disabled
@@ -373,7 +372,6 @@ fn main() -> Result<()> {
                     status: status_str.to_string(),
                     capsicum_applied: result.capsicum_applied,
                     fds_restricted: result.fds_restricted,
-                    net_restricted: false,
                 });
             }
             Err(e) => {
@@ -385,7 +383,6 @@ fn main() -> Result<()> {
                     status: "Error".to_string(),
                     capsicum_applied: false,
                     fds_restricted: 0,
-                    net_restricted: false,
                 });
             }
         }
