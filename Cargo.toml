@@ -190,6 +190,10 @@ harness = false
 name = "snapshot"
 harness = false
 
+[[bench]]
+name = "rate_tracker"
+harness = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
