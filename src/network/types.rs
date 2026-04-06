@@ -1,9 +1,10 @@
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Protocol {
     Tcp,
     Udp,
@@ -356,6 +357,29 @@ pub enum ApplicationProtocol {
     BitTorrent(BitTorrentInfo),
     Stun(StunInfo),
     Mqtt(MqttInfo),
+}
+
+impl ApplicationProtocol {
+    /// Return a short, allocation-free key for sorting by protocol name.
+    pub fn sort_key(&self) -> &'static str {
+        match self {
+            ApplicationProtocol::BitTorrent(_) => "BitTorrent",
+            ApplicationProtocol::Dhcp(_) => "DHCP",
+            ApplicationProtocol::Dns(_) => "DNS",
+            ApplicationProtocol::Http(_) => "HTTP",
+            ApplicationProtocol::Https(_) => "HTTPS",
+            ApplicationProtocol::Llmnr(_) => "LLMNR",
+            ApplicationProtocol::Mdns(_) => "mDNS",
+            ApplicationProtocol::Mqtt(_) => "MQTT",
+            ApplicationProtocol::NetBios(_) => "NetBIOS",
+            ApplicationProtocol::Ntp(_) => "NTP",
+            ApplicationProtocol::Quic(_) => "QUIC",
+            ApplicationProtocol::Snmp(_) => "SNMP",
+            ApplicationProtocol::Ssh(_) => "SSH",
+            ApplicationProtocol::Ssdp(_) => "SSDP",
+            ApplicationProtocol::Stun(_) => "STUN",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1557,7 +1581,8 @@ impl RateTracker {
     }
 
     /// Update the rate tracker with new byte counts at a specific timestamp.
-    /// Only pushes a sample — pruning is deferred to `prune()`.
+    /// Full pruning is deferred to `prune()`, but a lightweight cap is enforced
+    /// here to prevent unbounded growth between prune intervals.
     fn update_at(&mut self, now: Instant, bytes_sent: u64, bytes_received: u64) {
         // Calculate deltas since last update
         let delta_sent = bytes_sent.saturating_sub(self.last_bytes_sent);
@@ -1569,6 +1594,12 @@ impl RateTracker {
             delta_sent,
             delta_received,
         });
+
+        // Lightweight overflow guard: drop oldest samples if we exceed the cap.
+        // Full time-based pruning happens in prune() every ~1s.
+        while self.samples.len() > self.max_samples {
+            self.samples.pop_front();
+        }
 
         // Update last values for next delta calculation
         self.last_bytes_sent = bytes_sent;
@@ -1725,6 +1756,37 @@ impl Default for TcpAnalytics {
     }
 }
 
+// Rate-smoothing constants — tune these to control how quickly displayed
+// rates react to traffic changes.
+/// Multiplier when traffic stops entirely: prev * DECAY_FAST each refresh.
+/// ~3 refreshes (3 s) to reach zero.
+const RATE_DECAY_STOPPED: f64 = 0.15;
+/// Weight of the new sample when rate drops but traffic is still flowing.
+const RATE_BLEND_NEW: f64 = 0.6;
+/// Weight of the previous value (complement of RATE_BLEND_NEW).
+const RATE_BLEND_PREV: f64 = 0.4;
+/// Rates below this snap to zero to avoid perpetual sub-byte trickle.
+const RATE_ZERO_THRESHOLD: f64 = 1.0;
+
+/// Smooth a rate value for display/sort stability.
+/// - Rising: take the new value immediately (accurate throughput).
+/// - Falling to zero: aggressive decay (~3 refreshes / 3s to clear).
+/// - Falling but non-zero: gentle decay to absorb fluctuations.
+fn smooth_rate(raw: f64, prev: f64) -> f64 {
+    let smoothed = if raw >= prev {
+        raw
+    } else if raw == 0.0 {
+        prev * RATE_DECAY_STOPPED
+    } else {
+        RATE_BLEND_NEW * raw + RATE_BLEND_PREV * prev
+    };
+    if smoothed < RATE_ZERO_THRESHOLD {
+        0.0
+    } else {
+        smoothed
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Connection {
     // Core identification
@@ -1823,6 +1885,15 @@ impl Connection {
         }
     }
 
+    /// Clone this connection without the heavy `rate_tracker` samples.
+    /// The cached `current_incoming_rate_bps` / `current_outgoing_rate_bps`
+    /// fields are preserved, so the UI still has rate data.
+    pub fn clone_for_snapshot(&self) -> Self {
+        let mut snapshot = self.clone();
+        snapshot.rate_tracker = RateTracker::new();
+        snapshot
+    }
+
     /// Generate a unique key for this connection.
     /// Historic connections include `created_at` to disambiguate multiple
     /// closed connections that shared the same 4-tuple.
@@ -1856,103 +1927,106 @@ impl Connection {
     }
 
     /// Get display state with enhanced UDP/QUIC visibility
-    pub fn state(&self) -> String {
+    pub fn state(&self) -> Cow<'_, str> {
         match &self.protocol_state {
-            ProtocolState::Tcp(tcp_state) => tcp_state.to_string(),
+            ProtocolState::Tcp(tcp_state) => {
+                let name = match tcp_state {
+                    TcpState::SynSent => "SYN_SENT",
+                    TcpState::SynReceived => "SYN_RECV",
+                    TcpState::Established => "ESTABLISHED",
+                    TcpState::FinWait1 => "FIN_WAIT1",
+                    TcpState::FinWait2 => "FIN_WAIT2",
+                    TcpState::CloseWait => "CLOSE_WAIT",
+                    TcpState::LastAck => "LAST_ACK",
+                    TcpState::TimeWait => "TIME_WAIT",
+                    TcpState::Closing => "CLOSING",
+                    TcpState::Closed => "CLOSED",
+                    TcpState::Unknown => "TCP_UNKNOWN",
+                };
+                Cow::Borrowed(name)
+            }
             ProtocolState::Udp => {
                 // Check if it's a DPI-identified protocol
                 if let Some(dpi_info) = &self.dpi_info {
                     match &dpi_info.application {
                         ApplicationProtocol::Quic(quic) => {
                             // Enhanced QUIC state display
-                            match quic.connection_state {
-                                QuicConnectionState::Initial => "QUIC_INITIAL".to_string(),
-                                QuicConnectionState::Handshaking => "QUIC_HANDSHAKE".to_string(),
-                                QuicConnectionState::Connected => "QUIC_CONNECTED".to_string(),
-                                QuicConnectionState::Draining => "QUIC_DRAINING".to_string(),
-                                QuicConnectionState::Closed => "QUIC_CLOSED".to_string(),
-                                QuicConnectionState::Unknown => {
-                                    // Use packet type for more granular unknown states
-                                    match quic.packet_type {
-                                        QuicPacketType::ZeroRtt => "QUIC_0RTT".to_string(),
-                                        QuicPacketType::Retry => "QUIC_RETRY".to_string(),
-                                        QuicPacketType::VersionNegotiation => {
-                                            "QUIC_VERSION_NEG".to_string()
-                                        }
-                                        _ => "QUIC_UNKNOWN".to_string(),
-                                    }
-                                }
-                            }
+                            Cow::Borrowed(match quic.connection_state {
+                                QuicConnectionState::Initial => "QUIC_INITIAL",
+                                QuicConnectionState::Handshaking => "QUIC_HANDSHAKE",
+                                QuicConnectionState::Connected => "QUIC_CONNECTED",
+                                QuicConnectionState::Draining => "QUIC_DRAINING",
+                                QuicConnectionState::Closed => "QUIC_CLOSED",
+                                QuicConnectionState::Unknown => match quic.packet_type {
+                                    QuicPacketType::ZeroRtt => "QUIC_0RTT",
+                                    QuicPacketType::Retry => "QUIC_RETRY",
+                                    QuicPacketType::VersionNegotiation => "QUIC_VERSION_NEG",
+                                    _ => "QUIC_UNKNOWN",
+                                },
+                            })
                         }
-                        ApplicationProtocol::Dns(dns) => {
-                            // DNS-specific states
-                            if dns.is_response {
-                                "DNS_RESPONSE".to_string()
-                            } else {
-                                "DNS_QUERY".to_string()
-                            }
-                        }
-                        ApplicationProtocol::Http(_) => "HTTP_UDP".to_string(),
-                        ApplicationProtocol::Https(_) => "HTTPS_UDP".to_string(),
-                        ApplicationProtocol::Ssh(_) => "SSH_UDP".to_string(),
-                        ApplicationProtocol::Ntp(_) => "NTP".to_string(),
-                        ApplicationProtocol::Mdns(info) => {
-                            if info.is_response {
-                                "MDNS_RESPONSE".to_string()
-                            } else {
-                                "MDNS_QUERY".to_string()
-                            }
-                        }
-                        ApplicationProtocol::Llmnr(info) => {
-                            if info.is_response {
-                                "LLMNR_RESPONSE".to_string()
-                            } else {
-                                "LLMNR_QUERY".to_string()
-                            }
-                        }
+                        ApplicationProtocol::Dns(dns) => Cow::Borrowed(if dns.is_response {
+                            "DNS_RESPONSE"
+                        } else {
+                            "DNS_QUERY"
+                        }),
+                        ApplicationProtocol::Http(_) => Cow::Borrowed("HTTP_UDP"),
+                        ApplicationProtocol::Https(_) => Cow::Borrowed("HTTPS_UDP"),
+                        ApplicationProtocol::Ssh(_) => Cow::Borrowed("SSH_UDP"),
+                        ApplicationProtocol::Ntp(_) => Cow::Borrowed("NTP"),
+                        ApplicationProtocol::Mdns(info) => Cow::Borrowed(if info.is_response {
+                            "MDNS_RESPONSE"
+                        } else {
+                            "MDNS_QUERY"
+                        }),
+                        ApplicationProtocol::Llmnr(info) => Cow::Borrowed(if info.is_response {
+                            "LLMNR_RESPONSE"
+                        } else {
+                            "LLMNR_QUERY"
+                        }),
                         ApplicationProtocol::Dhcp(info) => {
-                            format!("DHCP_{}", info.message_type)
+                            Cow::Owned(format!("DHCP_{}", info.message_type))
                         }
                         ApplicationProtocol::Snmp(info) => {
-                            format!("SNMP_{}", info.pdu_type)
+                            Cow::Owned(format!("SNMP_{}", info.pdu_type))
                         }
                         ApplicationProtocol::Ssdp(info) => {
-                            format!("SSDP_{}", info.method)
+                            Cow::Owned(format!("SSDP_{}", info.method))
                         }
                         ApplicationProtocol::NetBios(info) => {
-                            format!("NETBIOS_{}", info.service)
+                            Cow::Owned(format!("NETBIOS_{}", info.service))
                         }
-                        ApplicationProtocol::BitTorrent(_) => "BT_UDP".to_string(),
+                        ApplicationProtocol::BitTorrent(_) => Cow::Borrowed("BT_UDP"),
                         ApplicationProtocol::Stun(info) => {
-                            format!("STUN_{}", info.message_class)
+                            Cow::Owned(format!("STUN_{}", info.message_class))
                         }
-                        ApplicationProtocol::Mqtt(_) => "MQTT_UDP".to_string(),
+                        ApplicationProtocol::Mqtt(_) => Cow::Borrowed("MQTT_UDP"),
                     }
                 } else {
                     // Regular UDP without DPI classification
                     // Check activity level to provide more meaningful states
                     let idle_time = self.idle_time();
-                    if idle_time > Duration::from_secs(60) {
-                        "UDP_STALE".to_string()
+                    Cow::Borrowed(if idle_time > Duration::from_secs(60) {
+                        "UDP_STALE"
                     } else if idle_time > Duration::from_secs(30) {
-                        "UDP_IDLE".to_string()
+                        "UDP_IDLE"
                     } else {
-                        "UDP_ACTIVE".to_string()
-                    }
+                        "UDP_ACTIVE"
+                    })
                 }
             }
             ProtocolState::Icmp { icmp_type, icmp_id } => match icmp_type {
                 8 => match icmp_id {
-                    Some(id) => format!("ECHO_REQ({})", id),
-                    None => "ECHO_REQUEST".to_string(),
+                    Some(id) => Cow::Owned(format!("ECHO_REQ({})", id)),
+                    None => Cow::Borrowed("ECHO_REQUEST"),
                 },
                 0 => match icmp_id {
-                    Some(id) => format!("ECHO_REP({})", id),
-                    None => "ECHO_REPLY".to_string(),
+                    Some(id) => Cow::Owned(format!("ECHO_REP({})", id)),
+                    None => Cow::Borrowed("ECHO_REPLY"),
                 },
-                3 => "DEST_UNREACH".to_string(),
-                11 => "TIME_EXCEEDED".to_string(),
-                _ => "ICMP_OTHER".to_string(),
+                3 => Cow::Borrowed("DEST_UNREACH"),
+                11 => Cow::Borrowed("TIME_EXCEEDED"),
+                _ => Cow::Borrowed("ICMP_OTHER"),
             },
             ProtocolState::Igmp {
                 igmp_type,
@@ -1967,24 +2041,24 @@ impl Connection {
                     _ => "IGMP_OTHER",
                 };
                 if let Some(addr) = group_addr {
-                    format!("{}({})", type_str, addr)
+                    Cow::Owned(format!("{}({})", type_str, addr))
                 } else {
-                    type_str.to_string()
+                    Cow::Borrowed(type_str)
                 }
             }
             ProtocolState::Arp(info) => match info.operation {
                 ArpOperation::Request => {
                     if let Some(ref vendor) = info.sender_vendor {
-                        format!("ARP_WHO_HAS {} ({})", info.target_ip, vendor)
+                        Cow::Owned(format!("ARP_WHO_HAS {} ({})", info.target_ip, vendor))
                     } else {
-                        format!("ARP_WHO_HAS {}", info.target_ip)
+                        Cow::Owned(format!("ARP_WHO_HAS {}", info.target_ip))
                     }
                 }
                 ArpOperation::Reply => {
                     if let Some(ref vendor) = info.sender_vendor {
-                        format!("ARP_IS_AT {} ({})", info.sender_mac, vendor)
+                        Cow::Owned(format!("ARP_IS_AT {} ({})", info.sender_mac, vendor))
                     } else {
-                        format!("ARP_IS_AT {}", info.sender_mac)
+                        Cow::Owned(format!("ARP_IS_AT {}", info.sender_mac))
                     }
                 }
             },
@@ -2001,10 +2075,24 @@ impl Connection {
     /// Prune stale samples and recalculate cached rates.
     /// Called periodically (e.g. every 1s). Pushing new samples happens per-packet
     /// via `update_rates`, keeping the hot path free of pruning/recalculation.
+    ///
+    /// Smooths only **falling** rates to prevent the bandwidth sort from jumping
+    /// when traffic is bursty. Rising rates are reflected immediately.
+    /// When the raw rate hits zero (traffic stopped), decay is aggressive (~3s
+    /// to reach zero). When rates merely fluctuate, decay is gentler.
     pub fn refresh_rates(&mut self) {
         self.rate_tracker.prune();
-        self.current_incoming_rate_bps = self.rate_tracker.get_incoming_rate_bps();
-        self.current_outgoing_rate_bps = self.rate_tracker.get_outgoing_rate_bps();
+        let raw_in = self.rate_tracker.get_incoming_rate_bps();
+        let raw_out = self.rate_tracker.get_outgoing_rate_bps();
+
+        self.current_incoming_rate_bps = smooth_rate(raw_in, self.current_incoming_rate_bps);
+        self.current_outgoing_rate_bps = smooth_rate(raw_out, self.current_outgoing_rate_bps);
+    }
+
+    /// Whether either cached rate is still non-zero (i.e. smoothing hasn't
+    /// decayed to zero yet). Used to decide if `refresh_rates` can be skipped.
+    pub fn has_nonzero_rates(&self) -> bool {
+        self.current_incoming_rate_bps != 0.0 || self.current_outgoing_rate_bps != 0.0
     }
 
     /// Get dynamic timeout for this connection based on protocol and state

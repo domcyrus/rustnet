@@ -890,22 +890,39 @@ pub fn compute_grouped_rows<'a>(
         groups.entry(key).or_default().push(conn);
     }
 
-    // Build stats for each group and sort by total bandwidth (descending)
+    // Build stats for each group in a single pass over each group's connections
     let mut group_stats: Vec<(String, ProcessGroupStats, Vec<&Connection>)> = groups
         .into_iter()
         .map(|(name, conns)| {
-            let active_conns = || conns.iter().filter(|c| !c.is_historic);
+            let mut connection_count = 0usize;
+            let mut historic_count = 0usize;
+            let mut tcp_count = 0usize;
+            let mut udp_count = 0usize;
+            let mut total_incoming_rate_bps = 0.0f64;
+            let mut total_outgoing_rate_bps = 0.0f64;
+
+            for c in &conns {
+                if c.is_historic {
+                    historic_count += 1;
+                } else {
+                    connection_count += 1;
+                    if c.protocol == Protocol::Tcp {
+                        tcp_count += 1;
+                    } else if c.protocol == Protocol::Udp {
+                        udp_count += 1;
+                    }
+                    total_incoming_rate_bps += c.current_incoming_rate_bps;
+                    total_outgoing_rate_bps += c.current_outgoing_rate_bps;
+                }
+            }
+
             let stats = ProcessGroupStats {
-                connection_count: active_conns().count(),
-                historic_count: conns.iter().filter(|c| c.is_historic).count(),
-                tcp_count: active_conns()
-                    .filter(|c| c.protocol == Protocol::Tcp)
-                    .count(),
-                udp_count: active_conns()
-                    .filter(|c| c.protocol == Protocol::Udp)
-                    .count(),
-                total_incoming_rate_bps: active_conns().map(|c| c.current_incoming_rate_bps).sum(),
-                total_outgoing_rate_bps: active_conns().map(|c| c.current_outgoing_rate_bps).sum(),
+                connection_count,
+                historic_count,
+                tcp_count,
+                udp_count,
+                total_incoming_rate_bps,
+                total_outgoing_rate_bps,
             };
             (name, stats, conns)
         })
@@ -2905,7 +2922,7 @@ fn draw_connection_details(
         &mut details_text,
         &mut detail_fields,
         "State",
-        conn.state(),
+        conn.state().into_owned(),
         label_style,
     );
     push_detail_field(
