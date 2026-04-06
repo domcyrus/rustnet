@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -1541,7 +1542,7 @@ struct RateSample {
 
 #[derive(Debug, Clone)]
 pub struct RateTracker {
-    samples: VecDeque<RateSample>,
+    samples: Arc<VecDeque<RateSample>>,
     window_duration: Duration,
     last_update: Instant,
     max_samples: usize,
@@ -1557,7 +1558,7 @@ impl RateTracker {
 
     pub fn with_window_duration(window_duration: Duration) -> Self {
         Self {
-            samples: VecDeque::new(),
+            samples: Arc::new(VecDeque::new()),
             window_duration,
             last_update: Instant::now(),
             // Increased to allow full time window even at high packet rates
@@ -1589,7 +1590,8 @@ impl RateTracker {
         let delta_received = bytes_received.saturating_sub(self.last_bytes_received);
 
         // Add new sample with deltas
-        self.samples.push_back(RateSample {
+        let samples = Arc::make_mut(&mut self.samples);
+        samples.push_back(RateSample {
             timestamp: now,
             delta_sent,
             delta_received,
@@ -1597,8 +1599,8 @@ impl RateTracker {
 
         // Lightweight overflow guard: drop oldest samples if we exceed the cap.
         // Full time-based pruning happens in prune() every ~1s.
-        while self.samples.len() > self.max_samples {
-            self.samples.pop_front();
+        while samples.len() > self.max_samples {
+            samples.pop_front();
         }
 
         // Update last values for next delta calculation
@@ -1611,18 +1613,19 @@ impl RateTracker {
     /// Called periodically (via `refresh_rates`) rather than per-packet.
     pub fn prune(&mut self) {
         let cutoff_time = self.last_update - self.window_duration;
+        let samples = Arc::make_mut(&mut self.samples);
 
-        while let Some(oldest) = self.samples.front() {
+        while let Some(oldest) = samples.front() {
             if oldest.timestamp < cutoff_time {
-                self.samples.pop_front();
+                samples.pop_front();
             } else {
                 break;
             }
         }
 
         // Limit total samples to prevent memory bloat
-        while self.samples.len() > self.max_samples {
-            self.samples.pop_front();
+        while samples.len() > self.max_samples {
+            samples.pop_front();
         }
     }
 
@@ -1883,15 +1886,6 @@ impl Connection {
             is_historic: false,
             closed_at: None,
         }
-    }
-
-    /// Clone this connection without the heavy `rate_tracker` samples.
-    /// The cached `current_incoming_rate_bps` / `current_outgoing_rate_bps`
-    /// fields are preserved, so the UI still has rate data.
-    pub fn clone_for_snapshot(&self) -> Self {
-        let mut snapshot = self.clone();
-        snapshot.rate_tracker = RateTracker::new();
-        snapshot
     }
 
     /// Generate a unique key for this connection.

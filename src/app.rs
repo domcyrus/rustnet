@@ -1247,7 +1247,7 @@ impl App {
                     let mut snapshot_data: Vec<Connection> = connections
                         .iter()
                         .filter_map(|entry| {
-                            let mut conn = entry.value().clone_for_snapshot();
+                            let mut conn = entry.value().clone();
                             if enrich_and_filter(&mut conn, &service_lookup, filter_localhost)
                                 && conn.is_active()
                             {
@@ -1263,7 +1263,7 @@ impl App {
                         let historic: Vec<Connection> = historic_connections
                             .iter()
                             .filter_map(|entry| {
-                                let mut conn = entry.value().clone_for_snapshot();
+                                let mut conn = entry.value().clone();
                                 if enrich_and_filter(&mut conn, &service_lookup, filter_localhost) {
                                     Some(conn)
                                 } else {
