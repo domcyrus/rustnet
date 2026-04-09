@@ -134,15 +134,19 @@ fn main() -> Result<()> {
     // This must be done BEFORE Landlock is applied so the file exists when adding rules
     if let Some(ref pcap_path) = config.pcap_export_file {
         let jsonl_path = format!("{}.connections.jsonl", pcap_path);
-        if let Err(e) = std::fs::File::create(&jsonl_path).and_then(|f| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        match std::fs::File::create(&jsonl_path) {
+            Ok(_f) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Err(e) = _f.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+                        warn!("Failed to set sidecar JSONL file permissions: {}", e);
+                    }
+                }
             }
-            Ok(f)
-        }) {
-            warn!("Failed to pre-create sidecar JSONL file: {}", e);
+            Err(e) => {
+                warn!("Failed to pre-create sidecar JSONL file: {}", e);
+            }
         }
     }
 
@@ -337,6 +341,65 @@ fn main() -> Result<()> {
                     seatbelt_applied: false,
                     fs_restricted: false,
                     net_restricted: false,
+                });
+            }
+        }
+    }
+
+    // Apply restricted token sandbox (Windows only)
+    // This must be done AFTER app.start() because:
+    // - Npcap handles need to be opened first
+    // - Log files need to be created first
+    #[cfg(target_os = "windows")]
+    {
+        use network::platform::sandbox::{
+            SandboxConfig, SandboxMode, SandboxStatus, apply_sandbox,
+        };
+
+        let sandbox_mode = if matches.get_flag("no-sandbox") {
+            SandboxMode::Disabled
+        } else if matches.get_flag("sandbox-strict") {
+            SandboxMode::Strict
+        } else {
+            SandboxMode::BestEffort
+        };
+
+        let sandbox_config = SandboxConfig { mode: sandbox_mode };
+
+        match apply_sandbox(&sandbox_config) {
+            Ok(result) => {
+                let status_str = match result.status {
+                    SandboxStatus::FullyEnforced => {
+                        info!("Windows sandbox fully enforced: {}", result.message);
+                        "Fully enforced"
+                    }
+                    SandboxStatus::PartiallyEnforced => {
+                        warn!("Windows sandbox partially enforced: {}", result.message);
+                        "Partially enforced"
+                    }
+                    SandboxStatus::NotApplied => {
+                        warn!("Windows sandbox not applied: {}", result.message);
+                        "Not applied"
+                    }
+                };
+
+                app.set_sandbox_info(app::SandboxInfo {
+                    status: status_str.to_string(),
+                    privileges_removed: result.privileges_removed,
+                    privileges_removed_count: result.privileges_removed_count,
+                    job_object_applied: result.job_object_applied,
+                });
+            }
+            Err(e) => {
+                if sandbox_mode == SandboxMode::Strict {
+                    return Err(e.context("Windows sandbox enforcement required but failed"));
+                }
+                warn!("Windows sandbox error (non-strict mode): {}", e);
+                app.set_sandbox_info(app::SandboxInfo {
+                    status: "Error".to_string(),
+                    privileges_removed: false,
+                    privileges_removed_count: 0,
+                    job_object_applied: false,
                 });
             }
         }

@@ -523,19 +523,18 @@ mod tests {
     fn test_udp_routing_resolution_can_execute() {
         // Sanity-check test to ensure the OS handles UDP metric routing cleanly.
         // It's perfectly fine if this fails in hermetic CI environments without outbound routes.
-        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
-            if socket.connect("8.8.8.8:53").is_ok() {
-                if let Ok(addr) = socket.local_addr() {
-                    assert!(
-                        !addr.ip().is_loopback(),
-                        "Active routed IP should not be loopback"
-                    );
-                    assert!(
-                        !addr.ip().is_unspecified(),
-                        "Active routed IP should not be unspecified"
-                    );
-                }
-            }
+        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0")
+            && socket.connect("8.8.8.8:53").is_ok()
+            && let Ok(addr) = socket.local_addr()
+        {
+            assert!(
+                !addr.ip().is_loopback(),
+                "Active routed IP should not be loopback"
+            );
+            assert!(
+                !addr.ip().is_unspecified(),
+                "Active routed IP should not be unspecified"
+            );
         }
     }
 }

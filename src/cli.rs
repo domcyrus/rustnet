@@ -140,6 +140,7 @@ pub fn build_cli() -> Command {
 
     #[cfg(any(
         target_os = "linux",
+        target_os = "windows",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     let cmd = cmd

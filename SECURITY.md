@@ -7,6 +7,7 @@ RustNet processes untrusted network data, making defense-in-depth security criti
 - [Landlock Sandboxing (Linux)](#landlock-sandboxing-linux)
 - [Seatbelt Sandboxing (macOS)](#seatbelt-sandboxing-macos)
 - [FreeBSD Sandboxing](#freebsd-sandboxing)
+- [Restricted Token Sandboxing (Windows)](#restricted-token-sandboxing-windows)
 - [Privilege Requirements](#privilege-requirements)
 - [Read-Only Operation](#read-only-operation)
 - [No External Communication](#no-external-communication)
@@ -120,6 +121,46 @@ On Linux, clipboard requires access to Wayland sockets (`/run/user/UID/wayland-0
 ## FreeBSD Sandboxing
 
 FreeBSD does not currently have sandboxing enabled. A full Capsicum sandbox using `cap_enter()` with `libcasper` for privileged process lookup is planned — see [ROADMAP.md](ROADMAP.md) for details.
+
+## Restricted Token Sandboxing (Windows)
+
+On Windows, RustNet removes dangerous privileges from the process token and applies a Job Object to prevent child process creation after initialization.
+
+### What Gets Restricted
+
+| Restriction | Description |
+|-------------|-------------|
+| Privilege removal | SeDebugPrivilege, SeTakeOwnershipPrivilege, SeBackupPrivilege, SeRestorePrivilege, and other dangerous privileges permanently removed |
+| Child processes | Job Object blocks creation of child processes (reverse shell, exec-based exfiltration) |
+
+### How It Works
+
+1. **Initialization phase**: RustNet opens Npcap handles and creates log files
+2. **Privilege removal**: `AdjustTokenPrivileges` with `SE_PRIVILEGE_REMOVED` permanently strips dangerous privileges from the process token
+3. **Job Object**: A Job Object with `JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 1` is applied, preventing any child process creation
+
+### Security Benefits
+
+If an attacker exploits a vulnerability in DPI/packet parsing:
+- Cannot debug other processes (SeDebugPrivilege removed)
+- Cannot take ownership of arbitrary files (SeTakeOwnershipPrivilege removed)
+- Cannot bypass ACLs to read files (SeBackupPrivilege removed)
+- Cannot spawn child processes (cmd.exe, powershell.exe, curl.exe — blocked by Job Object)
+- Cannot load kernel drivers (SeLoadDriverPrivilege removed)
+
+### Limitations
+
+Windows sandboxing is weaker than Linux/macOS/FreeBSD:
+- No filesystem restriction — Windows lacks a process-wide filesystem sandbox equivalent to Landlock or Seatbelt
+- No network restriction — blocking outbound would break Npcap packet capture
+- Privilege removal only affects privileges the elevated process held
+
+### CLI Options
+
+```
+--no-sandbox        Disable privilege removal and job object
+--sandbox-strict    Require full sandbox enforcement or exit
+```
 
 ## Privilege Requirements
 
