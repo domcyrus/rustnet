@@ -466,21 +466,21 @@ fn sort_connections(
                 a_process.cmp(b_process)
             }
 
-            SortColumn::LocalAddress => a.local_addr.to_string().cmp(&b.local_addr.to_string()),
+            SortColumn::LocalAddress => a
+                .local_addr
+                .ip()
+                .cmp(&b.local_addr.ip())
+                .then_with(|| a.local_addr.port().cmp(&b.local_addr.port())),
 
-            SortColumn::RemoteAddress => a.remote_addr.to_string().cmp(&b.remote_addr.to_string()),
+            SortColumn::RemoteAddress => a
+                .remote_addr
+                .ip()
+                .cmp(&b.remote_addr.ip())
+                .then_with(|| a.remote_addr.port().cmp(&b.remote_addr.port())),
 
             SortColumn::Application => {
-                let a_app = a
-                    .dpi_info
-                    .as_ref()
-                    .map(|dpi| dpi.application.to_string())
-                    .unwrap_or_default();
-                let b_app = b
-                    .dpi_info
-                    .as_ref()
-                    .map(|dpi| dpi.application.to_string())
-                    .unwrap_or_default();
+                let a_app = a.dpi_info.as_ref().map(|dpi| dpi.application.sort_key());
+                let b_app = b.dpi_info.as_ref().map(|dpi| dpi.application.sort_key());
                 a_app.cmp(&b_app)
             }
 
@@ -490,7 +490,7 @@ fn sort_connections(
                 a_service.cmp(b_service)
             }
 
-            SortColumn::State => a.state().cmp(&b.state()),
+            SortColumn::State => Ord::cmp(&a.state(), &b.state()),
 
             SortColumn::Location => {
                 let a_loc = a
@@ -506,7 +506,7 @@ fn sort_connections(
                 a_loc.cmp(b_loc)
             }
 
-            SortColumn::Protocol => a.protocol.to_string().cmp(&b.protocol.to_string()),
+            SortColumn::Protocol => a.protocol.cmp(&b.protocol),
         };
 
         if ascending {

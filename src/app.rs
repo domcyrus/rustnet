@@ -1338,10 +1338,14 @@ impl App {
                         break;
                     }
 
-                    // Refresh rates for all connections
-                    // This ensures rates decay to zero for idle connections
+                    // Refresh rates for connections that may still have non-zero rates.
+                    // Skip connections idle >30s whose rates are already zero.
                     for mut entry in connections.iter_mut() {
-                        entry.value_mut().refresh_rates();
+                        let conn = entry.value_mut();
+                        let idle_secs = conn.last_activity.elapsed().unwrap_or_default().as_secs();
+                        if idle_secs <= 30 || conn.has_nonzero_rates() {
+                            conn.refresh_rates();
+                        }
                     }
 
                     // Run every 1 second to balance responsiveness with performance
