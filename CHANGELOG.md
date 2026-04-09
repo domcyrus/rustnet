@@ -5,6 +5,40 @@ All notable changes to RustNet will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-04-09
+
+### Added
+- **Windows Restricted Token Sandbox**: Drop privileges at startup on Windows using a restricted process token (#206)
+- **macOS Seatbelt Sandboxing**: Apply a Seatbelt sandbox profile at startup on macOS, later tightened to restrict filesystem and IPC access (#196, #203)
+- **Linux Sandbox Hardening**: Drop Linux capabilities and clear the ambient capability set after startup (#208)
+- **Process Privilege in UI**: Show whether a process is privileged in the security section of the TUI (#197)
+- **Filter: Exact Port Matching and Regex Support**: Filter syntax supports exact port matches and regex patterns (#195)
+- **VLAN Support in PKTAP and SLL/SLL2**: Parse VLAN tags in PKTAP and SLL/SLL2 capture formats (#202)
+- **VLAN Header in Layer 3 Extraction**: Account for VLAN headers when extracting layer 3 data (#199, thanks @deepakpjose)
+- **IGMP Protocol Parsing**: Recognize and parse IGMP traffic (#209, thanks @deepakpjose)
+- **Process Name for Wildcard /proc/net/ Entries**: Resolve process names for wildcard (`0.0.0.0`/`::`) entries in `/proc/net/` (#218, thanks @deepakpjose)
+- **CI Supply-Chain Hardening**: Pin GitHub Actions to commit SHAs and verify Npcap installer checksums (#210)
+- **Architecture Roadmap**: Added workspace split and macOS privilege separation roadmap docs (#211)
+
+### Fixed
+- **Default Interface Selection**: Use the active routing table to pick the default interface (#194, thanks @l1a)
+- **Root Detection on Unix**: Use `geteuid()` instead of `getuid()` to detect root (#192, thanks @DeepChirp)
+- **Release Pipeline Reliability**: Improved release workflow reliability, gated downstream jobs on `publish-release`, added checksum verification to AUR updates, and documented the no-retag policy (2a38f2d, 795f7a1, 002eb55, 8403a0f)
+- **FreeBSD CI Dispatch**: Restrict FreeBSD dispatch to manual triggers only (#201)
+
+### Changed
+- **CPU Efficiency Improvements**: Substantial reductions in CPU usage across hot paths — rate calculation moved from per-update to per-refresh (#220), timeouts avoided to improve CPU performance (#213), threads given meaningful names to aid profiling (#212), and allocations reduced in sorting and snapshot paths (#222). Big thanks to [@deepakpjose](https://github.com/deepakpjose) for driving the CPU-efficiency work (#213, #220, #212) — these changes make RustNet noticeably lighter on the CPU.
+- **FreeBSD Platform Cleanup**: Refactored FreeBSD platform support code (#205)
+- **Dependencies**: Bumped `zip` (8.2.0 → 8.3.0 → 8.5.0), `clap_mangen`, `docker/login-action`, and other rust-dependencies group updates (#198, #200, #214, #216, #219, #221)
+- **OUI Vendor Database**: Refreshed IEEE OUI vendor database (#215)
+
+### Contributors
+
+Special thanks to the external contributors in this release:
+- [@deepakpjose](https://github.com/deepakpjose) — CPU-efficiency improvements and additional features (#199, #209, #212, #213, #218, #220)
+- [@l1a](https://github.com/l1a) — default interface selection via active routing table (#194)
+- [@DeepChirp](https://github.com/DeepChirp) — Unix root detection via `geteuid()` (#192)
+
 ## [1.1.0] - 2026-03-16
 
 ### Added
@@ -402,7 +436,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/domcyrus/rustnet/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/domcyrus/rustnet/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/domcyrus/rustnet/compare/v0.18.0...v1.0.0
 [0.18.0]: https://github.com/domcyrus/rustnet/compare/v0.17.0...v0.18.0
