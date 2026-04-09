@@ -83,6 +83,7 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
     let mut messages = Vec::new();
     let mut privileges_removed = false;
     let mut privileges_removed_count = 0u32;
+    let mut privileges_succeeded = false;
     let mut job_object_applied = false;
 
     // Step 1: Remove dangerous privileges
@@ -90,6 +91,7 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         Ok(result) => {
             privileges_removed = result.privileges_removed;
             privileges_removed_count = result.privileges_removed_count;
+            privileges_succeeded = result.succeeded;
             log::info!("Privilege restriction: {}", result.message);
             messages.push(result.message);
         }
@@ -114,9 +116,12 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         }
     }
 
-    let status = if privileges_removed && job_object_applied {
+    // Status reflects whether each step *succeeded*, not whether anything
+    // was actually removed. A standard (non-elevated) user never held the
+    // dangerous privileges, so a successful no-op is the desired end state.
+    let status = if privileges_succeeded && job_object_applied {
         SandboxStatus::FullyEnforced
-    } else if privileges_removed || job_object_applied {
+    } else if privileges_succeeded || job_object_applied {
         SandboxStatus::PartiallyEnforced
     } else {
         SandboxStatus::NotApplied

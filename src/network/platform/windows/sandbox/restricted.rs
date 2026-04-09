@@ -46,10 +46,15 @@ const PRIVILEGES_TO_REMOVE: &[&str] = &[
 
 /// Result of restricted token application
 pub struct RestrictedTokenResult {
-    /// Whether privileges were successfully removed
+    /// Whether at least one privilege was removed (count > 0).
+    /// False for non-elevated processes that never held the privileges.
     pub privileges_removed: bool,
     /// Number of privileges removed
     pub privileges_removed_count: u32,
+    /// Whether the privilege restriction step completed without errors.
+    /// True even when 0 privileges were removed because the token never
+    /// held them — that is the desired end state, not a failure.
+    pub succeeded: bool,
     /// Human-readable message
     pub message: String,
 }
@@ -119,6 +124,7 @@ pub fn remove_dangerous_privileges() -> Result<RestrictedTokenResult> {
         Ok(RestrictedTokenResult {
             privileges_removed: removed_count > 0,
             privileges_removed_count: removed_count,
+            succeeded: messages.is_empty(),
             message,
         })
     }
