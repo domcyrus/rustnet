@@ -381,10 +381,29 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit ${{ github.ref_name }} --draft=false --repo ${{ github.repository }}
 
+  # Gate job that waits for all publish steps to finish before firing
+  # downstream package-manager triggers. Without this gate, triggers that
+  # run as soon as publish-release completes race against publish-crates,
+  # publish-docker, update-copr, and release-ppa — and the downstream
+  # Homebrew/Chocolatey workflows bail because their "is release.yml still
+  # running?" safety check sees the parent run as in-progress.
+  all-published:
+    name: all-published
+    runs-on: ubuntu-latest
+    needs:
+      - publish-release
+      - publish-crates
+      - publish-docker
+      - update-copr
+      - release-ppa
+    steps:
+      - name: All publish steps complete
+        run: echo "Release pipeline fully published; safe to fire downstream triggers."
+
   trigger-bsd-build:
     name: trigger-bsd-build
     runs-on: ubuntu-latest
-    needs: publish-release
+    needs: all-published
     steps:
       - name: Trigger FreeBSD build
         run: |
@@ -398,7 +417,7 @@ jobs:
   trigger-homebrew-update:
     name: trigger-homebrew-update
     runs-on: ubuntu-latest
-    needs: publish-release
+    needs: all-published
     steps:
       - name: Trigger Homebrew formula update
         run: |
@@ -411,7 +430,7 @@ jobs:
   trigger-chocolatey-update:
     name: trigger-chocolatey-update
     runs-on: ubuntu-latest
-    needs: publish-release
+    needs: all-published
     steps:
       - name: Trigger Chocolatey package update
         run: |
@@ -421,10 +440,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.CHOCOLATEY_PAT }}
 
+  # Dispatching a same-repo workflow via gh workflow run requires
+  # actions: write on the token. The top-level permissions block grants
+  # contents/packages/attestations/id-token only, so explicitly opt in here.
   trigger-aur-update:
     name: trigger-aur-update
     runs-on: ubuntu-latest
-    needs: publish-release
+    needs: all-published
+    permissions:
+      actions: write
+      contents: read
     steps:
       - name: Trigger AUR package update
         run: |
