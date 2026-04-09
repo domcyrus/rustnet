@@ -127,40 +127,44 @@ pub fn remove_dangerous_privileges() -> Result<RestrictedTokenResult> {
 /// Remove a single privilege from the token.
 /// Returns Ok(true) if removed, Ok(false) if not held, Err on failure.
 unsafe fn remove_single_privilege(token: HANDLE, privilege_name: &str) -> Result<bool> {
-    let wide_name: Vec<u16> = privilege_name
-        .encode_utf16()
-        .chain(std::iter::once(0))
-        .collect();
+    unsafe {
+        let wide_name: Vec<u16> = privilege_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
 
-    let mut luid = LUID::default();
-    if LookupPrivilegeValueW(None, windows::core::PCWSTR(wide_name.as_ptr()), &mut luid).is_err() {
-        // Privilege name not recognized on this system — skip
-        return Ok(false);
+        let mut luid = LUID::default();
+        if LookupPrivilegeValueW(None, windows::core::PCWSTR(wide_name.as_ptr()), &mut luid)
+            .is_err()
+        {
+            // Privilege name not recognized on this system — skip
+            return Ok(false);
+        }
+
+        let tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_REMOVED,
+            }],
+        };
+
+        if AdjustTokenPrivileges(token, false, Some(&tp), 0, None, None).is_err() {
+            return Err(anyhow::anyhow!(
+                "AdjustTokenPrivileges failed for {}",
+                privilege_name
+            ));
+        }
+
+        // Check GetLastError — AdjustTokenPrivileges returns success even if
+        // the privilege wasn't held (ERROR_NOT_ALL_ASSIGNED = 1300)
+        let last_error = windows::Win32::Foundation::GetLastError();
+        if last_error.0 == ERROR_NOT_ALL_ASSIGNED {
+            return Ok(false);
+        }
+
+        Ok(true)
     }
-
-    let mut tp = TOKEN_PRIVILEGES {
-        PrivilegeCount: 1,
-        Privileges: [LUID_AND_ATTRIBUTES {
-            Luid: luid,
-            Attributes: SE_PRIVILEGE_REMOVED,
-        }],
-    };
-
-    if AdjustTokenPrivileges(token, false, Some(&mut tp), 0, None, None).is_err() {
-        return Err(anyhow::anyhow!(
-            "AdjustTokenPrivileges failed for {}",
-            privilege_name
-        ));
-    }
-
-    // Check GetLastError — AdjustTokenPrivileges returns success even if
-    // the privilege wasn't held (ERROR_NOT_ALL_ASSIGNED = 1300)
-    let last_error = windows::Win32::Foundation::GetLastError();
-    if last_error.0 == ERROR_NOT_ALL_ASSIGNED {
-        return Ok(false);
-    }
-
-    Ok(true)
 }
 
 /// Apply a Job Object to the current process that prevents child process creation.
@@ -173,7 +177,7 @@ pub fn apply_job_object() -> Result<JobObjectResult> {
         let job = CreateJobObjectW(None, None).context("Failed to create job object")?;
 
         // Configure: limit to 1 active process (prevents child spawning)
-        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+        let info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
             BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
                 LimitFlags: JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
                 ActiveProcessLimit: 1,

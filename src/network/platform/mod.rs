@@ -117,7 +117,7 @@ pub use macos::{MacOSStatsProvider, create_process_lookup};
 #[cfg(target_os = "windows")]
 pub use windows::sandbox;
 #[cfg(target_os = "windows")]
-pub use windows::{WindowsProcessLookup, WindowsStatsProvider, create_process_lookup};
+pub use windows::{WindowsStatsProvider, create_process_lookup};
 
 /// Trait for platform-specific process lookup
 pub trait ProcessLookup: Send + Sync {

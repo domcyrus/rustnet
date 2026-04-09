@@ -53,6 +53,10 @@ pub struct SandboxInfo {
     /// Overall status description
     pub status: String,
     /// Whether network connections are blocked
+    #[cfg(any(
+        target_os = "linux",
+        all(target_os = "macos", feature = "macos-sandbox")
+    ))]
     pub net_restricted: bool,
     // Linux-specific fields (Landlock + capabilities)
     /// Whether CAP_NET_RAW was dropped

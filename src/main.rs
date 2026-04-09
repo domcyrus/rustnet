@@ -134,15 +134,19 @@ fn main() -> Result<()> {
     // This must be done BEFORE Landlock is applied so the file exists when adding rules
     if let Some(ref pcap_path) = config.pcap_export_file {
         let jsonl_path = format!("{}.connections.jsonl", pcap_path);
-        if let Err(e) = std::fs::File::create(&jsonl_path).and_then(|f| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        match std::fs::File::create(&jsonl_path) {
+            Ok(_f) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Err(e) = _f.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+                        warn!("Failed to set sidecar JSONL file permissions: {}", e);
+                    }
+                }
             }
-            Ok(f)
-        }) {
-            warn!("Failed to pre-create sidecar JSONL file: {}", e);
+            Err(e) => {
+                warn!("Failed to pre-create sidecar JSONL file: {}", e);
+            }
         }
     }
 
@@ -384,7 +388,6 @@ fn main() -> Result<()> {
                     privileges_removed: result.privileges_removed,
                     privileges_removed_count: result.privileges_removed_count,
                     job_object_applied: result.job_object_applied,
-                    net_restricted: false,
                 });
             }
             Err(e) => {
@@ -397,7 +400,6 @@ fn main() -> Result<()> {
                     privileges_removed: false,
                     privileges_removed_count: 0,
                     job_object_applied: false,
-                    net_restricted: false,
                 });
             }
         }
