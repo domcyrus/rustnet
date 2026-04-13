@@ -99,7 +99,7 @@ jobs:
       # For test builds: upload raw binary
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rustnet-${{ matrix.build }}
           path: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
@@ -135,7 +135,7 @@ jobs:
 
       - name: Upload release archive
         if: ${{ inputs.create-archives }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-${{ matrix.target }}
           path: ${{ env.ASSET }}
@@ -312,7 +312,7 @@ jobs:
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
         continue-on-error: ${{ matrix.arch != 'x86_64' }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rustnet-linux-static-${{ matrix.arch }}
           path: ${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}
@@ -339,7 +339,7 @@ jobs:
         # JS actions don't work in Alpine containers on ARM runners;
         # release.yml has dedicated upload-arm-static/upload-android-static jobs as fallback
         continue-on-error: ${{ contains(matrix.arch, 'aarch64') }}
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-${{ matrix.target }}
           path: rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz
