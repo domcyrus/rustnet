@@ -864,40 +864,18 @@ where
                                     return Ok(());
                                 }
 
-                                // Handle navigation keys (j/k) and text input
-                                match c {
-                                    'k' => {
-                                        // Vim-style up navigation while filtering
-                                        // Use the SAME sorted connections list from the main loop
-                                        debug!(
-                                            "Filter mode navigation UP (k): {} connections available",
-                                            connections.len()
-                                        );
-                                        ui_state.move_selection_up(&connections);
-                                    }
-                                    'j' => {
-                                        // Vim-style down navigation while filtering
-                                        // Use the SAME sorted connections list from the main loop
-                                        debug!(
-                                            "Filter mode navigation DOWN (j): {} connections available",
-                                            connections.len()
-                                        );
-                                        ui_state.move_selection_down(&connections);
-                                    }
-                                    _ => {
-                                        // Regular character input for filter
-                                        ui_state.filter_add_char(c);
-                                        needs_data_refresh = true;
-                                    }
-                                }
+                                // All other characters (including j/k) are text input.
+                                // Use arrow keys to navigate while typing.
+                                ui_state.filter_add_char(c);
+                                needs_data_refresh = true;
                             }
                             _ => {}
                         }
                     } else {
                         // Handle input in normal mode
                         match (key.code, key.modifiers) {
-                            // Enter filter mode with '/'
-                            (KeyCode::Char('/'), _) => {
+                            // Enter filter mode with '/' (only on Overview tab)
+                            (KeyCode::Char('/'), _) if ui_state.selected_tab == 0 => {
                                 ui_state.quit_confirmation = false;
                                 debug!("Entering filter mode");
                                 ui_state.enter_filter_mode();
@@ -1256,10 +1234,9 @@ where
                                     // Clear filter if one is active
                                     ui_state.clear_filter();
                                     needs_data_refresh = true;
-                                } else if ui_state.selected_tab == 1 {
-                                    ui_state.selected_tab = 0; // Back to overview
-                                } else if ui_state.selected_tab == 2 {
-                                    ui_state.selected_tab = 0; // Back to overview from help
+                                } else if ui_state.selected_tab != 0 {
+                                    // Back to overview from any other tab
+                                    ui_state.selected_tab = 0;
                                 }
                             }
 

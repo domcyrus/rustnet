@@ -3916,7 +3916,9 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         ]),
         Line::from(vec![
             Span::styled("/ ", theme::fg(theme::key())),
-            Span::raw("Enter filter mode (navigate while typing!)"),
+            Span::raw(
+                "Enter filter mode on Overview (use \u{2191}/\u{2193} to navigate while typing)",
+            ),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled("Tabs:", theme::bold_fg(theme::accent()))]),
@@ -4186,6 +4188,21 @@ fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
     f.render_widget(filter_input, area);
 }
 
+/// Status bar text per tab. Only Overview exposes connection-list shortcuts
+/// (/, a, t, c); other tabs show just what actually works there.
+fn default_status_line(selected_tab: usize) -> &'static str {
+    match selected_tab {
+        // Overview
+        0 => {
+            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 't' history | 'c' copy"
+        }
+        // Details
+        1 => " 'h' help | Tab/Shift+Tab switch tabs | 'c' copy remote addr | Esc back to Overview",
+        // Interfaces / Graph / Help
+        _ => " 'h' help | Tab/Shift+Tab switch tabs | Esc back to Overview",
+    }
+}
+
 /// Draw status bar
 fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, area: Rect) {
     let status = if ui_state.quit_confirmation {
@@ -4197,18 +4214,15 @@ fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, a
         if time.elapsed().as_secs() < 3 {
             format!(" {} ", msg)
         } else {
-            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 't' history | 'c' copy".to_string()
+            default_status_line(ui_state.selected_tab).to_string()
         }
     } else if !ui_state.filter_query.is_empty() {
         format!(
             " 'h' help | Tab/Shift+Tab switch tabs | Showing {} filtered connections (Esc to clear) ",
             connection_count
         )
-    } else if ui_state.selected_tab == 1 {
-        " Click any field to copy | 'c' copy remote addr | Tab switch tabs | Esc back ".to_string()
     } else {
-        " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 't' history | 'c' copy"
-            .to_string()
+        default_status_line(ui_state.selected_tab).to_string()
     };
 
     let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {
