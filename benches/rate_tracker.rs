@@ -137,7 +137,7 @@ fn bench_snapshot_then_update(c: &mut Criterion) {
                     || connections.clone(),
                     |mut conns| {
                         // Step 1: snapshot clone (simulates UI snapshot)
-                        let _snapshot: Vec<Connection> = conns.iter().map(|c| c.clone()).collect();
+                        let _snapshot: Vec<Connection> = conns.to_vec();
                         // Step 2: mutate originals (simulates incoming packets)
                         for conn in &mut conns {
                             conn.bytes_sent += 100;
