@@ -397,13 +397,22 @@ fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<QuicInfo>, us
     if packet_type == QuicPacketType::Initial {
         if let Some((token_len, bytes_read)) = parse_variable_length_int(&payload[offset..]) {
             offset += bytes_read;
-            offset += token_len as usize; // Skip token
+            // Guard: a malformed/adversarial varint may decode to a value far
+            // larger than the remaining payload. Treat that as unparseable
+            // rather than panicking on the next slice access.
+            match (token_len as usize).checked_add(offset) {
+                Some(new_offset) if new_offset <= payload.len() => offset = new_offset,
+                _ => return (Some(quic_info), payload.len()),
+            }
         } else {
             return (Some(quic_info), payload.len()); // Can't parse, assume rest of datagram
         }
     }
 
     // Parse packet length (variable-length integer)
+    if offset >= payload.len() {
+        return (Some(quic_info), payload.len());
+    }
     let packet_length =
         if let Some((pkt_len, bytes_read)) = parse_variable_length_int(&payload[offset..]) {
             offset += bytes_read;
@@ -413,8 +422,9 @@ fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<QuicInfo>, us
             return (Some(quic_info), payload.len());
         };
 
-    // Total packet size = header (offset) + packet_length (includes pkt num + payload)
-    let total_packet_size = offset + packet_length;
+    // Total packet size = header (offset) + packet_length (includes pkt num + payload).
+    // Use checked_add so an adversarial varint length can't overflow usize.
+    let total_packet_size = offset.checked_add(packet_length).unwrap_or(payload.len());
 
     debug!(
         "QUIC: Long header packet - header_len={}, packet_length={}, total={}",
@@ -857,7 +867,12 @@ pub fn process_crypto_frames_in_packet(
             0x07 => {
                 // NEW_TOKEN frame
                 let (token_length, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read + token_length as usize;
+                offset = offset
+                    .checked_add(bytes_read)?
+                    .checked_add(token_length as usize)?;
+                if offset > payload.len() {
+                    break;
+                }
             }
 
             0x08..=0x0f => {
@@ -881,7 +896,10 @@ pub fn process_crypto_frames_in_packet(
                     payload.len() - offset
                 };
 
-                offset += stream_data_len;
+                offset = offset.checked_add(stream_data_len)?;
+                if offset > payload.len() {
+                    break;
+                }
             }
 
             0x10..=0x17 => {
@@ -910,7 +928,10 @@ pub fn process_crypto_frames_in_packet(
                     break;
                 }
                 let cid_length = payload[offset] as usize;
-                offset += 1 + cid_length + 16; // CID + stateless reset token
+                offset = offset.checked_add(1 + cid_length + 16)?; // CID + stateless reset token
+                if offset > payload.len() {
+                    break;
+                }
             }
 
             0x19 => {
@@ -939,14 +960,18 @@ pub fn process_crypto_frames_in_packet(
                 let (reason_length, bytes_read) = parse_variable_length_int(&payload[offset..])?;
                 offset += bytes_read;
 
-                let reason =
-                    if reason_length > 0 && offset + reason_length as usize <= payload.len() {
-                        let reason_bytes = &payload[offset..offset + reason_length as usize];
-                        String::from_utf8(reason_bytes.to_vec()).ok()
-                    } else {
-                        None
-                    };
-                offset += reason_length as usize;
+                let reason_len = reason_length as usize;
+                let reason_end = offset.checked_add(reason_len)?;
+                let reason = if reason_length > 0 && reason_end <= payload.len() {
+                    let reason_bytes = &payload[offset..reason_end];
+                    String::from_utf8(reason_bytes.to_vec()).ok()
+                } else {
+                    None
+                };
+                offset = reason_end;
+                if offset > payload.len() {
+                    break;
+                }
 
                 // Store CONNECTION_CLOSE information in quic_info
                 quic_info.connection_close = Some(crate::network::types::QuicCloseInfo {
@@ -2489,5 +2514,39 @@ mod tests {
         data.extend(build_sni_extension("valid.example.com"));
         let result = try_extract_sni_greedy(&data, false);
         assert_eq!(result, Some("valid.example.com".to_string()));
+    }
+
+    /// Regression test for a panic in parse_long_header_packet_with_length:
+    /// a malformed Initial packet whose token_length varint decodes to a
+    /// value far larger than the payload used to push `offset` past
+    /// `payload.len()`, causing the next slice access at line 408 to panic
+    /// with "range start index ... out of range for slice of length ...".
+    #[test]
+    fn test_long_header_huge_token_length_does_not_panic() {
+        // Build a QUIC v1 Initial long-header packet.
+        //   first byte: 0xC0 (long, Initial, pkt num len irrelevant here)
+        //   version:    0x00000001
+        //   DCID len:   0
+        //   SCID len:   0
+        //   token len varint: 8-byte form with a huge value (0xC8 8C ...)
+        // That varint decodes (with the top 2 bits masked) to
+        // 0x08c8c8c8c8c8ca67 — the exact value from the observed panic.
+        let mut pkt = Vec::new();
+        pkt.push(0xC0);
+        pkt.extend_from_slice(&0x0000_0001u32.to_be_bytes());
+        pkt.push(0); // DCID len
+        pkt.push(0); // SCID len
+        pkt.extend_from_slice(&[0xC8, 0x8C, 0x8C, 0x8C, 0x8C, 0x8C, 0xCA, 0x67]);
+        // Some trailing bytes to make the payload look plausible.
+        pkt.extend(std::iter::repeat_n(0u8, 64));
+
+        // Must not panic.
+        let (info, consumed) = parse_long_header_packet_with_length(&pkt);
+        assert!(info.is_some(), "should still surface a QuicInfo");
+        assert_eq!(
+            consumed,
+            pkt.len(),
+            "unparseable token length should cause us to treat the rest of the datagram as consumed"
+        );
     }
 }
