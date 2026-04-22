@@ -963,19 +963,37 @@ impl App {
                         }
                     };
 
-                    // Process batch
+                    // Process batch. Each packet parse is isolated with
+                    // catch_unwind so that a single malformed/adversarial
+                    // packet that panics a DPI parser cannot take down the
+                    // whole pcap_rx thread and leave the monitor running
+                    // blind.
                     let mut parsed_count = 0;
                     for packet_data in &batch {
-                        if let Some(parsed) = parser.parse_packet(packet_data) {
-                            update_connection(
-                                &connections,
-                                parsed,
-                                &stats,
-                                &json_log_path,
-                                &rtt_tracker,
-                                dns_resolver.as_deref(),
-                            );
-                            parsed_count += 1;
+                        let parse_result =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                parser.parse_packet(packet_data)
+                            }));
+                        match parse_result {
+                            Ok(Some(parsed)) => {
+                                update_connection(
+                                    &connections,
+                                    parsed,
+                                    &stats,
+                                    &json_log_path,
+                                    &rtt_tracker,
+                                    dns_resolver.as_deref(),
+                                );
+                                parsed_count += 1;
+                            }
+                            Ok(None) => {}
+                            Err(_) => {
+                                warn!(
+                                    "pcap_rx_{}: parser panicked on a packet ({} bytes); skipping",
+                                    id,
+                                    packet_data.len()
+                                );
+                            }
                         }
                     }
 
