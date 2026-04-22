@@ -817,14 +817,14 @@ where
                                 ui_state.filter_backspace();
                                 needs_data_refresh = true;
                             }
-                            KeyCode::Delete => {
-                                // Handle delete key (remove character after cursor)
-                                if ui_state.filter_cursor_position < ui_state.filter_query.len() {
-                                    ui_state
-                                        .filter_query
-                                        .remove(ui_state.filter_cursor_position);
-                                    needs_data_refresh = true;
-                                }
+                            KeyCode::Delete
+                                if ui_state.filter_cursor_position
+                                    < ui_state.filter_query.len() =>
+                            {
+                                ui_state
+                                    .filter_query
+                                    .remove(ui_state.filter_cursor_position);
+                                needs_data_refresh = true;
                             }
                             KeyCode::Left => {
                                 ui_state.filter_cursor_left();

@@ -1310,7 +1310,7 @@ impl App {
                     }
 
                     // Sort by creation time (oldest first, newest last for maximum stability)
-                    snapshot_data.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+                    snapshot_data.sort_by_key(|a| a.created_at);
 
                     let filtered_count = snapshot_data.len();
 
