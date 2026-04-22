@@ -86,10 +86,8 @@ fn parse_dhcp_options(options: &[u8]) -> Option<(DhcpMessageType, Option<String>
         let opt_data = &options[offset + 2..offset + 2 + opt_len];
 
         match opt_code {
-            DHCP_OPT_MESSAGE_TYPE => {
-                if opt_len >= 1 {
-                    message_type = Some(parse_message_type(opt_data[0]));
-                }
+            DHCP_OPT_MESSAGE_TYPE if opt_len >= 1 => {
+                message_type = Some(parse_message_type(opt_data[0]));
             }
             DHCP_OPT_HOSTNAME => {
                 if let Ok(name) = std::str::from_utf8(opt_data) {

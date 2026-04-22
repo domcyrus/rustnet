@@ -930,7 +930,7 @@ pub fn compute_grouped_rows<'a>(
 
     // Sort groups alphabetically by process name for stable ordering
     // (sorting by bandwidth causes constant reordering as rates fluctuate)
-    group_stats.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+    group_stats.sort_by_key(|a| a.0.to_lowercase());
 
     // Build the flattened row list
     let mut rows = Vec::new();
@@ -2808,11 +2808,7 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
         .iter()
         .take(max_rows)
         .map(|(name, count)| {
-            let bar_len = if max_count > 0 {
-                (*count * bar_width) / max_count
-            } else {
-                0
-            };
+            let bar_len = (*count * bar_width).checked_div(max_count).unwrap_or(0);
             let bar = "█".repeat(bar_len.max(1));
 
             // Color based on state health
