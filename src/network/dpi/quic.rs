@@ -2,7 +2,7 @@ use crate::network::types::{
     CryptoFrameReassembler, QuicConnectionState, QuicInfo, QuicPacketType, TlsInfo, TlsVersion,
 };
 use aes::Aes128;
-use aes::cipher::{BlockEncrypt, KeyInit};
+use aes::cipher::{BlockCipherEncrypt, KeyInit};
 use log::{debug, warn};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::{aead, hkdf};
@@ -1837,15 +1837,10 @@ fn build_hkdf_label(label: &[u8], context: &[u8], length: usize) -> Vec<u8> {
 
 /// AES-ECB encryption for header protection
 fn aes_ecb_encrypt(key: &[u8], block: &[u8]) -> Option<[u8; 16]> {
-    use aes::cipher::generic_array::GenericArray;
-
-    let cipher = Aes128::new(GenericArray::from_slice(key));
-    let mut output = GenericArray::clone_from_slice(block);
+    let cipher = Aes128::new(key.try_into().ok()?);
+    let mut output: aes::cipher::Array<u8, aes::cipher::consts::U16> = block.try_into().ok()?;
     cipher.encrypt_block(&mut output);
-
-    let mut result = [0u8; 16];
-    result.copy_from_slice(&output);
-    Some(result)
+    Some(output.into())
 }
 
 /// Convert connection ID to hex string
