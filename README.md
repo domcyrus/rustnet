@@ -24,22 +24,14 @@
 
 ## Features
 
-- **Real-time Network Monitoring**: Monitor active TCP, UDP, ICMP, and ARP connections with detailed state information
-- **Connection States**: Track TCP states (`ESTABLISHED`, `SYN_SENT`, `TIME_WAIT`, `FIN_WAIT*`, `CLOSE_WAIT`, …), QUIC handshake states (`Initial`, `Handshaking`, `Connected`, `Draining`), and SSH session states (`Banner`, `KeyExchange`, `Authentication`, `Established`)
-- **Interface Statistics**: Real-time monitoring of network interface metrics including bytes/packets transferred, errors, drops, and collisions
-- **Deep Packet Inspection (DPI)**: Detect application protocols including HTTP, HTTPS/TLS with SNI, DNS, SSH, QUIC, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, and NetBIOS
-- **TCP Network Analytics**: Real-time detection of TCP retransmissions, out-of-order packets, and fast retransmits with per-connection and aggregate statistics
-- **Smart Connection Lifecycle**: Protocol-aware timeouts with visual staleness indicators (white → yellow → red) before cleanup
-- **Process Identification**: Associate network connections with running processes
-- **Service Name Resolution**: Identify well-known services using port numbers
-- **GeoIP Location**: Show country codes for remote IPs using GeoLite2 databases (auto-discovered or manually specified)
-- **Reverse DNS Lookups**: Resolve IP addresses to hostnames with background async resolution and caching
-- **Cross-platform Support**: Works on Linux, macOS, Windows, and FreeBSD
-- **Advanced Filtering**: Real-time vim/fzf-style filtering with keyword support (`port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`)
-- **Terminal User Interface**: Beautiful TUI built with ratatui with adjustable column widths
-- **Multi-threaded Processing**: Concurrent packet processing for high performance
-- **Optional Logging**: Detailed logging with configurable log levels (disabled by default)
-- **Security Sandboxing**: Landlock-based filesystem/network restrictions on Linux 5.13+ (see [SECURITY.md](SECURITY.md))
+- **Per-process attribution**: Every TCP, UDP, and QUIC connection mapped to its owning process — via eBPF on Linux, PKTAP on macOS, native APIs on Windows and FreeBSD. Wireshark and tcpdump can't do this; `netstat` / `ss` can't show live state.
+- **Deep packet inspection**: Identify HTTP, HTTPS/TLS with SNI, DNS, SSH, QUIC, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, and NetBIOS — without external dissectors.
+- **Security sandboxing**: Landlock (Linux 5.13+), Seatbelt (macOS), restricted token + job objects (Windows). Drops privileges immediately after libpcap initializes. See [SECURITY.md](SECURITY.md).
+- **TCP network analytics**: Real-time retransmissions, out-of-order packets, and fast-retransmit detection — per-connection and aggregate.
+- **Smart connection lifecycle**: Protocol-aware timeouts with white → yellow → red staleness indicators. Toggle `t` to keep historic (closed) connections visible for forensics.
+- **Vim/fzf-style filtering**: `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, `proto:`, plus regex via `/(?i)pattern/`.
+- **GeoIP enrichment**: Country lookups via local MaxMind GeoLite2 — no network calls.
+- **Cross-platform**: Linux, macOS, Windows, FreeBSD.
 
 ## Why RustNet?
 
