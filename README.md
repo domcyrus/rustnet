@@ -1,21 +1,31 @@
-[![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
-[![Build Status](https://github.com/domcyrus/rustnet/workflows/Rust/badge.svg)](https://github.com/domcyrus/rustnet/actions)
-[![Crates.io](https://img.shields.io/crates/v/rustnet-monitor.svg)](https://crates.io/crates/rustnet-monitor)
-[![GitHub Stars](https://img.shields.io/github/stars/domcyrus/rustnet?style=flat&logo=github)](https://github.com/domcyrus/rustnet/stargazers)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![GitHub release](https://img.shields.io/github/v/release/domcyrus/rustnet.svg)](https://github.com/domcyrus/rustnet/releases)
-[![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/domcyrus/rustnet/pkgs/container/rustnet)
+<p align="center">
+  <h1 align="center">RustNet</h1>
+  <p align="center">
+    <strong>Per-process network monitoring for your terminal — live TCP, UDP, and QUIC connections with deep packet inspection, sandboxed by default.</strong>
+  </p>
+  <p align="center">
+    <a href="https://ratatui.rs/"><img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="Built With Ratatui"></a>
+    <a href="https://github.com/domcyrus/rustnet/actions"><img src="https://github.com/domcyrus/rustnet/workflows/Rust/badge.svg" alt="Build Status"></a>
+    <a href="https://crates.io/crates/rustnet-monitor"><img src="https://img.shields.io/crates/v/rustnet-monitor.svg" alt="Crates.io"></a>
+    <a href="https://github.com/domcyrus/rustnet/stargazers"><img src="https://img.shields.io/github/stars/domcyrus/rustnet?style=flat&logo=github" alt="GitHub Stars"></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"></a>
+    <a href="https://github.com/domcyrus/rustnet/releases"><img src="https://img.shields.io/github/v/release/domcyrus/rustnet.svg" alt="GitHub release"></a>
+    <a href="https://github.com/domcyrus/rustnet/pkgs/container/rustnet"><img src="https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker" alt="Docker Image"></a>
+  </p>
+</p>
 
-# RustNet
+<p align="center">
+  <img src="./assets/rustnet.gif" alt="RustNet demo" width="800">
+</p>
 
-A cross-platform network monitoring tool built with Rust. RustNet provides real-time visibility into network connections with detailed state information, connection lifecycle management, deep packet inspection, and a terminal user interface.
-
-![RustNet Demo](./assets/rustnet.gif)
+<p align="center">
+  <em>Real-time visibility into every connection your machine makes, who owns it, and what protocol it's speaking — without tcpdump, X11 forwarding, or root piping.</em>
+</p>
 
 ## Features
 
 - **Real-time Network Monitoring**: Monitor active TCP, UDP, ICMP, and ARP connections with detailed state information
-- **Connection States**: Track TCP states (`ESTABLISHED`, `SYN_SENT`, `TIME_WAIT`), QUIC states (`QUIC_INITIAL`, `QUIC_HANDSHAKE`, `QUIC_CONNECTED`), DNS states, SSH states, and activity-based UDP states
+- **Connection States**: Track TCP states (`ESTABLISHED`, `SYN_SENT`, `TIME_WAIT`, `FIN_WAIT*`, `CLOSE_WAIT`, …), QUIC handshake states (`Initial`, `Handshaking`, `Connected`, `Draining`), and SSH session states (`Banner`, `KeyExchange`, `Authentication`, `Established`)
 - **Interface Statistics**: Real-time monitoring of network interface metrics including bytes/packets transferred, errors, drops, and collisions
 - **Deep Packet Inspection (DPI)**: Detect application protocols including HTTP, HTTPS/TLS with SNI, DNS, SSH, QUIC, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, and NetBIOS
 - **TCP Network Analytics**: Real-time detection of TCP retransmissions, out-of-order packets, and fast retransmits with per-connection and aggregate statistics
@@ -250,7 +260,7 @@ RustNet uses smart timeouts and visual warnings before removing connections:
 - **HTTP/HTTPS**: 10 minutes (supports keep-alive)
 - **SSH**: 30 minutes (long sessions)
 - **TCP active**: 10 minutes, idle: 5 minutes
-- **QUIC active**: 10 minutes, idle: 5 minutes
+- **QUIC connected**: 3 minutes (or peer's transport-param idle timeout, when present); `Initial`/`Handshaking`: 60 seconds
 - **DNS**: 30 seconds
 - **TCP CLOSED**: 5 seconds
 
