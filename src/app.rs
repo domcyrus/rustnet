@@ -1,4 +1,9 @@
-// app.rs - Main application orchestration (with debug logging)
+//! Application orchestration: spins up the packet-capture pipeline, the
+//! DNS resolver, the GeoIP resolver, and the interface-stats collector,
+//! and owns the shared `DashMap` connection table that the TUI renders.
+//!
+//! Threads communicate over `crossbeam` channels; counters use atomics.
+
 use anyhow::Result;
 use crossbeam::channel::{self, Receiver, Sender};
 use dashmap::DashMap;

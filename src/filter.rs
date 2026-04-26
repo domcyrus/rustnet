@@ -1,3 +1,8 @@
+//! Vim/fzf-style connection filter: parses `port:`, `src:`, `dst:`,
+//! `sni:`, `process:`, `state:`, `proto:` keyword expressions (with
+//! optional `(?i)…` regex literals via `regex-lite`) and matches them
+//! against live `Connection` records.
+
 use crate::network::types::{ApplicationProtocol, Connection, ProtocolState};
 use regex_lite::Regex;
 

@@ -1,3 +1,8 @@
+//! Terminal user interface built on `ratatui` + `crossterm`: tabbed
+//! layout (overview, connections, interfaces, details), sortable tables
+//! with adjustable columns, sparkline/chart bandwidth widgets, and
+//! keyboard-driven filter and navigation.
+
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -25,7 +30,7 @@ pub type Terminal<B> = RatatuiTerminal<B>;
 /// Placeholder string displayed when a value is unavailable.
 const NONE_PLACEHOLDER: &str = "-";
 
-/// Global flag for NO_COLOR support (https://no-color.org)
+/// Global flag for NO_COLOR support (<https://no-color.org>)
 static NO_COLOR: AtomicBool = AtomicBool::new(false);
 
 /// Enable NO_COLOR mode (strips all colors from the UI)

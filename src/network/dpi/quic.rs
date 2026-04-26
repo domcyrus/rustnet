@@ -245,7 +245,7 @@ pub fn parse_quic_packet(payload: &[u8]) -> Option<QuicInfo> {
 }
 
 /// Merge QUIC info from multiple coalesced packets
-/// Prefers more complete information (SNI without [PARTIAL], higher connection state, etc.)
+/// Prefers more complete information (SNI without `[PARTIAL]`, higher connection state, etc.)
 fn merge_quic_packet_info(existing: Option<QuicInfo>, new: QuicInfo) -> QuicInfo {
     match existing {
         None => new,

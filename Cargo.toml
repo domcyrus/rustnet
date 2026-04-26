@@ -10,7 +10,7 @@ homepage = "https://github.com/domcyrus/rustnet"
 documentation = "https://docs.rs/rustnet-monitor"
 readme = "README.md"
 license = "Apache-2.0"
-keywords = ["network", "monitoring", "tui", "terminal", "packet-capture"]
+keywords = ["network", "monitoring", "tui", "ebpf", "packet-capture"]
 categories = ["command-line-utilities", "network-programming", "visualization"]
 exclude = [".github/", "scripts/", "tests/", "*.log", "target/", ".gitignore"]
 
