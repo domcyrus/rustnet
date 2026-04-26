@@ -124,11 +124,11 @@ Removes inactive connections using smart, protocol-aware timeouts. This prevents
 - **Regular UDP**: **60 seconds** - standard timeout
 
 #### QUIC Connections (Detected State)
-- **Connected (active)** (< 1 min idle): **10 minutes**
-- **Connected (idle)** (> 1 min idle): **5 minutes**
+- **Connected**: 3 minutes default, or the peer's `max_idle_timeout` transport parameter when present
 - **With CONNECTION_CLOSE frame**: 1-10 seconds (based on close type)
 - **Initial/Handshaking**: 60 seconds - allow connection establishment
 - **Draining**: 10 seconds - RFC 9000 draining period
+- **Closed**: 1 second - immediate cleanup
 
 **Visual Staleness Indicators:**
 
