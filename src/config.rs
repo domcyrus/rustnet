@@ -1,3 +1,6 @@
+//! Runtime configuration: CLI flags, GeoIP database discovery, refresh
+//! interval, DNS resolution toggle, and pcap export settings.
+
 use anyhow::{Result, anyhow};
 use std::fs;
 use std::path::PathBuf;

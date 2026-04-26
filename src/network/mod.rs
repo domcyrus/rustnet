@@ -1,3 +1,10 @@
+//! Networking core: libpcap-based packet capture, link-layer/IP/transport
+//! parsers, deep packet inspection (HTTP, TLS SNI, DNS, SSH, QUIC, NTP,
+//! mDNS, LLMNR, DHCP, SNMP, SSDP, NetBIOS), connection merging, GeoIP
+//! lookups, OUI vendor resolution, interface statistics, and
+//! platform-specific process attribution (procfs / eBPF on Linux, native
+//! APIs on macOS, Windows, and FreeBSD).
+
 pub mod capture;
 pub mod dns;
 pub mod dpi;

@@ -1,6 +1,7 @@
 [![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
 [![Build Status](https://github.com/domcyrus/rustnet/workflows/Rust/badge.svg)](https://github.com/domcyrus/rustnet/actions)
 [![Crates.io](https://img.shields.io/crates/v/rustnet-monitor.svg)](https://crates.io/crates/rustnet-monitor)
+[![Crates.io Downloads](https://img.shields.io/crates/d/rustnet-monitor.svg)](https://crates.io/crates/rustnet-monitor)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/domcyrus/rustnet.svg)](https://github.com/domcyrus/rustnet/releases)
 [![Docker Image](https://img.shields.io/badge/docker-ghcr.io-blue?logo=docker)](https://github.com/domcyrus/rustnet/pkgs/container/rustnet)
@@ -39,6 +40,8 @@ RustNet fills the gap between simple connection tools (`netstat`, `ss`) and pack
 - **SSH-friendly**: TUI works over SSH so you can quickly see what's happening on a remote server without forwarding X11 or capturing traffic
 
 RustNet complements packet capture tools. Use RustNet to see *what's making connections*. For deep forensic analysis, use `--pcap-export` to capture packets with process attribution, then enrich with `scripts/pcap_enrich.py` and analyze in Wireshark with full PID/process context. See [PCAP Export](USAGE.md#pcap-export) and [Comparison with Similar Tools](ARCHITECTURE.md#comparison-with-similar-tools) for details.
+
+Built on ratatui, libpcap, eBPF (libbpf-rs), DashMap, crossbeam, ring, MaxMind GeoLite2, and Landlock. See [ARCHITECTURE.md](ARCHITECTURE.md#dependencies) for the full dependency breakdown.
 
 <details>
 <summary><b>eBPF Enhanced Process Identification (Linux Default)</b></summary>
