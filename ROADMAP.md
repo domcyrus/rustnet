@@ -25,6 +25,7 @@ This document outlines the planned features and improvements for RustNet.
   - Architecture: pre-fork a Casper service before `cap_enter()`, communicate over socket pair at runtime
   - Write FFI bindings for `libprocstat` and `libcasper` (no Rust crate exists)
   - Link against `-lprocstat -lcasper -lcap_sysctl` (system libraries on FreeBSD 10+)
+- [ ] **Windows Sandbox Hardening**: Strengthen the current privilege-drop + Job Object setup with process mitigation policies (`SetProcessMitigationPolicy`), low-integrity execution, and evaluation of `CreateRestrictedToken` / AppContainer.
 - [ ] **OpenBSD and NetBSD Support**: Future platforms to support
 - [x] **Linux Process Identification**: **Experimental eBPF Support Implemented** - Basic eBPF-based process identification now available with `--features ebpf`. Provides efficient kernel-level process-to-connection mapping with lower overhead than procfs. Currently has limitations (see eBPF Improvements section below).
 

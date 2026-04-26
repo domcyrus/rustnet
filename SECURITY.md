@@ -7,7 +7,7 @@ RustNet processes untrusted network data, making defense-in-depth security criti
 - [Landlock Sandboxing (Linux)](#landlock-sandboxing-linux)
 - [Seatbelt Sandboxing (macOS)](#seatbelt-sandboxing-macos)
 - [FreeBSD Sandboxing](#freebsd-sandboxing)
-- [Restricted Token Sandboxing (Windows)](#restricted-token-sandboxing-windows)
+- [Privilege Drop and Job Object Sandboxing (Windows)](#privilege-drop-and-job-object-sandboxing-windows)
 - [Privilege Requirements](#privilege-requirements)
 - [Read-Only Operation](#read-only-operation)
 - [No External Communication](#no-external-communication)
@@ -122,7 +122,7 @@ On Linux, clipboard requires access to Wayland sockets (`/run/user/UID/wayland-0
 
 FreeBSD does not currently have sandboxing enabled. A full Capsicum sandbox using `cap_enter()` with `libcasper` for privileged process lookup is planned — see [ROADMAP.md](ROADMAP.md) for details.
 
-## Restricted Token Sandboxing (Windows)
+## Privilege Drop and Job Object Sandboxing (Windows)
 
 On Windows, RustNet removes dangerous privileges from the process token and applies a Job Object to prevent child process creation after initialization.
 

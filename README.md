@@ -26,7 +26,7 @@
 
 - **Per-process attribution**: Every TCP, UDP, and QUIC connection mapped to its owning process, via eBPF on Linux, PKTAP on macOS, native APIs on Windows and FreeBSD. Wireshark and tcpdump can't do this; `netstat` / `ss` can't show live state.
 - **Deep packet inspection**: Identify HTTP, HTTPS/TLS with SNI, DNS, SSH, QUIC, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, and NetBIOS, without external dissectors.
-- **Security sandboxing**: Landlock (Linux 5.13+), Seatbelt (macOS), restricted token + job objects (Windows). Drops privileges immediately after libpcap initializes. See [SECURITY.md](SECURITY.md).
+- **Security sandboxing**: Landlock (Linux 5.13+), Seatbelt (macOS), token privilege drop + job-object child-process block (Windows). Drops privileges immediately after libpcap initializes. See [SECURITY.md](SECURITY.md).
 - **TCP network analytics**: Real-time retransmissions, out-of-order packets, and fast-retransmit detection, per-connection and aggregate.
 - **Smart connection lifecycle**: Protocol-aware timeouts with white → yellow → red staleness indicators. Toggle `t` to keep historic (closed) connections visible for forensics.
 - **Vim/fzf-style filtering**: `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, `proto:`, plus regex via `/(?i)pattern/`.
