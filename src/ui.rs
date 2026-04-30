@@ -170,12 +170,12 @@ mod theme {
     }
 
     pub fn row_highlight() -> Style {
-        if super::NO_COLOR.load(super::Ordering::Relaxed) {
-            return Style::default().add_modifier(Modifier::REVERSED);
-        }
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        // No fg override: the highlight inherits the row's existing fg, so
+        // when REVERSED swaps fg ↔ bg, a red staleness row gets a red
+        // selection bar, a yellow row gets a yellow bar, and a default row
+        // gets a default-fg bar. The staleness signal survives the
+        // selection highlight.
+        Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
     }
 
     // --- Style builders (NO_COLOR-aware) ---
@@ -2356,9 +2356,8 @@ fn draw_graph_tab(f: &mut Frame, app: &App, connections: &[Connection], area: Re
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(35), // Traffic chart
+            Constraint::Percentage(35), // Traffic chart (RX/TX legend is built into the chart)
             Constraint::Percentage(20), // Network health + TCP states
-            Constraint::Length(1),      // Legend row
             Constraint::Min(0),         // App distribution + top processes
         ])
         .split(area);
@@ -2380,14 +2379,13 @@ fn draw_graph_tab(f: &mut Frame, app: &App, connections: &[Connection], area: Re
     let bottom_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(main_chunks[3]);
+        .split(main_chunks[2]);
 
     draw_traffic_chart(f, &traffic_history, top_chunks[0]);
     draw_connections_sparkline(f, &traffic_history, top_chunks[1]);
     draw_health_chart(f, &traffic_history, health_chunks[0]);
     draw_tcp_counters(f, app, health_chunks[1]);
     draw_tcp_states(f, connections, health_chunks[2]);
-    draw_traffic_legend(f, main_chunks[2]);
     draw_app_distribution(f, connections, bottom_chunks[0]);
     draw_top_processes(f, connections, bottom_chunks[1]);
 
@@ -2399,14 +2397,31 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Traffic Over Time (60s) ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     if !history.has_enough_data() {
-        let placeholder = Paragraph::new("Collecting data...")
-            .block(block)
-            .style(theme::fg(theme::muted()));
-        f.render_widget(placeholder, area);
+        let placeholder = Paragraph::new("Collecting data...").style(theme::fg(theme::muted()));
+        f.render_widget(placeholder, inner);
         return;
     }
+
+    // Reserve a 1-cell legend strip at the bottom of the panel so RX/TX
+    // labels are always visible (ratatui's built-in chart legend gets hidden
+    // by `hidden_legend_constraints` when the chart area is small).
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(inner);
+    let chart_area = layout[0];
+    let legend_area = layout[1];
+
+    let legend = Paragraph::new(Line::from(vec![
+        Span::styled("▬ RX (incoming) ↓", theme::fg(theme::rx())),
+        Span::raw("   "),
+        Span::styled("▬ TX (outgoing) ↑", theme::fg(theme::tx())),
+    ]));
+    f.render_widget(legend, legend_area);
 
     let (rx_data, tx_data) = history.get_chart_data();
 
@@ -2420,13 +2435,11 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
 
     let datasets = vec![
         Dataset::default()
-            .name("RX ↓")
             .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
             .style(theme::fg(theme::rx()))
             .data(&rx_data),
         Dataset::default()
-            .name("TX ↑")
             .marker(symbols::Marker::Braille)
             .graph_type(GraphType::Line)
             .style(theme::fg(theme::tx()))
@@ -2434,7 +2447,6 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     ];
 
     let chart = Chart::new(datasets)
-        .block(block)
         .x_axis(
             Axis::default()
                 .title("Time")
@@ -2458,7 +2470,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
                 ]),
         );
 
-    f.render_widget(chart, area);
+    f.render_widget(chart, chart_area);
 }
 
 /// Draw connections count sparkline
@@ -2620,19 +2632,6 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
     );
 
     f.render_widget(table, inner);
-}
-
-/// Draw chart legend
-fn draw_traffic_legend(f: &mut Frame, area: Rect) {
-    let legend = Paragraph::new(Line::from(vec![
-        Span::styled("▬", theme::fg(theme::rx())),
-        Span::raw(" RX (incoming)  "),
-        Span::styled("▬", theme::fg(theme::tx())),
-        Span::raw(" TX (outgoing)"),
-    ]))
-    .style(theme::fg(theme::muted()));
-
-    f.render_widget(legend, area);
 }
 
 /// Draw the network health gauges with RTT and packet loss bars
@@ -3832,6 +3831,9 @@ fn draw_connection_details(
 
     // Continuity: the title echoes the selected row so users feel like
     // they zoomed into the Overview entry rather than landed on a fresh view.
+    // The title's color also mirrors the row's staleness color from
+    // draw_connections_list, so a stale/critical row stays stale/critical
+    // when zoomed into Details.
     let process_label = conn
         .process_name
         .as_deref()
@@ -3844,6 +3846,18 @@ fn draw_connection_details(
         )
     } else {
         format!(" {} → {} (click to copy) ", process_label, conn.remote_addr)
+    };
+    let staleness = conn.staleness_ratio();
+    let title_style = if conn.is_historic {
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
+    } else if staleness >= 0.90 {
+        theme::fg(theme::err())
+    } else if staleness >= 0.75 {
+        theme::fg(theme::warn())
+    } else {
+        Style::default()
     };
 
     // Drain right-pane sections (Application/DPI + TCP Analytics + RTT) out
@@ -3889,7 +3903,7 @@ fn draw_connection_details(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(detail_title.clone()),
+                .title(Span::styled(detail_title.clone(), title_style)),
         )
         .style(Style::default())
         // trim:false preserves any leading whitespace in labels rather than
