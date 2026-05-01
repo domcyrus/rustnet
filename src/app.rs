@@ -376,7 +376,7 @@ impl Default for Config {
             bpf_filter: None, // No filter by default to see all packets
             json_log_file: None,
             pcap_export_file: None,
-            resolve_dns: false,
+            resolve_dns: true,
             show_ptr_lookups: false,
             geoip_country_path: None,
             geoip_asn_path: None,

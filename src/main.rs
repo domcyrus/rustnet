@@ -81,9 +81,9 @@ fn main() -> Result<()> {
         }
     }
 
-    if matches.get_flag("resolve-dns") {
-        config.resolve_dns = true;
-        info!("Reverse DNS resolution enabled");
+    if matches.get_flag("no-resolve-dns") {
+        config.resolve_dns = false;
+        info!("Reverse DNS resolution disabled");
     }
 
     if matches.get_flag("show-ptr-lookups") {

@@ -157,7 +157,7 @@ rustnet
 ```bash
 rustnet -i eth0              # Specify network interface
 rustnet --show-localhost     # Show localhost connections
-rustnet --resolve-dns        # Enable reverse DNS lookups
+rustnet --no-resolve-dns     # Disable reverse DNS lookups (enabled by default)
 rustnet -r 500               # Set refresh interval (ms)
 ```
 
@@ -178,7 +178,7 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `Esc` | Go back or clear filter |
 | `c` | Copy remote address |
 | `p` | Toggle service names/ports |
-| `d` | Toggle hostnames/IPs (with `--resolve-dns`) |
+| `d` | Toggle hostnames/IPs |
 | `s` `S` | Cycle sort columns / toggle direction |
 | `a` | Toggle process grouping |
 | `Space` | Expand/collapse process group |
