@@ -144,6 +144,34 @@ mod theme {
         muted()
     }
 
+    // --- Field-level aliases (same color used everywhere a field appears) ---
+    pub fn field_local_addr() -> Color {
+        accent()
+    }
+    pub fn field_remote_addr() -> Color {
+        info()
+    }
+    pub fn field_state() -> Color {
+        ok()
+    }
+    pub fn field_service() -> Color {
+        warn()
+    }
+    pub fn field_location() -> Color {
+        special()
+    }
+    pub fn field_process() -> Color {
+        ok()
+    }
+    pub fn field_application() -> Color {
+        warn()
+    }
+
+    // --- Panel border ---
+    pub fn border() -> Color {
+        special()
+    }
+
     // --- Status bar styles ---
     // Uses REVERSED modifier instead of fg(Black).bg(Color) which breaks on dark terminals
     pub fn status_bar_confirm() -> Style {
@@ -208,6 +236,77 @@ mod theme {
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         }
     }
+}
+
+/// Standard panel chrome: rounded magenta border + title.
+/// Single source of truth for every framed pane in the UI.
+fn panel_block<'a, T: Into<Line<'a>>>(title: T) -> Block<'a> {
+    Block::default()
+        .borders(Borders::ALL)
+        .border_set(symbols::border::ROUNDED)
+        .border_style(theme::fg(theme::border()))
+        .title(title)
+}
+
+/// Resolve the cell color for a connection's State column.
+/// Maps TCP states to the existing `tcp_*` aliases; falls back to
+/// `field_state()` for non-TCP protocols.
+fn state_color(conn: &Connection) -> Color {
+    match &conn.protocol_state {
+        ProtocolState::Tcp(state) => match state {
+            TcpState::Established => theme::tcp_established(),
+            TcpState::SynSent | TcpState::SynReceived => theme::tcp_opening(),
+            TcpState::FinWait1 | TcpState::FinWait2 | TcpState::Closing => theme::tcp_closing(),
+            TcpState::CloseWait | TcpState::LastAck | TcpState::TimeWait => theme::tcp_waiting(),
+            TcpState::Closed | TcpState::Unknown => theme::tcp_closed(),
+        },
+        _ => theme::field_state(),
+    }
+}
+
+/// Resolve the cell color for a DPI Application protocol.
+/// Mirrors the palette used in `draw_app_distribution`.
+fn dpi_color(app: &crate::network::types::ApplicationProtocol) -> Color {
+    use crate::network::types::ApplicationProtocol as AP;
+    match app {
+        AP::Https(_) => theme::proto_https(),
+        AP::Quic(_) => theme::proto_quic(),
+        AP::Http(_) => theme::proto_http(),
+        AP::Dns(_) | AP::Mdns(_) | AP::Llmnr(_) => theme::proto_dns(),
+        AP::Ssh(_) => theme::proto_ssh(),
+        _ => theme::field_application(),
+    }
+}
+
+/// Build a right-aligned bandwidth `Line` with rx/tx colored independently:
+/// "{rx}↓/{tx}↑" where the rx half is green (rx) and the tx half is blue (tx).
+fn bandwidth_line<'a>(rx_text: String, tx_text: String) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(rx_text, theme::fg(theme::rx())),
+        Span::raw("↓/"),
+        Span::styled(tx_text, theme::fg(theme::tx())),
+        Span::raw("↑"),
+    ])
+    .right_aligned()
+}
+
+/// Status indicator cell: filled dot for active connections (green/yellow/red
+/// by staleness), hollow dot for historic. Dual-encodes status via shape so
+/// the cue still works in NO_COLOR mode and for colorblind users.
+fn status_indicator_cell(conn: &Connection) -> Cell<'static> {
+    let (glyph, color) = if conn.is_historic {
+        ("○", theme::muted())
+    } else {
+        let staleness = conn.staleness_ratio();
+        if staleness >= 0.90 {
+            ("●", theme::err())
+        } else if staleness >= 0.75 {
+            ("●", theme::warn())
+        } else {
+            ("●", theme::ok())
+        }
+    };
+    Cell::from(glyph).style(theme::fg(color))
 }
 
 /// Sort column options for the connections table
@@ -1076,12 +1175,10 @@ fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect, click_regions: &mut 
         .collect();
 
     let tabs = Tabs::new(titles)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_set(symbols::border::ROUNDED)
-                .title(Span::styled(" RustNet Monitor ", theme::fg(theme::muted()))),
-        )
+        .block(panel_block(Span::styled(
+            " RustNet Monitor ",
+            theme::fg(theme::muted()),
+        )))
         .select(ui_state.selected_tab)
         // Drop the widget's default 1-char padding on each side; the title
         // strings carry their own " {title} " spacing so the active pill's
@@ -1187,6 +1284,7 @@ fn draw_connections_list(
 
     // Build column widths dynamically based on whether location is shown
     let mut widths = vec![
+        Constraint::Length(1),                 // Status indicator dot
         Constraint::Length(6),                 // Protocol
         Constraint::Length(17),                // Local Address
         Constraint::Length(remote_addr_width), // Remote Address
@@ -1230,8 +1328,10 @@ fn draw_connections_list(
         _ => "Down/Up".to_string(),
     };
 
-    // Build header labels dynamically
+    // Build header labels dynamically. The leading empty label is the
+    // header for the status indicator column (●/○).
     let mut header_labels = vec![
+        String::new(),
         add_sort_indicator("Pro", &[SortColumn::Protocol]),
         add_sort_indicator("Local Address", &[SortColumn::LocalAddress]),
         add_sort_indicator("Remote Address", &[SortColumn::RemoteAddress]),
@@ -1247,20 +1347,21 @@ fn draw_connections_list(
         add_sort_indicator("Process", &[SortColumn::Process]),
     ]);
 
-    // Compute column index offsets based on whether location is shown
-    // Columns: Pro(0), Local(1), Remote(2), [Loc(3)], State(3/4), Service(4/5), App(5/6), BW(6/7), Process(7/8)
-    let state_idx = if show_location { 4 } else { 3 };
-    let service_idx = if show_location { 5 } else { 4 };
-    let app_idx = if show_location { 6 } else { 5 };
-    let bw_idx = if show_location { 7 } else { 6 };
-    let process_idx = if show_location { 8 } else { 7 };
+    // Compute column index offsets. Status dot is column 0, then
+    // Pro(1), Local(2), Remote(3), [Loc(4)], State(4/5), Service(5/6), ...
+    let state_idx = if show_location { 5 } else { 4 };
+    let service_idx = if show_location { 6 } else { 5 };
+    let app_idx = if show_location { 7 } else { 6 };
+    let bw_idx = if show_location { 8 } else { 7 };
+    let process_idx = if show_location { 9 } else { 8 };
 
     let header_cells = header_labels.iter().enumerate().map(|(idx, h)| {
         let is_active = (match idx {
-            0 => ui_state.sort_column == SortColumn::Protocol,
-            1 => ui_state.sort_column == SortColumn::LocalAddress,
-            2 => ui_state.sort_column == SortColumn::RemoteAddress,
-            i if show_location && i == 3 => ui_state.sort_column == SortColumn::Location,
+            0 => false, // Status dot column is not sortable
+            1 => ui_state.sort_column == SortColumn::Protocol,
+            2 => ui_state.sort_column == SortColumn::LocalAddress,
+            3 => ui_state.sort_column == SortColumn::RemoteAddress,
+            i if show_location && i == 4 => ui_state.sort_column == SortColumn::Location,
             i if i == state_idx => ui_state.sort_column == SortColumn::State,
             i if i == service_idx => ui_state.sort_column == SortColumn::Service,
             i if i == app_idx => ui_state.sort_column == SortColumn::Application,
@@ -1339,30 +1440,32 @@ fn draw_connections_list(
                 Some(dpi) => dpi.application.to_string(),
                 None => NONE_PLACEHOLDER.to_string(),
             };
+            let dpi_cell_color = conn
+                .dpi_info
+                .as_ref()
+                .map(|d| dpi_color(&d.application))
+                .unwrap_or_else(theme::field_application);
 
             // Compact bandwidth display to fit in 14 chars
             let incoming_rate = format_rate_compact(conn.current_incoming_rate_bps);
             let outgoing_rate = format_rate_compact(conn.current_outgoing_rate_bps);
-            let bandwidth_display = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
 
-            // Determine row color based on staleness
-            // - Normal (white/default): fresh connections (< 75% of timeout)
-            // - Yellow: approaching timeout (75-90% of timeout)
-            // - Red: very close to timeout (> 90% of timeout)
+            // Determine row-level style by staleness.
+            //   - Fresh: per-cell field colors, no row override.
+            //   - Historic: per-cell field colors preserved, row gets DIM
+            //     so the colors fade but stay distinguishable.
+            //   - Critical / Aging (≥90% / ≥75% TTL): per-cell colors are
+            //     suppressed and the whole row goes red / yellow so the
+            //     operational signal dominates.
             let staleness = conn.staleness_ratio();
-            let row_style = if conn.is_historic {
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM)
+            let (row_override, color_cells) = if conn.is_historic {
+                (Some(Style::default().add_modifier(Modifier::DIM)), true)
             } else if staleness >= 0.90 {
-                // Critical: > 90% of timeout - will be cleaned up very soon
-                theme::fg(theme::err())
+                (Some(theme::fg(theme::err())), false)
             } else if staleness >= 0.75 {
-                // Warning: 75-90% of timeout - approaching cleanup
-                theme::fg(theme::warn())
+                (Some(theme::fg(theme::warn())), false)
             } else {
-                // Normal: < 75% of timeout
-                Style::default()
+                (None, true)
             };
 
             // Format addresses - use hostnames when DNS resolution is enabled and show_hostnames is true
@@ -1392,11 +1495,31 @@ fn draw_connections_list(
                 conn.remote_addr.to_string()
             };
 
-            // Build cells dynamically based on whether location is shown
+            // When `color_cells` is true each cell carries its own field
+            // color (the row's DIM, if any, fades them uniformly); otherwise
+            // per-cell colors are skipped and the row override paints all
+            // cells in a single staleness color.
+            let style_if_colored = |c: Color| {
+                if color_cells {
+                    theme::fg(c)
+                } else {
+                    Style::default()
+                }
+            };
+
+            let bandwidth_cell = if color_cells {
+                Cell::from(bandwidth_line(incoming_rate, outgoing_rate))
+            } else {
+                Cell::from(
+                    Line::from(format!("{}↓/{}↑", incoming_rate, outgoing_rate)).right_aligned(),
+                )
+            };
+
             let mut cells = vec![
-                Cell::from(conn.protocol.to_string()),
-                Cell::from(local_addr_display),
-                Cell::from(remote_addr_display),
+                status_indicator_cell(conn),
+                Cell::from(conn.protocol.to_string()).style(style_if_colored(theme::muted())),
+                Cell::from(local_addr_display).style(style_if_colored(theme::field_local_addr())),
+                Cell::from(remote_addr_display).style(style_if_colored(theme::field_remote_addr())),
             ];
             if show_location {
                 let location_display = conn
@@ -1404,16 +1527,23 @@ fn draw_connections_list(
                     .as_ref()
                     .map(|g| g.country_display())
                     .unwrap_or("-");
-                cells.push(Cell::from(location_display));
+                cells.push(
+                    Cell::from(location_display).style(style_if_colored(theme::field_location())),
+                );
             }
             cells.extend([
-                Cell::from(conn.state()),
-                Cell::from(service_display),
-                Cell::from(dpi_display),
-                Cell::from(Line::from(bandwidth_display).right_aligned()),
-                Cell::from(process_display),
+                Cell::from(conn.state()).style(style_if_colored(state_color(conn))),
+                Cell::from(service_display).style(style_if_colored(theme::field_service())),
+                Cell::from(dpi_display).style(style_if_colored(dpi_cell_color)),
+                bandwidth_cell,
+                Cell::from(process_display).style(style_if_colored(theme::field_process())),
             ]);
-            Row::new(cells).style(row_style)
+
+            let row = Row::new(cells);
+            match row_override {
+                Some(style) => row.style(style),
+                None => row,
+            }
         })
         .collect();
 
@@ -1447,7 +1577,7 @@ fn draw_connections_list(
 
     let connections_table = Table::new(rows, &widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(table_title))
+        .block(panel_block(table_title))
         .row_highlight_style(theme::row_highlight())
         .highlight_symbol("> ");
 
@@ -1495,8 +1625,9 @@ fn draw_grouped_connections_list(
 
     // Build widths dynamically - Loc column only when GeoIP country DB available
     let mut widths = vec![
-        Constraint::Min(28),    // Process/Protocol (wider for tree structure)
-        Constraint::Length(17), // Local Address
+        Constraint::Length(1),                 // Status indicator dot
+        Constraint::Min(28),                   // Process/Protocol (wider for tree structure)
+        Constraint::Length(17),                // Local Address
         Constraint::Length(remote_addr_width), // Remote Address
     ];
     if show_location {
@@ -1511,8 +1642,10 @@ fn draw_grouped_connections_list(
 
     let header_style = theme::fg(theme::heading());
 
-    // Build header cells dynamically
+    // Build header cells dynamically. Leading empty cell is the status
+    // indicator column (●/○).
     let mut header_cells = vec![
+        Cell::from("").style(header_style),
         Cell::from("Process / Protocol").style(header_style),
         Cell::from("Local Address").style(header_style),
         Cell::from("Remote Address").style(header_style),
@@ -1570,16 +1703,32 @@ fn draw_grouped_connections_list(
                     ))
                 };
 
-                // Protocol breakdown
-                let proto_breakdown = format!("TCP:{} UDP:{}", stats.tcp_count, stats.udp_count);
+                // Protocol breakdown: TCP count green (matches Established
+                // TCP rows below), UDP count cyan; labels muted.
+                let proto_breakdown = Line::from(vec![
+                    Span::styled("TCP:", theme::fg(theme::muted())),
+                    Span::styled(
+                        stats.tcp_count.to_string(),
+                        theme::fg(theme::tcp_established()),
+                    ),
+                    Span::raw(" "),
+                    Span::styled("UDP:", theme::fg(theme::muted())),
+                    Span::styled(stats.udp_count.to_string(), theme::fg(theme::accent())),
+                ]);
 
-                // Bandwidth display
+                // Bandwidth display matches per-row split (rx green / tx blue).
                 let incoming_rate = format_rate_compact(stats.total_incoming_rate_bps);
                 let outgoing_rate = format_rate_compact(stats.total_outgoing_rate_bps);
-                let bandwidth = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
 
-                // Build cells dynamically
-                let mut cells = vec![Cell::from(process_cell), Cell::from(""), Cell::from("")];
+                // Build cells dynamically. Status column is left blank on
+                // group header rows; the per-connection child rows below
+                // carry the actual status dots.
+                let mut cells = vec![
+                    Cell::from(""),
+                    Cell::from(process_cell),
+                    Cell::from(""),
+                    Cell::from(""),
+                ];
                 if show_location {
                     cells.push(Cell::from("")); // Loc (empty for group header)
                 }
@@ -1587,7 +1736,7 @@ fn draw_grouped_connections_list(
                     Cell::from(proto_breakdown),
                     Cell::from(""),
                     Cell::from(""),
-                    Cell::from(bandwidth),
+                    Cell::from(bandwidth_line(incoming_rate, outgoing_rate)),
                 ]);
                 Row::new(cells)
             }
@@ -1601,8 +1750,6 @@ fn draw_grouped_connections_list(
                 } else {
                     "  ├── "
                 };
-
-                let protocol_cell = format!("{}{}", prefix, connection.protocol);
 
                 // Format addresses
                 let local_addr_display = connection.local_addr.to_string();
@@ -1647,6 +1794,11 @@ fn draw_grouped_connections_list(
                     Some(dpi) => dpi.application.to_string(),
                     None => NONE_PLACEHOLDER.to_string(),
                 };
+                let dpi_cell_color = connection
+                    .dpi_info
+                    .as_ref()
+                    .map(|d| dpi_color(&d.application))
+                    .unwrap_or_else(theme::field_application);
 
                 // GeoIP location display (2-char country code)
                 let location_display = connection
@@ -1658,38 +1810,77 @@ fn draw_grouped_connections_list(
                 // Bandwidth display
                 let incoming_rate = format_rate_compact(connection.current_incoming_rate_bps);
                 let outgoing_rate = format_rate_compact(connection.current_outgoing_rate_bps);
-                let bandwidth = format!("{}↓/{}↑", incoming_rate, outgoing_rate);
 
-                // Row color based on staleness
+                // Row staleness override; same model as the flat view.
+                // Historic rows keep their per-cell colors but get DIM so the
+                // hue fades while staying scannable; aging/critical override
+                // every cell with yellow/red.
                 let staleness = connection.staleness_ratio();
-                let row_style = if connection.is_historic {
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::DIM)
+                let (row_override, color_cells) = if connection.is_historic {
+                    (Some(Style::default().add_modifier(Modifier::DIM)), true)
                 } else if staleness >= 0.90 {
-                    theme::fg(theme::err())
+                    (Some(theme::fg(theme::err())), false)
                 } else if staleness >= 0.75 {
-                    theme::fg(theme::warn())
+                    (Some(theme::fg(theme::warn())), false)
                 } else {
-                    Style::default()
+                    (None, true)
+                };
+                let style_if_colored = |c: Color| {
+                    if color_cells {
+                        theme::fg(c)
+                    } else {
+                        Style::default()
+                    }
                 };
 
-                // Build cells dynamically
+                // Protocol cell: tree prefix muted, protocol name in process color.
+                let protocol_cell = if color_cells {
+                    Cell::from(Line::from(vec![
+                        Span::styled(prefix.to_string(), theme::fg(theme::muted())),
+                        Span::styled(
+                            connection.protocol.to_string(),
+                            theme::fg(theme::field_process()),
+                        ),
+                    ]))
+                } else {
+                    Cell::from(format!("{}{}", prefix, connection.protocol))
+                };
+
+                let bandwidth_cell = if color_cells {
+                    Cell::from(bandwidth_line(incoming_rate, outgoing_rate))
+                } else {
+                    Cell::from(
+                        Line::from(format!("{}↓/{}↑", incoming_rate, outgoing_rate))
+                            .right_aligned(),
+                    )
+                };
+
                 let mut cells = vec![
-                    Cell::from(protocol_cell),
-                    Cell::from(local_addr_display),
-                    Cell::from(remote_addr_display),
+                    status_indicator_cell(connection),
+                    protocol_cell,
+                    Cell::from(local_addr_display)
+                        .style(style_if_colored(theme::field_local_addr())),
+                    Cell::from(remote_addr_display)
+                        .style(style_if_colored(theme::field_remote_addr())),
                 ];
                 if show_location {
-                    cells.push(Cell::from(location_display));
+                    cells.push(
+                        Cell::from(location_display)
+                            .style(style_if_colored(theme::field_location())),
+                    );
                 }
                 cells.extend([
-                    Cell::from(state),
-                    Cell::from(service_display),
-                    Cell::from(dpi_display),
-                    Cell::from(Line::from(bandwidth).right_aligned()),
+                    Cell::from(state).style(style_if_colored(state_color(connection))),
+                    Cell::from(service_display).style(style_if_colored(theme::field_service())),
+                    Cell::from(dpi_display).style(style_if_colored(dpi_cell_color)),
+                    bandwidth_cell,
                 ]);
-                Row::new(cells).style(row_style)
+
+                let row = Row::new(cells);
+                match row_override {
+                    Some(style) => row.style(style),
+                    None => row,
+                }
             }
         })
         .collect();
@@ -1727,7 +1918,7 @@ fn draw_grouped_connections_list(
 
     let connections_table = Table::new(rows, &widths)
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(table_title))
+        .block(panel_block(table_title))
         .row_highlight_style(theme::row_highlight())
         .highlight_symbol("> ");
 
@@ -1775,12 +1966,9 @@ fn draw_stats_panel(
     area: Rect,
 ) -> Result<()> {
     // Outer frame for the right column so it visually balances the
-    // connections table on the left. Default plain border + default color
-    // matches the connections table and the Details panes for a consistent
-    // "linked rectangles" feel across tabs.
-    let panel = Block::default()
-        .borders(Borders::ALL)
-        .title(Span::styled(" System ", theme::fg(theme::heading())));
+    // connections table on the left. Uses the standard rounded panel chrome
+    // so every framed pane shares the same border treatment.
+    let panel = panel_block(Span::styled(" System ", theme::fg(theme::heading())));
     let inner_area = panel.inner(area);
     f.render_widget(panel, area);
 
@@ -2394,9 +2582,7 @@ fn draw_graph_tab(f: &mut Frame, app: &App, connections: &[Connection], area: Re
 
 /// Draw the full traffic chart with RX/TX lines
 fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Traffic Over Time (60s) ");
+    let block = panel_block(" Traffic Over Time (60s) ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2475,9 +2661,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
 
 /// Draw connections count sparkline
 fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Connections ");
+    let block = panel_block(" Connections ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2509,9 +2693,7 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
 
 /// Draw application protocol distribution
 fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Application Distribution ");
+    let block = panel_block(" Application Distribution ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2573,9 +2755,7 @@ fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) 
 fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
     use std::collections::HashMap;
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Top Processes ");
+    let block = panel_block(" Top Processes ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2636,9 +2816,7 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
 
 /// Draw the network health gauges with RTT and packet loss bars
 fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Network Health ");
+    let block = panel_block(" Network Health ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2752,9 +2930,7 @@ fn draw_tcp_counters(f: &mut Frame, app: &App, area: Rect) {
     let out_of_order = stats.total_tcp_out_of_order.load(Ordering::Relaxed);
     let fast_retransmits = stats.total_tcp_fast_retransmits.load(Ordering::Relaxed);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" TCP Counters ");
+    let block = panel_block(" TCP Counters ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2860,7 +3036,7 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
         .filter_map(|&name| state_counts.get(name).map(|&count| (name, count)))
         .collect();
 
-    let block = Block::default().borders(Borders::ALL).title(" TCP States ");
+    let block = panel_block(" TCP States ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3003,12 +3179,22 @@ fn push_detail_section<'a>(
     fields: &mut Vec<Option<(String, String)>>,
     title: impl Into<String>,
 ) {
+    push_detail_section_styled(lines, fields, title, theme::bold_fg(theme::heading()));
+}
+
+/// Variant of `push_detail_section` that lets the caller pick the heading
+/// style. Used by the Application section so its title takes the protocol's
+/// own color (HTTPS green, QUIC cyan, etc.) and visually links to the
+/// matching Application cell in the Overview table.
+fn push_detail_section_styled<'a>(
+    lines: &mut Vec<Line<'a>>,
+    fields: &mut Vec<Option<(String, String)>>,
+    title: impl Into<String>,
+    style: Style,
+) {
     lines.push(Line::from(""));
     fields.push(None);
-    lines.push(Line::from(Span::styled(
-        title.into(),
-        theme::bold_fg(theme::heading()),
-    )));
+    lines.push(Line::from(Span::styled(title.into(), style)));
     fields.push(None);
 }
 
@@ -3073,29 +3259,59 @@ fn draw_connection_details(
             label_style,
             theme::fg(theme::muted()),
         );
+    } else {
+        // Mirror the historic Status line for active connections so the
+        // user can see how recently traffic moved on this connection.
+        // Color follows the same staleness buckets as the Overview row /
+        // status dot so the cue is consistent across views.
+        let ago = conn.last_activity.elapsed().unwrap_or_default();
+        let active_display = if ago.as_secs() < 60 {
+            format!("Active (last seen {}s ago)", ago.as_secs())
+        } else {
+            format!("Active (last seen {}m ago)", ago.as_secs() / 60)
+        };
+        let staleness = conn.staleness_ratio();
+        let active_color = if staleness >= 0.90 {
+            theme::err()
+        } else if staleness >= 0.75 {
+            theme::warn()
+        } else {
+            theme::ok()
+        };
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Status",
+            active_display,
+            label_style,
+            theme::fg(active_color),
+        );
     }
-    push_detail_field(
+    push_detail_field_styled(
         &mut details_text,
         &mut detail_fields,
         "Local Address",
         conn.local_addr.to_string(),
         label_style,
+        theme::fg(theme::field_local_addr()),
     );
-    push_detail_field(
+    push_detail_field_styled(
         &mut details_text,
         &mut detail_fields,
         "Remote Address",
         conn.remote_addr.to_string(),
         label_style,
+        theme::fg(theme::field_remote_addr()),
     );
-    push_detail_field(
+    push_detail_field_styled(
         &mut details_text,
         &mut detail_fields,
         "State",
         conn.state().into_owned(),
         label_style,
+        theme::fg(state_color(conn)),
     );
-    push_detail_field(
+    push_detail_field_styled(
         &mut details_text,
         &mut detail_fields,
         "Process",
@@ -3103,6 +3319,7 @@ fn draw_connection_details(
             .clone()
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
         label_style,
+        theme::fg(theme::field_process()),
     );
     push_detail_field(
         &mut details_text,
@@ -3113,7 +3330,7 @@ fn draw_connection_details(
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
         label_style,
     );
-    push_detail_field(
+    push_detail_field_styled(
         &mut details_text,
         &mut detail_fields,
         "Service",
@@ -3121,6 +3338,7 @@ fn draw_connection_details(
             .clone()
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
         label_style,
+        theme::fg(theme::field_service()),
     );
 
     // Add reverse DNS hostnames if available (skip ARP to avoid feedback loop)
@@ -3130,19 +3348,21 @@ fn draw_connection_details(
 
         if local_hostname.is_some() || remote_hostname.is_some() {
             push_detail_section(&mut details_text, &mut detail_fields, "Hostnames");
-            push_detail_field(
+            push_detail_field_styled(
                 &mut details_text,
                 &mut detail_fields,
                 "Local Hostname",
                 local_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
                 label_style,
+                theme::fg(theme::field_local_addr()),
             );
-            push_detail_field(
+            push_detail_field_styled(
                 &mut details_text,
                 &mut detail_fields,
                 "Remote Hostname",
                 remote_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
                 label_style,
+                theme::fg(theme::field_remote_addr()),
             );
         }
     }
@@ -3151,6 +3371,7 @@ fn draw_connection_details(
     if let Some(ref geoip) = conn.geoip_info
         && (geoip.country_code.is_some() || geoip.asn.is_some() || geoip.city.is_some())
     {
+        let location_value_style = theme::fg(theme::field_location());
         push_detail_section(&mut details_text, &mut detail_fields, "Geolocation");
         if let Some(ref country_name) = geoip.country_name {
             let country_display = if let Some(ref cc) = geoip.country_code {
@@ -3158,29 +3379,32 @@ fn draw_connection_details(
             } else {
                 country_name.clone()
             };
-            push_detail_field(
+            push_detail_field_styled(
                 &mut details_text,
                 &mut detail_fields,
                 "Country",
                 country_display,
                 label_style,
+                location_value_style,
             );
         } else if let Some(ref cc) = geoip.country_code {
-            push_detail_field(
+            push_detail_field_styled(
                 &mut details_text,
                 &mut detail_fields,
                 "Country",
                 cc.clone(),
                 label_style,
+                location_value_style,
             );
         }
         if let Some(ref city) = geoip.city {
-            push_detail_field(
+            push_detail_field_styled(
                 &mut details_text,
                 &mut detail_fields,
                 "City",
                 city.clone(),
                 label_style,
+                location_value_style,
             );
         }
         if let Some(asn) = geoip.asn {
@@ -3189,12 +3413,13 @@ fn draw_connection_details(
             } else {
                 format!("AS{}", asn)
             };
-            push_detail_field(
+            push_detail_field_styled(
                 &mut details_text,
                 &mut detail_fields,
                 "ASN",
                 asn_display,
                 label_style,
+                location_value_style,
             );
         }
     }
@@ -3204,10 +3429,11 @@ fn draw_connection_details(
     // "Application: <proto>" field below.
     if let Some(dpi) = &conn.dpi_info {
         let dpi_start = details_text.len();
-        push_detail_section(
+        push_detail_section_styled(
             &mut details_text,
             &mut detail_fields,
             format!("Application: {}", dpi.application),
+            theme::bold_fg(dpi_color(&dpi.application)),
         );
 
         // Add protocol-specific details
@@ -3900,11 +4126,7 @@ fn draw_connection_details(
     };
 
     let left_para = Paragraph::new(details_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(Span::styled(detail_title.clone(), title_style)),
-        )
+        .block(panel_block(Span::styled(detail_title.clone(), title_style)))
         .style(Style::default())
         // trim:false preserves any leading whitespace in labels rather than
         // collapsing it, which keeps the fixed-width label padding intact.
@@ -3921,7 +4143,7 @@ fn draw_connection_details(
             " Protocol & Metrics (click to copy) "
         };
         let right_para = Paragraph::new(right_text)
-            .block(Block::default().borders(Borders::ALL).title(right_title))
+            .block(panel_block(right_title))
             .style(Style::default())
             .wrap(Wrap { trim: false });
         f.render_widget(right_para, info_chunks[1]);
@@ -3932,55 +4154,59 @@ fn draw_connection_details(
     let mut traffic_text: Vec<Line> = Vec::new();
     let mut traffic_fields: Vec<Option<(String, String)>> = Vec::new();
 
-    push_detail_field(
+    let rx_value_style = theme::fg(theme::rx());
+    let tx_value_style = theme::fg(theme::tx());
+    push_detail_field_styled(
         &mut traffic_text,
         &mut traffic_fields,
         "Bytes Sent",
         format_bytes(conn.bytes_sent),
         label_style,
+        tx_value_style,
     );
-    push_detail_field(
+    push_detail_field_styled(
         &mut traffic_text,
         &mut traffic_fields,
         "Bytes Received",
         format_bytes(conn.bytes_received),
         label_style,
+        rx_value_style,
     );
-    push_detail_field(
+    push_detail_field_styled(
         &mut traffic_text,
         &mut traffic_fields,
         "Packets Sent",
         conn.packets_sent.to_string(),
         label_style,
+        tx_value_style,
     );
-    push_detail_field(
+    push_detail_field_styled(
         &mut traffic_text,
         &mut traffic_fields,
         "Packets Received",
         conn.packets_received.to_string(),
         label_style,
+        rx_value_style,
     );
-    push_detail_field(
+    push_detail_field_styled(
         &mut traffic_text,
         &mut traffic_fields,
         "Current Rate (In)",
         format_rate(conn.current_incoming_rate_bps),
         label_style,
+        rx_value_style,
     );
-    push_detail_field(
+    push_detail_field_styled(
         &mut traffic_text,
         &mut traffic_fields,
         "Current Rate (Out)",
         format_rate(conn.current_outgoing_rate_bps),
         label_style,
+        tx_value_style,
     );
 
     let traffic = Paragraph::new(traffic_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Traffic Statistics (click to copy)"),
-        )
+        .block(panel_block("Traffic Statistics (click to copy)"))
         .style(Style::default())
         .wrap(Wrap { trim: false });
 
@@ -4193,7 +4419,7 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
     ];
 
     let help = Paragraph::new(help_text)
-        .block(Block::default().borders(Borders::ALL).title("Help"))
+        .block(panel_block("Help"))
         .style(Style::default())
         .wrap(Wrap { trim: true })
         .alignment(ratatui::layout::Alignment::Left);
@@ -4307,11 +4533,7 @@ fn draw_interface_stats(f: &mut Frame, app: &crate::app::App, area: Rect) -> Res
         ])
         .style(theme::fg(theme::heading()))
     })
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Interface Statistics (Press 'i' to toggle) "),
-    )
+    .block(panel_block(" Interface Statistics (Press 'i' to toggle) "))
     .style(Style::default());
 
     f.render_widget(table, area);
@@ -4345,7 +4567,7 @@ fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
     };
 
     let filter_input = Paragraph::new(input_text)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(panel_block(title))
         .style(style)
         .wrap(Wrap { trim: false });
 
@@ -4439,11 +4661,7 @@ fn draw_loading_screen(f: &mut Frame) {
 
     let loading_paragraph = Paragraph::new(loading_text)
         .alignment(ratatui::layout::Alignment::Center)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("RustNet Monitor"),
-        );
+        .block(panel_block("RustNet Monitor"));
 
     f.render_widget(loading_paragraph, chunks[1]);
 }
