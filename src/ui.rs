@@ -3259,6 +3259,33 @@ fn draw_connection_details(
             label_style,
             theme::fg(theme::muted()),
         );
+    } else {
+        // Mirror the historic Status line for active connections so the
+        // user can see how recently traffic moved on this connection.
+        // Color follows the same staleness buckets as the Overview row /
+        // status dot so the cue is consistent across views.
+        let ago = conn.last_activity.elapsed().unwrap_or_default();
+        let active_display = if ago.as_secs() < 60 {
+            format!("Active (last seen {}s ago)", ago.as_secs())
+        } else {
+            format!("Active (last seen {}m ago)", ago.as_secs() / 60)
+        };
+        let staleness = conn.staleness_ratio();
+        let active_color = if staleness >= 0.90 {
+            theme::err()
+        } else if staleness >= 0.75 {
+            theme::warn()
+        } else {
+            theme::ok()
+        };
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Status",
+            active_display,
+            label_style,
+            theme::fg(active_color),
+        );
     }
     push_detail_field_styled(
         &mut details_text,
