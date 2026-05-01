@@ -674,7 +674,16 @@ fn try_decrypt_initial_with_secret(packet: &[u8], secret: &[u8], version: u32) -
 
     // Parse token length (for Initial packets)
     let (token_len, bytes_read) = parse_variable_length_int(&packet[offset..])?;
-    offset += bytes_read + token_len as usize;
+    // QUIC variable-length ints go up to 2^62 — guard against overflow on
+    // 32-bit targets and against crafted token lengths that exceed the packet.
+    let token_len_usize = usize::try_from(token_len).ok()?;
+    offset = offset
+        .checked_add(bytes_read)?
+        .checked_add(token_len_usize)?;
+    if offset > packet.len() {
+        debug!("QUIC: token_len pushed offset past end of packet");
+        return None;
+    }
 
     // Parse packet length
     let (packet_payload_length, bytes_read) = parse_variable_length_int(&packet[offset..])?;
@@ -2457,6 +2466,26 @@ mod tests {
         // With allow_partial=true, returns partial SNI
         let result = parse_sni_extension(&data, true);
         assert_eq!(result, Some("example.co[PARTIAL]".to_string()));
+    }
+
+    #[test]
+    fn test_initial_packet_oversized_token_len_does_not_panic() {
+        // Crafted Initial packet whose declared token length pushes the parse
+        // offset past the end of the packet. Pre-fix this panicked when
+        // slicing &packet[offset..] in try_decrypt_initial_with_secret.
+        let mut packet = Vec::new();
+        packet.push(0xC0); // long header, type=Initial
+        packet.extend_from_slice(&1u32.to_be_bytes()); // version 1
+        packet.push(0); // DCID len = 0
+        packet.push(0); // SCID len = 0
+        // Token length: 2-byte QUIC varint encoding 1000 (top 2 bits = 01).
+        let token_varint: u16 = 1000 | 0x4000;
+        packet.extend_from_slice(&token_varint.to_be_bytes());
+        // Intentionally no token bytes follow — declared length far exceeds packet.
+
+        let secret = [0u8; 32];
+        let result = try_decrypt_initial_with_secret(&packet, &secret, 1);
+        assert!(result.is_none());
     }
 
     #[test]
