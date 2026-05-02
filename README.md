@@ -97,6 +97,19 @@ Stats are collected every 2 seconds in a background thread with minimal performa
 
 </details>
 
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><strong>Overview</strong><br>Connections table with live stats and sparklines<br><img src="./assets/screenshots/overview.png" width="400"></td>
+    <td align="center"><strong>Details</strong><br>Per-connection SNI, cipher, GeoIP, DPI<br><img src="./assets/screenshots/details.png" width="400"></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>Graph</strong><br>Traffic chart, app distribution, top processes<br><img src="./assets/screenshots/graph.png" width="400"></td>
+    <td align="center"><strong>Interfaces</strong><br>Per-interface RX/TX history with errors and drops<br><img src="./assets/screenshots/interfaces.png" width="400"></td>
+  </tr>
+</table>
+
 ## Quick Start
 
 ### Installation
