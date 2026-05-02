@@ -85,15 +85,15 @@ pub fn build_cli() -> Command {
                 .required(false),
         )
         .arg(
-            Arg::new("resolve-dns")
-                .long("resolve-dns")
-                .help("Enable reverse DNS resolution for IP addresses (shows hostnames instead of IPs)")
+            Arg::new("no-resolve-dns")
+                .long("no-resolve-dns")
+                .help("Disable reverse DNS resolution for IP addresses (enabled by default; shows hostnames instead of IPs)")
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
             Arg::new("show-ptr-lookups")
                 .long("show-ptr-lookups")
-                .help("Show PTR lookup connections in UI (hidden by default when --resolve-dns is enabled)")
+                .help("Show PTR lookup connections in UI (hidden by default when DNS resolution is enabled)")
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
