@@ -1972,6 +1972,197 @@ fn draw_stats_panel(
     let inner_area = panel.inner(area);
     f.render_widget(panel, area);
 
+    // Build the security/sandbox text up front so the chunk height can match
+    // its content. Otherwise long feature lists get clipped on narrow columns.
+    #[cfg(target_os = "linux")]
+    let security_text: Vec<Line> = {
+        let sandbox_info = app.get_sandbox_info();
+        let status_style = match sandbox_info.status.as_str() {
+            "Fully enforced" => theme::fg(theme::ok()),
+            "Partially enforced" => theme::fg(theme::warn()),
+            "Not applied" | "Error" => theme::fg(theme::err()),
+            _ => Style::default(),
+        };
+
+        let mut features: Vec<&'static str> = Vec::new();
+        if sandbox_info.cap_dropped {
+            features.push("CAP_NET_RAW dropped");
+        }
+        if sandbox_info.ebpf_caps_dropped {
+            features.push("eBPF caps dropped");
+        }
+        if sandbox_info.fs_restricted {
+            features.push("FS restricted");
+        }
+        if sandbox_info.net_restricted {
+            features.push("Net blocked");
+        }
+
+        let available_indicator = if sandbox_info.landlock_available {
+            Span::styled(" [kernel supported]", theme::fg(theme::muted()))
+        } else {
+            Span::styled(" [kernel unsupported]", theme::fg(theme::muted()))
+        };
+
+        let uid = crate::network::privileges::effective_uid();
+        let (priv_label, priv_style) = if uid == 0 {
+            (
+                "Process: running as root".to_string(),
+                theme::fg(theme::warn()),
+            )
+        } else {
+            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
+        };
+
+        let mut lines = vec![Line::from(vec![
+            Span::raw("Sandbox: "),
+            Span::styled(sandbox_info.status.clone(), status_style),
+            available_indicator,
+        ])];
+        if features.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No restrictions active",
+                theme::fg(theme::warn()),
+            )));
+        } else {
+            for f in &features {
+                lines.push(Line::from(Span::styled(
+                    format!("• {f}"),
+                    theme::fg(theme::muted()),
+                )));
+            }
+        }
+        lines.push(Line::from(Span::styled(priv_label, priv_style)));
+        lines
+    };
+
+    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+    let security_text: Vec<Line> = {
+        let sandbox_info = app.get_sandbox_info();
+        let is_enforced = sandbox_info.status.as_str() == "Fully enforced";
+        let status_style = if is_enforced {
+            theme::fg(theme::ok())
+        } else {
+            theme::fg(theme::err())
+        };
+
+        let mut features: Vec<&'static str> = Vec::new();
+        if sandbox_info.seatbelt_applied {
+            features.push("Seatbelt applied");
+        }
+        if sandbox_info.fs_restricted {
+            features.push("FS restricted");
+        }
+        if sandbox_info.net_restricted {
+            features.push("Net blocked");
+        }
+
+        let uid = crate::network::privileges::effective_uid();
+        let (priv_label, priv_style) = if uid == 0 {
+            (
+                "Process: running as root".to_string(),
+                theme::fg(theme::warn()),
+            )
+        } else {
+            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
+        };
+
+        let mut lines = vec![Line::from(vec![
+            Span::raw("Seatbelt: "),
+            Span::styled(sandbox_info.status.clone(), status_style),
+        ])];
+        if features.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No restrictions active",
+                theme::fg(theme::warn()),
+            )));
+        } else {
+            for f in &features {
+                lines.push(Line::from(Span::styled(
+                    format!("• {f}"),
+                    theme::fg(theme::muted()),
+                )));
+            }
+        }
+        lines.push(Line::from(Span::styled(priv_label, priv_style)));
+        lines
+    };
+
+    #[cfg(all(
+        unix,
+        not(target_os = "linux"),
+        not(all(target_os = "macos", feature = "macos-sandbox"))
+    ))]
+    let security_text: Vec<Line> = {
+        let uid = crate::network::privileges::effective_uid();
+        if uid == 0 {
+            vec![Line::from(Span::styled(
+                "Running as root (UID 0)",
+                theme::fg(theme::warn()),
+            ))]
+        } else {
+            vec![Line::from(Span::styled(
+                format!("Running as UID {uid}"),
+                theme::fg(theme::ok()),
+            ))]
+        }
+    };
+
+    #[cfg(target_os = "windows")]
+    let security_text: Vec<Line> = {
+        let sandbox_info = app.get_sandbox_info();
+        let status_style = match sandbox_info.status.as_str() {
+            "Fully enforced" => theme::fg(theme::ok()),
+            "Partially enforced" => theme::fg(theme::warn()),
+            "Not applied" | "Error" => theme::fg(theme::err()),
+            _ => Style::default(),
+        };
+
+        let mut features: Vec<String> = Vec::new();
+        if sandbox_info.privileges_removed {
+            features.push(format!(
+                "{} privilege(s) removed",
+                sandbox_info.privileges_removed_count
+            ));
+        }
+        if sandbox_info.job_object_applied {
+            features.push("No child processes".to_string());
+        }
+
+        let is_elevated = crate::is_admin();
+        let (priv_label, priv_style) = if is_elevated {
+            (
+                "Process: running as Administrator".to_string(),
+                theme::fg(theme::warn()),
+            )
+        } else {
+            ("Process: standard user".to_string(), theme::fg(theme::ok()))
+        };
+
+        let mut lines = vec![Line::from(vec![
+            Span::raw("Sandbox: "),
+            Span::styled(sandbox_info.status.clone(), status_style),
+        ])];
+        if features.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "No restrictions active",
+                theme::fg(theme::warn()),
+            )));
+        } else {
+            for f in &features {
+                lines.push(Line::from(Span::styled(
+                    format!("• {f}"),
+                    theme::fg(theme::muted()),
+                )));
+            }
+        }
+        lines.push(Line::from(Span::styled(priv_label, priv_style)));
+        lines
+    };
+
+    // 1 line for the "Security" heading + one line per content line.
+    let security_height = 1u16 + security_text.len() as u16;
+
     // Inside the frame, sections are separated by a 1-row gap (no inner
     // borders) so the right column reads as one cohesive panel with
     // headings rather than a stack of nested boxes.
@@ -1982,8 +2173,8 @@ fn draw_stats_panel(
             Constraint::Length(1),  // gap
             Constraint::Length(5),  // Network Stats (1 heading + 4 content)
             Constraint::Length(1),  // gap
-            Constraint::Length(4),  // Security (1 heading + 3 content)
-            Constraint::Length(1),  // gap
+            Constraint::Length(security_height), // Security (heading + content)
+            Constraint::Length(1),               // gap
             Constraint::Min(0),     // Traffic + interface details
         ])
         .split(inner_area);
@@ -2146,199 +2337,6 @@ fn draw_stats_panel(
     let network_stats = Paragraph::new(network_stats_text).style(Style::default());
     f.render_widget(network_stats, chunks[2]);
     render_section_separator(f, chunks[3]);
-
-    // Security statistics (sandbox) - Linux shows Landlock + capabilities info
-    #[cfg(target_os = "linux")]
-    let security_text: Vec<Line> = {
-        let sandbox_info = app.get_sandbox_info();
-        let status_style = match sandbox_info.status.as_str() {
-            "Fully enforced" => theme::fg(theme::ok()),
-            "Partially enforced" => theme::fg(theme::warn()),
-            "Not applied" | "Error" => theme::fg(theme::err()),
-            _ => Style::default(),
-        };
-
-        let mut features = Vec::new();
-        if sandbox_info.cap_dropped {
-            features.push("CAP_NET_RAW dropped");
-        }
-        if sandbox_info.ebpf_caps_dropped {
-            features.push("eBPF caps dropped");
-        }
-        if sandbox_info.fs_restricted {
-            features.push("FS restricted");
-        }
-        if sandbox_info.net_restricted {
-            features.push("Net blocked");
-        }
-        let features_style = if features.is_empty() {
-            theme::fg(theme::warn())
-        } else {
-            theme::fg(theme::muted())
-        };
-
-        let available_indicator = if sandbox_info.landlock_available {
-            Span::styled(" [kernel supported]", theme::fg(theme::muted()))
-        } else {
-            Span::styled(" [kernel unsupported]", theme::fg(theme::muted()))
-        };
-
-        let uid = crate::network::privileges::effective_uid();
-        let (priv_label, priv_style) = if uid == 0 {
-            (
-                "Process: running as root".to_string(),
-                theme::fg(theme::warn()),
-            )
-        } else {
-            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
-        };
-
-        vec![
-            Line::from(vec![
-                Span::raw("Sandbox: "),
-                Span::styled(sandbox_info.status.clone(), status_style),
-                available_indicator,
-            ]),
-            Line::from(Span::styled(
-                if features.is_empty() {
-                    "No restrictions active".to_string()
-                } else {
-                    features.join(", ")
-                },
-                features_style,
-            )),
-            Line::from(Span::styled(priv_label, priv_style)),
-        ]
-    };
-
-    // macOS with Seatbelt sandbox: show sandbox status
-    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
-    let security_text: Vec<Line> = {
-        let sandbox_info = app.get_sandbox_info();
-        let is_enforced = sandbox_info.status.as_str() == "Fully enforced";
-        let status_style = if is_enforced {
-            theme::fg(theme::ok())
-        } else {
-            theme::fg(theme::err())
-        };
-
-        let mut features = Vec::new();
-        if sandbox_info.seatbelt_applied {
-            features.push("Seatbelt applied");
-        }
-        if sandbox_info.fs_restricted {
-            features.push("FS restricted");
-        }
-        if sandbox_info.net_restricted {
-            features.push("Net blocked");
-        }
-
-        let features_style = if features.is_empty() {
-            theme::fg(theme::warn())
-        } else {
-            theme::fg(theme::muted())
-        };
-
-        let uid = crate::network::privileges::effective_uid();
-        let (priv_label, priv_style) = if uid == 0 {
-            (
-                "Process: running as root".to_string(),
-                theme::fg(theme::warn()),
-            )
-        } else {
-            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
-        };
-
-        vec![
-            Line::from(vec![
-                Span::raw("Seatbelt: "),
-                Span::styled(sandbox_info.status.clone(), status_style),
-            ]),
-            Line::from(Span::styled(
-                if features.is_empty() {
-                    "No restrictions active".to_string()
-                } else {
-                    features.join(", ")
-                },
-                features_style,
-            )),
-            Line::from(Span::styled(priv_label, priv_style)),
-        ]
-    };
-
-    // Other unix platforms (FreeBSD, macOS without macos-sandbox feature, etc.):
-    // show privilege info only
-    #[cfg(all(
-        unix,
-        not(target_os = "linux"),
-        not(all(target_os = "macos", feature = "macos-sandbox"))
-    ))]
-    let security_text: Vec<Line> = {
-        let uid = crate::network::privileges::effective_uid();
-        if uid == 0 {
-            vec![Line::from(Span::styled(
-                "Running as root (UID 0)",
-                theme::fg(theme::warn()),
-            ))]
-        } else {
-            vec![Line::from(Span::styled(
-                format!("Running as UID {uid}"),
-                theme::fg(theme::ok()),
-            ))]
-        }
-    };
-
-    #[cfg(target_os = "windows")]
-    let security_text: Vec<Line> = {
-        let sandbox_info = app.get_sandbox_info();
-        let status_style = match sandbox_info.status.as_str() {
-            "Fully enforced" => theme::fg(theme::ok()),
-            "Partially enforced" => theme::fg(theme::warn()),
-            "Not applied" | "Error" => theme::fg(theme::err()),
-            _ => Style::default(),
-        };
-
-        let mut features = Vec::new();
-        if sandbox_info.privileges_removed {
-            features.push(format!(
-                "{} privilege(s) removed",
-                sandbox_info.privileges_removed_count
-            ));
-        }
-        if sandbox_info.job_object_applied {
-            features.push("No child processes".to_string());
-        }
-
-        let is_elevated = crate::is_admin();
-        let (priv_label, priv_style) = if is_elevated {
-            (
-                "Process: running as Administrator".to_string(),
-                theme::fg(theme::warn()),
-            )
-        } else {
-            ("Process: standard user".to_string(), theme::fg(theme::ok()))
-        };
-
-        vec![
-            Line::from(vec![
-                Span::raw("Sandbox: "),
-                Span::styled(sandbox_info.status.clone(), status_style),
-            ]),
-            Line::from(Span::styled(
-                if features.is_empty() {
-                    "No restrictions active".to_string()
-                } else {
-                    features.join(", ")
-                },
-                if features.is_empty() {
-                    theme::fg(theme::warn())
-                } else {
-                    theme::fg(theme::muted())
-                },
-            )),
-            Line::from(Span::styled(priv_label, priv_style)),
-        ]
-    };
 
     let mut security_lines: Vec<Line> = vec![Line::from(Span::styled(
         "Security",
