@@ -188,6 +188,27 @@ impl From<ConnInfo> for ProcessInfo {
     }
 }
 
+/// TCP socket statistics from `bpf_iter/tcp` — mirrors `struct tcp_stats` in the BPF C program.
+/// Layout must stay byte-for-byte identical to the C struct (both are packed).
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct TcpStats {
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub saddr: [u32; 4],
+    pub daddr: [u32; 4],
+    pub rtt_us: u32,
+    pub rtt_var_us: u32,
+    pub snd_cwnd: u32,
+    pub snd_ssthresh: u32,
+    pub total_retrans: u32,
+    pub sport: u16,
+    pub dport: u16,
+    pub family: u8,
+    pub state: u8,
+    pub _pad: [u8; 2],
+}
+
 pub struct MapReader;
 
 impl MapReader {

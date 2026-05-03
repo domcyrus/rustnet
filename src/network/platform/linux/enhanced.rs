@@ -1,6 +1,6 @@
 //! Enhanced Linux process lookup combining eBPF and procfs approaches
 
-use crate::network::platform::{ConnectionKey, DegradationReason, ProcessLookup};
+use crate::network::platform::{ConnectionKey, DegradationReason, ProcessLookup, TcpSocketStats};
 
 use super::process::LinuxProcessLookup;
 use crate::network::types::{Connection, Protocol};
@@ -414,6 +414,72 @@ mod ebpf_enhanced {
 
         fn get_degradation_reason(&self) -> DegradationReason {
             self.degradation_reason.clone()
+        }
+
+        #[cfg(feature = "ebpf")]
+        fn collect_tcp_stats(&self) -> Vec<TcpSocketStats> {
+            use std::net::{Ipv4Addr, Ipv6Addr};
+
+            let guard = match self.ebpf_tracker.read() {
+                Ok(g) => g,
+                Err(_) => return Vec::new(),
+            };
+            let tracker = match guard.as_ref() {
+                Some(t) => t,
+                None => return Vec::new(),
+            };
+            tracker
+                .scan_tcp_stats()
+                .into_iter()
+                .map(|s| {
+                    // Copy all packed fields to locals before use
+                    let family = s.family;
+                    let saddr = s.saddr;
+                    let daddr = s.daddr;
+                    let sport = s.sport;
+                    let dport = s.dport;
+                    let rtt_us = s.rtt_us;
+                    let snd_cwnd = s.snd_cwnd;
+                    let total_retrans = s.total_retrans;
+                    let bytes_sent = s.bytes_sent;
+                    let bytes_received = s.bytes_received;
+
+                    // AF_INET = 2, AF_INET6 = 10
+                    //
+                    // The BPF iter reads skc_rcv_saddr/__be32 (network byte order) directly
+                    // into saddr[0]. On x86 (little-endian) this u32 has its bytes reversed
+                    // relative to what Ipv4Addr::from(u32) expects. Using to_ne_bytes()
+                    // recovers the original network-order bytes, which Ipv4Addr::from([u8;4])
+                    // interprets correctly.
+                    let (src_addr, dst_addr) = if family == 2 {
+                        let src = Ipv4Addr::from(saddr[0].to_ne_bytes());
+                        let dst = Ipv4Addr::from(daddr[0].to_ne_bytes());
+                        (IpAddr::V4(src), IpAddr::V4(dst))
+                    } else {
+                        // IPv6: four u32 words, each with the same byte-reversal issue
+                        let to_v6 = |w: [u32; 4]| {
+                            let mut b = [0u8; 16];
+                            for (i, chunk) in b.chunks_exact_mut(4).enumerate() {
+                                chunk.copy_from_slice(&w[i].to_ne_bytes());
+                            }
+                            Ipv6Addr::from(b)
+                        };
+                        (IpAddr::V6(to_v6(saddr)), IpAddr::V6(to_v6(daddr)))
+                    };
+
+                    TcpSocketStats {
+                        src_addr,
+                        dst_addr,
+                        sport,
+                        dport,
+                        rtt_us,
+                        snd_cwnd,
+                        total_retrans,
+                        bytes_sent,
+                        bytes_received,
+                    }
+                })
+                .collect()
         }
     }
 

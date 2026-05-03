@@ -119,6 +119,24 @@ pub use windows::sandbox;
 #[cfg(target_os = "windows")]
 pub use windows::{WindowsStatsProvider, create_process_lookup};
 
+/// TCP socket statistics collected from the kernel via eBPF iter/tcp.
+/// On non-eBPF platforms, `collect_tcp_stats()` returns an empty Vec.
+#[derive(Debug, Clone)]
+pub struct TcpSocketStats {
+    pub src_addr: IpAddr,
+    pub dst_addr: IpAddr,
+    pub sport: u16,
+    pub dport: u16,
+    /// Smoothed RTT in microseconds
+    pub rtt_us: u32,
+    /// Congestion window (segments)
+    pub snd_cwnd: u32,
+    /// Total retransmissions
+    pub total_retrans: u32,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+}
+
 /// Trait for platform-specific process lookup
 pub trait ProcessLookup: Send + Sync {
     /// Look up process information for a connection
@@ -137,6 +155,12 @@ pub trait ProcessLookup: Send + Sync {
     /// Returns DegradationReason::None if using optimal detection method
     fn get_degradation_reason(&self) -> DegradationReason {
         DegradationReason::None // Default: no degradation
+    }
+
+    /// Scan kernel TCP sockets and return per-socket stats (RTT, cwnd, retrans, bytes).
+    /// Only populated on Linux with the eBPF feature; all other platforms return empty.
+    fn collect_tcp_stats(&self) -> Vec<TcpSocketStats> {
+        Vec::new()
     }
 
     /// Fallback lookup that relaxes the connection key to handle sockets stored with
