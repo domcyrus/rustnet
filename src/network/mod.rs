@@ -7,6 +7,7 @@
 
 pub mod capture;
 pub mod dns;
+pub mod dns_attribution;
 pub mod dpi;
 pub mod geoip;
 pub mod interface_stats;

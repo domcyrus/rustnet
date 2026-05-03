@@ -22,7 +22,8 @@ use ratatui::{
 use crate::app::{App, AppStats};
 use crate::network::dns::DnsResolver;
 use crate::network::types::{
-    AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory,
+    AppProtocolDistribution, ApplicationProtocol, Connection, Protocol, ProtocolState, TcpState,
+    TrafficHistory,
 };
 
 pub type Terminal<B> = RatatuiTerminal<B>;
@@ -165,6 +166,13 @@ mod theme {
     }
     pub fn field_application() -> Color {
         warn()
+    }
+    /// Color for hostnames *inferred* from a recently observed DNS
+    /// resolution (i.e. shown with a `~` prefix). Dimmer than
+    /// `field_remote_addr` so the inference is visually distinct from
+    /// authoritative SNI / Host data.
+    pub fn field_attributed_hostname() -> Color {
+        muted()
     }
 
     // --- Panel border ---
@@ -1468,31 +1476,62 @@ fn draw_connections_list(
                 (None, true)
             };
 
-            // Format addresses - use hostnames when DNS resolution is enabled and show_hostnames is true
+            // Format addresses - hostname priority is:
+            //   1. SNI extracted from this connection (HTTPS / QUIC)
+            //   2. HTTP Host: header
+            //   3. attributed_hostname (inferred from a recent DNS
+            //      observation; rendered with a leading `~` and dimmed)
+            //   4. Reverse DNS (system resolver, when enabled)
+            //   5. Raw IP
             let local_addr_display = conn.local_addr.to_string();
-            let remote_addr_display = if ui_state.show_hostnames && conn.protocol != Protocol::Arp {
-                if let Some(resolver) = dns_resolver {
-                    if let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip()) {
-                        // Truncate hostname if too long, but always show port
-                        let port = conn.remote_addr.port();
-                        let max_hostname_len = (remote_addr_width as usize).saturating_sub(7); // Leave room for :port
-                        if hostname.len() > max_hostname_len {
-                            format!(
-                                "{}...:{}",
-                                &hostname[..max_hostname_len.saturating_sub(3)],
-                                port
-                            )
-                        } else {
-                            format!("{}:{}", hostname, port)
-                        }
-                    } else {
-                        conn.remote_addr.to_string()
-                    }
-                } else {
-                    conn.remote_addr.to_string()
-                }
+            let (remote_addr_display, remote_is_attributed) = if conn.protocol == Protocol::Arp {
+                (conn.remote_addr.to_string(), false)
             } else {
-                conn.remote_addr.to_string()
+                let port = conn.remote_addr.port();
+                let max_hostname_len = (remote_addr_width as usize).saturating_sub(7);
+                let truncate = |name: &str, prefix: &str| -> String {
+                    let budget = max_hostname_len.saturating_sub(prefix.len());
+                    if name.len() > budget {
+                        format!(
+                            "{}{}...:{}",
+                            prefix,
+                            &name[..budget.saturating_sub(3)],
+                            port
+                        )
+                    } else {
+                        format!("{}{}:{}", prefix, name, port)
+                    }
+                };
+
+                let extracted_name = conn.dpi_info.as_ref().and_then(|d| match &d.application {
+                    ApplicationProtocol::Https(h) => h
+                        .tls_info
+                        .as_ref()
+                        .and_then(|t| t.sni.as_ref())
+                        .filter(|s| !s.contains("[PARTIAL]"))
+                        .cloned(),
+                    ApplicationProtocol::Quic(q) => q
+                        .tls_info
+                        .as_ref()
+                        .and_then(|t| t.sni.as_ref())
+                        .filter(|s| !s.contains("[PARTIAL]"))
+                        .cloned(),
+                    ApplicationProtocol::Http(h) => h.host.clone(),
+                    _ => None,
+                });
+
+                if let Some(name) = extracted_name {
+                    (truncate(&name, ""), false)
+                } else if let Some(att) = &conn.attributed_hostname {
+                    (truncate(&att.name, "~"), true)
+                } else if ui_state.show_hostnames
+                    && let Some(resolver) = dns_resolver
+                    && let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip())
+                {
+                    (truncate(&hostname, ""), false)
+                } else {
+                    (conn.remote_addr.to_string(), false)
+                }
             };
 
             // When `color_cells` is true each cell carries its own field
@@ -1519,7 +1558,11 @@ fn draw_connections_list(
                 status_indicator_cell(conn),
                 Cell::from(conn.protocol.to_string()).style(style_if_colored(theme::muted())),
                 Cell::from(local_addr_display).style(style_if_colored(theme::field_local_addr())),
-                Cell::from(remote_addr_display).style(style_if_colored(theme::field_remote_addr())),
+                Cell::from(remote_addr_display).style(style_if_colored(if remote_is_attributed {
+                    theme::field_attributed_hostname()
+                } else {
+                    theme::field_remote_addr()
+                })),
             ];
             if show_location {
                 let location_display = conn
@@ -3367,6 +3410,54 @@ fn draw_connection_details(
         }
     }
 
+    // Hostname inferred from a recent DNS observation (separate from
+    // SNI / Host / reverse DNS so users can see the provenance).
+    if let Some(att) = &conn.attributed_hostname {
+        push_detail_section(&mut details_text, &mut detail_fields, "Attributed Hostname");
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Name",
+            att.name.clone(),
+            label_style,
+            theme::fg(theme::field_attributed_hostname()),
+        );
+        let source_label = match att.source {
+            crate::network::types::AttributionSource::CapturedDns => "Captured DNS",
+        };
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Source",
+            source_label.to_string(),
+            label_style,
+            theme::fg(theme::field_attributed_hostname()),
+        );
+        let age_str = att
+            .observed_at
+            .elapsed()
+            .ok()
+            .map(|d| {
+                let s = d.as_secs();
+                if s < 60 {
+                    format!("{}s ago", s)
+                } else if s < 3600 {
+                    format!("{}m ago", s / 60)
+                } else {
+                    format!("{}h ago", s / 3600)
+                }
+            })
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Observed",
+            age_str,
+            label_style,
+            theme::fg(theme::field_attributed_hostname()),
+        );
+    }
+
     // Add GeoIP information if available
     if let Some(ref geoip) = conn.geoip_info
         && (geoip.country_code.is_some() || geoip.asn.is_some() || geoip.city.is_some())
@@ -4382,6 +4473,24 @@ fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::styled("  Red ", theme::fg(theme::err())),
             Span::raw("Critical - will be removed soon (> 90% of timeout)"),
         ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Hostname Display:",
+            theme::bold_fg(theme::accent()),
+        )]),
+        Line::from(vec![Span::raw(
+            "  Names come from (in order): TLS SNI, HTTP Host header, ",
+        )]),
+        Line::from(vec![Span::raw(
+            "  recently observed DNS resolution, or reverse DNS.",
+        )]),
+        Line::from(vec![
+            Span::styled("  ~name ", theme::fg(theme::field_attributed_hostname())),
+            Span::raw("means the hostname was inferred from a DNS response,"),
+        ]),
+        Line::from(vec![Span::raw(
+            "  not extracted from this connection itself.",
+        )]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Filter Examples:",
