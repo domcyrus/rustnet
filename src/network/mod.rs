@@ -5,6 +5,7 @@
 //! platform-specific process attribution (procfs / eBPF on Linux, native
 //! APIs on macOS, Windows, and FreeBSD).
 
+pub mod bogon;
 pub mod capture;
 pub mod dns;
 pub mod dpi;

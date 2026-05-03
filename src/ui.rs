@@ -3304,6 +3304,16 @@ fn draw_connection_details(
     push_detail_field_styled(
         &mut details_text,
         &mut detail_fields,
+        "Scope",
+        crate::network::bogon::classify(conn.remote_addr.ip())
+            .label()
+            .to_string(),
+        label_style,
+        theme::fg(theme::field_remote_addr()),
+    );
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
         "State",
         conn.state().into_owned(),
         label_style,
