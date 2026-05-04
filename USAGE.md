@@ -793,6 +793,25 @@ On systems with multiple network interfaces:
 
 RustNet uses intelligent timeout management to automatically clean up inactive connections while providing visual warnings before removal.
 
+### Hostname Display
+
+The hostname shown in the **Remote Address** column is chosen by priority:
+
+1. **TLS SNI** extracted from this connection's ClientHello (HTTPS or QUIC Initial)
+2. **HTTP `Host:` header** extracted from this connection
+3. **DNS-attributed hostname**: rendered as `~name:port` in a dim color when no authoritative source is available but a DNS resolution to this IP was observed within the last **10 seconds**
+4. **Reverse DNS** (system resolver, when DNS resolution is enabled)
+5. **Raw IP address**
+
+The leading `~` glyph is the visual signal that the hostname was *inferred* from a DNS response, not extracted from the connection itself. This is most useful for QUIC sessions after the handshake (where SNI is encrypted) and for plain TCP/UDP connections that carry no hostname-bearing payload. Detail view shows a separate **Attributed Hostname** section with source and observation age so the provenance is explicit.
+
+**Caveats** (rustnet learns names by sniffing DNS on the wire):
+
+- **DoH / DoT** (encrypted DNS): no plaintext to observe, no attribution.
+- **`/etc/hosts`, NSCD cache, `systemd-resolved` D-Bus API** (`org.freedesktop.resolve1`): no DNS packet is emitted, so attribution is impossible regardless of capture method.
+- **Local stub resolvers** (e.g. `systemd-resolved` on `127.0.0.53`): if you only capture a physical interface, you'll see the stub's upstream queries but not which app talked to the stub. Capture on `lo` as well to see the application side.
+- **VPN/WireGuard tunnels**: capture on the tunnel interface (e.g. `utun0`, `wg0`) rather than the underlay so you see plaintext DNS.
+
 ### Visual Staleness Indicators
 
 Connections change color based on how close they are to being cleaned up:
