@@ -5,6 +5,33 @@ All notable changes to RustNet will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-05-05
+
+The headline of this release is a major TUI refresh. The tabs, stats panel, and details view have all been redesigned, with new per-field colors, a status dot, and address scope labels making it easier to read connections at a glance.
+
+### Added
+- **TUI Revamp**: Redesigned tabs, stats panel, and details view (#239)
+- **Per-field Colors and Status Dot**: New per-field colors, status dot, and magenta panel borders for at-a-glance readability (#241)
+- **Address Scope Labels**: Remote addresses are tagged PUBLIC, PRIVATE, etc. in the connection list (#251)
+- **Reverse DNS Resolution by Default**: Reverse DNS resolution is now enabled by default. Use the new `--no-resolve-dns` flag to opt out (#245)
+
+### Fixed
+- **Sandbox Info on Overview**: Show the full sandbox details on the overview tab (#250)
+- **Search Scope and Status Bars**: Scope the `/` search to Overview and tidy the status bars (#229, #230)
+- **QUIC Initial Packet Parser**: Bounds-check `token_len` in the Initial packet parser (#244)
+- **QUIC Varint Parser**: Bounds-check varint lengths and isolate parser panics (#232)
+- **Release Pipeline**: Fix the downstream trigger race and AUR token permissions (#223)
+
+### Changed
+- **Demo Recording Automation**: Automate VHS recording for the demo GIF and README screenshots (#247)
+- **OUI Vendor Database**: Refreshed IEEE OUI vendor database (#242)
+- **Dependencies**: Bumped `rand` (0.8.5 to 0.8.6), `openssl` (0.10.75 to 0.10.78), `zip`, `libbpf-cargo`, and other rust-dependencies and actions group updates (#224, #225, #226, #227, #231, #233, #234, #238, #240, #243)
+
+### Documentation
+- **Windows Sandbox Terminology**: Accurate Windows sandbox terminology and roadmap entry (#237)
+- **README Polish**: README hero polish, metadata tune-up, and accuracy fixes (#236)
+- **Crate and Module Docs**: Expanded crate and module docs and tuned metadata for discoverability (#235)
+
 ## [1.2.0] - 2026-04-09
 
 ### Added
@@ -436,7 +463,8 @@ Special thanks to the external contributors in this release:
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/domcyrus/rustnet/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/domcyrus/rustnet/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/domcyrus/rustnet/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/domcyrus/rustnet/compare/v0.18.0...v1.0.0
