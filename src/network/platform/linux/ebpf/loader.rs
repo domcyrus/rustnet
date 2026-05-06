@@ -3,8 +3,10 @@
 use anyhow::Result;
 use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
 use log::{debug, info, warn};
+use std::io::Read as _;
 
 use crate::network::platform::DegradationReason;
+use super::maps_libbpf::TcpStats;
 
 mod socket_tracker {
     include!(concat!(env!("OUT_DIR"), "/socket_tracker.skel.rs"));
@@ -15,6 +17,7 @@ use socket_tracker::*;
 pub struct EbpfLoader {
     skel: Box<SocketTrackerSkel<'static>>,
     _open_object: Box<std::mem::MaybeUninit<libbpf_rs::OpenObject>>,
+    tcp_iter_link: Option<libbpf_rs::Link>,
 }
 
 impl EbpfLoader {
@@ -69,25 +72,33 @@ impl EbpfLoader {
         match skel.attach() {
             Ok(_) => {
                 info!("eBPF: Programs attached successfully");
-                // Verify programs are actually attached by checking their links
                 let prog_names = [
                     "trace_tcp_connect",
                     "trace_tcp_accept",
                     "trace_udp_sendmsg",
                     "trace_tcp_v6_connect",
                     "trace_udp_v6_sendmsg",
+                    "dump_tcp_sockets",
                 ];
-
                 for (i, prog_name) in prog_names.iter().enumerate() {
                     debug!("eBPF: Checking attachment for program {}: {}", i, prog_name);
                 }
-
                 info!("eBPF: All programs loaded and attached successfully");
             }
             Err(e) => {
                 warn!("eBPF: Failed to attach programs: {}", e);
                 return Err(e.into());
             }
+        }
+
+        // Take the iter/tcp link out before transmuting skel.
+        // Keeping it alive is what keeps dump_tcp_sockets attached; dropping it
+        // detaches the iter. The other kprobe links remain owned by skel.links.
+        let tcp_iter_link = skel.links.dump_tcp_sockets.take();
+        if tcp_iter_link.is_none() {
+            warn!("eBPF: dump_tcp_sockets iter/tcp did not attach — TCP stats will be unavailable");
+        } else {
+            info!("eBPF: iter/tcp attached, TCP stats scan available");
         }
 
         // SAFETY: SocketTrackerSkel borrows from open_object via the reference
@@ -99,6 +110,7 @@ impl EbpfLoader {
         Ok(Self {
             skel: Box::new(skel_static),
             _open_object: open_object,
+            tcp_iter_link,
         })
     }
 
@@ -194,5 +206,50 @@ impl EbpfLoader {
     /// Get the socket map for lookups
     pub fn socket_map(&self) -> &libbpf_rs::Map<'_> {
         &self.skel.maps.socket_map
+    }
+
+    /// Walk every tcp_sock in the kernel and return stats for each.
+    /// Triggers the iter/tcp BPF program by opening a new iterator fd and
+    /// reading from it — zero trap overhead, purely pull-based.
+    pub fn scan_tcp_stats(&self) -> Result<Vec<TcpStats>> {
+        let link = match &self.tcp_iter_link {
+            Some(l) => l,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut iter = libbpf_rs::Iter::new(link)?;
+        let mut buf = Vec::new();
+        iter.read_to_end(&mut buf)?;
+
+        let entry_size = std::mem::size_of::<TcpStats>();
+        if buf.is_empty() {
+            return Ok(Vec::new());
+        }
+        if buf.len() % entry_size != 0 {
+            return Err(anyhow::anyhow!(
+                "iter/tcp read {} bytes — not a multiple of {} (TcpStats size); possible struct layout mismatch",
+                buf.len(),
+                entry_size
+            ));
+        }
+
+        let result = buf
+            .chunks_exact(entry_size)
+            .map(|chunk| {
+                // SAFETY: TcpStats is #[repr(C, packed)]; all bit patterns are valid
+                // for every field type (integers). Chunk is exactly entry_size bytes.
+                unsafe {
+                    let mut s = std::mem::MaybeUninit::<TcpStats>::uninit();
+                    std::ptr::copy_nonoverlapping(
+                        chunk.as_ptr(),
+                        s.as_mut_ptr() as *mut u8,
+                        entry_size,
+                    );
+                    s.assume_init()
+                }
+            })
+            .collect();
+
+        Ok(result)
     }
 }

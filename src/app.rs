@@ -26,7 +26,7 @@ use crate::network::{
     merge::{create_connection_from_packet, merge_packet_into_connection},
     oui::OuiLookup,
     parser::{PacketParser, ParsedPacket, ParserConfig},
-    platform::create_process_lookup,
+    platform::{TcpSocketStats, create_process_lookup},
     services::ServiceLookup,
     types::{
         ApplicationProtocol, Connection, ConnectionKey, DnsQueryType, Protocol, RttTracker,
@@ -482,6 +482,11 @@ pub struct App {
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     sandbox_info: Arc<RwLock<SandboxInfo>>,
+
+    /// Latest TCP socket stats collected by the periodic background scanner.
+    /// Populated on Linux+eBPF; empty on all other platforms.
+    #[cfg(all(target_os = "linux", feature = "ebpf"))]
+    pub tcp_stats: Arc<RwLock<Vec<TcpSocketStats>>>,
 }
 
 impl App {
@@ -588,6 +593,8 @@ impl App {
                 all(target_os = "macos", feature = "macos-sandbox")
             ))]
             sandbox_info: Arc::new(RwLock::new(SandboxInfo::default())),
+            #[cfg(all(target_os = "linux", feature = "ebpf"))]
+            tcp_stats: Arc::new(RwLock::new(Vec::new())),
         })
     }
 
@@ -1036,6 +1043,8 @@ impl App {
         let pktap_active = Arc::clone(&self.pktap_active);
         let should_stop = Arc::clone(&self.should_stop);
         let process_detection_status = Arc::clone(&self.process_detection_status);
+        #[cfg(all(target_os = "linux", feature = "ebpf"))]
+        let tcp_stats_store = Arc::clone(&self.tcp_stats);
 
         thread::Builder::new()
             .name("process-enrichment".to_string())
@@ -1089,6 +1098,8 @@ impl App {
                 pktap_active,
                 process_detection_status,
                 process_ready_tx,
+                #[cfg(all(target_os = "linux", feature = "ebpf"))]
+                tcp_stats_store,
             ) {
                 error!("Process enrichment thread failed: {}", e);
             }
@@ -1105,6 +1116,8 @@ impl App {
         pktap_active: Arc<AtomicBool>,
         process_detection_status: Arc<RwLock<ProcessDetectionStatus>>,
         process_ready_tx: std::sync::mpsc::SyncSender<()>,
+        #[cfg(all(target_os = "linux", feature = "ebpf"))]
+        tcp_stats_store: Arc<RwLock<Vec<TcpSocketStats>>>,
     ) -> Result<()> {
         use crate::network::platform::DegradationReason;
 
@@ -1142,6 +1155,8 @@ impl App {
             process_lookup.get_detection_method()
         );
         let mut last_refresh = Instant::now();
+        #[cfg(all(target_os = "linux", feature = "ebpf"))]
+        let mut last_tcp_stats = Instant::now() - Duration::from_secs(5); // fire on first iteration
 
         loop {
             if should_stop.load(Ordering::Relaxed) {
@@ -1164,6 +1179,26 @@ impl App {
                     debug!("Process lookup refresh failed: {}", e);
                 }
                 last_refresh = Instant::now();
+            }
+
+            // Collect TCP socket stats every 5 seconds via eBPF iter/tcp
+            #[cfg(all(target_os = "linux", feature = "ebpf"))]
+            if last_tcp_stats.elapsed() >= Duration::from_secs(5) {
+                let stats = process_lookup.collect_tcp_stats();
+                debug!("TCP stats scan: {} sockets", stats.len());
+                for s in &stats {
+                    debug!(
+                        "  TCP {}:{} -> {}:{}  rtt={}µs  cwnd={}  retrans={}  tx={}B  rx={}B",
+                        s.src_addr, s.sport,
+                        s.dst_addr, s.dport,
+                        s.rtt_us, s.snd_cwnd, s.total_retrans,
+                        s.bytes_sent, s.bytes_received
+                    );
+                }
+                if let Ok(mut store) = tcp_stats_store.write() {
+                    *store = stats;
+                }
+                last_tcp_stats = Instant::now();
             }
 
             // Enrich connections without process info
