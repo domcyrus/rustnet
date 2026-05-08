@@ -336,4 +336,77 @@ int trace_ping_v6_sendmsg(struct pt_regs *ctx)
     return 0;
 }
 
+// bpf_iter__tcp is not exported in all vmlinux.h versions, define it explicitly
+struct bpf_iter__tcp {
+    union { struct bpf_iter_meta *meta; };
+    union { struct sock_common *sk_common; };
+    uid_t uid;
+};
+
+// Output record written to userspace via bpf_seq_write
+struct tcp_stats
+{
+    __u64 bytes_sent;
+    __u64 bytes_received;
+    __u32 saddr[4];
+    __u32 daddr[4];
+    __u32 rtt_us;       // smoothed RTT (srtt_us >> 3)
+    __u32 rtt_var_us;   // RTT variance (mdev_us >> 2)
+    __u32 snd_cwnd;     // congestion window (segments)
+    __u32 snd_ssthresh; // slow-start threshold
+    __u32 total_retrans;
+    __u16 sport;
+    __u16 dport;
+    __u8  family;       // AF_INET or AF_INET6
+    __u8  state;        // TCP state (1=ESTABLISHED, …)
+    __u8  _pad[2];
+} __attribute__((packed));
+
+// Pull-based TCP stats dump — no trap overhead.
+// Userspace triggers a scan by calling read() on the iter fd; the kernel
+// walks every tcp_sock and calls this program once per socket.
+SEC("iter/tcp")
+int dump_tcp_sockets(struct bpf_iter__tcp *ctx)
+{
+    struct sock_common *skc = ctx->sk_common;
+    if (!skc)
+        return 0;
+
+    struct tcp_sock *tp = bpf_skc_to_tcp_sock(skc);
+    if (!tp)
+        return 0;
+
+    struct tcp_stats stats = {};
+
+    __u16 family = BPF_CORE_READ(skc, skc_family);
+    stats.family = (__u8)family;
+    stats.state  = BPF_CORE_READ(skc, skc_state);
+
+    if (family == AF_INET) {
+        stats.saddr[0] = BPF_CORE_READ(skc, skc_rcv_saddr);
+        stats.daddr[0] = BPF_CORE_READ(skc, skc_daddr);
+    } else if (family == AF_INET6) {
+        struct in6_addr tmp;
+        BPF_CORE_READ_INTO(&tmp, skc, skc_v6_rcv_saddr);
+        __builtin_memcpy(stats.saddr, &tmp, sizeof(tmp));
+        BPF_CORE_READ_INTO(&tmp, skc, skc_v6_daddr);
+        __builtin_memcpy(stats.daddr, &tmp, sizeof(tmp));
+    }
+
+    stats.sport = BPF_CORE_READ(skc, skc_num);
+    stats.dport = bpf_ntohs(BPF_CORE_READ(skc, skc_dport));
+
+    // srtt_us stores RTT * 8; mdev_us stores variance * 4
+    stats.rtt_us       = BPF_CORE_READ(tp, srtt_us) >> 3;
+    stats.rtt_var_us   = BPF_CORE_READ(tp, mdev_us) >> 2;
+    stats.snd_cwnd     = BPF_CORE_READ(tp, snd_cwnd);
+    stats.snd_ssthresh = BPF_CORE_READ(tp, snd_ssthresh);
+    stats.total_retrans = BPF_CORE_READ(tp, total_retrans);
+    stats.bytes_sent    = BPF_CORE_READ(tp, bytes_sent);
+    stats.bytes_received = BPF_CORE_READ(tp, bytes_received);
+
+    bpf_seq_write(ctx->meta->seq, &stats, sizeof(stats));
+    return 0;
+}
+
 char LICENSE[] SEC("license") = "Dual BSD/GPL";

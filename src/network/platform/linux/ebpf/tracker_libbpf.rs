@@ -3,7 +3,7 @@
 use super::{
     ProcessInfo,
     loader::EbpfLoader,
-    maps_libbpf::{ConnKey, MapReader},
+    maps_libbpf::{ConnKey, MapReader, TcpStats},
 };
 use crate::network::platform::DegradationReason;
 use anyhow::Result;
@@ -42,6 +42,7 @@ impl LibbpfSocketTracker {
         let key = ConnKey::new_v4(src_ip, dst_ip, src_port, dst_port, is_tcp);
         match MapReader::lookup_connection(socket_map, key) {
             Ok(Some(result)) => {
+                log::debug!("eBPF IPv4 lookup worked");
                 return Some(result);
             }
             Ok(None) => {
@@ -187,6 +188,19 @@ impl LibbpfSocketTracker {
             Err(e) => {
                 log::debug!("eBPF ICMP zero-source lookup failed: {}", e);
                 None
+            }
+        }
+    }
+
+    /// Scan all TCP sockets in the kernel and return their stats.
+    /// This is pull-based (no kprobe traps): userspace triggers a kernel walk
+    /// by reading from the iter fd. Call this on demand, e.g. every few seconds.
+    pub fn scan_tcp_stats(&self) -> Vec<TcpStats> {
+        match self.loader.scan_tcp_stats() {
+            Ok(stats) => stats,
+            Err(e) => {
+                log::debug!("iter/tcp scan failed: {}", e);
+                Vec::new()
             }
         }
     }
