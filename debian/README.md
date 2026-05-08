@@ -11,7 +11,12 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-This automatically builds and uploads to Ubuntu 25.10+ which has Rust 1.88+ for edition 2024 support.
+This automatically builds and uploads source packages for both supported Ubuntu series:
+
+- Ubuntu 25.10 (Questing Quokka)
+- Ubuntu 26.04 LTS (Resolute Raccoon)
+
+Both series ship `rustc-1.88` / `cargo-1.88`, which is the minimum required for the let-chains feature used by the project (see `rust-version` in `Cargo.toml`).
 
 ## GitHub Secrets Setup
 
@@ -49,7 +54,7 @@ sudo apt install rustnet
 - **Binary**: rustnet
 - **Maintainer**: Marco Cadetg <cadetg@gmail.com>
 - **PPA**: https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet
-- **Supported**: Ubuntu 25.10 and later
+- **Supported**: Ubuntu 25.10 (Questing) and 26.04 LTS (Resolute)
 - **Architectures**: amd64, arm64, armhf
 
 ## Workflow

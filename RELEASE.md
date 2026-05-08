@@ -157,6 +157,16 @@ After GitHub Actions completes:
 - [ ] Verify FreeBSD build at https://github.com/domcyrus/rustnet-bsd
 - [ ] Announce release (if applicable)
 
+## Maintenance: New Ubuntu and Fedora Releases
+
+This is an occasional task, not part of every release. When a new Ubuntu interim or LTS, or a new Fedora release, is published and we want RustNet packages to ship for it:
+
+1. **Ubuntu PPA**: add the new codename to the matrix in [`.github/workflows/ppa-release.yml`](.github/workflows/ppa-release.yml) (the `set-matrix` job's `releases=[...]` list and the `workflow_dispatch` choice options). Confirm the new series ships `rustc-1.88` (or whatever the current `rust-version` floor in `Cargo.toml` is). Reference: issue [#254](https://github.com/domcyrus/rustnet/issues/254) added Ubuntu 26.04 (Resolute) support.
+2. **Fedora COPR**: add the new chroot in the COPR project settings at [https://copr.fedorainfracloud.org/coprs/domcyrus/rustnet/edit/](https://copr.fedorainfracloud.org/coprs/domcyrus/rustnet/edit/). The chroot list is managed in the COPR UI, not in this repo.
+3. Trigger a `workflow_dispatch` of `Release to Ubuntu PPA` for the new codename to verify the build before relying on it from the next tagged release.
+
+Conversely, when an older Ubuntu series is no longer worth supporting (no `rustc-1.88` in archive, or end of life), remove it from the same two locations and update [INSTALL.md](INSTALL.md) and [debian/README.md](debian/README.md) to match.
+
 ## Versioning
 
 RustNet follows [Semantic Versioning (SemVer)](https://semver.org/):

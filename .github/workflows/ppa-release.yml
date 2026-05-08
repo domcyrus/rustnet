@@ -13,12 +13,11 @@ on:
       ubuntu_release:
         description: 'Ubuntu release codename'
         required: true
-        default: 'oracular'
+        default: 'resolute'
         type: choice
         options:
-          - questing # 25.04
-          - oracular # 24.10 with Rust 1.81
-          - noble # 24.04 LTS with Rust 1.82
+          - questing # 25.10
+          - resolute # 26.04 LTS
       tarball_suffix:
         description: 'Tarball suffix (e.g., ds1, ds2) - leave empty for new releases'
         required: false
@@ -34,12 +33,28 @@ env:
   PPA: ppa:domcyrus/rustnet
 
 jobs:
+  set-matrix:
+    runs-on: ubuntu-24.04
+    outputs:
+      releases: ${{ steps.set.outputs.releases }}
+    steps:
+      - id: set
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo 'releases=["${{ inputs.ubuntu_release }}"]' >> $GITHUB_OUTPUT
+            echo "Dispatch: building only ${{ inputs.ubuntu_release }}"
+          else
+            echo 'releases=["questing","resolute"]' >> $GITHUB_OUTPUT
+            echo "Auto: building questing and resolute"
+          fi
+
   build-and-upload:
+    needs: set-matrix
     runs-on: ubuntu-24.04
     strategy:
+      fail-fast: false
       matrix:
-        ubuntu_release:
-          - questing
+        ubuntu_release: ${{ fromJSON(needs.set-matrix.outputs.releases) }}
 
     steps:
       - name: Checkout code
@@ -91,28 +106,21 @@ jobs:
             echo "Using version: $VERSION"
           fi
 
-          # Extract Debian revision from changelog
-          DEBIAN_REVISION=$(head -1 debian/changelog | sed 's/.*(\(.*\)-\(.*\)).*/\2/')
-          echo "debian_revision=$DEBIAN_REVISION" >> $GITHUB_OUTPUT
-
       - name: Update changelog
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          CURRENT_VERSION=$(head -1 debian/changelog | sed 's/.*(\(.*\)).*/\1/')
+          # Per-series version suffix so each Ubuntu release has an independent
+          # version line on Launchpad. The `+series1` suffix sorts strictly
+          # higher than a plain `-1ubuntu1`, so future uploads always supersede
+          # any previously published package.
+          NEW_VERSION="${VERSION}-1ubuntu1+${{ matrix.ubuntu_release }}1"
 
-          if [ "$VERSION-1ubuntu1" != "$CURRENT_VERSION" ]; then
-            echo "Updating changelog from $CURRENT_VERSION to $VERSION-1ubuntu1"
+          DEBFULLNAME="${{ env.DEBFULLNAME }}" DEBEMAIL="${{ env.DEBEMAIL }}" \
+            dch --newversion "$NEW_VERSION" \
+                --distribution "${{ matrix.ubuntu_release }}" \
+                "Build for ${{ matrix.ubuntu_release }} - upstream release $VERSION"
 
-            # Create new changelog entry
-            DEBFULLNAME="${{ env.DEBFULLNAME }}" DEBEMAIL="${{ env.DEBEMAIL }}" \
-              dch --newversion "$VERSION-1ubuntu1" \
-                  --distribution "questing" \
-                  "New upstream release $VERSION"
-
-            echo "✓ Changelog updated"
-          else
-            echo "✓ Changelog already at correct version"
-          fi
+          echo "✓ Changelog set to $NEW_VERSION (${{ matrix.ubuntu_release }})"
 
       - name: Build source package
         run: |
@@ -171,9 +179,14 @@ jobs:
           GPG_KEY_ID: ${{ secrets.GPG_KEY_ID }}
         run: |
           cd build-ppa
-          VERSION="${{ steps.version.outputs.version }}"
-          DEBIAN_REVISION="${{ steps.version.outputs.debian_revision }}"
-          CHANGES_FILE="rustnet-monitor_${VERSION}-${DEBIAN_REVISION}_source.changes"
+          # Locate the source.changes file produced by debuild. The version
+          # suffix (+seriesN) is dynamic, so glob rather than reconstruct.
+          CHANGES_FILE=$(ls rustnet-monitor_*_source.changes | head -1)
+          if [ -z "$CHANGES_FILE" ]; then
+            echo "::error::No source.changes file found in build-ppa"
+            exit 1
+          fi
+          echo "Signing and uploading $CHANGES_FILE"
 
           # Sign
           debsign -k${GPG_KEY_ID} ${CHANGES_FILE}
@@ -198,10 +211,14 @@ jobs:
 
       - name: Summary
         run: |
+          cd build-ppa
+          CHANGES_FILE=$(ls rustnet-monitor_*_source.changes | head -1)
+          FULL_VERSION=$(echo "$CHANGES_FILE" | sed 's/rustnet-monitor_\(.*\)_source\.changes/\1/')
+
           echo "## 🎉 PPA Upload Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Package**: rustnet-monitor" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version**: ${{ steps.version.outputs.version }}-${{ steps.version.outputs.debian_revision }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: $FULL_VERSION" >> $GITHUB_STEP_SUMMARY
           echo "- **Ubuntu**: ${{ matrix.ubuntu_release }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Installation" >> $GITHUB_STEP_SUMMARY
@@ -210,4 +227,4 @@ jobs:
           echo "sudo apt update && sudo apt install rustnet" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "[View PPA →](https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet/+packages)" >> $GITHUB_STEP_SUMMARY
+          echo "[View PPA](https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet/+packages)" >> $GITHUB_STEP_SUMMARY

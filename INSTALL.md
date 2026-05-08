@@ -89,9 +89,12 @@ choco install rustnet
 
 ### Linux Package Installation
 
-#### Ubuntu PPA (Recommended for Ubuntu 25.10+)
+#### Ubuntu PPA (Recommended for Ubuntu 25.10 Questing and 26.04 LTS Resolute)
 
-The easiest way to install RustNet on Ubuntu is via the official PPA.
+The easiest way to install RustNet on Ubuntu is via the official PPA. The PPA publishes builds for the following Ubuntu series:
+
+- Ubuntu 25.10 (Questing Quokka)
+- Ubuntu 26.04 LTS (Resolute Raccoon)
 
 ```bash
 # Add the RustNet PPA
@@ -111,7 +114,7 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**Important:** The PPA only supports Ubuntu 25.10+ due to the Rust 1.88+ requirement. Earlier Ubuntu versions don't have a recent enough Rust compiler in their repositories. For older Ubuntu versions, use the [.deb packages](#debianubuntu-deb-packages) from GitHub releases or [build from source](#building-from-source).
+**Important:** The PPA supports only the two series listed above (Ubuntu 25.10 Questing and 26.04 LTS Resolute) because the build requires Rust 1.88+ (used for let-chains in the project). Earlier Ubuntu versions don't ship a recent enough `rustc` in their repositories. For older Ubuntu versions, use the [.deb packages](#debianubuntu-deb-packages) from GitHub releases or [build from source](#building-from-source).
 
 #### Debian/Ubuntu (.deb packages)
 
