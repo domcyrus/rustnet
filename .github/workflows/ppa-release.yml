@@ -122,6 +122,25 @@ jobs:
 
           echo "✓ Changelog set to $NEW_VERSION (${{ matrix.ubuntu_release }})"
 
+      - name: Pin Rust toolchain version per release
+        run: |
+          # Each Ubuntu release ships a different set of versioned rustc/cargo
+          # packages. We pin to the lowest version available on the target
+          # release that still satisfies our >= 1.88 floor (let-chains).
+          case "${{ matrix.ubuntu_release }}" in
+            questing) RUST_VERSION=1.88 ;;
+            resolute) RUST_VERSION=1.91 ;;
+            *) echo "::error::Unknown release ${{ matrix.ubuntu_release }} - add it to the case statement"; exit 1 ;;
+          esac
+          echo "Pinning to rustc-$RUST_VERSION / cargo-$RUST_VERSION for ${{ matrix.ubuntu_release }}"
+
+          sed -i -E "s/(cargo|rustc|rustdoc)-1\.[0-9]+/\1-${RUST_VERSION}/g" debian/control debian/rules
+
+          echo "--- debian/control build-depends ---"
+          grep -E "(cargo|rustc)-1\." debian/control || true
+          echo "--- debian/rules toolchain exports ---"
+          grep -E "(CARGO|RUSTC|RUSTDOC) *=" debian/rules || true
+
       - name: Build source package
         run: |
           VERSION="${{ steps.version.outputs.version }}"
