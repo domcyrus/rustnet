@@ -89,14 +89,23 @@ impl EbpfLoader {
         // yields a "kprobe attach failed: <name>" message instead of a generic
         // failure with no symbol context.
         debug!("eBPF: Attaching kprobes individually");
-        let attachments: [(&str, &dyn Fn(&mut SocketTrackerSkel<'_>) -> libbpf_rs::Result<libbpf_rs::Link>); 7] = [
+        type AttachFn = dyn Fn(&mut SocketTrackerSkel<'_>) -> libbpf_rs::Result<libbpf_rs::Link>;
+        let attachments: [(&str, &AttachFn); 7] = [
             ("trace_tcp_connect", &|s| s.progs.trace_tcp_connect.attach()),
             ("trace_tcp_accept", &|s| s.progs.trace_tcp_accept.attach()),
             ("trace_udp_sendmsg", &|s| s.progs.trace_udp_sendmsg.attach()),
-            ("trace_tcp_v6_connect", &|s| s.progs.trace_tcp_v6_connect.attach()),
-            ("trace_udp_v6_sendmsg", &|s| s.progs.trace_udp_v6_sendmsg.attach()),
-            ("trace_ping_v4_sendmsg", &|s| s.progs.trace_ping_v4_sendmsg.attach()),
-            ("trace_ping_v6_sendmsg", &|s| s.progs.trace_ping_v6_sendmsg.attach()),
+            ("trace_tcp_v6_connect", &|s| {
+                s.progs.trace_tcp_v6_connect.attach()
+            }),
+            ("trace_udp_v6_sendmsg", &|s| {
+                s.progs.trace_udp_v6_sendmsg.attach()
+            }),
+            ("trace_ping_v4_sendmsg", &|s| {
+                s.progs.trace_ping_v4_sendmsg.attach()
+            }),
+            ("trace_ping_v6_sendmsg", &|s| {
+                s.progs.trace_ping_v6_sendmsg.attach()
+            }),
         ];
 
         let mut links: Vec<libbpf_rs::Link> = Vec::with_capacity(attachments.len());
@@ -108,8 +117,7 @@ impl EbpfLoader {
                 }
                 Err(e) => {
                     warn!("eBPF: Failed to attach kprobe {}: {}", name, e);
-                    return Err(anyhow::Error::new(e)
-                        .context(format!("attach kprobe {name}")));
+                    return Err(anyhow::Error::new(e).context(format!("attach kprobe {name}")));
                 }
             }
         }
@@ -347,9 +355,8 @@ fn classify_libbpf_error(err: &anyhow::Error) -> DegradationReason {
     // Genuine kprobe attach failure that isn't a permission issue — usually
     // a missing kernel symbol. Carry the symbol name where libbpf gave us
     // one so the user can confirm whether the kernel exposes it.
-    let mentions_attach = blob.contains("attach")
-        || blob.contains("kprobe")
-        || blob.contains("perf_event_open");
+    let mentions_attach =
+        blob.contains("attach") || blob.contains("kprobe") || blob.contains("perf_event_open");
     if mentions_attach {
         let sym = extract_kprobe_symbol(&blob).unwrap_or_default();
         return DegradationReason::KprobeAttachFailed(sym);

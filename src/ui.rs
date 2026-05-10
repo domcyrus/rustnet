@@ -2186,8 +2186,8 @@ fn draw_stats_panel(
             Constraint::Length(5),            // Network Stats (1 heading + 4 content)
             Constraint::Length(1),            // gap
             Constraint::Length(security_height), // Security (heading + content)
-            Constraint::Length(1),               // gap
-            Constraint::Min(0),                  // Traffic + interface details
+            Constraint::Length(1),            // gap
+            Constraint::Min(0),               // Traffic + interface details
         ])
         .split(inner_area);
 
