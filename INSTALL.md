@@ -843,7 +843,6 @@ RustNet auto-discovers databases from standard locations. Run `rustnet --help` t
 - Check if capabilities are set: `getcap $(which rustnet)` or `getcap ~/.cargo/bin/rustnet`
 - Verify libpcap is installed: `ldconfig -p | grep pcap`
 - Try running with sudo to confirm it's a permission issue: `sudo $(which rustnet)`
-- Some systems require `CAP_NET_BIND_SERVICE` as well
 
 #### No Suitable Capture Interfaces Found
 
@@ -858,6 +857,118 @@ RustNet auto-discovers databases from standard locations. Run `rustnet --help` t
 - Re-apply capabilities (modern): `sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)`
 - Some filesystems don't support extended attributes (capabilities)
 - Try copying the binary to a different filesystem (e.g., from NFS to local disk)
+
+#### eBPF Unavailable Despite Capabilities Being Set
+
+If RustNet shows `Process Detection: procfs` with a degradation message even
+after running `setcap`, work through the following checks. The TUI surfaces
+the actual reason on the second status line — use it to jump to the right
+section below.
+
+**1. `file caps ignored: binary on a nosuid mount`**
+
+The kernel silently ignores file capabilities for binaries that live on a
+filesystem mounted with the `nosuid` option. Common culprits: `/home` on
+hardened distros, `/tmp`, removable media, some bind-mounts inside
+containers.
+
+```bash
+# Find the mount that holds the binary and check its options
+findmnt -T $(realpath $(which rustnet)) -o TARGET,OPTIONS
+# If the OPTIONS column contains "nosuid", caps will not work.
+
+# Fix: install or copy the binary to a mount without nosuid
+sudo install -m 0755 $(which rustnet) /usr/local/bin/rustnet
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/local/bin/rustnet
+/usr/local/bin/rustnet
+```
+
+**2. `BPF denied (check perf_event_paranoid / AppArmor / unprivileged_bpf_disabled)`**
+
+Caps were granted, but the kernel returned `EPERM` or `EACCES`. Three layers
+can do that — check them in this order:
+
+```bash
+# 2a. perf_event_paranoid (THE most common cause on Debian).
+#     Debian 13 ships with kernel.perf_event_paranoid=3, which blocks
+#     perf_event_open(2) — and therefore kprobe attach — for non-root
+#     users *even with CAP_PERFMON*. Upstream kernels only go up to 2,
+#     where CAP_PERFMON correctly bypasses the restriction.
+#
+#     Ubuntu uses a different patch (paranoid=4) that was updated in
+#     late 2025 to honor CAP_PERFMON, so on recent Ubuntu kernels
+#     (Jammy 5.15.0-165+, Noble 6.8.0-91+, Plucky 6.14.0-37+,
+#     Questing 6.17.0-14+, Resolute 6.18.0-8+) `setcap` alone is
+#     enough — no sysctl change required. Debian's equivalent patch
+#     (bug #994044) was never updated and was archived in 2025
+#     without a fix, so Debian users still need the workaround below.
+sysctl kernel.perf_event_paranoid
+# If the value is 3 (Debian) or 4 on an old Ubuntu kernel, drop it to 2:
+sudo sysctl kernel.perf_event_paranoid=2
+# Make it persist across reboot:
+echo 'kernel.perf_event_paranoid = 2' | \
+  sudo tee /etc/sysctl.d/99-rustnet.conf
+
+# 2b. AppArmor confining rustnet (Debian/Ubuntu install AppArmor by default).
+sudo aa-status | grep rustnet
+# If listed, either disable the profile or add a rule allowing capability bpf,
+# capability perfmon, and the bpf() syscall for this binary.
+
+# 2c. unprivileged_bpf_disabled (Debian sets =2; file caps should bypass).
+sysctl kernel.unprivileged_bpf_disabled
+
+# Confirm caps actually became effective at exec:
+grep ^Cap /proc/$(pgrep -n rustnet)/status
+# CapEff must include CAP_BPF (bit 39) and CAP_PERFMON (bit 38).
+```
+
+**3. `kprobe attach failed: <symbol>`**
+
+The kernel is missing the symbol the eBPF probe wants to attach to. This is
+usually a kernel-config issue (e.g. CONFIG_IPV6 disabled, CONFIG_KPROBES
+off, or the symbol was inlined). RustNet currently attaches to
+`tcp_connect`, `inet_csk_accept`, `udp_sendmsg`, `tcp_v6_connect`,
+`udpv6_sendmsg`, `ping_v4_sendmsg`, and `ping_v6_sendmsg`.
+
+```bash
+# Check whether the failing symbol exists in the running kernel:
+sudo grep '<symbol_name>' /proc/kallsyms
+```
+
+If the symbol is genuinely missing, eBPF process detection will not work
+on this kernel build; procfs fallback continues to function.
+
+**4. `kernel BTF unavailable`**
+
+CO-RE relocations require `/sys/kernel/btf/vmlinux`. On stripped-down
+kernels (some embedded / minimal cloud images) this file is absent.
+
+```bash
+ls /sys/kernel/btf/vmlinux
+# If missing: install the kernel-debuginfo / linux-image package matching
+# your running kernel, or rebuild the kernel with CONFIG_DEBUG_INFO_BTF=y.
+```
+
+**5. Inside Docker / Podman**
+
+Even with file capabilities, the *bounding* set inside the container must
+contain `CAP_BPF` and `CAP_PERFMON`, or they get masked at exec:
+
+```bash
+docker run --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON \
+           --net=host --pid=host rustnet
+# Optionally, if your container's seccomp profile blocks bpf(2):
+#   --security-opt seccomp=unconfined
+# Or if AppArmor mediates BPF:
+#   --security-opt apparmor=unconfined
+```
+
+**6. `eBPF load failed: ...`**
+
+The catch-all branch carries the raw libbpf error text. Re-run with
+`RUST_LOG=debug rustnet 2>&1 | tee rustnet.log` and inspect the full
+chain — it usually contains an `errno` name (`EPERM`, `EACCES`, `ENOSPC`
+for memlock, etc.) that points at the root cause.
 
 #### Windows: Npcap Not Found
 

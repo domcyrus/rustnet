@@ -7,6 +7,7 @@
 
 use crate::network::types::{Connection, Protocol};
 use anyhow::Result;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -29,9 +30,28 @@ pub enum DegradationReason {
     /// eBPF feature not compiled in
     #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
     EbpfFeatureDisabled,
-    /// Kernel doesn't support required eBPF features
+    /// Kernel doesn't support required eBPF features (e.g. ENOSYS from bpf(2))
     #[cfg(target_os = "linux")]
     KernelUnsupported,
+    /// BPF syscall denied despite caps - typically AppArmor, kernel lockdown,
+    /// or unprivileged_bpf_disabled interactions
+    #[cfg(target_os = "linux")]
+    BpfPermissionDenied,
+    /// Failed to attach a kprobe (e.g. symbol missing from kernel). The
+    /// String carries the symbol name where known.
+    #[cfg(target_os = "linux")]
+    KprobeAttachFailed(String),
+    /// Kernel BTF unavailable / CO-RE relocation failed (no /sys/kernel/btf/vmlinux)
+    #[cfg(target_os = "linux")]
+    BtfUnavailable,
+    /// Generic eBPF load failure carrying the truncated libbpf error text
+    #[cfg(target_os = "linux")]
+    EbpfLoadFailed(String),
+    /// Binary lives on a filesystem mounted with `nosuid`, which makes the
+    /// kernel silently ignore file capabilities set via `setcap`. Common when
+    /// the binary is under `/home`, `/tmp`, or a removable mount.
+    #[cfg(target_os = "linux")]
+    BinaryOnNosuidMount,
     // macOS PKTAP reasons
     /// No root privileges for PKTAP
     #[cfg(target_os = "macos")]
@@ -49,27 +69,47 @@ pub enum DegradationReason {
 
 impl DegradationReason {
     /// Get human-readable description of what's needed
-    pub fn description(&self) -> &str {
+    pub fn description(&self) -> Cow<'_, str> {
         match self {
-            Self::None => "",
+            Self::None => Cow::Borrowed(""),
             #[cfg(target_os = "linux")]
-            Self::MissingCapBpf => "needs CAP_BPF",
+            Self::MissingCapBpf => Cow::Borrowed("needs CAP_BPF"),
             #[cfg(target_os = "linux")]
-            Self::MissingCapPerfmon => "needs CAP_PERFMON",
+            Self::MissingCapPerfmon => Cow::Borrowed("needs CAP_PERFMON"),
             #[cfg(target_os = "linux")]
-            Self::MissingBpfCapabilities => "needs CAP_BPF+CAP_PERFMON",
+            Self::MissingBpfCapabilities => Cow::Borrowed("needs CAP_BPF+CAP_PERFMON"),
             #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
-            Self::EbpfFeatureDisabled => "eBPF feature disabled",
+            Self::EbpfFeatureDisabled => Cow::Borrowed("eBPF feature disabled"),
             #[cfg(target_os = "linux")]
-            Self::KernelUnsupported => "kernel unsupported",
+            Self::KernelUnsupported => Cow::Borrowed("kernel unsupported"),
+            #[cfg(target_os = "linux")]
+            Self::BpfPermissionDenied => Cow::Borrowed(
+                "BPF denied (check perf_event_paranoid / AppArmor / unprivileged_bpf_disabled)",
+            ),
+            #[cfg(target_os = "linux")]
+            Self::KprobeAttachFailed(sym) => {
+                if sym.is_empty() {
+                    Cow::Borrowed("kprobe attach failed")
+                } else {
+                    Cow::Owned(format!("kprobe attach failed: {sym}"))
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Self::BtfUnavailable => Cow::Borrowed("kernel BTF unavailable"),
+            #[cfg(target_os = "linux")]
+            Self::EbpfLoadFailed(s) => Cow::Owned(format!("eBPF load failed: {s}")),
+            #[cfg(target_os = "linux")]
+            Self::BinaryOnNosuidMount => {
+                Cow::Borrowed("file caps ignored: binary on a nosuid mount")
+            }
             #[cfg(target_os = "macos")]
-            Self::MissingRootPrivileges => "needs root",
+            Self::MissingRootPrivileges => Cow::Borrowed("needs root"),
             #[cfg(target_os = "macos")]
-            Self::NoBpfDeviceAccess => "no BPF device access",
+            Self::NoBpfDeviceAccess => Cow::Borrowed("no BPF device access"),
             #[cfg(target_os = "macos")]
-            Self::BpfFilterIncompatible => "BPF filter incompatible",
+            Self::BpfFilterIncompatible => Cow::Borrowed("BPF filter incompatible"),
             #[cfg(target_os = "macos")]
-            Self::InterfaceSpecified => "interface specified",
+            Self::InterfaceSpecified => Cow::Borrowed("interface specified"),
         }
     }
 
@@ -81,7 +121,12 @@ impl DegradationReason {
             Self::MissingCapBpf
             | Self::MissingCapPerfmon
             | Self::MissingBpfCapabilities
-            | Self::KernelUnsupported => Some("eBPF"),
+            | Self::KernelUnsupported
+            | Self::BpfPermissionDenied
+            | Self::KprobeAttachFailed(_)
+            | Self::BtfUnavailable
+            | Self::EbpfLoadFailed(_)
+            | Self::BinaryOnNosuidMount => Some("eBPF"),
             #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
             Self::EbpfFeatureDisabled => Some("eBPF"),
             #[cfg(target_os = "macos")]

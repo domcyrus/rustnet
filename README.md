@@ -176,6 +176,10 @@ rustnet -r 500               # Set refresh interval (ms)
 
 See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.md) for complete options.
 
+> If you set capabilities but the TUI still shows `eBPF unavailable`, see
+> [eBPF Unavailable Despite Capabilities Being Set](INSTALL.md#ebpf-unavailable-despite-capabilities-being-set)
+> in the troubleshooting section.
+
 ## Keyboard Controls
 
 | Key | Action |

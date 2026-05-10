@@ -91,7 +91,7 @@ mod ebpf_enhanced {
                         "Failed to initialize eBPF tracker: {}, falling back to procfs",
                         e
                     );
-                    (None, DegradationReason::KernelUnsupported)
+                    (None, DegradationReason::EbpfLoadFailed(e.to_string()))
                 }
             };
 

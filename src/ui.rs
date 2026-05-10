@@ -2163,19 +2163,31 @@ fn draw_stats_panel(
     // 1 line for the "Security" heading + one line per content line.
     let security_height = 1u16 + security_text.len() as u16;
 
+    // The Statistics block is normally 13 lines. When process detection is
+    // degraded we render the warning as two indented lines (header +
+    // reason) so the often-long reason text isn't crammed onto the same
+    // line as "Process Detection: …" — which would truncate on a narrow
+    // right column. Reserve enough extra rows for the reason to wrap onto
+    // a second visual line on typical terminal widths.
+    let stats_height: u16 = if app.get_process_detection_status().is_degraded {
+        15
+    } else {
+        13
+    };
+
     // Inside the frame, sections are separated by a 1-row gap (no inner
     // borders) so the right column reads as one cohesive panel with
     // headings rather than a stack of nested boxes.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(13), // Statistics (1 heading + up to 12 content)
-            Constraint::Length(1),  // gap
-            Constraint::Length(5),  // Network Stats (1 heading + 4 content)
-            Constraint::Length(1),  // gap
+            Constraint::Length(stats_height), // Statistics (1 heading + content)
+            Constraint::Length(1),            // gap
+            Constraint::Length(5),            // Network Stats (1 heading + 4 content)
+            Constraint::Length(1),            // gap
             Constraint::Length(security_height), // Security (heading + content)
-            Constraint::Length(1),  // gap
-            Constraint::Min(0),     // Traffic + interface details
+            Constraint::Length(1),               // gap
+            Constraint::Min(0),                  // Traffic + interface details
         ])
         .split(inner_area);
 
@@ -2222,21 +2234,25 @@ fn draw_stats_panel(
         ]),
     ];
 
-    // Add degradation warning on second line if degraded
+    // Add degradation warning on two lines if degraded: a short header line
+    // ("eBPF unavailable:") and the reason on its own indented line. Long
+    // reasons (e.g. raw libbpf error text in EbpfLoadFailed) would otherwise
+    // overflow the narrow right column and get clipped.
     if detection_status.is_degraded {
-        let warning_text = format!(
-            "  {} unavailable - {}",
-            detection_status
-                .unavailable_feature
-                .as_deref()
-                .unwrap_or("Enhanced"),
-            detection_status
-                .degradation_reason
-                .as_deref()
-                .unwrap_or("insufficient permissions")
-        );
+        let feature = detection_status
+            .unavailable_feature
+            .as_deref()
+            .unwrap_or("Enhanced");
+        let reason = detection_status
+            .degradation_reason
+            .as_deref()
+            .unwrap_or("insufficient permissions");
         conn_stats_text.push(Line::from(Span::styled(
-            warning_text,
+            format!("  {feature} unavailable:"),
+            theme::fg(theme::muted()),
+        )));
+        conn_stats_text.push(Line::from(Span::styled(
+            format!("    {reason}"),
             theme::fg(theme::muted()),
         )));
     }
@@ -2282,7 +2298,13 @@ fn draw_stats_panel(
         },
     ]);
 
-    let conn_stats = Paragraph::new(conn_stats_text).style(Style::default());
+    // Wrap so the indented reason line for a degraded eBPF status (which can
+    // be ~140 chars in the EbpfLoadFailed catch-all) flows to the next visual
+    // row instead of being clipped on a narrow right column. trim:false
+    // preserves the leading indent on continuation rows.
+    let conn_stats = Paragraph::new(conn_stats_text)
+        .style(Style::default())
+        .wrap(Wrap { trim: false });
     f.render_widget(conn_stats, chunks[0]);
     render_section_separator(f, chunks[1]);
 

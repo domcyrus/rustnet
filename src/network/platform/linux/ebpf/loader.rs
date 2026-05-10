@@ -1,7 +1,7 @@
 //! eBPF program loader with comprehensive error handling
 
 use anyhow::Result;
-use libbpf_rs::skel::{OpenSkel, Skel, SkelBuilder};
+use libbpf_rs::skel::{OpenSkel, SkelBuilder};
 use log::{debug, info, warn};
 
 use crate::network::platform::DegradationReason;
@@ -15,6 +15,9 @@ use socket_tracker::*;
 pub struct EbpfLoader {
     skel: Box<SocketTrackerSkel<'static>>,
     _open_object: Box<std::mem::MaybeUninit<libbpf_rs::OpenObject>>,
+    // Per-program Link handles. Dropping a Link detaches the kprobe, so the
+    // links must outlive the loader. They are never read after attach.
+    _links: Vec<libbpf_rs::Link>,
 }
 
 impl EbpfLoader {
@@ -24,6 +27,23 @@ impl EbpfLoader {
         // First check if we have necessary capabilities
         let cap_result = Self::check_capabilities_detailed();
         if cap_result != DegradationReason::None {
+            // If caps are missing AND the binary lives on a nosuid mount, that
+            // is almost certainly the real cause: the kernel silently ignores
+            // file capabilities for binaries on `nosuid` filesystems, so any
+            // setcap the user applied was effectively a no-op. Surface that
+            // specific reason instead of the generic "needs CAP_X" message.
+            if matches!(
+                cap_result,
+                DegradationReason::MissingCapBpf
+                    | DegradationReason::MissingCapPerfmon
+                    | DegradationReason::MissingBpfCapabilities
+            ) && Self::executable_on_nosuid_mount()
+            {
+                warn!(
+                    "eBPF: rustnet binary lives on a nosuid mount; file capabilities are ignored at exec"
+                );
+                return Ok((None, DegradationReason::BinaryOnNosuidMount));
+            }
             info!(
                 "eBPF: Insufficient capabilities ({}), falling back to procfs",
                 cap_result.description()
@@ -43,7 +63,7 @@ impl EbpfLoader {
                     "eBPF: Failed to load program: {}, falling back to procfs",
                     e
                 );
-                Ok((None, DegradationReason::KernelUnsupported))
+                Ok((None, classify_libbpf_error(&e)))
             }
         }
     }
@@ -65,30 +85,35 @@ impl EbpfLoader {
             e
         })?;
 
-        debug!("eBPF: Attaching all programs");
-        match skel.attach() {
-            Ok(_) => {
-                info!("eBPF: Programs attached successfully");
-                // Verify programs are actually attached by checking their links
-                let prog_names = [
-                    "trace_tcp_connect",
-                    "trace_tcp_accept",
-                    "trace_udp_sendmsg",
-                    "trace_tcp_v6_connect",
-                    "trace_udp_v6_sendmsg",
-                ];
+        // Attach each kprobe individually so a single missing kernel symbol
+        // yields a "kprobe attach failed: <name>" message instead of a generic
+        // failure with no symbol context.
+        debug!("eBPF: Attaching kprobes individually");
+        let attachments: [(&str, &dyn Fn(&mut SocketTrackerSkel<'_>) -> libbpf_rs::Result<libbpf_rs::Link>); 7] = [
+            ("trace_tcp_connect", &|s| s.progs.trace_tcp_connect.attach()),
+            ("trace_tcp_accept", &|s| s.progs.trace_tcp_accept.attach()),
+            ("trace_udp_sendmsg", &|s| s.progs.trace_udp_sendmsg.attach()),
+            ("trace_tcp_v6_connect", &|s| s.progs.trace_tcp_v6_connect.attach()),
+            ("trace_udp_v6_sendmsg", &|s| s.progs.trace_udp_v6_sendmsg.attach()),
+            ("trace_ping_v4_sendmsg", &|s| s.progs.trace_ping_v4_sendmsg.attach()),
+            ("trace_ping_v6_sendmsg", &|s| s.progs.trace_ping_v6_sendmsg.attach()),
+        ];
 
-                for (i, prog_name) in prog_names.iter().enumerate() {
-                    debug!("eBPF: Checking attachment for program {}: {}", i, prog_name);
+        let mut links: Vec<libbpf_rs::Link> = Vec::with_capacity(attachments.len());
+        for (name, attach_fn) in attachments.iter() {
+            match attach_fn(&mut skel) {
+                Ok(link) => {
+                    debug!("eBPF: Attached kprobe {}", name);
+                    links.push(link);
                 }
-
-                info!("eBPF: All programs loaded and attached successfully");
-            }
-            Err(e) => {
-                warn!("eBPF: Failed to attach programs: {}", e);
-                return Err(e.into());
+                Err(e) => {
+                    warn!("eBPF: Failed to attach kprobe {}: {}", name, e);
+                    return Err(anyhow::Error::new(e)
+                        .context(format!("attach kprobe {name}")));
+                }
             }
         }
+        info!("eBPF: All {} kprobes attached successfully", links.len());
 
         // SAFETY: SocketTrackerSkel borrows from open_object via the reference
         // passed to skel_builder.open(). We extend the lifetime to 'static because
@@ -99,6 +124,7 @@ impl EbpfLoader {
         Ok(Self {
             skel: Box::new(skel_static),
             _open_object: open_object,
+            _links: links,
         })
     }
 
@@ -194,5 +220,246 @@ impl EbpfLoader {
     /// Get the socket map for lookups
     pub fn socket_map(&self) -> &libbpf_rs::Map<'_> {
         &self.skel.maps.socket_map
+    }
+
+    /// Detect whether the running binary lives on a filesystem mounted with
+    /// `nosuid`. When that is the case, the kernel silently ignores file
+    /// capabilities applied via `setcap`, so any caps the user granted are
+    /// effectively no-ops at exec time.
+    ///
+    /// Resolves `/proc/self/exe` to its canonical path, then walks
+    /// `/proc/self/mountinfo` looking for the longest mount-point prefix that
+    /// contains the binary. The mount options field is parsed for `nosuid`.
+    fn executable_on_nosuid_mount() -> bool {
+        use std::fs;
+        use std::path::Path;
+
+        let exe = match fs::read_link("/proc/self/exe") {
+            Ok(p) => p,
+            Err(e) => {
+                debug!("nosuid check: failed to resolve /proc/self/exe: {}", e);
+                return false;
+            }
+        };
+
+        let mountinfo = match fs::read_to_string("/proc/self/mountinfo") {
+            Ok(s) => s,
+            Err(e) => {
+                debug!("nosuid check: failed to read /proc/self/mountinfo: {}", e);
+                return false;
+            }
+        };
+
+        // /proc/self/mountinfo line layout (see man 5 proc, "mountinfo"):
+        //   id parent major:minor root mountpoint options - fstype source super_options
+        //   [0]  [1]    [2]      [3]    [4]       [5]   [6]
+        // Field 5 is the mount point and field 6 is the per-mount options.
+        let mut best: Option<(usize, &str)> = None;
+        for line in mountinfo.lines() {
+            let mut fields = line.split_whitespace();
+            let mountpoint = match fields.nth(4) {
+                Some(mp) => mp,
+                None => continue,
+            };
+            let options = match fields.next() {
+                Some(o) => o,
+                None => continue,
+            };
+            if Path::new(mountpoint).is_ancestor_of_or_equal(&exe) {
+                let len = mountpoint.len();
+                if best.map(|(l, _)| len > l).unwrap_or(true) {
+                    best = Some((len, options));
+                }
+            }
+        }
+
+        match best {
+            Some((_, options)) => {
+                let nosuid = options.split(',').any(|opt| opt == "nosuid");
+                if nosuid {
+                    debug!("nosuid check: binary {:?} is on a nosuid mount", exe);
+                }
+                nosuid
+            }
+            None => false,
+        }
+    }
+}
+
+/// Stable Rust does not expose `Path::is_ancestor_of`; do the prefix match
+/// component-by-component so `/foo` does not match `/foobar`.
+trait PathAncestorExt {
+    fn is_ancestor_of_or_equal(&self, other: &std::path::Path) -> bool;
+}
+
+impl PathAncestorExt for std::path::Path {
+    fn is_ancestor_of_or_equal(&self, other: &std::path::Path) -> bool {
+        let mut a = self.components();
+        let mut b = other.components();
+        loop {
+            match (a.next(), b.next()) {
+                (Some(x), Some(y)) if x == y => continue,
+                (None, _) => return true,
+                _ => return false,
+            }
+        }
+    }
+}
+
+/// Classify a libbpf error into a `DegradationReason` so the TUI can surface
+/// an actionable hint instead of a generic "kernel unsupported" message.
+///
+/// Walks the full error chain (libbpf-rs uses `anyhow::Context`) and matches
+/// the lower-cased text against well-known failure modes in priority order.
+fn classify_libbpf_error(err: &anyhow::Error) -> DegradationReason {
+    // Collect every link in the chain into a single lower-cased blob to avoid
+    // brittleness around which level wraps which.
+    let mut blob = String::new();
+    for cause in err.chain() {
+        blob.push_str(&cause.to_string().to_lowercase());
+        blob.push('\n');
+    }
+
+    if blob.contains("btf") || blob.contains("vmlinux") || blob.contains("co-re") {
+        return DegradationReason::BtfUnavailable;
+    }
+
+    // ENOSYS from bpf(2) means the syscall isn't implemented at all.
+    if blob.contains("function not implemented") || blob.contains("enosys") {
+        return DegradationReason::KernelUnsupported;
+    }
+
+    // Permission errors after the cap pre-check has already passed imply an
+    // LSM (AppArmor / lockdown), `kernel.unprivileged_bpf_disabled`, or —
+    // for kprobe attach via `perf_event_open(2)` — `kernel.perf_event_paranoid`
+    // being too restrictive even for CAP_PERFMON. libbpf surfaces these as
+    // either EPERM ("Operation not permitted") or EACCES ("Permission
+    // denied" / "-EACCES"). Both must be matched.
+    let permission_denied = blob.contains("operation not permitted")
+        || blob.contains("permission denied")
+        || blob.contains("eperm")
+        || blob.contains("eacces")
+        || blob.contains("-eacces");
+    if permission_denied {
+        return DegradationReason::BpfPermissionDenied;
+    }
+
+    // Genuine kprobe attach failure that isn't a permission issue — usually
+    // a missing kernel symbol. Carry the symbol name where libbpf gave us
+    // one so the user can confirm whether the kernel exposes it.
+    let mentions_attach = blob.contains("attach")
+        || blob.contains("kprobe")
+        || blob.contains("perf_event_open");
+    if mentions_attach {
+        let sym = extract_kprobe_symbol(&blob).unwrap_or_default();
+        return DegradationReason::KprobeAttachFailed(sym);
+    }
+
+    // Cap the text so the TUI's right-column reason line wraps to at most
+    // ~2 rows on typical terminal widths. Full text is always available in
+    // the rustnet log file via the `warn!("eBPF: Failed to load program: …")`
+    // emitted at the call site.
+    let mut text = err.to_string();
+    const MAX_LEN: usize = 100;
+    if text.len() > MAX_LEN {
+        text.truncate(MAX_LEN);
+        text.push('…');
+    }
+    DegradationReason::EbpfLoadFailed(text)
+}
+
+fn extract_kprobe_symbol(blob: &str) -> Option<String> {
+    // Look for "attach kprobe <name>" or "kprobe/<name>" first - both forms
+    // appear in libbpf error text.
+    for prefix in ["attach kprobe ", "kprobe/", "kprobe '"] {
+        if let Some(rest) = blob.split(prefix).nth(1) {
+            let sym: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !sym.is_empty() {
+                return Some(sym);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::anyhow;
+
+    #[test]
+    fn classifies_btf_error() {
+        let e = anyhow!("failed to load: BTF type 42 missing");
+        assert_eq!(classify_libbpf_error(&e), DegradationReason::BtfUnavailable);
+    }
+
+    #[test]
+    fn classifies_eperm_as_apparmor_hint() {
+        let e = anyhow!("bpf(BPF_PROG_LOAD): Operation not permitted");
+        assert_eq!(
+            classify_libbpf_error(&e),
+            DegradationReason::BpfPermissionDenied
+        );
+    }
+
+    #[test]
+    fn classifies_eacces_from_perf_event_open() {
+        // Exact wording observed on Debian 13 / kernel 6.12 (issue #255):
+        // libbpf returns -EACCES from perf_event_open() when attaching kprobe.
+        // This must classify as a permission issue (perf_event_paranoid /
+        // AppArmor) — NOT as a missing-kprobe-symbol failure.
+        let e = anyhow!(
+            "libbpf: prog 'trace_tcp_connect': failed to create kprobe \
+             'tcp_connect+0x0' perf event: -EACCES"
+        );
+        assert_eq!(
+            classify_libbpf_error(&e),
+            DegradationReason::BpfPermissionDenied
+        );
+    }
+
+    #[test]
+    fn classifies_kprobe_attach_with_symbol() {
+        let e = anyhow!("failed to attach kprobe ping_v6_sendmsg: No such file or directory");
+        match classify_libbpf_error(&e) {
+            DegradationReason::KprobeAttachFailed(sym) => assert_eq!(sym, "ping_v6_sendmsg"),
+            other => panic!("expected KprobeAttachFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn classifies_enosys_as_kernel_unsupported() {
+        let e = anyhow!("bpf syscall: Function not implemented");
+        assert_eq!(
+            classify_libbpf_error(&e),
+            DegradationReason::KernelUnsupported
+        );
+    }
+
+    #[test]
+    fn falls_back_to_ebpf_load_failed_with_truncation() {
+        let long = "x".repeat(500);
+        let e = anyhow!("{}", long);
+        match classify_libbpf_error(&e) {
+            DegradationReason::EbpfLoadFailed(s) => {
+                // 100 ASCII chars + "…" sentinel
+                assert!(
+                    s.chars().count() <= 101,
+                    "expected truncation, got {} chars",
+                    s.chars().count()
+                );
+                assert!(s.ends_with('…'), "expected ellipsis suffix, got {:?}", s);
+            }
+            other => panic!("expected EbpfLoadFailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn extracts_symbol_from_quoted_form() {
+        let sym = extract_kprobe_symbol("could not attach kprobe 'tcp_v6_connect' on cpu 0");
+        assert_eq!(sym.as_deref(), Some("tcp_v6_connect"));
     }
 }
