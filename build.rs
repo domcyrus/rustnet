@@ -29,6 +29,14 @@ include!("src/cli.rs");
 
 fn setup_cross_compilation_libs() {
     let target = env::var("TARGET").unwrap_or_default();
+    let host = env::var("HOST").unwrap_or_default();
+
+    // Only apply hard-coded multiarch lib paths when actually cross-compiling.
+    // On native builds (e.g. Homebrew on Linux arm64) these paths would shadow
+    // package-manager-provided libraries and break linkage.
+    if host == target {
+        return;
+    }
 
     match target.as_str() {
         "aarch64-unknown-linux-gnu" => {
