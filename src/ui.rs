@@ -3849,6 +3849,19 @@ fn draw_connection_details(
                         label_style,
                     );
                 }
+                if let Some(cseq_number) = info.cseq_number {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "CSeq",
+                        if let Some(method) = &info.cseq_method {
+                            format!("{} {}", cseq_number, method)
+                        } else {
+                            cseq_number.to_string()
+                        },
+                        label_style,
+                    );
+                }
                 if let Some(from) = &info.from {
                     push_detail_field(
                         &mut details_text,
@@ -3891,6 +3904,24 @@ fn draw_connection_details(
                         &mut detail_fields,
                         "Server",
                         server.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(content_type) = &info.content_type {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Content-Type",
+                        content_type.clone(),
+                        label_style,
+                    );
+                }
+                if info.has_sdp {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Body",
+                        "SDP".to_string(),
                         label_style,
                     );
                 }
