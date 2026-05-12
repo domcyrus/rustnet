@@ -15,6 +15,10 @@
 </p>
 
 <p align="center">
+  <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <img src="./assets/rustnet.gif" alt="RustNet demo" width="800">
 </p>
 
