@@ -897,6 +897,12 @@ fn merge_sip_info(old_info: &mut SipInfo, new_info: &SipInfo) {
     if new_info.reason_phrase.is_some() {
         old_info.reason_phrase.clone_from(&new_info.reason_phrase);
     }
+    if old_info.cseq_number.is_none() && new_info.cseq_number.is_some() {
+        old_info.cseq_number = new_info.cseq_number;
+    }
+    if old_info.cseq_method.is_none() && new_info.cseq_method.is_some() {
+        old_info.cseq_method.clone_from(&new_info.cseq_method);
+    }
     if old_info.from.is_none() && new_info.from.is_some() {
         old_info.from.clone_from(&new_info.from);
     }
@@ -912,6 +918,10 @@ fn merge_sip_info(old_info: &mut SipInfo, new_info: &SipInfo) {
     if old_info.server.is_none() && new_info.server.is_some() {
         old_info.server.clone_from(&new_info.server);
     }
+    if old_info.content_type.is_none() && new_info.content_type.is_some() {
+        old_info.content_type.clone_from(&new_info.content_type);
+    }
+    old_info.has_sdp |= new_info.has_sdp;
 }
 
 /// Update connection rate calculations using sliding window
