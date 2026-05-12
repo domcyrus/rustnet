@@ -116,6 +116,19 @@ impl std::fmt::Display for ApplicationProtocol {
                     write!(f, "SSDP {}", info.method)
                 }
             }
+            ApplicationProtocol::Sip(info) => {
+                if let Some(status_code) = info.status_code {
+                    write!(f, "SIP {}", status_code)
+                } else if let Some(method) = &info.method {
+                    if let Some(uri) = &info.request_uri {
+                        write!(f, "SIP {} ({})", method, uri)
+                    } else {
+                        write!(f, "SIP {}", method)
+                    }
+                } else {
+                    write!(f, "SIP")
+                }
+            }
             ApplicationProtocol::NetBios(info) => {
                 if let Some(name) = &info.name {
                     write!(f, "NetBIOS {} ({})", info.service, name)
@@ -354,6 +367,7 @@ pub enum ApplicationProtocol {
     Dhcp(DhcpInfo),
     Snmp(SnmpInfo),
     Ssdp(SsdpInfo),
+    Sip(SipInfo),
     NetBios(NetBiosInfo),
     BitTorrent(BitTorrentInfo),
     Stun(StunInfo),
@@ -375,6 +389,7 @@ impl ApplicationProtocol {
             ApplicationProtocol::NetBios(_) => "NetBIOS",
             ApplicationProtocol::Ntp(_) => "NTP",
             ApplicationProtocol::Quic(_) => "QUIC",
+            ApplicationProtocol::Sip(_) => "SIP",
             ApplicationProtocol::Snmp(_) => "SNMP",
             ApplicationProtocol::Ssh(_) => "SSH",
             ApplicationProtocol::Ssdp(_) => "SSDP",
@@ -715,6 +730,21 @@ impl std::fmt::Display for SsdpMethod {
             SsdpMethod::Response => write!(f, "RESPONSE"),
         }
     }
+}
+
+// SIP-specific types
+#[derive(Debug, Clone)]
+pub struct SipInfo {
+    pub is_response: bool,
+    pub method: Option<String>,
+    pub request_uri: Option<String>,
+    pub status_code: Option<u16>,
+    pub reason_phrase: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub call_id: Option<String>,
+    pub user_agent: Option<String>,
+    pub server: Option<String>,
 }
 
 // NetBIOS-specific types
@@ -1475,6 +1505,7 @@ impl AppProtocolDistribution {
                     | ApplicationProtocol::Dhcp(_)
                     | ApplicationProtocol::Snmp(_)
                     | ApplicationProtocol::Ssdp(_)
+                    | ApplicationProtocol::Sip(_)
                     | ApplicationProtocol::NetBios(_)
                     | ApplicationProtocol::BitTorrent(_)
                     | ApplicationProtocol::Stun(_)
@@ -1987,6 +2018,15 @@ impl Connection {
                         ApplicationProtocol::Ssdp(info) => {
                             Cow::Owned(format!("SSDP_{}", info.method))
                         }
+                        ApplicationProtocol::Sip(info) => {
+                            if let Some(status_code) = info.status_code {
+                                Cow::Owned(format!("SIP_{}", status_code))
+                            } else if let Some(method) = &info.method {
+                                Cow::Owned(format!("SIP_{}", method))
+                            } else {
+                                Cow::Borrowed("SIP")
+                            }
+                        }
                         ApplicationProtocol::NetBios(info) => {
                             Cow::Owned(format!("NETBIOS_{}", info.service))
                         }
@@ -2109,6 +2149,7 @@ impl Connection {
                         ApplicationProtocol::Dhcp(_) => Duration::from_secs(60),
                         ApplicationProtocol::Snmp(_) => Duration::from_secs(60),
                         ApplicationProtocol::Ssdp(_) => Duration::from_secs(30),
+                        ApplicationProtocol::Sip(_) => Duration::from_secs(120),
                         ApplicationProtocol::NetBios(_) => Duration::from_secs(60),
                         ApplicationProtocol::BitTorrent(_) => Duration::from_secs(60),
                         ApplicationProtocol::Stun(_) => Duration::from_secs(30),
