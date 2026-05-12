@@ -56,11 +56,15 @@ pub fn analyze_sip(payload: &[u8]) -> Option<SipInfo> {
         request_uri: start_line.request_uri,
         status_code: start_line.status_code,
         reason_phrase: start_line.reason_phrase,
+        cseq_number: None,
+        cseq_method: None,
         from: None,
         to: None,
         call_id: None,
         user_agent: None,
         server: None,
+        content_type: None,
+        has_sdp: false,
     };
 
     for line in text.lines().skip(1) {
@@ -93,6 +97,16 @@ pub fn analyze_sip(payload: &[u8]) -> Option<SipInfo> {
                     info.call_id = Some(value.to_string());
                 }
             }
+            "cseq" => {
+                if let Some((number, method)) = parse_cseq(value) {
+                    if info.cseq_number.is_none() {
+                        info.cseq_number = Some(number);
+                    }
+                    if info.cseq_method.is_none() {
+                        info.cseq_method = Some(method);
+                    }
+                }
+            }
             "user-agent" => {
                 if info.user_agent.is_none() {
                     info.user_agent = Some(value.to_string());
@@ -101,6 +115,14 @@ pub fn analyze_sip(payload: &[u8]) -> Option<SipInfo> {
             "server" => {
                 if info.server.is_none() {
                     info.server = Some(value.to_string());
+                }
+            }
+            "content-type" | "c" => {
+                if info.content_type.is_none() {
+                    info.content_type = Some(value.to_string());
+                }
+                if value.eq_ignore_ascii_case("application/sdp") {
+                    info.has_sdp = true;
                 }
             }
             _ => {}
@@ -164,6 +186,14 @@ fn is_known_sip_method(method: &str) -> bool {
     )
 }
 
+fn parse_cseq(value: &str) -> Option<(u32, String)> {
+    let mut parts = value.split_whitespace();
+    let number = parts.next()?.parse::<u32>().ok()?;
+    let method = parts.next()?;
+
+    Some((number, method.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,18 +205,24 @@ Via: SIP/2.0/UDP pc33.example.com;branch=z9hG4bK776asdhds\r\n\
 From: Alice <sip:alice@example.com>;tag=1928301774\r\n\
 To: Bob <sip:bob@example.com>\r\n\
 Call-ID: a84b4c76e66710@pc33.example.com\r\n\
+CSeq: 314159 INVITE\r\n\
 User-Agent: Softphone/1.0\r\n\
+Content-Type: application/sdp\r\n\
 \r\n";
 
         let info = analyze_sip(packet).expect("should parse");
         assert!(!info.is_response);
         assert_eq!(info.method.as_deref(), Some("INVITE"));
         assert_eq!(info.request_uri.as_deref(), Some("sip:bob@example.com"));
+        assert_eq!(info.cseq_number, Some(314159));
+        assert_eq!(info.cseq_method.as_deref(), Some("INVITE"));
         assert_eq!(
             info.call_id.as_deref(),
             Some("a84b4c76e66710@pc33.example.com")
         );
         assert_eq!(info.user_agent.as_deref(), Some("Softphone/1.0"));
+        assert_eq!(info.content_type.as_deref(), Some("application/sdp"));
+        assert!(info.has_sdp);
     }
 
     #[test]
@@ -197,12 +233,15 @@ From: Alice <sip:alice@example.com>;tag=9fxced76sl\r\n\
 To: Bob <sip:bob@example.com>;tag=8321234356\r\n\
 Call-ID: 3848276298220188511@atlanta.example.com\r\n\
 Server: PBX/2.1\r\n\
+CSeq: 1 INVITE\r\n\
 \r\n";
 
         let info = analyze_sip(packet).expect("should parse");
         assert!(info.is_response);
         assert_eq!(info.status_code, Some(200));
         assert_eq!(info.reason_phrase.as_deref(), Some("OK"));
+        assert_eq!(info.cseq_number, Some(1));
+        assert_eq!(info.cseq_method.as_deref(), Some("INVITE"));
         assert_eq!(info.server.as_deref(), Some("PBX/2.1"));
     }
 
@@ -212,6 +251,7 @@ Server: PBX/2.1\r\n\
 f: <sip:alice@example.com>\r\n\
 t: <sip:alice@example.com>\r\n\
 i: 12345@client.example.com\r\n\
+c: application/sdp\r\n\
 \r\n";
 
         let info = analyze_sip(packet).expect("should parse");
@@ -219,6 +259,19 @@ i: 12345@client.example.com\r\n\
         assert_eq!(info.from.as_deref(), Some("<sip:alice@example.com>"));
         assert_eq!(info.to.as_deref(), Some("<sip:alice@example.com>"));
         assert_eq!(info.call_id.as_deref(), Some("12345@client.example.com"));
+        assert_eq!(info.content_type.as_deref(), Some("application/sdp"));
+        assert!(info.has_sdp);
+    }
+
+    #[test]
+    fn test_sip_non_sdp_content_type() {
+        let packet = b"INFO sip:bob@example.com SIP/2.0\r\n\
+Content-Type: application/dtmf-relay\r\n\
+\r\n";
+
+        let info = analyze_sip(packet).expect("should parse");
+        assert_eq!(info.content_type.as_deref(), Some("application/dtmf-relay"));
+        assert!(!info.has_sdp);
     }
 
     #[test]
