@@ -13,6 +13,7 @@ mod mqtt;
 mod netbios;
 mod ntp;
 mod quic;
+mod sip;
 mod snmp;
 mod ssdp;
 mod ssh;
@@ -32,6 +33,7 @@ const PORT_NETBIOS_DGM: u16 = 138;
 const PORT_SNMP: u16 = 161;
 const PORT_SNMP_TRAP: u16 = 162;
 const PORT_HTTPS: u16 = 443;
+const PORT_SIP: u16 = 5060;
 const PORT_MQTT: u16 = 1883;
 const PORT_SSDP: u16 = 1900;
 const PORT_MDNS: u16 = 5353;
@@ -58,14 +60,23 @@ pub fn analyze_tcp_packet(
 
     // Try protocols in order of likelihood/speed
 
-    // 1. Check for HTTP (fast string matching)
+    // 1. Check for SIP (port 5060 or SIP start-line)
+    if (local_port == PORT_SIP || remote_port == PORT_SIP || sip::is_likely_sip(payload))
+        && let Some(sip_result) = sip::analyze_sip(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Sip(sip_result),
+        });
+    }
+
+    // 2. Check for HTTP (fast string matching)
     if let Some(http_result) = http::analyze_http(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::Http(http_result),
         });
     }
 
-    // 2. Check for TLS/HTTPS (port 443 or TLS handshake)
+    // 3. Check for TLS/HTTPS (port 443 or TLS handshake)
     if (local_port == PORT_HTTPS || remote_port == PORT_HTTPS || https::is_tls_handshake(payload))
         && let Some(tls_result) = https::analyze_https(payload)
     {
@@ -74,7 +85,7 @@ pub fn analyze_tcp_packet(
         });
     }
 
-    // 3. Check for BitTorrent (handshake signature \x13BitTorrent protocol)
+    // 4. Check for BitTorrent (handshake signature \x13BitTorrent protocol)
     if bittorrent::is_bittorrent_handshake(payload)
         && let Some(bt_result) = bittorrent::analyze_bittorrent(payload)
     {
@@ -83,7 +94,7 @@ pub fn analyze_tcp_packet(
         });
     }
 
-    // 4. Check for MQTT (port 1883 or MQTT signature)
+    // 5. Check for MQTT (port 1883 or MQTT signature)
     if (local_port == PORT_MQTT || remote_port == PORT_MQTT || mqtt::is_mqtt_packet(payload))
         && let Some(mqtt_result) = mqtt::analyze_mqtt(payload)
     {
@@ -92,7 +103,7 @@ pub fn analyze_tcp_packet(
         });
     }
 
-    // 5. Check for SSH (port 22 or SSH banner)
+    // 6. Check for SSH (port 22 or SSH banner)
     if (local_port == PORT_SSH || remote_port == PORT_SSH || ssh::is_likely_ssh(payload))
         && let Some(ssh_result) = ssh::analyze_ssh(payload, _is_outgoing)
     {
@@ -126,7 +137,16 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 2. QUIC/HTTP3 (port 443)
+    // 2. SIP (port 5060 or SIP start-line)
+    if (local_port == PORT_SIP || remote_port == PORT_SIP || sip::is_likely_sip(payload))
+        && let Some(sip_result) = sip::analyze_sip(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Sip(sip_result),
+        });
+    }
+
+    // 3. QUIC/HTTP3 (port 443)
     if (local_port == PORT_HTTPS || remote_port == PORT_HTTPS) && quic::is_quic_packet(payload) {
         let quic_info = quic::parse_quic_packet(payload);
         if let Some(quic_info) = quic_info {
@@ -144,7 +164,7 @@ pub fn analyze_udp_packet(
         }
     }
 
-    // 3. mDNS (port 5353)
+    // 4. mDNS (port 5353)
     if (local_port == PORT_MDNS || remote_port == PORT_MDNS)
         && let Some(mdns_result) = mdns::analyze_mdns(payload)
     {
@@ -153,7 +173,7 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 4. DHCP (ports 67-68)
+    // 5. DHCP (ports 67-68)
     if matches!(
         (local_port, remote_port),
         (PORT_DHCP_SERVER, _)
@@ -167,7 +187,7 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 5. NTP (port 123)
+    // 6. NTP (port 123)
     if (local_port == PORT_NTP || remote_port == PORT_NTP)
         && let Some(ntp_result) = ntp::analyze_ntp(payload)
     {
@@ -176,7 +196,7 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 6. LLMNR (port 5355)
+    // 7. LLMNR (port 5355)
     if (local_port == PORT_LLMNR || remote_port == PORT_LLMNR)
         && let Some(llmnr_result) = llmnr::analyze_llmnr(payload)
     {
@@ -185,7 +205,7 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 7. SSDP (port 1900)
+    // 8. SSDP (port 1900)
     if (local_port == PORT_SSDP || remote_port == PORT_SSDP)
         && let Some(ssdp_result) = ssdp::analyze_ssdp(payload)
     {
@@ -194,7 +214,7 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 8. NetBIOS-NS (port 137)
+    // 9. NetBIOS-NS (port 137)
     if (local_port == PORT_NETBIOS_NS || remote_port == PORT_NETBIOS_NS)
         && let Some(netbios_result) = netbios::analyze_netbios_ns(payload)
     {
@@ -203,7 +223,7 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 9. NetBIOS-DGM (port 138)
+    // 10. NetBIOS-DGM (port 138)
     if (local_port == PORT_NETBIOS_DGM || remote_port == PORT_NETBIOS_DGM)
         && let Some(netbios_result) = netbios::analyze_netbios_dgm(payload)
     {
@@ -212,7 +232,7 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 10. SNMP (ports 161-162)
+    // 11. SNMP (ports 161-162)
     if matches!(
         (local_port, remote_port),
         (PORT_SNMP, _) | (PORT_SNMP_TRAP, _) | (_, PORT_SNMP) | (_, PORT_SNMP_TRAP)
@@ -223,7 +243,7 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 11. STUN (port 3478/5349 or magic cookie detection for non-standard ports)
+    // 12. STUN (port 3478/5349 or magic cookie detection for non-standard ports)
     if (local_port == PORT_STUN
         || remote_port == PORT_STUN
         || local_port == PORT_STUN_TLS
@@ -236,7 +256,7 @@ pub fn analyze_udp_packet(
         });
     }
 
-    // 12. BitTorrent DHT / uTP (no port gating — signature-based)
+    // 13. BitTorrent DHT / uTP (no port gating — signature-based)
     if let Some(bt_result) = bittorrent::analyze_udp_bittorrent(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::BitTorrent(bt_result),
