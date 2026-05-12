@@ -87,6 +87,7 @@ impl ServiceLookup {
         lookup.add_service(143, Protocol::Tcp, "imap");
         lookup.add_service(443, Protocol::Tcp, "https");
         lookup.add_service(445, Protocol::Tcp, "microsoft-ds");
+        lookup.add_service(5060, Protocol::Tcp, "sip");
         lookup.add_service(587, Protocol::Tcp, "submission");
         lookup.add_service(993, Protocol::Tcp, "imaps");
         lookup.add_service(995, Protocol::Tcp, "pop3s");
