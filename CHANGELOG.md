@@ -12,6 +12,7 @@ The headline of this release is a major TUI refresh. The tabs, stats panel, and 
 ### Added
 - **TUI Revamp**: Redesigned tabs, stats panel, and details view (#239)
 - **Per-field Colors and Status Dot**: New per-field colors, status dot, and magenta panel borders for at-a-glance readability (#241)
+- **SIP Protocol Detection**: Deep packet inspection for SIP (Session Initiation Protocol) traffic over UDP/TCP port 5060, with method/URI/response code display and compact header support
 - **Address Scope Labels**: Remote addresses are tagged PUBLIC, PRIVATE, etc. in the connection list (#251)
 - **Reverse DNS Resolution by Default**: Reverse DNS resolution is now enabled by default. Use the new `--no-resolve-dns` flag to opt out (#245)
 

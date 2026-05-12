@@ -417,7 +417,7 @@ Wireshark operates at the packet capture layer (libpcap) - it sees raw network t
 |------------|---------|-----------|
 | Process identification | Yes (eBPF, procfs, platform APIs) | No |
 | Connection state tracking | Native (TCP FSM, QUIC states) | Via dissectors |
-| Protocol dissectors | ~15 common protocols | 3000+ protocols |
+| Protocol dissectors | ~16 common protocols | 3000+ protocols |
 | Packet-level inspection | Metadata only | Full payload |
 | Interface | TUI (terminal) | GUI |
 | Capture to file | Yes (`--pcap-export`) | Yes (native) |
