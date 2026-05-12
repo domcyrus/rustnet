@@ -3805,6 +3805,96 @@ fn draw_connection_details(
                     );
                 }
             }
+            crate::network::types::ApplicationProtocol::Sip(info) => {
+                push_detail_field(
+                    &mut details_text,
+                    &mut detail_fields,
+                    "Type",
+                    if info.is_response {
+                        "Response"
+                    } else {
+                        "Request"
+                    }
+                    .to_string(),
+                    label_style,
+                );
+                if let Some(method) = &info.method {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Method",
+                        method.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(status_code) = info.status_code {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Status",
+                        if let Some(reason) = &info.reason_phrase {
+                            format!("{} {}", status_code, reason)
+                        } else {
+                            status_code.to_string()
+                        },
+                        label_style,
+                    );
+                }
+                if let Some(request_uri) = &info.request_uri {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Request URI",
+                        request_uri.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(from) = &info.from {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "From",
+                        from.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(to) = &info.to {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "To",
+                        to.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(call_id) = &info.call_id {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Call-ID",
+                        call_id.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(user_agent) = &info.user_agent {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "User-Agent",
+                        user_agent.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(server) = &info.server {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Server",
+                        server.clone(),
+                        label_style,
+                    );
+                }
+            }
             crate::network::types::ApplicationProtocol::NetBios(info) => {
                 push_detail_field(
                     &mut details_text,
