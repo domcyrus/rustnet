@@ -7,7 +7,7 @@ use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reasse
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
     ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, MqttInfo,
-    ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState,
+    ProtocolState, QuicConnectionState, QuicInfo, SipInfo, SshInfo, TcpState,
 };
 
 /// Get the priority of a QUIC connection state for proper state progression
@@ -494,6 +494,11 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     merge_mqtt_info(old_info, new_info);
                 }
 
+                // SIP - merge dialog identifiers and latest request/response summary
+                (ApplicationProtocol::Sip(old_info), ApplicationProtocol::Sip(new_info)) => {
+                    merge_sip_info(old_info, new_info);
+                }
+
                 _ => {
                     // Keep existing protocol
                 }
@@ -874,6 +879,39 @@ fn merge_mqtt_info(old_info: &mut MqttInfo, new_info: &MqttInfo) {
     }
     // Always update packet_type to show the latest activity
     old_info.packet_type = new_info.packet_type;
+}
+
+/// Merge SIP information
+fn merge_sip_info(old_info: &mut SipInfo, new_info: &SipInfo) {
+    old_info.is_response = new_info.is_response;
+
+    if new_info.method.is_some() {
+        old_info.method.clone_from(&new_info.method);
+    }
+    if new_info.request_uri.is_some() {
+        old_info.request_uri.clone_from(&new_info.request_uri);
+    }
+    if new_info.status_code.is_some() {
+        old_info.status_code = new_info.status_code;
+    }
+    if new_info.reason_phrase.is_some() {
+        old_info.reason_phrase.clone_from(&new_info.reason_phrase);
+    }
+    if old_info.from.is_none() && new_info.from.is_some() {
+        old_info.from.clone_from(&new_info.from);
+    }
+    if old_info.to.is_none() && new_info.to.is_some() {
+        old_info.to.clone_from(&new_info.to);
+    }
+    if old_info.call_id.is_none() && new_info.call_id.is_some() {
+        old_info.call_id.clone_from(&new_info.call_id);
+    }
+    if old_info.user_agent.is_none() && new_info.user_agent.is_some() {
+        old_info.user_agent.clone_from(&new_info.user_agent);
+    }
+    if old_info.server.is_none() && new_info.server.is_some() {
+        old_info.server.clone_from(&new_info.server);
+    }
 }
 
 /// Update connection rate calculations using sliding window
