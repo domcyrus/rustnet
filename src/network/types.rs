@@ -118,10 +118,20 @@ impl std::fmt::Display for ApplicationProtocol {
             }
             ApplicationProtocol::Sip(info) => {
                 if let Some(status_code) = info.status_code {
-                    write!(f, "SIP {}", status_code)
+                    if info.has_sdp {
+                        write!(f, "SIP {} (SDP)", status_code)
+                    } else {
+                        write!(f, "SIP {}", status_code)
+                    }
                 } else if let Some(method) = &info.method {
                     if let Some(uri) = &info.request_uri {
-                        write!(f, "SIP {} ({})", method, uri)
+                        if info.has_sdp {
+                            write!(f, "SIP {} ({} SDP)", method, uri)
+                        } else {
+                            write!(f, "SIP {} ({})", method, uri)
+                        }
+                    } else if info.has_sdp {
+                        write!(f, "SIP {} (SDP)", method)
                     } else {
                         write!(f, "SIP {}", method)
                     }
@@ -740,11 +750,15 @@ pub struct SipInfo {
     pub request_uri: Option<String>,
     pub status_code: Option<u16>,
     pub reason_phrase: Option<String>,
+    pub cseq_number: Option<u32>,
+    pub cseq_method: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
     pub call_id: Option<String>,
     pub user_agent: Option<String>,
     pub server: Option<String>,
+    pub content_type: Option<String>,
+    pub has_sdp: bool,
 }
 
 // NetBIOS-specific types
