@@ -7,7 +7,7 @@ use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reasse
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
     ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, MqttInfo,
-    ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState,
+    ProtocolState, QuicConnectionState, QuicInfo, SipInfo, SipMessageType, SshInfo, TcpState,
 };
 
 /// Get the priority of a QUIC connection state for proper state progression
@@ -494,6 +494,13 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     merge_mqtt_info(old_info, new_info);
                 }
 
+                // SIP — accumulate metadata across requests/responses in
+                // the same dialog (Call-ID is the join key in real life,
+                // but here we operate on a single connection at a time).
+                (ApplicationProtocol::Sip(old_info), ApplicationProtocol::Sip(new_info)) => {
+                    merge_sip_info(old_info, new_info);
+                }
+
                 _ => {
                     // Keep existing protocol
                 }
@@ -874,6 +881,53 @@ fn merge_mqtt_info(old_info: &mut MqttInfo, new_info: &MqttInfo) {
     }
     // Always update packet_type to show the latest activity
     old_info.packet_type = new_info.packet_type;
+}
+
+/// Merge SIP metadata across observed messages in the same connection.
+/// Stable identity fields (`Call-ID`, `From`, `To`, `User-Agent`,
+/// `Server`, `Content-Type`/`has_sdp`) are filled in only if missing.
+/// Volatile fields (`message_type`, `method`, `status_code`,
+/// `reason_phrase`, `CSeq`) are overwritten with whatever the most
+/// recent message carries so the TUI reflects the latest activity in a
+/// dialog.
+fn merge_sip_info(old_info: &mut SipInfo, new_info: &SipInfo) {
+    if old_info.call_id.is_none() && new_info.call_id.is_some() {
+        old_info.call_id.clone_from(&new_info.call_id);
+    }
+    if old_info.from.is_none() && new_info.from.is_some() {
+        old_info.from.clone_from(&new_info.from);
+    }
+    if old_info.to.is_none() && new_info.to.is_some() {
+        old_info.to.clone_from(&new_info.to);
+    }
+    if old_info.user_agent.is_none() && new_info.user_agent.is_some() {
+        old_info.user_agent.clone_from(&new_info.user_agent);
+    }
+    if old_info.server.is_none() && new_info.server.is_some() {
+        old_info.server.clone_from(&new_info.server);
+    }
+    if old_info.content_type.is_none() && new_info.content_type.is_some() {
+        old_info.content_type.clone_from(&new_info.content_type);
+        old_info.has_sdp |= new_info.has_sdp;
+    }
+
+    // Latest-wins for what the dialog is doing right now.
+    if new_info.message_type != SipMessageType::Unknown {
+        old_info.message_type = new_info.message_type.clone();
+    }
+    if new_info.method.is_some() {
+        old_info.method.clone_from(&new_info.method);
+    }
+    if new_info.status_code.is_some() {
+        old_info.status_code = new_info.status_code;
+        old_info.reason_phrase.clone_from(&new_info.reason_phrase);
+    }
+    if new_info.cseq_number.is_some() {
+        old_info.cseq_number = new_info.cseq_number;
+    }
+    if new_info.cseq_method.is_some() {
+        old_info.cseq_method.clone_from(&new_info.cseq_method);
+    }
 }
 
 /// Update connection rate calculations using sliding window

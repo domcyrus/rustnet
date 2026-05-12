@@ -3967,6 +3967,105 @@ fn draw_connection_details(
                     );
                 }
             }
+            crate::network::types::ApplicationProtocol::Sip(info) => {
+                push_detail_field(
+                    &mut details_text,
+                    &mut detail_fields,
+                    "Message",
+                    info.message_type.to_string(),
+                    label_style,
+                );
+                if let Some(method) = &info.method {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Method",
+                        method.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(code) = info.status_code {
+                    let status = match &info.reason_phrase {
+                        Some(reason) => format!("{} {}", code, reason),
+                        None => code.to_string(),
+                    };
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Status",
+                        status,
+                        label_style,
+                    );
+                }
+                if let Some(from) = &info.from {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "From",
+                        from.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(to) = &info.to {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "To",
+                        to.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(call_id) = &info.call_id {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Call-ID",
+                        call_id.clone(),
+                        label_style,
+                    );
+                }
+                if let (Some(num), Some(method)) = (info.cseq_number, &info.cseq_method) {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "CSeq",
+                        format!("{} {}", num, method),
+                        label_style,
+                    );
+                }
+                if let Some(ua) = &info.user_agent {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "User-Agent",
+                        ua.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(server) = &info.server {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Server",
+                        server.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(ct) = &info.content_type {
+                    let label = if info.has_sdp {
+                        format!("{} (SDP)", ct)
+                    } else {
+                        ct.clone()
+                    };
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Content-Type",
+                        label,
+                        label_style,
+                    );
+                }
+            }
         }
         right_ranges.push(dpi_start..details_text.len());
     }

@@ -13,6 +13,7 @@ mod mqtt;
 mod netbios;
 mod ntp;
 mod quic;
+mod sip;
 mod snmp;
 mod ssdp;
 mod ssh;
@@ -38,6 +39,10 @@ const PORT_MDNS: u16 = 5353;
 const PORT_STUN: u16 = 3478;
 const PORT_STUN_TLS: u16 = 5349;
 const PORT_LLMNR: u16 = 5355;
+// SIP signaling: RFC 3261 reserves 5060 (plain) and 5061 (TLS). 5061 is
+// included only as a port hint; encrypted bodies are not parsed.
+const PORT_SIP: u16 = 5060;
+const PORT_SIP_TLS: u16 = 5061;
 
 /// Result of DPI analysis
 #[derive(Debug, Clone)]
@@ -57,6 +62,23 @@ pub fn analyze_tcp_packet(
     }
 
     // Try protocols in order of likelihood/speed
+
+    // 0. SIP — checked before HTTP because the two share a request-line
+    // grammar (`METHOD <uri> <version>`). Disambiguation hinges on the
+    // trailing version token (`SIP/2.0` vs `HTTP/x.y`); without this
+    // pre-flight check SIP `INVITE`/`OPTIONS`/`MESSAGE` could be
+    // misclassified as HTTP. The signature check is O(line length).
+    if (local_port == PORT_SIP
+        || remote_port == PORT_SIP
+        || local_port == PORT_SIP_TLS
+        || remote_port == PORT_SIP_TLS
+        || sip::is_sip(payload))
+        && let Some(sip_result) = sip::analyze_sip(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Sip(sip_result),
+        });
+    }
 
     // 1. Check for HTTP (fast string matching)
     if let Some(http_result) = http::analyze_http(payload) {
@@ -240,6 +262,18 @@ pub fn analyze_udp_packet(
     if let Some(bt_result) = bittorrent::analyze_udp_bittorrent(payload) {
         return Some(DpiResult {
             application: ApplicationProtocol::BitTorrent(bt_result),
+        });
+    }
+
+    // 13. SIP over UDP (port 5060 or start-line signature). Placed after
+    // structured binary protocols above so it never shadows them; the
+    // signature check is line-oriented and rejects non-text payloads
+    // quickly.
+    if (local_port == PORT_SIP || remote_port == PORT_SIP || sip::is_sip(payload))
+        && let Some(sip_result) = sip::analyze_sip(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Sip(sip_result),
         });
     }
 

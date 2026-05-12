@@ -160,6 +160,27 @@ impl std::fmt::Display for ApplicationProtocol {
                     write!(f, "MQTT {}", info.packet_type)
                 }
             }
+            ApplicationProtocol::Sip(info) => match info.message_type {
+                SipMessageType::Request => {
+                    let method = info.method.as_deref().unwrap_or("REQ");
+                    if let Some(call_id) = &info.call_id {
+                        write!(f, "SIP {} ({})", method, call_id)
+                    } else {
+                        write!(f, "SIP {}", method)
+                    }
+                }
+                SipMessageType::Response => {
+                    let code = info.status_code.unwrap_or(0);
+                    let cseq = info.cseq_method.as_deref();
+                    match (cseq, &info.reason_phrase) {
+                        (Some(m), Some(reason)) => write!(f, "SIP {} {} ({})", code, reason, m),
+                        (Some(m), None) => write!(f, "SIP {} ({})", code, m),
+                        (None, Some(reason)) => write!(f, "SIP {} {}", code, reason),
+                        (None, None) => write!(f, "SIP {}", code),
+                    }
+                }
+                SipMessageType::Unknown => write!(f, "SIP"),
+            },
         }
     }
 }
@@ -341,6 +362,43 @@ pub struct MqttInfo {
     pub qos: Option<u8>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum SipMessageType {
+    #[default]
+    Unknown,
+    Request,
+    Response,
+}
+
+impl std::fmt::Display for SipMessageType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SipMessageType::Unknown => write!(f, "?"),
+            SipMessageType::Request => write!(f, "REQ"),
+            SipMessageType::Response => write!(f, "RESP"),
+        }
+    }
+}
+
+/// Metadata extracted by best-effort SIP DPI. Mirrors the fields named in
+/// RFC 3261 §7. `has_sdp` is derived from `Content-Type: application/sdp`.
+#[derive(Debug, Clone, Default)]
+pub struct SipInfo {
+    pub message_type: SipMessageType,
+    pub method: Option<String>,
+    pub status_code: Option<u16>,
+    pub reason_phrase: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub call_id: Option<String>,
+    pub user_agent: Option<String>,
+    pub server: Option<String>,
+    pub cseq_number: Option<u32>,
+    pub cseq_method: Option<String>,
+    pub content_type: Option<String>,
+    pub has_sdp: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum ApplicationProtocol {
     Http(HttpInfo),
@@ -358,6 +416,7 @@ pub enum ApplicationProtocol {
     BitTorrent(BitTorrentInfo),
     Stun(StunInfo),
     Mqtt(MqttInfo),
+    Sip(SipInfo),
 }
 
 impl ApplicationProtocol {
@@ -375,6 +434,7 @@ impl ApplicationProtocol {
             ApplicationProtocol::NetBios(_) => "NetBIOS",
             ApplicationProtocol::Ntp(_) => "NTP",
             ApplicationProtocol::Quic(_) => "QUIC",
+            ApplicationProtocol::Sip(_) => "SIP",
             ApplicationProtocol::Snmp(_) => "SNMP",
             ApplicationProtocol::Ssh(_) => "SSH",
             ApplicationProtocol::Ssdp(_) => "SSDP",
@@ -1478,7 +1538,8 @@ impl AppProtocolDistribution {
                     | ApplicationProtocol::NetBios(_)
                     | ApplicationProtocol::BitTorrent(_)
                     | ApplicationProtocol::Stun(_)
-                    | ApplicationProtocol::Mqtt(_) => dist.other_count += 1,
+                    | ApplicationProtocol::Mqtt(_)
+                    | ApplicationProtocol::Sip(_) => dist.other_count += 1,
                 }
             } else {
                 dist.other_count += 1;
@@ -1995,6 +2056,11 @@ impl Connection {
                             Cow::Owned(format!("STUN_{}", info.message_class))
                         }
                         ApplicationProtocol::Mqtt(_) => Cow::Borrowed("MQTT_UDP"),
+                        ApplicationProtocol::Sip(info) => match info.message_type {
+                            SipMessageType::Request => Cow::Borrowed("SIP_REQUEST"),
+                            SipMessageType::Response => Cow::Borrowed("SIP_RESPONSE"),
+                            SipMessageType::Unknown => Cow::Borrowed("SIP"),
+                        },
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -2113,6 +2179,9 @@ impl Connection {
                         ApplicationProtocol::BitTorrent(_) => Duration::from_secs(60),
                         ApplicationProtocol::Stun(_) => Duration::from_secs(30),
                         ApplicationProtocol::Mqtt(_) => Duration::from_secs(120),
+                        // SIP dialogs idle between transactions; INVITE
+                        // sessions can stay registered for many minutes.
+                        ApplicationProtocol::Sip(_) => Duration::from_secs(300),
                     }
                 } else {
                     // Regular UDP without DPI classification
