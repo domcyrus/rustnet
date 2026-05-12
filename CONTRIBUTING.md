@@ -6,7 +6,7 @@ Pull requests are very welcome! Whether you're fixing bugs, adding features, imp
 
 We use the standard open-source fork and feature branch approach:
 
-1. **Open an issue first** to discuss your proposed changes (for non-trivial work)
+1. **Open an issue first** to discuss your proposed changes. For features and non-trivial refactors, please wait for a maintainer response before writing code. Typo fixes, small bug fixes, and documentation corrections do not need a prior issue.
 2. Fork the repository
 3. Clone your fork locally
 4. Create a feature branch from `main` (`git checkout -b feature/your-feature`)
@@ -70,6 +70,27 @@ Security is important for a network monitoring tool:
 - Link any related issues
 - Keep PRs focused - one feature or fix per PR
 - Be responsive to review feedback
+- Verify locally before opening the PR. The PR template lists the exact commands.
+
+## Duplicate Pull Requests
+
+If two or more PRs address the same issue, the maintainers will evaluate them on their merits (code quality, test coverage, architectural fit) rather than submission order. The PR that best fits the project will be merged; others will be closed with thanks. If your PR is closed in favor of another, useful pieces from your work (documentation, tests, edge cases) may be ported over and credited.
+
+To avoid duplicate work, please comment on the linked issue stating that you intend to work on it before you start writing code.
+
+## AI-Assisted Contributions
+
+AI-assisted contributions are welcome, provided you treat the output as your own work and take responsibility for it.
+
+If you use an AI assistant (Copilot, Claude, ChatGPT, Cursor, or similar) to help write code or documentation:
+
+- **Read every line** you are submitting. You are accountable for it.
+- **Run the verification commands** listed in the PR template yourself. Do not submit code with a note that tests "could not be run locally" and ask the reviewer to verify.
+- **Make sure the PR description matches the code.** If the model wrote the PR body, confirm it describes what the diff actually does.
+- **Do not split a single change into many cosmetic per-file commits** to make the work look incremental. One logical change, one commit, with a real commit message.
+- **Do not open a PR seconds after filing the issue that motivates it.** Allow time for the maintainers and other contributors to weigh in on the proposed approach.
+
+PRs that show signs of unreviewed AI output (failing tests, fabricated APIs, unrelated bundled changes, mismatched descriptions) will be closed.
 
 ## Questions?
 
