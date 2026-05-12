@@ -466,6 +466,11 @@ impl ConnectionFilter {
                 {
                     return true;
                 }
+                if let Some(ref cseq_method) = info.cseq_method
+                    && match_text(cseq_method, fv)
+                {
+                    return true;
+                }
                 if let Some(ref user_agent) = info.user_agent
                     && match_text(user_agent, fv)
                 {
@@ -474,6 +479,14 @@ impl ConnectionFilter {
                 if let Some(ref server) = info.server
                     && match_text(server, fv)
                 {
+                    return true;
+                }
+                if let Some(ref content_type) = info.content_type
+                    && match_text(content_type, fv)
+                {
+                    return true;
+                }
+                if info.has_sdp && match_text("sdp", fv) {
                     return true;
                 }
             }
