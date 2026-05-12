@@ -437,6 +437,46 @@ impl ConnectionFilter {
                     return true;
                 }
             }
+            ApplicationProtocol::Sip(info) => {
+                if match_text("sip", fv) {
+                    return true;
+                }
+                if let Some(ref method) = info.method
+                    && match_text(method, fv)
+                {
+                    return true;
+                }
+                if let Some(ref request_uri) = info.request_uri
+                    && match_text(request_uri, fv)
+                {
+                    return true;
+                }
+                if let Some(ref from) = info.from
+                    && match_text(from, fv)
+                {
+                    return true;
+                }
+                if let Some(ref to) = info.to
+                    && match_text(to, fv)
+                {
+                    return true;
+                }
+                if let Some(ref call_id) = info.call_id
+                    && match_text(call_id, fv)
+                {
+                    return true;
+                }
+                if let Some(ref user_agent) = info.user_agent
+                    && match_text(user_agent, fv)
+                {
+                    return true;
+                }
+                if let Some(ref server) = info.server
+                    && match_text(server, fv)
+                {
+                    return true;
+                }
+            }
             ApplicationProtocol::NetBios(info) => {
                 if let Some(ref name) = info.name
                     && match_text(name, fv)
