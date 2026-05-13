@@ -1,6 +1,18 @@
-# Contributing to rustnet
+# Contributing to RustNet
 
-Pull requests are very welcome! Whether you're fixing bugs, adding features, improving documentation, or providing feedback, all contributions help make rustnet better.
+Pull requests are very welcome! Whether you're fixing bugs, adding features, improving documentation, or providing feedback, all contributions help make RustNet better.
+
+## Project Scope
+
+RustNet aims to stay small and fast. Not every protocol or feature belongs in the core tool, even when a contribution is well-written.
+
+For Deep Packet Inspection in particular, we lean toward protocols that:
+
+- A meaningful share of RustNet users will actually encounter on their networks.
+- Produce visible, useful information (the plaintext window is wide enough to extract real metadata, not just to confirm the protocol exists before everything goes TLS).
+- Fit the existing architecture without disproportionate maintenance cost.
+
+If a protocol is rarely seen in modern traffic, almost always TLS-wrapped, or niche to a single user base, we may still close the PR with thanks even if the code is correct. Please open an issue first for any new protocol so we can sanity-check fit before you invest implementation time.
 
 ## Development Workflow
 

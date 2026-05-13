@@ -1,6 +1,6 @@
 # Contributors
 
-We would like to thank the following people for their contributions to rustnet:
+We would like to thank the following people for their contributions to RustNet:
 
 ## Maintainer
 
@@ -16,6 +16,6 @@ We would like to thank these people for their valuable contributions:
 
 ## Contributing
 
-We welcome and appreciate all contributions! Whether you're fixing bugs, adding features, improving documentation, or helping with ideas and feedback, your contributions make rustnet better.
+We welcome and appreciate all contributions! Whether you're fixing bugs, adding features, improving documentation, or helping with ideas and feedback, your contributions make RustNet better.
 
 See our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute.

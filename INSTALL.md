@@ -34,13 +34,13 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 2. **Open the DMG** and drag Rustnet.app to your Applications folder
 
 3. **Bypass Gatekeeper** (for unsigned builds):
-   - When you first try to open Rustnet, macOS will block it because the app is not signed
+   - When you first try to open RustNet, macOS will block it because the app is not signed
    - Go to **System Settings → Privacy & Security**
-   - Scroll down to find the message about Rustnet being blocked
+   - Scroll down to find the message about RustNet being blocked
    - Click **"Open Anyway"** to allow the application to run
    - You may need to confirm this choice when launching the app again
 
-4. **Run Rustnet**:
+4. **Run RustNet**:
    - Double-click Rustnet.app to launch it in a Terminal window with sudo
    - Or run from command line: `sudo /Applications/Rustnet.app/Contents/MacOS/rustnet`
 
@@ -70,7 +70,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 
 3. **Run the installer** and follow the installation wizard
 
-4. **Run Rustnet**:
+4. **Run RustNet**:
    - Open Command Prompt or PowerShell
    - Run: `rustnet.exe`
    - If Npcap is not installed or not in WinPcap compatible mode, RustNet will display a helpful error message with installation instructions

@@ -68,6 +68,9 @@ Multiple worker threads (up to 4 by default, based on CPU cores) that parse pack
   - DNS queries and responses
   - SSH connections with version detection
   - QUIC protocol with CONNECTION_CLOSE frame detection
+  - MQTT with packet types, version, and client identifier
+  - BitTorrent handshakes and DHT messages
+  - STUN for WebRTC and NAT traversal
   - NTP with version, mode, and stratum
   - mDNS and LLMNR for local name resolution
   - DHCP with message types and hostnames
