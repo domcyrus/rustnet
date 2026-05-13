@@ -402,6 +402,31 @@ impl ConnectionFilter {
                     return true;
                 }
             }
+            ApplicationProtocol::Ftp(info) => {
+                if match_text("ftp", fv) {
+                    return true;
+                }
+                if let Some(ref cmd) = info.command
+                    && match_text(cmd, fv)
+                {
+                    return true;
+                }
+                if let Some(ref user) = info.username
+                    && match_text(user, fv)
+                {
+                    return true;
+                }
+                if let Some(ref sw) = info.server_software
+                    && match_text(sw, fv)
+                {
+                    return true;
+                }
+                if let Some(code) = info.response_code
+                    && match_text(&code.to_string(), fv)
+                {
+                    return true;
+                }
+            }
             ApplicationProtocol::Mdns(info) => {
                 if let Some(ref query_name) = info.query_name
                     && match_text(query_name, fv)

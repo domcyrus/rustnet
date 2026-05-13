@@ -5,6 +5,7 @@ mod bittorrent;
 mod cipher_suites;
 mod dhcp;
 mod dns;
+mod ftp;
 mod http;
 mod https;
 mod llmnr;
@@ -24,6 +25,8 @@ pub use quic::{is_partial_sni, try_extract_tls_from_reassembler};
 // Well-known port numbers used for DPI protocol detection.
 const PORT_SSH: u16 = 22;
 const PORT_DNS: u16 = 53;
+const PORT_FTP: u16 = 21;
+const PORT_FTPS_IMPLICIT: u16 = 990;
 const PORT_DHCP_SERVER: u16 = 67;
 const PORT_DHCP_CLIENT: u16 = 68;
 const PORT_NTP: u16 = 123;
@@ -98,6 +101,21 @@ pub fn analyze_tcp_packet(
     {
         return Some(DpiResult {
             application: ApplicationProtocol::Ssh(ssh_result),
+        });
+    }
+
+    // 6. Check for FTP control channel (port 21, FTPS implicit 990, or signature).
+    //    Runs before more generic protocols since the start line is unambiguous
+    //    (3-digit reply code OR a small known command set).
+    if (local_port == PORT_FTP
+        || remote_port == PORT_FTP
+        || local_port == PORT_FTPS_IMPLICIT
+        || remote_port == PORT_FTPS_IMPLICIT
+        || ftp::is_ftp(payload))
+        && let Some(ftp_result) = ftp::analyze_ftp(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Ftp(ftp_result),
         });
     }
 

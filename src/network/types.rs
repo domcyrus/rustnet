@@ -160,6 +160,28 @@ impl std::fmt::Display for ApplicationProtocol {
                     write!(f, "MQTT {}", info.packet_type)
                 }
             }
+            ApplicationProtocol::Ftp(info) => match info.message_type {
+                FtpMessageType::Request => {
+                    if let Some(cmd) = &info.command {
+                        if let Some(args) = &info.args {
+                            write!(f, "FTP {} {}", cmd, args)
+                        } else {
+                            write!(f, "FTP {}", cmd)
+                        }
+                    } else {
+                        write!(f, "FTP")
+                    }
+                }
+                FtpMessageType::Response => {
+                    if let (Some(code), Some(sw)) = (info.response_code, &info.server_software) {
+                        write!(f, "FTP {} ({})", code, sw)
+                    } else if let Some(code) = info.response_code {
+                        write!(f, "FTP {}", code)
+                    } else {
+                        write!(f, "FTP")
+                    }
+                }
+            },
         }
     }
 }
@@ -358,6 +380,7 @@ pub enum ApplicationProtocol {
     BitTorrent(BitTorrentInfo),
     Stun(StunInfo),
     Mqtt(MqttInfo),
+    Ftp(FtpInfo),
 }
 
 impl ApplicationProtocol {
@@ -367,6 +390,7 @@ impl ApplicationProtocol {
             ApplicationProtocol::BitTorrent(_) => "BitTorrent",
             ApplicationProtocol::Dhcp(_) => "DHCP",
             ApplicationProtocol::Dns(_) => "DNS",
+            ApplicationProtocol::Ftp(_) => "FTP",
             ApplicationProtocol::Http(_) => "HTTP",
             ApplicationProtocol::Https(_) => "HTTPS",
             ApplicationProtocol::Llmnr(_) => "LLMNR",
@@ -381,6 +405,33 @@ impl ApplicationProtocol {
             ApplicationProtocol::Stun(_) => "STUN",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FtpMessageType {
+    Request,
+    Response,
+}
+
+impl fmt::Display for FtpMessageType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            FtpMessageType::Request => "FTP_REQUEST",
+            FtpMessageType::Response => "FTP_RESPONSE",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FtpInfo {
+    pub message_type: FtpMessageType,
+    pub command: Option<String>,
+    pub args: Option<String>,
+    pub response_code: Option<u16>,
+    pub response_message: Option<String>,
+    pub username: Option<String>,
+    pub server_software: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1478,7 +1529,8 @@ impl AppProtocolDistribution {
                     | ApplicationProtocol::NetBios(_)
                     | ApplicationProtocol::BitTorrent(_)
                     | ApplicationProtocol::Stun(_)
-                    | ApplicationProtocol::Mqtt(_) => dist.other_count += 1,
+                    | ApplicationProtocol::Mqtt(_)
+                    | ApplicationProtocol::Ftp(_) => dist.other_count += 1,
                 }
             } else {
                 dist.other_count += 1;
@@ -1995,6 +2047,7 @@ impl Connection {
                             Cow::Owned(format!("STUN_{}", info.message_class))
                         }
                         ApplicationProtocol::Mqtt(_) => Cow::Borrowed("MQTT_UDP"),
+                        ApplicationProtocol::Ftp(_) => Cow::Borrowed("FTP_UDP"),
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -2113,6 +2166,7 @@ impl Connection {
                         ApplicationProtocol::BitTorrent(_) => Duration::from_secs(60),
                         ApplicationProtocol::Stun(_) => Duration::from_secs(30),
                         ApplicationProtocol::Mqtt(_) => Duration::from_secs(120),
+                        ApplicationProtocol::Ftp(_) => Duration::from_secs(60),
                     }
                 } else {
                     // Regular UDP without DPI classification
