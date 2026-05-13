@@ -160,6 +160,34 @@ impl std::fmt::Display for ApplicationProtocol {
                     write!(f, "MQTT {}", info.packet_type)
                 }
             }
+            ApplicationProtocol::Imap(info) => match info.message_type {
+                ImapMessageType::Request => {
+                    if let (Some(cmd), Some(user)) = (&info.command, &info.username) {
+                        write!(f, "IMAP {} ({})", cmd, user)
+                    } else if let Some(cmd) = &info.command {
+                        write!(f, "IMAP {}", cmd)
+                    } else {
+                        write!(f, "IMAP")
+                    }
+                }
+                ImapMessageType::UntaggedResponse => {
+                    if let (Some(status), Some(sw)) = (&info.status, &info.server_software) {
+                        write!(f, "IMAP {} ({})", status, sw)
+                    } else if let Some(status) = &info.status {
+                        write!(f, "IMAP {}", status)
+                    } else {
+                        write!(f, "IMAP")
+                    }
+                }
+                ImapMessageType::TaggedResponse => {
+                    if let Some(status) = &info.status {
+                        write!(f, "IMAP {}", status)
+                    } else {
+                        write!(f, "IMAP")
+                    }
+                }
+                ImapMessageType::Continuation => write!(f, "IMAP +"),
+            },
         }
     }
 }
@@ -358,6 +386,7 @@ pub enum ApplicationProtocol {
     BitTorrent(BitTorrentInfo),
     Stun(StunInfo),
     Mqtt(MqttInfo),
+    Imap(ImapInfo),
 }
 
 impl ApplicationProtocol {
@@ -369,6 +398,7 @@ impl ApplicationProtocol {
             ApplicationProtocol::Dns(_) => "DNS",
             ApplicationProtocol::Http(_) => "HTTP",
             ApplicationProtocol::Https(_) => "HTTPS",
+            ApplicationProtocol::Imap(_) => "IMAP",
             ApplicationProtocol::Llmnr(_) => "LLMNR",
             ApplicationProtocol::Mdns(_) => "mDNS",
             ApplicationProtocol::Mqtt(_) => "MQTT",
@@ -381,6 +411,41 @@ impl ApplicationProtocol {
             ApplicationProtocol::Stun(_) => "STUN",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImapMessageType {
+    Request,
+    /// Tagged completion response (`<tag> OK/NO/BAD/BYE …`).
+    TaggedResponse,
+    /// Untagged status or data response (`* OK …`, `* 23 EXISTS`, …).
+    UntaggedResponse,
+    /// Command continuation request (`+ <text>`).
+    Continuation,
+}
+
+impl fmt::Display for ImapMessageType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            ImapMessageType::Request => "IMAP_REQUEST",
+            ImapMessageType::TaggedResponse => "IMAP_TAGGED_RESPONSE",
+            ImapMessageType::UntaggedResponse => "IMAP_UNTAGGED_RESPONSE",
+            ImapMessageType::Continuation => "IMAP_CONTINUATION",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ImapInfo {
+    pub message_type: ImapMessageType,
+    pub tag: Option<String>,
+    pub command: Option<String>,
+    pub args: Option<String>,
+    pub status: Option<String>,
+    pub response_message: Option<String>,
+    pub username: Option<String>,
+    pub server_software: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1478,7 +1543,8 @@ impl AppProtocolDistribution {
                     | ApplicationProtocol::NetBios(_)
                     | ApplicationProtocol::BitTorrent(_)
                     | ApplicationProtocol::Stun(_)
-                    | ApplicationProtocol::Mqtt(_) => dist.other_count += 1,
+                    | ApplicationProtocol::Mqtt(_)
+                    | ApplicationProtocol::Imap(_) => dist.other_count += 1,
                 }
             } else {
                 dist.other_count += 1;
@@ -1995,6 +2061,7 @@ impl Connection {
                             Cow::Owned(format!("STUN_{}", info.message_class))
                         }
                         ApplicationProtocol::Mqtt(_) => Cow::Borrowed("MQTT_UDP"),
+                        ApplicationProtocol::Imap(_) => Cow::Borrowed("IMAP_UDP"),
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -2113,6 +2180,7 @@ impl Connection {
                         ApplicationProtocol::BitTorrent(_) => Duration::from_secs(60),
                         ApplicationProtocol::Stun(_) => Duration::from_secs(30),
                         ApplicationProtocol::Mqtt(_) => Duration::from_secs(120),
+                        ApplicationProtocol::Imap(_) => Duration::from_secs(1800),
                     }
                 } else {
                     // Regular UDP without DPI classification

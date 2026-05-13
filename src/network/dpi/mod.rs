@@ -7,6 +7,7 @@ mod dhcp;
 mod dns;
 mod http;
 mod https;
+mod imap;
 mod llmnr;
 mod mdns;
 mod mqtt;
@@ -24,6 +25,7 @@ pub use quic::{is_partial_sni, try_extract_tls_from_reassembler};
 // Well-known port numbers used for DPI protocol detection.
 const PORT_SSH: u16 = 22;
 const PORT_DNS: u16 = 53;
+const PORT_IMAP: u16 = 143;
 const PORT_DHCP_SERVER: u16 = 67;
 const PORT_DHCP_CLIENT: u16 = 68;
 const PORT_NTP: u16 = 123;
@@ -98,6 +100,16 @@ pub fn analyze_tcp_packet(
     {
         return Some(DpiResult {
             application: ApplicationProtocol::Ssh(ssh_result),
+        });
+    }
+
+    // 6. Check for IMAP (port 143 or untagged/tagged frame signature). Port
+    //    993 (IMAPS) is TLS-wrapped — claimed by the HTTPS analyzer instead.
+    if (local_port == PORT_IMAP || remote_port == PORT_IMAP || imap::is_imap(payload))
+        && let Some(imap_result) = imap::analyze_imap(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Imap(imap_result),
         });
     }
 

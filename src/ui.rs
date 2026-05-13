@@ -3922,6 +3922,78 @@ fn draw_connection_details(
                     );
                 }
             }
+            crate::network::types::ApplicationProtocol::Imap(info) => {
+                push_detail_field(
+                    &mut details_text,
+                    &mut detail_fields,
+                    "Message Type",
+                    info.message_type.to_string(),
+                    label_style,
+                );
+                if let Some(tag) = &info.tag {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Tag",
+                        tag.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(cmd) = &info.command {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Command",
+                        cmd.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(args) = &info.args {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Arguments",
+                        args.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(status) = &info.status {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Status",
+                        status.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(message) = &info.response_message {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Response",
+                        message.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(user) = &info.username {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Username",
+                        user.clone(),
+                        label_style,
+                    );
+                }
+                if let Some(sw) = &info.server_software {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Server Software",
+                        sw.clone(),
+                        label_style,
+                    );
+                }
+            }
             crate::network::types::ApplicationProtocol::Mqtt(info) => {
                 push_detail_field(
                     &mut details_text,
