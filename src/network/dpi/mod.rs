@@ -13,6 +13,7 @@ mod mqtt;
 mod netbios;
 mod ntp;
 mod quic;
+mod smtp;
 mod snmp;
 mod ssdp;
 mod ssh;
@@ -24,6 +25,10 @@ pub use quic::{is_partial_sni, try_extract_tls_from_reassembler};
 // Well-known port numbers used for DPI protocol detection.
 const PORT_SSH: u16 = 22;
 const PORT_DNS: u16 = 53;
+const PORT_SMTP: u16 = 25;
+const PORT_SMTPS: u16 = 465;
+const PORT_SMTP_SUBMISSION: u16 = 587;
+const PORT_SMTP_ALT: u16 = 2525;
 const PORT_DHCP_SERVER: u16 = 67;
 const PORT_DHCP_CLIENT: u16 = 68;
 const PORT_NTP: u16 = 123;
@@ -98,6 +103,25 @@ pub fn analyze_tcp_packet(
     {
         return Some(DpiResult {
             application: ApplicationProtocol::Ssh(ssh_result),
+        });
+    }
+
+    // 6. Check for SMTP (ports 25 / 465 / 587 / 2525 or known verb / 3-digit
+    //    response prefix). Runs after HTTP so HTTP can claim its own payloads
+    //    cheaply — SMTP verbs do not overlap with HTTP methods.
+    if (local_port == PORT_SMTP
+        || remote_port == PORT_SMTP
+        || local_port == PORT_SMTPS
+        || remote_port == PORT_SMTPS
+        || local_port == PORT_SMTP_SUBMISSION
+        || remote_port == PORT_SMTP_SUBMISSION
+        || local_port == PORT_SMTP_ALT
+        || remote_port == PORT_SMTP_ALT
+        || smtp::is_smtp(payload))
+        && let Some(smtp_result) = smtp::analyze_smtp(payload)
+    {
+        return Some(DpiResult {
+            application: ApplicationProtocol::Smtp(smtp_result),
         });
     }
 

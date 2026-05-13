@@ -160,6 +160,31 @@ impl std::fmt::Display for ApplicationProtocol {
                     write!(f, "MQTT {}", info.packet_type)
                 }
             }
+            ApplicationProtocol::Smtp(info) => match info.message_type {
+                SmtpMessageType::Request => {
+                    if let Some(cmd) = &info.command {
+                        if let Some(envelope) = info.sender.as_deref().or(info.recipient.as_deref())
+                        {
+                            write!(f, "SMTP {} <{}>", cmd, envelope)
+                        } else if let Some(args) = &info.args {
+                            write!(f, "SMTP {} {}", cmd, args)
+                        } else {
+                            write!(f, "SMTP {}", cmd)
+                        }
+                    } else {
+                        write!(f, "SMTP")
+                    }
+                }
+                SmtpMessageType::Response => {
+                    if let (Some(code), Some(sw)) = (info.response_code, &info.server_software) {
+                        write!(f, "SMTP {} ({})", code, sw)
+                    } else if let Some(code) = info.response_code {
+                        write!(f, "SMTP {}", code)
+                    } else {
+                        write!(f, "SMTP")
+                    }
+                }
+            },
         }
     }
 }
@@ -358,6 +383,7 @@ pub enum ApplicationProtocol {
     BitTorrent(BitTorrentInfo),
     Stun(StunInfo),
     Mqtt(MqttInfo),
+    Smtp(SmtpInfo),
 }
 
 impl ApplicationProtocol {
@@ -375,12 +401,41 @@ impl ApplicationProtocol {
             ApplicationProtocol::NetBios(_) => "NetBIOS",
             ApplicationProtocol::Ntp(_) => "NTP",
             ApplicationProtocol::Quic(_) => "QUIC",
+            ApplicationProtocol::Smtp(_) => "SMTP",
             ApplicationProtocol::Snmp(_) => "SNMP",
             ApplicationProtocol::Ssh(_) => "SSH",
             ApplicationProtocol::Ssdp(_) => "SSDP",
             ApplicationProtocol::Stun(_) => "STUN",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SmtpMessageType {
+    Request,
+    Response,
+}
+
+impl fmt::Display for SmtpMessageType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            SmtpMessageType::Request => "SMTP_REQUEST",
+            SmtpMessageType::Response => "SMTP_RESPONSE",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SmtpInfo {
+    pub message_type: SmtpMessageType,
+    pub command: Option<String>,
+    pub args: Option<String>,
+    pub response_code: Option<u16>,
+    pub response_message: Option<String>,
+    pub sender: Option<String>,
+    pub recipient: Option<String>,
+    pub server_software: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1478,7 +1533,8 @@ impl AppProtocolDistribution {
                     | ApplicationProtocol::NetBios(_)
                     | ApplicationProtocol::BitTorrent(_)
                     | ApplicationProtocol::Stun(_)
-                    | ApplicationProtocol::Mqtt(_) => dist.other_count += 1,
+                    | ApplicationProtocol::Mqtt(_)
+                    | ApplicationProtocol::Smtp(_) => dist.other_count += 1,
                 }
             } else {
                 dist.other_count += 1;
@@ -1995,6 +2051,7 @@ impl Connection {
                             Cow::Owned(format!("STUN_{}", info.message_class))
                         }
                         ApplicationProtocol::Mqtt(_) => Cow::Borrowed("MQTT_UDP"),
+                        ApplicationProtocol::Smtp(_) => Cow::Borrowed("SMTP_UDP"),
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -2113,6 +2170,7 @@ impl Connection {
                         ApplicationProtocol::BitTorrent(_) => Duration::from_secs(60),
                         ApplicationProtocol::Stun(_) => Duration::from_secs(30),
                         ApplicationProtocol::Mqtt(_) => Duration::from_secs(120),
+                        ApplicationProtocol::Smtp(_) => Duration::from_secs(120),
                     }
                 } else {
                     // Regular UDP without DPI classification
