@@ -6,7 +6,7 @@ use std::time::{Instant, SystemTime};
 use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reassembler};
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
-    ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, MqttInfo,
+    ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, ImapInfo, MqttInfo,
     ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState,
 };
 
@@ -494,6 +494,11 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     merge_mqtt_info(old_info, new_info);
                 }
 
+                // IMAP - dialog state evolves across tagged exchanges
+                (ApplicationProtocol::Imap(old_info), ApplicationProtocol::Imap(new_info)) => {
+                    merge_imap_info(old_info, new_info);
+                }
+
                 _ => {
                     // Keep existing protocol
                 }
@@ -855,6 +860,40 @@ fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
     // Update auth method if not set
     if old_info.auth_method.is_none() && new_info.auth_method.is_some() {
         old_info.auth_method = new_info.auth_method.clone();
+    }
+}
+
+/// Merge IMAP information across packets in the same control connection.
+///
+/// Identity-like fields (`username`, `server_software`) are first-wins.
+/// Dialog state (`message_type`, `tag`, `command`, `args`, `status`,
+/// `response_message`) is latest-wins.
+fn merge_imap_info(old_info: &mut ImapInfo, new_info: &ImapInfo) {
+    if old_info.username.is_none() && new_info.username.is_some() {
+        old_info.username.clone_from(&new_info.username);
+    }
+    if old_info.server_software.is_none() && new_info.server_software.is_some() {
+        old_info
+            .server_software
+            .clone_from(&new_info.server_software);
+    }
+    old_info.message_type = new_info.message_type;
+    if new_info.tag.is_some() {
+        old_info.tag.clone_from(&new_info.tag);
+    }
+    if new_info.command.is_some() {
+        old_info.command.clone_from(&new_info.command);
+    }
+    if new_info.args.is_some() {
+        old_info.args.clone_from(&new_info.args);
+    }
+    if new_info.status.is_some() {
+        old_info.status.clone_from(&new_info.status);
+    }
+    if new_info.response_message.is_some() {
+        old_info
+            .response_message
+            .clone_from(&new_info.response_message);
     }
 }
 
