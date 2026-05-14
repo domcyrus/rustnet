@@ -21,6 +21,7 @@ use crate::filter::ConnectionFilter;
 use crate::network::{
     capture::{CaptureConfig, PacketReader, setup_packet_capture},
     dns::DnsResolver,
+    dns_attribution::DnsAttributionCache,
     geoip::{GeoIpConfig, GeoIpResolver},
     interface_stats::{InterfaceRates, InterfaceStats, InterfaceStatsProvider},
     merge::{create_connection_from_packet, merge_packet_into_connection},
@@ -29,8 +30,8 @@ use crate::network::{
     platform::create_process_lookup,
     services::ServiceLookup,
     types::{
-        ApplicationProtocol, Connection, ConnectionKey, DnsQueryType, Protocol, RttTracker,
-        TrafficHistory,
+        ApplicationProtocol, AttributionSource, Connection, ConnectionKey, DnsQueryType, Protocol,
+        RttTracker, TrafficHistory,
     },
 };
 
@@ -472,6 +473,10 @@ pub struct App {
     /// DNS resolver for reverse DNS lookups
     dns_resolver: Option<Arc<DnsResolver>>,
 
+    /// IP -> domain cache built from observed DNS responses; used to
+    /// attribute encrypted (QUIC) and SNI-less connections to a hostname.
+    dns_attribution: Arc<DnsAttributionCache>,
+
     /// GeoIP resolver for location/ASN lookups
     geoip_resolver: Option<Arc<GeoIpResolver>>,
 
@@ -581,6 +586,7 @@ impl App {
             traffic_history: Arc::new(RwLock::new(TrafficHistory::new(60))), // 60 seconds of history
             rtt_tracker: Arc::new(Mutex::new(RttTracker::new())),
             dns_resolver,
+            dns_attribution: DnsAttributionCache::shared(),
             geoip_resolver,
             #[cfg(any(
                 target_os = "linux",
@@ -908,6 +914,7 @@ impl App {
         let json_log_path = self.config.json_log_file.clone();
         let rtt_tracker = Arc::clone(&self.rtt_tracker);
         let dns_resolver = self.dns_resolver.clone();
+        let dns_attribution = Arc::clone(&self.dns_attribution);
         let oui_lookup = self.oui_lookup.clone();
         let parser_config = ParserConfig {
             enable_dpi: self.config.enable_dpi,
@@ -988,6 +995,7 @@ impl App {
                                     &json_log_path,
                                     &rtt_tracker,
                                     dns_resolver.as_deref(),
+                                    &dns_attribution,
                                 );
                                 parsed_count += 1;
                             }
@@ -1571,6 +1579,7 @@ impl App {
         let json_log_path = self.config.json_log_file.clone();
         let pcap_export_path = self.config.pcap_export_file.clone();
         let dns_resolver = self.dns_resolver.clone();
+        let dns_attribution = Arc::clone(&self.dns_attribution);
 
         thread::Builder::new()
             .name("cleanup_thread".to_string())
@@ -1587,6 +1596,11 @@ impl App {
                 let now = SystemTime::now();
                 let mut removed = 0;
 
+                // Periodic maintenance on the DNS attribution cache:
+                // drop expired IP→domain entries and stale pending
+                // enrollments (connections that never got DNS).
+                dns_attribution.cleanup_tick(Instant::now());
+
                 // Collect keys of connections to be removed
                 let mut removed_keys = Vec::new();
                 // Collect connections to archive as historic
@@ -1599,6 +1613,10 @@ impl App {
                     if !should_keep {
                         removed += 1;
                         removed_keys.push(key.clone());
+
+                        // Drop the connection from the attribution
+                        // pending index so dead keys don't linger.
+                        dns_attribution.forget_pending(conn.remote_addr.ip(), key);
 
                         // Archive to historic connections (key includes created_at
                         // so multiple closed connections with the same 4-tuple
@@ -1966,6 +1984,7 @@ impl App {
 }
 
 /// Update or create a connection from a parsed packet
+#[allow(clippy::too_many_arguments)]
 fn update_connection(
     connections: &DashMap<String, Connection>,
     parsed: ParsedPacket,
@@ -1973,6 +1992,7 @@ fn update_connection(
     json_log_path: &Option<String>,
     rtt_tracker: &Arc<Mutex<RttTracker>>,
     dns_resolver: Option<&DnsResolver>,
+    dns_attribution: &DnsAttributionCache,
 ) {
     let mut key = parsed.connection_key.clone();
     let now = SystemTime::now();
@@ -2035,6 +2055,25 @@ fn update_connection(
         return;
     }
 
+    // If this packet carried a DNS response, record the resolution
+    // and pull out the keys of any connections that were waiting on
+    // these IPs. Those waiters are tagged below in O(matches) instead
+    // of being polled on every packet of the connection's lifetime.
+    let pending_to_attribute: Vec<String> = if let Some(dpi_result) = &parsed.dpi_result
+        && let ApplicationProtocol::Dns(dns) = &dpi_result.application
+        && dns.is_response
+        && let Some(query_name) = &dns.query_name
+        && !dns.response_ips.is_empty()
+    {
+        dns_attribution.record_and_drain_pending(
+            query_name,
+            &dns.response_ips,
+            AttributionSource::CapturedDns,
+        )
+    } else {
+        Vec::new()
+    };
+
     connections
         .entry(key.clone())
         .and_modify(|conn| {
@@ -2065,6 +2104,11 @@ fn update_connection(
                     .total_tcp_fast_retransmits
                     .fetch_add(new_fast_retransmits, Ordering::Relaxed);
             }
+
+            // No per-packet attribution: existing connections that
+            // need a hostname were enrolled at creation time and are
+            // tagged event-driven via the pending-index drain below
+            // when the matching DNS response is observed.
         })
         .or_insert_with(|| {
             debug!("New connection detected: {}", key);
@@ -2075,6 +2119,11 @@ fn update_connection(
                 conn.initial_rtt = Some(rtt);
             }
 
+            // Tag now if a recent DNS resolution already covers this
+            // IP; otherwise enroll into the pending index so a future
+            // matching DNS response will tag it (see drain below).
+            dns_attribution.attribute(&mut conn);
+
             // Log new connection event if JSON logging is enabled
             if let Some(log_path) = json_log_path {
                 log_connection_event(log_path, "new_connection", &conn, None, dns_resolver);
@@ -2082,6 +2131,15 @@ fn update_connection(
 
             conn
         });
+
+    // Tag any connections whose remote IP just appeared in a DNS
+    // response. Each waiter was enrolled by `attribute()` at creation
+    // and has now been removed from the pending index by the drain.
+    for waiter_key in pending_to_attribute {
+        if let Some(mut entry) = connections.get_mut(&waiter_key) {
+            dns_attribution.attribute(&mut entry);
+        }
+    }
 }
 
 impl Drop for App {
