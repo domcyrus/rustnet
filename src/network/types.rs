@@ -415,9 +415,13 @@ pub enum FtpMessageType {
 
 impl fmt::Display for FtpMessageType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // The protocol-name prefix is already in the surrounding column /
+        // panel context, so the variant only needs to disambiguate
+        // request-vs-response. Emitting "FTP_REQUEST" / "FTP_RESPONSE" here
+        // produced "FTP / Message Type: FTP_REQUEST" in the details panel.
         let name = match self {
-            FtpMessageType::Request => "FTP_REQUEST",
-            FtpMessageType::Response => "FTP_RESPONSE",
+            FtpMessageType::Request => "Request",
+            FtpMessageType::Response => "Response",
         };
         write!(f, "{}", name)
     }
@@ -432,6 +436,10 @@ pub struct FtpInfo {
     pub response_message: Option<String>,
     pub username: Option<String>,
     pub server_software: Option<String>,
+    /// OS / system type from a `215` SYST reply (RFC 959 §4.2): `UNIX`,
+    /// `Windows_NT`, etc. Kept separate from `server_software` so the TUI
+    /// can label them distinctly — they describe different things.
+    pub system_type: Option<String>,
 }
 
 #[derive(Debug, Clone)]

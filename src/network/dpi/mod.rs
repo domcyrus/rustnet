@@ -26,7 +26,6 @@ pub use quic::{is_partial_sni, try_extract_tls_from_reassembler};
 const PORT_SSH: u16 = 22;
 const PORT_DNS: u16 = 53;
 const PORT_FTP: u16 = 21;
-const PORT_FTPS_IMPLICIT: u16 = 990;
 const PORT_DHCP_SERVER: u16 = 67;
 const PORT_DHCP_CLIENT: u16 = 68;
 const PORT_NTP: u16 = 123;
@@ -104,14 +103,15 @@ pub fn analyze_tcp_packet(
         });
     }
 
-    // 6. Check for FTP control channel (port 21, FTPS implicit 990, or signature).
-    //    Runs before more generic protocols since the start line is unambiguous
-    //    (3-digit reply code OR a small known command set).
-    if (local_port == PORT_FTP
-        || remote_port == PORT_FTP
-        || local_port == PORT_FTPS_IMPLICIT
-        || remote_port == PORT_FTPS_IMPLICIT
-        || ftp::is_ftp(payload))
+    // 6. Check for FTP control channel (port 21 plaintext / AUTH TLS upgrade,
+    //    or signature). Runs before more generic protocols since the start
+    //    line is unambiguous (3-digit reply code OR a small known command set).
+    //
+    //    Implicit FTPS on port 990 is intentionally NOT routed here: that
+    //    flow is TLS from the very first byte and falls through to the
+    //    HTTPS/TLS branch. AUTH TLS on port 21 is captured via the `AUTH`
+    //    command in the plaintext control channel before the upgrade.
+    if (local_port == PORT_FTP || remote_port == PORT_FTP || ftp::is_ftp(payload))
         && let Some(ftp_result) = ftp::analyze_ftp(payload)
     {
         return Some(DpiResult {

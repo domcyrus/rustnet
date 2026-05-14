@@ -67,6 +67,7 @@ Multiple worker threads (up to 4 by default, based on CPU cores) that parse pack
   - HTTPS/TLS with SNI (Server Name Indication)
   - DNS queries and responses
   - SSH connections with version detection
+  - FTP control channel with commands, response codes, username, server software, and system type
   - QUIC protocol with CONNECTION_CLOSE frame detection
   - MQTT with packet types, version, and client identifier
   - BitTorrent handshakes and DHT messages

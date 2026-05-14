@@ -865,11 +865,11 @@ fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
 
 /// Merge FTP information across packets in the same control connection.
 ///
-/// Identity-like fields (`username`, `server_software`) are first-wins so the
-/// first observed value is preserved across long-lived sessions. Dialog state
-/// (`message_type`, `command`, `args`, `response_code`, `response_message`) is
-/// latest-wins so the connection-table column reflects the most recent
-/// exchange.
+/// Identity-like fields (`username`, `server_software`, `system_type`) are
+/// first-wins so the first observed value is preserved across long-lived
+/// sessions. Dialog state (`message_type`, `command`, `args`, `response_code`,
+/// `response_message`) is latest-wins so the connection-table column reflects
+/// the most recent exchange.
 fn merge_ftp_info(old_info: &mut FtpInfo, new_info: &FtpInfo) {
     if old_info.username.is_none() && new_info.username.is_some() {
         old_info.username.clone_from(&new_info.username);
@@ -878,6 +878,9 @@ fn merge_ftp_info(old_info: &mut FtpInfo, new_info: &FtpInfo) {
         old_info
             .server_software
             .clone_from(&new_info.server_software);
+    }
+    if old_info.system_type.is_none() && new_info.system_type.is_some() {
+        old_info.system_type.clone_from(&new_info.system_type);
     }
     old_info.message_type = new_info.message_type;
     if new_info.command.is_some() {

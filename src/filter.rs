@@ -421,6 +421,11 @@ impl ConnectionFilter {
                 {
                     return true;
                 }
+                if let Some(ref sys) = info.system_type
+                    && match_text(sys, fv)
+                {
+                    return true;
+                }
                 if let Some(code) = info.response_code
                     && match_text(&code.to_string(), fv)
                 {

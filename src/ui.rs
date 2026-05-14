@@ -3984,6 +3984,15 @@ fn draw_connection_details(
                         label_style,
                     );
                 }
+                if let Some(sys) = &info.system_type {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "System Type",
+                        sys.clone(),
+                        label_style,
+                    );
+                }
             }
             crate::network::types::ApplicationProtocol::Mqtt(info) => {
                 push_detail_field(

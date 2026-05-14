@@ -62,7 +62,8 @@ pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
     }
 
     // Server response branch: `CCC <text>` or `CCC-<text>` where CCC is a
-    // 3-digit reply code.
+    // 3-digit reply code. A trailing `-` is the RFC 959 §4.2 continuation
+    // marker, signalling that the payload is multi-line.
     if line.len() >= 4
         && line[0].is_ascii_digit()
         && line[1].is_ascii_digit()
@@ -70,13 +71,30 @@ pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
         && (line[3] == b' ' || line[3] == b'-')
     {
         let code = std::str::from_utf8(&line[0..3]).ok()?.parse::<u16>().ok()?;
+        let is_continuation = line[3] == b'-';
         let message = std::str::from_utf8(&line[4..])
             .ok()
             .map(|s| s.trim().to_string());
-        // RFC 959 §5.4 / 4.2 — service-ready greetings (`220`) and system-type
-        // replies (`215`) typically embed the server software name; surface it
-        // so the connection-table column shows "FTP (vsftpd)" etc.
-        let server_software = if code == 220 || code == 215 {
+
+        // Software / system-type extraction is skipped on continuation lines
+        // (`220-Welcome to the FTP service.\r\n220 ProFTPD ...\r\n`) because
+        // the first line is human-greeting prose. vsftpd, ProFTPD, and
+        // Pure-FTPd all emit multi-line greetings by default, so honouring
+        // the continuation marker is critical — without it we tag
+        // `server_software = "Welcome"` on most real servers.
+        let server_software = if code == 220 && !is_continuation {
+            // RFC 959 §5.4 — service-ready greetings typically embed the
+            // FTP server software in the first whitespace-delimited token
+            // (`220 ProFTPD 1.3.7 ...`).
+            message.as_deref().map(extract_software_token)
+        } else {
+            None
+        };
+        // RFC 959 §4.2 — code 215 carries the system / OS name (`UNIX`,
+        // `Windows_NT`), NOT the FTP server software. Keeping the two
+        // separate avoids labelling "UNIX" under "Server Software" in the
+        // TUI.
+        let system_type = if code == 215 && !is_continuation {
             message.as_deref().map(extract_software_token)
         } else {
             None
@@ -89,6 +107,7 @@ pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
             response_message: message,
             username: None,
             server_software,
+            system_type,
         });
     }
 
@@ -128,6 +147,7 @@ pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
         response_message: None,
         username,
         server_software: None,
+        system_type: None,
     })
 }
 
@@ -199,6 +219,23 @@ mod tests {
     }
 
     #[test]
+    fn skips_software_extraction_on_220_continuation() {
+        // Default greeting on vsftpd / ProFTPD / Pure-FTPd is multi-line:
+        // the first line is `220-` continuation prose ("Welcome to..."),
+        // followed by `220 <software>` on a later line. We only see the
+        // first line at the DPI layer, so we must not pull "Welcome" out of
+        // it and label it as server software.
+        let payload = b"220-Welcome to the FTP service.\r\n220 ProFTPD 1.3.7\r\n";
+        let info = analyze_ftp(payload).expect("should parse");
+        assert_eq!(info.response_code, Some(220));
+        assert!(
+            info.server_software.is_none(),
+            "continuation lines must not populate server_software, got {:?}",
+            info.server_software
+        );
+    }
+
+    #[test]
     fn parses_user_request() {
         let payload = b"USER alice\r\n";
         let info = analyze_ftp(payload).expect("should parse");
@@ -234,10 +271,20 @@ mod tests {
 
     #[test]
     fn parses_system_type_response() {
+        // RFC 959 §4.2: a `215` reply returns the OS / system type, NOT the
+        // FTP server software. Previously we tagged "UNIX" under
+        // `server_software`, which surfaced under the "Server Software"
+        // column in the TUI alongside greetings like "ProFTPD". They are
+        // different things; route 215 to a dedicated `system_type` field
+        // and confirm `server_software` stays unset for this reply.
         let payload = b"215 UNIX Type: L8\r\n";
         let info = analyze_ftp(payload).expect("should parse");
         assert_eq!(info.response_code, Some(215));
-        assert_eq!(info.server_software.as_deref(), Some("UNIX"));
+        assert!(
+            info.server_software.is_none(),
+            "215 must not populate server_software"
+        );
+        assert_eq!(info.system_type.as_deref(), Some("UNIX"));
     }
 
     #[test]
