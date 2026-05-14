@@ -7,7 +7,7 @@ use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reasse
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
     ApplicationProtocol, Connection, DnsInfo, DpiInfo, HttpInfo, HttpsInfo, MqttInfo,
-    ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState,
+    ProtocolState, QuicConnectionState, QuicInfo, SmtpInfo, SshInfo, TcpState,
 };
 
 /// Get the priority of a QUIC connection state for proper state progression
@@ -494,6 +494,11 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     merge_mqtt_info(old_info, new_info);
                 }
 
+                // SMTP - dialog state evolves across commands/responses
+                (ApplicationProtocol::Smtp(old_info), ApplicationProtocol::Smtp(new_info)) => {
+                    merge_smtp_info(old_info, new_info);
+                }
+
                 _ => {
                     // Keep existing protocol
                 }
@@ -855,6 +860,41 @@ fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
     // Update auth method if not set
     if old_info.auth_method.is_none() && new_info.auth_method.is_some() {
         old_info.auth_method = new_info.auth_method.clone();
+    }
+}
+
+/// Merge SMTP information across packets in the same control connection.
+///
+/// Identity-like fields (`sender`, `recipient`, `server_software`) are
+/// first-wins. Dialog state (`message_type`, `command`, `args`,
+/// `response_code`, `response_message`) is latest-wins so the connection
+/// table column reflects the most recent exchange.
+fn merge_smtp_info(old_info: &mut SmtpInfo, new_info: &SmtpInfo) {
+    if old_info.sender.is_none() && new_info.sender.is_some() {
+        old_info.sender.clone_from(&new_info.sender);
+    }
+    if old_info.recipient.is_none() && new_info.recipient.is_some() {
+        old_info.recipient.clone_from(&new_info.recipient);
+    }
+    if old_info.server_software.is_none() && new_info.server_software.is_some() {
+        old_info
+            .server_software
+            .clone_from(&new_info.server_software);
+    }
+    old_info.message_type = new_info.message_type;
+    if new_info.command.is_some() {
+        old_info.command.clone_from(&new_info.command);
+    }
+    if new_info.args.is_some() {
+        old_info.args.clone_from(&new_info.args);
+    }
+    if new_info.response_code.is_some() {
+        old_info.response_code = new_info.response_code;
+    }
+    if new_info.response_message.is_some() {
+        old_info
+            .response_message
+            .clone_from(&new_info.response_message);
     }
 }
 

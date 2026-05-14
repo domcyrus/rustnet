@@ -402,6 +402,36 @@ impl ConnectionFilter {
                     return true;
                 }
             }
+            ApplicationProtocol::Smtp(info) => {
+                if match_text("smtp", fv) {
+                    return true;
+                }
+                if let Some(ref cmd) = info.command
+                    && match_text(cmd, fv)
+                {
+                    return true;
+                }
+                if let Some(ref sender) = info.sender
+                    && match_text(sender, fv)
+                {
+                    return true;
+                }
+                if let Some(ref recipient) = info.recipient
+                    && match_text(recipient, fv)
+                {
+                    return true;
+                }
+                if let Some(ref sw) = info.server_software
+                    && match_text(sw, fv)
+                {
+                    return true;
+                }
+                if let Some(code) = info.response_code
+                    && match_text(&code.to_string(), fv)
+                {
+                    return true;
+                }
+            }
             ApplicationProtocol::Mdns(info) => {
                 if let Some(ref query_name) = info.query_name
                     && match_text(query_name, fv)
