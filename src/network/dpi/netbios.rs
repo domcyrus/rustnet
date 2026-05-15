@@ -132,8 +132,10 @@ fn decode_netbios_name(data: &[u8]) -> Option<String> {
         let lo_nibble = lo - b'A';
         let c = hi_nibble | lo_nibble;
 
-        // Skip padding spaces (0x20)
-        if c != 0x20 && (c.is_ascii_graphic() || c.is_ascii_alphanumeric()) {
+        // Keep only printable ASCII: this naturally drops the trailing
+        // service-type suffix (0x00/0x1B/etc.) and padding spaces (0x20),
+        // since `is_ascii_graphic` covers 0x21..=0x7E exclusively.
+        if c.is_ascii_graphic() {
             name.push(c as char);
         }
     }
@@ -255,5 +257,26 @@ mod tests {
         let encoded = encode_netbios_name("PC");
         let name = decode_netbios_name(&encoded).expect("should decode");
         assert_eq!(name, "PC");
+    }
+
+    #[test]
+    fn test_decode_netbios_name_strips_service_type_suffix() {
+        // Real NetBIOS names embed a service-type byte at the 16th position
+        // (workstation=0x00, file_server=0x20, master_browser=0x1D, etc.).
+        // The non-printable suffix must NOT appear in the decoded name —
+        // decoding only keeps `is_ascii_graphic` characters (0x21..=0x7E).
+        let mut encoded = Vec::with_capacity(33);
+        encoded.push(32);
+        let padded = b"WORKSTATION    "; // 15 chars
+        for &b in padded {
+            encoded.push(b'A' + ((b >> 4) & 0x0F));
+            encoded.push(b'A' + (b & 0x0F));
+        }
+        // 16th byte = service-type 0x00 (workstation)
+        encoded.push(b'A');
+        encoded.push(b'A');
+
+        let decoded = decode_netbios_name(&encoded).expect("should decode");
+        assert_eq!(decoded, "WORKSTATION");
     }
 }
