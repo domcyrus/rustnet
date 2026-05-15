@@ -1013,15 +1013,15 @@ sudo yum install make pkgconfig libpcap-devel elfutils-libelf-devel zlib-devel c
 
 ### 安全最佳实践<a id="security-best-practices"></a>
 
-1. **尽可能使用能力而非 sudo**（Linux）
+1. **尽可能使用 Linux capabilities，而不是 sudo**（Linux）
 2. **使用基于组的访问而非以 root 运行**（macOS）
 3. **定期审计**哪些用户拥有数据包捕获特权
 4. **考虑网络分段**如果在生产系统上运行
 5. **监控日志文件**以发现未授权的使用
-6. **在不再需要 RustNet 时移除能力**：
+6. **在不再需要 RustNet 时移除相关 capabilities**：
 
    ```bash
-   # Linux：移除能力
+   # Linux：移除 capabilities
    sudo setcap -r /path/to/rustnet
 
    # macOS：从组中移除
@@ -1035,6 +1035,6 @@ sudo yum install make pkgconfig libpcap-devel elfutils-libelf-devel zlib-devel c
 - 数据包捕获访问的**审计日志**
 - **网络监控策略**和合规要求
 - 特权网络访问的**用户访问审查**
-- 配置管理系统中的**自动化能力管理**
+- 配置管理系统中的**自动化 capability 管理**
 
 此权限配置确保 RustNet 能够在捕获数据包的同时遵循安全最佳实践和最小权限原则。
