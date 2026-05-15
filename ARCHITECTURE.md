@@ -17,31 +17,21 @@ This document describes the technical architecture and implementation details of
 
 RustNet uses a multi-threaded architecture for efficient packet processing:
 
-```
-┌─────────────────┐
-│ Packet Capture  │ ──packets──> Crossbeam Channel
-│   (libpcap)     │                      │
-└─────────────────┘                      │
-                                         ├──> ┌──────────────────┐
-                                         ├──> │ Packet Processor │ ──> DashMap
-                                         ├──> │    (Thread 0)    │      │
-                                         └──> │    (Thread N)    │      │
-                                              └──────────────────┘      │
-                                                                        │
-┌─────────────────┐                                                     │
-│Process Enrichment│ ────────────────────────────────────────────> DashMap
-│  (Platform API) │                                                     │
-└─────────────────┘                                                     │
-                                                                        │
-┌─────────────────┐                                                     │
-│Snapshot Provider│ <─────────────────────────────────────────── DashMap
-└─────────────────┘                                                     │
-         │                                                              │
-         └──> RwLock<Vec<Connection>> (for UI)                          │
-                                                                        │
-┌─────────────────┐                                                     │
-│ Cleanup Thread  │ <─────────────────────────────────────────── DashMap
-└─────────────────┘
+```mermaid
+flowchart LR
+    PC[Packet Capture<br/>libpcap]
+    CH([Crossbeam Channel])
+    PP[Packet Processors<br/>Thread 0..N]
+    PE[Process Enrichment<br/>Platform API]
+    DM[(DashMap)]
+    SP[Snapshot Provider]
+    UI[/RwLock&lt;Vec&lt;Connection&gt;&gt;<br/>for UI/]
+    CT[Cleanup Thread]
+
+    PC -- packets --> CH --> PP --> DM
+    PE --> DM
+    DM --> SP --> UI
+    DM --> CT
 ```
 
 ## Key Components
