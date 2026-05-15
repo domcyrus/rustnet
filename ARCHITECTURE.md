@@ -1,4 +1,4 @@
-<p align="center"> <strong>English</strong> | <a href="ARCHITECTURE.zh-CN.md">简体中文</a> </p>
+<p align="center"> <strong>English</strong> | <a href="ARCHITECTURE.zh-CN.md">简体中文</a></p>
 
 # Architecture
 
