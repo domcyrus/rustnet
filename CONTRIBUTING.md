@@ -1,3 +1,5 @@
+<p align="center"> <strong>English</strong> | <a href="CONTRIBUTING.zh-CN.md">简体中文</a></p>
+
 # Contributing to RustNet
 
 Pull requests are very welcome! Whether you're fixing bugs, adding features, improving documentation, or providing feedback, all contributions help make RustNet better.

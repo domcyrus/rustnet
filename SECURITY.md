@@ -1,3 +1,5 @@
+<p align="center"><strong>English</strong> | <a href="SECURITY.zh-CN.md">简体中文</a></p>
+
 # Security
 
 RustNet processes untrusted network data, making defense-in-depth security critical. This document describes the security measures implemented.

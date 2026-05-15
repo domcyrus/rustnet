@@ -1,3 +1,5 @@
+<p align="center"><strong>English</strong> | <a href="INSTALL.zh-CN.md">简体中文</a> </p>
+
 # Installation Guide
 
 This guide covers all installation methods for RustNet across different platforms.

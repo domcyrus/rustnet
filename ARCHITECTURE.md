@@ -1,3 +1,5 @@
+<p align="center"> <strong>English</strong> | <a href="ARCHITECTURE.zh-CN.md">简体中文</a> </p>
+
 # Architecture
 
 This document describes the technical architecture and implementation details of RustNet.

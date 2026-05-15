@@ -1,3 +1,5 @@
+<p align="center"><strong>English</strong> | <a href="USAGE.zh-CN.md">简体中文</a></p>
+
 # Usage Guide
 
 This guide covers detailed usage of RustNet, including command-line options, keyboard controls, filtering, sorting, and understanding connection lifecycle.
