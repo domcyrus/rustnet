@@ -144,23 +144,24 @@ fn parse_version(data: &[u8]) -> Option<SnmpVersion> {
 
 /// Find the PDU type in the remaining data
 fn find_pdu_type(data: &[u8]) -> Option<SnmpPduType> {
-    // Look for context-specific tags (0xA0-0xA8)
+    // Look for context-specific tags (0xA0-0xA8). Single pass: the match
+    // both gates non-PDU bytes (via `_ => continue`) and converts the tag
+    // into its variant, so we no longer carry a dead `Unknown(other)` arm
+    // shadowed by the outer range check.
     for &byte in data.iter().take(50) {
-        // Limit search
-        if (PDU_GET_REQUEST..=PDU_REPORT).contains(&byte) {
-            return Some(match byte {
-                PDU_GET_REQUEST => SnmpPduType::GetRequest,
-                PDU_GET_NEXT_REQUEST => SnmpPduType::GetNextRequest,
-                PDU_GET_RESPONSE => SnmpPduType::GetResponse,
-                PDU_SET_REQUEST => SnmpPduType::SetRequest,
-                PDU_TRAP_V1 => SnmpPduType::Trap,
-                PDU_GET_BULK_REQUEST => SnmpPduType::GetBulkRequest,
-                PDU_INFORM_REQUEST => SnmpPduType::InformRequest,
-                PDU_TRAP_V2 => SnmpPduType::TrapV2,
-                PDU_REPORT => SnmpPduType::Report,
-                other => SnmpPduType::Unknown(other),
-            });
-        }
+        let pdu_type = match byte {
+            PDU_GET_REQUEST => SnmpPduType::GetRequest,
+            PDU_GET_NEXT_REQUEST => SnmpPduType::GetNextRequest,
+            PDU_GET_RESPONSE => SnmpPduType::GetResponse,
+            PDU_SET_REQUEST => SnmpPduType::SetRequest,
+            PDU_TRAP_V1 => SnmpPduType::Trap,
+            PDU_GET_BULK_REQUEST => SnmpPduType::GetBulkRequest,
+            PDU_INFORM_REQUEST => SnmpPduType::InformRequest,
+            PDU_TRAP_V2 => SnmpPduType::TrapV2,
+            PDU_REPORT => SnmpPduType::Report,
+            _ => continue,
+        };
+        return Some(pdu_type);
     }
     None
 }
@@ -296,5 +297,27 @@ mod tests {
         let (len, bytes) = parse_ber_length(&data).unwrap();
         assert_eq!(len, 256);
         assert_eq!(bytes, 3);
+    }
+
+    #[test]
+    fn test_find_pdu_type_skips_non_pdu_bytes() {
+        // Leading bytes are non-PDU (request-ID INTEGER, length, etc.);
+        // the scan must skip past them and land on the GetBulkRequest tag.
+        let data = [0x02, 0x04, 0x00, 0x00, 0x00, 0x07, PDU_GET_BULK_REQUEST];
+        assert_eq!(find_pdu_type(&data), Some(SnmpPduType::GetBulkRequest));
+    }
+
+    #[test]
+    fn test_find_pdu_type_returns_none_when_no_pdu() {
+        let data = [0x00, 0x01, 0x02, 0x03];
+        assert!(find_pdu_type(&data).is_none());
+    }
+
+    #[test]
+    fn test_find_pdu_type_caps_search_at_50_bytes() {
+        // PDU tag sits at offset 60 — beyond the cap, so it must not be found.
+        let mut data = vec![0x00u8; 60];
+        data.push(PDU_GET_REQUEST);
+        assert!(find_pdu_type(&data).is_none());
     }
 }
