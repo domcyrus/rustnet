@@ -165,7 +165,7 @@ choco install rustnet
 # 快速启动(所有平台)
 sudo rustnet
 
-# Linux：为可执行文件赋予 capability，即可免 sudo 运行(推荐)
+# Linux：为可执行文件赋予 Linux capabilities，即可免 sudo 运行(推荐)
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)
 rustnet
 ```
@@ -180,7 +180,7 @@ rustnet -r 500               # 设置刷新间隔(毫秒)
 
 权限配置详情见 [INSTALL.zh-CN.md](INSTALL.zh-CN.md)，完整参数说明见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
 
-> 如果已经设置了 capability，但 TUI 仍然提示 `eBPF unavailable`，请参阅 [INSTALL.zh-CN.md 的排障章节](INSTALL.zh-CN.md#ebpf-unavailable-despite-capabilities-being-set)。
+> 如果已经设置了 Linux capabilities，但 TUI 仍然提示 `eBPF unavailable`，请参阅 [INSTALL.zh-CN.md 的排障章节](INSTALL.zh-CN.md#ebpf-unavailable-despite-capabilities-being-set)。
 
 ## 键盘控制
 

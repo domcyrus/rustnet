@@ -183,7 +183,7 @@ RustNet 使用平台特定的 API 将网络连接与进程关联：
   - 进程名限制为 16 个字符（内核 `comm` 字段）
   - 可能显示线程名而非完整可执行文件名
   - 多线程应用显示内部线程名
-- **能力需求：**
+- **Linux capabilities 需求：**
   - 现代 Linux（5.8+）：`CAP_NET_RAW`（包捕获）、`CAP_BPF`、`CAP_PERFMON`（eBPF）
   - 旧版 Linux（pre-5.8）：`CAP_NET_RAW`（包捕获）、`CAP_SYS_ADMIN`（eBPF）
   - 注意：不需要 CAP_NET_ADMIN（使用只读、非混杂包捕获）
@@ -319,7 +319,7 @@ RustNet 使用以下关键依赖构建：
 - **procfs**（Linux）— 从 /proc 文件系统获取进程信息（运行时回退）
 - **libbpf-rs**（Linux）— eBPF 程序加载和管理
 - **landlock**（Linux）— 文件系统和网络沙箱
-- **caps**（Linux）— Linux 能力管理
+- **caps**（Linux）— Linux capabilities 管理
 - **windows**（Windows）— IP Helper API 的 Windows API 绑定
 
 ### 工具库

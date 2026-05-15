@@ -28,7 +28,7 @@
 # 使用 sudo 运行（适用于所有平台）
 sudo rustnet
 
-# 或授予能力以无需 sudo 运行（详情参见 INSTALL.md）
+# 或授予 Linux capabilities 以无需 sudo 运行（详情参见 INSTALL.md）
 # Linux 示例（现代内核 5.8+）：
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /path/to/rustnet
 rustnet
