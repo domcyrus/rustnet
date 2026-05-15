@@ -69,6 +69,7 @@ RustNet 采用多线程架构以实现高效的数据包处理：
   - 带 SNI（Server Name Indication）的 HTTPS/TLS
   - DNS 查询和响应
   - 带版本检测的 SSH 连接
+  - 带命令、响应代码、用户名、服务器软件和系统类型的 FTP 控制通道
   - 带 CONNECTION_CLOSE 帧检测的 QUIC 协议
   - 带报文类型、版本和客户端标识符的 MQTT
   - BitTorrent 握手和 DHT 消息
