@@ -68,8 +68,9 @@ pub(in crate::ui) fn draw_interface_stats(f: &mut Frame, app: &App, area: Rect) 
         };
 
         let right = |s: String| Cell::from(Line::from(s).right_aligned());
-        let right_styled =
-            |s: String, style: Style| Cell::from(Line::from(Span::styled(s, style)).right_aligned());
+        let right_styled = |s: String, style: Style| {
+            Cell::from(Line::from(Span::styled(s, style)).right_aligned())
+        };
         rows.push(Row::new(vec![
             Cell::from(stat.interface_name.clone()),
             right(rx_rate_str),
