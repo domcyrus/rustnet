@@ -15,7 +15,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{
         Axis, Block, Borders, Cell, Chart, Dataset, GraphType, Paragraph, Row, Sparkline, Table,
-        Tabs, Wrap,
+        Wrap,
     },
 };
 
@@ -27,6 +27,12 @@ use crate::network::types::{
 
 mod terminal;
 pub use terminal::{Terminal, restore_terminal, setup_terminal};
+
+mod widgets;
+use widgets::{
+    filter_input::draw_filter_input, loading::draw_loading_screen, status_bar::draw_status_bar,
+    tabs_bar::draw_tabs,
+};
 
 /// Placeholder string displayed when a value is unavailable.
 const NONE_PLACEHOLDER: &str = "-";
@@ -43,7 +49,7 @@ mod theme;
 
 /// Standard panel chrome: rounded magenta border + title.
 /// Single source of truth for every framed pane in the UI.
-fn panel_block<'a, T: Into<Line<'a>>>(title: T) -> Block<'a> {
+pub(crate) fn panel_block<'a, T: Into<Line<'a>>>(title: T) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
         .border_set(symbols::border::ROUNDED)
@@ -928,55 +934,6 @@ pub fn draw(
     draw_status_bar(f, ui_state, connections.len(), status_area);
 
     Ok(())
-}
-
-/// Draw mode tabs.
-///
-/// Custom styling: each title gets one space of padding so the active tab
-/// renders as a reverse-video pill. Inactive titles use the muted palette
-/// so the bar reads as a quiet header strip with one obvious focus point.
-const TAB_TITLES: [&str; 5] = ["Overview", "Details", "Interfaces", "Graph", "Help"];
-const TAB_DIVIDER: &str = " ▏ ";
-
-fn draw_tabs(f: &mut Frame, ui_state: &UIState, area: Rect, click_regions: &mut ClickableRegions) {
-    let inactive = theme::fg(theme::muted());
-    let titles: Vec<Line> = TAB_TITLES
-        .iter()
-        .map(|t| Line::from(Span::styled(format!(" {t} "), inactive)))
-        .collect();
-
-    let tabs = Tabs::new(titles)
-        .block(panel_block(Span::styled(
-            " RustNet Monitor ",
-            theme::fg(theme::muted()),
-        )))
-        .select(ui_state.selected_tab)
-        // Drop the widget's default 1-char padding on each side; the title
-        // strings carry their own " {title} " spacing so the active pill's
-        // reverse-video style covers the whole tab cell, not just the text.
-        .padding_left("")
-        .padding_right("")
-        .divider(Span::styled(TAB_DIVIDER, theme::fg(theme::muted())))
-        .style(Style::default())
-        .highlight_style(theme::primary().add_modifier(Modifier::REVERSED));
-
-    f.render_widget(tabs, area);
-
-    // Register clickable tab regions. Tabs renders inside the block's inner
-    // area (1px border each side); each title is " {title} " (2 chars padding
-    // baked in), divider spans 3 cells (" ▏ ").
-    let inner = area.inner(ratatui::layout::Margin {
-        horizontal: 1,
-        vertical: 1,
-    });
-    let divider_width = TAB_DIVIDER.chars().count() as u16;
-    let mut x_offset = inner.x;
-    for (i, title) in TAB_TITLES.iter().enumerate() {
-        let padded_width = title.len() as u16 + 2; // leading + trailing space
-        let tab_rect = Rect::new(x_offset, inner.y, padded_width, inner.height);
-        click_regions.register(tab_rect, ClickAction::SwitchTab(i));
-        x_offset += padded_width + divider_width;
-    }
 }
 
 /// Bundles read-only rendering context for overview drawing.
@@ -4412,131 +4369,6 @@ fn draw_interface_stats(f: &mut Frame, app: &crate::app::App, area: Rect) -> Res
     f.render_widget(table, area);
 
     Ok(())
-}
-
-/// Draw filter input area
-fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
-    let title = if ui_state.filter_mode {
-        "Filter (↑↓/jk to navigate, Enter to confirm, Esc to cancel)"
-    } else {
-        "Active Filter (Press Esc to clear)"
-    };
-
-    let input_text = if ui_state.filter_mode {
-        // Show cursor when in filter mode
-        let mut display_query = ui_state.filter_query.clone();
-        if ui_state.filter_cursor_position <= display_query.len() {
-            display_query.insert(ui_state.filter_cursor_position, '|');
-        }
-        display_query
-    } else {
-        ui_state.filter_query.clone()
-    };
-
-    let style = if ui_state.filter_mode {
-        theme::fg(theme::warn())
-    } else {
-        theme::fg(theme::ok())
-    };
-
-    let filter_input = Paragraph::new(input_text)
-        .block(panel_block(title))
-        .style(style)
-        .wrap(Wrap { trim: false });
-
-    f.render_widget(filter_input, area);
-}
-
-/// Status bar text per tab. Only Overview exposes connection-list shortcuts
-/// (/, a, t, c); other tabs show just what actually works there.
-fn default_status_line(selected_tab: usize) -> &'static str {
-    match selected_tab {
-        // Overview
-        0 => {
-            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 't' history | 'c' copy"
-        }
-        // Details
-        1 => " 'h' help | Tab/Shift+Tab switch tabs | 'c' copy remote addr | Esc back to Overview",
-        // Interfaces / Graph / Help
-        _ => " 'h' help | Tab/Shift+Tab switch tabs | Esc back to Overview",
-    }
-}
-
-/// Draw status bar
-fn draw_status_bar(f: &mut Frame, ui_state: &UIState, connection_count: usize, area: Rect) {
-    let status = if ui_state.quit_confirmation {
-        " Press 'q' again to quit or any other key to cancel ".to_string()
-    } else if ui_state.clear_confirmation {
-        " Press 'x' again to clear all connections or any other key to cancel ".to_string()
-    } else if let Some((ref msg, ref time)) = ui_state.clipboard_message {
-        // Show clipboard message for 3 seconds
-        if time.elapsed().as_secs() < 3 {
-            format!(" {} ", msg)
-        } else {
-            default_status_line(ui_state.selected_tab).to_string()
-        }
-    } else if !ui_state.filter_query.is_empty() {
-        format!(
-            " 'h' help | Tab/Shift+Tab switch tabs | Showing {} filtered connections (Esc to clear) ",
-            connection_count
-        )
-    } else {
-        default_status_line(ui_state.selected_tab).to_string()
-    };
-
-    let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {
-        theme::status_bar_confirm()
-    } else if ui_state.clipboard_message.is_some()
-        && ui_state
-            .clipboard_message
-            .as_ref()
-            .unwrap()
-            .1
-            .elapsed()
-            .as_secs()
-            < 3
-    {
-        theme::status_bar_success()
-    } else {
-        theme::status_bar_default()
-    };
-
-    let status_bar = Paragraph::new(status)
-        .style(style)
-        .alignment(ratatui::layout::Alignment::Left);
-
-    f.render_widget(status_bar, area);
-}
-
-/// Draw loading screen
-fn draw_loading_screen(f: &mut Frame) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(40),
-            Constraint::Length(5),
-            Constraint::Percentage(40),
-        ])
-        .split(f.area());
-
-    let loading_text = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("⣾ ", theme::fg(theme::heading())),
-            Span::styled("Loading network connections...", Style::default()),
-        ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "This may take a few seconds",
-            theme::fg(theme::muted()),
-        )]),
-    ];
-
-    let loading_paragraph = Paragraph::new(loading_text)
-        .alignment(ratatui::layout::Alignment::Center)
-        .block(panel_block("RustNet Monitor"));
-
-    f.render_widget(loading_paragraph, chunks[1]);
 }
 
 mod format;
