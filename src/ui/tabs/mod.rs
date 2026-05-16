@@ -5,3 +5,4 @@
 pub(super) mod graph;
 pub(super) mod help;
 pub(super) mod interfaces;
+pub(super) mod overview;
