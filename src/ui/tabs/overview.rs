@@ -1,7 +1,7 @@
-//\! Overview tab — the main connection list (flat or grouped), the
-//\! stats sidebar (interface, process detection, security, mini
-//\! traffic), the section separator helper, and the per-interface
-//\! sparkline used inside the stats sidebar.
+//! Overview tab — the main connection list (flat or grouped), the
+//! stats sidebar (interface, process detection, security, mini
+//! traffic), the section separator helper, and the per-interface
+//! sparkline used inside the stats sidebar.
 
 use anyhow::Result;
 use ratatui::{

@@ -1,7 +1,7 @@
-//\! UIState, ClickableRegions, ClickAction, SortColumn, GroupedRow, and
-//\! the selection/scroll helpers — everything tracking what the user is
-//\! looking at and acting on. No rendering happens here; tabs and widgets
-//\! read these to know what to draw.
+//! UIState, ClickableRegions, ClickAction, SortColumn, GroupedRow, and
+//! the selection/scroll helpers — everything tracking what the user is
+//! looking at and acting on. No rendering happens here; tabs and widgets
+//! read these to know what to draw.
 
 use std::collections::HashSet;
 

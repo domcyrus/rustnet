@@ -1,8 +1,8 @@
-//\! Details tab — full record for the selected connection: protocol
-//\! header, TCP analytics, traffic stats, and protocol-specific DPI
-//\! info. Also owns the push_detail_field / register_detail_clicks
-//\! helpers that build the label/value lines and the click-to-copy
-//\! registry.
+//! Details tab — full record for the selected connection: protocol
+//! header, TCP analytics, traffic stats, and protocol-specific DPI
+//! info. Also owns the push_detail_field / register_detail_clicks
+//! helpers that build the label/value lines and the click-to-copy
+//! registry.
 
 use anyhow::Result;
 use ratatui::{

@@ -1,6 +1,6 @@
-//\! Graph tab — traffic chart, connections sparkline, network
-//\! health, TCP counters, TCP state distribution, application
-//\! protocol distribution, and top processes by bandwidth.
+//! Graph tab — traffic chart, connections sparkline, network
+//! health, TCP counters, TCP state distribution, application
+//! protocol distribution, and top processes by bandwidth.
 
 use anyhow::Result;
 use ratatui::{
