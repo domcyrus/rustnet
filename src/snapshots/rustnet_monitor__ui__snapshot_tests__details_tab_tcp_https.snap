@@ -1,0 +1,45 @@
+---
+source: src/ui.rs
+assertion_line: 5443
+expression: output
+---
+╭ RustNet Monitor ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Overview  ▏  Details  ▏  Interfaces  ▏  Graph  ▏  Help                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+╭ firefox → 140.82.121.4:443 (click to copy) ────────────────────────╮╭ Protocol & Metrics (click to copy) ────────────────────────────────╮
+│Protocol              TCP                                           ││TCP Analytics                                                       │
+│Status                Active (last seen <T> ago)                     ││TCP Retransmits       0                                             │
+│Local Address         192.168.1.10:51234                            ││Out-of-Order Packets  0                                             │
+│Remote Address        140.82.121.4:443                              ││Duplicate ACKs        0                                             │
+│Scope                 PUBLIC                                        ││Fast Retransmits      0                                             │
+│State                 ESTABLISHED                                   ││Window Size           0                                             │
+│Process               firefox                                       ││                                                                    │
+│PID                   2001                                          ││                                                                    │
+│Service               https                                         ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+│                                                                    ││                                                                    │
+╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
+╭Traffic Statistics (click to copy)────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│Bytes Sent            12.21 KB                                                                                                            │
+│Bytes Received        234.38 KB                                                                                                           │
+│Packets Sent          12                                                                                                                  │
+│Packets Received      234                                                                                                                 │
+│Current Rate (In)     -                                                                                                                   │
+│Current Rate (Out)    -                                                                                                                   │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ 'h' help | Tab/Shift+Tab switch tabs | 'c' copy remote addr | Esc back to Overview

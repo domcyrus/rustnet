@@ -1,0 +1,6 @@
+---
+source: src/ui.rs
+assertion_line: 5245
+expression: output
+---
+ 'h' help | Tab/Shift+Tab switch tabs | Esc back to Overview

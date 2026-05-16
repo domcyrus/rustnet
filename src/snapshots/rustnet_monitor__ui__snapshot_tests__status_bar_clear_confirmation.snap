@@ -1,0 +1,6 @@
+---
+source: src/ui.rs
+assertion_line: 5275
+expression: output
+---
+ Press 'x' again to clear all connections or any other key to cancel

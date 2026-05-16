@@ -1,0 +1,55 @@
+---
+source: src/ui.rs
+assertion_line: 5159
+expression: output
+---
+╭Help──────────────────────────────────────────────────────────────────────────────────────────────╮
+│RustNet Monitor - Network Connection Monitor                                                      │
+│                                                                                                  │
+│q Quit application (press twice to confirm)                                                       │
+│Ctrl+C Quit immediately                                                                           │
+│x Clear all connections (press twice to confirm)                                                  │
+│Tab Switch between tabs                                                                           │
+│↑/k, ↓/j Navigate connections (wraps around)                                                      │
+│g, G Jump to first/last connection (vim-style)                                                    │
+│Page Up/Down, Ctrl+B/F Navigate connections by page                                               │
+│c Copy remote address to clipboard                                                                │
+│p Toggle between service names and port numbers                                                   │
+│d Toggle between hostnames and IP addresses (when --resolve-dns)                                  │
+│s Cycle through sort columns (Bandwidth, Process, etc.)                                           │
+│S Toggle sort direction (ascending/descending)                                                    │
+│a Toggle process grouping (aggregate by process)                                                  │
+│Space Expand/collapse group (when grouping enabled)                                               │
+│←/→ or h/l Collapse/expand group                                                                  │
+│t Toggle display of historic (closed) connections                                                 │
+│r Reset view (grouping, sort, filter)                                                             │
+│Enter View connection details                                                                     │
+│Esc Return to overview                                                                            │
+│h Toggle this help screen                                                                         │
+│i Toggle interface statistics view                                                                │
+│/ Enter filter mode on Overview (use ↑/↓ to navigate while typing)                                │
+│                                                                                                  │
+│Tabs:                                                                                             │
+│Overview Connection list with mini traffic graph                                                  │
+│Details Full details for selected connection                                                      │
+│Interfaces Network interface statistics                                                           │
+│Graph Traffic charts and protocol distribution                                                    │
+│Help This help screen                                                                             │
+│                                                                                                  │
+│Mouse Controls:                                                                                   │
+│Click tab Switch between tabs                                                                     │
+│Click row Select connection                                                                       │
+│Scroll wheel Navigate connection list                                                             │
+│Double-click row Open connection details                                                          │
+│Double-click group Expand/collapse process group                                                  │
+│Click field (Details) Copy field value to clipboard                                               │
+│                                                                                                  │
+│Connection Colors:                                                                                │
+│White Active connection (< 75% of timeout)                                                        │
+│Yellow Stale connection (75-90% of timeout)                                                       │
+│Red Critical - will be removed soon (> 90% of timeout)                                            │
+│                                                                                                  │
+│Filter Examples:                                                                                  │
+│/google Search for 'google' in all fields                                                         │
+│/port:22 Exact port match (only port 22, not 2223 or 5522)                                        │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

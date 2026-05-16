@@ -1888,6 +1888,42 @@ impl App {
         self.show_historic.store(value, Ordering::Relaxed);
     }
 
+    /// Seed the UI snapshot directly. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_connections_snapshot_for_test(&self, snapshot: Vec<Connection>) {
+        *self.connections_snapshot.write().unwrap() = snapshot;
+    }
+
+    /// Override the loading flag. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_loading_for_test(&self, value: bool) {
+        self.is_loading.store(value, Ordering::Relaxed);
+    }
+
+    /// Override the current interface label. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_current_interface_for_test(&self, iface: Option<String>) {
+        *self.current_interface.write().unwrap() = iface;
+    }
+
+    /// Seed an interface's cumulative stats. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_interface_stats_for_test(&self, name: &str, stats: InterfaceStats) {
+        self.interface_stats.insert(name.to_string(), stats);
+    }
+
+    /// Seed an interface's rate counters. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_interface_rates_for_test(&self, name: &str, rates: InterfaceRates) {
+        self.interface_rates.insert(name.to_string(), rates);
+    }
+
+    /// Override the traffic history ring. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_traffic_history_for_test(&self, history: TrafficHistory) {
+        *self.traffic_history.write().unwrap() = history;
+    }
+
     /// Clear all connections and related data, starting fresh
     /// This clears:
     /// - All tracked connections

@@ -1,0 +1,8 @@
+---
+source: src/ui.rs
+assertion_line: 5222
+expression: output
+---
+╭Active Filter (Press Esc to clear)────────────────────────────────────────────╮
+│tcp port:443                                                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯

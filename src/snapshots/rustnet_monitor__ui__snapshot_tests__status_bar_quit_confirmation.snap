@@ -1,0 +1,6 @@
+---
+source: src/ui.rs
+assertion_line: 5265
+expression: output
+---
+ Press 'q' again to quit or any other key to cancel

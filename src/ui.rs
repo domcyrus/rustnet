@@ -5102,3 +5102,478 @@ mod tests {
         assert_eq!(ui_state.selected_connection_key, Some(connections[0].key()));
     }
 }
+
+#[cfg(test)]
+mod snapshot_tests {
+    //! Snapshot tests covering chrome (tabs, filter, status bar, loading,
+    //! help) and full-page renders that need no live `App` plumbing.
+    //!
+    //! Rendering is captured as plain-text (cell symbols only) — colors
+    //! and modifiers are dropped because they're hard to diff usefully and
+    //! the theme is exercised separately. Layout regressions are what
+    //! these tests catch.
+    //!
+    //! Snapshots live in `src/snapshots/` (insta's default for unit
+    //! tests). Run `cargo insta review` after intentional UI changes.
+    use super::*;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+
+    /// Render a closure into a `width × height` test buffer and return a
+    /// plain-text dump (one line per row, no trailing whitespace trim).
+    fn render<F>(width: u16, height: u16, draw: F) -> String
+    where
+        F: FnOnce(&mut Frame),
+    {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("create test terminal");
+        terminal.draw(draw).expect("draw frame");
+        buffer_to_string(terminal.backend().buffer())
+    }
+
+    fn buffer_to_string(buffer: &Buffer) -> String {
+        let area = buffer.area;
+        let mut out = String::with_capacity((area.width as usize + 1) * area.height as usize);
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buffer[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    // --- Chrome: loading, help, tabs, filter input, status bar ---
+
+    #[test]
+    fn loading_screen() {
+        let output = render(80, 20, draw_loading_screen);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn help_tab() {
+        let output = render(100, 50, |f| {
+            draw_help(f, f.area()).expect("draw_help");
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn tabs_bar_overview_active() {
+        let ui_state = UIState {
+            selected_tab: 0,
+            ..Default::default()
+        };
+        let mut regions = ClickableRegions::default();
+        let output = render(80, 3, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn tabs_bar_details_active() {
+        let ui_state = UIState {
+            selected_tab: 1,
+            ..Default::default()
+        };
+        let mut regions = ClickableRegions::default();
+        let output = render(80, 3, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn tabs_bar_help_active() {
+        let ui_state = UIState {
+            selected_tab: 4,
+            ..Default::default()
+        };
+        let mut regions = ClickableRegions::default();
+        let output = render(80, 3, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn filter_input_mode_active_empty() {
+        let ui_state = UIState {
+            filter_mode: true,
+            filter_query: String::new(),
+            filter_cursor_position: 0,
+            ..Default::default()
+        };
+        let output = render(80, 3, |f| draw_filter_input(f, &ui_state, f.area()));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn filter_input_mode_active_with_text() {
+        let ui_state = UIState {
+            filter_mode: true,
+            filter_query: "port:443".to_string(),
+            filter_cursor_position: 8,
+            ..Default::default()
+        };
+        let output = render(80, 3, |f| draw_filter_input(f, &ui_state, f.area()));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn filter_input_persisted() {
+        let ui_state = UIState {
+            filter_mode: false,
+            filter_query: "tcp port:443".to_string(),
+            filter_cursor_position: 0,
+            ..Default::default()
+        };
+        let output = render(80, 3, |f| draw_filter_input(f, &ui_state, f.area()));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_overview_default() {
+        let ui_state = UIState::default();
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_details_tab() {
+        let ui_state = UIState {
+            selected_tab: 1,
+            ..Default::default()
+        };
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_help_tab() {
+        let ui_state = UIState {
+            selected_tab: 4,
+            ..Default::default()
+        };
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 0, f.area()));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_filtered() {
+        let ui_state = UIState {
+            filter_query: "port:443".to_string(),
+            ..Default::default()
+        };
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 7, f.area()));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_quit_confirmation() {
+        let ui_state = UIState {
+            quit_confirmation: true,
+            ..Default::default()
+        };
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_clear_confirmation() {
+        let ui_state = UIState {
+            clear_confirmation: true,
+            ..Default::default()
+        };
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        insta::assert_snapshot!(output);
+    }
+
+    // --- Full-page renders backed by a seeded App ---
+    //
+    // A real `App` is built with `App::new(test_config())` (no threads, no
+    // DNS, no GeoIP). Connection lists, interface stats, and the loading
+    // flag are injected through `#[cfg(test)]` setters on `App`. Time-
+    // sensitive strings (Status "Active (last seen Xs ago)", "Started Xs
+    // ago", etc.) are scrubbed with `insta::with_settings!` filters so
+    // snapshots stay stable across runs.
+
+    use crate::app::{App, Config};
+    use crate::network::interface_stats::{InterfaceRates, InterfaceStats};
+    use crate::network::types::{Connection, Protocol, ProtocolState, TcpState, TrafficHistory};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::time::{Duration, SystemTime};
+
+    fn test_config() -> Config {
+        Config {
+            interface: Some("eth0".to_string()),
+            filter_localhost: false,
+            refresh_interval: 1000,
+            enable_dpi: false,
+            bpf_filter: None,
+            json_log_file: None,
+            pcap_export_file: None,
+            resolve_dns: false,
+            show_ptr_lookups: false,
+            geoip_country_path: None,
+            geoip_asn_path: None,
+            geoip_city_path: None,
+            disable_geoip: true,
+        }
+    }
+
+    fn test_app() -> App {
+        let app = App::new(test_config()).expect("App::new in test_config");
+        app.set_loading_for_test(false);
+        app.set_current_interface_for_test(Some("eth0".to_string()));
+        app
+    }
+
+    /// Test-fixture spec for one connection. Folded into a struct so
+    /// `sample_connections()` can build a vec literally instead of
+    /// passing nine positional args per entry.
+    struct ConnSpec {
+        protocol: Protocol,
+        local: (Ipv4Addr, u16),
+        remote: (Ipv4Addr, u16),
+        state: ProtocolState,
+        service: &'static str,
+        process: &'static str,
+        pid: u32,
+        bytes_sent: u64,
+        bytes_received: u64,
+    }
+
+    fn build_conn(spec: ConnSpec) -> Connection {
+        let local_sa = SocketAddr::new(IpAddr::V4(spec.local.0), spec.local.1);
+        let remote_sa = SocketAddr::new(IpAddr::V4(spec.remote.0), spec.remote.1);
+        let now = SystemTime::now();
+        let mut conn = Connection::new(spec.protocol, local_sa, remote_sa, spec.state);
+        conn.service_name = Some(spec.service.to_string());
+        conn.process_name = Some(spec.process.to_string());
+        conn.pid = Some(spec.pid);
+        conn.bytes_sent = spec.bytes_sent;
+        conn.bytes_received = spec.bytes_received;
+        conn.packets_sent = spec.bytes_sent / 1024;
+        conn.packets_received = spec.bytes_received / 1024;
+        conn.created_at = now;
+        conn.last_activity = now;
+        conn
+    }
+
+    fn sample_connections() -> Vec<Connection> {
+        [
+            ConnSpec {
+                protocol: Protocol::Tcp,
+                local: (Ipv4Addr::new(192, 168, 1, 10), 51234),
+                remote: (Ipv4Addr::new(140, 82, 121, 4), 443),
+                state: ProtocolState::Tcp(TcpState::Established),
+                service: "https",
+                process: "firefox",
+                pid: 2001,
+                bytes_sent: 12_500,
+                bytes_received: 240_000,
+            },
+            ConnSpec {
+                protocol: Protocol::Udp,
+                local: (Ipv4Addr::new(192, 168, 1, 10), 53),
+                remote: (Ipv4Addr::new(1, 1, 1, 1), 53),
+                state: ProtocolState::Udp,
+                service: "dns",
+                process: "systemd-resolved",
+                pid: 820,
+                bytes_sent: 1_200,
+                bytes_received: 3_400,
+            },
+            ConnSpec {
+                protocol: Protocol::Tcp,
+                local: (Ipv4Addr::new(192, 168, 1, 10), 22),
+                remote: (Ipv4Addr::new(10, 0, 0, 5), 51022),
+                state: ProtocolState::Tcp(TcpState::Established),
+                service: "ssh",
+                process: "sshd",
+                pid: 1500,
+                bytes_sent: 88_000,
+                bytes_received: 42_000,
+            },
+            ConnSpec {
+                protocol: Protocol::Tcp,
+                local: (Ipv4Addr::new(192, 168, 1, 10), 60123),
+                remote: (Ipv4Addr::new(151, 101, 1, 195), 443),
+                state: ProtocolState::Tcp(TcpState::TimeWait),
+                service: "https",
+                process: "curl",
+                pid: 9876,
+                bytes_sent: 0,
+                bytes_received: 1_536,
+            },
+        ]
+        .into_iter()
+        .map(build_conn)
+        .collect()
+    }
+
+    /// Insta filters that scrub volatile values from the rendered output.
+    /// The order matters — more specific patterns first.
+    fn time_filters() -> Vec<(&'static str, &'static str)> {
+        vec![
+            (r"last seen \d+[smhd] ago", "last seen <T> ago"),
+            (r"Started \d+[smhd] ago", "Started <T> ago"),
+            (r"Closed \(\d+[smhd] ago\)", "Closed (<T> ago)"),
+            (r"\(idle \d+[smhd]\)", "(idle <T>)"),
+        ]
+    }
+
+    // Overview snapshots are intentionally omitted from Phase 1: the
+    // stats sidebar renders a Security panel whose text comes from
+    // platform-specific code paths (Seatbelt on macOS, Landlock on
+    // Linux, Restricted Token on Windows) plus the running user's UID,
+    // making byte-stable snapshots non-portable. Once Phase 2 splits
+    // the Security panel into its own function we can snapshot it with
+    // a stub `SandboxInfo`, then add overview snapshots back.
+
+    #[test]
+    fn details_tab_tcp_https() {
+        let app = test_app();
+        let connections = sample_connections();
+        app.set_connections_snapshot_for_test(connections.clone());
+
+        let ui_state = UIState {
+            selected_tab: 1, // Details
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw details");
+        });
+
+        insta::with_settings!({
+            filters => time_filters(),
+        }, {
+            insta::assert_snapshot!(output);
+        });
+    }
+
+    #[test]
+    fn interfaces_tab() {
+        let app = test_app();
+        app.set_connections_snapshot_for_test(sample_connections());
+        app.set_interface_stats_for_test(
+            "eth0",
+            InterfaceStats {
+                interface_name: "eth0".to_string(),
+                rx_bytes: 1_500_000_000,
+                tx_bytes: 250_000_000,
+                rx_packets: 1_200_000,
+                tx_packets: 800_000,
+                rx_errors: 0,
+                tx_errors: 0,
+                rx_dropped: 12,
+                tx_dropped: 0,
+                collisions: 0,
+                timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+            },
+        );
+        app.set_interface_rates_for_test(
+            "eth0",
+            InterfaceRates {
+                rx_bytes_per_sec: 524_288,
+                tx_bytes_per_sec: 131_072,
+            },
+        );
+
+        let ui_state = UIState {
+            selected_tab: 2, // Interfaces
+            ..Default::default()
+        };
+        let connections = app.get_connections();
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        let output = render(140, 30, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw interfaces");
+        });
+
+        insta::with_settings!({
+            filters => time_filters(),
+        }, {
+            insta::assert_snapshot!(output);
+        });
+    }
+
+    #[test]
+    fn graph_tab_empty_history() {
+        let app = test_app();
+        app.set_connections_snapshot_for_test(sample_connections());
+        app.set_traffic_history_for_test(TrafficHistory::new(60));
+
+        let ui_state = UIState {
+            selected_tab: 3, // Graph
+            ..Default::default()
+        };
+        let connections = app.get_connections();
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw graph");
+        });
+
+        insta::with_settings!({
+            filters => time_filters(),
+        }, {
+            insta::assert_snapshot!(output);
+        });
+    }
+
+    #[test]
+    fn loading_screen_via_app() {
+        let app = App::new(test_config()).expect("App::new");
+        // Leave is_loading=true so draw() takes the loading branch.
+        let connections: Vec<Connection> = Vec::new();
+        let ui_state = UIState::default();
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        let output = render(80, 20, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw loading");
+        });
+
+        insta::assert_snapshot!(output);
+    }
+}

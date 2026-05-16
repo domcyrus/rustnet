@@ -1,0 +1,6 @@
+---
+source: src/ui.rs
+assertion_line: 5229
+expression: output
+---
+ 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 't' history | 'c' copy

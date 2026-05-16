@@ -1,0 +1,8 @@
+---
+source: src/ui.rs
+assertion_line: 5210
+expression: output
+---
+╭Filter (↑↓/jk to navigate, Enter to confirm, Esc to cancel)───────────────────╮
+│port:443|                                                                     │
+╰──────────────────────────────────────────────────────────────────────────────╯

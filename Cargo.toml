@@ -21,6 +21,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "rustnet"
 path = "src/main.rs"
+# The bin re-compiles every src/* module that lib.rs also re-exports.
+# Running `cargo test` on the bin therefore duplicates every unit test
+# under a different crate prefix, which breaks snapshot-test file paths
+# (`rustnet__...` vs `rustnet_monitor__...`). Tests live in the lib and
+# in `tests/`; the bin is just the entry point.
+test = false
 
 [dependencies]
 anyhow = "1.0"
@@ -178,6 +184,7 @@ eula = false
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
+insta = { version = "1", features = ["filters"] }
 
 [[bench]]
 name = "packet_parsing"

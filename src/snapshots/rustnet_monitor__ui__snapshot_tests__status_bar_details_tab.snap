@@ -1,0 +1,6 @@
+---
+source: src/ui.rs
+assertion_line: 5237
+expression: output
+---
+ 'h' help | Tab/Shift+Tab switch tabs | 'c' copy remote addr | Esc back to Overview

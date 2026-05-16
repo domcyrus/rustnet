@@ -1,0 +1,6 @@
+---
+source: src/ui.rs
+assertion_line: 5255
+expression: output
+---
+ 'h' help | Tab/Shift+Tab switch tabs | Showing 7 filtered connections (Esc to clear)
