@@ -3,3 +3,4 @@
 //! from the top-level `draw()` dispatcher in `ui::mod`.
 
 pub(super) mod help;
+pub(super) mod interfaces;
