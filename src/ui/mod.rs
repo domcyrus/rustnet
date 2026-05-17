@@ -33,22 +33,22 @@ use tabs::{
     overview::OverviewTab,
 };
 
-/// Route a key event to the active tab's Component. Main loop
-/// calls this once per Event::Key before falling through to its
-/// own match (which still owns global keys + the not-yet-migrated
-/// per-tab keys).
+/// Route a key event to the active tab's Component. Returns
+/// `Some(effects)` if the tab claimed the key, `None` otherwise so
+/// the caller can fall through to its own (global / fallback)
+/// handling.
 pub fn dispatch_key(
     tab: usize,
     key: crossterm::event::KeyEvent,
     ctx: &mut HandlerContext<'_>,
-) -> Vec<Effect> {
+) -> Option<Vec<Effect>> {
     match tab {
         0 => OverviewTab.handle_key(key, ctx),
         1 => DetailsTab.handle_key(key, ctx),
         2 => InterfacesTab.handle_key(key, ctx),
         3 => GraphTab.handle_key(key, ctx),
         4 => HelpTab.handle_key(key, ctx),
-        _ => Vec::new(),
+        _ => None,
     }
 }
 

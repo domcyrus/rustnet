@@ -13,7 +13,7 @@ use ratatui::{
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use log::info;
+use log::{debug, info};
 
 use crate::app::{App, AppStats};
 use crate::network::dns::DnsResolver;
@@ -40,7 +40,7 @@ impl Component for OverviewTab {
         draw_overview(f, ctx, area, click_regions)
     }
 
-    fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
         match (key.code, key.modifiers) {
             // --- Navigation ---
             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
@@ -51,7 +51,7 @@ impl Component for OverviewTab {
                 } else {
                     ctx.ui_state.move_selection_up(ctx.connections);
                 }
-                Vec::new()
+                Some(Vec::new())
             }
             (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
                 if ctx.ui_state.grouping_enabled
@@ -61,7 +61,7 @@ impl Component for OverviewTab {
                 } else {
                     ctx.ui_state.move_selection_down(ctx.connections);
                 }
-                Vec::new()
+                Some(Vec::new())
             }
             (KeyCode::PageUp, _) | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
                 let page_size = ctx.ui_state.visible_rows.max(1);
@@ -73,7 +73,7 @@ impl Component for OverviewTab {
                     ctx.ui_state
                         .move_selection_page_up(ctx.connections, page_size);
                 }
-                Vec::new()
+                Some(Vec::new())
             }
             (KeyCode::PageDown, _) | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
                 let page_size = ctx.ui_state.visible_rows.max(1);
@@ -86,15 +86,15 @@ impl Component for OverviewTab {
                     ctx.ui_state
                         .move_selection_page_down(ctx.connections, page_size);
                 }
-                Vec::new()
+                Some(Vec::new())
             }
             (KeyCode::Char('g'), KeyModifiers::NONE) => {
                 ctx.ui_state.move_selection_to_first(ctx.connections);
-                Vec::new()
+                Some(Vec::new())
             }
             (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
                 ctx.ui_state.move_selection_to_last(ctx.connections);
-                Vec::new()
+                Some(Vec::new())
             }
 
             // --- Open Details on Enter (only for a real connection, not a group header) ---
@@ -104,7 +104,7 @@ impl Component for OverviewTab {
                 if !ctx.connections.is_empty() && !on_group_header {
                     ctx.ui_state.selected_tab = 1;
                 }
-                Vec::new()
+                Some(Vec::new())
             }
 
             // --- Group expand / collapse ---
@@ -112,19 +112,30 @@ impl Component for OverviewTab {
                 if ctx.ui_state.grouping_enabled && ctx.ui_state.is_group_selected() =>
             {
                 ctx.ui_state.toggle_group_expansion();
-                vec![Effect::Regroup]
+                Some(vec![Effect::Regroup])
             }
             (KeyCode::Left, _) if ctx.ui_state.grouping_enabled => {
                 ctx.ui_state.collapse_selected_group();
-                vec![Effect::Regroup]
+                Some(vec![Effect::Regroup])
             }
             (KeyCode::Right, _) if ctx.ui_state.grouping_enabled => {
                 ctx.ui_state.expand_selected_group();
-                vec![Effect::Regroup]
+                Some(vec![Effect::Regroup])
             }
             (KeyCode::Char('l'), _) if ctx.ui_state.grouping_enabled => {
                 ctx.ui_state.expand_selected_group();
-                vec![Effect::Regroup]
+                Some(vec![Effect::Regroup])
+            }
+
+            // --- Filter mode entry and exit ---
+            (KeyCode::Char('/'), _) => {
+                debug!("Entering filter mode");
+                ctx.ui_state.enter_filter_mode();
+                Some(Vec::new())
+            }
+            (KeyCode::Esc, _) if !ctx.ui_state.filter_query.is_empty() => {
+                ctx.ui_state.clear_filter();
+                Some(vec![Effect::RefreshData])
             }
 
             // --- Display toggles & sort ---
@@ -140,7 +151,7 @@ impl Component for OverviewTab {
                         "showing service names"
                     }
                 );
-                Vec::new()
+                Some(Vec::new())
             }
 
             // Toggle hostname / IP display — DNS resolver must be enabled
@@ -154,7 +165,7 @@ impl Component for OverviewTab {
                         "showing IP addresses"
                     }
                 );
-                Vec::new()
+                Some(Vec::new())
             }
 
             // Toggle historic-connection inclusion
@@ -171,7 +182,7 @@ impl Component for OverviewTab {
                         "hidden"
                     }
                 );
-                vec![Effect::RefreshData]
+                Some(vec![Effect::RefreshData])
             }
 
             // Toggle process grouping
@@ -185,7 +196,7 @@ impl Component for OverviewTab {
                         "disabled (flat list)"
                     }
                 );
-                vec![Effect::Regroup]
+                Some(vec![Effect::Regroup])
             }
 
             // Reset view settings
@@ -196,7 +207,7 @@ impl Component for OverviewTab {
                     ctx.app.set_show_historic(false);
                 }
                 info!("Reset view settings to defaults");
-                vec![Effect::RefreshData]
+                Some(vec![Effect::RefreshData])
             }
 
             // Cycle sort column
@@ -211,7 +222,7 @@ impl Component for OverviewTab {
                         "descending"
                     }
                 );
-                vec![Effect::RefreshData]
+                Some(vec![Effect::RefreshData])
             }
 
             // Toggle sort direction (Shift+s)
@@ -226,7 +237,7 @@ impl Component for OverviewTab {
                     },
                     ctx.ui_state.sort_column.display_name()
                 );
-                vec![Effect::RefreshData]
+                Some(vec![Effect::RefreshData])
             }
 
             // Copy selected connection's remote address
@@ -235,21 +246,36 @@ impl Component for OverviewTab {
                     && let Some(conn) = ctx.connections.get(idx)
                 {
                     let addr = conn.remote_addr.to_string();
-                    vec![Effect::Copy {
+                    Some(vec![Effect::Copy {
                         label: addr.clone(),
                         value: addr,
-                    }]
+                    }])
                 } else {
-                    Vec::new()
+                    Some(Vec::new())
                 }
             }
 
-            // 'x' (clear with confirmation), 'q', filter-mode entry, and
-            // navigation keys still live in main.rs's event loop. They'll
-            // migrate once the Component trait grows a "claimed" return
-            // type so the loop can stop falling through to its catch-all
-            // that resets confirmations.
-            _ => Vec::new(),
+            // Clear all connections (two-press confirmation)
+            (KeyCode::Char('x'), _) => {
+                if ctx.ui_state.clear_confirmation {
+                    info!("User confirmed clear all connections");
+                    ctx.app.clear_all_connections();
+                    ctx.ui_state.clear_confirmation = false;
+                    ctx.ui_state.show_historic = false;
+                    ctx.ui_state.selected_connection_key = None;
+                    ctx.ui_state.clipboard_message = Some((
+                        "All connections cleared".to_string(),
+                        std::time::Instant::now(),
+                    ));
+                    Some(vec![Effect::RefreshData])
+                } else {
+                    info!("User requested clear - showing confirmation");
+                    ctx.ui_state.clear_confirmation = true;
+                    Some(Vec::new())
+                }
+            }
+
+            _ => None,
         }
     }
 }

@@ -65,6 +65,13 @@ pub enum Effect {
 /// render tick). `handle_key` translates raw keystrokes into
 /// `Effect`s; UIState mutations happen in-place through the
 /// handler context.
+///
+/// `handle_key` returns:
+/// - `None` — the component did not claim this key; the loop falls
+///   through to its global / fallback handling.
+/// - `Some(vec)` — the component handled the key (vec may be empty
+///   if no cross-cutting effect was needed). The loop skips its
+///   fallback match.
 pub trait Component {
     fn draw(
         &mut self,
@@ -74,7 +81,7 @@ pub trait Component {
         click_regions: &mut ClickableRegions,
     ) -> Result<()>;
 
-    fn handle_key(&mut self, _key: KeyEvent, _ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
-        Vec::new()
+    fn handle_key(&mut self, _key: KeyEvent, _ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        None
     }
 }

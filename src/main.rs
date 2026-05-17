@@ -674,12 +674,25 @@ where
                     }
 
                     // Phase 5: give the active tab's Component first crack
-                    // at the key. Today only OverviewTab claims a few
-                    // toggles (p/d/t/a/r/s/S/c). Anything it didn't match
-                    // falls through to the existing global / per-tab
-                    // handler below. Filter-mode input still routes the
-                    // old way until OverviewTab grows a filter handler.
-                    if !ui_state.filter_mode {
+                    // at the key. If it claims (returns Some), the loop
+                    // skips its fallback match — main.rs only owns global
+                    // keys (q, Ctrl+C, Tab, h, i) and filter-mode input
+                    // now. The per-key confirmation reset happens up here
+                    // for both branches so q / x can still set their own
+                    // confirmations without the catch-all clobbering them.
+                    let claimed = if !ui_state.filter_mode {
+                        // Reset confirmations except for the keys that
+                        // manage them. Runs before dispatch so component
+                        // and main.rs branches share the same rule.
+                        match key.code {
+                            KeyCode::Char('q') => ui_state.clear_confirmation = false,
+                            KeyCode::Char('x') => ui_state.quit_confirmation = false,
+                            _ => {
+                                ui_state.quit_confirmation = false;
+                                ui_state.clear_confirmation = false;
+                            }
+                        }
+
                         let grouped_opt = if ui_state.grouping_enabled {
                             Some(grouped_rows.as_slice())
                         } else {
@@ -691,18 +704,31 @@ where
                             connections: &connections,
                             grouped_rows: grouped_opt,
                         };
-                        let effects = ui::dispatch_key(hctx.ui_state.selected_tab, key, &mut hctx);
-                        let outcome = ui::apply_effects(effects, &mut ui_state, app);
-                        if outcome.needs_data_refresh {
-                            needs_data_refresh = true;
+                        if let Some(effects) =
+                            ui::dispatch_key(hctx.ui_state.selected_tab, key, &mut hctx)
+                        {
+                            let outcome = ui::apply_effects(effects, &mut ui_state, app);
+                            if outcome.needs_data_refresh {
+                                needs_data_refresh = true;
+                            }
+                            if outcome.needs_regroup {
+                                needs_regroup = true;
+                            }
+                            true
+                        } else {
+                            false
                         }
-                        if outcome.needs_regroup {
-                            needs_regroup = true;
-                        }
-                    }
+                    } else {
+                        false
+                    };
 
-                    if ui_state.filter_mode {
-                        // Handle input in filter mode
+                    if claimed {
+                        // Component handled the key end-to-end; no further
+                        // routing needed.
+                    } else if ui_state.filter_mode {
+                        // Filter-mode keys still route here directly until
+                        // OverviewTab grows a filter-mode handler. Keep
+                        // separate from the normal-mode fallback below.
                         match key.code {
                             KeyCode::Enter => {
                                 // Apply filter and exit input mode (now optional)
@@ -775,16 +801,15 @@ where
                             _ => {}
                         }
                     } else {
-                        // Handle input in normal mode
+                        // Normal-mode fallback: keys that weren't claimed
+                        // by the active tab's Component. Global navigation
+                        // and quit/help/interface-toggle live here, plus
+                        // cross-tab fallbacks for x (clear) and Esc which
+                        // would otherwise stop working on non-Overview
+                        // tabs. Per-arm confirmation clearing is no longer
+                        // needed — the dispatcher above already applied
+                        // the per-key reset rule.
                         match (key.code, key.modifiers) {
-                            // Enter filter mode with '/' (only on Overview tab)
-                            (KeyCode::Char('/'), _) if ui_state.selected_tab == 0 => {
-                                ui_state.quit_confirmation = false;
-                                debug!("Entering filter mode");
-                                ui_state.enter_filter_mode();
-                                debug!("Filter mode now: {}", ui_state.filter_mode);
-                            }
-
                             // Quit with confirmation
                             (KeyCode::Char('q'), _) => {
                                 if ui_state.quit_confirmation {
@@ -804,15 +829,11 @@ where
 
                             // Tab navigation (forward)
                             (KeyCode::Tab, KeyModifiers::NONE) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
                                 ui_state.selected_tab = (ui_state.selected_tab + 1) % 5;
                             }
 
                             // Shift+Tab navigation (backward)
                             (KeyCode::BackTab, _) | (KeyCode::Tab, KeyModifiers::SHIFT) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
                                 ui_state.selected_tab = if ui_state.selected_tab == 0 {
                                     4 // Wrap to last tab
                                 } else {
@@ -822,8 +843,6 @@ where
 
                             // Help toggle
                             (KeyCode::Char('h'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
                                 ui_state.show_help = !ui_state.show_help;
                                 if ui_state.show_help {
                                     ui_state.selected_tab = 4; // Switch to help tab
@@ -834,8 +853,6 @@ where
 
                             // Interface stats toggle (shortcut to Interface tab)
                             (KeyCode::Char('i'), _) | (KeyCode::Char('I'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
                                 if ui_state.selected_tab == 2 {
                                     ui_state.selected_tab = 0; // Back to overview
                                 } else {
@@ -843,15 +860,11 @@ where
                                 }
                             }
 
-                            // Navigation (j/k/up/down/g/G/PgUp/PgDn), Enter (open Details),
-                            // group expand/collapse (Space/Left/Right/l), and the display
-                            // toggles (p/d/t/a/r/s/S/c) all migrated to
-                            // OverviewTab::handle_key. They've already been applied above;
-                            // the `_` catch-all here keeps clearing confirmations.
-
-                            // Clear all connections with confirmation
+                            // x and Esc keep cross-tab fallbacks here so
+                            // clear / filter-clear / tab-back still work
+                            // from Details / Interfaces / Graph / Help
+                            // (OverviewTab only claims them on Overview).
                             (KeyCode::Char('x'), _) => {
-                                ui_state.quit_confirmation = false;
                                 if ui_state.clear_confirmation {
                                     info!("User confirmed clear all connections");
                                     app.clear_all_connections();
@@ -869,25 +882,16 @@ where
                                 }
                             }
 
-                            // Escape to go back or clear filter
                             (KeyCode::Esc, _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
                                 if !ui_state.filter_query.is_empty() {
-                                    // Clear filter if one is active
                                     ui_state.clear_filter();
                                     needs_data_refresh = true;
                                 } else if ui_state.selected_tab != 0 {
-                                    // Back to overview from any other tab
                                     ui_state.selected_tab = 0;
                                 }
                             }
 
-                            // Any other key resets confirmations
-                            _ => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                            }
+                            _ => {}
                         }
                     }
                 } // end Event::Key
