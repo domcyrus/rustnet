@@ -13,13 +13,15 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
+use crossterm::event::{KeyEvent, MouseEvent};
+
 use crate::network::dns::DnsResolver;
 use crate::network::types::{Connection, Protocol, ProtocolState};
 use crate::ui::{
-    ClickAction, ClickableRegions, Component, ComponentContext, NONE_PLACEHOLDER, UIState,
-    dpi_color,
+    ClickAction, ClickableRegions, Component, ComponentContext, Effect, HandlerContext,
+    NONE_PLACEHOLDER, UIState, dpi_color,
     format::{format_bytes, format_rate},
-    panel_block, state_color, theme,
+    panel_block, state_color, theme, try_handle_connection_nav,
 };
 
 /// Padded width for detail labels so values line up vertically.
@@ -53,6 +55,25 @@ impl Component for DetailsTab {
             dns_resolver.as_deref(),
             click_regions,
         )
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        // Connection navigation flips which record is shown; 'c'
+        // copies its remote address. Shared with OverviewTab via
+        // try_handle_connection_nav so both stay in lockstep.
+        try_handle_connection_nav(key, ctx)
+    }
+
+    fn handle_mouse(
+        &mut self,
+        _mouse: MouseEvent,
+        _ctx: &mut HandlerContext<'_>,
+    ) -> Option<Vec<Effect>> {
+        // No tab-specific mouse handling beyond what the global
+        // ClickableRegions dispatch in main.rs already does (the
+        // 'click a field to copy' CopyField regions are registered
+        // during draw and routed there).
+        None
     }
 }
 

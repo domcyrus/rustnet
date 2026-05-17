@@ -37,11 +37,21 @@ use tabs::{
 /// `Some(effects)` if the tab claimed the key, `None` otherwise so
 /// the caller can fall through to its own (global / fallback)
 /// handling.
+///
+/// Filter mode is Overview-owned (it owns the query state and the
+/// filter input widget), so when `filter_mode` is on the dispatch
+/// routes to `OverviewTab` regardless of the visible tab. This
+/// keeps filter typing working when the user has switched to
+/// Details / Interfaces / Graph / Help while a filter is being
+/// edited.
 pub fn dispatch_key(
     tab: usize,
     key: crossterm::event::KeyEvent,
     ctx: &mut HandlerContext<'_>,
 ) -> Option<Vec<Effect>> {
+    if ctx.ui_state.filter_mode {
+        return OverviewTab.handle_key(key, ctx);
+    }
     match tab {
         0 => OverviewTab.handle_key(key, ctx),
         1 => DetailsTab.handle_key(key, ctx),
@@ -94,7 +104,7 @@ mod clipboard;
 pub use clipboard::copy_to_clipboard;
 
 mod actions;
-pub use actions::clear_all_with_confirmation;
+pub use actions::{clear_all_with_confirmation, try_handle_connection_nav};
 
 mod component;
 pub use component::{Component, DrawContext as ComponentContext, Effect, HandlerContext};

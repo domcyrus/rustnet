@@ -22,7 +22,7 @@ use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER, SortColumn, UIState, bandwidth_line, clear_all_with_confirmation, dpi_color,
     format::{format_bytes, format_rate_compact},
-    panel_block, state_color, status_indicator_cell, theme,
+    panel_block, state_color, status_indicator_cell, theme, try_handle_connection_nav,
 };
 
 /// Overview tab — connection list + stats sidebar. Reads every
@@ -87,62 +87,12 @@ impl Component for OverviewTab {
             return handle_filter_mode_key(key, ctx);
         }
 
-        match (key.code, key.modifiers) {
-            // --- Navigation ---
-            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                if ctx.ui_state.grouping_enabled
-                    && let Some(rows) = ctx.grouped_rows
-                {
-                    ctx.ui_state.move_selection_up_grouped(rows);
-                } else {
-                    ctx.ui_state.move_selection_up(ctx.connections);
-                }
-                Some(Vec::new())
-            }
-            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                if ctx.ui_state.grouping_enabled
-                    && let Some(rows) = ctx.grouped_rows
-                {
-                    ctx.ui_state.move_selection_down_grouped(rows);
-                } else {
-                    ctx.ui_state.move_selection_down(ctx.connections);
-                }
-                Some(Vec::new())
-            }
-            (KeyCode::PageUp, _) | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-                let page_size = ctx.ui_state.visible_rows.max(1);
-                if ctx.ui_state.grouping_enabled
-                    && let Some(rows) = ctx.grouped_rows
-                {
-                    ctx.ui_state.move_selection_page_up_grouped(rows, page_size);
-                } else {
-                    ctx.ui_state
-                        .move_selection_page_up(ctx.connections, page_size);
-                }
-                Some(Vec::new())
-            }
-            (KeyCode::PageDown, _) | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
-                let page_size = ctx.ui_state.visible_rows.max(1);
-                if ctx.ui_state.grouping_enabled
-                    && let Some(rows) = ctx.grouped_rows
-                {
-                    ctx.ui_state
-                        .move_selection_page_down_grouped(rows, page_size);
-                } else {
-                    ctx.ui_state
-                        .move_selection_page_down(ctx.connections, page_size);
-                }
-                Some(Vec::new())
-            }
-            (KeyCode::Char('g'), KeyModifiers::NONE) => {
-                ctx.ui_state.move_selection_to_first(ctx.connections);
-                Some(Vec::new())
-            }
-            (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
-                ctx.ui_state.move_selection_to_last(ctx.connections);
-                Some(Vec::new())
-            }
+        // --- Connection navigation + copy (shared with DetailsTab) ---
+        if let nav @ Some(_) = try_handle_connection_nav(key, ctx) {
+            return nav;
+        }
 
+        match (key.code, key.modifiers) {
             // --- Open Details on Enter (only for a real connection, not a group header) ---
             (KeyCode::Enter, _) => {
                 let on_group_header =
@@ -286,20 +236,8 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // Copy selected connection's remote address
-            (KeyCode::Char('c'), KeyModifiers::NONE) => {
-                if let Some(idx) = ctx.ui_state.get_selected_index(ctx.connections)
-                    && let Some(conn) = ctx.connections.get(idx)
-                {
-                    let addr = conn.remote_addr.to_string();
-                    Some(vec![Effect::Copy {
-                        label: addr.clone(),
-                        value: addr,
-                    }])
-                } else {
-                    Some(Vec::new())
-                }
-            }
+            // (Connection navigation + 'c' copy are handled by
+            // try_handle_connection_nav at the top of this function.)
 
             // Clear all connections (two-press confirmation)
             (KeyCode::Char('x'), _) => {
