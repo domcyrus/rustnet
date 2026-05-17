@@ -1,9 +1,9 @@
 use clap::{Arg, Command};
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const INTERFACE_HELP: &str = "Network interface to monitor (use \"any\" to capture all interfaces)";
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 const INTERFACE_HELP: &str = "Network interface to monitor";
 
 #[cfg(target_os = "macos")]

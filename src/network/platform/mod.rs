@@ -19,38 +19,41 @@ pub enum DegradationReason {
     None,
     // Linux eBPF reasons
     /// Missing CAP_BPF capability (Linux 5.8+)
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     MissingCapBpf,
     /// Missing CAP_PERFMON capability (Linux 5.8+)
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     MissingCapPerfmon,
     /// Missing both CAP_BPF and CAP_PERFMON (and no CAP_SYS_ADMIN fallback)
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     MissingBpfCapabilities,
     /// eBPF feature not compiled in
-    #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
+    #[cfg(any(
+        all(target_os = "linux", not(feature = "ebpf")),
+        all(target_os = "android", not(feature = "android-ebpf"))
+    ))]
     EbpfFeatureDisabled,
     /// Kernel doesn't support required eBPF features (e.g. ENOSYS from bpf(2))
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     KernelUnsupported,
     /// BPF syscall denied despite caps - typically AppArmor, kernel lockdown,
     /// or unprivileged_bpf_disabled interactions
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     BpfPermissionDenied,
     /// Failed to attach a kprobe (e.g. symbol missing from kernel). The
     /// String carries the symbol name where known.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     KprobeAttachFailed(String),
     /// Kernel BTF unavailable / CO-RE relocation failed (no /sys/kernel/btf/vmlinux)
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     BtfUnavailable,
     /// Generic eBPF load failure carrying the truncated libbpf error text
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     EbpfLoadFailed(String),
     /// Binary lives on a filesystem mounted with `nosuid`, which makes the
     /// kernel silently ignore file capabilities set via `setcap`. Common when
     /// the binary is under `/home`, `/tmp`, or a removable mount.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     BinaryOnNosuidMount,
     // macOS PKTAP reasons
     /// No root privileges for PKTAP
@@ -72,21 +75,24 @@ impl DegradationReason {
     pub fn description(&self) -> Cow<'_, str> {
         match self {
             Self::None => Cow::Borrowed(""),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::MissingCapBpf => Cow::Borrowed("needs CAP_BPF"),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::MissingCapPerfmon => Cow::Borrowed("needs CAP_PERFMON"),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::MissingBpfCapabilities => Cow::Borrowed("needs CAP_BPF+CAP_PERFMON"),
-            #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
+            #[cfg(any(
+                all(target_os = "linux", not(feature = "ebpf")),
+                all(target_os = "android", not(feature = "android-ebpf"))
+            ))]
             Self::EbpfFeatureDisabled => Cow::Borrowed("eBPF feature disabled"),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::KernelUnsupported => Cow::Borrowed("kernel unsupported"),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::BpfPermissionDenied => Cow::Borrowed(
                 "BPF denied (check perf_event_paranoid / AppArmor / unprivileged_bpf_disabled)",
             ),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::KprobeAttachFailed(sym) => {
                 if sym.is_empty() {
                     Cow::Borrowed("kprobe attach failed")
@@ -94,11 +100,11 @@ impl DegradationReason {
                     Cow::Owned(format!("kprobe attach failed: {sym}"))
                 }
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::BtfUnavailable => Cow::Borrowed("kernel BTF unavailable"),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::EbpfLoadFailed(s) => Cow::Owned(format!("eBPF load failed: {s}")),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::BinaryOnNosuidMount => {
                 Cow::Borrowed("file caps ignored: binary on a nosuid mount")
             }
@@ -117,7 +123,7 @@ impl DegradationReason {
     pub fn unavailable_feature(&self) -> Option<&str> {
         match self {
             Self::None => None,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::MissingCapBpf
             | Self::MissingCapPerfmon
             | Self::MissingBpfCapabilities
@@ -127,7 +133,10 @@ impl DegradationReason {
             | Self::BtfUnavailable
             | Self::EbpfLoadFailed(_)
             | Self::BinaryOnNosuidMount => Some("eBPF"),
-            #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
+            #[cfg(any(
+                all(target_os = "linux", not(feature = "ebpf")),
+                all(target_os = "android", not(feature = "android-ebpf"))
+            ))]
             Self::EbpfFeatureDisabled => Some("eBPF"),
             #[cfg(target_os = "macos")]
             Self::MissingRootPrivileges
@@ -141,7 +150,7 @@ impl DegradationReason {
 // Platform-specific modules (one cfg per platform instead of many)
 #[cfg(target_os = "freebsd")]
 mod freebsd;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -153,7 +162,7 @@ mod windows;
 pub use freebsd::{FreeBSDStatsProvider, create_process_lookup};
 #[cfg(all(target_os = "linux", feature = "landlock"))]
 pub use linux::sandbox;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub use linux::{LinuxStatsProvider, create_process_lookup};
 #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
 pub use macos::sandbox;

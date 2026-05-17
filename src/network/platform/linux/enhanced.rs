@@ -11,11 +11,17 @@ use std::net::IpAddr;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-#[cfg(feature = "ebpf")]
+#[cfg(any(
+    all(target_os = "linux", feature = "ebpf"),
+    all(target_os = "android", feature = "android-ebpf")
+))]
 use super::ebpf::EbpfSocketTracker;
 
 // When eBPF is enabled, use the full enhanced implementation
-#[cfg(feature = "ebpf")]
+#[cfg(any(
+    all(target_os = "linux", feature = "ebpf"),
+    all(target_os = "android", feature = "android-ebpf")
+))]
 mod ebpf_enhanced {
     use super::*;
     use crate::network::types::ProtocolState;
@@ -484,7 +490,10 @@ mod ebpf_enhanced {
 }
 
 // When eBPF is disabled, use a simpler procfs-only implementation
-#[cfg(not(feature = "ebpf"))]
+#[cfg(not(any(
+    all(target_os = "linux", feature = "ebpf"),
+    all(target_os = "android", feature = "android-ebpf")
+)))]
 mod procfs_only {
     use super::*;
 
@@ -713,8 +722,14 @@ mod procfs_only {
 }
 
 // Re-export the appropriate implementation based on feature flag
-#[cfg(feature = "ebpf")]
+#[cfg(any(
+    all(target_os = "linux", feature = "ebpf"),
+    all(target_os = "android", feature = "android-ebpf")
+))]
 pub use ebpf_enhanced::*;
 
-#[cfg(not(feature = "ebpf"))]
+#[cfg(not(any(
+    all(target_os = "linux", feature = "ebpf"),
+    all(target_os = "android", feature = "android-ebpf")
+)))]
 pub use procfs_only::*;

@@ -3,12 +3,18 @@
 mod interface_stats;
 mod process;
 
-#[cfg(feature = "ebpf")]
+#[cfg(any(
+    all(target_os = "linux", feature = "ebpf"),
+    all(target_os = "android", feature = "android-ebpf")
+))]
 pub mod ebpf;
-#[cfg(feature = "ebpf")]
+#[cfg(any(
+    all(target_os = "linux", feature = "ebpf"),
+    all(target_os = "android", feature = "android-ebpf")
+))]
 mod enhanced;
 
-#[cfg(feature = "landlock")]
+#[cfg(all(target_os = "linux", feature = "landlock"))]
 pub mod sandbox;
 
 pub use interface_stats::LinuxStatsProvider;
@@ -21,7 +27,10 @@ use anyhow::Result;
 /// Tries enhanced eBPF lookup first (if feature enabled), falls back to procfs
 /// The `_use_pktap` parameter is ignored on Linux (only used on macOS)
 pub fn create_process_lookup(_use_pktap: bool) -> Result<Box<dyn ProcessLookup>> {
-    #[cfg(feature = "ebpf")]
+    #[cfg(any(
+        all(target_os = "linux", feature = "ebpf"),
+        all(target_os = "android", feature = "android-ebpf")
+    ))]
     {
         // Try enhanced lookup first (with eBPF if available), fall back to basic
         match enhanced::EnhancedLinuxProcessLookup::new() {
