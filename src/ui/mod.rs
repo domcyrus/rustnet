@@ -33,16 +33,6 @@ use tabs::{
     overview::OverviewTab,
 };
 
-/// Padded width for detail labels so values line up vertically.
-/// Sized for the longest expected label ("Out-of-Order Packets" = 20 chars)
-/// plus 2 chars of breathing room before the value column.
-const DETAIL_LABEL_WIDTH: usize = 22;
-
-/// Below this terminal width the Details info panes collapse back to a
-/// single column. With label width 22 plus reasonable values, ~50 cells
-/// per side is the readable floor.
-const DETAILS_SPLIT_MIN_WIDTH: u16 = 100;
-
 /// Placeholder string displayed when a value is unavailable.
 const NONE_PLACEHOLDER: &str = "-";
 
@@ -59,6 +49,9 @@ pub use state::{
     ClickAction, ClickableRegions, GroupedRow, SortColumn, UIState, compute_grouped_rows,
     compute_scroll_offset,
 };
+
+mod sorting;
+pub use sorting::sort_connections;
 
 mod component;
 pub use component::{Component, DrawContext as ComponentContext};

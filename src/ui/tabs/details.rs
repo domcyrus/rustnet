@@ -16,11 +16,21 @@ use ratatui::{
 use crate::network::dns::DnsResolver;
 use crate::network::types::{Connection, Protocol, ProtocolState};
 use crate::ui::{
-    ClickAction, ClickableRegions, Component, ComponentContext, DETAIL_LABEL_WIDTH,
-    DETAILS_SPLIT_MIN_WIDTH, NONE_PLACEHOLDER, UIState, dpi_color,
+    ClickAction, ClickableRegions, Component, ComponentContext, NONE_PLACEHOLDER, UIState,
+    dpi_color,
     format::{format_bytes, format_rate},
     panel_block, state_color, theme,
 };
+
+/// Padded width for detail labels so values line up vertically.
+/// Sized for the longest expected label ("Out-of-Order Packets" = 20 chars)
+/// plus 2 chars of breathing room before the value column.
+const DETAIL_LABEL_WIDTH: usize = 22;
+
+/// Below this terminal width the Details info panes collapse back to a
+/// single column. With label width 22 plus reasonable values, ~50 cells
+/// per side is the readable floor.
+const DETAILS_SPLIT_MIN_WIDTH: u16 = 100;
 
 /// Details tab. Pulls DNS resolver per-render from the app — no
 /// per-tab state today.
