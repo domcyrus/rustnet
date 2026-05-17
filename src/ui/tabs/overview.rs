@@ -41,6 +41,11 @@ impl Component for OverviewTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        // --- Filter mode owns its own input mini-loop ---
+        if ctx.ui_state.filter_mode {
+            return handle_filter_mode_key(key, ctx);
+        }
+
         match (key.code, key.modifiers) {
             // --- Navigation ---
             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
@@ -277,6 +282,73 @@ impl Component for OverviewTab {
 
             _ => None,
         }
+    }
+}
+
+/// Filter-mode input: text entry + cursor movement + arrow-key
+/// navigation through the filtered list. Active only while
+/// `ui_state.filter_mode` is true.
+fn handle_filter_mode_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+    match key.code {
+        KeyCode::Enter => {
+            debug!(
+                "Exiting filter mode. Filter: '{}'",
+                ctx.ui_state.filter_query
+            );
+            ctx.ui_state.exit_filter_mode();
+            Some(vec![Effect::RefreshData])
+        }
+        KeyCode::Esc => {
+            ctx.ui_state.clear_filter();
+            Some(vec![Effect::RefreshData])
+        }
+        KeyCode::Backspace => {
+            ctx.ui_state.filter_backspace();
+            Some(vec![Effect::RefreshData])
+        }
+        KeyCode::Delete
+            if ctx.ui_state.filter_cursor_position < ctx.ui_state.filter_query.len() =>
+        {
+            ctx.ui_state
+                .filter_query
+                .remove(ctx.ui_state.filter_cursor_position);
+            Some(vec![Effect::RefreshData])
+        }
+        KeyCode::Left => {
+            ctx.ui_state.filter_cursor_left();
+            Some(Vec::new())
+        }
+        KeyCode::Right => {
+            ctx.ui_state.filter_cursor_right();
+            Some(Vec::new())
+        }
+        KeyCode::Home => {
+            ctx.ui_state.filter_cursor_position = 0;
+            Some(Vec::new())
+        }
+        KeyCode::End => {
+            ctx.ui_state.filter_cursor_position = ctx.ui_state.filter_query.len();
+            Some(Vec::new())
+        }
+        // Navigation works while typing — uses the parent's sorted list.
+        KeyCode::Up => {
+            ctx.ui_state.move_selection_up(ctx.connections);
+            Some(Vec::new())
+        }
+        KeyCode::Down => {
+            ctx.ui_state.move_selection_down(ctx.connections);
+            Some(Vec::new())
+        }
+        // Ctrl+H = backspace (SecureCRT compatibility). All other chars are text input.
+        KeyCode::Char(c) => {
+            if c == 'h' && key.modifiers.contains(KeyModifiers::CONTROL) {
+                ctx.ui_state.filter_backspace();
+                return Some(vec![Effect::RefreshData]);
+            }
+            ctx.ui_state.filter_add_char(c);
+            Some(vec![Effect::RefreshData])
+        }
+        _ => Some(Vec::new()),
     }
 }
 

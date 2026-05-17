@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::{LevelFilter, debug, error, info, warn};
+use log::{LevelFilter, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
 use simplelog::{Config as LogConfig, WriteLogger};
 use std::fs::{self, File};
@@ -674,132 +674,49 @@ where
                     }
 
                     // Phase 5: give the active tab's Component first crack
-                    // at the key. If it claims (returns Some), the loop
-                    // skips its fallback match — main.rs only owns global
-                    // keys (q, Ctrl+C, Tab, h, i) and filter-mode input
-                    // now. The per-key confirmation reset happens up here
-                    // for both branches so q / x can still set their own
-                    // confirmations without the catch-all clobbering them.
-                    let claimed = if !ui_state.filter_mode {
-                        // Reset confirmations except for the keys that
-                        // manage them. Runs before dispatch so component
-                        // and main.rs branches share the same rule.
-                        match key.code {
-                            KeyCode::Char('q') => ui_state.clear_confirmation = false,
-                            KeyCode::Char('x') => ui_state.quit_confirmation = false,
-                            _ => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                            }
+                    // at the key (including filter-mode input — OverviewTab
+                    // owns that). If it claims (returns Some), the loop
+                    // skips its fallback match. The per-key confirmation
+                    // reset happens here for both branches so q / x can
+                    // still set their own confirmations without the
+                    // catch-all clobbering them.
+                    match key.code {
+                        KeyCode::Char('q') => ui_state.clear_confirmation = false,
+                        KeyCode::Char('x') => ui_state.quit_confirmation = false,
+                        _ => {
+                            ui_state.quit_confirmation = false;
+                            ui_state.clear_confirmation = false;
                         }
+                    }
 
-                        let grouped_opt = if ui_state.grouping_enabled {
-                            Some(grouped_rows.as_slice())
-                        } else {
-                            None
-                        };
-                        let mut hctx = ui::HandlerContext {
-                            app,
-                            ui_state: &mut ui_state,
-                            connections: &connections,
-                            grouped_rows: grouped_opt,
-                        };
-                        if let Some(effects) =
-                            ui::dispatch_key(hctx.ui_state.selected_tab, key, &mut hctx)
-                        {
-                            let outcome = ui::apply_effects(effects, &mut ui_state, app);
-                            if outcome.needs_data_refresh {
-                                needs_data_refresh = true;
-                            }
-                            if outcome.needs_regroup {
-                                needs_regroup = true;
-                            }
-                            true
-                        } else {
-                            false
+                    let grouped_opt = if ui_state.grouping_enabled {
+                        Some(grouped_rows.as_slice())
+                    } else {
+                        None
+                    };
+                    let mut hctx = ui::HandlerContext {
+                        app,
+                        ui_state: &mut ui_state,
+                        connections: &connections,
+                        grouped_rows: grouped_opt,
+                    };
+                    let claimed = if let Some(effects) =
+                        ui::dispatch_key(hctx.ui_state.selected_tab, key, &mut hctx)
+                    {
+                        let outcome = ui::apply_effects(effects, &mut ui_state, app);
+                        if outcome.needs_data_refresh {
+                            needs_data_refresh = true;
                         }
+                        if outcome.needs_regroup {
+                            needs_regroup = true;
+                        }
+                        true
                     } else {
                         false
                     };
 
                     if claimed {
-                        // Component handled the key end-to-end; no further
-                        // routing needed.
-                    } else if ui_state.filter_mode {
-                        // Filter-mode keys still route here directly until
-                        // OverviewTab grows a filter-mode handler. Keep
-                        // separate from the normal-mode fallback below.
-                        match key.code {
-                            KeyCode::Enter => {
-                                // Apply filter and exit input mode (now optional)
-                                debug!("Exiting filter mode. Filter: '{}'", ui_state.filter_query);
-                                ui_state.exit_filter_mode();
-                                needs_data_refresh = true;
-                                debug!("Filter mode now: {}", ui_state.filter_mode);
-                            }
-                            KeyCode::Esc => {
-                                // Clear filter and exit filter mode
-                                ui_state.clear_filter();
-                                needs_data_refresh = true;
-                            }
-                            KeyCode::Backspace => {
-                                ui_state.filter_backspace();
-                                needs_data_refresh = true;
-                            }
-                            KeyCode::Delete
-                                if ui_state.filter_cursor_position
-                                    < ui_state.filter_query.len() =>
-                            {
-                                ui_state
-                                    .filter_query
-                                    .remove(ui_state.filter_cursor_position);
-                                needs_data_refresh = true;
-                            }
-                            KeyCode::Left => {
-                                ui_state.filter_cursor_left();
-                            }
-                            KeyCode::Right => {
-                                ui_state.filter_cursor_right();
-                            }
-                            KeyCode::Home => {
-                                ui_state.filter_cursor_position = 0;
-                            }
-                            KeyCode::End => {
-                                ui_state.filter_cursor_position = ui_state.filter_query.len();
-                            }
-                            // Allow navigation while in filter mode!
-                            KeyCode::Up => {
-                                // Use the SAME sorted connections list from the main loop
-                                // to ensure index consistency with the displayed table
-                                debug!(
-                                    "Filter mode navigation UP: {} connections available",
-                                    connections.len()
-                                );
-                                ui_state.move_selection_up(&connections);
-                            }
-                            KeyCode::Down => {
-                                // Use the SAME sorted connections list from the main loop
-                                // to ensure index consistency with the displayed table
-                                debug!(
-                                    "Filter mode navigation DOWN: {} connections available",
-                                    connections.len()
-                                );
-                                ui_state.move_selection_down(&connections);
-                            }
-                            KeyCode::Char(c) => {
-                                // Handle Ctrl+H as backspace for SecureCRT compatibility
-                                if c == 'h' && key.modifiers.contains(KeyModifiers::CONTROL) {
-                                    ui_state.filter_backspace();
-                                    return Ok(());
-                                }
-
-                                // All other characters (including j/k) are text input.
-                                // Use arrow keys to navigate while typing.
-                                ui_state.filter_add_char(c);
-                                needs_data_refresh = true;
-                            }
-                            _ => {}
-                        }
+                        // Component handled the key end-to-end.
                     } else {
                         // Normal-mode fallback: keys that weren't claimed
                         // by the active tab's Component. Global navigation
