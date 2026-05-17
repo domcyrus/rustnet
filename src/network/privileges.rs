@@ -4,7 +4,7 @@
 //! network packets on different platforms (Linux, macOS, Windows).
 
 use anyhow::Result;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use anyhow::anyhow;
 #[cfg(any(
     not(any(
@@ -42,6 +42,7 @@ impl PrivilegeStatus {
     /// Create a status indicating insufficient privileges
     #[cfg(any(
         target_os = "linux",
+        target_os = "android",
         target_os = "macos",
         target_os = "windows",
         target_os = "freebsd",
@@ -84,7 +85,7 @@ impl PrivilegeStatus {
 
 /// Check if the current process has sufficient privileges for packet capture
 pub fn check_packet_capture_privileges() -> Result<PrivilegeStatus> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         check_linux_privileges()
     }
@@ -106,6 +107,7 @@ pub fn check_packet_capture_privileges() -> Result<PrivilegeStatus> {
 
     #[cfg(not(any(
         target_os = "linux",
+        target_os = "android",
         target_os = "macos",
         target_os = "windows",
         target_os = "freebsd"
@@ -117,7 +119,7 @@ pub fn check_packet_capture_privileges() -> Result<PrivilegeStatus> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn check_linux_privileges() -> Result<PrivilegeStatus> {
     use std::fs;
 
@@ -181,7 +183,7 @@ fn check_linux_privileges() -> Result<PrivilegeStatus> {
 }
 
 /// Detect if running inside a container
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn is_running_in_container() -> bool {
     use std::fs;
 

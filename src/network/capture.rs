@@ -326,7 +326,7 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
 
             // Special handling for 'any' interface
             if name == "any" {
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(not(any(target_os = "linux", target_os = "android")))]
                 {
                     return Err(anyhow!(
                         "The 'any' interface is only supported on Linux.\n\
@@ -335,7 +335,7 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                     ));
                 }
 
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "android"))]
                 {
                     log::info!("Using 'any' pseudo-interface to capture on all interfaces");
                 }

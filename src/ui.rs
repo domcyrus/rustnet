@@ -1974,7 +1974,7 @@ fn draw_stats_panel(
 
     // Build the security/sandbox text up front so the chunk height can match
     // its content. Otherwise long feature lists get clipped on narrow columns.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     let security_text: Vec<Line> = {
         let sandbox_info = app.get_sandbox_info();
         let status_style = match sandbox_info.status.as_str() {

@@ -1,4 +1,5 @@
 use anyhow::Result;
+#[cfg(not(target_os = "android"))]
 use arboard::Clipboard;
 use log::{LevelFilter, debug, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
@@ -518,6 +519,7 @@ fn sort_connections(
 }
 
 /// Copy text to the system clipboard and update UI state with feedback.
+#[cfg(not(target_os = "android"))]
 fn copy_to_clipboard(text: &str, display_msg: &str, ui_state: &mut ui::UIState, app: &app::App) {
     // Used conditionally on Linux/FreeBSD for sandbox-aware error messages
     let _ = app;
@@ -564,6 +566,16 @@ fn copy_to_clipboard(text: &str, display_msg: &str, ui_state: &mut ui::UIState, 
             ui_state.clipboard_message = Some((msg, std::time::Instant::now()));
         }
     }
+}
+
+/// Android clipboard stub - clipboard not available via arboard on Android
+#[cfg(target_os = "android")]
+fn copy_to_clipboard(_text: &str, display_msg: &str, ui_state: &mut ui::UIState, _app: &app::App) {
+    info!("Copy requested (Android): {}", display_msg);
+    ui_state.clipboard_message = Some((
+        format!("Copied (log only): {}", display_msg),
+        std::time::Instant::now(),
+    ));
 }
 
 fn run_ui_loop<B: ratatui::prelude::Backend>(

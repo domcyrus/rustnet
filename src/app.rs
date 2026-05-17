@@ -37,7 +37,7 @@ use crate::network::{
 // Platform-specific interface stats provider
 #[cfg(target_os = "freebsd")]
 use crate::network::platform::FreeBSDStatsProvider as PlatformStatsProvider;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use crate::network::platform::LinuxStatsProvider as PlatformStatsProvider;
 #[cfg(target_os = "macos")]
 use crate::network::platform::MacOSStatsProvider as PlatformStatsProvider;
@@ -50,6 +50,7 @@ use std::sync::{LazyLock, Mutex};
 /// Sandbox status information for UI display
 #[cfg(any(
     target_os = "linux",
+    target_os = "android",
     target_os = "windows",
     all(target_os = "macos", feature = "macos-sandbox")
 ))]
@@ -60,21 +61,22 @@ pub struct SandboxInfo {
     /// Whether network connections are blocked
     #[cfg(any(
         target_os = "linux",
+        target_os = "android",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
     pub net_restricted: bool,
     // Linux-specific fields (Landlock + capabilities)
     /// Whether CAP_NET_RAW was dropped
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub cap_dropped: bool,
     /// Whether CAP_BPF/CAP_PERFMON were dropped
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub ebpf_caps_dropped: bool,
     /// Whether Landlock is available on this kernel
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub landlock_available: bool,
     /// Whether Landlock filesystem restrictions are applied
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     pub fs_restricted: bool,
     // macOS-specific fields (Seatbelt)
     /// Whether Seatbelt sandbox was applied
@@ -478,6 +480,7 @@ pub struct App {
     /// Sandbox status (Linux Landlock / macOS Seatbelt / Windows restricted token)
     #[cfg(any(
         target_os = "linux",
+        target_os = "android",
         target_os = "windows",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
@@ -584,6 +587,7 @@ impl App {
             geoip_resolver,
             #[cfg(any(
                 target_os = "linux",
+                target_os = "android",
                 target_os = "windows",
                 all(target_os = "macos", feature = "macos-sandbox")
             ))]
@@ -694,7 +698,7 @@ impl App {
                     *linktype_storage.write().unwrap() = Some(linktype);
 
                     // Drop CAP_NET_RAW now that the socket is open (Linux only)
-                    #[cfg(all(target_os = "linux", feature = "landlock"))]
+                    #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "landlock"))]
                     {
                         if let Err(e) =
                             crate::network::platform::sandbox::capabilities::drop_cap_net_raw()
@@ -920,7 +924,7 @@ impl App {
                 info!("Packet processor {} started", id);
 
                 // Drop CAP_NET_RAW immediately as this thread doesn't need it (Linux only)
-                #[cfg(all(target_os = "linux", feature = "landlock"))]
+                #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "landlock"))]
                 {
                     if let Err(e) =
                         crate::network::platform::sandbox::capabilities::drop_cap_net_raw()
@@ -1811,6 +1815,7 @@ impl App {
     /// Get sandbox status information
     #[cfg(any(
         target_os = "linux",
+        target_os = "android",
         target_os = "windows",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
@@ -1824,6 +1829,7 @@ impl App {
     /// Set sandbox status information
     #[cfg(any(
         target_os = "linux",
+        target_os = "android",
         target_os = "windows",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
