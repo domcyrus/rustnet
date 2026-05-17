@@ -16,24 +16,31 @@ use crate::app::{App, AppStats};
 use crate::network::dns::DnsResolver;
 use crate::network::types::{Connection, Protocol};
 use crate::ui::{
-    ClickAction, ClickableRegions, GroupedRow, NONE_PLACEHOLDER, SortColumn, UIState,
-    bandwidth_line, dpi_color,
+    ClickAction, ClickableRegions, Component, ComponentContext, GroupedRow, NONE_PLACEHOLDER,
+    SortColumn, UIState, bandwidth_line, dpi_color,
     format::{format_bytes, format_rate_compact},
     panel_block, state_color, status_indicator_cell, theme,
 };
 
-pub(in crate::ui) struct DrawContext<'a> {
-    pub ui_state: &'a UIState,
-    pub connections: &'a [Connection],
-    pub stats: &'a AppStats,
-    pub app: &'a App,
-    pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
+/// Overview tab — connection list + stats sidebar. Reads every
+/// ComponentContext field; holds no per-tab state today.
+pub(in crate::ui) struct OverviewTab;
+
+impl Component for OverviewTab {
+    fn draw(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        ctx: &ComponentContext<'_>,
+        click_regions: &mut ClickableRegions,
+    ) -> Result<()> {
+        draw_overview(f, ctx, area, click_regions)
+    }
 }
 
-/// Draw the overview mode
-pub(in crate::ui) fn draw_overview(
+fn draw_overview(
     f: &mut Frame,
-    ctx: &DrawContext,
+    ctx: &ComponentContext,
     area: Rect,
     click_regions: &mut ClickableRegions,
 ) -> Result<()> {

@@ -29,11 +29,8 @@ use widgets::{
 
 mod tabs;
 use tabs::{
-    details::draw_connection_details,
-    graph::draw_graph_tab,
-    help::HelpTab,
-    interfaces::InterfacesTab,
-    overview::{DrawContext, draw_overview},
+    details::DetailsTab, graph::GraphTab, help::HelpTab, interfaces::InterfacesTab,
+    overview::OverviewTab,
 };
 
 /// Padded width for detail labels so values line up vertically.
@@ -187,37 +184,19 @@ pub fn draw(
         (None, chunks[2])
     };
 
+    let comp_ctx = ComponentContext {
+        app,
+        connections,
+        ui_state,
+        grouped_rows,
+        stats,
+    };
     match ui_state.selected_tab {
-        0 => {
-            let ctx = DrawContext {
-                ui_state,
-                connections,
-                stats,
-                app,
-                grouped_rows,
-            };
-            draw_overview(f, &ctx, content_area, click_regions)?;
-        }
-        1 => {
-            let dns_resolver = app.get_dns_resolver();
-            draw_connection_details(
-                f,
-                ui_state,
-                connections,
-                content_area,
-                dns_resolver.as_deref(),
-                click_regions,
-            )?
-        }
-        2 => {
-            let comp_ctx = ComponentContext { app };
-            InterfacesTab.draw(f, content_area, &comp_ctx, click_regions)?;
-        }
-        3 => draw_graph_tab(f, app, connections, content_area)?,
-        4 => {
-            let comp_ctx = ComponentContext { app };
-            HelpTab.draw(f, content_area, &comp_ctx, click_regions)?;
-        }
+        0 => OverviewTab.draw(f, content_area, &comp_ctx, click_regions)?,
+        1 => DetailsTab.draw(f, content_area, &comp_ctx, click_regions)?,
+        2 => InterfacesTab.draw(f, content_area, &comp_ctx, click_regions)?,
+        3 => GraphTab.draw(f, content_area, &comp_ctx, click_regions)?,
+        4 => HelpTab.draw(f, content_area, &comp_ctx, click_regions)?,
         _ => {}
     }
 

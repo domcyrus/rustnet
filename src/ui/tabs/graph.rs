@@ -17,9 +17,26 @@ use crate::network::types::{
     AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory,
 };
 use crate::ui::{
+    ClickableRegions, Component, ComponentContext,
     format::{format_rate, format_rate_compact},
     panel_block, theme,
 };
+
+/// Read-only graph tab. Aggregates traffic history, protocol mix,
+/// and TCP analytics every render — no per-tab state today.
+pub(in crate::ui) struct GraphTab;
+
+impl Component for GraphTab {
+    fn draw(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        ctx: &ComponentContext<'_>,
+        _click_regions: &mut ClickableRegions,
+    ) -> Result<()> {
+        draw_graph_tab(f, ctx.app, ctx.connections, area)
+    }
+}
 
 pub(in crate::ui) fn draw_graph_tab(
     f: &mut Frame,

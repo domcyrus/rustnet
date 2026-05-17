@@ -16,11 +16,35 @@ use ratatui::{
 use crate::network::dns::DnsResolver;
 use crate::network::types::{Connection, Protocol, ProtocolState};
 use crate::ui::{
-    ClickAction, ClickableRegions, DETAIL_LABEL_WIDTH, DETAILS_SPLIT_MIN_WIDTH, NONE_PLACEHOLDER,
-    UIState, dpi_color,
+    ClickAction, ClickableRegions, Component, ComponentContext, DETAIL_LABEL_WIDTH,
+    DETAILS_SPLIT_MIN_WIDTH, NONE_PLACEHOLDER, UIState, dpi_color,
     format::{format_bytes, format_rate},
     panel_block, state_color, theme,
 };
+
+/// Details tab. Pulls DNS resolver per-render from the app — no
+/// per-tab state today.
+pub(in crate::ui) struct DetailsTab;
+
+impl Component for DetailsTab {
+    fn draw(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        ctx: &ComponentContext<'_>,
+        click_regions: &mut ClickableRegions,
+    ) -> Result<()> {
+        let dns_resolver = ctx.app.get_dns_resolver();
+        draw_connection_details(
+            f,
+            ctx.ui_state,
+            ctx.connections,
+            area,
+            dns_resolver.as_deref(),
+            click_regions,
+        )
+    }
+}
 
 fn push_detail_field<'a>(
     lines: &mut Vec<Line<'a>>,

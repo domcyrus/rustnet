@@ -17,19 +17,19 @@
 use anyhow::Result;
 use ratatui::{Frame, layout::Rect};
 
-use crate::app::App;
-use crate::ui::ClickableRegions;
+use crate::app::{App, AppStats};
+use crate::network::types::Connection;
+use crate::ui::{ClickableRegions, GroupedRow, UIState};
 
 /// Read-only bundle passed to every component's `draw`. Lifetime
 /// matches the borrow scope inside the main loop's `terminal.draw`
 /// closure.
-///
-/// New fields land as more tabs are converted to Components —
-/// `ui_state`, `connections`, `grouped_rows`, and `stats` will join
-/// when their first Component consumer arrives, to avoid `dead_code`
-/// warnings on unused fields.
 pub struct DrawContext<'a> {
     pub app: &'a App,
+    pub connections: &'a [Connection],
+    pub ui_state: &'a UIState,
+    pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
+    pub stats: &'a AppStats,
 }
 
 /// Implemented by every tab. `draw` must be cheap (called every
