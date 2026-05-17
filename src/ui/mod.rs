@@ -31,8 +31,8 @@ mod tabs;
 use tabs::{
     details::draw_connection_details,
     graph::draw_graph_tab,
-    help::draw_help,
-    interfaces::draw_interface_stats,
+    help::HelpTab,
+    interfaces::InterfacesTab,
     overview::{DrawContext, draw_overview},
 };
 
@@ -62,6 +62,9 @@ pub use state::{
     ClickAction, ClickableRegions, GroupedRow, SortColumn, UIState, compute_grouped_rows,
     compute_scroll_offset,
 };
+
+mod component;
+pub use component::{Component, DrawContext as ComponentContext};
 
 mod theme;
 
@@ -206,9 +209,15 @@ pub fn draw(
                 click_regions,
             )?
         }
-        2 => draw_interface_stats(f, app, content_area)?,
+        2 => {
+            let comp_ctx = ComponentContext { app };
+            InterfacesTab.draw(f, content_area, &comp_ctx, click_regions)?;
+        }
         3 => draw_graph_tab(f, app, connections, content_area)?,
-        4 => draw_help(f, content_area)?,
+        4 => {
+            let comp_ctx = ComponentContext { app };
+            HelpTab.draw(f, content_area, &comp_ctx, click_regions)?;
+        }
         _ => {}
     }
 
@@ -553,6 +562,7 @@ mod snapshot_tests {
 
     #[test]
     fn help_tab() {
+        use crate::ui::tabs::help::draw_help;
         let output = render(100, 50, |f| {
             draw_help(f, f.area()).expect("draw_help");
         });

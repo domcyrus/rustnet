@@ -10,7 +10,23 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-use crate::ui::{panel_block, theme};
+use crate::ui::{ClickableRegions, Component, ComponentContext, panel_block, theme};
+
+/// Stateless help tab. Zero-sized — held in the tabs vec like any
+/// other Component, even though it never mutates.
+pub(in crate::ui) struct HelpTab;
+
+impl Component for HelpTab {
+    fn draw(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        _ctx: &ComponentContext<'_>,
+        _click_regions: &mut ClickableRegions,
+    ) -> Result<()> {
+        draw_help(f, area)
+    }
+}
 
 pub(in crate::ui) fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
     let help_text: Vec<Line> = vec![

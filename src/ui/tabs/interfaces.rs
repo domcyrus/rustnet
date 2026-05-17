@@ -12,7 +12,25 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::ui::{format::format_bytes, panel_block, theme};
+use crate::ui::{
+    ClickableRegions, Component, ComponentContext, format::format_bytes, panel_block, theme,
+};
+
+/// Read-only interfaces tab. Stateless for now; the table is rebuilt
+/// from the App's interface-stats DashMap every render.
+pub(in crate::ui) struct InterfacesTab;
+
+impl Component for InterfacesTab {
+    fn draw(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        ctx: &ComponentContext<'_>,
+        _click_regions: &mut ClickableRegions,
+    ) -> Result<()> {
+        draw_interface_stats(f, ctx.app, area)
+    }
+}
 
 pub(in crate::ui) fn draw_interface_stats(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
     let mut stats = app.get_interface_stats();
