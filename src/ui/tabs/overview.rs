@@ -12,12 +12,15 @@ use ratatui::{
     widgets::{Cell, Paragraph, Row, Sparkline, Table, Wrap},
 };
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use log::info;
+
 use crate::app::{App, AppStats};
 use crate::network::dns::DnsResolver;
 use crate::network::types::{Connection, Protocol};
 use crate::ui::{
-    ClickAction, ClickableRegions, Component, ComponentContext, GroupedRow, NONE_PLACEHOLDER,
-    SortColumn, UIState, bandwidth_line, dpi_color,
+    ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
+    NONE_PLACEHOLDER, SortColumn, UIState, bandwidth_line, dpi_color,
     format::{format_bytes, format_rate_compact},
     panel_block, state_color, status_indicator_cell, theme,
 };
@@ -35,6 +38,132 @@ impl Component for OverviewTab {
         click_regions: &mut ClickableRegions,
     ) -> Result<()> {
         draw_overview(f, ctx, area, click_regions)
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
+        match (key.code, key.modifiers) {
+            // Toggle port number / service name display
+            (KeyCode::Char('p'), _) => {
+                ctx.ui_state.show_port_numbers = !ctx.ui_state.show_port_numbers;
+                info!(
+                    "Toggled port display: {}",
+                    if ctx.ui_state.show_port_numbers {
+                        "showing port numbers"
+                    } else {
+                        "showing service names"
+                    }
+                );
+                Vec::new()
+            }
+
+            // Toggle hostname / IP display — DNS resolver must be enabled
+            (KeyCode::Char('d'), _) if ctx.app.is_dns_resolution_enabled() => {
+                ctx.ui_state.show_hostnames = !ctx.ui_state.show_hostnames;
+                info!(
+                    "Toggled hostname display: {}",
+                    if ctx.ui_state.show_hostnames {
+                        "showing hostnames"
+                    } else {
+                        "showing IP addresses"
+                    }
+                );
+                Vec::new()
+            }
+
+            // Toggle historic-connection inclusion
+            (KeyCode::Char('t'), _) => {
+                ctx.ui_state.show_historic = !ctx.ui_state.show_historic;
+                ctx.ui_state.scroll_offset = 0;
+                ctx.ui_state.grouped_scroll_offset = 0;
+                ctx.app.toggle_show_historic();
+                info!(
+                    "Historic connections: {}",
+                    if ctx.ui_state.show_historic {
+                        "showing"
+                    } else {
+                        "hidden"
+                    }
+                );
+                vec![Effect::RefreshData]
+            }
+
+            // Toggle process grouping
+            (KeyCode::Char('a'), _) => {
+                ctx.ui_state.toggle_grouping();
+                info!(
+                    "Grouping mode: {}",
+                    if ctx.ui_state.grouping_enabled {
+                        "enabled (grouped by process)"
+                    } else {
+                        "disabled (flat list)"
+                    }
+                );
+                vec![Effect::Regroup]
+            }
+
+            // Reset view settings
+            (KeyCode::Char('r'), _) => {
+                let was_historic = ctx.ui_state.show_historic;
+                ctx.ui_state.reset_view();
+                if was_historic {
+                    ctx.app.set_show_historic(false);
+                }
+                info!("Reset view settings to defaults");
+                vec![Effect::RefreshData]
+            }
+
+            // Cycle sort column
+            (KeyCode::Char('s'), KeyModifiers::NONE) => {
+                ctx.ui_state.cycle_sort_column();
+                info!(
+                    "Sort column: {} ({})",
+                    ctx.ui_state.sort_column.display_name(),
+                    if ctx.ui_state.sort_ascending {
+                        "ascending"
+                    } else {
+                        "descending"
+                    }
+                );
+                vec![Effect::RefreshData]
+            }
+
+            // Toggle sort direction (Shift+s)
+            (KeyCode::Char('S'), _) => {
+                ctx.ui_state.toggle_sort_direction();
+                info!(
+                    "Sort direction: {} ({})",
+                    if ctx.ui_state.sort_ascending {
+                        "ascending"
+                    } else {
+                        "descending"
+                    },
+                    ctx.ui_state.sort_column.display_name()
+                );
+                vec![Effect::RefreshData]
+            }
+
+            // Copy selected connection's remote address
+            (KeyCode::Char('c'), KeyModifiers::NONE) => {
+                if let Some(idx) = ctx.ui_state.get_selected_index(ctx.connections)
+                    && let Some(conn) = ctx.connections.get(idx)
+                {
+                    let addr = conn.remote_addr.to_string();
+                    vec![Effect::Copy {
+                        label: addr.clone(),
+                        value: addr,
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+
+            // 'x' (clear with confirmation), 'q', filter-mode entry, and
+            // navigation keys still live in main.rs's event loop. They'll
+            // migrate once the Component trait grows a "claimed" return
+            // type so the loop can stop falling through to its catch-all
+            // that resets confirmations.
+            _ => Vec::new(),
+        }
     }
 }
 

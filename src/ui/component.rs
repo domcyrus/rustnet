@@ -3,18 +3,14 @@
 //!
 //! Differences from ratatui's official component template:
 //! - No `tokio::sync::mpsc::UnboundedSender<Action>` — the loop is
-//!   synchronous; once event handling moves into components they'll
-//!   return `Vec<Effect>` instead of pushing through a channel.
+//!   synchronous; components return `Vec<Effect>` from event
+//!   handlers instead of pushing through a channel.
 //! - No `register_action_handler` / `register_config_handler` /
 //!   `init` — shared state (`App`, `UIState`) is passed through
 //!   context structs on each call.
-//!
-//! This first cut only defines `draw`. `handle_key`/`handle_mouse`
-//! and the `Effect` enum will be added alongside the main-loop
-//! refactor that gives them a consumer; without one, the warnings
-//! would be unavoidable without `#[allow(dead_code)]`.
 
 use anyhow::Result;
+use crossterm::event::KeyEvent;
 use ratatui::{Frame, layout::Rect};
 
 use crate::app::{App, AppStats};
@@ -32,9 +28,39 @@ pub struct DrawContext<'a> {
     pub stats: &'a AppStats,
 }
 
+/// Mutable bundle for event handlers. The component owns the
+/// mutation of `ui_state`; cross-cutting work (refresh, clipboard,
+/// quit) goes back via the returned `Vec<Effect>`.
+pub struct HandlerContext<'a> {
+    pub app: &'a App,
+    pub ui_state: &'a mut UIState,
+    pub connections: &'a [Connection],
+}
+
+/// Cross-cutting effects a component can request from the main
+/// loop. Anything the component can't or shouldn't apply directly
+/// (data refresh flag, clipboard write, quit) gets enumerated here
+/// so `apply_effects` is the single place that touches the loop.
+#[derive(Debug, Clone)]
+pub enum Effect {
+    /// Connection data needs to be re-pulled from the snapshot
+    /// provider before the next render.
+    RefreshData,
+    /// Grouped rows need to be rebuilt from the existing connection
+    /// list (cheaper than full RefreshData when only expand/collapse
+    /// changed).
+    Regroup,
+    /// Copy `value` to the system clipboard. `label` is the
+    /// human-readable name shown in the status-bar banner.
+    Copy { label: String, value: String },
+    // Quit will land when the global keys (q, Ctrl+C) migrate into a
+    // shared handler; for now main.rs breaks the loop directly.
+}
+
 /// Implemented by every tab. `draw` must be cheap (called every
-/// render tick). Event handlers will be added when the main-loop
-/// refactor gives them a consumer.
+/// render tick). `handle_key` translates raw keystrokes into
+/// `Effect`s; UIState mutations happen in-place through the
+/// handler context.
 pub trait Component {
     fn draw(
         &mut self,
@@ -43,4 +69,8 @@ pub trait Component {
         ctx: &DrawContext<'_>,
         click_regions: &mut ClickableRegions,
     ) -> Result<()>;
+
+    fn handle_key(&mut self, _key: KeyEvent, _ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
+        Vec::new()
+    }
 }

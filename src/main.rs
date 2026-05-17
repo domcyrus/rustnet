@@ -673,6 +673,28 @@ where
                         continue;
                     }
 
+                    // Phase 5: give the active tab's Component first crack
+                    // at the key. Today only OverviewTab claims a few
+                    // toggles (p/d/t/a/r/s/S/c). Anything it didn't match
+                    // falls through to the existing global / per-tab
+                    // handler below. Filter-mode input still routes the
+                    // old way until OverviewTab grows a filter handler.
+                    if !ui_state.filter_mode {
+                        let mut hctx = ui::HandlerContext {
+                            app,
+                            ui_state: &mut ui_state,
+                            connections: &connections,
+                        };
+                        let effects = ui::dispatch_key(hctx.ui_state.selected_tab, key, &mut hctx);
+                        let outcome = ui::apply_effects(effects, &mut ui_state, app);
+                        if outcome.needs_data_refresh {
+                            needs_data_refresh = true;
+                        }
+                        if outcome.needs_regroup {
+                            needs_regroup = true;
+                        }
+                    }
+
                     if ui_state.filter_mode {
                         // Handle input in filter mode
                         match key.code {
@@ -949,137 +971,10 @@ where
                                 }
                             }
 
-                            // 'a' to toggle grouping (aggregate) mode
-                            (KeyCode::Char('a'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                ui_state.toggle_grouping();
-                                needs_regroup = true;
-                                info!(
-                                    "Grouping mode: {}",
-                                    if ui_state.grouping_enabled {
-                                        "enabled (grouped by process)"
-                                    } else {
-                                        "disabled (flat list)"
-                                    }
-                                );
-                            }
-
-                            // 'r' to reset all view settings (grouping, sort, filter, historic)
-                            (KeyCode::Char('r'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                let was_historic = ui_state.show_historic;
-                                ui_state.reset_view();
-                                if was_historic {
-                                    app.set_show_historic(false);
-                                }
-                                needs_data_refresh = true;
-                                info!("Reset view settings to defaults");
-                            }
-
-                            // Toggle port number display
-                            (KeyCode::Char('p'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                ui_state.show_port_numbers = !ui_state.show_port_numbers;
-                                info!(
-                                    "Toggled port display: {}",
-                                    if ui_state.show_port_numbers {
-                                        "showing port numbers"
-                                    } else {
-                                        "showing service names"
-                                    }
-                                );
-                            }
-
-                            // Toggle hostname display (when DNS resolution is enabled)
-                            (KeyCode::Char('d'), _) => {
-                                if app.is_dns_resolution_enabled() {
-                                    ui_state.quit_confirmation = false;
-                                    ui_state.clear_confirmation = false;
-                                    ui_state.show_hostnames = !ui_state.show_hostnames;
-                                    info!(
-                                        "Toggled hostname display: {}",
-                                        if ui_state.show_hostnames {
-                                            "showing hostnames"
-                                        } else {
-                                            "showing IP addresses"
-                                        }
-                                    );
-                                }
-                            }
-
-                            // Toggle historic connections display
-                            (KeyCode::Char('t'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                ui_state.show_historic = !ui_state.show_historic;
-                                ui_state.scroll_offset = 0;
-                                ui_state.grouped_scroll_offset = 0;
-                                app.toggle_show_historic();
-                                needs_data_refresh = true;
-                                info!(
-                                    "Historic connections: {}",
-                                    if ui_state.show_historic {
-                                        "showing"
-                                    } else {
-                                        "hidden"
-                                    }
-                                );
-                            }
-
-                            // Cycle sort column with 's'
-                            (KeyCode::Char('s'), KeyModifiers::NONE) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                ui_state.cycle_sort_column();
-                                needs_data_refresh = true;
-                                info!(
-                                    "Sort column: {} ({})",
-                                    ui_state.sort_column.display_name(),
-                                    if ui_state.sort_ascending {
-                                        "ascending"
-                                    } else {
-                                        "descending"
-                                    }
-                                );
-                            }
-
-                            // Toggle sort direction with 'S' (Shift+s)
-                            (KeyCode::Char('S'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                ui_state.toggle_sort_direction();
-                                needs_data_refresh = true;
-                                info!(
-                                    "Sort direction: {} ({})",
-                                    if ui_state.sort_ascending {
-                                        "ascending"
-                                    } else {
-                                        "descending"
-                                    },
-                                    ui_state.sort_column.display_name()
-                                );
-                            }
-
-                            // Copy remote address to clipboard
-                            (KeyCode::Char('c'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                if let Some(selected_idx) =
-                                    ui_state.get_selected_index(&connections)
-                                    && let Some(conn) = connections.get(selected_idx)
-                                {
-                                    let remote_addr = conn.remote_addr.to_string();
-                                    copy_to_clipboard(
-                                        &remote_addr,
-                                        &remote_addr,
-                                        &mut ui_state,
-                                        app,
-                                    );
-                                }
-                            }
+                            // p/d/t/a/r/s/S/c migrated to OverviewTab::handle_key
+                            // and applied before this match runs. Anything
+                            // those keys would land on here is now handled
+                            // by the `_` catch-all that resets confirmations.
 
                             // Clear all connections with confirmation
                             (KeyCode::Char('x'), _) => {

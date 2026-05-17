@@ -33,6 +33,25 @@ use tabs::{
     overview::OverviewTab,
 };
 
+/// Route a key event to the active tab's Component. Main loop
+/// calls this once per Event::Key before falling through to its
+/// own match (which still owns global keys + the not-yet-migrated
+/// per-tab keys).
+pub fn dispatch_key(
+    tab: usize,
+    key: crossterm::event::KeyEvent,
+    ctx: &mut HandlerContext<'_>,
+) -> Vec<Effect> {
+    match tab {
+        0 => OverviewTab.handle_key(key, ctx),
+        1 => DetailsTab.handle_key(key, ctx),
+        2 => InterfacesTab.handle_key(key, ctx),
+        3 => GraphTab.handle_key(key, ctx),
+        4 => HelpTab.handle_key(key, ctx),
+        _ => Vec::new(),
+    }
+}
+
 /// Placeholder string displayed when a value is unavailable.
 const NONE_PLACEHOLDER: &str = "-";
 
@@ -57,7 +76,10 @@ mod clipboard;
 pub use clipboard::copy_to_clipboard;
 
 mod component;
-pub use component::{Component, DrawContext as ComponentContext};
+pub use component::{Component, DrawContext as ComponentContext, Effect, HandlerContext};
+
+mod effects;
+pub use effects::apply_effects;
 
 mod theme;
 
