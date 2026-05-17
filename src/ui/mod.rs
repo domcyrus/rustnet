@@ -93,6 +93,9 @@ pub use sorting::sort_connections;
 mod clipboard;
 pub use clipboard::copy_to_clipboard;
 
+mod actions;
+pub use actions::clear_all_with_confirmation;
+
 mod component;
 pub use component::{Component, DrawContext as ComponentContext, Effect, HandlerContext};
 

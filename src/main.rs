@@ -439,7 +439,7 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
 }
 
 /// Sort connections based on the specified column and direction
-use ui::{copy_to_clipboard, sort_connections};
+use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
 
 fn run_ui_loop<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,
@@ -781,22 +781,10 @@ where
                             // clear / filter-clear / tab-back still work
                             // from Details / Interfaces / Graph / Help
                             // (OverviewTab only claims them on Overview).
-                            (KeyCode::Char('x'), _) => {
-                                if ui_state.clear_confirmation {
-                                    info!("User confirmed clear all connections");
-                                    app.clear_all_connections();
-                                    ui_state.clear_confirmation = false;
-                                    ui_state.show_historic = false;
-                                    ui_state.selected_connection_key = None;
-                                    ui_state.clipboard_message = Some((
-                                        "All connections cleared".to_string(),
-                                        std::time::Instant::now(),
-                                    ));
-                                    needs_data_refresh = true;
-                                } else {
-                                    info!("User requested clear - showing confirmation");
-                                    ui_state.clear_confirmation = true;
-                                }
+                            (KeyCode::Char('x'), _)
+                                if clear_all_with_confirmation(&mut ui_state, app) =>
+                            {
+                                needs_data_refresh = true;
                             }
 
                             (KeyCode::Esc, _) => {

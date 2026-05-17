@@ -20,7 +20,7 @@ use crate::network::dns::DnsResolver;
 use crate::network::types::{Connection, Protocol};
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
-    NONE_PLACEHOLDER, SortColumn, UIState, bandwidth_line, dpi_color,
+    NONE_PLACEHOLDER, SortColumn, UIState, bandwidth_line, clear_all_with_confirmation, dpi_color,
     format::{format_bytes, format_rate_compact},
     panel_block, state_color, status_indicator_cell, theme,
 };
@@ -303,20 +303,9 @@ impl Component for OverviewTab {
 
             // Clear all connections (two-press confirmation)
             (KeyCode::Char('x'), _) => {
-                if ctx.ui_state.clear_confirmation {
-                    info!("User confirmed clear all connections");
-                    ctx.app.clear_all_connections();
-                    ctx.ui_state.clear_confirmation = false;
-                    ctx.ui_state.show_historic = false;
-                    ctx.ui_state.selected_connection_key = None;
-                    ctx.ui_state.clipboard_message = Some((
-                        "All connections cleared".to_string(),
-                        std::time::Instant::now(),
-                    ));
+                if clear_all_with_confirmation(ctx.ui_state, ctx.app) {
                     Some(vec![Effect::RefreshData])
                 } else {
-                    info!("User requested clear - showing confirmation");
-                    ctx.ui_state.clear_confirmation = true;
                     Some(Vec::new())
                 }
             }

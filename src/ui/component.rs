@@ -57,8 +57,6 @@ pub enum Effect {
     /// Copy `value` to the system clipboard. `label` is the
     /// human-readable name shown in the status-bar banner.
     Copy { label: String, value: String },
-    // Quit will land when the global keys (q, Ctrl+C) migrate into a
-    // shared handler; for now main.rs breaks the loop directly.
 }
 
 /// Implemented by every tab. `draw` must be cheap (called every
