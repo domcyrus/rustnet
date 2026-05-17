@@ -52,6 +52,24 @@ pub fn dispatch_key(
     }
 }
 
+/// Same as `dispatch_key` but for mouse events (currently the
+/// scroll wheel — clicks go through the global `ClickableRegions`
+/// hit-test in main.rs).
+pub fn dispatch_mouse(
+    tab: usize,
+    mouse: crossterm::event::MouseEvent,
+    ctx: &mut HandlerContext<'_>,
+) -> Option<Vec<Effect>> {
+    match tab {
+        0 => OverviewTab.handle_mouse(mouse, ctx),
+        1 => DetailsTab.handle_mouse(mouse, ctx),
+        2 => InterfacesTab.handle_mouse(mouse, ctx),
+        3 => GraphTab.handle_mouse(mouse, ctx),
+        4 => HelpTab.handle_mouse(mouse, ctx),
+        _ => None,
+    }
+}
+
 /// Placeholder string displayed when a value is unavailable.
 const NONE_PLACEHOLDER: &str = "-";
 

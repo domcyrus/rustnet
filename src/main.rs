@@ -570,8 +570,37 @@ where
                 crossterm::event::Event::Mouse(mouse) => {
                     use crossterm::event::{MouseButton, MouseEventKind};
 
-                    match mouse.kind {
-                        MouseEventKind::Down(MouseButton::Left) => {
+                    // Active tab's Component gets first crack — currently
+                    // only OverviewTab claims (scroll wheel inside the
+                    // scroll area). Click events fall through to the
+                    // global ClickableRegions dispatch below.
+                    let grouped_opt = if ui_state.grouping_enabled {
+                        Some(grouped_rows.as_slice())
+                    } else {
+                        None
+                    };
+                    let mut hctx = ui::HandlerContext {
+                        app,
+                        ui_state: &mut ui_state,
+                        connections: &connections,
+                        grouped_rows: grouped_opt,
+                        click_regions: &click_regions,
+                    };
+                    if let Some(effects) =
+                        ui::dispatch_mouse(hctx.ui_state.selected_tab, mouse, &mut hctx)
+                    {
+                        let outcome = ui::apply_effects(effects, &mut ui_state, app);
+                        if outcome.needs_data_refresh {
+                            needs_data_refresh = true;
+                        }
+                        if outcome.needs_regroup {
+                            needs_regroup = true;
+                        }
+                        continue;
+                    }
+
+                    if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+                        {
                             ui_state.quit_confirmation = false;
                             ui_state.clear_confirmation = false;
 
@@ -630,38 +659,8 @@ where
                                 }
                             }
                         }
-                        MouseEventKind::ScrollUp => {
-                            if let Some(scroll_area) = click_regions.scroll_area
-                                && mouse.column >= scroll_area.x
-                                && mouse.column < scroll_area.x + scroll_area.width
-                                && mouse.row >= scroll_area.y
-                                && mouse.row < scroll_area.y + scroll_area.height
-                                && ui_state.selected_tab == 0
-                            {
-                                if ui_state.grouping_enabled {
-                                    ui_state.move_selection_up_grouped(&grouped_rows);
-                                } else {
-                                    ui_state.move_selection_up(&connections);
-                                }
-                            }
-                        }
-                        MouseEventKind::ScrollDown => {
-                            if let Some(scroll_area) = click_regions.scroll_area
-                                && mouse.column >= scroll_area.x
-                                && mouse.column < scroll_area.x + scroll_area.width
-                                && mouse.row >= scroll_area.y
-                                && mouse.row < scroll_area.y + scroll_area.height
-                                && ui_state.selected_tab == 0
-                            {
-                                if ui_state.grouping_enabled {
-                                    ui_state.move_selection_down_grouped(&grouped_rows);
-                                } else {
-                                    ui_state.move_selection_down(&connections);
-                                }
-                            }
-                        }
-                        _ => {}
                     }
+                    // Scroll events are handled by OverviewTab::handle_mouse above.
                 }
                 crossterm::event::Event::Key(key) => {
                     use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
@@ -699,6 +698,7 @@ where
                         ui_state: &mut ui_state,
                         connections: &connections,
                         grouped_rows: grouped_opt,
+                        click_regions: &click_regions,
                     };
                     let claimed = if let Some(effects) =
                         ui::dispatch_key(hctx.ui_state.selected_tab, key, &mut hctx)

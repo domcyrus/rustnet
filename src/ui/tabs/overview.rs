@@ -12,7 +12,7 @@ use ratatui::{
     widgets::{Cell, Paragraph, Row, Sparkline, Table, Wrap},
 };
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use log::{debug, info};
 
 use crate::app::{App, AppStats};
@@ -38,6 +38,47 @@ impl Component for OverviewTab {
         click_regions: &mut ClickableRegions,
     ) -> Result<()> {
         draw_overview(f, ctx, area, click_regions)
+    }
+
+    fn handle_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        ctx: &mut HandlerContext<'_>,
+    ) -> Option<Vec<Effect>> {
+        // Scroll wheel: navigate the connection list, but only when
+        // the cursor is over the registered scroll area. Click events
+        // are dispatched by main.rs through ClickableRegions.
+        let scroll_area = ctx.click_regions.scroll_area?;
+        let in_scroll_area = mouse.column >= scroll_area.x
+            && mouse.column < scroll_area.x + scroll_area.width
+            && mouse.row >= scroll_area.y
+            && mouse.row < scroll_area.y + scroll_area.height;
+        if !in_scroll_area {
+            return None;
+        }
+        match mouse.kind {
+            MouseEventKind::ScrollUp => {
+                if ctx.ui_state.grouping_enabled
+                    && let Some(rows) = ctx.grouped_rows
+                {
+                    ctx.ui_state.move_selection_up_grouped(rows);
+                } else {
+                    ctx.ui_state.move_selection_up(ctx.connections);
+                }
+                Some(Vec::new())
+            }
+            MouseEventKind::ScrollDown => {
+                if ctx.ui_state.grouping_enabled
+                    && let Some(rows) = ctx.grouped_rows
+                {
+                    ctx.ui_state.move_selection_down_grouped(rows);
+                } else {
+                    ctx.ui_state.move_selection_down(ctx.connections);
+                }
+                Some(Vec::new())
+            }
+            _ => None,
+        }
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {

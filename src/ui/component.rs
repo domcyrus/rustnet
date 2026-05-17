@@ -10,15 +10,12 @@
 //!   context structs on each call.
 
 use anyhow::Result;
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{Frame, layout::Rect};
 
 use crate::app::{App, AppStats};
 use crate::network::types::Connection;
 use crate::ui::{ClickableRegions, GroupedRow, UIState};
-//
-// HandlerContext also carries `grouped_rows`. It needs the same lifetime
-// as the borrowed slice the loop hands in, hence the explicit `'a`.
 
 /// Read-only bundle passed to every component's `draw`. Lifetime
 /// matches the borrow scope inside the main loop's `terminal.draw`
@@ -33,12 +30,15 @@ pub struct DrawContext<'a> {
 
 /// Mutable bundle for event handlers. The component owns the
 /// mutation of `ui_state`; cross-cutting work (refresh, clipboard)
-/// goes back via the returned `Vec<Effect>`.
+/// goes back via the returned `Vec<Effect>`. `click_regions` is
+/// read-only and lets `handle_mouse` consult the current frame's
+/// hit-test table (e.g. scroll-area bounds).
 pub struct HandlerContext<'a> {
     pub app: &'a App,
     pub ui_state: &'a mut UIState,
     pub connections: &'a [Connection],
     pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
+    pub click_regions: &'a ClickableRegions,
 }
 
 /// Cross-cutting effects a component can request from the main
@@ -82,6 +82,18 @@ pub trait Component {
     ) -> Result<()>;
 
     fn handle_key(&mut self, _key: KeyEvent, _ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        None
+    }
+
+    /// Same Some/None contract as `handle_key`. Click events are
+    /// dispatched through the global `ClickableRegions` hit-test
+    /// in main.rs; tabs use this hook for raw-position needs
+    /// (typically scroll-wheel handling).
+    fn handle_mouse(
+        &mut self,
+        _mouse: MouseEvent,
+        _ctx: &mut HandlerContext<'_>,
+    ) -> Option<Vec<Effect>> {
         None
     }
 }
