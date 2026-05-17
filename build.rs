@@ -11,7 +11,15 @@ fn main() -> Result<()> {
     // Compile eBPF programs on Linux when the feature is enabled
     // Check TARGET environment variable, not cfg!, to handle cross-compilation correctly
     let target = env::var("TARGET").unwrap_or_default();
-    if target.contains("linux") && env::var("CARGO_FEATURE_EBPF").is_ok() {
+    let build_ebpf = if target.contains("android") {
+        env::var("CARGO_FEATURE_ANDROID_EBPF").is_ok()
+    } else if target.contains("linux") {
+        env::var("CARGO_FEATURE_EBPF").is_ok()
+    } else {
+        false
+    };
+
+    if build_ebpf {
         compile_ebpf_programs();
     }
 
@@ -186,7 +194,7 @@ fn download_windows_npcap_sdk() -> Result<()> {
     Ok(())
 }
 
-#[cfg(all(target_os = "linux", feature = "ebpf"))]
+#[cfg(any(feature = "ebpf", feature = "android-ebpf"))]
 fn get_vmlinux_header(arch: &str) -> Result<PathBuf> {
     // Use bundled vmlinux.h from resources directory
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
@@ -205,7 +213,7 @@ fn get_vmlinux_header(arch: &str) -> Result<PathBuf> {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "ebpf"))]
+#[cfg(any(feature = "ebpf", feature = "android-ebpf"))]
 fn compile_ebpf_programs() {
     use libbpf_cargo::SkeletonBuilder;
     use std::ffi::OsStr;
@@ -247,7 +255,7 @@ fn compile_ebpf_programs() {
     println!("cargo:rerun-if-changed={}", src);
 }
 
-#[cfg(not(all(target_os = "linux", feature = "ebpf")))]
+#[cfg(not(any(feature = "ebpf", feature = "android-ebpf")))]
 fn compile_ebpf_programs() {
     // No-op when not on Linux or eBPF feature is not enabled
 }

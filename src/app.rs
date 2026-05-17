@@ -698,7 +698,7 @@ impl App {
                     *linktype_storage.write().unwrap() = Some(linktype);
 
                     // Drop CAP_NET_RAW now that the socket is open (Linux only)
-                    #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "landlock"))]
+                    #[cfg(all(target_os = "linux", feature = "landlock"))]
                     {
                         if let Err(e) =
                             crate::network::platform::sandbox::capabilities::drop_cap_net_raw()
@@ -924,7 +924,7 @@ impl App {
                 info!("Packet processor {} started", id);
 
                 // Drop CAP_NET_RAW immediately as this thread doesn't need it (Linux only)
-                #[cfg(all(any(target_os = "linux", target_os = "android"), feature = "landlock"))]
+                #[cfg(all(target_os = "linux", feature = "landlock"))]
                 {
                     if let Err(e) =
                         crate::network::platform::sandbox::capabilities::drop_cap_net_raw()

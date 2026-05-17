@@ -7,6 +7,8 @@ ANDROID_TARGET=${RUSTNET_ANDROID_TARGET:-aarch64-linux-android}
 ANDROID_API=${RUSTNET_ANDROID_API:-}
 LIBPCAP_ROOT=${RUSTNET_ANDROID_LIBPCAP_ROOT:-${ROOT_DIR}/../libpcap-install}
 LIBPCAP_VER=${RUSTNET_ANDROID_LIBPCAP_VER:-1.10.5}
+ENABLE_ANDROID_EBPF=${RUSTNET_ANDROID_ENABLE_EBPF:-1}
+ANDROID_EBPF_CONFIG="${ROOT_DIR}/.cargo/android-ebpf-config.toml"
 
 if [[ -z "${NDK_ROOT}" ]]; then
     cat >&2 <<'EOF'
@@ -45,9 +47,8 @@ find_prebuilt_dir() {
 
 default_api_for_target() {
     case "$1" in
-        aarch64-linux-android|x86_64-linux-android) echo 21 ;;
-        armv7-linux-androideabi|i686-linux-android) echo 16 ;;
-        *) echo 21 ;;
+        aarch64-linux-android|x86_64-linux-android|armv7-linux-androideabi|i686-linux-android) echo 24 ;;
+        *) echo 24 ;;
     esac
 }
 
@@ -61,6 +62,11 @@ fi
 
 if [[ -z "${ANDROID_API}" ]]; then
     ANDROID_API=$(default_api_for_target "${ANDROID_TARGET}")
+fi
+
+if (( ANDROID_API < 24 )); then
+    echo "Android API ${ANDROID_API} is too low for current libpcap/pnet support; using 24 instead." >&2
+    ANDROID_API=24
 fi
 
 CLANG="${TOOLCHAIN_DIR}/${ANDROID_TARGET}${ANDROID_API}-clang"
@@ -107,6 +113,43 @@ Android API: ${ANDROID_API}
 NDK prebuilt: ${PREBUILT_DIR}
 Clang: ${CLANG}
 libpcap: ${LIBPCAP_ROOT}
+android-ebpf: ${ENABLE_ANDROID_EBPF}
 EOF
 
-exec cargo "$@"
+args=("$@")
+
+has_no_default_features=0
+has_features=0
+for arg in "${args[@]}"; do
+    case "${arg}" in
+        --no-default-features) has_no_default_features=1 ;;
+        --features|--all-features) has_features=1 ;;
+        --features=*) has_features=1 ;;
+    esac
+done
+
+if [[ ${has_no_default_features} -eq 0 ]]; then
+    args+=(--no-default-features)
+fi
+
+if [[ ${ENABLE_ANDROID_EBPF} == 1 && ${has_features} -eq 0 ]]; then
+    args+=(--features android-ebpf)
+fi
+
+restore_lockfile() {
+    if [[ -n "${lock_backup_path:-}" && -f "${lock_backup_path}" ]]; then
+        mv "${lock_backup_path}" "${ROOT_DIR}/Cargo.lock"
+    fi
+}
+
+if [[ ${ENABLE_ANDROID_EBPF} == 1 ]]; then
+    args+=(--config "${ANDROID_EBPF_CONFIG}")
+
+    if [[ -f "${ROOT_DIR}/Cargo.lock" ]]; then
+        lock_backup_path=$(mktemp "${ROOT_DIR}/Cargo.lock.android-ebpf.XXXXXX")
+        cp "${ROOT_DIR}/Cargo.lock" "${lock_backup_path}"
+        trap restore_lockfile EXIT
+    fi
+fi
+
+cargo "${args[@]}"

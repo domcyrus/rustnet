@@ -28,7 +28,10 @@ pub enum DegradationReason {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     MissingBpfCapabilities,
     /// eBPF feature not compiled in
-    #[cfg(all(any(target_os = "linux", target_os = "android"), not(feature = "ebpf")))]
+    #[cfg(any(
+        all(target_os = "linux", not(feature = "ebpf")),
+        all(target_os = "android", not(feature = "android-ebpf"))
+    ))]
     EbpfFeatureDisabled,
     /// Kernel doesn't support required eBPF features (e.g. ENOSYS from bpf(2))
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -78,7 +81,10 @@ impl DegradationReason {
             Self::MissingCapPerfmon => Cow::Borrowed("needs CAP_PERFMON"),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::MissingBpfCapabilities => Cow::Borrowed("needs CAP_BPF+CAP_PERFMON"),
-            #[cfg(all(any(target_os = "linux", target_os = "android"), not(feature = "ebpf")))]
+            #[cfg(any(
+                all(target_os = "linux", not(feature = "ebpf")),
+                all(target_os = "android", not(feature = "android-ebpf"))
+            ))]
             Self::EbpfFeatureDisabled => Cow::Borrowed("eBPF feature disabled"),
             #[cfg(any(target_os = "linux", target_os = "android"))]
             Self::KernelUnsupported => Cow::Borrowed("kernel unsupported"),
@@ -127,7 +133,10 @@ impl DegradationReason {
             | Self::BtfUnavailable
             | Self::EbpfLoadFailed(_)
             | Self::BinaryOnNosuidMount => Some("eBPF"),
-            #[cfg(all(any(target_os = "linux", target_os = "android"), not(feature = "ebpf")))]
+            #[cfg(any(
+                all(target_os = "linux", not(feature = "ebpf")),
+                all(target_os = "android", not(feature = "android-ebpf"))
+            ))]
             Self::EbpfFeatureDisabled => Some("eBPF"),
             #[cfg(target_os = "macos")]
             Self::MissingRootPrivileges
@@ -151,7 +160,7 @@ mod windows;
 // Re-export factory functions and types from platform modules
 #[cfg(target_os = "freebsd")]
 pub use freebsd::{FreeBSDStatsProvider, create_process_lookup};
-#[cfg(all(any(target_os = "linux", target_os = "android"), feature = "landlock"))]
+#[cfg(all(target_os = "linux", feature = "landlock"))]
 pub use linux::sandbox;
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub use linux::{LinuxStatsProvider, create_process_lookup};
