@@ -53,6 +53,9 @@ pub use state::{
 mod sorting;
 pub use sorting::sort_connections;
 
+mod clipboard;
+pub use clipboard::copy_to_clipboard;
+
 mod component;
 pub use component::{Component, DrawContext as ComponentContext};
 

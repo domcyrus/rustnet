@@ -1,5 +1,4 @@
 use anyhow::Result;
-use arboard::Clipboard;
 use log::{LevelFilter, debug, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
 use simplelog::{Config as LogConfig, WriteLogger};
@@ -440,56 +439,7 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
 }
 
 /// Sort connections based on the specified column and direction
-use ui::sort_connections;
-
-/// Copy text to the system clipboard and update UI state with feedback.
-fn copy_to_clipboard(text: &str, display_msg: &str, ui_state: &mut ui::UIState, app: &app::App) {
-    // Used conditionally on Linux/FreeBSD for sandbox-aware error messages
-    let _ = app;
-    let result = Clipboard::new().and_then(|mut cb| cb.set_text(text));
-
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    let result = result.or_else(|_| {
-        std::process::Command::new("wl-copy")
-            .arg(text)
-            .status()
-            .map_err(|e| arboard::Error::Unknown {
-                description: e.to_string(),
-            })
-            .and_then(|s| {
-                if s.success() {
-                    Ok(())
-                } else {
-                    Err(arboard::Error::Unknown {
-                        description: "wl-copy failed".to_string(),
-                    })
-                }
-            })
-    });
-
-    match result {
-        Ok(()) => {
-            info!("Copied to clipboard: {}", display_msg);
-            ui_state.clipboard_message = Some((
-                format!("Copied: {}", display_msg),
-                std::time::Instant::now(),
-            ));
-        }
-        Err(e) => {
-            #[cfg(target_os = "linux")]
-            let msg = if app.get_sandbox_info().fs_restricted {
-                "Clipboard unavailable (sandbox active). Use --no-sandbox to enable.".to_string()
-            } else {
-                format!("Clipboard error: {}", e)
-            };
-            #[cfg(not(target_os = "linux"))]
-            let msg = format!("Clipboard error: {}", e);
-
-            error!("{}", msg);
-            ui_state.clipboard_message = Some((msg, std::time::Instant::now()));
-        }
-    }
-}
+use ui::{copy_to_clipboard, sort_connections};
 
 fn run_ui_loop<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,
