@@ -680,10 +680,16 @@ where
                     // handler below. Filter-mode input still routes the
                     // old way until OverviewTab grows a filter handler.
                     if !ui_state.filter_mode {
+                        let grouped_opt = if ui_state.grouping_enabled {
+                            Some(grouped_rows.as_slice())
+                        } else {
+                            None
+                        };
                         let mut hctx = ui::HandlerContext {
                             app,
                             ui_state: &mut ui_state,
                             connections: &connections,
+                            grouped_rows: grouped_opt,
                         };
                         let effects = ui::dispatch_key(hctx.ui_state.selected_tab, key, &mut hctx);
                         let outcome = ui::apply_effects(effects, &mut ui_state, app);
@@ -837,144 +843,11 @@ where
                                 }
                             }
 
-                            // Navigation in connection list
-                            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                if ui_state.grouping_enabled {
-                                    debug!(
-                                        "Navigation UP (grouped): {} rows available",
-                                        grouped_rows.len()
-                                    );
-                                    ui_state.move_selection_up_grouped(&grouped_rows);
-                                } else {
-                                    debug!(
-                                        "Navigation UP: {} connections available",
-                                        connections.len()
-                                    );
-                                    ui_state.move_selection_up(&connections);
-                                }
-                            }
-
-                            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                if ui_state.grouping_enabled {
-                                    debug!(
-                                        "Navigation DOWN (grouped): {} rows available",
-                                        grouped_rows.len()
-                                    );
-                                    ui_state.move_selection_down_grouped(&grouped_rows);
-                                } else {
-                                    debug!(
-                                        "Navigation DOWN: {} connections available",
-                                        connections.len()
-                                    );
-                                    ui_state.move_selection_down(&connections);
-                                }
-                            }
-
-                            // Page Up/Down navigation
-                            (KeyCode::PageUp, _) | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                let page_size = ui_state.visible_rows.max(1);
-                                if ui_state.grouping_enabled {
-                                    ui_state
-                                        .move_selection_page_up_grouped(&grouped_rows, page_size);
-                                } else {
-                                    ui_state.move_selection_page_up(&connections, page_size);
-                                }
-                            }
-
-                            (KeyCode::PageDown, _)
-                            | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                let page_size = ui_state.visible_rows.max(1);
-                                if ui_state.grouping_enabled {
-                                    ui_state
-                                        .move_selection_page_down_grouped(&grouped_rows, page_size);
-                                } else {
-                                    ui_state.move_selection_page_down(&connections, page_size);
-                                }
-                            }
-
-                            // Vim-style jump to first/last (g/G)
-                            (KeyCode::Char('g'), KeyModifiers::NONE) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                // Jump to first connection (vim-style 'g')
-                                ui_state.move_selection_to_first(&connections);
-                            }
-
-                            (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                // Jump to last connection (vim-style 'G')
-                                ui_state.move_selection_to_last(&connections);
-                            }
-
-                            // Enter to view details (only works on connections, not group headers)
-                            (KeyCode::Enter, _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                if ui_state.selected_tab == 0
-                                    && !connections.is_empty()
-                                    && !(ui_state.grouping_enabled && ui_state.is_group_selected())
-                                {
-                                    // Switch to details view when on a connection (not a group header)
-                                    ui_state.selected_tab = 1;
-                                }
-                            }
-
-                            // Space to toggle group expansion
-                            (KeyCode::Char(' '), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                if ui_state.selected_tab == 0
-                                    && ui_state.grouping_enabled
-                                    && ui_state.is_group_selected()
-                                {
-                                    ui_state.toggle_group_expansion();
-                                    needs_regroup = true;
-                                }
-                            }
-
-                            // Left arrow to collapse group
-                            (KeyCode::Left, _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
-                                    ui_state.collapse_selected_group();
-                                    needs_regroup = true;
-                                }
-                            }
-
-                            // Right arrow to expand group
-                            (KeyCode::Right, _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
-                                    ui_state.expand_selected_group();
-                                    needs_regroup = true;
-                                }
-                            }
-
-                            // 'l' to expand group (vim-style, in addition to right arrow)
-                            (KeyCode::Char('l'), _) => {
-                                ui_state.quit_confirmation = false;
-                                ui_state.clear_confirmation = false;
-                                if ui_state.selected_tab == 0 && ui_state.grouping_enabled {
-                                    ui_state.expand_selected_group();
-                                    needs_regroup = true;
-                                }
-                            }
-
-                            // p/d/t/a/r/s/S/c migrated to OverviewTab::handle_key
-                            // and applied before this match runs. Anything
-                            // those keys would land on here is now handled
-                            // by the `_` catch-all that resets confirmations.
+                            // Navigation (j/k/up/down/g/G/PgUp/PgDn), Enter (open Details),
+                            // group expand/collapse (Space/Left/Right/l), and the display
+                            // toggles (p/d/t/a/r/s/S/c) all migrated to
+                            // OverviewTab::handle_key. They've already been applied above;
+                            // the `_` catch-all here keeps clearing confirmations.
 
                             // Clear all connections with confirmation
                             (KeyCode::Char('x'), _) => {

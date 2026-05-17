@@ -42,6 +42,93 @@ impl Component for OverviewTab {
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Vec<Effect> {
         match (key.code, key.modifiers) {
+            // --- Navigation ---
+            (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
+                if ctx.ui_state.grouping_enabled
+                    && let Some(rows) = ctx.grouped_rows
+                {
+                    ctx.ui_state.move_selection_up_grouped(rows);
+                } else {
+                    ctx.ui_state.move_selection_up(ctx.connections);
+                }
+                Vec::new()
+            }
+            (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
+                if ctx.ui_state.grouping_enabled
+                    && let Some(rows) = ctx.grouped_rows
+                {
+                    ctx.ui_state.move_selection_down_grouped(rows);
+                } else {
+                    ctx.ui_state.move_selection_down(ctx.connections);
+                }
+                Vec::new()
+            }
+            (KeyCode::PageUp, _) | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+                let page_size = ctx.ui_state.visible_rows.max(1);
+                if ctx.ui_state.grouping_enabled
+                    && let Some(rows) = ctx.grouped_rows
+                {
+                    ctx.ui_state.move_selection_page_up_grouped(rows, page_size);
+                } else {
+                    ctx.ui_state
+                        .move_selection_page_up(ctx.connections, page_size);
+                }
+                Vec::new()
+            }
+            (KeyCode::PageDown, _) | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+                let page_size = ctx.ui_state.visible_rows.max(1);
+                if ctx.ui_state.grouping_enabled
+                    && let Some(rows) = ctx.grouped_rows
+                {
+                    ctx.ui_state
+                        .move_selection_page_down_grouped(rows, page_size);
+                } else {
+                    ctx.ui_state
+                        .move_selection_page_down(ctx.connections, page_size);
+                }
+                Vec::new()
+            }
+            (KeyCode::Char('g'), KeyModifiers::NONE) => {
+                ctx.ui_state.move_selection_to_first(ctx.connections);
+                Vec::new()
+            }
+            (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
+                ctx.ui_state.move_selection_to_last(ctx.connections);
+                Vec::new()
+            }
+
+            // --- Open Details on Enter (only for a real connection, not a group header) ---
+            (KeyCode::Enter, _) => {
+                let on_group_header =
+                    ctx.ui_state.grouping_enabled && ctx.ui_state.is_group_selected();
+                if !ctx.connections.is_empty() && !on_group_header {
+                    ctx.ui_state.selected_tab = 1;
+                }
+                Vec::new()
+            }
+
+            // --- Group expand / collapse ---
+            (KeyCode::Char(' '), _)
+                if ctx.ui_state.grouping_enabled && ctx.ui_state.is_group_selected() =>
+            {
+                ctx.ui_state.toggle_group_expansion();
+                vec![Effect::Regroup]
+            }
+            (KeyCode::Left, _) if ctx.ui_state.grouping_enabled => {
+                ctx.ui_state.collapse_selected_group();
+                vec![Effect::Regroup]
+            }
+            (KeyCode::Right, _) if ctx.ui_state.grouping_enabled => {
+                ctx.ui_state.expand_selected_group();
+                vec![Effect::Regroup]
+            }
+            (KeyCode::Char('l'), _) if ctx.ui_state.grouping_enabled => {
+                ctx.ui_state.expand_selected_group();
+                vec![Effect::Regroup]
+            }
+
+            // --- Display toggles & sort ---
+
             // Toggle port number / service name display
             (KeyCode::Char('p'), _) => {
                 ctx.ui_state.show_port_numbers = !ctx.ui_state.show_port_numbers;

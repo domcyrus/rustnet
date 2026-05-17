@@ -16,6 +16,9 @@ use ratatui::{Frame, layout::Rect};
 use crate::app::{App, AppStats};
 use crate::network::types::Connection;
 use crate::ui::{ClickableRegions, GroupedRow, UIState};
+//
+// HandlerContext also carries `grouped_rows`. It needs the same lifetime
+// as the borrowed slice the loop hands in, hence the explicit `'a`.
 
 /// Read-only bundle passed to every component's `draw`. Lifetime
 /// matches the borrow scope inside the main loop's `terminal.draw`
@@ -29,12 +32,13 @@ pub struct DrawContext<'a> {
 }
 
 /// Mutable bundle for event handlers. The component owns the
-/// mutation of `ui_state`; cross-cutting work (refresh, clipboard,
-/// quit) goes back via the returned `Vec<Effect>`.
+/// mutation of `ui_state`; cross-cutting work (refresh, clipboard)
+/// goes back via the returned `Vec<Effect>`.
 pub struct HandlerContext<'a> {
     pub app: &'a App,
     pub ui_state: &'a mut UIState,
     pub connections: &'a [Connection],
+    pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
 }
 
 /// Cross-cutting effects a component can request from the main
