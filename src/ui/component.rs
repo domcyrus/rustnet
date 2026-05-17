@@ -1,0 +1,97 @@
+//! Per-tab Component pattern adapted for rustnet's synchronous,
+//! crossbeam-threaded UI loop.
+//!
+//! Differences from ratatui's official component template:
+//! - No `tokio::sync::mpsc::UnboundedSender<Action>` — the loop is
+//!   synchronous; components return `Vec<Effect>` from event
+//!   handlers instead of pushing through a channel.
+//! - No `register_action_handler` / `register_config_handler` /
+//!   `init` — shared state (`App`, `UIState`) is passed through
+//!   context structs on each call.
+
+use anyhow::Result;
+use crossterm::event::{KeyEvent, MouseEvent};
+use ratatui::{Frame, layout::Rect};
+
+use crate::app::{App, AppStats};
+use crate::network::types::Connection;
+use crate::ui::{ClickableRegions, GroupedRow, UIState};
+
+/// Read-only bundle passed to every component's `draw`. Lifetime
+/// matches the borrow scope inside the main loop's `terminal.draw`
+/// closure.
+pub struct DrawContext<'a> {
+    pub app: &'a App,
+    pub connections: &'a [Connection],
+    pub ui_state: &'a UIState,
+    pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
+    pub stats: &'a AppStats,
+}
+
+/// Mutable bundle for event handlers. The component owns the
+/// mutation of `ui_state`; cross-cutting work (refresh, clipboard)
+/// goes back via the returned `Vec<Effect>`. `click_regions` is
+/// read-only and lets `handle_mouse` consult the current frame's
+/// hit-test table (e.g. scroll-area bounds).
+pub struct HandlerContext<'a> {
+    pub app: &'a App,
+    pub ui_state: &'a mut UIState,
+    pub connections: &'a [Connection],
+    pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
+    pub click_regions: &'a ClickableRegions,
+}
+
+/// Cross-cutting effects a component can request from the main
+/// loop. Anything the component can't or shouldn't apply directly
+/// (data refresh flag, clipboard write, quit) gets enumerated here
+/// so `apply_effects` is the single place that touches the loop.
+#[derive(Debug, Clone)]
+pub enum Effect {
+    /// Connection data needs to be re-pulled from the snapshot
+    /// provider before the next render.
+    RefreshData,
+    /// Grouped rows need to be rebuilt from the existing connection
+    /// list (cheaper than full RefreshData when only expand/collapse
+    /// changed).
+    Regroup,
+    /// Copy `value` to the system clipboard. `label` is the
+    /// human-readable name shown in the status-bar banner.
+    Copy { label: String, value: String },
+}
+
+/// Implemented by every tab. `draw` must be cheap (called every
+/// render tick). `handle_key` translates raw keystrokes into
+/// `Effect`s; UIState mutations happen in-place through the
+/// handler context.
+///
+/// `handle_key` returns:
+/// - `None` — the component did not claim this key; the loop falls
+///   through to its global / fallback handling.
+/// - `Some(vec)` — the component handled the key (vec may be empty
+///   if no cross-cutting effect was needed). The loop skips its
+///   fallback match.
+pub trait Component {
+    fn draw(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        ctx: &DrawContext<'_>,
+        click_regions: &mut ClickableRegions,
+    ) -> Result<()>;
+
+    fn handle_key(&mut self, _key: KeyEvent, _ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        None
+    }
+
+    /// Same Some/None contract as `handle_key`. Click events are
+    /// dispatched through the global `ClickableRegions` hit-test
+    /// in main.rs; tabs use this hook for raw-position needs
+    /// (typically scroll-wheel handling).
+    fn handle_mouse(
+        &mut self,
+        _mouse: MouseEvent,
+        _ctx: &mut HandlerContext<'_>,
+    ) -> Option<Vec<Effect>> {
+        None
+    }
+}
