@@ -4,6 +4,8 @@
 
 This guide covers all installation methods for RustNet across different platforms.
 
+> **Tip:** For an at-a-glance view of which distributions package RustNet and which version each carries, see [RustNet on Repology](https://repology.org/project/rustnet/versions).
+
 ## Table of Contents
 
 - [Installing from Release Packages](#installing-from-release-packages)
