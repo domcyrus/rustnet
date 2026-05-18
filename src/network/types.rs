@@ -732,7 +732,6 @@ pub enum SnmpPduType {
     InformRequest,
     TrapV2,
     Report,
-    Unknown(u8),
 }
 
 impl std::fmt::Display for SnmpPduType {
@@ -747,7 +746,6 @@ impl std::fmt::Display for SnmpPduType {
             SnmpPduType::InformRequest => write!(f, "INFORM"),
             SnmpPduType::TrapV2 => write!(f, "TRAPv2"),
             SnmpPduType::Report => write!(f, "REPORT"),
-            SnmpPduType::Unknown(v) => write!(f, "UNKNOWN({})", v),
         }
     }
 }
