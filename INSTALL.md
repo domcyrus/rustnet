@@ -186,6 +186,45 @@ yay -S rustnet-bin
 yay -S rustnet-git
 ```
 
+#### Nix / NixOS
+
+RustNet is available in [nixpkgs](https://search.nixos.org/packages?channel=unstable&query=rustnet). It currently lives in **nixpkgs-unstable** only — stable channels will pick it up at the next nixpkgs release.
+
+**Try it without installing (ephemeral shell):**
+
+```bash
+# On a system where your nixpkgs channel is unstable:
+nix-shell -p rustnet
+# Then inside the shell:
+sudo rustnet
+
+# On a stable channel, point nix-shell at unstable explicitly:
+nix-shell -I nixpkgs=channel:nixpkgs-unstable -p rustnet
+```
+
+**Persistent install on NixOS** — add to `/etc/nixos/configuration.nix`:
+
+```nix
+environment.systemPackages = with pkgs; [
+  rustnet
+];
+```
+
+Then run `sudo nixos-rebuild switch`.
+
+**Note on permissions:** NixOS's `/nix/store` is read-only, so `sudo setcap` on the binary won't persist across rebuilds. The simplest option is `sudo rustnet`. For sudo-less operation, define a NixOS [security.wrappers](https://search.nixos.org/options?channel=unstable&query=security.wrappers) entry that carries the capabilities:
+
+```nix
+security.wrappers.rustnet = {
+  source = "${pkgs.rustnet}/bin/rustnet";
+  owner = "root";
+  group = "root";
+  capabilities = "cap_net_raw,cap_bpf,cap_perfmon+eip";
+};
+```
+
+Then run `rustnet` via the wrapper path (`/run/wrappers/bin/rustnet`).
+
 #### Fedora (COPR - Recommended for Fedora 42+)
 
 The easiest way to install RustNet on Fedora is via the official COPR repository.
