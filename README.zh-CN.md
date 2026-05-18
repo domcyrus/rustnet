@@ -141,6 +141,12 @@ sudo dnf install rustnet
 sudo pacman -S rustnet
 ```
 
+**Nix / NixOS(nixpkgs-unstable):**
+```bash
+nix-shell -p rustnet
+# 然后在 shell 中执行: sudo rustnet
+```
+
 **通过 crates.io:**
 ```bash
 cargo install rustnet-monitor

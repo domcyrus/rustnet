@@ -186,6 +186,45 @@ yay -S rustnet-bin
 yay -S rustnet-git
 ```
 
+#### Nix / NixOS
+
+RustNet 已收录在 [nixpkgs](https://search.nixos.org/packages?channel=unstable&query=rustnet) 中。目前仅 `nixpkgs-unstable` 提供 —— stable 通道将在 nixpkgs 下次稳定版发布时同步包含。
+
+**在不安装的情况下试用（临时 shell）：**
+
+```bash
+# 当前 nixpkgs 通道为 unstable 时：
+nix-shell -p rustnet
+# 然后在 shell 中执行：
+sudo rustnet
+
+# 使用 stable 通道时，显式让 nix-shell 指向 unstable：
+nix-shell -I nixpkgs=channel:nixpkgs-unstable -p rustnet
+```
+
+**在 NixOS 上持久安装** —— 在 `/etc/nixos/configuration.nix` 中添加：
+
+```nix
+environment.systemPackages = with pkgs; [
+  rustnet
+];
+```
+
+然后运行 `sudo nixos-rebuild switch`。
+
+**关于权限：** NixOS 的 `/nix/store` 是只读的，因此对二进制文件执行 `sudo setcap` 不会在系统重建后保留。最简单的方式是 `sudo rustnet`。如果希望无需 sudo 运行，可以定义一个携带相应 Linux capabilities 的 NixOS [security.wrappers](https://search.nixos.org/options?channel=unstable&query=security.wrappers) 项：
+
+```nix
+security.wrappers.rustnet = {
+  source = "${pkgs.rustnet}/bin/rustnet";
+  owner = "root";
+  group = "root";
+  capabilities = "cap_net_raw,cap_bpf,cap_perfmon+eip";
+};
+```
+
+然后通过 wrapper 路径执行 `rustnet`（`/run/wrappers/bin/rustnet`）。
+
 #### Fedora（COPR - 推荐用于 Fedora 42+）<a id="fedora-copr---recommended-for-fedora-42"></a>
 
 在 Fedora 上安装 RustNet 最简单的方式是通过官方 COPR 仓库。
