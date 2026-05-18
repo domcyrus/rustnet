@@ -4,6 +4,8 @@
 
 本文档涵盖 RustNet 在各平台上的所有安装方法。
 
+> **提示：** 想一眼看清哪些发行版打包了 RustNet、各自分发的版本号是多少，请查看 [Repology 上的 RustNet 页面](https://repology.org/project/rustnet/versions)。
+
 ## 目录
 
 - [从发布包安装](#installing-from-release-packages)
