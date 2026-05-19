@@ -37,11 +37,15 @@ pub fn analyze_ssdp(payload: &[u8]) -> Option<SsdpInfo> {
         return None;
     };
 
-    // Extract service type from ST or NT header
+    // Extract service type from ST or NT header. Compare the 3-byte prefix
+    // with `eq_ignore_ascii_case` so we don't allocate a lowercased copy
+    // of every header line just to check two ASCII names.
     let mut service_type = None;
     for line in text.lines().skip(1) {
-        let line_lower = line.to_lowercase();
-        if line_lower.starts_with("st:") || line_lower.starts_with("nt:") {
+        let is_st_or_nt = line.get(..3).is_some_and(|prefix| {
+            prefix.eq_ignore_ascii_case("st:") || prefix.eq_ignore_ascii_case("nt:")
+        });
+        if is_st_or_nt {
             // Extract value after the colon
             if let Some(value) = line.get(3..) {
                 let trimmed = value.trim();
@@ -132,5 +136,34 @@ mod tests {
     fn test_ssdp_not_ssdp() {
         let packet = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
         assert!(analyze_ssdp(packet).is_none());
+    }
+
+    #[test]
+    fn test_ssdp_mixed_case_st_and_nt_headers() {
+        // SSDP / UPnP servers in the wild use varied capitalisation for
+        // header names (HTTP §3.2 lets the field-name be case-insensitive).
+        // Lock the invariant the `eq_ignore_ascii_case` refactor relies on:
+        // any case mix on the 2-byte field-name still extracts the value.
+        let st_variants = [
+            b"M-SEARCH * HTTP/1.1\r\nST: ssdp:all\r\n\r\n".to_vec(),
+            b"M-SEARCH * HTTP/1.1\r\nSt: ssdp:all\r\n\r\n".to_vec(),
+            b"M-SEARCH * HTTP/1.1\r\nsT: ssdp:all\r\n\r\n".to_vec(),
+            b"M-SEARCH * HTTP/1.1\r\nst: ssdp:all\r\n\r\n".to_vec(),
+        ];
+        for packet in &st_variants {
+            let info = analyze_ssdp(packet).expect("should parse");
+            assert_eq!(info.service_type, Some("ssdp:all".to_string()));
+        }
+
+        let nt_variants = [
+            b"NOTIFY * HTTP/1.1\r\nNT: upnp:rootdevice\r\n\r\n".to_vec(),
+            b"NOTIFY * HTTP/1.1\r\nNt: upnp:rootdevice\r\n\r\n".to_vec(),
+            b"NOTIFY * HTTP/1.1\r\nnT: upnp:rootdevice\r\n\r\n".to_vec(),
+            b"NOTIFY * HTTP/1.1\r\nnt: upnp:rootdevice\r\n\r\n".to_vec(),
+        ];
+        for packet in &nt_variants {
+            let info = analyze_ssdp(packet).expect("should parse");
+            assert_eq!(info.service_type, Some("upnp:rootdevice".to_string()));
+        }
     }
 }
