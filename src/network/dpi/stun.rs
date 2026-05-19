@@ -51,17 +51,19 @@ pub fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
     // Decode message type (bytes 0-1, 14 bits after masking top 2 bits)
     let msg_type = u16::from_be_bytes([payload[0] & 0x3F, payload[1]]);
 
-    // Extract class bits: C1 is bit 8, C0 is bit 4 (RFC 5389 section 6)
-    let c0 = (msg_type >> 4) & 0x1;
-    let c1 = (msg_type >> 8) & 0x1;
+    // Extract class bits: C1 is bit 8, C0 is bit 4 (RFC 5389 section 6).
+    // Both extractions mask to a single bit, so `class_bits` is bounded
+    // to 0..=3 by construction — the 0b11 arm covers the only remaining
+    // value, which lets us drop the `unreachable!()` catch-all.
+    let c0 = ((msg_type >> 4) & 0x1) as u8;
+    let c1 = ((msg_type >> 8) & 0x1) as u8;
     let class_bits = (c1 << 1) | c0;
 
     let message_class = match class_bits {
         0b00 => StunMessageClass::Request,
         0b01 => StunMessageClass::Indication,
         0b10 => StunMessageClass::SuccessResponse,
-        0b11 => StunMessageClass::ErrorResponse,
-        _ => unreachable!(),
+        _ => StunMessageClass::ErrorResponse, // 0b11; class_bits ∈ {0,1,2,3}
     };
 
     // Extract method: remove the class bits from msg_type
@@ -276,6 +278,26 @@ mod tests {
         let packet = build_stun_packet(0, 0x0003, &[]);
         let info = analyze_stun(&packet).expect("should parse");
         assert_eq!(info.method, StunMethod::Unknown(0x0003));
+    }
+
+    #[test]
+    fn test_class_bits_exhaustive_for_unknown_method() {
+        // Lock the invariant the refactor relies on: class_bits is bounded
+        // to 0..=3 by construction (each of c0/c1 is masked to one bit).
+        // Pair every class with a non-Binding method to confirm the class
+        // decode is independent of method recognition — otherwise a future
+        // change to method handling could mask a class-bit regression.
+        for (class, expected) in [
+            (0u8, StunMessageClass::Request),
+            (1u8, StunMessageClass::Indication),
+            (2u8, StunMessageClass::SuccessResponse),
+            (3u8, StunMessageClass::ErrorResponse),
+        ] {
+            let packet = build_stun_packet(class, 0x0003, &[]); // unknown method
+            let info = analyze_stun(&packet).expect("should parse");
+            assert_eq!(info.message_class, expected);
+            assert_eq!(info.method, StunMethod::Unknown(0x0003));
+        }
     }
 
     #[test]
