@@ -104,16 +104,12 @@ pub fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
         info.connection_state = SshConnectionState::Banner;
     }
 
-    // Try to extract algorithm information from KEXINIT messages or any payload
-    if payload.len() > 20 && payload[5] == 20 {
-        if let Some(algorithms) = parse_kexinit_algorithms(payload) {
-            info.algorithms = algorithms;
-        }
-    } else {
-        // Also try to extract algorithms from banner/text content
-        if let Some(algorithms) = parse_kexinit_algorithms(payload) {
-            info.algorithms = algorithms;
-        }
+    // Try to extract algorithm information. `parse_kexinit_algorithms` is a
+    // substring scan, so it works equally on a real KEXINIT message (msg
+    // type 20) and on free-form banner/text content — there's no need to
+    // branch on whether the payload looks like a KEXINIT.
+    if let Some(algorithms) = parse_kexinit_algorithms(payload) {
+        info.algorithms = algorithms;
     }
 
     debug!("SSH analysis result: {:?}", info);
