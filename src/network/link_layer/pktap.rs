@@ -53,15 +53,11 @@ impl PktapHeader {
 
         // SAFETY: We verified data.len() >= size_of::<PktapHeader>() above.
         // Using read_unaligned because data (&[u8]) may not satisfy PktapHeader's
-        // alignment requirement from its u32 fields.
-        let mut header = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const PktapHeader) };
-
-        // Convert from network byte order if needed
-        header.pth_length = u32::from_le_bytes(header.pth_length.to_le_bytes());
-        header.pth_type_next = u32::from_le_bytes(header.pth_type_next.to_le_bytes());
-        header.pth_dlt = u32::from_le_bytes(header.pth_dlt.to_le_bytes());
-        header.pth_pid = u32::from_le_bytes(header.pth_pid.to_le_bytes());
-        header.pth_epid = u32::from_le_bytes(header.pth_epid.to_le_bytes());
+        // alignment requirement from its u32 fields. PKTAP is macOS-only and the
+        // wire format is little-endian, so reading the struct natively on a
+        // little-endian host already yields the correct field values — no
+        // explicit byte-swap is required.
+        let header = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const PktapHeader) };
 
         Some(header)
     }
