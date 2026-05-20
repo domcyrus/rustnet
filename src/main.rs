@@ -672,7 +672,7 @@ where
                         continue;
                     }
 
-                    // Phase 5: give the active tab's Component first crack
+                    // Give the active tab's Component first crack
                     // at the key (including filter-mode input — OverviewTab
                     // owns that). If it claims (returns Some), the loop
                     // skips its fallback match. The per-key confirmation

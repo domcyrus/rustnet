@@ -858,13 +858,13 @@ mod snapshot_tests {
         ]
     }
 
-    // Overview snapshots are intentionally omitted from Phase 1: the
-    // stats sidebar renders a Security panel whose text comes from
-    // platform-specific code paths (Seatbelt on macOS, Landlock on
-    // Linux, Restricted Token on Windows) plus the running user's UID,
-    // making byte-stable snapshots non-portable. Once Phase 2 splits
-    // the Security panel into its own function we can snapshot it with
-    // a stub `SandboxInfo`, then add overview snapshots back.
+    // Overview snapshots are intentionally omitted: the stats sidebar
+    // renders a Security panel whose text comes from platform-specific
+    // code paths (Seatbelt on macOS, Landlock on Linux, Restricted Token
+    // on Windows) plus the running user's UID, making byte-stable
+    // snapshots non-portable. Splitting the Security panel into its own
+    // function would let us snapshot it with a stub `SandboxInfo`, then
+    // add overview snapshots back.
 
     #[test]
     fn details_tab_tcp_https() {
