@@ -17,9 +17,10 @@ pub fn is_mqtt_packet(payload: &[u8]) -> bool {
 
     // Validate flags for packet types with fixed flag requirements (MQTT spec §2.1.2)
     match packet_type {
-        1 | 2 | 4 | 6 | 7 | 8 | 9 | 11 | 12 | 13 | 14 => {
-            // CONNECT, CONNACK, PUBACK, PUBREL, PUBCOMP, SUBACK, UNSUBACK, PINGREQ/RESP, DISCONNECT
-            // must have flags = 0, except SUBSCRIBE(8), UNSUBSCRIBE(10) which must have 0x02
+        1 | 2 | 4 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 => {
+            // CONNECT, CONNACK, PUBACK, PUBREL, PUBCOMP, SUBACK, UNSUBACK,
+            // PINGREQ/RESP, DISCONNECT must have flags = 0, except SUBSCRIBE(8)
+            // and UNSUBSCRIBE(10) which must have 0x02.
             let expected = match packet_type {
                 8 | 10 => 0x02, // SUBSCRIBE, UNSUBSCRIBE require bit 1 set
                 _ => 0x00,
