@@ -11,6 +11,8 @@
 //! [`rustnet_capture`] crate and is re-exported here as [`capture`] so existing
 //! `crate::network::capture::*` paths keep resolving.
 
+#[cfg(feature = "kubernetes")]
+pub mod kubernetes;
 pub mod platform;
 pub mod privileges;
 

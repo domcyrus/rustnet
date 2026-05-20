@@ -147,6 +147,19 @@ pub fn build_cli() -> Command {
                 .action(clap::ArgAction::SetTrue),
         );
 
+    #[cfg(feature = "kubernetes")]
+    let cmd = cmd.arg(
+        Arg::new("kubernetes")
+            .long("kubernetes")
+            .value_name("MODE")
+            .help(
+                "Kubernetes pod/container attribution: \"auto\" (enable only when running inside a pod), \"on\" (always), or \"off\"",
+            )
+            .value_parser(["auto", "on", "off"])
+            .default_value("auto")
+            .required(false),
+    );
+
     #[cfg(any(
         target_os = "linux",
         target_os = "windows",

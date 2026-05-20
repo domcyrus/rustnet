@@ -53,6 +53,13 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Enable Kubernetes pod/container attribution in the container image.
+          # It is dependency-free and runtime-gated (`--kubernetes auto`, the
+          # default, is inert outside a pod), so a single image serves both
+          # general container use and kubectl-rustnet. Native installs
+          # (cargo/brew/deb/rpm) leave the feature off and stay lean.
+          build-args: |
+            CARGO_FEATURES=kubernetes
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

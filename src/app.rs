@@ -249,6 +249,33 @@ fn log_connection_event(
         event["process_name"] = json!(process_name);
     }
 
+    // Add Kubernetes attribution if the process is part of a pod
+    #[cfg(feature = "kubernetes")]
+    if let Some(k8s) = &conn.k8s_info {
+        let mut obj = serde_json::Map::new();
+        if let Some(v) = &k8s.pod_uid {
+            obj.insert("pod_uid".into(), json!(v));
+        }
+        if let Some(v) = &k8s.pod_name {
+            obj.insert("pod_name".into(), json!(v));
+        }
+        if let Some(v) = &k8s.pod_namespace {
+            obj.insert("pod_namespace".into(), json!(v));
+        }
+        if let Some(v) = &k8s.container_id {
+            obj.insert("container_id".into(), json!(v));
+        }
+        if let Some(v) = &k8s.container_name {
+            obj.insert("container_name".into(), json!(v));
+        }
+        if let Some(v) = &k8s.cgroup_path {
+            obj.insert("cgroup_path".into(), json!(v));
+        }
+        if !obj.is_empty() {
+            event["kubernetes"] = serde_json::Value::Object(obj);
+        }
+    }
+
     // Add service name if available
     if let Some(service_name) = &conn.service_name {
         event["service_name"] = json!(service_name);
@@ -351,6 +378,33 @@ fn log_pcap_connection(pcap_path: &str, conn: &Connection) {
         "state": conn.state(),
     });
 
+    // Add Kubernetes attribution if the process is part of a pod
+    #[cfg(feature = "kubernetes")]
+    if let Some(k8s) = &conn.k8s_info {
+        let mut obj = serde_json::Map::new();
+        if let Some(v) = &k8s.pod_uid {
+            obj.insert("pod_uid".into(), json!(v));
+        }
+        if let Some(v) = &k8s.pod_name {
+            obj.insert("pod_name".into(), json!(v));
+        }
+        if let Some(v) = &k8s.pod_namespace {
+            obj.insert("pod_namespace".into(), json!(v));
+        }
+        if let Some(v) = &k8s.container_id {
+            obj.insert("container_id".into(), json!(v));
+        }
+        if let Some(v) = &k8s.container_name {
+            obj.insert("container_name".into(), json!(v));
+        }
+        if let Some(v) = &k8s.cgroup_path {
+            obj.insert("cgroup_path".into(), json!(v));
+        }
+        if !obj.is_empty() {
+            event["kubernetes"] = serde_json::Value::Object(obj);
+        }
+    }
+
     // Only add GeoIP fields when they have actual values
     if let Some(ref geoip) = conn.geoip_info {
         if let Some(ref cc) = geoip.country_code {
@@ -409,6 +463,9 @@ pub struct Config {
     pub geoip_city_path: Option<String>,
     /// Disable GeoIP lookups entirely
     pub disable_geoip: bool,
+    /// Kubernetes pod/container attribution mode
+    #[cfg(feature = "kubernetes")]
+    pub kubernetes_mode: crate::network::kubernetes::KubernetesMode,
 }
 
 impl Default for Config {
@@ -427,6 +484,8 @@ impl Default for Config {
             geoip_asn_path: None,
             geoip_city_path: None,
             disable_geoip: false,
+            #[cfg(feature = "kubernetes")]
+            kubernetes_mode: crate::network::kubernetes::KubernetesMode::default(),
         }
     }
 }
@@ -1160,6 +1219,8 @@ impl App {
         let pktap_active = Arc::clone(&self.pktap_active);
         let should_stop = Arc::clone(&self.should_stop);
         let process_detection_status = Arc::clone(&self.process_detection_status);
+        #[cfg(feature = "kubernetes")]
+        let kubernetes_mode = self.config.kubernetes_mode;
 
         thread::Builder::new()
             .name("process-enrichment".to_string())
@@ -1213,6 +1274,8 @@ impl App {
                 pktap_active,
                 process_detection_status,
                 process_ready_tx,
+                #[cfg(feature = "kubernetes")]
+                kubernetes_mode,
             ) {
                 error!("Process enrichment thread failed: {}", e);
             }
@@ -1229,6 +1292,7 @@ impl App {
         pktap_active: Arc<AtomicBool>,
         process_detection_status: Arc<RwLock<ProcessDetectionStatus>>,
         process_ready_tx: std::sync::mpsc::SyncSender<()>,
+        #[cfg(feature = "kubernetes")] kubernetes_mode: crate::network::kubernetes::KubernetesMode,
     ) -> Result<()> {
         use crate::network::platform::DegradationReason;
 
@@ -1236,6 +1300,25 @@ impl App {
         let use_pktap = pktap_active.load(Ordering::Relaxed);
 
         let process_lookup = create_process_lookup(use_pktap)?;
+
+        // Kubernetes pod/container attribution. `auto` enables only when rustnet
+        // is itself running inside a pod, so the resolver and the cross-namespace
+        // socket table are only built when enabled and non-Kubernetes hosts do
+        // no extra /proc work. The table stays empty when disabled.
+        #[cfg(feature = "kubernetes")]
+        let kubernetes_resolver = kubernetes_mode
+            .enabled()
+            .then(crate::network::kubernetes::KubernetesResolver::new);
+        #[cfg(feature = "kubernetes")]
+        if kubernetes_resolver.is_some() {
+            info!("Kubernetes pod/container attribution enabled");
+        }
+        #[cfg(feature = "kubernetes")]
+        let mut k8s_socket_table = crate::network::kubernetes::KubernetesSocketTable::empty();
+        #[cfg(feature = "kubernetes")]
+        if let Some(resolver) = &kubernetes_resolver {
+            k8s_socket_table = crate::network::kubernetes::KubernetesSocketTable::build(resolver);
+        }
 
         // Signal that process detection (including eBPF loading) is complete.
         // The main thread waits for this before dropping eBPF capabilities.
@@ -1300,6 +1383,14 @@ impl App {
                 if let Err(e) = process_lookup.refresh() {
                     debug!("Process lookup refresh failed: {}", e);
                 }
+                // Refresh pod-name metadata and rebuild the cross-namespace
+                // socket table on the same cadence.
+                #[cfg(feature = "kubernetes")]
+                if let Some(resolver) = &kubernetes_resolver {
+                    resolver.refresh_metadata();
+                    k8s_socket_table =
+                        crate::network::kubernetes::KubernetesSocketTable::build(resolver);
+                }
                 last_refresh = Instant::now();
             }
 
@@ -1348,6 +1439,36 @@ impl App {
                     }
 
                     if did_enrich {
+                        enriched += 1;
+                    }
+
+                    // Look up Kubernetes pod/container metadata for the PID.
+                    // Cheap after the first hit per PID (cached in the resolver).
+                    #[cfg(feature = "kubernetes")]
+                    if let Some(resolver) = &kubernetes_resolver
+                        && entry.k8s_info.is_none()
+                        && let Some(k8s) = resolver.enrich(pid)
+                    {
+                        entry.k8s_info = Some(k8s);
+                    }
+                } else {
+                    // The primary lookup couldn't attribute this connection.
+                    // Under hostNetwork, that includes every pod-owned socket
+                    // living in another network namespace. The socket table
+                    // walks per-PID /proc/<pid>/net/* (netns-aware) for kubepods
+                    // PIDs and matches the 4-tuple, yielding both the PID and
+                    // its pod/container metadata.
+                    #[cfg(feature = "kubernetes")]
+                    if entry.pid.is_none()
+                        && let Some((pid, k8s)) = k8s_socket_table.lookup_connection(&entry)
+                    {
+                        entry.pid = Some(pid);
+                        if entry.process_name.is_none() {
+                            entry.process_name = crate::network::kubernetes::read_process_name(pid);
+                        }
+                        if entry.k8s_info.is_none() {
+                            entry.k8s_info = Some(k8s);
+                        }
                         enriched += 1;
                     }
                 }

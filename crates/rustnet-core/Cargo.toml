@@ -29,3 +29,8 @@ maxminddb = "0.28"
 flate2 = "1"
 ring = "0.17"
 aes = "0.9"
+
+[features]
+# Adds the Kubernetes pod/container metadata (`K8sInfo`) to `Connection`.
+# Resolution itself lives in the rustnet binary; no extra dependencies.
+kubernetes = []

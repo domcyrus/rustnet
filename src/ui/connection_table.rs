@@ -192,10 +192,27 @@ fn process_text(conn: &Connection) -> String {
     // throws away a heap allocation per row per frame. Only the None-pid
     // arm needs to materialize an owned String.
     let name = conn.process_name.as_deref().unwrap_or(NONE_PLACEHOLDER);
-    match conn.pid {
+    let text = match conn.pid {
         Some(pid) => format!("{name} ({pid})"),
         None => name.to_string(),
+    };
+
+    // Kubernetes attribution: when the resolver mapped this connection to
+    // a pod, prefix the cell with "namespace/pod" so the owning workload
+    // is visible at a glance. The process name/PID follow it.
+    #[cfg(feature = "kubernetes")]
+    if let Some(pod) = conn.k8s_info.as_ref().and_then(|k| k.pod_name.as_deref()) {
+        return match conn
+            .k8s_info
+            .as_ref()
+            .and_then(|k| k.pod_namespace.as_deref())
+        {
+            Some(ns) => format!("{ns}/{pod}  {text}"),
+            None => format!("{pod}  {text}"),
+        };
     }
+
+    text
 }
 
 /// Untruncated Service cell text: service name or port number.
