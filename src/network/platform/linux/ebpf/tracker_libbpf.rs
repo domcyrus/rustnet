@@ -150,10 +150,26 @@ impl LibbpfSocketTracker {
         dst_ip: IpAddr,
         icmp_id: u16,
     ) -> Option<ProcessInfo> {
+        match (src_ip, dst_ip) {
+            (IpAddr::V4(src), IpAddr::V4(dst)) => self.lookup_icmp_v4(src, dst, icmp_id),
+            (IpAddr::V6(src), IpAddr::V6(dst)) => self.lookup_icmp_v6(src, dst, icmp_id),
+            _ => {
+                log::warn!("Mixed IPv4/IPv6 addresses not supported in eBPF ICMP lookup");
+                None
+            }
+        }
+    }
+
+    fn lookup_icmp_v4(
+        &mut self,
+        src_ip: Ipv4Addr,
+        dst_ip: Ipv4Addr,
+        icmp_id: u16,
+    ) -> Option<ProcessInfo> {
         let socket_map = self.loader.socket_map();
 
         // Try exact match first
-        let key = ConnKey::new_icmp(src_ip, dst_ip, icmp_id);
+        let key = ConnKey::new_icmp_v4(src_ip, dst_ip, icmp_id);
         match MapReader::lookup_connection(socket_map, key) {
             Ok(Some(result)) => return Some(result),
             Ok(None) => {
@@ -165,11 +181,50 @@ impl LibbpfSocketTracker {
         }
 
         // Try with zero source address (common for ICMP - socket not bound to specific IP)
-        let zero_src_ip = match src_ip {
-            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
-            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-        };
-        let zero_src_key = ConnKey::new_icmp(zero_src_ip, dst_ip, icmp_id);
+        let zero_src_key = ConnKey::new_icmp_v4(Ipv4Addr::new(0, 0, 0, 0), dst_ip, icmp_id);
+
+        match MapReader::lookup_connection(socket_map, zero_src_key) {
+            Ok(Some(result)) => {
+                log::debug!(
+                    "eBPF ICMP lookup succeeded with zero source address! PID: {}, comm: {}",
+                    result.pid,
+                    result.comm
+                );
+                Some(result)
+            }
+            Ok(None) => {
+                log::debug!("eBPF ICMP lookup miss for ID: {}", icmp_id);
+                None
+            }
+            Err(e) => {
+                log::debug!("eBPF ICMP zero-source lookup failed: {}", e);
+                None
+            }
+        }
+    }
+
+    fn lookup_icmp_v6(
+        &mut self,
+        src_ip: Ipv6Addr,
+        dst_ip: Ipv6Addr,
+        icmp_id: u16,
+    ) -> Option<ProcessInfo> {
+        let socket_map = self.loader.socket_map();
+
+        // Try exact match first
+        let key = ConnKey::new_icmp_v6(src_ip, dst_ip, icmp_id);
+        match MapReader::lookup_connection(socket_map, key) {
+            Ok(Some(result)) => return Some(result),
+            Ok(None) => {
+                log::debug!("eBPF ICMP exact lookup miss, trying with zero source address");
+            }
+            Err(e) => {
+                log::debug!("eBPF ICMP lookup failed: {}", e);
+            }
+        }
+
+        // Try with zero source address (common for ICMP - socket not bound to specific IP)
+        let zero_src_key = ConnKey::new_icmp_v6(Ipv6Addr::UNSPECIFIED, dst_ip, icmp_id);
 
         match MapReader::lookup_connection(socket_map, zero_src_key) {
             Ok(Some(result)) => {

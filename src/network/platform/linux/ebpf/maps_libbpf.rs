@@ -3,7 +3,7 @@
 use super::ProcessInfo;
 use anyhow::Result;
 use libbpf_rs::MapCore;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// Connection key matching the eBPF program structure (supports IPv4 and IPv6)
 #[repr(C, packed)]
@@ -27,55 +27,69 @@ pub struct ConnInfo {
     pub timestamp: u64,
 }
 
+// AF_INET / AF_INET6 (matches kernel `<linux/socket.h>` numeric values).
+const AF_INET: u8 = 2;
+const AF_INET6: u8 = 10;
+
+// IPPROTO_* values used by the eBPF socket map.
+const IPPROTO_ICMP: u8 = 1;
+const IPPROTO_TCP: u8 = 6;
+const IPPROTO_UDP: u8 = 17;
+const IPPROTO_ICMPV6: u8 = 58;
+
 impl ConnKey {
-    pub fn new(src_ip: IpAddr, dst_ip: IpAddr, src_port: u16, dst_port: u16, is_tcp: bool) -> Self {
-        let mut key = Self {
+    /// Build an empty key for an IPv4 connection. Address fields stay zeroed
+    /// and are filled by [`Self::fill_v4`].
+    fn empty_v4(sport: u16, dport: u16, proto: u8) -> Self {
+        Self {
             saddr: [0; 4],
             daddr: [0; 4],
-            sport: src_port,
-            dport: dst_port,
-            proto: if is_tcp { 6 } else { 17 }, // IPPROTO_TCP or IPPROTO_UDP
-            family: match src_ip {
-                IpAddr::V4(_) => 2,  // AF_INET
-                IpAddr::V6(_) => 10, // AF_INET6
-            },
-        };
-
-        match (src_ip, dst_ip) {
-            (IpAddr::V4(src), IpAddr::V4(dst)) => {
-                // Use little-endian to match kernel/eBPF native format
-                key.saddr[0] = u32::from_le_bytes(src.octets());
-                key.daddr[0] = u32::from_le_bytes(dst.octets());
-            }
-            (IpAddr::V6(src), IpAddr::V6(dst)) => {
-                let src_bytes = src.octets();
-                let dst_bytes = dst.octets();
-
-                // Convert 16-byte IPv6 addresses to 4 u32 values (big-endian)
-                for i in 0..4 {
-                    let src_start = i * 4;
-                    let dst_start = i * 4;
-                    key.saddr[i] = u32::from_be_bytes([
-                        src_bytes[src_start],
-                        src_bytes[src_start + 1],
-                        src_bytes[src_start + 2],
-                        src_bytes[src_start + 3],
-                    ]);
-                    key.daddr[i] = u32::from_be_bytes([
-                        dst_bytes[dst_start],
-                        dst_bytes[dst_start + 1],
-                        dst_bytes[dst_start + 2],
-                        dst_bytes[dst_start + 3],
-                    ]);
-                }
-            }
-            _ => {
-                // Callers use new_v4(Ipv4, Ipv4) or new_v6(Ipv6, Ipv6), so mixed types are impossible
-                unreachable!("Mixed IPv4/IPv6 addresses not supported");
-            }
+            sport,
+            dport,
+            proto,
+            family: AF_INET,
         }
+    }
 
-        key
+    /// Build an empty key for an IPv6 connection. Address fields stay zeroed
+    /// and are filled by [`Self::fill_v6`].
+    fn empty_v6(sport: u16, dport: u16, proto: u8) -> Self {
+        Self {
+            saddr: [0; 4],
+            daddr: [0; 4],
+            sport,
+            dport,
+            proto,
+            family: AF_INET6,
+        }
+    }
+
+    fn fill_v4(&mut self, src_ip: Ipv4Addr, dst_ip: Ipv4Addr) {
+        // Use little-endian to match kernel/eBPF native format.
+        self.saddr[0] = u32::from_le_bytes(src_ip.octets());
+        self.daddr[0] = u32::from_le_bytes(dst_ip.octets());
+    }
+
+    fn fill_v6(&mut self, src_ip: Ipv6Addr, dst_ip: Ipv6Addr) {
+        let src_bytes = src_ip.octets();
+        let dst_bytes = dst_ip.octets();
+
+        // Convert 16-byte IPv6 addresses to 4 u32 values (big-endian).
+        for i in 0..4 {
+            let start = i * 4;
+            self.saddr[i] = u32::from_be_bytes([
+                src_bytes[start],
+                src_bytes[start + 1],
+                src_bytes[start + 2],
+                src_bytes[start + 3],
+            ]);
+            self.daddr[i] = u32::from_be_bytes([
+                dst_bytes[start],
+                dst_bytes[start + 1],
+                dst_bytes[start + 2],
+                dst_bytes[start + 3],
+            ]);
+        }
     }
 
     pub fn new_v4(
@@ -85,13 +99,10 @@ impl ConnKey {
         dst_port: u16,
         is_tcp: bool,
     ) -> Self {
-        Self::new(
-            IpAddr::V4(src_ip),
-            IpAddr::V4(dst_ip),
-            src_port,
-            dst_port,
-            is_tcp,
-        )
+        let proto = if is_tcp { IPPROTO_TCP } else { IPPROTO_UDP };
+        let mut key = Self::empty_v4(src_port, dst_port, proto);
+        key.fill_v4(src_ip, dst_ip);
+        key
     }
 
     pub(crate) fn new_v6(
@@ -101,67 +112,25 @@ impl ConnKey {
         dst_port: u16,
         is_tcp: bool,
     ) -> Self {
-        Self::new(
-            IpAddr::V6(src_ip),
-            IpAddr::V6(dst_ip),
-            src_port,
-            dst_port,
-            is_tcp,
-        )
+        let proto = if is_tcp { IPPROTO_TCP } else { IPPROTO_UDP };
+        let mut key = Self::empty_v6(src_port, dst_port, proto);
+        key.fill_v6(src_ip, dst_ip);
+        key
     }
 
-    /// Create a key for ICMP lookup
-    /// icmp_id acts as the "source port", dport is 0
-    pub fn new_icmp(src_ip: IpAddr, dst_ip: IpAddr, icmp_id: u16) -> Self {
-        let mut key = Self {
-            saddr: [0; 4],
-            daddr: [0; 4],
-            sport: icmp_id,
-            dport: 0,
-            proto: match src_ip {
-                IpAddr::V4(_) => 1,  // IPPROTO_ICMP
-                IpAddr::V6(_) => 58, // IPPROTO_ICMPV6
-            },
-            family: match src_ip {
-                IpAddr::V4(_) => 2,  // AF_INET
-                IpAddr::V6(_) => 10, // AF_INET6
-            },
-        };
+    /// Create an IPv4 ICMP lookup key. `icmp_id` acts as the "source port",
+    /// `dport` is 0.
+    pub fn new_icmp_v4(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, icmp_id: u16) -> Self {
+        let mut key = Self::empty_v4(icmp_id, 0, IPPROTO_ICMP);
+        key.fill_v4(src_ip, dst_ip);
+        key
+    }
 
-        match (src_ip, dst_ip) {
-            (IpAddr::V4(src), IpAddr::V4(dst)) => {
-                // Use little-endian to match kernel/eBPF native format
-                key.saddr[0] = u32::from_le_bytes(src.octets());
-                key.daddr[0] = u32::from_le_bytes(dst.octets());
-            }
-            (IpAddr::V6(src), IpAddr::V6(dst)) => {
-                let src_bytes = src.octets();
-                let dst_bytes = dst.octets();
-
-                // Convert 16-byte IPv6 addresses to 4 u32 values (big-endian)
-                for i in 0..4 {
-                    let src_start = i * 4;
-                    let dst_start = i * 4;
-                    key.saddr[i] = u32::from_be_bytes([
-                        src_bytes[src_start],
-                        src_bytes[src_start + 1],
-                        src_bytes[src_start + 2],
-                        src_bytes[src_start + 3],
-                    ]);
-                    key.daddr[i] = u32::from_be_bytes([
-                        dst_bytes[dst_start],
-                        dst_bytes[dst_start + 1],
-                        dst_bytes[dst_start + 2],
-                        dst_bytes[dst_start + 3],
-                    ]);
-                }
-            }
-            _ => {
-                // Callers use new_icmp with addresses from a single connection (always same family)
-                unreachable!("Mixed IPv4/IPv6 addresses not supported");
-            }
-        }
-
+    /// Create an IPv6 ICMPv6 lookup key. `icmp_id` acts as the "source port",
+    /// `dport` is 0.
+    pub fn new_icmp_v6(src_ip: Ipv6Addr, dst_ip: Ipv6Addr, icmp_id: u16) -> Self {
+        let mut key = Self::empty_v6(icmp_id, 0, IPPROTO_ICMPV6);
+        key.fill_v6(src_ip, dst_ip);
         key
     }
 
@@ -331,5 +300,107 @@ impl MapReader {
 
         log::info!("=== End Lookup Debug ===");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_v4_writes_little_endian_addrs_and_tcp_proto() {
+        let key = ConnKey::new_v4(
+            Ipv4Addr::new(10, 0, 0, 1),
+            Ipv4Addr::new(192, 168, 1, 100),
+            12345,
+            443,
+            true,
+        );
+        assert_eq!(key.family, AF_INET);
+        assert_eq!(key.proto, IPPROTO_TCP);
+        assert_eq!(key.sport, 12345);
+        assert_eq!(key.dport, 443);
+        // Octets reinterpreted as host-order u32 — matches what
+        // u32::from_le_bytes(ip.octets()) produced previously.
+        assert_eq!(
+            key.saddr[0],
+            u32::from_le_bytes(Ipv4Addr::new(10, 0, 0, 1).octets())
+        );
+        assert_eq!(
+            key.daddr[0],
+            u32::from_le_bytes(Ipv4Addr::new(192, 168, 1, 100).octets())
+        );
+        // Upper IPv6 slots stay zeroed for IPv4 keys.
+        assert_eq!(&key.saddr[1..], &[0, 0, 0]);
+        assert_eq!(&key.daddr[1..], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn new_v4_marks_udp_when_not_tcp() {
+        let key = ConnKey::new_v4(
+            Ipv4Addr::new(127, 0, 0, 1),
+            Ipv4Addr::new(8, 8, 8, 8),
+            53000,
+            53,
+            false,
+        );
+        assert_eq!(key.proto, IPPROTO_UDP);
+    }
+
+    #[test]
+    fn new_v6_writes_big_endian_addrs_across_all_four_slots() {
+        let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let dst = Ipv6Addr::new(0xfe80, 0, 0, 0, 0x1234, 0x5678, 0x9abc, 0xdef0);
+        let key = ConnKey::new_v6(src, dst, 1, 2, true);
+        assert_eq!(key.family, AF_INET6);
+        assert_eq!(key.proto, IPPROTO_TCP);
+
+        let src_bytes = src.octets();
+        let dst_bytes = dst.octets();
+        for i in 0..4 {
+            let start = i * 4;
+            assert_eq!(
+                key.saddr[i],
+                u32::from_be_bytes([
+                    src_bytes[start],
+                    src_bytes[start + 1],
+                    src_bytes[start + 2],
+                    src_bytes[start + 3],
+                ])
+            );
+            assert_eq!(
+                key.daddr[i],
+                u32::from_be_bytes([
+                    dst_bytes[start],
+                    dst_bytes[start + 1],
+                    dst_bytes[start + 2],
+                    dst_bytes[start + 3],
+                ])
+            );
+        }
+    }
+
+    #[test]
+    fn new_icmp_v4_uses_icmp_proto_and_zero_dport() {
+        let key = ConnKey::new_icmp_v4(
+            Ipv4Addr::new(10, 0, 0, 1),
+            Ipv4Addr::new(8, 8, 8, 8),
+            0x4242,
+        );
+        assert_eq!(key.proto, IPPROTO_ICMP);
+        assert_eq!(key.family, AF_INET);
+        assert_eq!(key.sport, 0x4242);
+        assert_eq!(key.dport, 0);
+    }
+
+    #[test]
+    fn new_icmp_v6_uses_icmpv6_proto_and_zero_dport() {
+        let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let dst = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
+        let key = ConnKey::new_icmp_v6(src, dst, 0x0101);
+        assert_eq!(key.proto, IPPROTO_ICMPV6);
+        assert_eq!(key.family, AF_INET6);
+        assert_eq!(key.sport, 0x0101);
+        assert_eq!(key.dport, 0);
     }
 }
