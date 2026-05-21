@@ -46,20 +46,22 @@ pub fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
         return None;
     }
 
-    // Parse headers
+    // Parse headers. HTTP field-names are case-insensitive (RFC 7230 §3.2),
+    // so compare in place with `eq_ignore_ascii_case` instead of allocating a
+    // lowercased copy of every header name just to match two ASCII literals.
     for line in lines.iter().skip(1) {
         if line.is_empty() {
             break; // End of headers
         }
 
         if let Some((key, value)) = line.split_once(':') {
-            let key = key.trim().to_lowercase();
+            let key = key.trim();
             let value = value.trim();
 
-            match key.as_str() {
-                "host" => info.host = Some(value.to_string()),
-                "user-agent" => info.user_agent = Some(value.to_string()),
-                _ => {}
+            if key.eq_ignore_ascii_case("host") {
+                info.host = Some(value.to_string());
+            } else if key.eq_ignore_ascii_case("user-agent") {
+                info.user_agent = Some(value.to_string());
             }
         }
     }
@@ -126,5 +128,35 @@ mod tests {
 
         assert_eq!(info.status_code, Some(200));
         assert!(info.method.is_none());
+    }
+
+    #[test]
+    fn test_http_mixed_case_host_and_user_agent_headers() {
+        // HTTP/1.1 §3.2 makes field-names case-insensitive. Real-world traffic
+        // varies in capitalisation (`Host`, `HOST`, `host`, etc.) and the
+        // `eq_ignore_ascii_case` refactor relies on this invariant — lock it
+        // here so a future change that drops the case-insensitive compare
+        // fails this test instead of silently regressing.
+        let host_variants: [&[u8]; 4] = [
+            b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
+            b"GET / HTTP/1.1\r\nhost: example.com\r\n\r\n",
+            b"GET / HTTP/1.1\r\nHOST: example.com\r\n\r\n",
+            b"GET / HTTP/1.1\r\nhOsT: example.com\r\n\r\n",
+        ];
+        for payload in &host_variants {
+            let info = analyze_http(payload).expect("should parse");
+            assert_eq!(info.host.as_deref(), Some("example.com"));
+        }
+
+        let ua_variants: [&[u8]; 4] = [
+            b"GET / HTTP/1.1\r\nUser-Agent: curl/8.5\r\n\r\n",
+            b"GET / HTTP/1.1\r\nuser-agent: curl/8.5\r\n\r\n",
+            b"GET / HTTP/1.1\r\nUSER-AGENT: curl/8.5\r\n\r\n",
+            b"GET / HTTP/1.1\r\nUser-AGENT: curl/8.5\r\n\r\n",
+        ];
+        for payload in &ua_variants {
+            let info = analyze_http(payload).expect("should parse");
+            assert_eq!(info.user_agent.as_deref(), Some("curl/8.5"));
+        }
     }
 }
