@@ -120,7 +120,6 @@ Stats are collected every 2 seconds in a background thread with minimal performa
 
 **Homebrew (macOS / Linux):**
 ```bash
-brew tap domcyrus/rustnet
 brew install rustnet
 ```
 

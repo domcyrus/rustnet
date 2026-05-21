@@ -252,7 +252,6 @@ rustnet
 
 **在 macOS 上：**
 ```bash
-brew tap domcyrus/rustnet
 brew install rustnet
 
 # 按照安装后显示的提示进行权限配置
@@ -260,7 +259,7 @@ brew install rustnet
 
 **在 Linux 上：**
 ```bash
-brew install domcyrus/rustnet/rustnet
+brew install rustnet
 
 # 为 Homebrew 安装的二进制文件授予 Linux capabilities（现代内核 5.8+）
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(brew --prefix)/bin/rustnet
@@ -634,7 +633,6 @@ sudo chgrp access_bpf /dev/bpf*
 如果通过 Homebrew 安装，formula 会提供详细的配置说明：
 
 ```bash
-brew tap domcyrus/rustnet
 brew install rustnet
 # 按照安装后显示的提示操作
 ```
