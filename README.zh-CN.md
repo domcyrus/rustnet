@@ -120,7 +120,6 @@ RustNet 在所有支持的平台上提供实时的网络接口统计：
 
 **Homebrew(macOS / Linux):**
 ```bash
-brew tap domcyrus/rustnet
 brew install rustnet
 ```
 
