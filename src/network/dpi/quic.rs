@@ -6,6 +6,7 @@ use aes::cipher::{BlockCipherEncrypt, KeyInit};
 use log::{debug, warn};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::{aead, hkdf};
+use std::fmt::Write as _;
 
 // QUIC v1 Initial salt (from RFC 9001)
 const INITIAL_SALT_V1: &[u8] = &[
@@ -1877,12 +1878,23 @@ fn aes_ecb_encrypt(key: &[u8], block: &[u8]) -> Option<[u8; 16]> {
     Some(output.into())
 }
 
-/// Convert connection ID to hex string
+/// Convert connection ID to a lowercase colon-separated hex string.
 fn connection_id_to_hex(id: &[u8]) -> String {
-    id.iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<Vec<String>>()
-        .join(":")
+    if id.is_empty() {
+        return String::new();
+    }
+    // 2 hex chars per byte + a separator between every pair of bytes.
+    let mut out = String::with_capacity(id.len() * 3 - 1);
+    let mut first = true;
+    for b in id {
+        if !first {
+            out.push(':');
+        }
+        // write! to a String never fails.
+        let _ = write!(out, "{b:02x}");
+        first = false;
+    }
+    out
 }
 
 /// Check if a packet is likely a QUIC packet
@@ -2572,5 +2584,32 @@ mod tests {
             pkt.len(),
             "unparseable token length should cause us to treat the rest of the datagram as consumed"
         );
+    }
+
+    #[test]
+    fn test_connection_id_to_hex_8_byte_short_dcid() {
+        // Locks the lowercase + colon-separated contract on a representative
+        // 8-byte short-form DCID.
+        let dcid: [u8; 8] = [0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0];
+        assert_eq!(connection_id_to_hex(&dcid), "12:34:56:78:9a:bc:de:f0");
+    }
+
+    #[test]
+    fn test_connection_id_to_hex_pads_single_digit_bytes() {
+        // Locks the `{:02x}` zero-padding contract.
+        assert_eq!(
+            connection_id_to_hex(&[0x00, 0x0a, 0x0f, 0x10]),
+            "00:0a:0f:10"
+        );
+    }
+
+    #[test]
+    fn test_connection_id_to_hex_single_byte_no_separator() {
+        assert_eq!(connection_id_to_hex(&[0xab]), "ab");
+    }
+
+    #[test]
+    fn test_connection_id_to_hex_empty_returns_empty() {
+        assert_eq!(connection_id_to_hex(&[]), "");
     }
 }
