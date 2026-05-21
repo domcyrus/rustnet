@@ -33,12 +33,11 @@ pub fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
             info.version = parse_http_version(parts[0]);
             info.status_code = parts[1].parse::<u16>().ok();
         } else if is_http_method(parts[0]) {
-            // Request line: GET /path HTTP/1.1
+            // Request line: GET /path HTTP/1.1 — outer `parts.len() >= 3`
+            // already guarantees `parts[2]` is in bounds.
             info.method = Some(parts[0].to_string());
             info.path = Some(parts[1].to_string());
-            if parts.len() >= 3 {
-                info.version = parse_http_version(parts[2]);
-            }
+            info.version = parse_http_version(parts[2]);
         } else {
             return None; // Not valid HTTP
         }
