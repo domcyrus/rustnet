@@ -34,7 +34,7 @@ libc = "0.2"
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 crossterm = "0.29"
 crossbeam = "0.8"
-dashmap = "6.1"
+dashmap = "6.2"
 dns-lookup = "3.0"
 log = "0.4"
 pcap = "2.4.0"
