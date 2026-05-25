@@ -32,3 +32,15 @@ updates:
           - "major"
           - "minor"
           - "patch"
+
+  # Maintain Docker base images (Dockerfile FROM pins)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    cooldown:
+      default-days: 7
+    groups:
+      docker:
+        patterns:
+          - "*"

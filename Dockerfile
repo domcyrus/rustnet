@@ -1,5 +1,6 @@
 # Multi-stage Docker build for RustNet
-FROM rust:1.89-slim AS builder
+# Base images are pinned by digest for reproducible, tamper-evident builds.
+FROM rust:1.89-slim@sha256:8cffb8fe4e8a95cf0d6a2060375e5a28aff4c752155aa9f1f9193530769bdf66 AS builder
 
 # Install rustfmt component (required for eBPF compilation)
 RUN rustup component add rustfmt
@@ -37,21 +38,23 @@ COPY assets/oui.gz ./assets/oui.gz
 RUN cargo build --release
 
 # Runtime stage - use trixie-slim to match GLIBC version from builder
-FROM debian:trixie-slim
+# Pinned by digest for a reproducible, tamper-evident base image.
+FROM debian:trixie-slim@sha256:b6e2a152f22a40ff69d92cb397223c906017e1391a73c952b588e51af8883bf8
 
 # Install runtime dependencies
+# libcap2-bin provides setcap, used below to grant packet-capture capabilities
+# to the binary so it can run as a non-root user.
 RUN apt-get update && apt-get install -y \
     libpcap0.8 \
     libelf1 \
     zlib1g \
     ca-certificates \
+    libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
-# Create a non-root user for general security practices
-# Note: While this follows Docker security best practices, RustNet requires elevated
-# privileges for packet capture (NET_RAW/NET_ADMIN capabilities or root access).
-# The container will need to be run with --cap-add=NET_RAW --cap-add=NET_ADMIN
-# or --privileged flag to function properly for network monitoring.
+# Create a non-root user. The container runs as this user (see USER below);
+# packet-capture privileges are granted via file capabilities on the binary
+# rather than by running as root.
 RUN useradd -r -s /bin/false rustnet
 
 # Set working directory
@@ -66,8 +69,15 @@ COPY --from=builder /app/assets/services ./assets/services
 # Create logs directory
 RUN mkdir -p /app/logs && chown rustnet:rustnet /app/logs
 
-# Set executable permissions
-RUN chmod +x /usr/local/bin/rustnet
+# Set executable permissions and grant CAP_NET_RAW as a file capability so the
+# binary can capture packets as a non-root user. NET_RAW is in Docker's default
+# capability bounding set, so `docker run rustnet` works without extra flags.
+#
+# Only NET_RAW is baked in on purpose: a file capability that is NOT also in the
+# container's bounding set makes execve() fail with EPERM. BPF/PERFMON are not
+# in Docker's default set, so eBPF is handled at runtime instead (see below).
+RUN chmod +x /usr/local/bin/rustnet \
+    && setcap 'cap_net_raw=ep' /usr/local/bin/rustnet
 
 # Expose no ports by default (rustnet is for monitoring, not serving)
 # Network access is handled via host networking or packet capture capabilities
@@ -78,9 +88,17 @@ LABEL org.opencontainers.image.description="A cross-platform network monitoring 
 LABEL org.opencontainers.image.source="https://github.com/domcyrus/rustnet"
 LABEL org.opencontainers.image.licenses="Apache License, Version 2.0"
 
-# Important: RustNet requires elevated privileges for packet capture and eBPF functionality
-# Modern kernels (5.8+): docker run --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON rustnet
-# Legacy kernels: docker run --cap-add=NET_RAW --cap-add=SYS_ADMIN rustnet
-# Or with: docker run --privileged rustnet
-# Note: CAP_NET_ADMIN is NOT required (uses read-only, non-promiscuous packet capture)
+# RustNet runs as the non-root 'rustnet' user. CAP_NET_RAW is baked into the
+# binary as a file capability and is part of Docker's default bounding set, so
+# basic packet capture works out of the box:
+#   docker run rustnet
+# eBPF-based process attribution needs BPF+PERFMON, which are NOT in the default
+# bounding set and can't be granted to a non-root user via file capabilities.
+# Enable eBPF by running as root with the extra caps (modern kernels 5.8+):
+#   docker run --user root --cap-add=BPF --cap-add=PERFMON rustnet
+# Older kernels use CAP_SYS_ADMIN instead of BPF+PERFMON:
+#   docker run --user root --cap-add=SYS_ADMIN rustnet
+# Without those, rustnet falls back to /proc-based process detection.
+# CAP_NET_ADMIN is NOT required (read-only, non-promiscuous capture).
+USER rustnet
 ENTRYPOINT ["rustnet"]

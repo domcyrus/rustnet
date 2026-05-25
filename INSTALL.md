@@ -520,7 +520,9 @@ Building RustNet on Windows requires the Npcap SDK and proper environment config
 
 ## Using Docker
 
-RustNet is available as a Docker container from GitHub Container Registry:
+RustNet is available as a Docker container from GitHub Container Registry. The
+image runs as a **non-root** user by default, with `CAP_NET_RAW` baked into the
+binary as a file capability — so basic packet capture works with no extra flags.
 
 ```bash
 # Pull the latest image
@@ -529,19 +531,22 @@ docker pull ghcr.io/domcyrus/rustnet:latest
 # Or pull a specific version
 docker pull ghcr.io/domcyrus/rustnet:0.7.0
 
-# Run with required capabilities for eBPF support (latest)
-docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
+# Option A — basic monitoring (non-root, recommended)
+# Captures packets via the built-in CAP_NET_RAW file capability. Process
+# attribution uses /proc (eBPF disabled). No --cap-add needed.
+docker run --rm -it --net=host ghcr.io/domcyrus/rustnet:latest
+
+# Option B — full eBPF process attribution (runs as root + extra caps)
+# eBPF needs CAP_BPF + CAP_PERFMON. A non-root user can't make these effective
+# from --cap-add alone, so enable them by also running as root.
+docker run --rm -it --user root \
+  --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
   ghcr.io/domcyrus/rustnet:latest
 
-# Run with specific version
-docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
-  ghcr.io/domcyrus/rustnet:0.7.0
+# Run with a specific interface (either option; -i flag at the end)
+docker run --rm -it --net=host ghcr.io/domcyrus/rustnet:latest -i eth0
 
-# Run with specific interface
-docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
-  ghcr.io/domcyrus/rustnet:latest -i eth0
-
-# Alternative: Run with privileged mode (less secure but simpler)
+# Alternative: privileged mode (simplest, least secure)
 docker run --rm -it --privileged --net=host \
   ghcr.io/domcyrus/rustnet:latest
 
@@ -549,7 +554,13 @@ docker run --rm -it --privileged --net=host \
 docker run --rm ghcr.io/domcyrus/rustnet:latest --help
 ```
 
-**Note:** The container requires capabilities (`NET_RAW`, `BPF`, and `PERFMON`) or privileged mode for packet capture with eBPF support. Host networking (`--net=host`) is recommended for monitoring all network interfaces.
+**Note:** Basic capture (Option A) needs no special flags — the image carries
+`CAP_NET_RAW` as a file capability and runs non-root. eBPF-based process
+attribution (Option B) additionally needs `CAP_BPF` + `CAP_PERFMON`; because
+those can't be granted to a non-root user via file capabilities, enable them by
+running as root (`--user root`) with the matching `--cap-add` flags. Either way,
+rustnet drops these capabilities and sandboxes itself immediately after startup.
+Host networking (`--net=host`) is recommended for monitoring all interfaces.
 
 ## Permissions Setup
 
