@@ -548,15 +548,15 @@ fn parse_short_header_packet(payload: &[u8]) -> Option<QuicInfo> {
     quic_info.packet_type = QuicPacketType::OneRtt;
     quic_info.connection_state = QuicConnectionState::Connected;
 
-    // For short header, connection ID length is not in the packet
-    // We'll use common sizes (8 bytes) as a heuristic
-    let dcid = if payload.len() >= 9 {
+    // For short header, connection ID length is not in the packet — use a
+    // common 8-byte size as a heuristic. Move the slice straight into
+    // `connection_id`; the long-header path keeps a local `dcid` because it
+    // re-borrows for TLS decryption, but here nothing else reads it.
+    quic_info.connection_id = if payload.len() >= 9 {
         payload[1..9].to_vec()
     } else {
         payload[1..].to_vec()
     };
-
-    quic_info.connection_id = dcid.clone();
     // Short header packets are data packets - don't use for connection tracking
     quic_info.connection_id_hex = None;
 
