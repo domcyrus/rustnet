@@ -257,9 +257,9 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 
 ### Views and Tabs
 
-- `Tab` - Switch between tabs (Overview, Details, Interfaces, Graph, Help)
-- `Shift+Tab` - Switch between tabs in reverse order
-- `i` - Toggle Interface Statistics view
+- `Tab` or `]` - Next tab
+- `Shift+Tab` or `[` - Previous tab
+- `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Interfaces / Graph / Help
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
 - `h` - Toggle help screen

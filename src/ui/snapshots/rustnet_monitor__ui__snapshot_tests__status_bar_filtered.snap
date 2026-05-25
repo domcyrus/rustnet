@@ -1,6 +1,6 @@
 ---
-source: src/ui.rs
-assertion_line: 5255
+source: src/ui/mod.rs
+assertion_line: 703
 expression: output
 ---
- 'h' help | Tab/Shift+Tab switch tabs | Showing 7 filtered connections (Esc to clear)
+ 'h' help | 1-5 jump | Tab/[/] cycle | Showing 7 filtered connections (Esc to clear)

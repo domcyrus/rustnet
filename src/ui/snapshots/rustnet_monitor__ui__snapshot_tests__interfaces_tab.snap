@@ -1,6 +1,6 @@
 ---
-source: src/ui.rs
-assertion_line: 5497
+source: src/ui/mod.rs
+assertion_line: 955
 expression: output
 ---
 ╭ RustNet Monitor ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -32,4 +32,4 @@ expression: output
 │                                                                                                                                          │
 │                                                                                                                                          │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- 'h' help | Tab/Shift+Tab switch tabs | Esc back to Overview
+ 'h' help | 1-5 jump | Tab/[/] cycle | Esc back to Overview
