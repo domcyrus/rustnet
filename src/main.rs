@@ -747,18 +747,14 @@ where
                             // Tab navigation (forward)
                             (KeyCode::Tab, KeyModifiers::NONE)
                             | (KeyCode::Char(']'), KeyModifiers::NONE) => {
-                                ui_state.selected_tab = (ui_state.selected_tab + 1) % 5;
+                                ui_state.next_tab();
                             }
 
                             // Shift+Tab navigation (backward)
                             (KeyCode::BackTab, _)
                             | (KeyCode::Tab, KeyModifiers::SHIFT)
                             | (KeyCode::Char('['), KeyModifiers::NONE) => {
-                                ui_state.selected_tab = if ui_state.selected_tab == 0 {
-                                    4 // Wrap to last tab
-                                } else {
-                                    ui_state.selected_tab - 1
-                                };
+                                ui_state.prev_tab();
                             }
 
                             // Direct-jump shortcuts to each tab (mirrors the
@@ -766,26 +762,11 @@ where
                             // Tab indices match `TAB_TITLES` in
                             // `ui::widgets::tabs_bar`: Overview, Details,
                             // Interfaces, Graph, Help.
-                            (KeyCode::Char('1'), KeyModifiers::NONE) => {
-                                ui_state.selected_tab = 0;
-                                ui_state.show_help = false;
-                            }
-                            (KeyCode::Char('2'), KeyModifiers::NONE) => {
-                                ui_state.selected_tab = 1;
-                                ui_state.show_help = false;
-                            }
-                            (KeyCode::Char('3'), KeyModifiers::NONE) => {
-                                ui_state.selected_tab = 2;
-                                ui_state.show_help = false;
-                            }
-                            (KeyCode::Char('4'), KeyModifiers::NONE) => {
-                                ui_state.selected_tab = 3;
-                                ui_state.show_help = false;
-                            }
-                            (KeyCode::Char('5'), KeyModifiers::NONE) => {
-                                ui_state.selected_tab = 4;
-                                ui_state.show_help = true;
-                            }
+                            (KeyCode::Char('1'), KeyModifiers::NONE) => ui_state.jump_to_tab(0),
+                            (KeyCode::Char('2'), KeyModifiers::NONE) => ui_state.jump_to_tab(1),
+                            (KeyCode::Char('3'), KeyModifiers::NONE) => ui_state.jump_to_tab(2),
+                            (KeyCode::Char('4'), KeyModifiers::NONE) => ui_state.jump_to_tab(3),
+                            (KeyCode::Char('5'), KeyModifiers::NONE) => ui_state.jump_to_tab(4),
 
                             // Help toggle — kept because `h` is the universal
                             // mnemonic for help across less / man / vim / tmux.
