@@ -293,7 +293,7 @@ RustNet 在移除连接前会先用智能超时机制与颜色给出预警：
 - **[SECURITY.zh-CN.md](SECURITY.zh-CN.md)** —— 安全特性，包括 Landlock 沙箱与权限管理
 - **[ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)** —— 技术架构、各平台实现与性能细节
 - **[CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)** —— 贡献指南，包括工作流、质量要求与 AI 辅助贡献规范
-- **[PROFILING.md](PROFILING.md)** —— 性能分析指南，含 flamegraph 配置与优化建议
+- **[PROFILING.zh-CN.md](PROFILING.zh-CN.md)** —— 性能分析指南，含 flamegraph 配置与优化建议
 - **[ROADMAP.md](ROADMAP.md)** —— 已规划的功能与后续改进
 - **[RELEASE.md](RELEASE.md)** —— 维护者发布流程
 

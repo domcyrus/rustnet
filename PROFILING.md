@@ -1,3 +1,5 @@
+<p align="center"><strong>English</strong> | <a href="PROFILING.zh-CN.md">简体中文</a></p>
+
 # RustNet Performance Profiling Guide
 
 This guide explains how to profile RustNet to identify performance bottlenecks.
