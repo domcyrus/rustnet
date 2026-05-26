@@ -307,6 +307,9 @@ impl MapReader {
 mod tests {
     use super::*;
 
+    // ConnKey is #[repr(C, packed)], so test asserts copy each field into
+    // a local first — taking a reference to a packed field (including the
+    // implicit one assert_eq! creates) is E0793 under Rust 2024.
     #[test]
     fn new_v4_writes_little_endian_addrs_and_tcp_proto() {
         let key = ConnKey::new_v4(
@@ -316,23 +319,27 @@ mod tests {
             443,
             true,
         );
+        let saddr = key.saddr;
+        let daddr = key.daddr;
+        let sport = key.sport;
+        let dport = key.dport;
         assert_eq!(key.family, AF_INET);
         assert_eq!(key.proto, IPPROTO_TCP);
-        assert_eq!(key.sport, 12345);
-        assert_eq!(key.dport, 443);
+        assert_eq!(sport, 12345);
+        assert_eq!(dport, 443);
         // Octets reinterpreted as host-order u32 — matches what
         // u32::from_le_bytes(ip.octets()) produced previously.
         assert_eq!(
-            key.saddr[0],
+            saddr[0],
             u32::from_le_bytes(Ipv4Addr::new(10, 0, 0, 1).octets())
         );
         assert_eq!(
-            key.daddr[0],
+            daddr[0],
             u32::from_le_bytes(Ipv4Addr::new(192, 168, 1, 100).octets())
         );
         // Upper IPv6 slots stay zeroed for IPv4 keys.
-        assert_eq!(&key.saddr[1..], &[0, 0, 0]);
-        assert_eq!(&key.daddr[1..], &[0, 0, 0]);
+        assert_eq!(&saddr[1..], &[0, 0, 0]);
+        assert_eq!(&daddr[1..], &[0, 0, 0]);
     }
 
     #[test]
@@ -352,6 +359,8 @@ mod tests {
         let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
         let dst = Ipv6Addr::new(0xfe80, 0, 0, 0, 0x1234, 0x5678, 0x9abc, 0xdef0);
         let key = ConnKey::new_v6(src, dst, 1, 2, true);
+        let saddr = key.saddr;
+        let daddr = key.daddr;
         assert_eq!(key.family, AF_INET6);
         assert_eq!(key.proto, IPPROTO_TCP);
 
@@ -360,7 +369,7 @@ mod tests {
         for i in 0..4 {
             let start = i * 4;
             assert_eq!(
-                key.saddr[i],
+                saddr[i],
                 u32::from_be_bytes([
                     src_bytes[start],
                     src_bytes[start + 1],
@@ -369,7 +378,7 @@ mod tests {
                 ])
             );
             assert_eq!(
-                key.daddr[i],
+                daddr[i],
                 u32::from_be_bytes([
                     dst_bytes[start],
                     dst_bytes[start + 1],
@@ -387,10 +396,12 @@ mod tests {
             Ipv4Addr::new(8, 8, 8, 8),
             0x4242,
         );
+        let sport = key.sport;
+        let dport = key.dport;
         assert_eq!(key.proto, IPPROTO_ICMP);
         assert_eq!(key.family, AF_INET);
-        assert_eq!(key.sport, 0x4242);
-        assert_eq!(key.dport, 0);
+        assert_eq!(sport, 0x4242);
+        assert_eq!(dport, 0);
     }
 
     #[test]
@@ -398,9 +409,11 @@ mod tests {
         let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
         let dst = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
         let key = ConnKey::new_icmp_v6(src, dst, 0x0101);
+        let sport = key.sport;
+        let dport = key.dport;
         assert_eq!(key.proto, IPPROTO_ICMPV6);
         assert_eq!(key.family, AF_INET6);
-        assert_eq!(key.sport, 0x0101);
-        assert_eq!(key.dport, 0);
+        assert_eq!(sport, 0x0101);
+        assert_eq!(dport, 0);
     }
 }
