@@ -1175,15 +1175,11 @@ impl App {
 
                     // Only set process name if it's missing
                     if let Some(existing_name) = &entry.process_name {
-                        // Check if the existing name differs significantly (for debugging)
-                        let existing_normalized = existing_name
-                            .split_whitespace()
-                            .collect::<Vec<&str>>()
-                            .join(" ");
-                        let new_normalized =
-                            name.split_whitespace().collect::<Vec<&str>>().join(" ");
-
-                        if existing_normalized != new_normalized {
+                        // Whitespace-collapsed compare for debug logging.
+                        // `Iterator::ne` walks token-by-token, so we skip the
+                        // intermediate `Vec<&str>` + joined `String` pair the
+                        // old code built per connection only to drop again.
+                        if existing_name.split_whitespace().ne(name.split_whitespace()) {
                             debug!(
                                 "⚠️  Process name differs: existing='{}' vs lsof='{}'",
                                 existing_name, name
