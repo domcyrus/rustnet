@@ -1,7 +1,7 @@
 use anyhow::Result;
 use log::{LevelFilter, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
-use simplelog::{Config as LogConfig, WriteLogger};
+use simplelog::{ConfigBuilder, WriteLogger};
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
@@ -31,8 +31,6 @@ fn main() -> Result<()> {
 
     // Check privileges BEFORE initializing TUI (so error messages are visible)
     check_privileges_early()?;
-
-    info!("Starting RustNet Monitor");
 
     // Build configuration from command line arguments
     let mut config = app::Config::default();
@@ -432,8 +430,28 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
     let log_file_path = log_dir.join(format!("rustnet_{}.log", timestamp));
 
-    // Initialize the logger
-    WriteLogger::init(level, LogConfig::default(), File::create(log_file_path)?)?;
+    // Enable the `target` field on every log line so each entry carries
+    // the originating module (e.g. `network::dpi::dns`). Combined with
+    // the startup-banner lines below, this addresses #310 — users now
+    // see both the program identity (name/version/pid) at the top of
+    // the file and which subsystem emitted each subsequent line.
+    let config = ConfigBuilder::new()
+        .set_target_level(LevelFilter::Error)
+        .build();
+
+    WriteLogger::init(level, config, File::create(log_file_path)?)?;
+
+    // Startup banner — one identifying header so a user grepping a
+    // long-lived log file can immediately see which binary, which
+    // version, and which pid produced these lines. The `pkg_name` is
+    // the cargo package name (`rustnet-monitor`), not `argv[0]`, so it
+    // stays correct when the binary is renamed or symlinked.
+    info!(
+        "{} v{} starting (pid {})",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        std::process::id()
+    );
 
     Ok(())
 }
