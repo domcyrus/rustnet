@@ -32,8 +32,6 @@ fn main() -> Result<()> {
     // Check privileges BEFORE initializing TUI (so error messages are visible)
     check_privileges_early()?;
 
-    info!("Starting RustNet Monitor");
-
     // Build configuration from command line arguments
     let mut config = app::Config::default();
 
