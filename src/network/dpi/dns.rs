@@ -1,7 +1,65 @@
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
 use crate::network::types::{DnsInfo, DnsQueryType};
 
 /// Maximum DNS name length per RFC 1035 section 2.3.4
 const MAX_DNS_NAME_LEN: usize = 253;
+
+/// Cap on how many answer records we will walk for a single packet. Real
+/// resolver answers are well under this; the bound is here to keep a
+/// malformed `ancount` from spinning the parser.
+const MAX_ANSWERS_TO_PARSE: usize = 64;
+
+/// Cap on response IPs we surface per packet. The UI only renders a short
+/// list anyway, and the merge layer dedups across the flow, so anything
+/// beyond this is noise we'd rather drop than allocate for.
+const MAX_RESPONSE_IPS_PER_PACKET: usize = 16;
+
+/// Cap on how many pointer indirections we follow while skipping a name in
+/// the answer section. Per RFC 1035 these must not form cycles; this cap
+/// keeps a crafted packet from looping forever.
+const MAX_NAME_POINTER_HOPS: usize = 16;
+
+/// Walk a DNS name in the answer section and return the offset of the
+/// byte immediately after the name (where TYPE / CLASS / TTL / RDLENGTH
+/// start). Compression pointers (0xC0-prefixed two-byte sequences) terminate
+/// the name in-place, so the returned offset is two past the start of the
+/// pointer. Returns `None` if the name is malformed or runs off the end of
+/// the payload.
+fn skip_dns_name(payload: &[u8], start: usize) -> Option<usize> {
+    let mut offset = start;
+    let mut hops = 0;
+    loop {
+        if offset >= payload.len() {
+            return None;
+        }
+        let label_len = payload[offset] as usize;
+        if label_len == 0 {
+            return Some(offset + 1);
+        }
+        if label_len & 0xC0 == 0xC0 {
+            // Pointer: two bytes total, name ends here at the call site.
+            if offset + 1 >= payload.len() {
+                return None;
+            }
+            hops += 1;
+            if hops > MAX_NAME_POINTER_HOPS {
+                return None;
+            }
+            return Some(offset + 2);
+        }
+        // Reject reserved length-octet top bits (0x40 / 0x80) — neither
+        // standard label nor pointer.
+        if label_len & 0xC0 != 0 {
+            return None;
+        }
+        let next = offset.checked_add(1)?.checked_add(label_len)?;
+        if next > payload.len() {
+            return None;
+        }
+        offset = next;
+    }
+}
 
 pub fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
     if payload.len() < 12 {
@@ -118,6 +176,66 @@ pub fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
                 32769 => DnsQueryType::DLV,
                 other => DnsQueryType::Other(other),
             });
+            // Advance past QTYPE (2) and QCLASS (2) so the answer-section
+            // walk below starts at the first answer record. If QCLASS runs
+            // past the payload, the answer walk's bounds checks will
+            // short-circuit cleanly.
+            offset = offset.saturating_add(4);
+        }
+
+        // Answer-section walk for A / AAAA records. Only runs on responses
+        // (QR bit set), since the original DnsInfo.response_ips field is
+        // only meaningful for resolver answers.
+        if info.is_response {
+            let ancount = u16::from_be_bytes([payload[6], payload[7]]) as usize;
+            let ancount = ancount.min(MAX_ANSWERS_TO_PARSE);
+            for _ in 0..ancount {
+                let after_name = match skip_dns_name(payload, offset) {
+                    Some(o) => o,
+                    None => break,
+                };
+                // Fixed-size answer fields: TYPE (2) + CLASS (2) + TTL (4) + RDLENGTH (2) = 10
+                if after_name
+                    .checked_add(10)
+                    .map(|e| e > payload.len())
+                    .unwrap_or(true)
+                {
+                    break;
+                }
+                let atype = u16::from_be_bytes([payload[after_name], payload[after_name + 1]]);
+                let rdlength =
+                    u16::from_be_bytes([payload[after_name + 8], payload[after_name + 9]]) as usize;
+                let rdata_start = after_name + 10;
+                let rdata_end = match rdata_start.checked_add(rdlength) {
+                    Some(e) if e <= payload.len() => e,
+                    _ => break,
+                };
+
+                if info.response_ips.len() < MAX_RESPONSE_IPS_PER_PACKET {
+                    match (atype, rdlength) {
+                        (1, 4) => {
+                            // A record
+                            let octets: [u8; 4] = payload[rdata_start..rdata_end]
+                                .try_into()
+                                .expect("rdlength==4 and bounds checked above");
+                            info.response_ips.push(IpAddr::V4(Ipv4Addr::from(octets)));
+                        }
+                        (28, 16) => {
+                            // AAAA record
+                            let octets: [u8; 16] = payload[rdata_start..rdata_end]
+                                .try_into()
+                                .expect("rdlength==16 and bounds checked above");
+                            info.response_ips.push(IpAddr::V6(Ipv6Addr::from(octets)));
+                        }
+                        _ => {
+                            // CNAME, NS, SOA, etc. — not surfaced through
+                            // response_ips; skip rdata and continue.
+                        }
+                    }
+                }
+
+                offset = rdata_end;
+            }
         }
     }
 
@@ -179,5 +297,149 @@ mod tests {
         assert_eq!(info.query_name, Some("example.com".to_string()));
         assert_eq!(info.query_type, Some(DnsQueryType::A));
         assert!(!info.is_response);
+    }
+
+    /// Helper: build a baseline question-section payload for `example.com / A`.
+    /// Returns the payload and the offset that points at the byte right after
+    /// the question section, where answer records start.
+    fn make_example_question(qr_bit: bool, ancount: u16) -> (Vec<u8>, usize) {
+        let mut payload = vec![0u8; 12];
+        // Flags: QR bit when this is a response
+        if qr_bit {
+            payload[2] = 0x80;
+        }
+        // qdcount = 1
+        payload[4] = 0;
+        payload[5] = 1;
+        // ancount
+        payload[6..8].copy_from_slice(&ancount.to_be_bytes());
+        // "example"
+        payload.push(7);
+        payload.extend_from_slice(b"example");
+        // "com"
+        payload.push(3);
+        payload.extend_from_slice(b"com");
+        // null terminator
+        payload.push(0);
+        // QTYPE A (1), QCLASS IN (1)
+        payload.extend_from_slice(&[0, 1, 0, 1]);
+        let answers_start = payload.len();
+        (payload, answers_start)
+    }
+
+    #[test]
+    fn test_response_with_single_a_record_populates_ip() {
+        // Response with one A record pointing to 93.184.216.34 (the public
+        // example.com address). The answer name uses a compression pointer
+        // back to the question, which is the common wire shape.
+        let (mut payload, _answers_start) = make_example_question(true, 1);
+
+        // NAME: pointer to offset 12 (start of question name).
+        payload.extend_from_slice(&[0xC0, 0x0C]);
+        // TYPE A, CLASS IN, TTL 60, RDLENGTH 4
+        payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+        // RDATA: 93.184.216.34
+        payload.extend_from_slice(&[93, 184, 216, 34]);
+
+        let info = analyze_dns(&payload).unwrap();
+        assert!(info.is_response);
+        assert_eq!(
+            info.response_ips,
+            vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]
+        );
+    }
+
+    #[test]
+    fn test_response_with_aaaa_record_populates_ipv6() {
+        let (mut payload, _) = make_example_question(true, 1);
+        payload.extend_from_slice(&[0xC0, 0x0C]); // pointer to question name
+        // TYPE AAAA (28), CLASS IN, TTL 60, RDLENGTH 16
+        payload.extend_from_slice(&[0, 28, 0, 1, 0, 0, 0, 60, 0, 16]);
+        payload.extend_from_slice(&[
+            0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01,
+        ]);
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.response_ips.len(), 1);
+        assert!(matches!(info.response_ips[0], IpAddr::V6(_)));
+    }
+
+    #[test]
+    fn test_response_mixed_records_collects_a_and_aaaa_skips_cname() {
+        // Three answers: CNAME (skipped — not surfaced via response_ips),
+        // A, AAAA. Order matters; the parser must walk past CNAME's
+        // rdata correctly to reach the IP records.
+        let (mut payload, _) = make_example_question(true, 3);
+
+        // 1) CNAME record. RDATA = pointer to "example.com" at offset 12 (2 bytes).
+        payload.extend_from_slice(&[0xC0, 0x0C]); // NAME
+        payload.extend_from_slice(&[0, 5, 0, 1, 0, 0, 0, 60, 0, 2]); // TYPE CNAME (5), CLASS IN, TTL, RDLENGTH 2
+        payload.extend_from_slice(&[0xC0, 0x0C]); // RDATA: compressed name pointer
+
+        // 2) A record 1.2.3.4
+        payload.extend_from_slice(&[0xC0, 0x0C]);
+        payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+        payload.extend_from_slice(&[1, 2, 3, 4]);
+
+        // 3) AAAA record ::1
+        payload.extend_from_slice(&[0xC0, 0x0C]);
+        payload.extend_from_slice(&[0, 28, 0, 1, 0, 0, 0, 60, 0, 16]);
+        payload.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(
+            info.response_ips,
+            vec![
+                IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+                IpAddr::V6(Ipv6Addr::LOCALHOST),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_query_packet_leaves_response_ips_empty() {
+        // QR bit clear ⇒ this is a question, not a response. Even if a
+        // (malformed) packet stuffs answer-shaped bytes after the question,
+        // the parser must not surface any IPs because the field is only
+        // meaningful for resolver answers.
+        let (mut payload, _) = make_example_question(false, 1);
+        payload.extend_from_slice(&[0xC0, 0x0C]);
+        payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+        payload.extend_from_slice(&[8, 8, 8, 8]);
+
+        let info = analyze_dns(&payload).unwrap();
+        assert!(!info.is_response);
+        assert!(info.response_ips.is_empty());
+    }
+
+    #[test]
+    fn test_truncated_rdata_does_not_panic() {
+        // Claims RDLENGTH 4 but only supplies 2 bytes of rdata. The walk
+        // must stop cleanly, not panic on the slice access.
+        let (mut payload, _) = make_example_question(true, 1);
+        payload.extend_from_slice(&[0xC0, 0x0C]);
+        payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+        payload.extend_from_slice(&[1, 2]); // only 2 bytes of rdata
+
+        let info = analyze_dns(&payload).unwrap();
+        assert!(info.response_ips.is_empty());
+    }
+
+    #[test]
+    fn test_response_ips_capped_per_packet() {
+        // Build a response with more A records than the per-packet cap.
+        // The parser must surface at most MAX_RESPONSE_IPS_PER_PACKET IPs
+        // even when ancount and the wire payload are both larger.
+        let n: u16 = (MAX_RESPONSE_IPS_PER_PACKET as u16) + 4;
+        let (mut payload, _) = make_example_question(true, n);
+        for i in 0..n {
+            payload.extend_from_slice(&[0xC0, 0x0C]);
+            payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+            payload.extend_from_slice(&[10, 0, 0, (i & 0xFF) as u8]);
+        }
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.response_ips.len(), MAX_RESPONSE_IPS_PER_PACKET);
     }
 }
