@@ -16,6 +16,14 @@ For Deep Packet Inspection in particular, we lean toward protocols that:
 
 If a protocol is rarely seen in modern traffic, almost always TLS-wrapped, or niche to a single user base, we may still close the PR with thanks even if the code is correct. Please open an issue first for any new protocol so we can sanity-check fit before you invest implementation time.
 
+## Performance & Optimizations
+
+If a PR is motivated by performance, it must show that the code is on a real hot path. A microbenchmark alone is **not** enough: it only proves a function got faster in isolation, not that the function matters to overall runtime.
+
+- **Profile first.** Capture a flamegraph under real traffic (see [PROFILING.md](PROFILING.md)) and confirm the code shows up as meaningful CPU time.
+- **A bench is supporting evidence, not proof.** A `cargo bench` / criterion comparison showing your change is faster is welcome, but it does not establish that the code is hot.
+- **Cold-path micro-optimizations may be closed with thanks.** Optimizing code that runs rarely (connection setup, one-time parsing, error handling) adds review and maintenance cost without a meaningful gain.
+
 ## Development Workflow
 
 We use the standard open-source fork and feature branch approach:
