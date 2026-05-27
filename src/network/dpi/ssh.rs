@@ -17,16 +17,14 @@ pub fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
         auth_method: None,
     };
 
-    // Convert payload to string for banner analysis
+    // Convert payload to string for banner analysis. Drive the line iterator
+    // directly — the loop below is the only consumer, so materializing every
+    // line into a `Vec<&str>` first just wastes a heap slice per parse. The
+    // empty-payload case falls through to the loop and is a no-op.
     let text = String::from_utf8_lossy(payload);
-    let lines: Vec<&str> = text.lines().collect();
-
-    if lines.is_empty() {
-        return None;
-    }
 
     // Parse SSH banner(s) and assign based on packet direction
-    for line in lines {
+    for line in text.lines() {
         if let Some(banner_info) = parse_ssh_banner(line) {
             // Use packet direction to distinguish client vs server
             if is_outgoing {
