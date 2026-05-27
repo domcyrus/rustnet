@@ -307,9 +307,10 @@ fn handle_filter_mode_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option
             ctx.ui_state.move_selection_down(ctx.connections);
             Some(Vec::new())
         }
-        // Ctrl+H = backspace (SecureCRT compatibility). All other chars are text input.
+        // Some terminals report Backspace as a raw BS/DEL control character.
+        // Ctrl+H is also Backspace in several terminal configurations.
         KeyCode::Char(c) => {
-            if c == 'h' && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if is_filter_backspace_char(c, key.modifiers) {
                 ctx.ui_state.filter_backspace();
                 return Some(vec![Effect::RefreshData]);
             }
@@ -318,6 +319,10 @@ fn handle_filter_mode_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option
         }
         _ => Some(Vec::new()),
     }
+}
+
+fn is_filter_backspace_char(c: char, modifiers: KeyModifiers) -> bool {
+    matches!(c, '\u{8}' | '\u{7f}') || (c == 'h' && modifiers.contains(KeyModifiers::CONTROL))
 }
 
 fn draw_overview(
@@ -1645,4 +1650,57 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
     f.render_widget(interface_para, sections[1]);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::{handle_filter_mode_key, is_filter_backspace_char};
+    use crate::{
+        app::{App, Config},
+        ui::{ClickableRegions, HandlerContext, UIState},
+    };
+
+    #[test]
+    fn filter_mode_treats_terminal_backspace_variants_as_backspace() {
+        assert!(is_filter_backspace_char('\u{8}', KeyModifiers::NONE));
+        assert!(is_filter_backspace_char('\u{7f}', KeyModifiers::NONE));
+        assert!(is_filter_backspace_char('h', KeyModifiers::CONTROL));
+        assert!(!is_filter_backspace_char('h', KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn filter_mode_backspace_on_empty_query_stays_in_filter_mode() {
+        let app = App::new(Config {
+            resolve_dns: false,
+            disable_geoip: true,
+            ..Config::default()
+        })
+        .expect("create app");
+        let mut ui_state = UIState::default();
+        ui_state.enter_filter_mode();
+        let connections = [];
+        let click_regions = ClickableRegions::default();
+        let mut ctx = HandlerContext {
+            app: &app,
+            ui_state: &mut ui_state,
+            connections: &connections,
+            grouped_rows: None,
+            click_regions: &click_regions,
+        };
+
+        handle_filter_mode_key(
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+            &mut ctx,
+        );
+        handle_filter_mode_key(
+            KeyEvent::new(KeyCode::Char('\u{7f}'), KeyModifiers::NONE),
+            &mut ctx,
+        );
+
+        assert!(ctx.ui_state.filter_mode);
+        assert!(ctx.ui_state.filter_query.is_empty());
+        assert_eq!(ctx.ui_state.filter_cursor_position, 0);
+    }
 }
