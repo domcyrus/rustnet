@@ -1173,9 +1173,9 @@ dependencies = [
 
 [[package]]
 name = "http_req"
-version = "0.14.5"
+version = "0.14.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de766a0797dd9413840539810fcb140d7eced846e290725ea9dff50920126193"
+checksum = "a74cb441cd28aa6f00dfb4d17216c134cfa17d252b2c65367e30fcbb824923f8"
 dependencies = [
  "base64",
  "native-tls",
