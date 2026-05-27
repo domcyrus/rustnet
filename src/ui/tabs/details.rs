@@ -675,6 +675,15 @@ pub(in crate::ui) fn draw_connection_details(
                         label_style,
                     );
                 }
+                if !info.response_ips.is_empty() {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Response IPs",
+                        format!("{:?}", info.response_ips),
+                        label_style,
+                    );
+                }
             }
             crate::network::types::ApplicationProtocol::Llmnr(info) => {
                 if let Some(query_name) = &info.query_name {
@@ -692,6 +701,15 @@ pub(in crate::ui) fn draw_connection_details(
                         &mut detail_fields,
                         "Query Type",
                         format!("{}", query_type),
+                        label_style,
+                    );
+                }
+                if !info.response_ips.is_empty() {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "Response IPs",
+                        format!("{:?}", info.response_ips),
                         label_style,
                     );
                 }

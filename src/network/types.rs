@@ -649,6 +649,7 @@ pub struct MdnsInfo {
     pub query_name: Option<String>,
     pub query_type: Option<DnsQueryType>,
     pub is_response: bool,
+    pub response_ips: Vec<std::net::IpAddr>,
 }
 
 // LLMNR-specific types
@@ -657,6 +658,7 @@ pub struct LlmnrInfo {
     pub query_name: Option<String>,
     pub query_type: Option<DnsQueryType>,
     pub is_response: bool,
+    pub response_ips: Vec<std::net::IpAddr>,
 }
 
 // DHCP-specific types
