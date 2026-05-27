@@ -57,7 +57,9 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         ]),
         Line::from(vec![
             Span::styled("1-5 ", theme::fg(theme::key())),
-            Span::raw("Jump directly to a tab (1=Overview, 2=Details, 3=Interfaces, 4=Graph, 5=Help)"),
+            Span::raw(
+                "Jump directly to a tab (1=Overview, 2=Details, 3=Interfaces, 4=Graph, 5=Help)",
+            ),
         ]),
         Line::from(vec![
             Span::styled("↑/k, ↓/j ", theme::fg(theme::key())),

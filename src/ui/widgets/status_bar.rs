@@ -15,9 +15,7 @@ fn default_status_line(selected_tab: usize) -> &'static str {
             " 'h' help | 1-5 jump | Tab/[/] cycle | '/' filter | 'a' group | 't' history | 'c' copy"
         }
         // Details
-        1 => {
-            " 'h' help | 1-5 jump | Tab/[/] cycle | 'c' copy remote addr | Esc back to Overview"
-        }
+        1 => " 'h' help | 1-5 jump | Tab/[/] cycle | 'c' copy remote addr | Esc back to Overview",
         // Interfaces / Graph / Help
         _ => " 'h' help | 1-5 jump | Tab/[/] cycle | Esc back to Overview",
     }

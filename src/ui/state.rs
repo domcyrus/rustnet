@@ -790,7 +790,10 @@ mod tests {
                 ..UIState::default()
             };
             ui.jump_to_tab(idx);
-            assert_eq!(ui.selected_tab, idx, "selected_tab after jump_to_tab({idx})");
+            assert_eq!(
+                ui.selected_tab, idx,
+                "selected_tab after jump_to_tab({idx})"
+            );
             assert_eq!(
                 ui.show_help,
                 idx == HELP_TAB_INDEX,
