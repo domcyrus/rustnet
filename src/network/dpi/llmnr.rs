@@ -19,6 +19,7 @@ pub fn analyze_llmnr(payload: &[u8]) -> Option<LlmnrInfo> {
         query_name: dns_info.query_name,
         query_type: dns_info.query_type,
         is_response: dns_info.is_response,
+        response_ips: dns_info.response_ips,
     })
 }
 
@@ -99,5 +100,47 @@ mod tests {
     fn test_llmnr_too_short() {
         let packet = [0u8; 8];
         assert!(analyze_llmnr(&packet).is_none());
+    }
+
+    /// Build an LLMNR response that echoes the question and supplies an A
+    /// record. RFC 4795 §2.1: LLMNR responses re-include the question.
+    fn build_llmnr_response_with_a(name: &str, ip: [u8; 4]) -> Vec<u8> {
+        let mut packet = Vec::new();
+        // Header: txid 1, flags response, qdcount=1, ancount=1, ns=0, ar=0.
+        packet.extend_from_slice(&[0x00, 0x01, 0x80, 0x00, 0x00, 0x01, 0x00, 0x01]);
+        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+        // Question (single label).
+        packet.push(name.len() as u8);
+        packet.extend_from_slice(name.as_bytes());
+        packet.push(0x00);
+        packet.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE A, QCLASS IN
+        // Answer: NAME pointer back to offset 12, TYPE A, CLASS IN, TTL, RDLENGTH 4, RDATA.
+        packet.extend_from_slice(&[
+            0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x04,
+        ]);
+        packet.extend_from_slice(&ip);
+        packet
+    }
+
+    #[test]
+    fn test_llmnr_response_populates_response_ips() {
+        let packet = build_llmnr_response_with_a("workstation", [192, 168, 1, 42]);
+        let info = analyze_llmnr(&packet).expect("should parse");
+        assert!(info.is_response);
+        assert_eq!(info.query_name, Some("workstation".to_string()));
+        assert_eq!(
+            info.response_ips,
+            vec![std::net::IpAddr::V4(std::net::Ipv4Addr::new(
+                192, 168, 1, 42
+            ))]
+        );
+    }
+
+    #[test]
+    fn test_llmnr_query_leaves_response_ips_empty() {
+        let packet = build_llmnr_query("workstation", 1);
+        let info = analyze_llmnr(&packet).expect("should parse");
+        assert!(!info.is_response);
+        assert!(info.response_ips.is_empty());
     }
 }
