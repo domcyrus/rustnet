@@ -1118,7 +1118,7 @@ fn draw_stats_panel(
 
         let mut lines = vec![Line::from(vec![
             Span::raw("Sandbox: "),
-            Span::styled(sandbox_info.status.clone(), status_style),
+            Span::styled(sandbox_info.status, status_style),
             available_indicator,
         ])];
         if features.is_empty() {
@@ -1171,7 +1171,7 @@ fn draw_stats_panel(
 
         let mut lines = vec![Line::from(vec![
             Span::raw("Seatbelt: "),
-            Span::styled(sandbox_info.status.clone(), status_style),
+            Span::styled(sandbox_info.status, status_style),
         ])];
         if features.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -1243,7 +1243,7 @@ fn draw_stats_panel(
 
         let mut lines = vec![Line::from(vec![
             Span::raw("Sandbox: "),
-            Span::styled(sandbox_info.status.clone(), status_style),
+            Span::styled(sandbox_info.status, status_style),
         ])];
         if features.is_empty() {
             lines.push(Line::from(Span::styled(
