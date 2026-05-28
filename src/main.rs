@@ -303,8 +303,8 @@ fn main() -> Result<()> {
             mode: sandbox_mode,
             block_network: true, // RustNet is passive, doesn't need TCP
             log_dir,
-            json_log_path: config.json_log_file.clone(),
-            pcap_export_path: config.pcap_export_file.clone(),
+            json_log_path: config.json_log_file,
+            pcap_export_path: config.pcap_export_file,
             geoip_paths,
         };
 

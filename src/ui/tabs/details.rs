@@ -1189,7 +1189,7 @@ pub(in crate::ui) fn draw_connection_details(
     };
 
     let left_para = Paragraph::new(details_text)
-        .block(panel_block(Span::styled(detail_title.clone(), title_style)))
+        .block(panel_block(Span::styled(detail_title, title_style)))
         .style(Style::default())
         // trim:false preserves any leading whitespace in labels rather than
         // collapsing it, which keeps the fixed-width label padding intact.
