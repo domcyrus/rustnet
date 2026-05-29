@@ -1205,44 +1205,38 @@ impl TrafficHistory {
 
     /// Get RX bytes/sec values for sparkline (newest last), smoothed with moving average
     pub fn get_rx_sparkline_data(&self, count: usize) -> Vec<u64> {
+        // `samples` is filled push_back/pop_front, so `iter()` is already
+        // oldest→newest. Skip past everything but the last `count` instead of
+        // the rev→take→collect→rev→collect dance, which allocated twice.
+        let skip = self.samples.len().saturating_sub(count);
         let raw: Vec<u64> = self
             .samples
             .iter()
-            .rev()
-            .take(count)
+            .skip(skip)
             .map(|s| s.rx_bytes_per_sec)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
             .collect();
         Self::smooth_data(&raw, 3)
     }
 
     /// Get TX bytes/sec values for sparkline (newest last), smoothed with moving average
     pub fn get_tx_sparkline_data(&self, count: usize) -> Vec<u64> {
+        let skip = self.samples.len().saturating_sub(count);
         let raw: Vec<u64> = self
             .samples
             .iter()
-            .rev()
-            .take(count)
+            .skip(skip)
             .map(|s| s.tx_bytes_per_sec)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
             .collect();
         Self::smooth_data(&raw, 3)
     }
 
     /// Get active connection count values for sparkline (newest last)
     pub fn get_connection_sparkline_data(&self, count: usize) -> Vec<u64> {
+        let skip = self.samples.len().saturating_sub(count);
         self.samples
             .iter()
-            .rev()
-            .take(count)
+            .skip(skip)
             .map(|s| s.connection_count as u64)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
             .collect()
     }
 
@@ -2287,6 +2281,33 @@ mod tests {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
             ProtocolState::Tcp(TcpState::Established),
         )
+    }
+
+    #[test]
+    fn sparkline_getters_return_last_count_oldest_first() {
+        // Distinct rx/tx/conn values per sample so ordering bugs are visible.
+        let mut hist = TrafficHistory::new(100);
+        for i in 1u64..=5 {
+            hist.add_sample(i * 10, i * 100, i as usize, 0, 0, None);
+        }
+
+        // Fewer than available: keep the N newest, oldest→newest. Use count=2
+        // for rx/tx (below the moving-average window of 3, so smooth_data is a
+        // passthrough that preserves order) — this asserts the selection/order,
+        // not the smoothing. The connection getter has no smoothing.
+        assert_eq!(hist.get_rx_sparkline_data(2), vec![40, 50]);
+        assert_eq!(hist.get_tx_sparkline_data(2), vec![400, 500]);
+        assert_eq!(hist.get_connection_sparkline_data(3), vec![3, 4, 5]);
+
+        // count exceeds sample count: return everything, oldest→newest.
+        assert_eq!(hist.get_connection_sparkline_data(99), vec![1, 2, 3, 4, 5]);
+
+        // count == 0: empty.
+        assert!(hist.get_connection_sparkline_data(0).is_empty());
+
+        // Empty history: empty out, no panic.
+        let empty = TrafficHistory::new(10);
+        assert!(empty.get_connection_sparkline_data(5).is_empty());
     }
 
     #[test]
