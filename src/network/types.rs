@@ -1211,8 +1211,6 @@ impl TrafficHistory {
             .rev()
             .take(count)
             .map(|s| s.rx_bytes_per_sec)
-            .collect::<Vec<_>>()
-            .into_iter()
             .rev()
             .collect();
         Self::smooth_data(&raw, 3)
@@ -1226,8 +1224,6 @@ impl TrafficHistory {
             .rev()
             .take(count)
             .map(|s| s.tx_bytes_per_sec)
-            .collect::<Vec<_>>()
-            .into_iter()
             .rev()
             .collect();
         Self::smooth_data(&raw, 3)
@@ -1240,8 +1236,6 @@ impl TrafficHistory {
             .rev()
             .take(count)
             .map(|s| s.connection_count as u64)
-            .collect::<Vec<_>>()
-            .into_iter()
             .rev()
             .collect()
     }
@@ -2279,6 +2273,21 @@ impl Connection {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn sparkline_returns_newest_last_in_order() {
+        let mut history = TrafficHistory::new(16);
+        for i in 1..=5u64 {
+            history.add_sample(i * 10, i * 100, i as usize, 0, 0, None);
+        }
+        // get_connection_sparkline_data is the unsmoothed path, so it directly
+        // exercises the rev/take/rev ordering: newest `count` samples, newest last.
+        assert_eq!(history.get_connection_sparkline_data(3), vec![3, 4, 5]);
+        assert_eq!(
+            history.get_connection_sparkline_data(10),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
 
     fn create_test_connection() -> Connection {
         Connection::new(
