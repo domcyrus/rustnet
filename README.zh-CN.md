@@ -135,6 +135,13 @@ sudo dnf copr enable domcyrus/rustnet
 sudo dnf install rustnet
 ```
 
+**openSUSE Tumbleweed:**
+```bash
+sudo zypper addrepo https://download.opensuse.org/repositories/home:/domcyrus:/rustnet/openSUSE_Tumbleweed/home:domcyrus:rustnet.repo
+sudo zypper refresh
+sudo zypper install rustnet
+```
+
 **Arch Linux:**
 ```bash
 sudo pacman -S rustnet

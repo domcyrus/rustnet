@@ -248,6 +248,23 @@ rustnet
 
 **重要：** 由于 Rust 1.88+ 的要求，COPR 仅支持 Fedora 42 和 43。CentOS 和 RHEL 的仓库中没有足够新的 Rust 编译器。对于这些发行版，请使用 GitHub releases 中的 [.rpm 包](#redhatfedoracentos-rpm-packages)或[从源码构建](#building-from-source)。
 
+#### openSUSE Tumbleweed（OBS）<a id="opensuse-tumbleweed-obs"></a>
+
+RustNet 通过 [openSUSE Build Service](https://build.opensuse.org/package/show/home:domcyrus:rustnet/rustnet) 为 openSUSE Tumbleweed（x86_64 和 aarch64）构建。
+
+```bash
+sudo zypper addrepo https://download.opensuse.org/repositories/home:/domcyrus:/rustnet/openSUSE_Tumbleweed/home:domcyrus:rustnet.repo
+sudo zypper refresh
+sudo zypper install rustnet
+
+# 使用 sudo 运行
+sudo rustnet
+
+# 可选：授予 Linux capabilities 以无需 sudo 运行（现代内核 5.8+）
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
+rustnet
+```
+
 #### Homebrew 安装<a id="homebrew-installation"></a>
 
 **在 macOS 上：**
