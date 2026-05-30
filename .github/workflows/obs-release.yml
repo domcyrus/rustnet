@@ -1,0 +1,144 @@
+name: Release to OBS
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-obs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - name: Get version
+        id: version
+        run: |
+          # Extract version by removing 'v' prefix if it exists, fallback to Cargo.toml
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/v}
+          else
+            VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Setup Linux dependencies
+        uses: ./.github/actions/setup-linux-deps
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
+        with:
+          toolchain: stable
+
+      - name: Install OBS dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osc obs-build build-essential
+
+      - name: Configure OBS credentials
+        run: |
+          cat <<EOF > ~/.oscrc
+          [general]
+          apiurl = https://api.opensuse.org
+          
+          [https://api.opensuse.org]
+          user = ${{ secrets.OBS_USER }}
+          pass = ${{ secrets.OBS_PASS }}
+          EOF
+          chmod 600 ~/.oscrc
+
+      - name: Download source tarball
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PACKAGE_NAME="rustnet"
+          
+          # Output filename must match Source0's basename (v%{version}.tar.gz)
+          # so the offline OBS build can resolve it; the internal dir prefix
+          # stays rustnet-%{version}/ to match %autosetup -n.
+          RELEASE_TAG="v${VERSION}"
+          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "✓ Found release tag: $RELEASE_TAG"
+            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$RELEASE_TAG" | gzip > "v${VERSION}.tar.gz"
+          else
+            echo "⚠ Release tag $RELEASE_TAG not found, using HEAD"
+            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD | gzip > "v${VERSION}.tar.gz"
+          fi
+
+      - name: Vendor dependencies
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PACKAGE_NAME="rustnet"
+          RELEASE_TAG="v${VERSION}"
+          
+          mkdir -p build-vendor
+          if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
+            git archive --format=tar "$RELEASE_TAG" | tar -x -C build-vendor
+          else
+            git archive --format=tar HEAD | tar -x -C build-vendor
+          fi
+          
+          cd build-vendor
+          # Capture the source-replacement config that cargo prints. The OBS
+          # build has no network, so it needs this at .cargo/config.toml to
+          # resolve crates from the vendored directory instead of crates.io.
+          mkdir -p .cargo
+          cargo vendor vendor > .cargo/config.toml
+
+          # Clean up static libs to reduce size
+          find vendor -name "*.a" -delete
+          find vendor -name "*.lib" -delete
+
+          # Bundle .cargo/config.toml alongside vendor/ so `%autosetup -a 1`
+          # drops both into the source tree for the offline build.
+          tar --use-compress-program="zstd -T0 -10" -cf ../vendor.tar.zst .cargo vendor
+          cd ..
+          rm -rf build-vendor
+
+      - name: Prepare and push to OBS
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          OBS_PROJECT="${{ secrets.OBS_PROJECT }}"
+          OBS_PACKAGE="rustnet"
+          
+          if [ -z "$OBS_PROJECT" ]; then
+            echo "::error::OBS_PROJECT secret is not set!"
+            exit 1
+          fi
+          
+          # Checkout OBS project
+          osc checkout "$OBS_PROJECT" "$OBS_PACKAGE"
+          cd "$OBS_PROJECT/$OBS_PACKAGE"
+          
+          # Clean old files
+          rm -f *.tar.gz *.tar.zst *.spec
+          
+          # Copy new files
+          cp ../../v${VERSION}.tar.gz .
+          cp ../../vendor.tar.zst .
+          cp ../../rpm/rustnet.spec .
+          
+          # Update version in spec file
+          sed -i "s/^Version:.*/Version: $VERSION/" rustnet.spec
+
+          # Prepend a changelog entry. OBS has no rpmautospec, so the spec's
+          # %changelog is empty on SUSE and the changelog lives here instead.
+          STAMP="$(LC_ALL=C date -u '+%a %b %e %T %Z %Y')"
+          {
+            printf -- '-------------------------------------------------------------------\n'
+            printf '%s - %s@opensuse.org\n\n' "$STAMP" "${{ secrets.OBS_USER }}"
+            printf -- '- Update to version %s\n\n' "$VERSION"
+            [ -f rustnet.changes ] && cat rustnet.changes
+          } > rustnet.changes.new
+          mv rustnet.changes.new rustnet.changes
+
+          # Add new files, remove deleted ones
+          osc addremove
+          
+          # Commit to OBS
+          osc commit -m "Update to version $VERSION"

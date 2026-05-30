@@ -396,6 +396,7 @@ jobs:
       - publish-docker
       - update-copr
       - release-ppa
+      - release-obs
     steps:
       - name: All publish steps complete
         run: echo "Release pipeline fully published; safe to fire downstream triggers."
@@ -792,4 +793,10 @@ jobs:
     name: Release to PPA
     needs: publish-release
     uses: ./.github/workflows/ppa-release.yml
+    secrets: inherit
+
+  release-obs:
+    name: Release to OBS
+    needs: publish-release
+    uses: ./.github/workflows/obs-release.yml
     secrets: inherit
