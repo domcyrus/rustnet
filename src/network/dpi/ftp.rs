@@ -120,7 +120,13 @@ pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
     if !is_command {
         return None;
     }
-    let command = std::str::from_utf8(&upper).ok()?.to_string();
+    // `first_token_upper` already proved every byte is ASCII alphabetic, so
+    // the UTF-8 validation inside `String::from_utf8` is a fast linear walk
+    // that always succeeds — but the `?` stays as a defensive guard against
+    // a future change that widens the accepted byte range. Taking the `Vec`
+    // by value avoids the redundant `.to_string()` copy that the previous
+    // `std::str::from_utf8(&upper).ok()?.to_string()` shape required.
+    let command = String::from_utf8(upper).ok()?;
     // Trim leading command + whitespace to expose the argument.
     let args = std::str::from_utf8(line)
         .ok()
