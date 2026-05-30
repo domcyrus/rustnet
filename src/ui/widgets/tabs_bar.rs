@@ -15,7 +15,13 @@ use crate::ui::{ClickAction, ClickableRegions, UIState, panel_block, theme};
 /// Custom styling: each title gets one space of padding so the active tab
 /// renders as a reverse-video pill. Inactive titles use the muted palette
 /// so the bar reads as a quiet header strip with one obvious focus point.
-const TAB_TITLES: [&str; 5] = ["Overview", "Details", "Interfaces", "Graph", "Help"];
+pub(crate) const TAB_TITLES: [&str; 5] = ["Overview", "Details", "Interfaces", "Graph", "Help"];
+/// Total number of tabs (kept in sync with `TAB_TITLES`).
+pub(crate) const TAB_COUNT: usize = TAB_TITLES.len();
+/// Index of the Help tab. Lets `UIState::jump_to_tab` keep `show_help` in
+/// sync without re-checking `TAB_TITLES` at the call site.
+pub(crate) const HELP_TAB_INDEX: usize = TAB_COUNT - 1;
+
 const TAB_DIVIDER: &str = " ▏ ";
 
 pub(in crate::ui) fn draw_tabs(

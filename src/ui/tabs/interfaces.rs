@@ -135,7 +135,7 @@ pub(in crate::ui) fn draw_interface_stats(f: &mut Frame, app: &App, area: Rect) 
         ])
         .style(theme::fg(theme::heading()))
     })
-    .block(panel_block(" Interface Statistics (Press 'i' to toggle) "))
+    .block(panel_block(" Interface Statistics "))
     .style(Style::default());
 
     f.render_widget(table, area);

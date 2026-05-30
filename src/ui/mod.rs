@@ -96,6 +96,7 @@ pub use state::{
     ClickAction, ClickableRegions, GroupedRow, SortColumn, UIState, compute_grouped_rows,
     compute_scroll_offset,
 };
+pub(crate) use widgets::tabs_bar::{HELP_TAB_INDEX, TAB_COUNT};
 
 mod sorting;
 pub use sorting::sort_connections;

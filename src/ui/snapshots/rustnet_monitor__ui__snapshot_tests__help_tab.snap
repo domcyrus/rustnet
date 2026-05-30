@@ -1,6 +1,6 @@
 ---
-source: src/ui.rs
-assertion_line: 5159
+source: src/ui/mod.rs
+assertion_line: 597
 expression: output
 ---
 ╭Help──────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -9,7 +9,9 @@ expression: output
 │q Quit application (press twice to confirm)                                                       │
 │Ctrl+C Quit immediately                                                                           │
 │x Clear all connections (press twice to confirm)                                                  │
-│Tab Switch between tabs                                                                           │
+│Tab, ] Next tab                                                                                   │
+│Shift+Tab, [ Previous tab                                                                         │
+│1-5 Jump directly to a tab (1=Overview, 2=Details, 3=Interfaces, 4=Graph, 5=Help)                 │
 │↑/k, ↓/j Navigate connections (wraps around)                                                      │
 │g, G Jump to first/last connection (vim-style)                                                    │
 │Page Up/Down, Ctrl+B/F Navigate connections by page                                               │
@@ -26,7 +28,6 @@ expression: output
 │Enter View connection details                                                                     │
 │Esc Return to overview                                                                            │
 │h Toggle this help screen                                                                         │
-│i Toggle interface statistics view                                                                │
 │/ Enter filter mode on Overview (use ↑/↓ to navigate while typing)                                │
 │                                                                                                  │
 │Tabs:                                                                                             │
@@ -51,5 +52,4 @@ expression: output
 │                                                                                                  │
 │Filter Examples:                                                                                  │
 │/google Search for 'google' in all fields                                                         │
-│/port:22 Exact port match (only port 22, not 2223 or 5522)                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

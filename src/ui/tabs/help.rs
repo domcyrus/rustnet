@@ -48,8 +48,18 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Clear all connections (press twice to confirm)"),
         ]),
         Line::from(vec![
-            Span::styled("Tab ", theme::fg(theme::key())),
-            Span::raw("Switch between tabs"),
+            Span::styled("Tab, ] ", theme::fg(theme::key())),
+            Span::raw("Next tab"),
+        ]),
+        Line::from(vec![
+            Span::styled("Shift+Tab, [ ", theme::fg(theme::key())),
+            Span::raw("Previous tab"),
+        ]),
+        Line::from(vec![
+            Span::styled("1-5 ", theme::fg(theme::key())),
+            Span::raw(
+                "Jump directly to a tab (1=Overview, 2=Details, 3=Interfaces, 4=Graph, 5=Help)",
+            ),
         ]),
         Line::from(vec![
             Span::styled("↑/k, ↓/j ", theme::fg(theme::key())),
@@ -114,10 +124,6 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         Line::from(vec![
             Span::styled("h ", theme::fg(theme::key())),
             Span::raw("Toggle this help screen"),
-        ]),
-        Line::from(vec![
-            Span::styled("i ", theme::fg(theme::key())),
-            Span::raw("Toggle interface statistics view"),
         ]),
         Line::from(vec![
             Span::styled("/ ", theme::fg(theme::key())),

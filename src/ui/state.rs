@@ -458,7 +458,37 @@ impl UIState {
         }
     }
 
-    /// Cycle to the next sort column
+    /// Jump directly to a tab by index (0 = Overview … 4 = Help).
+    ///
+    /// Keeps `show_help` in sync with `selected_tab` so the Help tab toggle
+    /// (`h`) and the direct-jump shortcut (`5`) agree on which screen is
+    /// visible. Out-of-range indices are ignored.
+    pub fn jump_to_tab(&mut self, target: usize) {
+        use crate::ui::{HELP_TAB_INDEX, TAB_COUNT};
+        if target >= TAB_COUNT {
+            return;
+        }
+        self.selected_tab = target;
+        self.show_help = target == HELP_TAB_INDEX;
+    }
+
+    /// Cycle to the next tab, wrapping back to Overview after Help.
+    pub fn next_tab(&mut self) {
+        use crate::ui::TAB_COUNT;
+        self.selected_tab = (self.selected_tab + 1) % TAB_COUNT;
+    }
+
+    /// Cycle to the previous tab, wrapping from Overview back to Help.
+    pub fn prev_tab(&mut self) {
+        use crate::ui::TAB_COUNT;
+        self.selected_tab = if self.selected_tab == 0 {
+            TAB_COUNT - 1
+        } else {
+            self.selected_tab - 1
+        };
+    }
+
+    /// Cycle to the next sort column.
     pub fn cycle_sort_column(&mut self) {
         self.sort_column = self.sort_column.next(self.has_geoip);
         // Reset to the default direction for the new column
@@ -740,4 +770,75 @@ pub fn compute_grouped_rows<'a>(
     }
 
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::{HELP_TAB_INDEX, TAB_COUNT};
+
+    #[test]
+    fn jump_to_tab_sets_selected_and_help_flag() {
+        // Each in-range index switches to the matching tab; `show_help` must
+        // agree with `selected_tab == HELP_TAB_INDEX` so the `h` toggle and
+        // the direct-jump shortcut (`5`) stay coherent.
+        for idx in 0..TAB_COUNT {
+            // Start in the opposite `show_help` state so the assertion below
+            // proves `jump_to_tab` rewrote the flag, not just left it alone.
+            let mut ui = UIState {
+                show_help: idx != HELP_TAB_INDEX,
+                ..UIState::default()
+            };
+            ui.jump_to_tab(idx);
+            assert_eq!(
+                ui.selected_tab, idx,
+                "selected_tab after jump_to_tab({idx})"
+            );
+            assert_eq!(
+                ui.show_help,
+                idx == HELP_TAB_INDEX,
+                "show_help after jump_to_tab({idx})"
+            );
+        }
+    }
+
+    #[test]
+    fn jump_to_tab_ignores_out_of_range() {
+        // Lock the invariant that the public API does not silently corrupt
+        // `selected_tab` to a value outside `0..TAB_COUNT` — `tabs_bar.rs`
+        // indexes into `TAB_TITLES` by that value when drawing.
+        let mut ui = UIState {
+            selected_tab: 2,
+            show_help: false,
+            ..UIState::default()
+        };
+        ui.jump_to_tab(TAB_COUNT);
+        assert_eq!(ui.selected_tab, 2);
+        assert!(!ui.show_help);
+        ui.jump_to_tab(99);
+        assert_eq!(ui.selected_tab, 2);
+        assert!(!ui.show_help);
+    }
+
+    #[test]
+    fn next_tab_cycles_and_wraps() {
+        let mut ui = UIState::default();
+        assert_eq!(ui.selected_tab, 0);
+        for expected in 1..TAB_COUNT {
+            ui.next_tab();
+            assert_eq!(ui.selected_tab, expected);
+        }
+        // Past the last tab wraps to the first.
+        ui.next_tab();
+        assert_eq!(ui.selected_tab, 0);
+    }
+
+    #[test]
+    fn prev_tab_wraps_from_first_to_last() {
+        let mut ui = UIState::default();
+        ui.prev_tab();
+        assert_eq!(ui.selected_tab, TAB_COUNT - 1);
+        ui.prev_tab();
+        assert_eq!(ui.selected_tab, TAB_COUNT - 2);
+    }
 }

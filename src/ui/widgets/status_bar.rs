@@ -12,12 +12,12 @@ fn default_status_line(selected_tab: usize) -> &'static str {
     match selected_tab {
         // Overview
         0 => {
-            " 'h' help | Tab/Shift+Tab switch tabs | '/' filter | 'a' group | 't' history | 'c' copy"
+            " 'h' help | 1-5 jump | Tab/[/] cycle | '/' filter | 'a' group | 't' history | 'c' copy"
         }
         // Details
-        1 => " 'h' help | Tab/Shift+Tab switch tabs | 'c' copy remote addr | Esc back to Overview",
+        1 => " 'h' help | 1-5 jump | Tab/[/] cycle | 'c' copy remote addr | Esc back to Overview",
         // Interfaces / Graph / Help
-        _ => " 'h' help | Tab/Shift+Tab switch tabs | Esc back to Overview",
+        _ => " 'h' help | 1-5 jump | Tab/[/] cycle | Esc back to Overview",
     }
 }
 
@@ -40,7 +40,7 @@ pub(in crate::ui) fn draw_status_bar(
         }
     } else if !ui_state.filter_query.is_empty() {
         format!(
-            " 'h' help | Tab/Shift+Tab switch tabs | Showing {} filtered connections (Esc to clear) ",
+            " 'h' help | 1-5 jump | Tab/[/] cycle | Showing {} filtered connections (Esc to clear) ",
             connection_count
         )
     } else {

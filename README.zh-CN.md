@@ -85,7 +85,7 @@ cargo build --release --no-default-features
 RustNet 在所有支持的平台上提供实时的网络接口统计：
 
 - **概览标签页**：展示当前活跃的接口，包含速率、错误数与丢包数
-- **接口标签页**(按 `i`)：以详细表格呈现各接口的完整指标
+- **接口标签页**(按 `3`)：以详细表格呈现各接口的完整指标
 - **跨平台**：Linux(sysfs)、macOS / FreeBSD(getifaddrs)、Windows(GetIfTable2 API)
 - **智能过滤**：Windows 上自动剔除虚拟 / 过滤类适配器
 
@@ -201,8 +201,9 @@ rustnet -r 500               # 设置刷新间隔(毫秒)
 | `q` | 退出(连按两次确认) |
 | `Ctrl+C` | 立即退出 |
 | `x` | 清空所有连接(连按两次确认) |
-| `Tab` | 切换标签页 |
-| `i` | 切换接口统计视图 |
+| `Tab` 或 `]` | 下一个标签页 |
+| `Shift+Tab` 或 `[` | 上一个标签页 |
+| `1`–`5` | 直接跳转到 Overview / Details / Interfaces / Graph / Help |
 | `↑/k` `↓/j` | 上下移动 |
 | `g` `G` | 跳到第一条 / 最后一条连接 |
 | `Enter` | 查看连接详情 |

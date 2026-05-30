@@ -85,7 +85,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for technical information.
 RustNet provides real-time network interface statistics across all supported platforms:
 
 - **Overview Tab**: Shows active interfaces with current rates, errors, and drops
-- **Interfaces Tab** (press `i`): Detailed table with comprehensive metrics for all interfaces
+- **Interfaces Tab** (press `3`): Detailed table with comprehensive metrics for all interfaces
 - **Cross-Platform**: Linux (sysfs), macOS/FreeBSD (getifaddrs), Windows (GetIfTable2 API)
 - **Smart Filtering**: Windows automatically excludes virtual/filter adapters
 
@@ -203,8 +203,9 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `q` | Quit (press twice to confirm) |
 | `Ctrl+C` | Quit immediately |
 | `x` | Clear all connections (press twice to confirm) |
-| `Tab` | Switch between tabs |
-| `i` | Toggle interface statistics view |
+| `Tab` or `]` | Next tab |
+| `Shift+Tab` or `[` | Previous tab |
+| `1`–`5` | Jump to Overview / Details / Interfaces / Graph / Help |
 | `↑/k` `↓/j` | Navigate up/down |
 | `g` `G` | Jump to first/last connection |
 | `Enter` | View connection details |

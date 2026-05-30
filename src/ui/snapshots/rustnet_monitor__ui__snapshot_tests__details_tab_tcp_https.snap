@@ -1,6 +1,6 @@
 ---
-source: src/ui.rs
-assertion_line: 5443
+source: src/ui/mod.rs
+assertion_line: 899
 expression: output
 ---
 ╭ RustNet Monitor ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -42,4 +42,4 @@ expression: output
 │Current Rate (In)     -                                                                                                                   │
 │Current Rate (Out)    -                                                                                                                   │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- 'h' help | Tab/Shift+Tab switch tabs | 'c' copy remote addr | Esc back to Overview
+ 'h' help | 1-5 jump | Tab/[/] cycle | 'c' copy remote addr | Esc back to Overview

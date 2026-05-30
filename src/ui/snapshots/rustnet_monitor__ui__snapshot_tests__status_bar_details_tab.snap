@@ -1,6 +1,6 @@
 ---
-source: src/ui.rs
-assertion_line: 5237
+source: src/ui/mod.rs
+assertion_line: 683
 expression: output
 ---
- 'h' help | Tab/Shift+Tab switch tabs | 'c' copy remote addr | Esc back to Overview
+ 'h' help | 1-5 jump | Tab/[/] cycle | 'c' copy remote addr | Esc back to Overview
