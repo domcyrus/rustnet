@@ -31,10 +31,11 @@ Requires: libpcap
 Requires: hicolor-icon-theme
 %if 0%{?suse_version}
 Requires: libelf1
-# Pulled in so %post can run setcap (minimal Tumbleweed lacks it). Weak dep
-# because `sudo rustnet` still works without it. Mirrors the PPA's
-# `Recommends: libcap2-bin`.
-Recommends: libcap-progs
+# Pulled in so %post can run setcap (minimal Tumbleweed lacks it).
+# Hard Requires (not Recommends) because zypper doesn't pull in new
+# Recommends on `zypper update`, which would silently break the cap
+# auto-setup for existing users on upgrade.
+Requires: libcap-progs
 %else
 Requires: elfutils-libelf
 %endif
