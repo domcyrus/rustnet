@@ -17,14 +17,11 @@ pub fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
 
     // Safe string conversion for HTTP parsing
     let text = String::from_utf8_lossy(payload);
-    let lines: Vec<&str> = text.lines().collect();
-
-    if lines.is_empty() {
-        return None;
-    }
-
-    // Parse first line
-    let first_line = lines[0];
+    // Drive the line iterator directly: the request/status line is the first
+    // element and headers are everything after it. Collecting into a `Vec<&str>`
+    // just to index `[0]` and `skip(1)` allocates one heap slice per parse.
+    let mut lines = text.lines();
+    let first_line = lines.next()?;
     let parts: Vec<&str> = first_line.split_whitespace().collect();
 
     if parts.len() >= 3 {
@@ -48,7 +45,7 @@ pub fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
     // Parse headers. HTTP field-names are case-insensitive (RFC 7230 §3.2),
     // so compare in place with `eq_ignore_ascii_case` instead of allocating a
     // lowercased copy of every header name just to match two ASCII literals.
-    for line in lines.iter().skip(1) {
+    for line in lines {
         if line.is_empty() {
             break; // End of headers
         }
