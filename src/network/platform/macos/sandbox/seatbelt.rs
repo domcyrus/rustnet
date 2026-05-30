@@ -10,6 +10,8 @@
 //! - Network: Outbound TCP/UDP connections (RustNet is passive)
 //! - Filesystem writes: Only allowed to configured log and PCAP paths
 //! - Filesystem writes: All user home directories blocked (/Users, /var/root)
+//! - Filesystem reads: User home directories and system credential stores
+//!   (keychains, dslocal account database, SSH host keys) blocked
 //!
 //! # Profile Strategy
 //!
@@ -83,6 +85,20 @@ const SBPL_PROFILE_BASE: &str = r#"(version 1)
 (deny file-read-data
     (subpath "/Users")
     (subpath "/var/root"))
+
+;; Block reads of system credential stores outside the user homes above.
+;; RustNet never needs these, so denying them limits credential theft if a
+;; DPI/packet-parsing vulnerability is exploited. This matters in particular
+;; when running as root: Seatbelt is enforced regardless of uid, so it covers
+;; secrets that DAC file permissions would otherwise expose to a root process.
+;; Both the symlink and resolved forms are listed because macOS resolves
+;; /etc -> /private/etc and /var -> /private/var.
+(deny file-read*
+    (subpath "/Library/Keychains")
+    (subpath "/private/var/db/dslocal")
+    (subpath "/var/db/dslocal")
+    (subpath "/private/etc/ssh")
+    (subpath "/etc/ssh"))
 
 ;; Block writes to user home directories
 ;; Regular user homes on macOS are under /Users; root's home is /var/root.
@@ -465,6 +481,21 @@ mod tests {
         CString::new(build_sbpl_profile(true)).expect("full profile must not contain null bytes");
         CString::new(build_sbpl_profile(false))
             .expect("base-only profile must not contain null bytes");
+    }
+
+    #[test]
+    fn test_profile_denies_system_credential_stores() {
+        // Both with and without network blocking, the base profile must deny
+        // reads of the system credential stores rustnet never needs.
+        for block_network in [true, false] {
+            let profile = build_sbpl_profile(block_network);
+            for store in ["/Library/Keychains", "/private/var/db/dslocal", "/etc/ssh"] {
+                assert!(
+                    profile.contains(store),
+                    "Expected credential-store deny for {store} (block_network={block_network})"
+                );
+            }
+        }
     }
 
     #[test]

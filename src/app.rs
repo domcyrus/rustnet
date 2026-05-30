@@ -475,6 +475,12 @@ pub struct App {
     /// GeoIP resolver for location/ASN lookups
     geoip_resolver: Option<Arc<GeoIpResolver>>,
 
+    /// Receiver half of the packet channel, stashed between the privileged
+    /// startup phase (`start`: capture/eBPF threads that need capabilities) and
+    /// the worker phase (`start_workers`: the DPI parser threads, spawned after
+    /// the sandbox is applied so they inherit it). Taken by `start_workers`.
+    packet_rx: Option<Receiver<Vec<Vec<u8>>>>,
+
     /// Sandbox status (Linux Landlock / macOS Seatbelt / Windows restricted token)
     #[cfg(any(
         target_os = "linux",
@@ -582,6 +588,7 @@ impl App {
             rtt_tracker: Arc::new(Mutex::new(RttTracker::new())),
             dns_resolver,
             geoip_resolver,
+            packet_rx: None,
             #[cfg(any(
                 target_os = "linux",
                 target_os = "windows",
@@ -591,25 +598,52 @@ impl App {
         })
     }
 
-    /// Start all background threads
+    /// Start the privileged-init background threads only: packet capture (which
+    /// opens the raw socket — needs CAP_NET_RAW) and process enrichment (which
+    /// loads eBPF — needs CAP_BPF/CAP_PERFMON). These must run BEFORE the sandbox
+    /// is applied.
     ///
-    /// Returns a receiver that signals when process detection initialization is complete
-    /// (including eBPF loading). The caller should wait on this before dropping
-    /// eBPF capabilities to avoid a race condition.
+    /// The DPI parser/worker threads are intentionally NOT started here — the
+    /// caller must apply the sandbox and then call [`App::start_workers`]. On
+    /// Linux the Landlock domain and dropped capabilities are per-thread and are
+    /// only inherited by threads spawned *after* `restrict_self`, so spawning the
+    /// parser threads in the worker phase is what places the untrusted-input DPI
+    /// code inside the sandbox — even when rustnet runs as root.
+    ///
+    /// Returns a receiver that signals when process detection initialization
+    /// (including eBPF loading) is complete. The caller should wait on this
+    /// before applying the sandbox so eBPF has finished loading.
     pub fn start(&mut self) -> Result<std::sync::mpsc::Receiver<()>> {
         info!("Starting network monitor application");
 
         // Use stored connection map
         let connections = Arc::clone(&self.connections);
 
-        // Start packet capture pipeline
-        self.start_packet_capture_pipeline(connections.clone())?;
+        // Phase 1: privileged init. Start the capture pipeline (opens the raw
+        // socket and stashes the packet receiver for the worker phase).
+        self.start_packet_capture_pipeline()?;
 
         // Create channel to signal when process detection (incl. eBPF) is ready
         let (process_ready_tx, process_ready_rx) = std::sync::mpsc::sync_channel(1);
 
         // Start process enrichment thread (but delay for PKTAP detection on macOS)
-        self.start_process_enrichment_conditional(connections.clone(), process_ready_tx)?;
+        self.start_process_enrichment_conditional(connections, process_ready_tx)?;
+
+        Ok(process_ready_rx)
+    }
+
+    /// Start the worker threads: the DPI packet processors plus enrichment,
+    /// snapshot, cleanup, and the rate/stats/history collectors.
+    ///
+    /// Call this AFTER the sandbox has been applied on the main thread (see
+    /// [`App::start`]); these threads then inherit the sandbox. Spawning the
+    /// packet processors here rather than in `start` is what places the
+    /// untrusted-input DPI parsers inside the Landlock domain on Linux.
+    pub fn start_workers(&mut self) -> Result<()> {
+        let connections = Arc::clone(&self.connections);
+
+        // Start the DPI packet processing threads (drain the stashed channel).
+        self.start_packet_processors(connections.clone())?;
 
         // Start GeoIP enrichment thread
         self.start_geoip_enrichment_thread(connections.clone())?;
@@ -639,19 +673,35 @@ impl App {
             })
             .expect("Failed to spawn startup_flag thread");
 
-        Ok(process_ready_rx)
+        Ok(())
     }
 
-    /// Start packet capture and processing pipeline
-    fn start_packet_capture_pipeline(
-        &self,
-        connections: Arc<DashMap<String, Connection>>,
-    ) -> Result<()> {
+    /// Phase 1 of the capture pipeline: create the packet channel and start the
+    /// capture thread (which opens the raw socket). The receiver is stashed in
+    /// `self.packet_rx` for [`App::start_packet_processors`], which runs in the
+    /// worker phase after the sandbox has been applied.
+    fn start_packet_capture_pipeline(&mut self) -> Result<()> {
         // Create packet channel — sender batches packets, receiver gets Vec<Vec<u8>> per batch
         let (packet_tx, packet_rx) = channel::bounded::<Vec<Vec<u8>>>(MAX_PACKET_QUEUE);
 
         // Start capture thread
         self.start_capture_thread(packet_tx)?;
+
+        // Stash the receiver; the processor threads are spawned post-sandbox.
+        self.packet_rx = Some(packet_rx);
+
+        Ok(())
+    }
+
+    /// Spawn the DPI packet-processor threads, draining the channel stashed by
+    /// [`App::start_packet_capture_pipeline`].
+    fn start_packet_processors(
+        &mut self,
+        connections: Arc<DashMap<String, Connection>>,
+    ) -> Result<()> {
+        let packet_rx = self.packet_rx.take().ok_or_else(|| {
+            anyhow::anyhow!("packet receiver missing; start() must run before start_workers()")
+        })?;
 
         // Start multiple packet processing threads
         let num_processors = thread::available_parallelism()

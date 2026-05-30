@@ -107,9 +107,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Setup SSH for AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.AUR_SSH_PRIVATE_KEY }}" > ~/.ssh/aur
+          # Pass the key via env, not inline interpolation, so its bytes are never
+          # spliced into the rendered command line (matches the GPG handling in
+          # ppa-release.yml). printf avoids echo's escape interpretation.
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
           ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
 

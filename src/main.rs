@@ -2,7 +2,7 @@ use anyhow::Result;
 use log::{LevelFilter, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
 use simplelog::{ConfigBuilder, WriteLogger};
-use std::fs::{self, File};
+use std::fs;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
@@ -127,22 +127,28 @@ fn main() -> Result<()> {
     let process_ready_rx = app.start()?;
     info!("Application started");
 
-    // Pre-create sidecar JSONL file for PCAP export (needed for Landlock permissions)
-    // This must be done BEFORE Landlock is applied so the file exists when adding rules
+    // Pre-create the PCAP export file and its sidecar JSONL (needed for Landlock
+    // permissions). This must be done BEFORE the sandbox is applied so the files
+    // exist when adding rules: Landlock requires an open FD to scope a rule to a
+    // file, so a not-yet-existing path falls back to granting write on the whole
+    // parent directory. Pre-creating keeps the write rule file-scoped. The PCAP
+    // writer later reopens the path with truncation, so a zero-byte file is fine.
     if let Some(ref pcap_path) = config.pcap_export_file {
         let jsonl_path = format!("{}.connections.jsonl", pcap_path);
-        match std::fs::File::create(&jsonl_path) {
-            Ok(_f) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Err(e) = _f.set_permissions(std::fs::Permissions::from_mode(0o600)) {
-                        warn!("Failed to set sidecar JSONL file permissions: {}", e);
+        for (label, path) in [("PCAP", pcap_path.as_str()), ("sidecar JSONL", &jsonl_path)] {
+            match std::fs::File::create(path) {
+                Ok(_f) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Err(e) = _f.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+                            warn!("Failed to set {} file permissions: {}", label, e);
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                warn!("Failed to pre-create sidecar JSONL file: {}", e);
+                Err(e) => {
+                    warn!("Failed to pre-create {} file: {}", label, e);
+                }
             }
         }
     }
@@ -182,10 +188,14 @@ fn main() -> Result<()> {
             SandboxMode::BestEffort
         };
 
-        // Collect read paths (GeoIP databases)
+        // Collect read paths (GeoIP databases). Exclude the bare current-directory
+        // entry: a Landlock PathBeneath rule on "." grants recursive read access to
+        // the entire CWD subtree (e.g. all of $HOME when rustnet is launched from
+        // there), which defeats the point of the read-path whitelist. The concrete
+        // GeoIP locations (resources/geoip2, XDG/system dirs) stay covered.
         let read_paths: Vec<PathBuf> = GeoIpResolver::get_search_paths()
             .into_iter()
-            .filter(|p| p.exists())
+            .filter(|p| p.exists() && p.as_os_str() != ".")
             .collect();
 
         let mut write_paths = Vec::new();
@@ -402,6 +412,12 @@ fn main() -> Result<()> {
         }
     }
 
+    // Now that the sandbox has been applied on the main thread, start the worker
+    // threads (DPI packet processors, enrichment, snapshot, cleanup, collectors).
+    // On Linux these inherit the Landlock domain and the dropped capabilities, so
+    // a compromise in a DPI parser is contained even when running as root.
+    app.start_workers()?;
+
     // Run the UI loop
     let res = run_ui_loop(&mut terminal, &app);
 
@@ -420,15 +436,55 @@ fn main() -> Result<()> {
 }
 
 fn setup_logging(level: LevelFilter) -> Result<()> {
-    // Create logs directory if it doesn't exist
+    // The log directory is resolved relative to the current working directory.
+    // rustnet typically runs as root, so a pre-planted symlink at `logs/` (e.g.
+    // `logs -> /etc`) would let an attacker who controls the launch directory
+    // redirect root-owned writes to an arbitrary location. Refuse to use it if
+    // it is a symlink (symlink_metadata does not follow the link).
     let log_dir = Path::new("logs");
+    #[cfg(unix)]
+    if let Ok(meta) = fs::symlink_metadata(log_dir)
+        && meta.file_type().is_symlink()
+    {
+        anyhow::bail!("refusing to use log directory 'logs': it is a symlink");
+    }
+
     if !log_dir.exists() {
         fs::create_dir_all(log_dir)?;
+        // Restrict the directory to the owner: the diagnostic log can contain
+        // connection metadata and (at debug/trace) DNS/SNI hostnames, and rustnet
+        // typically runs as root, so it must not be world-readable. Mirrors the
+        // 0o600 treatment of the JSON/PCAP outputs.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = fs::set_permissions(log_dir, fs::Permissions::from_mode(0o700)) {
+                warn!("Failed to set logs directory permissions: {}", e);
+            }
+        }
     }
 
     // Create timestamped log file name
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
     let log_file_path = log_dir.join(format!("rustnet_{}.log", timestamp));
+
+    // On Unix, open with O_NOFOLLOW so a symlink pre-planted at the (predictable,
+    // timestamped) path cannot redirect the write, and set the 0o600 mode at
+    // creation time to avoid a create-then-chmod window where the file is briefly
+    // world-readable.
+    #[cfg(unix)]
+    let log_file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(0o600)
+            .open(&log_file_path)?
+    };
+    #[cfg(not(unix))]
+    let log_file = fs::File::create(&log_file_path)?;
 
     // Enable the `target` field on every log line so each entry carries
     // the originating module (e.g. `network::dpi::dns`). Combined with
@@ -439,7 +495,7 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
         .set_target_level(LevelFilter::Error)
         .build();
 
-    WriteLogger::init(level, config, File::create(log_file_path)?)?;
+    WriteLogger::init(level, config, log_file)?;
 
     // Startup banner — one identifying header so a user grepping a
     // long-lived log file can immediately see which binary, which
