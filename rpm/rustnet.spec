@@ -4,46 +4,83 @@ Name:    rustnet
 # renovate: datasource=github-releases depName=domcyrus/rustnet extractVersion=true
 Version: 1.3.0
 Release: 1%{?dist}
-Summary: A cross-platform network monitoring terminal UI tool built with Rust
+Summary: Per-process network monitoring TUI with deep packet inspection
 License: Apache-2.0
 URL:     https://github.com/domcyrus/%{name}
 Source0: %{url}/archive/refs/tags/v%{version}.tar.gz
+%if 0%{?suse_version}
+Source1: vendor.tar.zst
+%endif
 
+%if 0%{?suse_version}
+BuildRequires: cargo-packaging
+%else
 BuildRequires: cargo
+%endif
 BuildRequires: rust >= 1.88.0
 BuildRequires: libpcap-devel
+%if 0%{?suse_version}
+BuildRequires: libelf-devel
+%else
 BuildRequires: elfutils-libelf-devel
+%endif
 BuildRequires: clang
 BuildRequires: llvm
 
 Requires: libpcap
+%if 0%{?suse_version}
+Requires: libelf1
+%else
 Requires: elfutils-libelf
+%endif
 
 %description
-A cross-platform network monitoring tool built with Rust. RustNet provides
-real-time visibility into network connections with detailed state information,
-connection lifecycle management, deep packet inspection, and a terminal user
-interface.
+RustNet is a terminal UI that shows live per-process network activity:
+which application owns each TCP, UDP, and QUIC connection, what protocol
+it speaks, and how the connection is behaving in real time. It runs
+sandboxed by default and drops privileges immediately after libpcap
+initializes.
 
-Features include:
-- Real-time Network Monitoring for TCP, UDP, ICMP, and ARP connections
-- Deep Packet Inspection (DPI) for HTTP/HTTPS, DNS, SSH, and QUIC protocols
-- Connection lifecycle management with protocol-aware timeouts
-- Process identification and service name resolution
-- Cross-platform support (Linux, macOS, Windows, BSD)
-- Advanced filtering with vim/fzf-style search
-- eBPF-enhanced process detection (enabled by default with automatic fallback)
+Features:
+- Per-process attribution for TCP, UDP, and QUIC via eBPF on Linux,
+  PKTAP on macOS, and native APIs on Windows and FreeBSD
+- Deep packet inspection for HTTP, HTTPS/TLS (with SNI), DNS, SSH,
+  FTP, QUIC, MQTT, BitTorrent, STUN, NTP, mDNS, LLMNR, DHCP, SNMP,
+  SSDP, and NetBIOS
+- Security sandboxing: Landlock (Linux 5.13+), Seatbelt (macOS),
+  token privilege drop and job-object child blocking (Windows)
+- TCP analytics: retransmissions, out-of-order packets, and
+  fast-retransmit detection, per-connection and aggregate
+- Protocol-aware connection lifecycle with staleness indicators
+- Vim/fzf-style filtering on port, src, dst, sni, process, state,
+  proto, plus regex
+- GeoIP country lookups via local MaxMind GeoLite2 (no network calls)
+- Cross-platform: Linux, macOS, Windows, FreeBSD
 
 %prep
+%if 0%{?suse_version}
+%autosetup -n %{name}-%{version} -a 1
+%else
 %autosetup -n %{name}-%{version}
+%endif
 
 %build
+%if 0%{?suse_version}
+%{cargo_build}
+%else
 export RUSTFLAGS="%{build_rustflags}"
 # eBPF is now enabled by default, no need for explicit feature flag
 cargo build --release
+%endif
 
 %install
+%if 0%{?suse_version}
+%{cargo_install}
+# cargo_install may generate .crates.toml and .crates2.json, we don't want them
+rm -f %{buildroot}%{_prefix}/.crates.toml %{buildroot}%{_prefix}/.crates2.json
+%else
 install -Dpm 0755 target/release/rustnet -t %{buildroot}%{_bindir}/
+%endif
 install -Dpm 0644 assets/services -t %{buildroot}%{_datadir}/%{name}/
 install -Dpm 0644 README.md -t %{buildroot}%{_docdir}/%{name}/
 install -Dpm 0644 resources/packaging/linux/graphics/rustnet.png -t %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/
@@ -124,4 +161,8 @@ USAGE:
 EOF
 
 %changelog
+%if 0%{?suse_version}
+# OBS does not support rpmautospec; the changelog is maintained in rustnet.changes
+%else
 %autochangelog
+%endif

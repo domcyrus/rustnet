@@ -248,6 +248,23 @@ rustnet
 
 **Important:** The COPR only supports Fedora 42 and 43 due to the Rust 1.88+ requirement. CentOS and RHEL don't have recent enough Rust compilers in their repositories. For those distributions, use the [.rpm packages](#redhatfedoracentos-rpm-packages) from GitHub releases or [build from source](#building-from-source).
 
+#### openSUSE Tumbleweed (OBS)
+
+RustNet is built for openSUSE Tumbleweed (x86_64 and aarch64) via the [openSUSE Build Service](https://build.opensuse.org/package/show/home:domcyrus:rustnet/rustnet).
+
+```bash
+sudo zypper addrepo https://download.opensuse.org/repositories/home:/domcyrus:/rustnet/openSUSE_Tumbleweed/home:domcyrus:rustnet.repo
+sudo zypper refresh
+sudo zypper install rustnet
+
+# Run with sudo
+sudo rustnet
+
+# Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
+sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
+rustnet
+```
+
 #### Homebrew Installation
 
 **On macOS:**
