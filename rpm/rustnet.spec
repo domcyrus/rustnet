@@ -92,6 +92,9 @@ install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_da
 %{_bindir}/rustnet
 %dir %{_datadir}/%{name}
 %{_datadir}/%{name}/services
+%dir %{_datadir}/icons/hicolor
+%dir %{_datadir}/icons/hicolor/256x256
+%dir %{_datadir}/icons/hicolor/256x256/apps
 %{_datadir}/icons/hicolor/256x256/apps/rustnet.png
 %{_datadir}/applications/rustnet.desktop
 
