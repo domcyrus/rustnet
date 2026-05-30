@@ -1631,10 +1631,7 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
 
         if filtered_interface_stats.len() > num_to_show {
             lines.push(Line::from(Span::styled(
-                format!(
-                    "... {} more",
-                    filtered_interface_stats.len() - num_to_show
-                ),
+                format!("... {} more", filtered_interface_stats.len() - num_to_show),
                 theme::fg(theme::muted()),
             )));
         }
