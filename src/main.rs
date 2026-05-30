@@ -127,22 +127,28 @@ fn main() -> Result<()> {
     let process_ready_rx = app.start()?;
     info!("Application started");
 
-    // Pre-create sidecar JSONL file for PCAP export (needed for Landlock permissions)
-    // This must be done BEFORE Landlock is applied so the file exists when adding rules
+    // Pre-create the PCAP export file and its sidecar JSONL (needed for Landlock
+    // permissions). This must be done BEFORE the sandbox is applied so the files
+    // exist when adding rules: Landlock requires an open FD to scope a rule to a
+    // file, so a not-yet-existing path falls back to granting write on the whole
+    // parent directory. Pre-creating keeps the write rule file-scoped. The PCAP
+    // writer later reopens the path with truncation, so a zero-byte file is fine.
     if let Some(ref pcap_path) = config.pcap_export_file {
         let jsonl_path = format!("{}.connections.jsonl", pcap_path);
-        match std::fs::File::create(&jsonl_path) {
-            Ok(_f) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Err(e) = _f.set_permissions(std::fs::Permissions::from_mode(0o600)) {
-                        warn!("Failed to set sidecar JSONL file permissions: {}", e);
+        for (label, path) in [("PCAP", pcap_path.as_str()), ("sidecar JSONL", &jsonl_path)] {
+            match std::fs::File::create(path) {
+                Ok(_f) => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Err(e) = _f.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+                            warn!("Failed to set {} file permissions: {}", label, e);
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                warn!("Failed to pre-create sidecar JSONL file: {}", e);
+                Err(e) => {
+                    warn!("Failed to pre-create {} file: {}", label, e);
+                }
             }
         }
     }
