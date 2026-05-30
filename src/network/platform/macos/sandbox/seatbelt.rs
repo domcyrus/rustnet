@@ -489,11 +489,7 @@ mod tests {
         // reads of the system credential stores rustnet never needs.
         for block_network in [true, false] {
             let profile = build_sbpl_profile(block_network);
-            for store in [
-                "/Library/Keychains",
-                "/private/var/db/dslocal",
-                "/etc/ssh",
-            ] {
+            for store in ["/Library/Keychains", "/private/var/db/dslocal", "/etc/ssh"] {
                 assert!(
                     profile.contains(store),
                     "Expected credential-store deny for {store} (block_network={block_network})"
