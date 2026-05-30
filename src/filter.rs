@@ -1,5 +1,7 @@
 //! Vim/fzf-style connection filter: parses `port:`, `src:`, `dst:`,
-//! `sni:`, `process:`, `state:`, `proto:` keyword expressions (with
+//! `sni:`, `process:`, `state:`, `proto:`, (and `pod:`, `ns:`,
+//! `container:` when the `kubernetes` feature is enabled) keyword
+//! expressions (with
 //! optional `(?i)…` regex literals via `regex-lite`) and matches them
 //! against live `Connection` records.
 
@@ -52,6 +54,15 @@ pub enum FilterCriteria {
     Application(FilterValue),
     /// Match connection state (e.g., ESTABLISHED, SYN_RECV)
     State(FilterValue),
+    /// Match Kubernetes pod name or UID
+    #[cfg(feature = "kubernetes")]
+    Pod(FilterValue),
+    /// Match Kubernetes pod namespace
+    #[cfg(feature = "kubernetes")]
+    Namespace(FilterValue),
+    /// Match Kubernetes container name or ID
+    #[cfg(feature = "kubernetes")]
+    Container(FilterValue),
 }
 
 pub struct ConnectionFilter {
@@ -160,6 +171,18 @@ impl ConnectionFilter {
                     "state" => {
                         criteria.push(FilterCriteria::State(parse_filter_value(&value)));
                     }
+                    #[cfg(feature = "kubernetes")]
+                    "pod" => {
+                        criteria.push(FilterCriteria::Pod(parse_filter_value(&value)));
+                    }
+                    #[cfg(feature = "kubernetes")]
+                    "ns" | "namespace" => {
+                        criteria.push(FilterCriteria::Namespace(parse_filter_value(&value)));
+                    }
+                    #[cfg(feature = "kubernetes")]
+                    "container" | "cont" => {
+                        criteria.push(FilterCriteria::Container(parse_filter_value(&value)));
+                    }
                     _ => {
                         // Unknown keyword, treat as general search
                         criteria.push(FilterCriteria::General(parse_filter_value(
@@ -215,6 +238,24 @@ impl ConnectionFilter {
             FilterCriteria::Sni(fv) => self.matches_sni(connection, fv),
             FilterCriteria::Application(fv) => self.matches_application(connection, fv),
             FilterCriteria::State(fv) => match_text(&connection.state(), fv),
+            #[cfg(feature = "kubernetes")]
+            FilterCriteria::Pod(fv) => connection.k8s_info.as_ref().is_some_and(|k| {
+                k.pod_name.as_deref().is_some_and(|n| match_text(n, fv))
+                    || k.pod_uid.as_deref().is_some_and(|u| match_text(u, fv))
+            }),
+            #[cfg(feature = "kubernetes")]
+            FilterCriteria::Namespace(fv) => connection.k8s_info.as_ref().is_some_and(|k| {
+                k.pod_namespace
+                    .as_deref()
+                    .is_some_and(|ns| match_text(ns, fv))
+            }),
+            #[cfg(feature = "kubernetes")]
+            FilterCriteria::Container(fv) => connection.k8s_info.as_ref().is_some_and(|k| {
+                k.container_name
+                    .as_deref()
+                    .is_some_and(|n| match_text(n, fv))
+                    || k.container_id.as_deref().is_some_and(|c| match_text(c, fv))
+            }),
         })
     }
 
@@ -781,5 +822,58 @@ mod tests {
             FilterCriteria::Port(PortMatch::Partial(_)) => {}
             _ => panic!("Expected fallback to Partial for invalid regex"),
         }
+    }
+
+    #[cfg(feature = "kubernetes")]
+    #[test]
+    fn test_kubernetes_filter_keywords() {
+        use crate::network::types::*;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        conn.k8s_info = Some(K8sInfo {
+            pod_uid: Some("c3b4d893-473e-43c2-8013-8ee2955a4630".to_string()),
+            pod_name: Some("nginx-86644db9cc-mf5lx".to_string()),
+            pod_namespace: Some("demo-traffic".to_string()),
+            container_id: Some(
+                "c16c7605305c854d8582a1db3d5bb3c4b6c89a08e914223e9d500682b3fb0b1b".to_string(),
+            ),
+            container_name: Some("nginx".to_string()),
+            cgroup_path: None,
+        });
+
+        // pod: matches by name (substring)
+        assert!(ConnectionFilter::parse("pod:nginx").matches(&conn));
+        // pod: matches by UID prefix
+        assert!(ConnectionFilter::parse("pod:c3b4d893").matches(&conn));
+        // ns: matches namespace
+        assert!(ConnectionFilter::parse("ns:demo-traffic").matches(&conn));
+        assert!(ConnectionFilter::parse("namespace:demo").matches(&conn));
+        // container: matches by name and by ID prefix
+        assert!(ConnectionFilter::parse("container:nginx").matches(&conn));
+        assert!(ConnectionFilter::parse("container:c16c7605").matches(&conn));
+        // Negative cases
+        assert!(!ConnectionFilter::parse("pod:redis").matches(&conn));
+        assert!(!ConnectionFilter::parse("ns:kube-system").matches(&conn));
+        assert!(!ConnectionFilter::parse("container:redis").matches(&conn));
+
+        // Combined filter
+        assert!(ConnectionFilter::parse("ns:demo-traffic pod:nginx").matches(&conn));
+
+        // Filter on connections without K8s info returns no match for any pod filter.
+        let bare = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        assert!(!ConnectionFilter::parse("pod:nginx").matches(&bare));
+        assert!(!ConnectionFilter::parse("ns:demo").matches(&bare));
+        assert!(!ConnectionFilter::parse("container:nginx").matches(&bare));
     }
 }

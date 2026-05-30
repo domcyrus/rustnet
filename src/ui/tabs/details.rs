@@ -415,6 +415,73 @@ pub(in crate::ui) fn draw_connection_details(
         }
     }
 
+    // Kubernetes attribution (pod / container) when the owning process is in
+    // a kubepods cgroup. Only rendered when the resolver populated `k8s_info`.
+    #[cfg(feature = "kubernetes")]
+    if let Some(ref k8s) = conn.k8s_info {
+        let k8s_value_style = theme::fg(theme::field_process());
+        push_detail_section(&mut details_text, &mut detail_fields, "Kubernetes");
+        // Prefer the human-readable pod name over the raw UID; show both when
+        // both are present.
+        if let Some(ref name) = k8s.pod_name {
+            let pod_display = if let Some(ref ns) = k8s.pod_namespace {
+                format!("{}/{}", ns, name)
+            } else {
+                name.clone()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Pod",
+                pod_display,
+                label_style,
+                k8s_value_style,
+            );
+        }
+        if let Some(ref uid) = k8s.pod_uid {
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Pod UID",
+                uid.clone(),
+                label_style,
+                k8s_value_style,
+            );
+        }
+        if let Some(ref cname) = k8s.container_name {
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Container",
+                cname.clone(),
+                label_style,
+                k8s_value_style,
+            );
+        }
+        if let Some(ref cid) = k8s.container_id {
+            // Container IDs are 64 hex chars; truncate to the short form
+            // typically shown by `kubectl get pod ... -o wide`.
+            let short = if cid.len() >= 12 { &cid[..12] } else { cid };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Container ID",
+                short.to_string(),
+                label_style,
+                k8s_value_style,
+            );
+        }
+        if let Some(ref path) = k8s.cgroup_path {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Cgroup",
+                path.clone(),
+                label_style,
+            );
+        }
+    }
+
     // Add DPI / application protocol information. Section heading carries
     // both the label and the protocol so we don't need a redundant
     // "Application: <proto>" field below.

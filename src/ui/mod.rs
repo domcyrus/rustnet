@@ -753,6 +753,8 @@ mod snapshot_tests {
             geoip_asn_path: None,
             geoip_city_path: None,
             disable_geoip: true,
+            #[cfg(feature = "kubernetes")]
+            kubernetes_mode: crate::network::kubernetes::KubernetesMode::default(),
         }
     }
 

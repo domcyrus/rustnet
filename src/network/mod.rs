@@ -11,6 +11,8 @@ pub mod dns;
 pub mod dpi;
 pub mod geoip;
 pub mod interface_stats;
+#[cfg(feature = "kubernetes")]
+pub mod kubernetes;
 pub mod link_layer;
 pub mod merge;
 pub mod oui;
