@@ -224,8 +224,11 @@ jobs:
             > /usr/local/bin/arm-linux-musleabihf-gcc
           chmod +x /usr/local/bin/arm-linux-musleabihf-gcc
 
+          # libpcap is pinned by version + sha256 (Dependabot does not track
+          # tarballs fetched in run steps, so bump the URL and the hash together).
           curl -fsSL --retry 3 --retry-delay 5 \
             -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          echo "37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  libpcap.tar.gz" | sha256sum -c -
           tar xzf libpcap.tar.gz
           cd libpcap-1.10.5
           CC=arm-linux-musleabihf-gcc \
@@ -252,8 +255,11 @@ jobs:
             > /usr/local/bin/i686-linux-musl-gcc
           chmod +x /usr/local/bin/i686-linux-musl-gcc
 
+          # libpcap is pinned by version + sha256 (Dependabot does not track
+          # tarballs fetched in run steps, so bump the URL and the hash together).
           curl -fsSL --retry 3 --retry-delay 5 \
             -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          echo "37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  libpcap.tar.gz" | sha256sum -c -
           tar xzf libpcap.tar.gz
           cd libpcap-1.10.5
           CC=i686-linux-musl-gcc \

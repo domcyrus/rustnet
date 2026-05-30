@@ -393,7 +393,10 @@ impl PacketParser {
         // Handle extension headers if needed
         let (final_next_header, transport_offset) =
             self.parse_ipv6_extension_headers(next_header, transport_data);
-        let final_transport_data = &transport_data[transport_offset..];
+        // A crafted extension header can declare a length that runs past the
+        // captured bytes, so `transport_offset` may exceed the slice length.
+        // Clamp before slicing to avoid an out-of-bounds panic (one-packet DoS).
+        let final_transport_data = &transport_data[transport_offset.min(transport_data.len())..];
 
         let params =
             TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
@@ -596,7 +599,10 @@ impl PacketParser {
         // Handle extension headers if needed
         let (final_next_header, transport_offset) =
             self.parse_ipv6_extension_headers(next_header, transport_data);
-        let final_transport_data = &transport_data[transport_offset..];
+        // A crafted extension header can declare a length that runs past the
+        // captured bytes, so `transport_offset` may exceed the slice length.
+        // Clamp before slicing to avoid an out-of-bounds panic (one-packet DoS).
+        let final_transport_data = &transport_data[transport_offset.min(transport_data.len())..];
 
         let params =
             TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
@@ -909,6 +915,38 @@ mod tests {
         let parser = create_parser_with_linktype(1);
         let empty = vec![];
         assert!(parser.parse_packet(&empty).is_none());
+    }
+
+    #[test]
+    fn test_ipv6_extension_header_overflow_does_not_panic() {
+        // Regression: a crafted IPv6 extension header can declare a length
+        // that runs far past the captured bytes. The parser used to slice
+        // `transport_data[transport_offset..]` with `transport_offset` past
+        // the end, panicking the capture thread (one-packet DoS). It must now
+        // clamp and return cleanly instead.
+        let parser = create_parser_with_linktype(1);
+        let mut packet = vec![
+            // Ethernet (ethertype 0x86dd = IPv6)
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x86, 0xdd,
+        ];
+        packet.extend_from_slice(&[
+            // IPv6 header: version 6, next_header = 0 (Hop-by-Hop Options)
+            0x60, 0x00, 0x00, 0x00, // version / traffic class / flow label
+            0x00, 0x02, // payload length = 2
+            0x00, // next header = Hop-by-Hop Options
+            0x40, // hop limit
+            // src addr (::1)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x01, // dst addr (::2)
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x02,
+        ]);
+        // Hop-by-Hop extension header that claims (0xFF + 1) * 8 = 2048 bytes
+        // while only 2 bytes are present.
+        packet.extend_from_slice(&[0x3b /* next = no next header */, 0xff]);
+
+        // Must not panic.
+        let _ = parser.parse_packet(&packet);
     }
 
     #[test]

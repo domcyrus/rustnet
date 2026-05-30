@@ -735,7 +735,11 @@ fn try_decrypt_initial_with_secret(packet: &[u8], secret: &[u8], version: u32) -
 
     // Decrypt the payload
     let ciphertext_offset = pn_offset + pn_length;
-    let ciphertext_len = packet_payload_length as usize - pn_length;
+    // `packet_payload_length` is an attacker-controlled varint; if it is
+    // smaller than the packet-number length the subtraction would underflow
+    // (panic in debug, wrap to a huge value in release that then slips past
+    // the bounds check below and panics on the slice). Reject instead.
+    let ciphertext_len = (packet_payload_length as usize).checked_sub(pn_length)?;
 
     if ciphertext_offset + ciphertext_len > packet.len() {
         debug!("QUIC: Ciphertext extends beyond packet");
@@ -2484,6 +2488,31 @@ mod tests {
         // Intentionally no token bytes follow — declared length far exceeds packet.
 
         let secret = [0u8; 32];
+        let result = try_decrypt_initial_with_secret(&packet, &secret, 1);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_initial_packet_short_length_does_not_underflow() {
+        // Regression: a crafted Initial packet whose declared payload `Length`
+        // varint is smaller than the packet-number length made
+        // `packet_payload_length - pn_length` underflow. In debug that panicked
+        // outright; in release it wrapped to a huge value that slipped past the
+        // bounds check and panicked on the ciphertext slice (start > end).
+        // It must now bail out via checked_sub and return None.
+        let mut packet = Vec::new();
+        packet.push(0xC0); // long header, type = Initial
+        packet.extend_from_slice(&1u32.to_be_bytes()); // version 1
+        packet.push(0); // DCID len = 0
+        packet.push(0); // SCID len = 0
+        packet.push(0); // token length varint = 0
+        packet.push(0); // packet length varint = 0  (< any pn_length of 1..=4)
+        // Enough trailing bytes for the header-protection sample
+        // (sample_offset + 16 must be within the packet).
+        packet.extend(std::iter::repeat_n(0u8, 24));
+
+        let secret = [0u8; 32];
+        // Must not panic in either debug or release.
         let result = try_decrypt_initial_with_secret(&packet, &secret, 1);
         assert!(result.is_none());
     }

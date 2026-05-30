@@ -12,6 +12,12 @@ use crate::network::types::{
 
 /// Get the priority of a QUIC connection state for proper state progression
 /// Higher priority = more advanced state. States should only progress forward.
+/// Upper bound on DNS response IPs accumulated per connection across packets.
+/// The per-packet parser already caps extraction (see `MAX_RESPONSE_IPS_PER_PACKET`
+/// in dpi/dns.rs); this bounds the cross-packet merge accumulator so a sustained
+/// flow cannot grow it without limit.
+const MAX_MERGED_RESPONSE_IPS: usize = 64;
+
 fn quic_state_priority(state: &QuicConnectionState) -> u8 {
     match state {
         QuicConnectionState::Unknown => 0,
@@ -785,8 +791,16 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
         old_info.query_type = new_info.query_type;
     }
 
-    // Merge response IPs (keep unique)
+    // Merge response IPs (keep unique). Cap the accumulator: a long-lived
+    // DNS-shaped UDP flow (the idle timeout is refreshed on every packet) would
+    // otherwise grow this Vec without bound, and the `contains` dedup is a linear
+    // scan, so an attacker feeding a steady stream of distinct A/AAAA answers
+    // drives O(n^2) CPU and unbounded memory on the processing pipeline. The UI
+    // only renders a short list and the cap is far above any real resolver answer.
     for ip in &new_info.response_ips {
+        if old_info.response_ips.len() >= MAX_MERGED_RESPONSE_IPS {
+            break;
+        }
         if !old_info.response_ips.contains(ip) {
             old_info.response_ips.push(*ip);
         }
@@ -967,6 +981,33 @@ mod tests {
             process_name: None,
             process_id: None,
         }
+    }
+
+    #[test]
+    fn test_merge_dns_response_ips_is_capped() {
+        // A sustained DNS-shaped flow must not grow response_ips without bound.
+        // Feed far more distinct answer IPs than the cap and confirm it stops.
+        let mut old = DnsInfo {
+            query_name: Some("example.com".to_string()),
+            query_type: None,
+            response_ips: Vec::new(),
+            is_response: true,
+        };
+
+        for i in 0..(MAX_MERGED_RESPONSE_IPS as u32 * 4) {
+            let octets = i.to_be_bytes();
+            let new = DnsInfo {
+                query_name: None,
+                query_type: None,
+                response_ips: vec![IpAddr::V4(Ipv4Addr::new(
+                    10, octets[1], octets[2], octets[3],
+                ))],
+                is_response: true,
+            };
+            merge_dns_info(&mut old, &new);
+        }
+
+        assert_eq!(old.response_ips.len(), MAX_MERGED_RESPONSE_IPS);
     }
 
     #[test]

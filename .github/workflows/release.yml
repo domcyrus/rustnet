@@ -247,8 +247,11 @@ jobs:
             > /usr/local/bin/arm-linux-musleabihf-gcc
           chmod +x /usr/local/bin/arm-linux-musleabihf-gcc
 
+          # libpcap is pinned by version + sha256 (Dependabot does not track
+          # tarballs fetched in run steps, so bump the URL and the hash together).
           curl -fsSL --retry 3 --retry-delay 5 \
             -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          echo "37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  libpcap.tar.gz" | sha256sum -c -
           tar xzf libpcap.tar.gz
           cd libpcap-1.10.5
           CC=arm-linux-musleabihf-gcc \
@@ -280,8 +283,11 @@ jobs:
             > /usr/local/bin/i686-linux-musl-gcc
           chmod +x /usr/local/bin/i686-linux-musl-gcc
 
+          # libpcap is pinned by version + sha256 (Dependabot does not track
+          # tarballs fetched in run steps, so bump the URL and the hash together).
           curl -fsSL --retry 3 --retry-delay 5 \
             -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
+          echo "37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  libpcap.tar.gz" | sha256sum -c -
           tar xzf libpcap.tar.gz
           cd libpcap-1.10.5
           CC=i686-linux-musl-gcc \
@@ -686,6 +692,13 @@ jobs:
           Invoke-WebRequest `
             -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip" `
             -OutFile "$env:TEMP\wix-binaries.zip" -Verbose
+          # Verify the toolchain that builds the shipped MSI. Pinned by version +
+          # sha256; bump both together (Dependabot does not track this download).
+          $expected = "2c1888d5d1dba377fc7fa14444cf556963747ff9a0a289a3599cf09da03b9e2e"
+          $actual = (Get-FileHash "$env:TEMP\wix-binaries.zip" -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) {
+            throw "WiX zip checksum mismatch: expected $expected, got $actual"
+          }
           Expand-Archive -LiteralPath "$env:TEMP\wix-binaries.zip" -DestinationPath "$env:TEMP\wix" -Verbose
 
           # Add WiX to PATH for all subsequent steps

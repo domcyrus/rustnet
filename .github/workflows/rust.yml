@@ -51,7 +51,9 @@ jobs:
     - name: Install cargo-audit
       run: cargo install cargo-audit --locked
     - name: Run security audit
-      run: cargo audit
+      # Fail the build on advisories and on yanked crates so a withdrawn
+      # dependency (e.g. a yanked release pinned in Cargo.lock) is caught in CI.
+      run: cargo audit --deny warnings --deny yanked
 
   docker:
     runs-on: ubuntu-latest
