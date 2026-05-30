@@ -1489,10 +1489,10 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         ])
         .split(area);
 
-    let heading = Paragraph::new(Line::from(vec![
-        Span::styled("Traffic ", theme::bold_fg(theme::heading())),
-        Span::styled("(press 'i' for full table)", theme::fg(theme::muted())),
-    ]));
+    let heading = Paragraph::new(Line::from(vec![Span::styled(
+        "Traffic",
+        theme::bold_fg(theme::heading()),
+    )]));
     f.render_widget(heading, layout[0]);
 
     let sections = &layout[1..];
@@ -1632,7 +1632,7 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         if filtered_interface_stats.len() > num_to_show {
             lines.push(Line::from(Span::styled(
                 format!(
-                    "... {} more (press 'i')",
+                    "... {} more",
                     filtered_interface_stats.len() - num_to_show
                 ),
                 theme::fg(theme::muted()),

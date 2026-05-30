@@ -458,7 +458,6 @@ impl UIState {
         }
     }
 
-    /// Cycle to the next sort column
     /// Jump directly to a tab by index (0 = Overview … 4 = Help).
     ///
     /// Keeps `show_help` in sync with `selected_tab` so the Help tab toggle
@@ -489,6 +488,7 @@ impl UIState {
         };
     }
 
+    /// Cycle to the next sort column.
     pub fn cycle_sort_column(&mut self) {
         self.sort_column = self.sort_column.next(self.has_geoip);
         // Reset to the default direction for the new column
