@@ -76,6 +76,12 @@ pub struct SandboxInfo {
     /// Whether Landlock filesystem restrictions are applied
     #[cfg(target_os = "linux")]
     pub fs_restricted: bool,
+    /// Whether Landlock scope restrictions (abstract UNIX sockets + signals) are applied
+    #[cfg(target_os = "linux")]
+    pub scope_restricted: bool,
+    /// Effective Landlock ABI negotiated with the kernel (e.g. `Some(6)`), or `None`
+    #[cfg(target_os = "linux")]
+    pub landlock_abi: Option<u8>,
     // macOS-specific fields (Seatbelt)
     /// Whether Seatbelt sandbox was applied
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]

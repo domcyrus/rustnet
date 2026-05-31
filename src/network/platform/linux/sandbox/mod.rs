@@ -10,7 +10,9 @@
 //! After sandboxing is applied:
 //! - Filesystem: Only `/proc` and specified read paths (e.g., GeoIP databases) readable
 //! - Filesystem: Only specified write paths writable (e.g., logs, exports)
-//! - Network: TCP bind/connect blocked (kernel 6.4+)
+//! - Network: TCP bind/connect blocked (kernel 6.7+, ABI v4)
+//! - Scope: abstract UNIX socket connects + signals to outside processes blocked
+//!   (kernel 6.12+, ABI v6)
 //! - Capabilities: CAP_NET_RAW, CAP_BPF, CAP_PERFMON dropped
 //! - Privileges: PR_SET_NO_NEW_PRIVS set (no privilege escalation via execve)
 //!
@@ -22,8 +24,9 @@
 //! # Compatibility
 //!
 //! - Kernel 5.13+: Filesystem sandboxing
-//! - Kernel 6.4+: Network sandboxing (TCP bind/connect)
-//! - Older kernels: Graceful degradation (sandbox not applied)
+//! - Kernel 6.7+:  Network sandboxing (TCP bind/connect, ABI v4)
+//! - Kernel 6.12+: Scope sandboxing (abstract UNIX sockets + signals, ABI v6)
+//! - Older kernels: Graceful degradation (unsupported restrictions dropped)
 
 #[cfg(feature = "landlock")]
 pub mod capabilities;
@@ -73,6 +76,11 @@ pub struct SandboxResult {
     pub landlock_fs_applied: bool,
     /// Whether Landlock network restrictions were applied
     pub landlock_net_applied: bool,
+    /// Whether Landlock scope restrictions (abstract UNIX sockets + signals) were applied
+    pub landlock_scope_applied: bool,
+    /// Effective Landlock ABI negotiated with the kernel (e.g. `Some(6)`), or
+    /// `None` when Landlock is unavailable / not enforced
+    pub landlock_effective_abi: Option<u8>,
 }
 
 /// Status of sandbox application
@@ -115,6 +123,8 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
             landlock_available,
             landlock_fs_applied: false,
             landlock_net_applied: false,
+            landlock_scope_applied: false,
+            landlock_effective_abi: None,
         });
     }
 
@@ -126,6 +136,8 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         landlock_available,
         landlock_fs_applied: false,
         landlock_net_applied: false,
+        landlock_scope_applied: false,
+        landlock_effective_abi: None,
     };
 
     let mut messages = Vec::new();
@@ -195,12 +207,17 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         Ok(ll_result) => {
             result.landlock_fs_applied = ll_result.fs_applied;
             result.landlock_net_applied = ll_result.net_applied;
+            result.landlock_scope_applied = ll_result.scope_applied;
+            result.landlock_effective_abi = ll_result.effective_abi;
 
             if ll_result.fs_applied {
                 messages.push("Landlock filesystem restrictions applied".to_string());
             }
             if ll_result.net_applied {
                 messages.push("Landlock network restrictions applied".to_string());
+            }
+            if ll_result.scope_applied {
+                messages.push("Landlock scope restrictions applied".to_string());
             }
             if !ll_result.fs_applied && !ll_result.net_applied {
                 messages.push(format!("Landlock not applied: {}", ll_result.message));
@@ -266,5 +283,7 @@ pub fn apply_sandbox(_config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         landlock_available: false,
         landlock_fs_applied: false,
         landlock_net_applied: false,
+        landlock_scope_applied: false,
+        landlock_effective_abi: None,
     })
 }

@@ -1104,8 +1104,15 @@ fn draw_stats_panel(
         if sandbox_info.net_restricted {
             features.push("Net blocked");
         }
+        if sandbox_info.scope_restricted {
+            features.push("IPC scoped");
+        }
 
-        let available_indicator = if sandbox_info.landlock_available {
+        let available_indicator = if let Some(abi) = sandbox_info.landlock_abi {
+            // The negotiated ABI tells you which restriction tier is active:
+            // v4 = TCP block, v6 = + abstract-socket/signal scoping.
+            Span::styled(format!(" [Landlock ABI v{abi}]"), theme::fg(theme::muted()))
+        } else if sandbox_info.landlock_available {
             Span::styled(" [kernel supported]", theme::fg(theme::muted()))
         } else {
             Span::styled(" [kernel unsupported]", theme::fg(theme::muted()))
