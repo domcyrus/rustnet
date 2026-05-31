@@ -239,6 +239,8 @@ fn main() -> Result<()> {
                     landlock_available: result.landlock_available,
                     fs_restricted: result.landlock_fs_applied,
                     net_restricted: result.landlock_net_applied,
+                    scope_restricted: result.landlock_scope_applied,
+                    landlock_abi: result.landlock_effective_abi,
                 });
             }
             Err(e) => {
@@ -253,6 +255,8 @@ fn main() -> Result<()> {
                     landlock_available: false,
                     fs_restricted: false,
                     net_restricted: false,
+                    scope_restricted: false,
+                    landlock_abi: None,
                 });
             }
         }
