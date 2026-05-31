@@ -2497,7 +2497,6 @@ dependencies = [
  "libc",
  "log",
  "pcap",
- "pnet_datalink",
  "ratatui",
  "regex-lite",
  "rustnet-capture",

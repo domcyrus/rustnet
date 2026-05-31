@@ -17,10 +17,11 @@
 //! reports why via [`DegradationReason`] (e.g. missing `CAP_BPF`, no root for
 //! PKTAP), which front-ends can surface to the user.
 //!
-//! This crate depends only on `rustnet-core` (for [`Connection`]/[`Protocol`])
-//! and, on macOS, `rustnet-capture` (to learn whether PKTAP is active). It has
-//! no UI or capture-loop dependency, so headless tools can attribute processes
-//! the same way the `rustnet` TUI does.
+//! This crate depends only on `rustnet-core` (for [`Connection`]/[`Protocol`]).
+//! It does not depend on `rustnet-capture`; on macOS the application injects
+//! whether PKTAP is active (via `report_pktap_degradation`) rather than this
+//! crate querying capture. It has no UI or capture-loop dependency, so headless
+//! tools can attribute processes the same way the `rustnet` TUI does.
 
 use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};

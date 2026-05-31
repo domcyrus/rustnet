@@ -34,8 +34,9 @@ the first inhabitant; kernel TCP/UDP counters, socket states, and
 cgroup/container info are natural future additions that share the same eBPF and
 OS-query machinery.
 
-It depends only on `rustnet-core` (for `Connection`/`Protocol`) and, on macOS,
-`rustnet-capture` (to learn whether PKTAP is active). No UI or capture-loop
+It depends only on `rustnet-core` (for `Connection`/`Protocol`); it does not
+depend on `rustnet-capture`. On macOS the application injects whether PKTAP is
+active rather than this crate querying capture. No UI or capture-loop
 dependency, so headless tools can attribute processes the same way the `rustnet`
 TUI does.
 

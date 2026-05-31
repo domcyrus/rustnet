@@ -181,9 +181,10 @@ The experimental eBPF support provides efficient process identification but has 
 Restructure the single crate into a Cargo workspace (same GitHub repo) with clear separation of concerns:
 
 - [x] **rustnet-monitor** (binary, bin name `rustnet`): CLI, TUI, app event
-  loop, and platform-specific process attribution / sandboxing -- the
-  user-facing application. (Package stays `rustnet-monitor` because the
-  `rustnet` crate name is taken on crates.io; the installed binary is `rustnet`.)
+  loop, sandboxing (Landlock/Seatbelt), and interface statistics -- the
+  user-facing application; process attribution is delegated to `rustnet-host`.
+  (Package stays `rustnet-monitor` because the `rustnet` crate name is taken on
+  crates.io; the installed binary is `rustnet`.)
 - [x] **rustnet-core** (library): Packet parsing, protocol types, DPI,
   link-layer parsers, connection merging, and DNS/GeoIP/OUI lookups -- the
   reusable, platform-independent, capture-independent analysis core. Lives at
@@ -198,6 +199,12 @@ Restructure the single crate into a Cargo workspace (same GitHub repo) with clea
   wanting a bespoke capture path (e.g. the macOS pktap helper) can swap it out.
   The macOS `DegradationReason` coupling was untangled by giving capture its own
   `PktapUnavailable` enum, which the binary maps to its UI `DegradationReason`.
+- [x] **rustnet-host** (library): Per-connection process attribution behind one
+  `ProcessLookup` trait -- eBPF/procfs on Linux, PKTAP/lsof on macOS, the IP
+  Helper API on Windows, and `sockstat` on FreeBSD. Lives at `crates/rustnet-host`
+  and owns the eBPF build tooling (the `socket_tracker.bpf.c` program and bundled
+  `vmlinux.h`). The binary injects PKTAP availability via `report_pktap_degradation`,
+  so the crate needs no dependency on `rustnet-capture`.
 - [ ] **rustnet-helper** (binary): Minimal suid helper for macOS pktap privilege
   separation (~100 lines, zero C deps — just `libc`). **Future work, not yet a
   crate.** The root-gated pktap interface creation (`SIOCIFCREATE`) can only be
@@ -211,15 +218,17 @@ Benefits:
 - `cargo install rustnet-monitor` continues to work unchanged
 
 **Status:** The workspace exists with `rustnet-monitor` (binary) depending on
-`rustnet-core` and `rustnet-capture`. The binary's `src/network` module
-re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`) so
-existing `crate::network::*` paths, integration tests, and benches are
+`rustnet-core`, `rustnet-capture`, and `rustnet-host`. The binary's `src/network`
+module re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`)
+so existing `crate::network::*` paths, integration tests, and benches are
 unchanged. Net-only dependencies (`dns-lookup`, `ring`, `aes`, `flate2`,
 `maxminddb`, `pnet_datalink`) and the baked-in `oui.gz` / `services` assets live
-in `rustnet-core`; all pcap usage lives in `rustnet-capture`. `rustnet-core`
-also exposes a `ConnectionTracker` so headless tools can fold captured packets
-into a live, lifecycle-managed connection table without the TUI. Remaining work:
-the `rustnet-helper` macOS pktap suid helper (needs real hardware).
+in `rustnet-core`; all pcap usage lives in `rustnet-capture`; and `procfs` /
+`libbpf-rs` plus the eBPF programs and `vmlinux.h` live in `rustnet-host`.
+`rustnet-core` also exposes a `ConnectionTracker` so headless tools can fold
+captured packets into a live, lifecycle-managed connection table without the
+TUI. Remaining work: the `rustnet-helper` macOS pktap suid helper (needs real
+hardware).
 
 ### macOS Privilege Separation (pktap without root)
 

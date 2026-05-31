@@ -27,11 +27,28 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          NAME=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].name')
-          # Check if this version already exists on crates.io
-          if cargo search "$NAME" --limit 1 | grep -q "\"$VERSION\""; then
-            echo "⚠️  $NAME@$VERSION already published to crates.io, skipping"
-          else
-            cargo publish
-          fi
+          # The workspace must be published in dependency order: rustnet-core
+          # first, then the crates that depend on it, then the binary last.
+          # Each crate's path deps also carry a version, so dependents resolve
+          # against crates.io once their dependencies are indexed.
+          for crate in rustnet-core rustnet-capture rustnet-host rustnet-monitor; do
+            VERSION=$(cargo metadata --no-deps --format-version 1 \
+              | jq -r --arg n "$crate" '.packages[] | select(.name == $n) | .version')
+            if cargo search "$crate" --limit 1 | grep -q "\"$VERSION\""; then
+              echo "⚠️  $crate@$VERSION already published to crates.io, skipping"
+              continue
+            fi
+            echo "📦 Publishing $crate@$VERSION"
+            cargo publish -p "$crate"
+            # Wait for the new version to appear in the index before publishing
+            # a dependent that requires it.
+            if [ "$crate" != "rustnet-monitor" ]; then
+              for _ in $(seq 1 30); do
+                if cargo search "$crate" --limit 1 | grep -q "\"$VERSION\""; then
+                  break
+                fi
+                echo "⏳ waiting for $crate@$VERSION to appear on crates.io..."
+                sleep 10
+              done
+            fi
+          done

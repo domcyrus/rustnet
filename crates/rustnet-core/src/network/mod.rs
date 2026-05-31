@@ -4,9 +4,8 @@
 //! interface-statistics traits, and the shared connection/protocol types.
 //!
 //! This is the platform-independent, capture-independent analysis layer.
-//! Raw packet capture and platform-specific process attribution live in the
-//! `rustnet` binary crate (and, in future, dedicated `rustnet-capture` /
-//! `rustnet-helper` crates).
+//! Raw packet capture lives in the `rustnet-capture` crate and platform-specific
+//! process attribution in the `rustnet-host` crate.
 
 pub mod bogon;
 pub mod dns;
