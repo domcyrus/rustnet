@@ -6,10 +6,13 @@
 use anyhow::Result;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Cell, Paragraph, Row, Sparkline, Table, Wrap},
+    widgets::{
+        Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Sparkline, Table,
+        Wrap,
+    },
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -373,6 +376,41 @@ fn draw_overview(
 }
 
 /// Draw connections list
+/// Render a vertical scrollbar on the right border of a bordered table
+/// `area` when the row list overflows the viewport. `position` is the
+/// scroll offset of the topmost visible row; `viewport` is the number
+/// of rows currently visible. No-op when everything fits, so short
+/// lists keep a clean border. Styled to match the panel border (and
+/// NO_COLOR-aware via `theme::fg`).
+fn draw_table_scrollbar(
+    f: &mut Frame,
+    area: Rect,
+    total_rows: usize,
+    position: usize,
+    viewport: usize,
+) {
+    if total_rows <= viewport {
+        return;
+    }
+    let mut scrollbar_state = ScrollbarState::new(total_rows)
+        .position(position)
+        .viewport_content_length(viewport);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .style(theme::fg(theme::border()));
+    // Inset vertically by 1 so the bar sits between the top/bottom
+    // borders, on the right edge of the panel.
+    f.render_stateful_widget(
+        scrollbar,
+        area.inner(Margin {
+            horizontal: 0,
+            vertical: 1,
+        }),
+        &mut scrollbar_state,
+    );
+}
+
 fn draw_connections_list(
     f: &mut Frame,
     ui_state: &UIState,
@@ -689,6 +727,8 @@ fn draw_connections_list(
         .highlight_symbol("> ");
 
     f.render_stateful_widget(connections_table, area, &mut state);
+
+    draw_table_scrollbar(f, area, connections.len(), scroll_offset, visible_rows);
 
     // Register click regions for visible connection rows
     click_regions.scroll_area = Some(area);
@@ -1030,6 +1070,8 @@ fn draw_grouped_connections_list(
         .highlight_symbol("> ");
 
     f.render_stateful_widget(connections_table, area, &mut state);
+
+    draw_table_scrollbar(f, area, grouped_rows.len(), scroll_offset, visible_rows);
 
     // Register click regions for visible grouped rows
     click_regions.scroll_area = Some(area);
@@ -1665,6 +1707,48 @@ mod tests {
         assert!(is_filter_backspace_char('\u{7f}', KeyModifiers::NONE));
         assert!(is_filter_backspace_char('h', KeyModifiers::CONTROL));
         assert!(!is_filter_backspace_char('h', KeyModifiers::NONE));
+    }
+
+    /// Render `draw_table_scrollbar` into a test buffer and report whether
+    /// any non-space glyph landed in the rightmost column (the scrollbar
+    /// track/thumb sits on the right border).
+    fn scrollbar_renders(total_rows: usize, position: usize, viewport: usize) -> bool {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+
+        let backend = TestBackend::new(20, 12);
+        let mut terminal = Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|f| {
+                super::draw_table_scrollbar(
+                    f,
+                    Rect::new(0, 0, 20, 12),
+                    total_rows,
+                    position,
+                    viewport,
+                )
+            })
+            .expect("draw scrollbar");
+        let buffer = terminal.backend().buffer();
+        let right_x = 19;
+        (0..12).any(|y| buffer[(right_x, y)].symbol() != " ")
+    }
+
+    #[test]
+    fn scrollbar_hidden_when_content_fits() {
+        // 5 rows, 10-row viewport: nothing to scroll, no bar drawn.
+        assert!(!scrollbar_renders(5, 0, 10));
+        // Exactly fits is also a no-op.
+        assert!(!scrollbar_renders(10, 0, 10));
+    }
+
+    #[test]
+    fn scrollbar_shown_when_content_overflows() {
+        // 100 rows, 10-row viewport: bar must render on the right edge.
+        assert!(scrollbar_renders(100, 0, 10));
+        // Still drawn when scrolled into the middle of the list.
+        assert!(scrollbar_renders(100, 45, 10));
     }
 
     #[test]
