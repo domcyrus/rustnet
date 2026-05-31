@@ -5,7 +5,7 @@ use super::{
     loader::EbpfLoader,
     maps_libbpf::{ConnKey, MapReader},
 };
-use crate::network::platform::DegradationReason;
+use crate::DegradationReason;
 use anyhow::Result;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 

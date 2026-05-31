@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/rustnet-core", "crates/rustnet-capture", "crates/rustnet-host"]
+resolver = "3"
+
 [package]
 name = "rustnet-monitor"
 version = "1.3.0"
@@ -29,13 +33,15 @@ path = "src/main.rs"
 test = false
 
 [dependencies]
+rustnet-core = { version = "0.1.0", path = "crates/rustnet-core" }
+rustnet-capture = { version = "0.1.0", path = "crates/rustnet-capture" }
+rustnet-host = { version = "0.1.0", path = "crates/rustnet-host" }
 anyhow = "1.0"
 libc = "0.2"
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 crossterm = "0.29"
 crossbeam = "0.8"
 dashmap = "6.2"
-dns-lookup = "3.0"
 log = "0.4"
 pcap = "2.4.0"
 pnet_datalink = "0.35"
@@ -43,17 +49,15 @@ clap = { version = "4.6", features = ["derive"] }
 simplelog = "0.12"
 chrono = "0.4"
 ratatui = { version = "0.30", features = ["all-widgets"] }
-ring = "0.17"
-aes = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-flate2 = "1"
-maxminddb = "0.28"
 regex-lite = "0.1"
+# Note: dns-lookup, ring, aes, flate2, and maxminddb moved to rustnet-core,
+# which is the only place they are used. They are re-exported transitively
+# through the `crate::network` facade in src/network/mod.rs.
 
 [target.'cfg(target_os = "linux")'.dependencies]
-procfs = "0.18"
-libbpf-rs = { version = "0.26", optional = true }
+# procfs + libbpf-rs moved to the rustnet-host crate (process attribution).
 landlock = { version = "0.4", optional = true }
 caps = { version = "0.5", optional = true }
 
@@ -93,9 +97,6 @@ windows = { version = "0.62", features = [
     "Win32_System_Threading",
 ] }
 
-[target.'cfg(target_os = "linux")'.build-dependencies]
-libbpf-cargo = { version = "0.26", optional = true }
-
 [features]
 # eBPF is enabled by default for enhanced performance on Linux.
 # On non-Linux platforms, this feature has no effect as all eBPF code
@@ -104,7 +105,9 @@ libbpf-cargo = { version = "0.26", optional = true }
 # macos-sandbox provides Seatbelt sandboxing on macOS 10.5+ (no extra deps).
 default = ["ebpf", "landlock", "macos-sandbox"]
 linux-default = ["ebpf"]  # Deprecated: kept for backwards compatibility
-ebpf = ["libbpf-rs", "dep:libbpf-cargo"]
+# eBPF now lives in the rustnet-host crate; this is a passthrough so
+# `--features ebpf` (and the default) keep enabling it as before.
+ebpf = ["rustnet-host/ebpf"]
 landlock = ["dep:landlock", "dep:caps"]
 macos-sandbox = []
 
@@ -147,7 +150,7 @@ assets = [
         "644",
     ],
     [
-        "assets/services",
+        "crates/rustnet-core/assets/services",
         "usr/share/rustnet-monitor/",
         "644",
     ],
@@ -168,7 +171,7 @@ conf-files = []
 assets = [
     { source = "target/release/rustnet", dest = "/usr/bin/rustnet", mode = "755" },
     { source = "README.md", dest = "/usr/share/doc/rustnet-monitor/README.md", mode = "644" },
-    { source = "assets/services", dest = "/usr/share/rustnet-monitor/services", mode = "644" },
+    { source = "crates/rustnet-core/assets/services", dest = "/usr/share/rustnet-monitor/services", mode = "644" },
     { source = "resources/packaging/linux/graphics/rustnet.png", dest = "/usr/share/icons/hicolor/256x256/apps/rustnet.png", mode = "644" },
     { source = "resources/packaging/linux/rustnet.desktop", dest = "/usr/share/applications/rustnet.desktop", mode = "644" },
 ]

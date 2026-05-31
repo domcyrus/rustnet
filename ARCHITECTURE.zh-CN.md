@@ -326,13 +326,13 @@ RustNet 使用以下关键依赖构建：
 
 RustNet 在编译时嵌入静态查找数据库，避免运行时文件依赖。两者遵循相同的模式：嵌入文件，启动时解析为 `HashMap`，暴露 `lookup()` 方法。
 
-### 服务查找（`assets/services`）
+### 服务查找（`crates/rustnet-core/assets/services`）
 
-端口到服务名的映射（例如 80/tcp -> http）。由 `src/network/services.rs` 中的 `ServiceLookup` 使用 `include_str!` 加载。
+端口到服务名的映射（例如 80/tcp -> http）。由 `crates/rustnet-core/src/network/services.rs` 中的 `ServiceLookup` 使用 `include_str!` 加载。
 
-### OUI 厂商数据库（`assets/oui.gz`）
+### OUI 厂商数据库（`crates/rustnet-core/assets/oui.gz`）
 
-IEEE MA-L OUI 前缀到厂商的映射，用于 MAC 地址厂商解析（例如 `00:1B:63` -> Apple）。Gzip 压缩以减小二进制体积（压缩后约 400KB，原始约 1.2MB）。由 `src/network/oui.rs` 中的 `OuiLookup` 使用 `include_bytes!` + `flate2` 在启动时解压。
+IEEE MA-L OUI 前缀到厂商的映射，用于 MAC 地址厂商解析（例如 `00:1B:63` -> Apple）。Gzip 压缩以减小二进制体积（压缩后约 400KB，原始约 1.2MB）。由 `crates/rustnet-core/src/network/oui.rs` 中的 `OuiLookup` 使用 `include_bytes!` + `flate2` 在启动时解压。
 
 GitHub Action（`.github/workflows/update-oui.yml`）每月从 [IEEE 公开数据库](https://standards-oui.ieee.org/oui/oui.txt) 更新此文件，如有变更则自动打开 PR。
 

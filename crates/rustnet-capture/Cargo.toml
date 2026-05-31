@@ -1,0 +1,24 @@
+[package]
+name = "rustnet-capture"
+version = "0.1.0"
+authors = ["domcyrus"]
+edition = "2024"
+rust-version = "1.88.0" # Let-chains require Rust 1.88.0+
+description = "libpcap/Npcap-based packet-capture backend for rustnet: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame reader"
+repository = "https://github.com/domcyrus/rustnet"
+homepage = "https://github.com/domcyrus/rustnet"
+documentation = "https://docs.rs/rustnet-capture"
+readme = "README.md"
+license = "Apache-2.0"
+keywords = ["network", "packet", "capture", "pcap", "bpf"]
+categories = ["network-programming"]
+
+[lib]
+name = "rustnet_capture"
+path = "src/lib.rs"
+
+[dependencies]
+rustnet-core = { version = "0.1.0", path = "../rustnet-core" }
+anyhow = "1.0"
+log = "0.4"
+pcap = "2.4.0"

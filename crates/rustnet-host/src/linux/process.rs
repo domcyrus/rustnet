@@ -1,7 +1,7 @@
 // network/platform/linux/process.rs - Linux procfs-based process lookup
 
-use crate::network::platform::{ConnectionKey, ProcessLookup};
-use crate::network::types::{Connection, Protocol};
+use crate::{ConnectionKey, ProcessLookup};
+use rustnet_core::network::types::{Connection, Protocol};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::fs;

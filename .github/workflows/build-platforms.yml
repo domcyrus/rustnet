@@ -117,9 +117,9 @@ jobs:
 
           cp "target/${{ matrix.target }}/release/$RUSTNET_BIN" "$staging/"
 
-          if [ -d "assets" ] && [ -f "assets/services" ]; then
+          if [ -d "crates/rustnet-core/assets" ] && [ -f "crates/rustnet-core/assets/services" ]; then
             mkdir -p "$staging/assets"
-            cp "assets/services" "$staging/assets/"
+            cp "crates/rustnet-core/assets/services" "$staging/assets/"
           fi
 
           cp README.md "$staging/"
@@ -334,7 +334,7 @@ jobs:
           mkdir -p "$staging/assets"
 
           cp "$BIN" "$staging/rustnet"
-          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true
 

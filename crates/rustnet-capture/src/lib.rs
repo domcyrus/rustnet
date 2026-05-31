@@ -1,13 +1,46 @@
-// network/capture.rs - Packet capture setup and utilities
+//! # rustnet-capture
+//!
+//! Packet-capture backend for [RustNet](https://github.com/domcyrus/rustnet),
+//! built on `libpcap` / `Npcap` via the [`pcap`] crate. This crate owns all of
+//! RustNet's pcap-based capture: device selection, BPF-filter setup, the macOS
+//! PKTAP fast path for process metadata, TUN/TAP handling, and a simple
+//! [`PacketReader`] that yields raw link-layer frames.
+//!
+//! It is deliberately separate from the analysis core (`rustnet-core`) and the
+//! `rustnet` application so that alternative front-ends — e.g. a headless
+//! Prometheus exporter — can pair capture with `rustnet-core` without pulling
+//! in the TUI, and so that platforms wanting a bespoke capture path (e.g. a
+//! root-free macOS pktap helper) can swap this crate out entirely.
+//!
+//! Capture yields raw bytes plus the libpcap data-link type (DLT); parsing
+//! those bytes is `rustnet-core`'s job.
 use anyhow::{Result, anyhow};
 use pcap::{Active, Capture, Device, Error as PcapError};
 
+/// Why the macOS PKTAP fast path could not be used during capture setup.
+///
+/// PKTAP attaches process metadata to captured packets, but it requires root,
+/// a usable BPF device, the default interface, and no BPF filter. When any of
+/// those preconditions fail, capture records the reason here so the application
+/// can surface it (the `rustnet` binary maps these to its UI-level
+/// `DegradationReason`). Kept capture-native so this crate has no dependency on
+/// the application's process-attribution types.
 #[cfg(target_os = "macos")]
-use crate::network::platform::DegradationReason;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PktapUnavailable {
+    /// Could not open the BPF device (typically a permission issue).
+    NoBpfDeviceAccess,
+    /// PKTAP device creation failed — almost always missing root privileges.
+    MissingRootPrivileges,
+    /// A specific interface was requested; PKTAP only works on the default path.
+    InterfaceSpecified,
+    /// A BPF filter was supplied, which is incompatible with PKTAP.
+    BpfFilterIncompatible,
+}
 
-/// Stores why PKTAP is not available on macOS (set during capture setup)
+/// Stores why PKTAP is not available on macOS (set during capture setup).
 #[cfg(target_os = "macos")]
-pub static PKTAP_DEGRADATION_REASON: std::sync::OnceLock<DegradationReason> =
+pub static PKTAP_DEGRADATION_REASON: std::sync::OnceLock<PktapUnavailable> =
     std::sync::OnceLock::new();
 
 /// Packet capture configuration
@@ -224,7 +257,7 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                             "Falling back to regular capture (process detection will use lsof)"
                         );
                         // Store degradation reason - failed to open (permission issue)
-                        let _ = PKTAP_DEGRADATION_REASON.set(DegradationReason::NoBpfDeviceAccess);
+                        let _ = PKTAP_DEGRADATION_REASON.set(PktapUnavailable::NoBpfDeviceAccess);
                     }
                 }
             }
@@ -235,7 +268,7 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                 );
                 log::info!("Falling back to regular capture (process detection will use lsof)");
                 // Store degradation reason - failed to create device (permission issue)
-                let _ = PKTAP_DEGRADATION_REASON.set(DegradationReason::MissingRootPrivileges);
+                let _ = PKTAP_DEGRADATION_REASON.set(PktapUnavailable::MissingRootPrivileges);
             }
         }
     }
@@ -245,14 +278,14 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     {
         if config.interface.is_some() {
             // Specific interface requested - PKTAP can't be used
-            let _ = PKTAP_DEGRADATION_REASON.set(DegradationReason::InterfaceSpecified);
+            let _ = PKTAP_DEGRADATION_REASON.set(PktapUnavailable::InterfaceSpecified);
         }
         if config.filter.is_some() {
             log::warn!(
                 "BPF filter specified - using regular capture instead of PKTAP (BPF filters don't work with PKTAP)"
             );
             // Store degradation reason - BPF filter incompatible
-            let _ = PKTAP_DEGRADATION_REASON.set(DegradationReason::BpfFilterIncompatible);
+            let _ = PKTAP_DEGRADATION_REASON.set(PktapUnavailable::BpfFilterIncompatible);
         }
     }
 
@@ -261,7 +294,7 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     let device = find_capture_device(&config.interface)?;
 
     // Check if this is a TUN/TAP interface
-    use crate::network::link_layer::tun_tap;
+    use rustnet_core::network::link_layer::tun_tap;
     let is_tunnel = tun_tap::is_tunnel_interface(&device.name);
     let tunnel_type = if tun_tap::is_tun_interface(&device.name) {
         "TUN (Layer 3)"

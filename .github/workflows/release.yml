@@ -160,7 +160,7 @@ jobs:
           mkdir -p "$staging/assets"
 
           cp target/release/rustnet "$staging/"
-          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true
 
@@ -355,7 +355,7 @@ jobs:
           staging="rustnet-${VERSION}-${ARTIFACT}"
           mkdir -p "$staging/assets"
           cp "$BIN" "$staging/rustnet"
-          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true
           tar czf "$staging.tar.gz" "$staging"
@@ -507,9 +507,9 @@ jobs:
             cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
 
             # Ensure services file exists for packaging
-            mkdir -p assets
+            mkdir -p crates/rustnet-core/assets
             if [ -f "rustnet-${{ github.ref_name }}-$target/assets/services" ]; then
-              cp "rustnet-${{ github.ref_name }}-$target/assets/services" assets/
+              cp "rustnet-${{ github.ref_name }}-$target/assets/services" crates/rustnet-core/assets/
             fi
 
             # Create deb package
@@ -531,9 +531,9 @@ jobs:
             cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
 
             # Ensure services file exists for packaging
-            mkdir -p assets
+            mkdir -p crates/rustnet-core/assets
             if [ -f "rustnet-${{ github.ref_name }}-$target/assets/services" ]; then
-              cp "rustnet-${{ github.ref_name }}-$target/assets/services" assets/
+              cp "rustnet-${{ github.ref_name }}-$target/assets/services" crates/rustnet-core/assets/
             fi
 
             # Fix library linking if needed

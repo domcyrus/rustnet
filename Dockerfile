@@ -22,17 +22,16 @@ WORKDIR /app
 # Copy Cargo files first for better caching
 COPY Cargo.toml Cargo.lock ./
 
-# Copy build script for eBPF compilation
+# Copy build script (manpage/completions; npcap on Windows)
 COPY build.rs ./
-
-# Copy bundled eBPF vmlinux headers (required for eBPF compilation)
-COPY resources/ebpf/vmlinux ./resources/ebpf/vmlinux
 
 # Copy source code
 COPY src ./src
 COPY benches ./benches
-COPY assets/services ./assets/services
-COPY assets/oui.gz ./assets/oui.gz
+# Workspace member crates. rustnet-core holds the baked-in oui.gz / services
+# assets (include_bytes!/include_str!); rustnet-host holds the eBPF programs and
+# bundled vmlinux headers compiled by its own build.rs.
+COPY crates ./crates
 
 # Build the application in release mode (eBPF is enabled by default on Linux)
 RUN cargo build --release
@@ -63,8 +62,8 @@ WORKDIR /app
 # Copy the binary from builder stage
 COPY --from=builder /app/target/release/rustnet /usr/local/bin/rustnet
 
-# Copy assets/services only
-COPY --from=builder /app/assets/services ./assets/services
+# Copy the services asset for reference (the binary already embeds it at build time)
+COPY --from=builder /app/crates/rustnet-core/assets/services ./assets/services
 
 # Create logs directory
 RUN mkdir -p /app/logs && chown rustnet:rustnet /app/logs

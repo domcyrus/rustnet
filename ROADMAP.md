@@ -180,16 +180,46 @@ The experimental eBPF support provides efficient process identification but has 
 
 Restructure the single crate into a Cargo workspace (same GitHub repo) with clear separation of concerns:
 
-- **rustnet** (binary): CLI, TUI, app event loop -- the user-facing application
-- **rustnet-net** (library): Packet parsing, protocol types, DPI, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups -- reusable by other tools
-- **rustnet-capture** (library): Raw BPF ioctls, fd passing, pktap device management -- no libpcap, no C dependencies, just `libc`
-- **rustnet-helper** (binary): Minimal suid helper for macOS pktap privilege separation (~100 lines)
+- [x] **rustnet-monitor** (binary, bin name `rustnet`): CLI, TUI, app event
+  loop, and platform-specific process attribution / sandboxing -- the
+  user-facing application. (Package stays `rustnet-monitor` because the
+  `rustnet` crate name is taken on crates.io; the installed binary is `rustnet`.)
+- [x] **rustnet-core** (library): Packet parsing, protocol types, DPI,
+  link-layer parsers, connection merging, and DNS/GeoIP/OUI lookups -- the
+  reusable, platform-independent, capture-independent analysis core. Lives at
+  `crates/rustnet-core`. (Named `rustnet-core` rather than `rustnet-net` to
+  avoid the redundant "net-net"; verified available on crates.io.)
+- [x] **rustnet-capture** (library): the libpcap/Npcap-based capture backend --
+  device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame
+  `PacketReader`. Lives at `crates/rustnet-capture`. This is the **existing**
+  pcap code moved into its own crate (not a libpcap-free rewrite): the point of
+  the split is composability — a headless front-end (e.g. a Prometheus exporter)
+  can pair `rustnet-capture` + `rustnet-core` without the TUI, and a platform
+  wanting a bespoke capture path (e.g. the macOS pktap helper) can swap it out.
+  The macOS `DegradationReason` coupling was untangled by giving capture its own
+  `PktapUnavailable` enum, which the binary maps to its UI `DegradationReason`.
+- [ ] **rustnet-helper** (binary): Minimal suid helper for macOS pktap privilege
+  separation (~100 lines, zero C deps — just `libc`). **Future work, not yet a
+  crate.** The root-gated pktap interface creation (`SIOCIFCREATE`) can only be
+  written and validated on real macOS hardware, so this is deferred until it can
+  be done for real rather than scaffolded. See "macOS Privilege Separation" below.
 
 Benefits:
 - Clean dependency boundaries (helper has zero C dependencies)
-- `rustnet-net` becomes independently useful as a Rust network analysis library
+- `rustnet-core` becomes independently useful as a Rust network analysis library
 - Compile times improve (parallel crate compilation)
-- `cargo install rustnet` continues to work unchanged
+- `cargo install rustnet-monitor` continues to work unchanged
+
+**Status:** The workspace exists with `rustnet-monitor` (binary) depending on
+`rustnet-core` and `rustnet-capture`. The binary's `src/network` module
+re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`) so
+existing `crate::network::*` paths, integration tests, and benches are
+unchanged. Net-only dependencies (`dns-lookup`, `ring`, `aes`, `flate2`,
+`maxminddb`, `pnet_datalink`) and the baked-in `oui.gz` / `services` assets live
+in `rustnet-core`; all pcap usage lives in `rustnet-capture`. `rustnet-core`
+also exposes a `ConnectionTracker` so headless tools can fold captured packets
+into a live, lifecycle-managed connection table without the TUI. Remaining work:
+the `rustnet-helper` macOS pktap suid helper (needs real hardware).
 
 ### macOS Privilege Separation (pktap without root)
 

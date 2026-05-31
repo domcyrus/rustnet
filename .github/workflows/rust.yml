@@ -5,10 +5,9 @@ on:
     branches: [ "main" ]
     paths:
       - 'src/**'
+      - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'assets/services'
-      - 'assets/oui.gz'
       - 'build.rs'
       - 'benches/**'
       - 'Dockerfile'
@@ -17,10 +16,9 @@ on:
     branches: [ "main" ]
     paths:
       - 'src/**'
+      - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'assets/services'
-      - 'assets/oui.gz'
       - 'build.rs'
       - 'benches/**'
       - 'Dockerfile'
