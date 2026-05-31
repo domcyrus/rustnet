@@ -4,7 +4,7 @@ use anyhow::Result;
 use libbpf_rs::skel::{OpenSkel, SkelBuilder};
 use log::{debug, info, warn};
 
-use crate::network::platform::DegradationReason;
+use crate::DegradationReason;
 
 mod socket_tracker {
     include!(concat!(env!("OUT_DIR"), "/socket_tracker.skel.rs"));

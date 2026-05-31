@@ -1,10 +1,9 @@
 // network/platform/macos/process.rs - macOS lsof-based process lookup
 
-use crate::network::capture::PKTAP_DEGRADATION_REASON;
-use crate::network::platform::{ConnectionKey, DegradationReason, ProcessLookup};
-use crate::network::types::{Connection, Protocol};
+use crate::{ConnectionKey, DegradationReason, ProcessLookup};
 use anyhow::Result;
 use log::{debug, error, info, warn};
+use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::process::Command;
@@ -192,11 +191,9 @@ impl ProcessLookup for MacOSProcessLookup {
     }
 
     fn get_degradation_reason(&self) -> DegradationReason {
-        // Return the PKTAP degradation reason if set, otherwise default to missing root
-        PKTAP_DEGRADATION_REASON
-            .get()
-            .cloned()
-            .unwrap_or(DegradationReason::MissingRootPrivileges)
+        // The reason PKTAP wasn't used is injected by the application (which
+        // learns it from the capture layer); see `super::report_pktap_degradation`.
+        super::pktap_degradation()
     }
 }
 

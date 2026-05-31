@@ -37,7 +37,7 @@ override_dh_auto_install:
 	install -Dm755 target/release/rustnet debian/rustnet/usr/bin/rustnet
 
 	# Install services file
-	install -Dm644 assets/services debian/rustnet/usr/share/rustnet-monitor/services
+	install -Dm644 crates/rustnet-core/assets/services debian/rustnet/usr/share/rustnet-monitor/services
 
 	# Install desktop file
 	install -Dm644 resources/packaging/linux/rustnet.desktop \

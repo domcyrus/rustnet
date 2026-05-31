@@ -1,0 +1,47 @@
+[package]
+name = "rustnet-host"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Per-connection process attribution for rustnet: eBPF/procfs on Linux, PKTAP/lsof on macOS, IP Helper on Windows, sockstat on FreeBSD, behind one ProcessLookup trait"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/rustnet-host"
+readme = "README.md"
+license.workspace = true
+keywords = ["network", "process", "ebpf", "procfs", "lsof"]
+categories = ["network-programming", "os"]
+
+[lib]
+name = "rustnet_host"
+path = "src/lib.rs"
+
+[features]
+# eBPF-based process attribution on Linux (libbpf). No effect on other platforms.
+ebpf = ["dep:libbpf-rs", "dep:libbpf-cargo"]
+
+[dependencies]
+rustnet-core.workspace = true
+anyhow.workspace = true
+log.workspace = true
+# Used by the Linux eBPF loader (geteuid etc.), macOS lsof path, and FreeBSD.
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = "0.18"
+libbpf-rs = { version = "0.26", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_Threading",
+] }
+
+[build-dependencies]
+anyhow.workspace = true
+
+[target.'cfg(target_os = "linux")'.build-dependencies]
+libbpf-cargo = { version = "0.26", optional = true }

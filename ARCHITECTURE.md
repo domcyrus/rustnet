@@ -6,12 +6,48 @@ This document describes the technical architecture and implementation details of
 
 ## Table of Contents
 
+- [Crate Structure](#crate-structure)
 - [Multi-threaded Architecture](#multi-threaded-architecture)
 - [Key Components](#key-components)
 - [Platform-Specific Implementations](#platform-specific-implementations)
 - [Performance Considerations](#performance-considerations)
 - [Dependencies](#dependencies)
 - [Security](#security)
+
+## Crate Structure
+
+RustNet is a Cargo workspace of four crates. The analysis logic, capture backend, and process attribution each live in their own reusable library crate; the binary composes them into the TUI application.
+
+| Crate | Type | Responsibility |
+| --- | --- | --- |
+| [`rustnet-core`](crates/rustnet-core) | library | Platform- and capture-independent analysis core: packet parsing, protocol/connection types, deep packet inspection, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups, and a reusable `ConnectionTracker` (live table + RTT + QUIC coalescing + lifecycle) for headless tools. Operates only on byte slices and parsed structures -- no libpcap, raw sockets, or OS process tables. |
+| [`rustnet-capture`](crates/rustnet-capture) | library | libpcap/Npcap packet-capture backend: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame `PacketReader`. |
+| [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution behind one `ProcessLookup` trait: eBPF/procfs on Linux, PKTAP/lsof on macOS, the IP Helper API on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
+| `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, app event loop, sandboxing (Landlock/Seatbelt), and interface statistics. Dogfoods `ConnectionTracker` as the single source of truth. |
+
+The package is named `rustnet-monitor` because the `rustnet` crate name is taken on crates.io; the installed binary is `rustnet`.
+
+### Dependency Graph
+
+```mermaid
+flowchart TD
+    BIN[rustnet-monitor<br/>bin: rustnet]
+    CAP[rustnet-capture]
+    HOST[rustnet-host]
+    CORE[rustnet-core]
+
+    BIN --> CAP
+    BIN --> HOST
+    BIN --> CORE
+    CAP --> CORE
+    HOST --> CORE
+```
+
+The graph is acyclic: `rustnet-core` has no workspace dependencies, and both `rustnet-capture` and `rustnet-host` depend only on it. Keeping `rustnet-core` a leaf lets it be published and reused independently -- a headless front-end (e.g. a Prometheus exporter) can pair `rustnet-capture` + `rustnet-core` without the TUI.
+
+### Re-export Facade
+
+To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. The `src/network/platform` module still hosts the OS sandboxing (Landlock/Seatbelt) and interface-stats collectors, and wires in `rustnet-host`'s process lookup.
 
 ## Multi-threaded Architecture
 
@@ -326,13 +362,13 @@ RustNet is built with the following key dependencies:
 
 RustNet embeds static lookup databases at compile time, avoiding runtime file dependencies. Both follow the same pattern: embed the file, parse into a `HashMap` at startup, expose a `lookup()` method.
 
-### Service Lookup (`assets/services`)
+### Service Lookup (`crates/rustnet-core/assets/services`)
 
-Port-to-service-name mappings (e.g., 80/tcp -> http). Loaded by `ServiceLookup` in `src/network/services.rs` using `include_str!`.
+Port-to-service-name mappings (e.g., 80/tcp -> http). Loaded by `ServiceLookup` in `crates/rustnet-core/src/network/services.rs` using `include_str!`.
 
-### OUI Vendor Database (`assets/oui.gz`)
+### OUI Vendor Database (`crates/rustnet-core/assets/oui.gz`)
 
-IEEE MA-L OUI prefix-to-vendor mappings for MAC address vendor resolution (e.g., `00:1B:63` -> Apple). Gzip-compressed to reduce binary size (~400KB compressed vs ~1.2MB raw). Decompressed at startup by `OuiLookup` in `src/network/oui.rs` using `include_bytes!` + `flate2`. Currently used for ARP connections only.
+IEEE MA-L OUI prefix-to-vendor mappings for MAC address vendor resolution (e.g., `00:1B:63` -> Apple). Gzip-compressed to reduce binary size (~400KB compressed vs ~1.2MB raw). Decompressed at startup by `OuiLookup` in `crates/rustnet-core/src/network/oui.rs` using `include_bytes!` + `flate2`. Currently used for ARP connections only.
 
 A GitHub Action (`.github/workflows/update-oui.yml`) updates this file monthly from the [IEEE public database](https://standards-oui.ieee.org/oui/oui.txt) and opens a PR if there are changes.
 

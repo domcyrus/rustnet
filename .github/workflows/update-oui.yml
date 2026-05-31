@@ -19,14 +19,14 @@ jobs:
         run: |
           curl -fsSL 'https://standards-oui.ieee.org/oui/oui.txt' -o oui-raw.txt
           grep '(base 16)' oui-raw.txt | sed 's/[[:space:]]*(base 16)[[:space:]]*/\t/' > oui-clean.txt
-          gzip -9 -c oui-clean.txt > assets/oui.gz
+          gzip -9 -c oui-clean.txt > crates/rustnet-core/assets/oui.gz
           rm oui-raw.txt oui-clean.txt
 
       - name: Create pull request if changed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if git diff --quiet assets/oui.gz; then
+          if git diff --quiet crates/rustnet-core/assets/oui.gz; then
             echo "OUI database is already up to date."
             exit 0
           fi
@@ -35,7 +35,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$BRANCH"
-          git add assets/oui.gz
+          git add crates/rustnet-core/assets/oui.gz
           git commit -m "Update OUI vendor database"
           git push -f origin "$BRANCH"
 

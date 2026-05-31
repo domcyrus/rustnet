@@ -1,8 +1,8 @@
 // network/platform/linux/process.rs - Linux procfs-based process lookup
 
-use crate::network::platform::{ConnectionKey, ProcessLookup};
-use crate::network::types::{Connection, Protocol};
+use crate::{ConnectionKey, ProcessLookup};
 use anyhow::Result;
+use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};

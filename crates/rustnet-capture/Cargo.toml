@@ -1,0 +1,27 @@
+[package]
+name = "rustnet-capture"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "libpcap/Npcap-based packet-capture backend for rustnet: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame reader"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/rustnet-capture"
+readme = "README.md"
+license.workspace = true
+keywords = ["network", "packet", "capture", "pcap", "bpf"]
+categories = ["network-programming"]
+
+[lib]
+name = "rustnet_capture"
+path = "src/lib.rs"
+
+# This crate yields raw frames + DLT only; parsing is rustnet-core's job. It
+# deliberately does NOT depend on rustnet-core, so a consumer wanting just a
+# capture source isn't forced to compile the full analysis stack (ring, aes,
+# maxminddb, ...). Pair it with rustnet-core at the application layer.
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+pcap = "2.4.0"

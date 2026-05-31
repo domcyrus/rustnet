@@ -1,11 +1,11 @@
 //! Enhanced Linux process lookup combining eBPF and procfs approaches
 
-use crate::network::platform::{ConnectionKey, DegradationReason, ProcessLookup};
+use crate::{ConnectionKey, DegradationReason, ProcessLookup};
 
 use super::process::LinuxProcessLookup;
-use crate::network::types::{Connection, Protocol};
 use anyhow::Result;
 use log::{debug, info, warn};
+use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::RwLock;
@@ -18,7 +18,7 @@ use super::ebpf::EbpfSocketTracker;
 #[cfg(feature = "ebpf")]
 mod ebpf_enhanced {
     use super::*;
-    use crate::network::types::ProtocolState;
+    use rustnet_core::network::types::ProtocolState;
 
     /// Enhanced process lookup that combines eBPF (fast path) with procfs (fallback)
     pub struct EnhancedLinuxProcessLookup {

@@ -208,7 +208,7 @@ jobs:
           staging="rustnet-${VERSION}-${ARTIFACT}"
           mkdir -p "$staging/assets"
           cp "$BIN" "$staging/rustnet"
-          cp assets/services "$staging/assets/" 2>/dev/null || true
+          cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
           cp README.md "$staging/"
           cp LICENSE "$staging/" 2>/dev/null || true
           tar czf "$staging.tar.gz" "$staging"

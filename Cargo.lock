@@ -2437,10 +2437,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustnet-capture"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "pcap",
+]
+
+[[package]]
+name = "rustnet-core"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "crossbeam",
+ "dashmap",
+ "dns-lookup",
+ "flate2",
+ "log",
+ "maxminddb",
+ "pnet_datalink",
+ "ring",
+]
+
+[[package]]
+name = "rustnet-host"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libbpf-cargo",
+ "libbpf-rs",
+ "libc",
+ "log",
+ "procfs",
+ "rustnet-core",
+ "windows",
+]
+
+[[package]]
 name = "rustnet-monitor"
 version = "1.3.0"
 dependencies = [
- "aes",
  "anyhow",
  "arboard",
  "caps",
@@ -2452,22 +2490,17 @@ dependencies = [
  "crossbeam",
  "crossterm",
  "dashmap",
- "dns-lookup",
- "flate2",
  "http_req",
  "insta",
  "landlock",
- "libbpf-cargo",
- "libbpf-rs",
  "libc",
  "log",
- "maxminddb",
  "pcap",
- "pnet_datalink",
- "procfs",
  "ratatui",
  "regex-lite",
- "ring",
+ "rustnet-capture",
+ "rustnet-core",
+ "rustnet-host",
  "serde",
  "serde_json",
  "sha2 0.11.0",

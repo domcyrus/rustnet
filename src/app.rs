@@ -23,15 +23,12 @@ use crate::network::{
     dns::DnsResolver,
     geoip::{GeoIpConfig, GeoIpResolver},
     interface_stats::{InterfaceRates, InterfaceStats, InterfaceStatsProvider},
-    merge::{create_connection_from_packet, merge_packet_into_connection},
     oui::OuiLookup,
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
     services::ServiceLookup,
-    types::{
-        ApplicationProtocol, Connection, ConnectionKey, DnsQueryType, Protocol, RttTracker,
-        TrafficHistory,
-    },
+    tracker::ConnectionTracker,
+    types::{ApplicationProtocol, Connection, DnsQueryType, Protocol, TrafficHistory},
 };
 
 // Platform-specific interface stats provider
@@ -45,7 +42,6 @@ use crate::network::platform::MacOSStatsProvider as PlatformStatsProvider;
 use crate::network::platform::WindowsStatsProvider as PlatformStatsProvider;
 
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
 
 /// Sandbox status information for UI display
 #[cfg(any(
@@ -140,24 +136,13 @@ impl ProcessDetectionStatus {
     }
 }
 
-/// Global QUIC connection ID to connection key mapping
-/// This allows tracking QUIC connections across connection ID changes
-static QUIC_CONNECTION_MAPPING: LazyLock<Mutex<HashMap<String, String>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Maximum QUIC connection ID mappings to prevent unbounded growth.
-const MAX_QUIC_MAPPINGS: usize = 10_000;
+// Connection-table limits (max connections, historic retention, QUIC mappings)
+// now live in `rustnet_core::network::tracker::TrackerConfig`, which the
+// `ConnectionTracker` enforces. The defaults match the previous constants.
 
 /// Maximum queued packets before backpressure drops packets.
 /// At ~1500 bytes per packet, 10,000 packets ≈ 15 MB of buffer.
 const MAX_PACKET_QUEUE: usize = 10_000;
-
-/// Maximum tracked connections to prevent memory exhaustion from port scans
-/// or connection floods.
-const MAX_CONNECTIONS: usize = 50_000;
-
-/// Maximum historic (closed) connections retained for display.
-const MAX_HISTORIC_CONNECTIONS: usize = 5_000;
 
 /// Open or create a file for appending with restrictive permissions (0o600 on Unix).
 ///
@@ -427,14 +412,14 @@ pub struct App {
     /// Control flag for graceful shutdown
     should_stop: Arc<AtomicBool>,
 
-    /// Active connections map (shared with background threads)
-    connections: Arc<DashMap<String, Connection>>,
+    /// Live connection tracker (active + historic tables, RTT, QUIC coalescing,
+    /// and lifecycle cleanup). Shared with background threads. This is the same
+    /// `rustnet_core::network::tracker::ConnectionTracker` headless tools use —
+    /// the single source of truth for connection state.
+    tracker: Arc<ConnectionTracker>,
 
     /// Current connections snapshot for UI
     connections_snapshot: Arc<RwLock<Vec<Connection>>>,
-
-    /// Historic (closed) connections for optional display
-    historic_connections: Arc<DashMap<String, Connection>>,
 
     /// Whether to include historic connections in the snapshot
     show_historic: Arc<AtomicBool>,
@@ -471,9 +456,6 @@ pub struct App {
 
     /// Traffic history for graph visualization
     traffic_history: Arc<RwLock<TrafficHistory>>,
-
-    /// RTT tracker for latency measurement
-    rtt_tracker: Arc<Mutex<RttTracker>>,
 
     /// DNS resolver for reverse DNS lookups
     dns_resolver: Option<Arc<DnsResolver>>,
@@ -574,9 +556,8 @@ impl App {
         Ok(Self {
             config,
             should_stop: Arc::new(AtomicBool::new(false)),
-            connections: Arc::new(DashMap::new()),
+            tracker: Arc::new(ConnectionTracker::new()),
             connections_snapshot: Arc::new(RwLock::new(Vec::new())),
-            historic_connections: Arc::new(DashMap::new()),
             show_historic: Arc::new(AtomicBool::new(false)),
             service_lookup: Arc::new(service_lookup),
             oui_lookup,
@@ -591,7 +572,6 @@ impl App {
             interface_stats: Arc::new(DashMap::new()),
             interface_rates: Arc::new(DashMap::new()),
             traffic_history: Arc::new(RwLock::new(TrafficHistory::new(60))), // 60 seconds of history
-            rtt_tracker: Arc::new(Mutex::new(RttTracker::new())),
             dns_resolver,
             geoip_resolver,
             packet_rx: None,
@@ -622,8 +602,8 @@ impl App {
     pub fn start(&mut self) -> Result<std::sync::mpsc::Receiver<()>> {
         info!("Starting network monitor application");
 
-        // Use stored connection map
-        let connections = Arc::clone(&self.connections);
+        // Shared connection tracker (active + historic tables, RTT, QUIC)
+        let tracker = Arc::clone(&self.tracker);
 
         // Phase 1: privileged init. Start the capture pipeline (opens the raw
         // socket and stashes the packet receiver for the worker phase).
@@ -633,7 +613,7 @@ impl App {
         let (process_ready_tx, process_ready_rx) = std::sync::mpsc::sync_channel(1);
 
         // Start process enrichment thread (but delay for PKTAP detection on macOS)
-        self.start_process_enrichment_conditional(connections, process_ready_tx)?;
+        self.start_process_enrichment_conditional(tracker.clone(), process_ready_tx)?;
 
         Ok(process_ready_rx)
     }
@@ -646,22 +626,22 @@ impl App {
     /// packet processors here rather than in `start` is what places the
     /// untrusted-input DPI parsers inside the Landlock domain on Linux.
     pub fn start_workers(&mut self) -> Result<()> {
-        let connections = Arc::clone(&self.connections);
+        let tracker = Arc::clone(&self.tracker);
 
         // Start the DPI packet processing threads (drain the stashed channel).
-        self.start_packet_processors(connections.clone())?;
+        self.start_packet_processors(tracker.clone())?;
 
         // Start GeoIP enrichment thread
-        self.start_geoip_enrichment_thread(connections.clone())?;
+        self.start_geoip_enrichment_thread(tracker.clone())?;
 
         // Start snapshot provider for UI
-        self.start_snapshot_provider(connections.clone(), Arc::clone(&self.historic_connections))?;
+        self.start_snapshot_provider(tracker.clone())?;
 
         // Start cleanup thread
-        self.start_cleanup_thread(connections.clone(), Arc::clone(&self.historic_connections))?;
+        self.start_cleanup_thread(tracker.clone())?;
 
         // Start rate refresh thread
-        self.start_rate_refresh_thread(connections)?;
+        self.start_rate_refresh_thread(tracker)?;
 
         // Start interface stats collection thread
         self.start_interface_stats_thread()?;
@@ -701,10 +681,7 @@ impl App {
 
     /// Spawn the DPI packet-processor threads, draining the channel stashed by
     /// [`App::start_packet_capture_pipeline`].
-    fn start_packet_processors(
-        &mut self,
-        connections: Arc<DashMap<String, Connection>>,
-    ) -> Result<()> {
+    fn start_packet_processors(&mut self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let packet_rx = self.packet_rx.take().ok_or_else(|| {
             anyhow::anyhow!("packet receiver missing; start() must run before start_workers()")
         })?;
@@ -716,7 +693,7 @@ impl App {
             .min(4);
 
         for i in 0..num_processors {
-            self.start_packet_processor(i, packet_rx.clone(), connections.clone());
+            self.start_packet_processor(i, packet_rx.clone(), tracker.clone());
         }
 
         Ok(())
@@ -768,6 +745,32 @@ impl App {
                         if pktap::is_pktap_linktype(linktype) {
                             _pktap_active.store(true, Ordering::Relaxed);
                             info!("✓ PKTAP is active - process metadata will be provided directly");
+                        } else {
+                            // PKTAP not active: bridge the capture layer's reason into
+                            // the process-attribution degradation reason. This keeps
+                            // rustnet-host decoupled from rustnet-capture — the app
+                            // (which orchestrates both) does the translation.
+                            use crate::network::capture::PktapUnavailable;
+                            use crate::network::platform::{
+                                DegradationReason, report_pktap_degradation,
+                            };
+                            let reason = match crate::network::capture::PKTAP_DEGRADATION_REASON
+                                .get()
+                            {
+                                Some(PktapUnavailable::NoBpfDeviceAccess) => {
+                                    DegradationReason::NoBpfDeviceAccess
+                                }
+                                Some(PktapUnavailable::InterfaceSpecified) => {
+                                    DegradationReason::InterfaceSpecified
+                                }
+                                Some(PktapUnavailable::BpfFilterIncompatible) => {
+                                    DegradationReason::BpfFilterIncompatible
+                                }
+                                Some(PktapUnavailable::MissingRootPrivileges) | None => {
+                                    DegradationReason::MissingRootPrivileges
+                                }
+                            };
+                            report_pktap_degradation(reason);
                         }
                     }
 
@@ -956,13 +959,12 @@ impl App {
         &self,
         id: usize,
         packet_rx: Receiver<Vec<Vec<u8>>>,
-        connections: Arc<DashMap<String, Connection>>,
+        tracker: Arc<ConnectionTracker>,
     ) {
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let linktype_storage = Arc::clone(&self.linktype);
         let json_log_path = self.config.json_log_file.clone();
-        let rtt_tracker = Arc::clone(&self.rtt_tracker);
         let dns_resolver = self.dns_resolver.clone();
         let oui_lookup = self.oui_lookup.clone();
         let parser_config = ParserConfig {
@@ -1038,11 +1040,10 @@ impl App {
                         match parse_result {
                             Ok(Some(parsed)) => {
                                 update_connection(
-                                    &connections,
+                                    &tracker,
                                     parsed,
                                     &stats,
                                     &json_log_path,
-                                    &rtt_tracker,
                                     dns_resolver.as_deref(),
                                 );
                                 parsed_count += 1;
@@ -1086,7 +1087,7 @@ impl App {
     /// Start process enrichment thread conditionally based on PKTAP status
     fn start_process_enrichment_conditional(
         &self,
-        connections: Arc<DashMap<String, Connection>>,
+        tracker: Arc<ConnectionTracker>,
         process_ready_tx: std::sync::mpsc::SyncSender<()>,
     ) -> Result<()> {
         let pktap_active = Arc::clone(&self.pktap_active);
@@ -1140,7 +1141,7 @@ impl App {
 
             // Start the actual process enrichment
             if let Err(e) = Self::run_process_enrichment(
-                connections,
+                tracker,
                 should_stop,
                 pktap_active,
                 process_detection_status,
@@ -1156,7 +1157,7 @@ impl App {
 
     /// Run the actual process enrichment logic
     fn run_process_enrichment(
-        connections: Arc<DashMap<String, Connection>>,
+        tracker: Arc<ConnectionTracker>,
         should_stop: Arc<AtomicBool>,
         pktap_active: Arc<AtomicBool>,
         process_detection_status: Arc<RwLock<ProcessDetectionStatus>>,
@@ -1224,7 +1225,7 @@ impl App {
 
             // Enrich connections without process info
             let mut enriched = 0;
-            for mut entry in connections.iter_mut() {
+            for mut entry in tracker.connections().iter_mut() {
                 // Allow partial enrichment - fill in missing pieces without overwriting existing data
                 if let Some((pid, name)) = process_lookup.get_process_for_connection(&entry) {
                     let mut did_enrich = false;
@@ -1287,11 +1288,7 @@ impl App {
     }
 
     /// Start snapshot provider thread for UI updates
-    fn start_snapshot_provider(
-        &self,
-        connections: Arc<DashMap<String, Connection>>,
-        historic_connections: Arc<DashMap<String, Connection>>,
-    ) -> Result<()> {
+    fn start_snapshot_provider(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let snapshot = Arc::clone(&self.connections_snapshot);
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
@@ -1338,9 +1335,10 @@ impl App {
 
                     // Create snapshot
                     let start = Instant::now();
-                    let total_connections = connections.len();
+                    let total_connections = tracker.len();
 
-                    let mut snapshot_data: Vec<Connection> = connections
+                    let mut snapshot_data: Vec<Connection> = tracker
+                        .connections()
                         .iter()
                         .filter_map(|entry| {
                             let mut conn = entry.value().clone();
@@ -1356,7 +1354,8 @@ impl App {
 
                     // Append historic connections when toggle is on
                     if show_historic.load(Ordering::Relaxed) {
-                        let historic: Vec<Connection> = historic_connections
+                        let historic: Vec<Connection> = tracker
+                            .historic()
                             .iter()
                             .filter_map(|entry| {
                                 let mut conn = entry.value().clone();
@@ -1400,10 +1399,7 @@ impl App {
     }
 
     /// Start rate refresh thread to update rates for idle connections
-    fn start_rate_refresh_thread(
-        &self,
-        connections: Arc<DashMap<String, Connection>>,
-    ) -> Result<()> {
+    fn start_rate_refresh_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
 
         thread::Builder::new()
@@ -1419,7 +1415,7 @@ impl App {
 
                     // Refresh rates for connections that may still have non-zero rates.
                     // Skip connections idle >30s whose rates are already zero.
-                    for mut entry in connections.iter_mut() {
+                    for mut entry in tracker.connections().iter_mut() {
                         let conn = entry.value_mut();
                         let idle_secs = conn.last_activity.elapsed().unwrap_or_default().as_secs();
                         if idle_secs <= 30 || conn.has_nonzero_rates() {
@@ -1497,7 +1493,7 @@ impl App {
         let interface_rates = Arc::clone(&self.interface_rates);
         let connections_snapshot = Arc::clone(&self.connections_snapshot);
         let stats = Arc::clone(&self.stats);
-        let rtt_tracker = Arc::clone(&self.rtt_tracker);
+        let tracker = Arc::clone(&self.tracker);
 
         thread::Builder::new()
             .name("graph_ui".to_string())
@@ -1542,10 +1538,7 @@ impl App {
                     prev_retransmits = current_retransmits;
 
                     // Get average RTT from tracker (last 1 second window)
-                    let avg_rtt_ms = rtt_tracker
-                        .lock()
-                        .ok()
-                        .and_then(|mut tracker| tracker.take_average_rtt(1));
+                    let avg_rtt_ms = tracker.take_average_rtt(1);
 
                     // Add sample to traffic history
                     if let Ok(mut history) = traffic_history.write() {
@@ -1569,10 +1562,7 @@ impl App {
     }
 
     /// Start GeoIP enrichment thread to populate location/ASN info for connections
-    fn start_geoip_enrichment_thread(
-        &self,
-        connections: Arc<DashMap<String, Connection>>,
-    ) -> Result<()> {
+    fn start_geoip_enrichment_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let geoip_resolver = match &self.geoip_resolver {
             Some(resolver) => Arc::clone(resolver),
             None => return Ok(()), // No resolver available
@@ -1594,7 +1584,7 @@ impl App {
 
                     // Enrich connections without GeoIP info
                     let mut enriched = 0;
-                    for mut entry in connections.iter_mut() {
+                    for mut entry in tracker.connections().iter_mut() {
                         if entry.geoip_info.is_none() {
                             let remote_ip = entry.remote_addr.ip();
                             let info = geoip_resolver.lookup(remote_ip);
@@ -1618,11 +1608,7 @@ impl App {
     }
 
     /// Start cleanup thread to remove old connections
-    fn start_cleanup_thread(
-        &self,
-        connections: Arc<DashMap<String, Connection>>,
-        historic_connections: Arc<DashMap<String, Connection>>,
-    ) -> Result<()> {
+    fn start_cleanup_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
         let json_log_path = self.config.json_log_file.clone();
         let pcap_export_path = self.config.pcap_export_file.clone();
@@ -1639,114 +1625,53 @@ impl App {
                     break;
                 }
 
-                // Remove inactive connections
+                // Remove inactive connections. The tracker handles the timeout
+                // sweep, historic archiving + eviction, and QUIC-mapping cleanup;
+                // we layer the app's close-event logging on the returned set.
                 let now = SystemTime::now();
-                let mut removed = 0;
+                let removed = tracker.cleanup(now);
 
-                // Collect keys of connections to be removed
-                let mut removed_keys = Vec::new();
-                // Collect connections to archive as historic
-                let mut to_archive: Vec<(String, Connection)> = Vec::new();
+                for conn in &removed {
+                    // Calculate connection duration
+                    let duration_secs = now
+                        .duration_since(conn.created_at)
+                        .map(|d| d.as_secs())
+                        .ok();
 
-                connections.retain(|key, conn| {
-                    // Use dynamic timeout based on connection type and state
-                    let should_keep = !conn.should_cleanup(now);
-
-                    if !should_keep {
-                        removed += 1;
-                        removed_keys.push(key.clone());
-
-                        // Archive to historic connections (key includes created_at
-                        // so multiple closed connections with the same 4-tuple
-                        // don't overwrite each other)
-                        let mut historic = conn.clone();
-                        historic.is_historic = true;
-                        historic.closed_at = Some(now);
-                        let historic_key = format!(
-                            "{}:{}",
-                            key,
-                            conn.created_at
-                                .duration_since(SystemTime::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_nanos()
-                        );
-                        to_archive.push((historic_key, historic));
-
-                        // Calculate connection duration
-                        let duration_secs = now
-                            .duration_since(conn.created_at)
-                            .map(|d| d.as_secs())
-                            .ok();
-
-                        // Log connection_closed event if JSON logging is enabled
-                        if let Some(log_path) = &json_log_path {
-                            log_connection_event(
-                                log_path,
-                                "connection_closed",
-                                conn,
-                                duration_secs,
-                                dns_resolver.as_deref(),
-                            );
-                        }
-
-                        // Log to PCAP sidecar file if PCAP export is enabled
-                        if let Some(pcap_path) = &pcap_export_path {
-                            log_pcap_connection(pcap_path, conn);
-                        }
-
-                        // Log cleanup reason for debugging
-                        let conn_timeout = conn.get_timeout();
-                        let idle_time = now.duration_since(conn.last_activity).unwrap_or_default();
-                        debug!(
-                            "Cleanup: Removing {} connection {} (idle: {:?}, timeout: {:?}, state: {})",
-                            conn.protocol,
-                            key,
-                            idle_time,
-                            conn_timeout,
-                            conn.state()
+                    // Log connection_closed event if JSON logging is enabled
+                    if let Some(log_path) = &json_log_path {
+                        log_connection_event(
+                            log_path,
+                            "connection_closed",
+                            conn,
+                            duration_secs,
+                            dns_resolver.as_deref(),
                         );
                     }
 
-                    should_keep
-                });
-
-                // Insert archived connections into historic map
-                for (key, conn) in to_archive {
-                    historic_connections.insert(key, conn);
-                }
-
-                // Enforce MAX_HISTORIC_CONNECTIONS by evicting oldest-closed first
-                if historic_connections.len() > MAX_HISTORIC_CONNECTIONS {
-                    let mut entries: Vec<(String, SystemTime)> = historic_connections
-                        .iter()
-                        .map(|entry| {
-                            let closed =
-                                entry.value().closed_at.unwrap_or(entry.value().created_at);
-                            (entry.key().clone(), closed)
-                        })
-                        .collect();
-                    entries.sort_by_key(|(_, closed)| *closed);
-                    let to_remove = historic_connections.len() - MAX_HISTORIC_CONNECTIONS;
-                    for (key, _) in entries.into_iter().take(to_remove) {
-                        historic_connections.remove(&key);
+                    // Log to PCAP sidecar file if PCAP export is enabled
+                    if let Some(pcap_path) = &pcap_export_path {
+                        log_pcap_connection(pcap_path, conn);
                     }
-                }
 
-                // Clean up QUIC connection ID mappings for removed connections
-                if !removed_keys.is_empty()
-                    && let Ok(mut mapping) = QUIC_CONNECTION_MAPPING.lock()
-                {
-                    mapping.retain(|_, conn_key| !removed_keys.contains(conn_key));
+                    // Log cleanup reason for debugging
+                    let conn_timeout = conn.get_timeout();
+                    let idle_time = now.duration_since(conn.last_activity).unwrap_or_default();
                     debug!(
-                        "Cleaned up QUIC mappings for {} removed connections",
-                        removed_keys.len()
+                        "Cleanup: Removing {} connection {} -> {} (idle: {:?}, timeout: {:?}, state: {})",
+                        conn.protocol,
+                        conn.local_addr,
+                        conn.remote_addr,
+                        idle_time,
+                        conn_timeout,
+                        conn.state()
                     );
                 }
 
-                if removed > 0 {
+                if !removed.is_empty() {
                     debug!(
                         "Removed {} inactive connections and cleaned up QUIC mappings",
-                        removed
+                        removed.len()
                     );
                 }
 
@@ -1990,11 +1915,9 @@ impl App {
     pub fn clear_all_connections(&self) {
         info!("Clearing all connections and resetting statistics");
 
-        // Clear the main connections map
-        self.connections.clear();
-
-        // Clear historic connections and reset toggle
-        self.historic_connections.clear();
+        // Clear the tracker (active + historic tables, RTT, and QUIC mappings)
+        // and reset the historic-view toggle.
+        self.tracker.clear();
         self.show_historic.store(false, Ordering::Relaxed);
 
         // Clear the UI snapshot
@@ -2005,16 +1928,6 @@ impl App {
         // Clear traffic history
         if let Ok(mut history) = self.traffic_history.write() {
             history.clear();
-        }
-
-        // Clear RTT tracker
-        if let Ok(mut tracker) = self.rtt_tracker.lock() {
-            tracker.clear();
-        }
-
-        // Clear QUIC connection ID mappings
-        if let Ok(mut mapping) = QUIC_CONNECTION_MAPPING.lock() {
-            mapping.clear();
         }
 
         // Reset statistics counters
@@ -2057,123 +1970,55 @@ impl App {
     }
 }
 
-/// Update or create a connection from a parsed packet
+/// Update or create a connection from a parsed packet.
+///
+/// The connection table, RTT tracking, QUIC coalescing, and the connection
+/// limit all live in the shared [`ConnectionTracker`]; this wrapper layers the
+/// app-specific concerns (global statistics and JSON event logging) on top of
+/// the tracker's [`IngestOutcome`].
 fn update_connection(
-    connections: &DashMap<String, Connection>,
+    tracker: &ConnectionTracker,
     parsed: ParsedPacket,
-    _stats: &AppStats,
+    stats: &AppStats,
     json_log_path: &Option<String>,
-    rtt_tracker: &Arc<Mutex<RttTracker>>,
     dns_resolver: Option<&DnsResolver>,
 ) {
-    let mut key = parsed.connection_key.clone();
-    let now = SystemTime::now();
+    let outcome = tracker.ingest(&parsed);
 
-    // Track RTT for TCP connections using SYN/SYN-ACK timing
-    let mut measured_rtt: Option<std::time::Duration> = None;
-    if parsed.protocol == Protocol::Tcp
-        && let Some(tcp_header) = &parsed.tcp_header
-    {
-        let conn_key = ConnectionKey::new(parsed.local_addr, parsed.remote_addr);
-
-        if tcp_header.flags.syn && !tcp_header.flags.ack {
-            // This is a SYN packet (outgoing connection initiation)
-            if let Ok(mut tracker) = rtt_tracker.lock() {
-                tracker.record_syn(conn_key);
-            }
-        } else if tcp_header.flags.syn && tcp_header.flags.ack {
-            // This is a SYN-ACK packet (connection response)
-            if let Ok(mut tracker) = rtt_tracker.lock() {
-                measured_rtt = tracker.record_syn_ack(&conn_key);
-            }
-        }
+    // Fold TCP anomaly counts into the global statistics.
+    if outcome.retransmits > 0 {
+        stats
+            .total_tcp_retransmits
+            .fetch_add(outcome.retransmits, Ordering::Relaxed);
+    }
+    if outcome.out_of_order > 0 {
+        stats
+            .total_tcp_out_of_order
+            .fetch_add(outcome.out_of_order, Ordering::Relaxed);
+    }
+    if outcome.fast_retransmits > 0 {
+        stats
+            .total_tcp_fast_retransmits
+            .fetch_add(outcome.fast_retransmits, Ordering::Relaxed);
     }
 
-    // For QUIC packets, check if we have a connection ID mapping
-    if parsed.protocol == Protocol::Udp
-        && let Some(dpi_result) = &parsed.dpi_result
-        && let ApplicationProtocol::Quic(quic_info) = &dpi_result.application
-        && let Some(conn_id_hex) = &quic_info.connection_id_hex
-        && let Ok(mut mapping) = QUIC_CONNECTION_MAPPING.lock()
-    {
-        if let Some(existing_key) = mapping.get(conn_id_hex) {
-            key = existing_key.clone();
-            debug!(
-                "QUIC: Using existing connection key {} for Connection ID {}",
-                key, conn_id_hex
-            );
-        } else {
-            // Prevent unbounded growth of QUIC connection ID mappings
-            if mapping.len() >= MAX_QUIC_MAPPINGS {
-                debug!("QUIC mapping limit reached, clearing old entries");
-                mapping.clear();
-            }
-            // New QUIC connection ID, create mapping
-            mapping.insert(conn_id_hex.clone(), key.clone());
-            debug!(
-                "QUIC: Created new mapping {} -> {} for Connection ID {}",
-                conn_id_hex, key, conn_id_hex
-            );
-        }
-    }
-
-    // Prevent unbounded growth from port scans or connection floods.
-    // Only limit new connections; existing ones always get updated.
-    if !connections.contains_key(&key) && connections.len() >= MAX_CONNECTIONS {
+    if outcome.dropped {
         debug!(
-            "Connection limit reached ({}), dropping new connection: {}",
-            MAX_CONNECTIONS, key
+            "Connection limit reached, dropping new connection: {}",
+            outcome.key
         );
         return;
     }
 
-    connections
-        .entry(key.clone())
-        .and_modify(|conn| {
-            let (new_retransmits, new_out_of_order, new_fast_retransmits) =
-                merge_packet_into_connection(conn, &parsed, now);
-
-            // Store RTT measurement if we got one from SYN-ACK
-            if let Some(rtt) = measured_rtt
-                && conn.initial_rtt.is_none()
-            {
-                conn.initial_rtt = Some(rtt);
-                debug!("RTT measured for {}: {:?}", key, rtt);
-            }
-
-            // Update global statistics
-            if new_retransmits > 0 {
-                _stats
-                    .total_tcp_retransmits
-                    .fetch_add(new_retransmits, Ordering::Relaxed);
-            }
-            if new_out_of_order > 0 {
-                _stats
-                    .total_tcp_out_of_order
-                    .fetch_add(new_out_of_order, Ordering::Relaxed);
-            }
-            if new_fast_retransmits > 0 {
-                _stats
-                    .total_tcp_fast_retransmits
-                    .fetch_add(new_fast_retransmits, Ordering::Relaxed);
-            }
-        })
-        .or_insert_with(|| {
-            debug!("New connection detected: {}", key);
-            let mut conn = create_connection_from_packet(&parsed, now);
-
-            // Store RTT measurement if we got one (unlikely for new connection, but handle it)
-            if let Some(rtt) = measured_rtt {
-                conn.initial_rtt = Some(rtt);
-            }
-
-            // Log new connection event if JSON logging is enabled
-            if let Some(log_path) = json_log_path {
-                log_connection_event(log_path, "new_connection", &conn, None, dns_resolver);
-            }
-
-            conn
-        });
+    // Log a new-connection event if JSON logging is enabled.
+    if outcome.created {
+        debug!("New connection detected: {}", outcome.key);
+        if let Some(log_path) = json_log_path
+            && let Some(conn) = tracker.connections().get(&outcome.key)
+        {
+            log_connection_event(log_path, "new_connection", conn.value(), None, dns_resolver);
+        }
+    }
 }
 
 impl Drop for App {

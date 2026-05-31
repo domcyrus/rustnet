@@ -5,10 +5,9 @@ on:
     branches: [ "main" ]
     paths:
       - 'src/**'
+      - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'assets/services'
-      - 'assets/oui.gz'
       - 'build.rs'
       - 'benches/**'
       - 'Dockerfile'
@@ -17,10 +16,9 @@ on:
     branches: [ "main" ]
     paths:
       - 'src/**'
+      - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
-      - 'assets/services'
-      - 'assets/oui.gz'
       - 'build.rs'
       - 'benches/**'
       - 'Dockerfile'
@@ -42,12 +40,17 @@ jobs:
       run: sudo apt-get update && sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
     - name: Check formatting
       run: cargo fmt --check
+    # --workspace --all-targets so the library crates (rustnet-core/-capture/
+    # -host) are linted, built, and tested too. The workspace root is a real
+    # package (rustnet-monitor), so a bare `cargo {clippy,build,test}` only
+    # selects the binary and silently skips the library crates' lints, tests,
+    # and doctests.
     - name: Run clippy
-      run: cargo clippy -- -D warnings
+      run: cargo clippy --workspace --all-targets -- -D warnings
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --workspace --all-targets --verbose
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --workspace --verbose
     - name: Install cargo-audit
       run: cargo install cargo-audit --locked
     - name: Run security audit
