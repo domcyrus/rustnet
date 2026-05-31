@@ -392,7 +392,17 @@ fn draw_table_scrollbar(
     if total_rows <= viewport {
         return;
     }
-    let mut scrollbar_state = ScrollbarState::new(total_rows)
+    // ratatui sizes the thumb against `(content_length - 1) + viewport`, so the
+    // thumb only reaches the track bottom when `position == content_length - 1`
+    // (last row scrolled to the *top* of the viewport). Our `position` is a
+    // scroll offset clamped to `total_rows - viewport` (last row at the *bottom*
+    // of the viewport), so reporting `total_rows` as the content length leaves
+    // the thumb short by `viewport - 1` rows. Reporting the number of distinct
+    // scroll positions instead makes the thumb track the visible window
+    // `[position, position + viewport)` over `[0, total_rows)` and sit flush at
+    // the bottom when fully scrolled.
+    let scroll_positions = total_rows - viewport + 1;
+    let mut scrollbar_state = ScrollbarState::new(scroll_positions)
         .position(position)
         .viewport_content_length(viewport);
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
