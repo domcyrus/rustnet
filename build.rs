@@ -178,4 +178,3 @@ fn download_windows_npcap_sdk() -> Result<()> {
 
     Ok(())
 }
-

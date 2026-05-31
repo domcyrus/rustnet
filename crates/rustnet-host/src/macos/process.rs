@@ -1,9 +1,9 @@
 // network/platform/macos/process.rs - macOS lsof-based process lookup
 
 use crate::{ConnectionKey, DegradationReason, ProcessLookup};
-use rustnet_core::network::types::{Connection, Protocol};
 use anyhow::Result;
 use log::{debug, error, info, warn};
+use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::process::Command;

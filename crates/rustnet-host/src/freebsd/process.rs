@@ -1,8 +1,8 @@
 // network/platform/freebsd/process.rs - FreeBSD sockstat-based process lookup
 
 use crate::{ConnectionKey, ProcessLookup};
-use rustnet_core::network::types::{Connection, Protocol};
 use anyhow::{Context, Result};
+use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::RwLock;

@@ -1,8 +1,8 @@
 // network/platform/windows/process.rs - Windows IP Helper API process lookup
 
 use crate::{ConnectionKey, ProcessLookup};
-use rustnet_core::network::types::{Connection, Protocol};
 use anyhow::Result;
+use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};

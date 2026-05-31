@@ -461,7 +461,11 @@ mod tests {
         assert_eq!(removed.len(), 1, "the idle connection should be removed");
         assert!(!removed[0].is_historic, "returned form is the original");
         assert_eq!(tracker.len(), 0);
-        assert_eq!(tracker.historic_len(), 1, "removed conn archived as historic");
+        assert_eq!(
+            tracker.historic_len(),
+            1,
+            "removed conn archived as historic"
+        );
     }
 
     #[test]

@@ -1288,10 +1288,7 @@ impl App {
     }
 
     /// Start snapshot provider thread for UI updates
-    fn start_snapshot_provider(
-        &self,
-        tracker: Arc<ConnectionTracker>,
-    ) -> Result<()> {
+    fn start_snapshot_provider(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let snapshot = Arc::clone(&self.connections_snapshot);
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
@@ -1402,10 +1399,7 @@ impl App {
     }
 
     /// Start rate refresh thread to update rates for idle connections
-    fn start_rate_refresh_thread(
-        &self,
-        tracker: Arc<ConnectionTracker>,
-    ) -> Result<()> {
+    fn start_rate_refresh_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
 
         thread::Builder::new()
@@ -1568,10 +1562,7 @@ impl App {
     }
 
     /// Start GeoIP enrichment thread to populate location/ASN info for connections
-    fn start_geoip_enrichment_thread(
-        &self,
-        tracker: Arc<ConnectionTracker>,
-    ) -> Result<()> {
+    fn start_geoip_enrichment_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let geoip_resolver = match &self.geoip_resolver {
             Some(resolver) => Arc::clone(resolver),
             None => return Ok(()), // No resolver available
@@ -1617,10 +1608,7 @@ impl App {
     }
 
     /// Start cleanup thread to remove old connections
-    fn start_cleanup_thread(
-        &self,
-        tracker: Arc<ConnectionTracker>,
-    ) -> Result<()> {
+    fn start_cleanup_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
         let json_log_path = self.config.json_log_file.clone();
         let pcap_export_path = self.config.pcap_export_file.clone();

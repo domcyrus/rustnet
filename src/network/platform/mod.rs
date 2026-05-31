@@ -29,15 +29,15 @@ mod windows;
 // Re-export interface-stats providers and the sandbox entry points.
 #[cfg(target_os = "freebsd")]
 pub use freebsd::FreeBSDStatsProvider;
-#[cfg(all(target_os = "linux", feature = "landlock"))]
-pub use linux::sandbox;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxStatsProvider;
-#[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
-pub use macos::sandbox;
+#[cfg(all(target_os = "linux", feature = "landlock"))]
+pub use linux::sandbox;
 #[cfg(target_os = "macos")]
 pub use macos::MacOSStatsProvider;
-#[cfg(target_os = "windows")]
-pub use windows::sandbox;
+#[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+pub use macos::sandbox;
 #[cfg(target_os = "windows")]
 pub use windows::WindowsStatsProvider;
+#[cfg(target_os = "windows")]
+pub use windows::sandbox;

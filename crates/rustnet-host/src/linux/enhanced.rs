@@ -3,9 +3,9 @@
 use crate::{ConnectionKey, DegradationReason, ProcessLookup};
 
 use super::process::LinuxProcessLookup;
-use rustnet_core::network::types::{Connection, Protocol};
 use anyhow::Result;
 use log::{debug, info, warn};
+use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::RwLock;
