@@ -12,7 +12,10 @@
 //! a parser, then feed each parsed packet to [`ConnectionTracker::ingest`] and
 //! periodically call [`ConnectionTracker::cleanup`]. A Prometheus exporter, a
 //! pcap post-processor, or a test harness can all reuse the exact connection
-//! semantics of the main application.
+//! semantics of the main application. Offline consumers replaying a saved trace
+//! should use [`ConnectionTracker::ingest_at`] with each packet's capture
+//! timestamp so connection lifetimes and timeouts follow trace time rather than
+//! the replay wall clock.
 //!
 //! ```no_run
 //! use rustnet_core::network::parser::PacketParser;
@@ -127,9 +130,23 @@ impl ConnectionTracker {
     }
 
     /// Fold a parsed packet into the connection table, creating or updating the
-    /// matching connection. Returns an [`IngestOutcome`] describing the effect.
+    /// matching connection, timestamping the update with the current wall clock.
+    ///
+    /// This is the right call for live capture. Offline consumers replaying a
+    /// pcap should use [`ingest_at`](Self::ingest_at) and pass the packet's own
+    /// capture time so connection lifetimes and [`cleanup`](Self::cleanup)
+    /// timeouts reflect the trace rather than the replay wall clock.
     pub fn ingest(&self, parsed: &ParsedPacket) -> IngestOutcome {
-        let now = SystemTime::now();
+        self.ingest_at(parsed, SystemTime::now())
+    }
+
+    /// Like [`ingest`](Self::ingest), but stamps the connection update with the
+    /// supplied `now` instead of the wall clock.
+    ///
+    /// Use this for deterministic offline processing (pcap replay, tests): pass
+    /// the packet's capture timestamp so `created_at`/`last_activity` and the
+    /// `cleanup` timeout sweep operate on trace time, not real time.
+    pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
         let mut key = parsed.connection_key.clone();
 
         // Track RTT for TCP connections using SYN/SYN-ACK timing.
@@ -479,6 +496,28 @@ mod tests {
         let removed = tracker.cleanup(far_future);
         assert_eq!(removed.len(), 1);
         assert_eq!(tracker.historic_len(), 0, "historic disabled");
+    }
+
+    #[test]
+    fn ingest_at_uses_supplied_time_for_cleanup() {
+        // A packet ingested "in the past" must be eligible for cleanup at a
+        // `now` only slightly later than its supplied capture time — proving the
+        // tracker stamps the connection with the caller's time, not the wall
+        // clock. (Wall-clock stamping would make `created_at` ~= real now, so a
+        // cleanup at trace-time + a few minutes would NOT expire it.)
+        let tracker = ConnectionTracker::new();
+        let capture_time = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        tracker.ingest_at(&parse(&udp_frame(40000, 53)), capture_time);
+        assert_eq!(tracker.len(), 1);
+
+        // One day after the capture time the UDP flow is well past its timeout.
+        let removed = tracker.cleanup(capture_time + Duration::from_secs(86_400));
+        assert_eq!(
+            removed.len(),
+            1,
+            "flow stamped at capture time should expire"
+        );
+        assert_eq!(tracker.len(), 0);
     }
 
     #[test]

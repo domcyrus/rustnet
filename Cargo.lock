@@ -2443,7 +2443,6 @@ dependencies = [
  "anyhow",
  "log",
  "pcap",
- "rustnet-core",
 ]
 
 [[package]]

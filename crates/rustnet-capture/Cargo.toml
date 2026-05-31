@@ -1,15 +1,15 @@
 [package]
 name = "rustnet-capture"
-version = "0.1.0"
-authors = ["domcyrus"]
-edition = "2024"
-rust-version = "1.88.0" # Let-chains require Rust 1.88.0+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "libpcap/Npcap-based packet-capture backend for rustnet: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame reader"
-repository = "https://github.com/domcyrus/rustnet"
-homepage = "https://github.com/domcyrus/rustnet"
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://docs.rs/rustnet-capture"
 readme = "README.md"
-license = "Apache-2.0"
+license.workspace = true
 keywords = ["network", "packet", "capture", "pcap", "bpf"]
 categories = ["network-programming"]
 
@@ -17,8 +17,11 @@ categories = ["network-programming"]
 name = "rustnet_capture"
 path = "src/lib.rs"
 
+# This crate yields raw frames + DLT only; parsing is rustnet-core's job. It
+# deliberately does NOT depend on rustnet-core, so a consumer wanting just a
+# capture source isn't forced to compile the full analysis stack (ring, aes,
+# maxminddb, ...). Pair it with rustnet-core at the application layer.
 [dependencies]
-rustnet-core = { version = "0.1.0", path = "../rustnet-core" }
-anyhow = "1.0"
-log = "0.4"
+anyhow.workspace = true
+log.workspace = true
 pcap = "2.4.0"

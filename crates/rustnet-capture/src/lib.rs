@@ -293,12 +293,16 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
     log::info!("Setting up regular packet capture");
     let device = find_capture_device(&config.interface)?;
 
-    // Check if this is a TUN/TAP interface
-    use rustnet_core::network::link_layer::tun_tap;
-    let is_tunnel = tun_tap::is_tunnel_interface(&device.name);
-    let tunnel_type = if tun_tap::is_tun_interface(&device.name) {
+    // Check if this is a TUN/TAP interface (for the log line below). This is a
+    // capture-side device concern, so we match the names here rather than pull
+    // all of `rustnet-core` into this crate just to label a log message. The
+    // actual TUN/TAP frame parsing still lives in `rustnet-core`.
+    let is_tun = device.name.starts_with("tun") || device.name.starts_with("utun");
+    let is_tap = device.name.starts_with("tap");
+    let is_tunnel = is_tun || is_tap;
+    let tunnel_type = if is_tun {
         "TUN (Layer 3)"
-    } else if tun_tap::is_tap_interface(&device.name) {
+    } else if is_tap {
         "TAP (Layer 2)"
     } else {
         "N/A"

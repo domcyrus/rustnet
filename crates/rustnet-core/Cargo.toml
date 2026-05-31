@@ -1,15 +1,15 @@
 [package]
 name = "rustnet-core"
-version = "0.1.0"
-authors = ["domcyrus"]
-edition = "2024"
-rust-version = "1.88.0" # Let-chains require Rust 1.88.0+
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Network analysis library: packet parsing, protocol types, deep packet inspection, link-layer parsers, connection merging, and DNS/GeoIP/OUI lookups — the reusable core of rustnet"
-repository = "https://github.com/domcyrus/rustnet"
-homepage = "https://github.com/domcyrus/rustnet"
+repository.workspace = true
+homepage.workspace = true
 documentation = "https://docs.rs/rustnet-core"
 readme = "README.md"
-license = "Apache-2.0"
+license.workspace = true
 keywords = ["network", "packet", "dpi", "parser", "geoip"]
 categories = ["network-programming", "parser-implementations"]
 
@@ -18,8 +18,8 @@ name = "rustnet_core"
 path = "src/lib.rs"
 
 [dependencies]
-anyhow = "1.0"
-log = "0.4"
+anyhow.workspace = true
+log.workspace = true
 dashmap = "6.2"
 crossbeam = "0.8"
 dns-lookup = "3.0"
