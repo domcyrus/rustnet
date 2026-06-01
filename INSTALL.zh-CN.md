@@ -190,18 +190,14 @@ yay -S rustnet-git
 
 #### Nix / NixOS
 
-RustNet 已收录在 [nixpkgs](https://search.nixos.org/packages?channel=unstable&query=rustnet) 中。目前仅 `nixpkgs-unstable` 提供 —— stable 通道将在 nixpkgs 下次稳定版发布时同步包含。
+RustNet 已收录在 [nixpkgs](https://search.nixos.org/packages?query=rustnet) 中，**stable** 通道（以及 `nixpkgs-unstable`）均已提供。
 
 **在不安装的情况下试用（临时 shell）：**
 
 ```bash
-# 当前 nixpkgs 通道为 unstable 时：
 nix-shell -p rustnet
 # 然后在 shell 中执行：
 sudo rustnet
-
-# 使用 stable 通道时，显式让 nix-shell 指向 unstable：
-nix-shell -I nixpkgs=channel:nixpkgs-unstable -p rustnet
 ```
 
 **在 NixOS 上持久安装** —— 在 `/etc/nixos/configuration.nix` 中添加：
@@ -226,6 +222,19 @@ security.wrappers.rustnet = {
 ```
 
 然后通过 wrapper 路径执行 `rustnet`（`/run/wrappers/bin/rustnet`）。
+
+> **即将推出 —— 专用 NixOS 模块。** nixpkgs 正在评审一个
+> [`programs.rustnet` 模块](https://github.com/NixOS/nixpkgs/pull/517620)。
+> 合并后它会自动为你封装上述 capabilities，整个配置即可简化为：
+>
+> ```nix
+> programs.rustnet.enable = true;
+> ```
+>
+> 该模块通过 `security.wrappers` 授予 `cap_net_raw`、`cap_bpf` 和
+> `cap_perfmon`（但**不**授予 `cap_net_admin`，因为 RustNet 从不需要混杂模式），
+> 采用与 `programs.mtr`、`programs.wireshark` 相同的模式，让你无需 sudo 即可运行
+> `rustnet`。
 
 #### Fedora（COPR - 推荐用于 Fedora 42+）<a id="fedora-copr---recommended-for-fedora-42"></a>
 

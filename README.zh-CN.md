@@ -147,7 +147,7 @@ sudo zypper install rustnet
 sudo pacman -S rustnet
 ```
 
-**Nix / NixOS(nixpkgs-unstable):**
+**Nix / NixOS:**
 ```bash
 nix-shell -p rustnet
 # 然后在 shell 中执行: sudo rustnet
