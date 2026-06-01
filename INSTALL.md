@@ -190,18 +190,14 @@ yay -S rustnet-git
 
 #### Nix / NixOS
 
-RustNet is available in [nixpkgs](https://search.nixos.org/packages?channel=unstable&query=rustnet). It currently lives in **nixpkgs-unstable** only — stable channels will pick it up at the next nixpkgs release.
+RustNet is available in [nixpkgs](https://search.nixos.org/packages?query=rustnet), including the **stable** channels (as well as `nixpkgs-unstable`).
 
 **Try it without installing (ephemeral shell):**
 
 ```bash
-# On a system where your nixpkgs channel is unstable:
 nix-shell -p rustnet
 # Then inside the shell:
 sudo rustnet
-
-# On a stable channel, point nix-shell at unstable explicitly:
-nix-shell -I nixpkgs=channel:nixpkgs-unstable -p rustnet
 ```
 
 **Persistent install on NixOS** — add to `/etc/nixos/configuration.nix`:
@@ -226,6 +222,20 @@ security.wrappers.rustnet = {
 ```
 
 Then run `rustnet` via the wrapper path (`/run/wrappers/bin/rustnet`).
+
+> **Coming soon — dedicated NixOS module.** A [`programs.rustnet`
+> module](https://github.com/NixOS/nixpkgs/pull/517620) is in review for
+> nixpkgs. Once merged it wraps exactly the capabilities above for you, so the
+> whole setup becomes:
+>
+> ```nix
+> programs.rustnet.enable = true;
+> ```
+>
+> This grants `cap_net_raw`, `cap_bpf`, and `cap_perfmon` (but **not**
+> `cap_net_admin`, since RustNet never needs promiscuous mode) through
+> `security.wrappers` — the same pattern `programs.mtr` and
+> `programs.wireshark` use — letting you run `rustnet` without sudo.
 
 #### Fedora (COPR - Recommended for Fedora 42+)
 
