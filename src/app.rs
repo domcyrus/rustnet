@@ -1449,6 +1449,10 @@ impl App {
 
                 let provider = PlatformStatsProvider;
                 let mut previous_stats: HashMap<String, InterfaceStats> = HashMap::new();
+                // Warn once if stat collection ever fails so a permission/sandbox
+                // regression (e.g. Landlock denying /sys) is visible at the
+                // default log level instead of being silently swallowed.
+                let mut warned_collect_failure = false;
 
                 loop {
                     if should_stop.load(Ordering::Relaxed) {
@@ -1477,7 +1481,15 @@ impl App {
                             }
                         }
                         Err(e) => {
-                            debug!("Failed to collect interface stats: {}", e);
+                            if !warned_collect_failure {
+                                warn!(
+                                    "Failed to collect interface stats: {} (interface panel will be empty; on Linux this is often a sandbox/permission issue reading /sys/class/net)",
+                                    e
+                                );
+                                warned_collect_failure = true;
+                            } else {
+                                debug!("Failed to collect interface stats: {}", e);
+                            }
                         }
                     }
 
