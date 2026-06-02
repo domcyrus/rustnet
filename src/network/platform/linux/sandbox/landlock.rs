@@ -182,6 +182,20 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
         log::warn!("Could not add /proc rule: {}", e);
     }
 
+    // Add rules for sysfs (read-only). The interface-stats poller enumerates
+    // interfaces via read_dir("/sys/class/net") and then reads each
+    // /sys/class/net/<iface>/statistics/* counter. Those per-interface entries
+    // are symlinks into /sys/devices/.../net/<iface>, and Landlock evaluates the
+    // *resolved* path, so both subtrees need an allow-rule — without them the
+    // reads fail with EACCES and the Interfaces panel shows
+    // "No interface stats available". sysfs is not process-sensitive the way
+    // /proc is, and this is read-only, so granting the two subtrees is fine.
+    for sysfs_path in ["/sys/class/net", "/sys/devices"] {
+        if let Err(e) = add_path_rule(&mut ruleset_created, sysfs_path, read_access) {
+            log::warn!("Could not add {} rule: {}", sysfs_path, e);
+        }
+    }
+
     // Add rules for read-only paths (e.g., GeoIP databases)
     for path in &config.read_paths {
         if path.exists()
