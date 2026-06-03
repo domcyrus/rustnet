@@ -68,7 +68,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       - name: Setup Linux dependencies
         if: matrix.os == 'ubuntu-22.04'
@@ -179,7 +179,7 @@ jobs:
       # x86_64: use standard checkout action
       - name: Checkout repository
         if: matrix.arch == 'x86_64' || matrix.arch == 'x86_64-android' || matrix.arch == 'armv7-android' || matrix.arch == 'x86-android'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
       # aarch64: JS actions don't work in Alpine containers on ARM runners
       - name: Checkout repository (ARM workaround)
