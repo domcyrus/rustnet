@@ -11,6 +11,7 @@ on:
       - 'build.rs'
       - 'benches/**'
       - 'Dockerfile'
+      - 'deny.toml'
       - '.github/workflows/rust.yml'
   pull_request:
     branches: [ "main" ]
@@ -22,6 +23,7 @@ on:
       - 'build.rs'
       - 'benches/**'
       - 'Dockerfile'
+      - 'deny.toml'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -51,12 +53,13 @@ jobs:
       run: cargo build --workspace --all-targets --verbose
     - name: Run tests
       run: cargo test --workspace --verbose
-    - name: Install cargo-audit
-      run: cargo install cargo-audit --locked
-    - name: Run security audit
-      # Fail the build on advisories and on yanked crates so a withdrawn
-      # dependency (e.g. a yanked release pinned in Cargo.lock) is caught in CI.
-      run: cargo audit --deny warnings --deny yanked
+    - name: Run cargo-deny
+      # Checks RustSec advisories and yanked crates (yanked = "deny" in
+      # deny.toml, so a withdrawn dependency pinned in Cargo.lock is caught),
+      # plus license policy, wildcard bans, and registry sources.
+      uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
+      with:
+        command: check
 
   docker:
     runs-on: ubuntu-latest

@@ -172,7 +172,7 @@ fn main() -> Result<()> {
     // - eBPF programs need to be loaded first (requires CAP_BPF + CAP_PERFMON)
     // - Packet capture handles need to be opened first (access to /dev)
     // - Log files need to be created first
-    #[cfg(all(target_os = "linux", feature = "landlock"))]
+    #[cfg(target_os = "linux")]
     {
         use network::geoip::GeoIpResolver;
         use network::platform::sandbox::{
@@ -241,6 +241,7 @@ fn main() -> Result<()> {
                     net_restricted: result.landlock_net_applied,
                     scope_restricted: result.landlock_scope_applied,
                     landlock_abi: result.landlock_effective_abi,
+                    no_new_privs: result.no_new_privs,
                 });
             }
             Err(e) => {
@@ -257,6 +258,7 @@ fn main() -> Result<()> {
                     net_restricted: false,
                     scope_restricted: false,
                     landlock_abi: None,
+                    no_new_privs: false,
                 });
             }
         }
