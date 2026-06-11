@@ -4,7 +4,9 @@
 # (which runs both demo.tape and this tape, then cleans the throwaway GIF).
 #
 # Manual render: vhs screenshots.tape
-# Pre-build the release binary first: cargo build --release
+# Pre-build the release binary and grant it capture capabilities first:
+#   cargo build --release
+#   sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' target/release/rustnet
 #
 # Walks every tab and emits PNGs under assets/screenshots/.
 # Sized larger than demo.tape (1600x1000, FontSize 16) for crisper README
@@ -35,7 +37,7 @@ Set PlaybackSpeed 1.0
 Hide
 Type "clear"
 Enter
-Type "sudo -A target/release/rustnet"
+Type "target/release/rustnet -i any"
 Enter
 Sleep 5s
 Show

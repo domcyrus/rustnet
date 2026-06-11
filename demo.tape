@@ -1,16 +1,15 @@
 # vhs tape for the rustnet demo GIF.
 #
 # Render with: scripts/record-rustnet-demo.sh
-# (wraps `vhs demo.tape` with sudo pre-cache, background traffic,
-#  and gifsicle optimization).
+# (wraps `vhs demo.tape` with setcap, background traffic, and
+#  gifsicle optimization).
 #
 # Manual render: vhs demo.tape (writes assets/rustnet.gif).
-# Pre-build the release binary first: cargo build --release
-# Capture needs root: the tape runs `sudo -A`, which reads the password
-# from the askpass helper pointed to by $SUDO_ASKPASS. The wrapper script
-# above sets that automatically. For manual runs, export SUDO_ASKPASS
-# yourself (or on Linux set CAP_NET_RAW on the binary and drop the
-# `sudo -A` from the tape).
+# Pre-build the release binary and grant it capture capabilities first:
+#   cargo build --release
+#   sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' target/release/rustnet
+# The tape then runs the binary unprivileged, so the Security sidebar
+# shows the sandboxed non-root posture instead of a root warning.
 #
 # Pacing principles (from the ratatui showcase review):
 #   - never show the blank state: stay hidden until the table is populated
@@ -54,7 +53,7 @@ Set PlaybackSpeed 1.0
 Hide
 Type "clear"
 Enter
-Type "sudo -A target/release/rustnet"
+Type "target/release/rustnet -i any"
 Enter
 Sleep 5s
 Show
