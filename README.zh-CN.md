@@ -188,6 +188,7 @@ rustnet -i eth0              # 指定网络接口
 rustnet --show-localhost     # 显示 localhost 上的连接
 rustnet --no-resolve-dns     # 关闭反向 DNS 解析(默认开启)
 rustnet -r 500               # 设置刷新间隔(毫秒)
+rustnet --theme classic      # 原始全彩调色板(默认：muted)
 ```
 
 权限配置详情见 [INSTALL.zh-CN.md](INSTALL.zh-CN.md)，完整参数说明见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
@@ -217,6 +218,7 @@ rustnet -r 500               # 设置刷新间隔(毫秒)
 | `←/→` 或 `h/l` | 折叠 / 展开当前分组 |
 | `PageUp/PageDown` 或 `Ctrl+B/F` | 翻页 |
 | `t` | 切换是否显示历史（已关闭）连接 |
+| `i` | 切换 System 信息侧边栏 |
 | `r` | 重置视图(分组、排序、过滤) |
 | `/` | 进入过滤模式 |
 | `h` | 切换帮助 |
@@ -235,9 +237,9 @@ rustnet -r 500               # 设置刷新间隔(毫秒)
 ```
 
 **排序：**
-- 按 `s` 在可排序的列之间循环切换(协议、地址、状态、服务、带宽、进程)
+- 按 `s` 在可排序的列之间循环切换(进程、地址、服务、应用、状态、带宽)
 - 按 `S`(Shift+s)切换升序 / 降序
-- 想抓出带宽大户：连续按 `s` 直到显示 "Down/Up ↓"(按上下行合计速度排序)
+- 想抓出带宽大户：连续按 `s` 直到显示 "Bandwidth Total ↓"(按上下行合计速度排序)
 
 完整的过滤语法与排序说明见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
 

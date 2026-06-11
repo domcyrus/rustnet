@@ -40,9 +40,12 @@ pub fn sort_connections(connections: &mut [Connection], sort_column: SortColumn,
                 .then_with(|| a.remote_addr.port().cmp(&b.remote_addr.port())),
 
             SortColumn::Application => {
+                // The App column shows "{proto}·{application}", so rows
+                // without DPI info (None sorts first) still order
+                // meaningfully by the protocol tie-break.
                 let a_app = a.dpi_info.as_ref().map(|dpi| dpi.application.sort_key());
                 let b_app = b.dpi_info.as_ref().map(|dpi| dpi.application.sort_key());
-                a_app.cmp(&b_app)
+                a_app.cmp(&b_app).then_with(|| a.protocol.cmp(&b.protocol))
             }
 
             SortColumn::Service => {
@@ -66,8 +69,6 @@ pub fn sort_connections(connections: &mut [Connection], sort_column: SortColumn,
                     .unwrap_or("");
                 a_loc.cmp(b_loc)
             }
-
-            SortColumn::Protocol => a.protocol.cmp(&b.protocol),
         };
 
         if ascending {

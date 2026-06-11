@@ -1,20 +1,18 @@
-//! Top tab bar — five fixed tabs styled as a reverse-video pill
-//! highlight on the selected one. Also registers click regions so
-//! a mouse click on a tab title triggers `ClickAction::SwitchTab`.
+//! Top tab bar — a borderless two-row strip: the brand + numbered tab
+//! titles on the first row, and an underline rule on the second with a
+//! heavy accent segment under the active tab. The heavy ━ vs light ─
+//! glyph difference keeps the active tab readable under NO_COLOR.
+//! Click regions cover both rows so a click on the underline works too.
 
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::Tabs,
+    widgets::Paragraph,
 };
 
-use crate::ui::{ClickAction, ClickableRegions, UIState, panel_block, theme};
+use crate::ui::{ClickAction, ClickableRegions, UIState, theme};
 
-/// Custom styling: each title gets one space of padding so the active tab
-/// renders as a reverse-video pill. Inactive titles use the muted palette
-/// so the bar reads as a quiet header strip with one obvious focus point.
 pub(crate) const TAB_TITLES: [&str; 5] = ["Overview", "Details", "Interfaces", "Graph", "Help"];
 /// Total number of tabs (kept in sync with `TAB_TITLES`).
 pub(crate) const TAB_COUNT: usize = TAB_TITLES.len();
@@ -22,7 +20,12 @@ pub(crate) const TAB_COUNT: usize = TAB_TITLES.len();
 /// sync without re-checking `TAB_TITLES` at the call site.
 pub(crate) const HELP_TAB_INDEX: usize = TAB_COUNT - 1;
 
-const TAB_DIVIDER: &str = " ▏ ";
+/// Height of the tab bar in rows (titles + underline).
+pub(crate) const TABS_BAR_HEIGHT: u16 = 2;
+
+const BRAND: &str = " rustnet ";
+/// Gap between tab titles, in cells.
+const TAB_GAP: u16 = 3;
 
 pub(in crate::ui) fn draw_tabs(
     f: &mut Frame,
@@ -30,42 +33,66 @@ pub(in crate::ui) fn draw_tabs(
     area: Rect,
     click_regions: &mut ClickableRegions,
 ) {
-    let inactive = theme::fg(theme::muted());
-    let titles: Vec<Line> = TAB_TITLES
-        .iter()
-        .map(|t| Line::from(Span::styled(format!(" {t} "), inactive)))
-        .collect();
+    let mut title_spans: Vec<Span> = vec![Span::styled(BRAND, theme::primary())];
+    let mut underline_spans: Vec<Span> = vec![Span::styled(
+        "─".repeat(BRAND.chars().count()),
+        theme::fg(theme::border()),
+    )];
 
-    let tabs = Tabs::new(titles)
-        .block(panel_block(Span::styled(
-            " RustNet Monitor ",
-            theme::fg(theme::muted()),
-        )))
-        .select(ui_state.selected_tab)
-        // Drop the widget's default 1-char padding on each side; the title
-        // strings carry their own " {title} " spacing so the active pill's
-        // reverse-video style covers the whole tab cell, not just the text.
-        .padding_left("")
-        .padding_right("")
-        .divider(Span::styled(TAB_DIVIDER, theme::fg(theme::muted())))
-        .style(Style::default())
-        .highlight_style(theme::primary().add_modifier(Modifier::REVERSED));
-
-    f.render_widget(tabs, area);
-
-    // Register clickable tab regions. Tabs renders inside the block's inner
-    // area (1px border each side); each title is " {title} " (2 chars padding
-    // baked in), divider spans 3 cells (" ▏ ").
-    let inner = area.inner(ratatui::layout::Margin {
-        horizontal: 1,
-        vertical: 1,
-    });
-    let divider_width = TAB_DIVIDER.chars().count() as u16;
-    let mut x_offset = inner.x;
+    let gap = " ".repeat(TAB_GAP as usize);
+    let mut x_offset = area.x + BRAND.chars().count() as u16;
     for (i, title) in TAB_TITLES.iter().enumerate() {
-        let padded_width = title.len() as u16 + 2; // leading + trailing space
-        let tab_rect = Rect::new(x_offset, inner.y, padded_width, inner.height);
+        // Numbered titles: the 1-5 jump shortcut becomes discoverable.
+        let label = format!("{} {}", i + 1, title);
+        let label_width = label.chars().count() as u16;
+        let active = i == ui_state.selected_tab;
+
+        title_spans.push(Span::raw(gap.clone()));
+        if active {
+            title_spans.push(Span::styled(
+                format!("{} ", i + 1),
+                theme::fg(theme::accent()),
+            ));
+            title_spans.push(Span::styled((*title).to_string(), theme::primary()));
+        } else {
+            title_spans.push(Span::styled(label.clone(), theme::fg(theme::muted())));
+        }
+
+        underline_spans.push(Span::styled(
+            "─".repeat(TAB_GAP as usize),
+            theme::fg(theme::border()),
+        ));
+        let rule_glyph = if active { "━" } else { "─" };
+        let rule_style = if active {
+            theme::fg(theme::accent())
+        } else {
+            theme::fg(theme::border())
+        };
+        underline_spans.push(Span::styled(
+            rule_glyph.repeat(label_width as usize),
+            rule_style,
+        ));
+
+        // Click region spans both rows (title + underline).
+        let tab_rect = Rect::new(x_offset + TAB_GAP, area.y, label_width, TABS_BAR_HEIGHT);
         click_regions.register(tab_rect, ClickAction::SwitchTab(i));
-        x_offset += padded_width + divider_width;
+        x_offset += TAB_GAP + label_width;
+    }
+
+    // Extend the rule to the right edge of the bar.
+    let used: u16 = x_offset.saturating_sub(area.x);
+    if area.width > used {
+        underline_spans.push(Span::styled(
+            "─".repeat((area.width - used) as usize),
+            theme::fg(theme::border()),
+        ));
+    }
+
+    let titles = Paragraph::new(Line::from(title_spans));
+    let underline = Paragraph::new(Line::from(underline_spans));
+
+    f.render_widget(titles, Rect::new(area.x, area.y, area.width, 1));
+    if area.height >= TABS_BAR_HEIGHT {
+        f.render_widget(underline, Rect::new(area.x, area.y + 1, area.width, 1));
     }
 }

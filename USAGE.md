@@ -62,6 +62,9 @@ rustnet --refresh-interval 2000
 # Disable deep packet inspection
 rustnet --no-dpi
 
+# Restore the original full-color palette
+rustnet --theme classic
+
 # Disable reverse DNS lookups (enabled by default)
 rustnet --no-resolve-dns
 
@@ -90,6 +93,8 @@ Options:
       --json-log <FILE>                  Enable JSON logging of connection events to specified file
       --pcap-export <FILE>               Export captured packets to PCAP file for Wireshark analysis
       --no-color                         Disable all colors in the UI (also respects NO_COLOR env var)
+      --theme <PRESET>                   Color theme preset: "muted" (single accent, color reserved
+                                         for signals, default) or "classic" (original full-color palette)
       --geoip-country <PATH>             Path to GeoLite2-Country.mmdb (auto-discovered if not specified)
       --geoip-asn <PATH>                 Path to GeoLite2-ASN.mmdb (auto-discovered if not specified)
       --geoip-city <PATH>                Path to GeoLite2-City.mmdb (auto-discovered if not specified)
@@ -194,6 +199,25 @@ Reverse DNS lookups are **enabled by default**: IP addresses are resolved to hos
 
 **Note**: Resolved hostnames are also included in JSON logs (`destination_hostname`, `source_hostname` fields).
 
+#### `--theme <PRESET>`
+
+Select the color theme preset:
+
+- **`muted`** (default): A restrained palette with one cyan accent. Addresses
+  keep calm colors (remote = blue, local = cyan); everything else uses color
+  only for *signals* — transitional connection states, staleness (yellow/red
+  rows), and live bandwidth.
+- **`classic`**: The original full-color palette from earlier releases, with a
+  distinct color per column.
+
+```bash
+# Bring back the original full-color look
+rustnet --theme classic
+```
+
+Related: `--no-color` disables all colors entirely (also honors the `NO_COLOR`
+environment variable).
+
 #### `-f, --bpf-filter <FILTER>`
 
 Apply a BPF (Berkeley Packet Filter) expression to filter packets at capture time. This is more efficient than application-level filtering as packets are filtered in the kernel before reaching RustNet.
@@ -272,6 +296,7 @@ Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-
 - `/` - Enter filter mode (vim-style search with real-time results)
 - `x` - Clear all connections and reset statistics (press twice to confirm)
 - `t` - Toggle display of historic (closed) connections
+- `i` - Toggle the System info sidebar
 - `r` - Reset view to defaults (clears grouping, sort, filter, and historic)
 
 ### Process Grouping
@@ -308,7 +333,7 @@ RustNet has full mouse support. Mouse capture is enabled automatically — all i
 
 | Action | Effect |
 |--------|--------|
-| **Click** on a group header (`[+]`/`[-]`) | Select the group |
+| **Click** on a group header (`▸`/`▾`) | Select the group |
 | **Double-click** a group header | Expand or collapse the process group |
 | **Click** on a connection within an expanded group | Select that connection |
 | **Double-click** a connection within an expanded group | Open the Details tab for that connection |
@@ -422,7 +447,7 @@ RustNet provides powerful table sorting to help you analyze network connections.
 
 **Find bandwidth hogs (combined up+down traffic):**
 ```
-Press 's' repeatedly until you see: Down/Up ↓
+Press 's' repeatedly until you see: Bandwidth Total ↓
 The connections with highest total bandwidth appear at the top
 ```
 
@@ -438,15 +463,16 @@ Press `s` to cycle through columns in left-to-right order:
 
 | Column | Default Direction | Description |
 |--------|-------------------|-------------|
-| **Protocol** | ↑ Ascending | Sort by protocol type (TCP, UDP, ICMP, etc.) |
-| **Local Address** | ↑ Ascending | Sort by local IP:port (useful for multi-interface systems) |
-| **Remote Address** | ↑ Ascending | Sort by remote IP:port |
-| **Location** | ↑ Ascending | Sort by country code (requires GeoIP database) |
-| **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
-| **Service** | ↑ Ascending | Sort by service name or port number |
-| **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.) |
-| **Bandwidth (Down/Up)** | ↓ Descending | Sort by **combined up+down** bandwidth (highest first by default) |
 | **Process** | ↑ Ascending | Sort by process name alphabetically |
+| **Remote Address** | ↑ Ascending | Sort by remote IP:port |
+| **Local Address** | ↑ Ascending | Sort by local IP:port (useful for multi-interface systems) |
+| **Location** | ↑ Ascending | Sort by country code (requires GeoIP database) |
+| **Service** | ↑ Ascending | Sort by service name or port number |
+| **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.), with TCP/UDP as tie-break |
+| **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
+| **Bandwidth (Rx/Tx)** | ↓ Descending | Sort by **combined up+down** bandwidth (highest first by default) |
+
+Columns hidden at narrow terminal widths stay in the cycle — the active sort is always named in the table's section title.
 
 ### Sort Indicators
 
@@ -458,12 +484,12 @@ The active sort column is highlighted with:
 **Visual indicators:**
 ```
 Active column header appears in cyan with underline:
-Pro │ Local Address │ Remote Address ↑│ State │ ...
-                      ^^^^^^^^^^^^^^^^
-                      (cyan, underlined, with arrow)
+Process │ Remote ↑ │ Local │ Service │ App │ ...
+          ^^^^^^^^
+          (cyan, underlined, with arrow)
 
-Table title shows current sort:
-┌─ Active Connections (Sort: Remote Addr ↑) ──┐
+Section title shows current sort:
+▎ Active Connections · 42 shown · sort Remote Addr ↑
 ```
 
 ### Sort Behavior
@@ -493,7 +519,7 @@ Sorting works seamlessly with filtering:
 Example workflow:
 ```
 1. Press '/' and type 'firefox' to filter Firefox connections
-2. Press 's' until you see "Down/Up ↓"
+2. Press 's' until you see "Bandwidth Total ↓"
 3. Now viewing Firefox connections sorted by total bandwidth (up+down combined)
 ```
 
@@ -501,7 +527,7 @@ Example workflow:
 
 **Find which process is using the most bandwidth:**
 ```
-1. Press 's' until "Down/Up ↓" appears
+1. Press 's' until "Bandwidth Total ↓" appears
 2. Top connection shows the highest total bandwidth (up+down combined)
 3. Look at the "Process" column to see which application
 ```
@@ -515,14 +541,14 @@ Example workflow:
 
 **Find idle connections (lowest bandwidth):**
 ```
-1. Press 's' to cycle to "Down/Up ↓"
-2. Press 'S' to toggle to "Down/Up ↑" (ascending)
+1. Press 's' to cycle to "Bandwidth Total ↓"
+2. Press 'S' to toggle to "Bandwidth Total ↑" (ascending)
 3. Connections with lowest total bandwidth appear first
 ```
 
 **Sort by application protocol:**
 ```
-1. Press 's' until "Application / Host ↑" appears
+1. Press 's' until "Application ↑" appears
 2. All HTTPS connections group together, DNS queries together, etc.
 3. Useful for finding all connections of a specific type
 ```
@@ -545,24 +571,24 @@ Press `a` again to return to the flat (ungrouped) connection list.
 When grouping is enabled, the connection list shows process groups:
 
 ```
-[+] firefox (12)              TCP: 10 UDP: 2     12.5K↓/1.2K↑
-[-] chrome (8)                TCP: 8  UDP: 0     45.2K↓/5.1K↑
-  ├── TCP  192.168.1.10:54321  142.250.80.78:443    ESTABLISHED  HTTPS
-  ├── TCP  192.168.1.10:54322  142.250.80.78:443    ESTABLISHED  HTTPS
-  └── UDP  192.168.1.10:54323  8.8.8.8:53           -            DNS
-[+] systemd-resolved (3)      TCP: 0  UDP: 3     0.2K↓/0.1K↑
-[+] <unknown> (5)             TCP: 2  UDP: 3     0.5K↓/0.2K↑
+▸ firefox (12)                                       TCP:10 UDP:2  12.5K/1.2K
+▾ chrome (8)                                         TCP:8 UDP:0   45.2K/5.1K
+  ├─ 4101   142.250.80.78:443  192.168.1.10:54321   ESTABLISHED   1.2K/0.3K
+  ├─ 4101   142.250.80.78:443  192.168.1.10:54322   ESTABLISHED   0.8K/0.1K
+  └─ 4102   8.8.8.8:53         192.168.1.10:54323   UDP_ACTIVE    0.2K/0.1K
+▸ systemd-resolved (3)                               TCP:0 UDP:3   0.2K/0.1K
+▸ <unknown> (5)                                      TCP:2 UDP:3   0.5K/0.2K
 ```
 
 **Group header format:**
-- `[+]` / `[-]` - Collapsed/expanded indicator
+- `▸` / `▾` - Collapsed/expanded indicator
 - Process name and connection count
 - Protocol breakdown (TCP/UDP counts)
-- Total bandwidth (download↓/upload↑)
+- Total bandwidth (rx/tx, in the Bandwidth column)
 
 **Expanded connections:**
-- Tree-style prefixes (`├──` / `└──`) show hierarchy
-- Individual connection details (protocol, addresses, state, application)
+- Tree-style prefixes (`├─` / `└─`) with the PID (the group header carries the process name)
+- The same columns as the flat view (addresses, state, application, bandwidth)
 
 ### Expanding and Collapsing Groups
 

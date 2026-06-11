@@ -1,8 +1,6 @@
 ---
-source: src/ui.rs
-assertion_line: 5198
+source: src/ui/mod.rs
+assertion_line: 652
 expression: output
 ---
-╭Filter (↑↓/jk to navigate, Enter to confirm, Esc to cancel)───────────────────╮
-│|                                                                             │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ / |                                   ↑↓ navigate · Enter confirm · Esc cancel

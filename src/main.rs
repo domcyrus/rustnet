@@ -96,6 +96,14 @@ fn main() -> Result<()> {
         ui::set_no_color(true);
     }
 
+    // Color theme preset
+    let theme_preset = match matches.get_one::<String>("theme").map(String::as_str) {
+        Some("classic") => ui::ThemePreset::Classic,
+        _ => ui::ThemePreset::Muted,
+    };
+    info!("Using {theme_preset:?} color theme");
+    ui::set_theme_preset(theme_preset);
+
     // GeoIP configuration
     if matches.get_flag("no-geoip") {
         config.disable_geoip = true;
@@ -619,12 +627,15 @@ where
             }
         })?;
 
-        // Update visible rows for page navigation based on terminal height
+        // Update visible rows for page navigation based on terminal height.
+        // Chrome rows: tab bar (2) + section title (1) + table header incl.
+        // margin (2) + status bar (1) = 6, plus the filter line (1) when a
+        // filter is being edited or active.
         if let Ok(size) = terminal.size() {
             let chrome = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
-                11
+                7
             } else {
-                8
+                6
             };
             ui_state.visible_rows = (size.height as usize).saturating_sub(chrome);
         }
@@ -725,6 +736,26 @@ where
                                                 ui_state.selected_tab = 1;
                                             }
                                         }
+                                    }
+                                    ui::ClickAction::SelectConnectionKey(key) => {
+                                        // Keep the grouped selection coherent: adopt the
+                                        // clicked connection's group when grouping is on.
+                                        if ui_state.grouping_enabled {
+                                            for row in &grouped_rows {
+                                                if let ui::GroupedRow::Connection {
+                                                    process_name,
+                                                    connection,
+                                                    ..
+                                                } = row
+                                                    && connection.key() == key
+                                                {
+                                                    ui_state.selected_group =
+                                                        Some(process_name.clone());
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        ui_state.selected_connection_key = Some(key);
                                     }
                                     ui::ClickAction::CopyField { label, value } => {
                                         copy_to_clipboard(

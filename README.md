@@ -188,6 +188,7 @@ rustnet -i eth0              # Specify network interface
 rustnet --show-localhost     # Show localhost connections
 rustnet --no-resolve-dns     # Disable reverse DNS lookups (enabled by default)
 rustnet -r 500               # Set refresh interval (ms)
+rustnet --theme classic      # Original full-color palette (default: muted)
 ```
 
 See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.md) for complete options.
@@ -219,6 +220,7 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `←/→` or `h/l` | Collapse/expand group |
 | `PageUp/PageDown` or `Ctrl+B/F` | Page navigation |
 | `t` | Toggle historic (closed) connections |
+| `i` | Toggle the System info sidebar |
 | `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |
 | `h` | Toggle help |
@@ -237,9 +239,9 @@ See [USAGE.md](USAGE.md) for detailed keyboard controls and navigation tips.
 ```
 
 **Sorting:**
-- Press `s` to cycle through sortable columns (Protocol, Address, State, Service, Bandwidth, Process)
+- Press `s` to cycle through sortable columns (Process, Addresses, Service, Application, State, Bandwidth)
 - Press `S` (Shift+s) to toggle sort direction
-- Find bandwidth hogs: Press `s` until "Down/Up ↓" appears (sorts by combined up+down speed)
+- Find bandwidth hogs: Press `s` until "Bandwidth Total ↓" appears (sorts by combined up+down speed)
 
 See [USAGE.md](USAGE.md) for complete filtering syntax and sorting guide.
 

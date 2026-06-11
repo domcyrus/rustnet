@@ -18,10 +18,12 @@ use crossterm::event::{KeyEvent, MouseEvent};
 use crate::network::dns::DnsResolver;
 use crate::network::types::{Connection, Protocol, ProtocolState};
 use crate::ui::{
-    ClickAction, ClickableRegions, Component, ComponentContext, Effect, HandlerContext,
-    NONE_PLACEHOLDER, UIState, dpi_color,
+    ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
+    NONE_PLACEHOLDER,
+    connection_table::{build_header, column_constraints, connection_row, select_columns},
+    dpi_color,
     format::{format_bytes, format_rate},
-    panel_block, state_color, theme, try_handle_connection_nav,
+    section_header, state_color, theme, try_handle_connection_nav,
 };
 
 /// Padded width for detail labels so values line up vertically.
@@ -46,18 +48,17 @@ impl Component for DetailsTab {
         ctx: &ComponentContext<'_>,
         click_regions: &mut ClickableRegions,
     ) -> Result<()> {
-        let dns_resolver = ctx.app.get_dns_resolver();
-        draw_connection_details(
-            f,
-            ctx.ui_state,
-            ctx.connections,
-            area,
-            dns_resolver.as_deref(),
-            click_regions,
-        )
+        draw_connection_details(f, ctx, area, click_regions)
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        // In grouped mode, flip through the grouped view's connection
+        // sequence, skipping group headers — a header has no record to
+        // show on this tab. Falls through to the shared flat-list
+        // helper when grouping is off (or the sequence is empty).
+        if let Some(effects) = try_handle_grouped_details_nav(key, ctx) {
+            return Some(effects);
+        }
         // Connection navigation flips which record is shown; 'c'
         // copies its remote address. Shared with OverviewTab via
         // try_handle_connection_nav so both stay in lockstep.
@@ -119,18 +120,16 @@ fn line_is_blank(line: &Line<'_>) -> bool {
 }
 
 /// Register one click-to-copy region per non-empty field row in a Details
-/// pane. `skip_placeholder_values` mirrors the existing connection-info
+/// pane. `inner` is the pane's *content* rect (the panes are borderless,
+/// so callers pass the area the text actually renders into).
+/// `skip_placeholder_values` mirrors the existing connection-info
 /// behavior of skipping NONE_PLACEHOLDER / empty values.
 fn register_detail_clicks(
     click_regions: &mut ClickableRegions,
-    pane_area: Rect,
+    inner: Rect,
     fields: &[Option<(String, String)>],
     skip_placeholder_values: bool,
 ) {
-    let inner = pane_area.inner(ratatui::layout::Margin {
-        horizontal: 1,
-        vertical: 1,
-    });
     for (line_idx, entry) in fields.iter().enumerate() {
         if let Some((label, value)) = entry {
             if skip_placeholder_values && (value == NONE_PLACEHOLDER || value.is_empty()) {
@@ -179,14 +178,169 @@ fn push_detail_section_styled<'a>(
     fields.push(None);
 }
 
-pub(in crate::ui) fn draw_connection_details(
+/// Height of the continuity strip: column header (1) + header margin (1)
+/// + up to [`STRIP_ROWS`] connection rows + a blank separator row.
+const STRIP_HEIGHT: u16 = 6;
+/// Number of neighbor rows shown in the continuity strip.
+const STRIP_ROWS: usize = 3;
+
+/// Connection-row navigation for grouped mode: walks the grouped
+/// view's connection sequence directly, skipping group headers. The
+/// shared `try_handle_connection_nav` helper moves row-by-row through
+/// `grouped_rows`, which is right for Overview but would land on
+/// headers here. Claims only the navigation keys; everything else
+/// (e.g. 'c' copy) returns `None` for the caller to handle.
+fn try_handle_grouped_details_nav(
+    key: KeyEvent,
+    ctx: &mut HandlerContext<'_>,
+) -> Option<Vec<Effect>> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    if !ctx.ui_state.grouping_enabled {
+        return None;
+    }
+    let rows = ctx.grouped_rows?;
+    // Indices of the Connection rows within grouped_rows, in display
+    // order (children of collapsed groups are absent, matching the
+    // Overview screen the user navigated from).
+    let indices: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, row)| matches!(row, GroupedRow::Connection { .. }).then_some(idx))
+        .collect();
+    if indices.is_empty() {
+        return None;
+    }
+
+    let current = ctx.ui_state.selected_connection_key.as_deref().and_then(|key| {
+        indices.iter().position(|&idx| {
+            matches!(&rows[idx], GroupedRow::Connection { connection, .. } if connection.key() == key)
+        })
+    });
+
+    let len = indices.len();
+    let page = ctx.ui_state.visible_rows.max(1);
+    let target = match (key.code, key.modifiers) {
+        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => match current {
+            Some(0) | None => len - 1, // wrap to bottom
+            Some(pos) => pos - 1,
+        },
+        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => match current {
+            Some(pos) if pos + 1 < len => pos + 1,
+            _ => 0, // wrap to top
+        },
+        (KeyCode::PageUp, _) | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+            current.unwrap_or(0).saturating_sub(page)
+        }
+        (KeyCode::PageDown, _) | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+            (current.unwrap_or(0) + page).min(len - 1)
+        }
+        (KeyCode::Char('g'), KeyModifiers::NONE) => 0,
+        (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => len - 1,
+        _ => return None,
+    };
+    ctx.ui_state
+        .set_selected_grouped_by_index(rows, indices[target]);
+    Some(Vec::new())
+}
+
+/// Mini connection table at the top of Details: the selected row plus
+/// its neighbors, rendered with the exact same columns and styling as
+/// the Overview table. This is what makes Details read as a zoom into
+/// the list (j/k flips through neighbors without leaving the tab;
+/// clicking a strip row selects it). The neighbors come from whatever
+/// j/k navigates here: the grouped view's connection sequence when
+/// grouping is on, the flat list otherwise.
+fn draw_connection_strip(
     f: &mut Frame,
-    ui_state: &UIState,
-    connections: &[Connection],
+    ctx: &ComponentContext<'_>,
     area: Rect,
     dns_resolver: Option<&DnsResolver>,
+    show_location: bool,
+    click_regions: &mut ClickableRegions,
+) {
+    let ui_state = ctx.ui_state;
+    let connections = ctx.connections;
+
+    // Grouped mode: window over the grouped connection sequence. Falls
+    // back to the flat list when the selection isn't in the sequence
+    // (e.g. its group is collapsed).
+    let grouped: Option<(Vec<&Connection>, usize)> = if ui_state.grouping_enabled {
+        ctx.grouped_rows.and_then(|rows| {
+            let sequence: Vec<&Connection> = rows
+                .iter()
+                .filter_map(|row| match row {
+                    GroupedRow::Connection { connection, .. } => Some(*connection),
+                    GroupedRow::Group { .. } => None,
+                })
+                .collect();
+            let selected = ui_state
+                .selected_connection_key
+                .as_deref()
+                .and_then(|key| sequence.iter().position(|c| c.key() == key))?;
+            Some((sequence, selected))
+        })
+    } else {
+        None
+    };
+    let (sequence, selected) = grouped.unwrap_or_else(|| {
+        (
+            connections.iter().collect(),
+            ui_state.get_selected_index(connections).unwrap_or(0),
+        )
+    });
+
+    let len = sequence.len();
+    let window_size = STRIP_ROWS.min(len);
+    // Center the selection where possible, clamped at the list edges.
+    let start = selected
+        .saturating_sub(1)
+        .min(len.saturating_sub(window_size));
+    let window = &sequence[start..start + window_size];
+
+    let columns = select_columns(area.width, show_location);
+    let widths = column_constraints(&columns);
+    let header = build_header(&columns, ui_state);
+
+    let rows: Vec<ratatui::widgets::Row> = window
+        .iter()
+        .map(|conn| connection_row(conn, &columns, ui_state, dns_resolver, None))
+        .collect();
+
+    let mut state = ratatui::widgets::TableState::default();
+    state.select(Some(selected - start));
+
+    let table = ratatui::widgets::Table::new(rows, &widths)
+        .header(header)
+        .row_highlight_style(theme::row_highlight())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(table, area, &mut state);
+
+    let header_height = 2_u16; // column header (1) + bottom margin (1)
+    for (i, conn) in window.iter().enumerate() {
+        let row_y = area.y + header_height + i as u16;
+        if row_y >= area.y + area.height {
+            break;
+        }
+        click_regions.register(
+            Rect::new(area.x, row_y, area.width, 1),
+            ClickAction::SelectConnectionKey(conn.key()),
+        );
+    }
+}
+
+pub(in crate::ui) fn draw_connection_details(
+    f: &mut Frame,
+    ctx: &ComponentContext<'_>,
+    area: Rect,
     click_regions: &mut ClickableRegions,
 ) -> Result<()> {
+    let ui_state = ctx.ui_state;
+    let connections = ctx.connections;
+    let resolver = ctx.app.get_dns_resolver();
+    let dns_resolver = resolver.as_deref();
+    let (has_country_db, _has_asn_db, _has_city_db) = ctx.app.get_geoip_status();
+
     if connections.is_empty() {
         return Ok(());
     }
@@ -194,14 +348,35 @@ pub(in crate::ui) fn draw_connection_details(
     let conn_idx = ui_state.get_selected_index(connections).unwrap_or(0);
     let conn = &connections[conn_idx];
 
-    // Traffic Statistics has a fixed shape (6 rows + 2 border lines), so pin
-    // it to that height and let Connection Information take everything else.
-    // The bigger top pane fits more of the per-protocol DPI fields without
-    // scrolling/wrapping.
+    // Top: the continuity strip (same grid as Overview). Bottom: Traffic
+    // Statistics with a fixed shape (spacer + header + 6 rows). The
+    // connection information pane takes everything in between, which
+    // fits more of the per-protocol DPI fields without wrapping.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(8)])
+        .constraints([
+            Constraint::Length(STRIP_HEIGHT),
+            Constraint::Min(0),
+            Constraint::Length(8),
+        ])
         .split(area);
+
+    let strip_area = Rect::new(
+        chunks[0].x,
+        chunks[0].y,
+        chunks[0].width,
+        chunks[0].height.saturating_sub(1), // trailing blank separator row
+    );
+    draw_connection_strip(
+        f,
+        ctx,
+        strip_area,
+        dns_resolver,
+        has_country_db,
+        click_regions,
+    );
+    // Re-point the info/traffic split at the remaining chunks.
+    let chunks = [chunks[1], chunks[2]];
 
     // Connection details - build lines and field entries in parallel for click-to-copy.
     // All sections share a single label_style (muted gray); visual grouping comes
@@ -243,8 +418,8 @@ pub(in crate::ui) fn draw_connection_details(
     } else {
         // Mirror the historic Status line for active connections so the
         // user can see how recently traffic moved on this connection.
-        // Color follows the same staleness buckets as the Overview row /
-        // status dot so the cue is consistent across views.
+        // Color follows the same staleness buckets as the Overview row
+        // styling so the cue is consistent across views.
         let ago = conn.last_activity.elapsed().unwrap_or_default();
         let active_display = if ago.as_secs() < 60 {
             format!("Active (last seen {}s ago)", ago.as_secs())
@@ -1136,10 +1311,10 @@ pub(in crate::ui) fn draw_connection_details(
         right_ranges.push(metrics_start..details_text.len());
     }
 
-    // Continuity: the title echoes the selected row so users feel like
-    // they zoomed into the Overview entry rather than landed on a fresh view.
-    // The title's color also mirrors the row's staleness color from
-    // draw_connections_list, so a stale/critical row stays stale/critical
+    // Continuity: the header band echoes the selected row so users feel
+    // like they zoomed into the Overview entry rather than landed on a
+    // fresh view. Its color mirrors the row's staleness color from the
+    // connection table, so a stale/critical row stays stale/critical
     // when zoomed into Details.
     let process_label = conn
         .process_name
@@ -1147,25 +1322,39 @@ pub(in crate::ui) fn draw_connection_details(
         .filter(|s| !s.is_empty())
         .unwrap_or("?");
     let detail_title = if conn.is_historic {
-        format!(
-            " Historic · {} → {} (click to copy) ",
-            process_label, conn.remote_addr
-        )
+        format!(" Historic · {} → {}", process_label, conn.remote_addr)
     } else {
-        format!(" {} → {} (click to copy) ", process_label, conn.remote_addr)
+        format!(" {} → {}", process_label, conn.remote_addr)
     };
     let staleness = conn.staleness_ratio();
     let title_style = if conn.is_historic {
         Style::default()
             .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM)
+            .add_modifier(Modifier::DIM | Modifier::BOLD)
     } else if staleness >= 0.90 {
-        theme::fg(theme::err())
+        theme::bold_fg(theme::err())
     } else if staleness >= 0.75 {
-        theme::fg(theme::warn())
+        theme::bold_fg(theme::warn())
     } else {
-        Style::default()
+        Style::default().add_modifier(Modifier::BOLD)
     };
+
+    // One header band across the whole info area; the panes below it
+    // are borderless. When grouping is on, say so — the strip above and
+    // the j/k navigation follow the grouped view's order, mirroring the
+    // "Grouped by Process" suffix in the Overview title.
+    let mut band = vec![Span::styled(detail_title, title_style)];
+    if ui_state.grouping_enabled {
+        band.push(Span::styled(
+            " · grouped by process",
+            theme::fg(theme::muted()),
+        ));
+    }
+    band.push(Span::styled(
+        " · click a field to copy",
+        theme::fg(theme::muted()),
+    ));
+    let info_area = section_header(f, chunks[0], Line::from(band));
 
     // Drain right-pane sections (Application/DPI + TCP Analytics + RTT) out
     // of the main buffers when we have enough horizontal room to show two
@@ -1173,8 +1362,9 @@ pub(in crate::ui) fn draw_connection_details(
     // if the connection has no DPI / TCP analytics, so the layout stays
     // consistent across connection types. Below the width threshold the
     // panel collapses back to a single column so narrow terminals stay
-    // readable.
-    let split_horizontally = chunks[0].width >= DETAILS_SPLIT_MIN_WIDTH;
+    // readable. The right pane needs no title of its own — its content
+    // starts with the bold "Application: …" / "TCP Analytics" headings.
+    let split_horizontally = info_area.width >= DETAILS_SPLIT_MIN_WIDTH;
     let mut right_text: Vec<Line> = Vec::new();
     let mut right_fields: Vec<Option<(String, String)>> = Vec::new();
     if split_horizontally {
@@ -1200,14 +1390,14 @@ pub(in crate::ui) fn draw_connection_details(
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(chunks[0])
+            .spacing(2)
+            .split(info_area)
             .to_vec()
     } else {
-        vec![chunks[0]]
+        vec![info_area]
     };
 
     let left_para = Paragraph::new(details_text)
-        .block(panel_block(Span::styled(detail_title, title_style)))
         .style(Style::default())
         // trim:false preserves any leading whitespace in labels rather than
         // collapsing it, which keeps the fixed-width label padding intact.
@@ -1215,16 +1405,8 @@ pub(in crate::ui) fn draw_connection_details(
     f.render_widget(left_para, info_chunks[0]);
     register_detail_clicks(click_regions, info_chunks[0], &detail_fields, true);
 
-    if info_chunks.len() == 2 {
-        // Drop "(click to copy)" from the title when the pane is empty so
-        // the hint doesn't promise something the user can't actually do.
-        let right_title = if right_text.is_empty() {
-            " Protocol & Metrics "
-        } else {
-            " Protocol & Metrics (click to copy) "
-        };
+    if info_chunks.len() == 2 && !right_text.is_empty() {
         let right_para = Paragraph::new(right_text)
-            .block(panel_block(right_title))
             .style(Style::default())
             .wrap(Wrap { trim: false });
         f.render_widget(right_para, info_chunks[1]);
@@ -1286,13 +1468,27 @@ pub(in crate::ui) fn draw_connection_details(
         tx_value_style,
     );
 
+    // Blank spacer row, then the section header, then the 6 stat rows.
+    let traffic_area = Rect::new(
+        chunks[1].x,
+        chunks[1].y + 1,
+        chunks[1].width,
+        chunks[1].height.saturating_sub(1),
+    );
+    let traffic_area = section_header(
+        f,
+        traffic_area,
+        Span::styled(
+            " Traffic Statistics",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    );
     let traffic = Paragraph::new(traffic_text)
-        .block(panel_block("Traffic Statistics (click to copy)"))
         .style(Style::default())
         .wrap(Wrap { trim: false });
 
-    f.render_widget(traffic, chunks[1]);
-    register_detail_clicks(click_regions, chunks[1], &traffic_fields, false);
+    f.render_widget(traffic, traffic_area);
+    register_detail_clicks(click_regions, traffic_area, &traffic_fields, false);
 
     Ok(())
 }

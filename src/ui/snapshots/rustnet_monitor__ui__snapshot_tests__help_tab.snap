@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 597
+assertion_line: 572
 expression: output
 ---
 ╭Help──────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -24,6 +24,7 @@ expression: output
 │Space Expand/collapse group (when grouping enabled)                                               │
 │←/→ or h/l Collapse/expand group                                                                  │
 │t Toggle display of historic (closed) connections                                                 │
+│i Toggle the System info sidebar                                                                  │
 │r Reset view (grouping, sort, filter)                                                             │
 │Enter View connection details                                                                     │
 │Esc Return to overview                                                                            │
@@ -51,5 +52,4 @@ expression: output
 │Red Critical - will be removed soon (> 90% of timeout)                                            │
 │                                                                                                  │
 │Filter Examples:                                                                                  │
-│/google Search for 'google' in all fields                                                         │
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────╯

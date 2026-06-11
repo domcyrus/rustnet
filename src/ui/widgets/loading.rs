@@ -23,7 +23,7 @@ pub(in crate::ui) fn draw_loading_screen(f: &mut Frame) {
     let loading_text = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("⣾ ", theme::fg(theme::heading())),
+            Span::styled("⣾ ", theme::bold_fg(theme::accent())),
             Span::styled("Loading network connections...", Style::default()),
         ]),
         Line::from(""),

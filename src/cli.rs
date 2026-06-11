@@ -103,6 +103,15 @@ pub fn build_cli() -> Command {
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(
+            Arg::new("theme")
+                .long("theme")
+                .value_name("PRESET")
+                .help("Color theme preset: \"muted\" (single accent, color reserved for signals) or \"classic\" (original full-color palette)")
+                .value_parser(["muted", "classic"])
+                .default_value("muted")
+                .required(false),
+        )
+        .arg(
             Arg::new("geoip-country")
                 .long("geoip-country")
                 .value_name("PATH")

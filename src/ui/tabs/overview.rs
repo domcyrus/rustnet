@@ -6,12 +6,12 @@
 use anyhow::Result;
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Margin, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Cell, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Sparkline, Table,
-        Wrap,
+        Block, Borders, Cell, Padding, Paragraph, Row, Scrollbar, ScrollbarOrientation,
+        ScrollbarState, Sparkline, Table, Wrap,
     },
 };
 
@@ -23,9 +23,15 @@ use crate::network::dns::DnsResolver;
 use crate::network::types::{Connection, Protocol};
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
-    NONE_PLACEHOLDER, SortColumn, UIState, bandwidth_line, clear_all_with_confirmation, dpi_color,
-    format::{format_bytes, format_rate_compact},
-    panel_block, state_color, status_indicator_cell, theme, try_handle_connection_nav,
+    NONE_PLACEHOLDER, SortColumn, UIState, clear_all_with_confirmation,
+    connection_table::{
+        Column, ColumnId, bandwidth_cell, build_header, column_constraints, connection_row,
+        select_columns,
+    },
+    format::format_bytes,
+    section_header,
+    state::ProcessGroupStats,
+    theme, try_handle_connection_nav,
 };
 
 /// Overview tab — connection list + stats sidebar. Reads every
@@ -184,6 +190,20 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
+            // Toggle the System stats sidebar
+            (KeyCode::Char('i'), _) => {
+                ctx.ui_state.show_system_panel = !ctx.ui_state.show_system_panel;
+                info!(
+                    "System sidebar: {}",
+                    if ctx.ui_state.show_system_panel {
+                        "shown"
+                    } else {
+                        "hidden"
+                    }
+                );
+                Some(Vec::new())
+            }
+
             // Toggle process grouping
             (KeyCode::Char('a'), _) => {
                 ctx.ui_state.toggle_grouping();
@@ -328,16 +348,33 @@ fn is_filter_backspace_char(c: char, modifiers: KeyModifiers) -> bool {
     matches!(c, '\u{8}' | '\u{7f}') || (c == 'h' && modifiers.contains(KeyModifiers::CONTROL))
 }
 
+/// Fixed width of the System stats sidebar. A constant (rather than a
+/// percentage) keeps it from ballooning on wide terminals; it just fits
+/// the longest stat lines ("Process Detection: …").
+const SYSTEM_PANEL_WIDTH: u16 = 34;
+/// Below this Overview width the sidebar is dropped even when toggled
+/// on — the connection table needs the room more.
+const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
+
 fn draw_overview(
     f: &mut Frame,
     ctx: &ComponentContext,
     area: Rect,
     click_regions: &mut ClickableRegions,
 ) -> Result<()> {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
-        .split(area);
+    let show_system_panel =
+        ctx.ui_state.show_system_panel && area.width >= SYSTEM_PANEL_MIN_AREA_WIDTH;
+    let chunks = if show_system_panel {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0), Constraint::Length(SYSTEM_PANEL_WIDTH)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(0)])
+            .split(area)
+    };
 
     // Get DNS resolver from app if enabled
     let dns_resolver = ctx.app.get_dns_resolver();
@@ -370,18 +407,18 @@ fn draw_overview(
         );
     }
 
-    draw_stats_panel(f, ctx.connections, ctx.stats, ctx.app, chunks[1])?;
+    if show_system_panel {
+        draw_stats_panel(f, ctx.connections, ctx.stats, ctx.app, chunks[1])?;
+    }
 
     Ok(())
 }
 
-/// Draw connections list
-/// Render a vertical scrollbar on the right border of a bordered table
-/// `area` when the row list overflows the viewport. `position` is the
+/// Render a vertical scrollbar on the right edge of the table's row
+/// region when the row list overflows the viewport. `position` is the
 /// scroll offset of the topmost visible row; `viewport` is the number
-/// of rows currently visible. No-op when everything fits, so short
-/// lists keep a clean border. Styled to match the panel border (and
-/// NO_COLOR-aware via `theme::fg`).
+/// of rows currently visible. No-op when everything fits. Styled to
+/// match the section rules (and NO_COLOR-aware via `theme::fg`).
 fn draw_table_scrollbar(
     f: &mut Frame,
     area: Rect,
@@ -405,20 +442,14 @@ fn draw_table_scrollbar(
     let mut scrollbar_state = ScrollbarState::new(scroll_positions)
         .position(position)
         .viewport_content_length(viewport);
+    // Thumb in the default foreground so it matches the table content;
+    // only the track recedes into the chrome gray.
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)
-        .style(theme::fg(theme::border()));
-    // Inset vertically by 1 so the bar sits between the top/bottom
-    // borders, on the right edge of the panel.
-    f.render_stateful_widget(
-        scrollbar,
-        area.inner(Margin {
-            horizontal: 0,
-            vertical: 1,
-        }),
-        &mut scrollbar_state,
-    );
+        .track_style(theme::fg(theme::border()))
+        .thumb_style(Style::default());
+    f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
 
 fn draw_connections_list(
@@ -430,276 +461,29 @@ fn draw_connections_list(
     show_location: bool,
     click_regions: &mut ClickableRegions,
 ) {
-    // When DNS resolution is enabled, we need more space for hostnames
-    let remote_addr_width = if dns_resolver.is_some() && ui_state.show_hostnames {
-        30
-    } else {
-        21
-    };
+    // Borderless: one title row, then the table.
+    let area = section_header(
+        f,
+        area,
+        connections_title(ui_state, false, connections.len()),
+    );
 
-    // Build column widths dynamically based on whether location is shown
-    let mut widths = vec![
-        Constraint::Length(1),                 // Status indicator dot
-        Constraint::Length(6),                 // Protocol
-        Constraint::Length(17),                // Local Address
-        Constraint::Length(remote_addr_width), // Remote Address
-    ];
-    if show_location {
-        widths.push(Constraint::Length(4)); // Location (2-char country code)
-    }
-    widths.extend([
-        Constraint::Length(16), // State
-        Constraint::Length(10), // Service
-        Constraint::Length(24), // DPI/Application
-        Constraint::Length(12), // Bandwidth
-        Constraint::Min(20),    // Process
-    ]);
-
-    // Helper function to add sort indicator to column headers
-    let add_sort_indicator = |label: &str, columns: &[SortColumn]| -> String {
-        if columns.contains(&ui_state.sort_column) && ui_state.sort_column != SortColumn::CreatedAt
-        {
-            let arrow = if ui_state.sort_ascending {
-                "↑"
-            } else {
-                "↓"
-            };
-            format!("{} {}", label, arrow)
-        } else {
-            label.to_string()
-        }
-    };
-
-    // Special handler for bandwidth column - shows combined total when sorting by bandwidth
-    let bandwidth_label = match ui_state.sort_column {
-        SortColumn::BandwidthTotal => {
-            let arrow = if ui_state.sort_ascending {
-                "↑"
-            } else {
-                "↓"
-            };
-            format!("Down/Up {}", arrow)
-        }
-        _ => "Down/Up".to_string(),
-    };
-
-    // Build header labels dynamically. The leading empty label is the
-    // header for the status indicator column (●/○).
-    let mut header_labels = vec![
-        String::new(),
-        add_sort_indicator("Pro", &[SortColumn::Protocol]),
-        add_sort_indicator("Local Address", &[SortColumn::LocalAddress]),
-        add_sort_indicator("Remote Address", &[SortColumn::RemoteAddress]),
-    ];
-    if show_location {
-        header_labels.push(add_sort_indicator("Loc", &[SortColumn::Location]));
-    }
-    header_labels.extend([
-        add_sort_indicator("State", &[SortColumn::State]),
-        add_sort_indicator("Service", &[SortColumn::Service]),
-        add_sort_indicator("Application / Host", &[SortColumn::Application]),
-        bandwidth_label,
-        add_sort_indicator("Process", &[SortColumn::Process]),
-    ]);
-
-    // Compute column index offsets. Status dot is column 0, then
-    // Pro(1), Local(2), Remote(3), [Loc(4)], State(4/5), Service(5/6), ...
-    let state_idx = if show_location { 5 } else { 4 };
-    let service_idx = if show_location { 6 } else { 5 };
-    let app_idx = if show_location { 7 } else { 6 };
-    let bw_idx = if show_location { 8 } else { 7 };
-    let process_idx = if show_location { 9 } else { 8 };
-
-    let header_cells = header_labels.iter().enumerate().map(|(idx, h)| {
-        let is_active = (match idx {
-            0 => false, // Status dot column is not sortable
-            1 => ui_state.sort_column == SortColumn::Protocol,
-            2 => ui_state.sort_column == SortColumn::LocalAddress,
-            3 => ui_state.sort_column == SortColumn::RemoteAddress,
-            i if show_location && i == 4 => ui_state.sort_column == SortColumn::Location,
-            i if i == state_idx => ui_state.sort_column == SortColumn::State,
-            i if i == service_idx => ui_state.sort_column == SortColumn::Service,
-            i if i == app_idx => ui_state.sort_column == SortColumn::Application,
-            i if i == bw_idx => ui_state.sort_column == SortColumn::BandwidthTotal,
-            i if i == process_idx => ui_state.sort_column == SortColumn::Process,
-            _ => false,
-        }) && ui_state.sort_column != SortColumn::CreatedAt;
-
-        let style = if is_active {
-            theme::bold_underline_fg(theme::accent())
-        } else {
-            theme::fg(theme::heading())
-        };
-
-        Cell::from(h.as_str()).style(style)
-    });
-    let header = Row::new(header_cells).height(1).bottom_margin(1);
-
-    // Virtualization: only build Row objects for the visible window
+    // Virtualization window first: the Remote column sizes itself to the
+    // rows actually on screen, so the window must be known before the
+    // column set is chosen.
     let scroll_offset = ui_state.scroll_offset;
     let visible_rows = ui_state.visible_rows.max(1);
     let window_end = (scroll_offset + visible_rows + 1).min(connections.len());
     let visible_connections = &connections[scroll_offset.min(connections.len())..window_end];
 
+    // Reserve the two rightmost columns: a blank gap, then the scrollbar.
+    let columns = select_columns(area.width.saturating_sub(2), show_location);
+    let widths = column_constraints(&columns);
+    let header = build_header(&columns, ui_state);
+
     let rows: Vec<Row> = visible_connections
         .iter()
-        .map(|conn| {
-            let pid_str = conn
-                .pid
-                .map(|p| p.to_string())
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
-
-            // Process names are now pre-normalized at the source (PKTAP/lsof), so we can use them directly
-            let process_str = conn
-                .process_name
-                .clone()
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
-
-            let process_display = if conn.pid.is_some() {
-                // Ensure exactly one space between process name and PID: "PROCESS_NAME (PID)"
-                let full_display = format!("{} ({})", process_str, pid_str);
-
-                // Truncate process display to fit in column (roughly 20+ chars available)
-                if full_display.len() > 25 {
-                    format!("{}...", &full_display[..22])
-                } else {
-                    full_display
-                }
-            } else {
-                // Truncate process name if no PID
-                if process_str.len() > 25 {
-                    format!("{}...", &process_str[..22])
-                } else {
-                    process_str
-                }
-            };
-
-            // Display port number or service name based on toggle
-            let service_display = if ui_state.show_port_numbers {
-                conn.remote_addr.port().to_string()
-            } else {
-                let service_name = conn
-                    .service_name
-                    .clone()
-                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
-                // Truncate service name to fit in 8 chars
-                if service_name.len() > 8 {
-                    format!("{:.5}...", service_name)
-                } else {
-                    service_name
-                }
-            };
-
-            // DPI/Application protocol display (enhanced for hostnames)
-            let dpi_display = match &conn.dpi_info {
-                Some(dpi) => dpi.application.to_string(),
-                None => NONE_PLACEHOLDER.to_string(),
-            };
-            let dpi_cell_color = conn
-                .dpi_info
-                .as_ref()
-                .map(|d| dpi_color(&d.application))
-                .unwrap_or_else(theme::field_application);
-
-            // Compact bandwidth display to fit in 14 chars
-            let incoming_rate = format_rate_compact(conn.current_incoming_rate_bps);
-            let outgoing_rate = format_rate_compact(conn.current_outgoing_rate_bps);
-
-            // Determine row-level style by staleness.
-            //   - Fresh: per-cell field colors, no row override.
-            //   - Historic: per-cell field colors preserved, row gets DIM
-            //     so the colors fade but stay distinguishable.
-            //   - Critical / Aging (≥90% / ≥75% TTL): per-cell colors are
-            //     suppressed and the whole row goes red / yellow so the
-            //     operational signal dominates.
-            let staleness = conn.staleness_ratio();
-            let (row_override, color_cells) = if conn.is_historic {
-                (Some(Style::default().add_modifier(Modifier::DIM)), true)
-            } else if staleness >= 0.90 {
-                (Some(theme::fg(theme::err())), false)
-            } else if staleness >= 0.75 {
-                (Some(theme::fg(theme::warn())), false)
-            } else {
-                (None, true)
-            };
-
-            // Format addresses - use hostnames when DNS resolution is enabled and show_hostnames is true
-            let local_addr_display = conn.local_addr.to_string();
-            let remote_addr_display = if ui_state.show_hostnames && conn.protocol != Protocol::Arp {
-                if let Some(resolver) = dns_resolver {
-                    if let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip()) {
-                        // Truncate hostname if too long, but always show port
-                        let port = conn.remote_addr.port();
-                        let max_hostname_len = (remote_addr_width as usize).saturating_sub(7); // Leave room for :port
-                        if hostname.len() > max_hostname_len {
-                            format!(
-                                "{}...:{}",
-                                &hostname[..max_hostname_len.saturating_sub(3)],
-                                port
-                            )
-                        } else {
-                            format!("{}:{}", hostname, port)
-                        }
-                    } else {
-                        conn.remote_addr.to_string()
-                    }
-                } else {
-                    conn.remote_addr.to_string()
-                }
-            } else {
-                conn.remote_addr.to_string()
-            };
-
-            // When `color_cells` is true each cell carries its own field
-            // color (the row's DIM, if any, fades them uniformly); otherwise
-            // per-cell colors are skipped and the row override paints all
-            // cells in a single staleness color.
-            let style_if_colored = |c: Color| {
-                if color_cells {
-                    theme::fg(c)
-                } else {
-                    Style::default()
-                }
-            };
-
-            let bandwidth_cell = if color_cells {
-                Cell::from(bandwidth_line(incoming_rate, outgoing_rate))
-            } else {
-                Cell::from(
-                    Line::from(format!("{}↓/{}↑", incoming_rate, outgoing_rate)).right_aligned(),
-                )
-            };
-
-            let mut cells = vec![
-                status_indicator_cell(conn),
-                Cell::from(conn.protocol.to_string()).style(style_if_colored(theme::muted())),
-                Cell::from(local_addr_display).style(style_if_colored(theme::field_local_addr())),
-                Cell::from(remote_addr_display).style(style_if_colored(theme::field_remote_addr())),
-            ];
-            if show_location {
-                let location_display = conn
-                    .geoip_info
-                    .as_ref()
-                    .map(|g| g.country_display())
-                    .unwrap_or("-");
-                cells.push(
-                    Cell::from(location_display).style(style_if_colored(theme::field_location())),
-                );
-            }
-            cells.extend([
-                Cell::from(conn.state()).style(style_if_colored(state_color(conn))),
-                Cell::from(service_display).style(style_if_colored(theme::field_service())),
-                Cell::from(dpi_display).style(style_if_colored(dpi_cell_color)),
-                bandwidth_cell,
-                Cell::from(process_display).style(style_if_colored(theme::field_process())),
-            ]);
-
-            let row = Row::new(cells);
-            match row_override {
-                Some(style) => row.style(style),
-                None => row,
-            }
-        })
+        .map(|conn| connection_row(conn, &columns, ui_state, dns_resolver, None))
         .collect();
 
     // Create table state with selection adjusted to windowed slice
@@ -708,47 +492,28 @@ fn draw_connections_list(
         state.select(Some(selected_index.saturating_sub(scroll_offset)));
     }
 
-    // Build dynamic title with sort information
-    let base_title = if ui_state.show_historic {
-        "Active + Historic Connections"
-    } else {
-        "Active Connections"
-    };
-    let table_title = if ui_state.sort_column != SortColumn::CreatedAt {
-        let direction = if ui_state.sort_ascending {
-            "↑"
-        } else {
-            "↓"
-        };
-        format!(
-            "{} (Sort: {} {})",
-            base_title,
-            ui_state.sort_column.display_name(),
-            direction
-        )
-    } else {
-        base_title.to_string()
-    };
-
     let connections_table = Table::new(rows, &widths)
         .header(header)
-        .block(panel_block(table_title))
         .row_highlight_style(theme::row_highlight())
         .highlight_symbol("> ");
 
-    f.render_stateful_widget(connections_table, area, &mut state);
+    let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
+    f.render_stateful_widget(connections_table, table_area, &mut state);
 
-    draw_table_scrollbar(f, area, connections.len(), scroll_offset, visible_rows);
+    // Scrollbar tracks the row region (below header + margin).
+    let header_height = 2_u16; // header row (1) + bottom_margin (1)
+    let rows_area = Rect::new(
+        area.x,
+        area.y + header_height,
+        area.width,
+        area.height.saturating_sub(header_height),
+    );
+    draw_table_scrollbar(f, rows_area, connections.len(), scroll_offset, visible_rows);
 
     // Register click regions for visible connection rows
     click_regions.scroll_area = Some(area);
-    let inner = area.inner(ratatui::layout::Margin {
-        horizontal: 1,
-        vertical: 1,
-    });
-    let header_height = 2_u16; // header row (1) + bottom_margin (1)
-    let visible_start_y = inner.y + header_height;
-    let max_visible_rows = inner.height.saturating_sub(header_height) as usize;
+    let visible_start_y = area.y + header_height;
+    let max_visible_rows = area.height.saturating_sub(header_height) as usize;
 
     for i in 0..max_visible_rows {
         let conn_idx = scroll_offset + i;
@@ -756,12 +521,53 @@ fn draw_connections_list(
             break;
         }
         let row_y = visible_start_y + i as u16;
-        let row_rect = Rect::new(inner.x, row_y, inner.width, 1);
+        let row_rect = Rect::new(area.x, row_y, area.width, 1);
         click_regions.register(row_rect, ClickAction::SelectConnection(conn_idx));
     }
 }
 
-/// Draw grouped connections list (grouped by process)
+/// Shared section title for the flat and grouped connection tables —
+/// same bold base, same muted metadata, so toggling grouping reads as
+/// a view change rather than a different screen.
+fn connections_title<'a>(ui_state: &UIState, grouped: bool, shown: usize) -> Line<'a> {
+    let mut base = if ui_state.show_historic {
+        "Active + Historic Connections".to_string()
+    } else {
+        "Active Connections".to_string()
+    };
+    if grouped {
+        base.push_str(" · Grouped by Process");
+    }
+    let counter = if grouped { "processes" } else { "shown" };
+    let mut spans = vec![
+        Span::styled(
+            format!(" {base}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!(" · {shown} {counter}"), theme::fg(theme::muted())),
+    ];
+    if ui_state.sort_column != SortColumn::CreatedAt {
+        let direction = if ui_state.sort_ascending {
+            "↑"
+        } else {
+            "↓"
+        };
+        spans.push(Span::styled(
+            format!(
+                " · sort {} {}",
+                ui_state.sort_column.display_name(),
+                direction
+            ),
+            theme::fg(theme::muted()),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Draw the grouped connection list (grouped by process) on the same
+/// column grid as the flat view: identical header, widths, and cell
+/// styling. Group headers and tree-connector children are the only
+/// difference, so toggling grouping doesn't read as a screen change.
 fn draw_grouped_connections_list(
     f: &mut Frame,
     ui_state: &UIState,
@@ -771,58 +577,23 @@ fn draw_grouped_connections_list(
     show_location: bool,
     click_regions: &mut ClickableRegions,
 ) {
-    // Column layout for grouped view:
-    // - First column shows expand/collapse indicator + process name or tree prefix + protocol
-    // - Remaining columns similar to flat view but with adjusted widths
-    let remote_addr_width = if dns_resolver.is_some() && ui_state.show_hostnames {
-        26
-    } else {
-        18
-    };
-
-    // Build widths dynamically - Loc column only when GeoIP country DB available
-    let mut widths = vec![
-        Constraint::Length(1),                 // Status indicator dot
-        Constraint::Min(28),                   // Process/Protocol (wider for tree structure)
-        Constraint::Length(17),                // Local Address
-        Constraint::Length(remote_addr_width), // Remote Address
-    ];
-    if show_location {
-        widths.push(Constraint::Length(4)); // Location (2-char country code)
-    }
-    widths.extend([
-        Constraint::Length(12), // State
-        Constraint::Length(8),  // Service
-        Constraint::Length(20), // Application/Host
-        Constraint::Length(14), // Bandwidth
-    ]);
-
-    let header_style = theme::fg(theme::heading());
-
-    // Build header cells dynamically. Leading empty cell is the status
-    // indicator column (●/○).
-    let mut header_cells = vec![
-        Cell::from("").style(header_style),
-        Cell::from("Process / Protocol").style(header_style),
-        Cell::from("Local Address").style(header_style),
-        Cell::from("Remote Address").style(header_style),
-    ];
-    if show_location {
-        header_cells.push(Cell::from("Loc").style(header_style));
-    }
-    header_cells.extend([
-        Cell::from("State").style(header_style),
-        Cell::from("Service").style(header_style),
-        Cell::from("Application").style(header_style),
-        Cell::from("Down/Up").style(header_style),
-    ]);
-    let header = Row::new(header_cells).height(1).bottom_margin(1);
+    // Borderless: one title row, then the table (same chrome as flat).
+    let group_count = grouped_rows
+        .iter()
+        .filter(|row| matches!(row, GroupedRow::Group { .. }))
+        .count();
+    let area = section_header(f, area, connections_title(ui_state, true, group_count));
 
     // Virtualization: only build Row objects for the visible window
     let scroll_offset = ui_state.grouped_scroll_offset;
     let visible_rows = ui_state.visible_rows.max(1);
     let window_end = (scroll_offset + visible_rows + 1).min(grouped_rows.len());
     let visible_grouped = &grouped_rows[scroll_offset.min(grouped_rows.len())..window_end];
+
+    // Reserve the two rightmost columns: a blank gap, then the scrollbar.
+    let columns = select_columns(area.width.saturating_sub(2), show_location);
+    let widths = column_constraints(&columns);
+    let header = build_header(&columns, ui_state);
 
     let rows: Vec<Row> = visible_grouped
         .iter()
@@ -831,213 +602,34 @@ fn draw_grouped_connections_list(
                 process_name,
                 stats,
                 expanded,
-            } => {
-                let expand_indicator = if *expanded { "[-]" } else { "[+]" };
-                let process_cell = if ui_state.show_historic && stats.historic_count > 0 {
-                    Line::from(vec![
-                        Span::styled(
-                            format!(
-                                "{} {} ({}, ",
-                                expand_indicator, process_name, stats.connection_count
-                            ),
-                            theme::bold_fg(theme::accent()),
-                        ),
-                        Span::styled(
-                            format!("{}", stats.historic_count),
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::DIM | Modifier::BOLD),
-                        ),
-                        Span::styled(")".to_string(), theme::bold_fg(theme::accent())),
-                    ])
-                } else {
-                    Line::from(Span::styled(
-                        format!(
-                            "{} {} ({})",
-                            expand_indicator, process_name, stats.connection_count
-                        ),
-                        theme::bold_fg(theme::accent()),
-                    ))
-                };
-
-                // Protocol breakdown: TCP count green (matches Established
-                // TCP rows below), UDP count cyan; labels muted.
-                let proto_breakdown = Line::from(vec![
-                    Span::styled("TCP:", theme::fg(theme::muted())),
-                    Span::styled(
-                        stats.tcp_count.to_string(),
-                        theme::fg(theme::tcp_established()),
-                    ),
-                    Span::raw(" "),
-                    Span::styled("UDP:", theme::fg(theme::muted())),
-                    Span::styled(stats.udp_count.to_string(), theme::fg(theme::accent())),
-                ]);
-
-                // Bandwidth display matches per-row split (rx green / tx blue).
-                let incoming_rate = format_rate_compact(stats.total_incoming_rate_bps);
-                let outgoing_rate = format_rate_compact(stats.total_outgoing_rate_bps);
-
-                // Build cells dynamically. Status column is left blank on
-                // group header rows; the per-connection child rows below
-                // carry the actual status dots.
-                let mut cells = vec![
-                    Cell::from(""),
-                    Cell::from(process_cell),
-                    Cell::from(""),
-                    Cell::from(""),
-                ];
-                if show_location {
-                    cells.push(Cell::from("")); // Loc (empty for group header)
-                }
-                cells.extend([
-                    Cell::from(proto_breakdown),
-                    Cell::from(""),
-                    Cell::from(""),
-                    Cell::from(bandwidth_line(incoming_rate, outgoing_rate)),
-                ]);
-                Row::new(cells)
-            }
+            } => group_header_row(&columns, process_name, stats, *expanded, ui_state),
             GroupedRow::Connection {
                 connection,
                 is_last_in_group,
                 ..
             } => {
-                let prefix = if *is_last_in_group {
-                    "  └── "
+                // The group header above carries the process name, so the
+                // child row's Process cell is just the tree connector + PID.
+                let connector = if *is_last_in_group {
+                    "  └─ "
                 } else {
-                    "  ├── "
+                    "  ├─ "
                 };
-
-                // Format addresses
-                let local_addr_display = connection.local_addr.to_string();
-                let remote_addr_display = if ui_state.show_hostnames
-                    && connection.protocol != Protocol::Arp
-                {
-                    if let Some(resolver) = dns_resolver {
-                        if let Some(hostname) = resolver.get_hostname(&connection.remote_addr.ip())
-                        {
-                            let port = connection.remote_addr.port();
-                            let max_len = (remote_addr_width as usize).saturating_sub(7);
-                            if hostname.len() > max_len {
-                                format!("{}..:{}", &hostname[..max_len.saturating_sub(2)], port)
-                            } else {
-                                format!("{}:{}", hostname, port)
-                            }
-                        } else {
-                            connection.remote_addr.to_string()
-                        }
-                    } else {
-                        connection.remote_addr.to_string()
-                    }
-                } else {
-                    connection.remote_addr.to_string()
-                };
-
-                // State display
-                let state = connection.state();
-
-                // Service display
-                let service_display = if ui_state.show_port_numbers {
-                    connection.remote_addr.port().to_string()
-                } else {
-                    connection
-                        .service_name
-                        .clone()
-                        .unwrap_or_else(|| NONE_PLACEHOLDER.to_string())
-                };
-
-                // DPI display
-                let dpi_display = match &connection.dpi_info {
-                    Some(dpi) => dpi.application.to_string(),
-                    None => NONE_PLACEHOLDER.to_string(),
-                };
-                let dpi_cell_color = connection
-                    .dpi_info
-                    .as_ref()
-                    .map(|d| dpi_color(&d.application))
-                    .unwrap_or_else(theme::field_application);
-
-                // GeoIP location display (2-char country code)
-                let location_display = connection
-                    .geoip_info
-                    .as_ref()
-                    .map(|g| g.country_display())
-                    .unwrap_or("-");
-
-                // Bandwidth display
-                let incoming_rate = format_rate_compact(connection.current_incoming_rate_bps);
-                let outgoing_rate = format_rate_compact(connection.current_outgoing_rate_bps);
-
-                // Row staleness override; same model as the flat view.
-                // Historic rows keep their per-cell colors but get DIM so the
-                // hue fades while staying scannable; aging/critical override
-                // every cell with yellow/red.
-                let staleness = connection.staleness_ratio();
-                let (row_override, color_cells) = if connection.is_historic {
-                    (Some(Style::default().add_modifier(Modifier::DIM)), true)
-                } else if staleness >= 0.90 {
-                    (Some(theme::fg(theme::err())), false)
-                } else if staleness >= 0.75 {
-                    (Some(theme::fg(theme::warn())), false)
-                } else {
-                    (None, true)
-                };
-                let style_if_colored = |c: Color| {
-                    if color_cells {
-                        theme::fg(c)
-                    } else {
-                        Style::default()
-                    }
-                };
-
-                // Protocol cell: tree prefix muted, protocol name in process color.
-                let protocol_cell = if color_cells {
-                    Cell::from(Line::from(vec![
-                        Span::styled(prefix.to_string(), theme::fg(theme::muted())),
-                        Span::styled(
-                            connection.protocol.to_string(),
-                            theme::fg(theme::field_process()),
-                        ),
-                    ]))
-                } else {
-                    Cell::from(format!("{}{}", prefix, connection.protocol))
-                };
-
-                let bandwidth_cell = if color_cells {
-                    Cell::from(bandwidth_line(incoming_rate, outgoing_rate))
-                } else {
-                    Cell::from(
-                        Line::from(format!("{}↓/{}↑", incoming_rate, outgoing_rate))
-                            .right_aligned(),
-                    )
-                };
-
-                let mut cells = vec![
-                    status_indicator_cell(connection),
-                    protocol_cell,
-                    Cell::from(local_addr_display)
-                        .style(style_if_colored(theme::field_local_addr())),
-                    Cell::from(remote_addr_display)
-                        .style(style_if_colored(theme::field_remote_addr())),
-                ];
-                if show_location {
-                    cells.push(
-                        Cell::from(location_display)
-                            .style(style_if_colored(theme::field_location())),
-                    );
-                }
-                cells.extend([
-                    Cell::from(state).style(style_if_colored(state_color(connection))),
-                    Cell::from(service_display).style(style_if_colored(theme::field_service())),
-                    Cell::from(dpi_display).style(style_if_colored(dpi_cell_color)),
-                    bandwidth_cell,
+                let pid = connection
+                    .pid
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+                let process_cell = Line::from(vec![
+                    Span::styled(connector.to_string(), theme::fg(theme::muted())),
+                    Span::raw(pid),
                 ]);
-
-                let row = Row::new(cells);
-                match row_override {
-                    Some(style) => row.style(style),
-                    None => row,
-                }
+                connection_row(
+                    connection,
+                    &columns,
+                    ui_state,
+                    dns_resolver,
+                    Some(process_cell),
+                )
             }
         })
         .collect();
@@ -1048,50 +640,34 @@ fn draw_grouped_connections_list(
         state.select(Some(selected_index.saturating_sub(scroll_offset)));
     }
 
-    // Build title showing both group sort (A-Z) and connection sort within groups
-    let history_suffix = if ui_state.show_historic {
-        " + Historic"
-    } else {
-        ""
-    };
-    let table_title = if ui_state.sort_column != SortColumn::CreatedAt {
-        let direction = if ui_state.sort_ascending {
-            "↑"
-        } else {
-            "↓"
-        };
-        format!(
-            "Grouped by Process (A-Z){} │ Connections: {} {}",
-            history_suffix,
-            ui_state.sort_column.display_name(),
-            direction
-        )
-    } else {
-        format!(
-            "Grouped by Process (A-Z){} │ Connections: Time ↑",
-            history_suffix
-        )
-    };
-
     let connections_table = Table::new(rows, &widths)
         .header(header)
-        .block(panel_block(table_title))
         .row_highlight_style(theme::row_highlight())
         .highlight_symbol("> ");
 
-    f.render_stateful_widget(connections_table, area, &mut state);
+    let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
+    f.render_stateful_widget(connections_table, table_area, &mut state);
 
-    draw_table_scrollbar(f, area, grouped_rows.len(), scroll_offset, visible_rows);
+    // Scrollbar tracks the row region (below header + margin).
+    let header_height = 2_u16;
+    let rows_area = Rect::new(
+        area.x,
+        area.y + header_height,
+        area.width,
+        area.height.saturating_sub(header_height),
+    );
+    draw_table_scrollbar(
+        f,
+        rows_area,
+        grouped_rows.len(),
+        scroll_offset,
+        visible_rows,
+    );
 
     // Register click regions for visible grouped rows
     click_regions.scroll_area = Some(area);
-    let inner = area.inner(ratatui::layout::Margin {
-        horizontal: 1,
-        vertical: 1,
-    });
-    let header_height = 2_u16;
-    let visible_start_y = inner.y + header_height;
-    let max_visible_rows = inner.height.saturating_sub(header_height) as usize;
+    let visible_start_y = area.y + header_height;
+    let max_visible_rows = area.height.saturating_sub(header_height) as usize;
 
     for i in 0..max_visible_rows {
         let row_idx = scroll_offset + i;
@@ -1099,9 +675,69 @@ fn draw_grouped_connections_list(
             break;
         }
         let row_y = visible_start_y + i as u16;
-        let row_rect = Rect::new(inner.x, row_y, inner.width, 1);
+        let row_rect = Rect::new(area.x, row_y, area.width, 1);
         click_regions.register(row_rect, ClickAction::SelectConnection(row_idx));
     }
+}
+
+/// A process-group header row rendered on the shared grid: ▾/▸ + name +
+/// count in the Process column, TCP/UDP breakdown in State, aggregate
+/// bandwidth in the Bandwidth column; other cells stay empty.
+fn group_header_row<'a>(
+    columns: &[Column],
+    process_name: &str,
+    stats: &ProcessGroupStats,
+    expanded: bool,
+    ui_state: &UIState,
+) -> Row<'a> {
+    let indicator = if expanded { "▾" } else { "▸" };
+    // Plain BOLD (no accent): group headers are structural anchors, and
+    // the accent color stays reserved for the active tab / sort indicator.
+    let group_style = Style::default().add_modifier(Modifier::BOLD);
+
+    let cells: Vec<Cell<'a>> = columns
+        .iter()
+        .map(|col| match col.id {
+            ColumnId::Process => {
+                let line = if ui_state.show_historic && stats.historic_count > 0 {
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{indicator} {process_name} ({}, ", stats.connection_count),
+                            group_style,
+                        ),
+                        Span::styled(
+                            stats.historic_count.to_string(),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::DIM | Modifier::BOLD),
+                        ),
+                        Span::styled(")".to_string(), group_style),
+                    ])
+                } else {
+                    Line::from(Span::styled(
+                        format!("{indicator} {process_name} ({})", stats.connection_count),
+                        group_style,
+                    ))
+                };
+                Cell::from(line)
+            }
+            ColumnId::State => Cell::from(Line::from(vec![
+                Span::styled("TCP:", theme::fg(theme::muted())),
+                Span::raw(stats.tcp_count.to_string()),
+                Span::raw(" "),
+                Span::styled("UDP:", theme::fg(theme::muted())),
+                Span::raw(stats.udp_count.to_string()),
+            ])),
+            ColumnId::Bandwidth => bandwidth_cell(
+                stats.total_incoming_rate_bps,
+                stats.total_outgoing_rate_bps,
+                true,
+            ),
+            _ => Cell::from(""),
+        })
+        .collect();
+
+    Row::new(cells)
 }
 
 /// Draw stats panel
@@ -1124,12 +760,21 @@ fn draw_stats_panel(
     app: &App,
     area: Rect,
 ) -> Result<()> {
-    // Outer frame for the right column so it visually balances the
-    // connections table on the left. Uses the standard rounded panel chrome
-    // so every framed pane shares the same border treatment.
-    let panel = panel_block(Span::styled(" System ", theme::fg(theme::heading())));
+    // Borderless: a single quiet vertical rule separates the sidebar
+    // from the connections table, and the section header names it —
+    // deliberately *not* the same chrome as the table so the two read
+    // as different kinds of content.
+    let panel = Block::default()
+        .borders(Borders::LEFT)
+        .border_style(theme::fg(theme::border()))
+        .padding(Padding::horizontal(1));
     let inner_area = panel.inner(area);
     f.render_widget(panel, area);
+    let inner_area = section_header(
+        f,
+        inner_area,
+        Span::styled(" System", Style::default().add_modifier(Modifier::BOLD)),
+    );
 
     // Build the security/sandbox text up front so the chunk height can match
     // its content. Otherwise long feature lists get clipped on narrow columns.

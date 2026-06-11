@@ -13,7 +13,7 @@ use ratatui::{
 
 use crate::app::App;
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, format::format_bytes, panel_block, theme,
+    ClickableRegions, Component, ComponentContext, format::format_bytes, section_header, theme,
 };
 
 /// Read-only interfaces tab. Stateless for now; the table is rebuilt
@@ -135,9 +135,16 @@ pub(in crate::ui) fn draw_interface_stats(f: &mut Frame, app: &App, area: Rect) 
         ])
         .style(theme::fg(theme::heading()))
     })
-    .block(panel_block(" Interface Statistics "))
     .style(Style::default());
 
+    let area = section_header(
+        f,
+        area,
+        ratatui::text::Span::styled(
+            " Interface Statistics",
+            Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+    );
     f.render_widget(table, area);
 
     Ok(())

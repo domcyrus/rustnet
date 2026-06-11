@@ -1,5 +1,13 @@
 //! Centralized color palette for cross-terminal consistency.
 //! All semantic colors derive from these 7 base constants.
+//!
+//! Two presets share this module: the default `Muted` preset keeps one
+//! accent color (cyan) and reserves the rest of the palette for semantic
+//! signals (state health, staleness, traffic activity), while `Classic`
+//! restores the original per-field rainbow. Every alias below branches on
+//! the active preset so call sites stay preset-agnostic.
+
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::style::{Color, Modifier, Style};
 
@@ -11,6 +19,31 @@ const ACCENT: Color = Color::Cyan; // Informational highlight
 const MUTED: Color = Color::Gray; // Secondary/inactive
 const INFO: Color = Color::Blue; // Neutral info
 const SPECIAL: Color = Color::Magenta; // Distinct/special
+
+// --- Theme presets ---
+
+/// Selectable palette presets (`--theme` CLI flag).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemePreset {
+    /// Restrained default: one cyan accent, color only for semantic signals.
+    Muted,
+    /// The original full-color palette with per-field colors.
+    Classic,
+}
+
+/// Stored as a bool ("is classic") so reads stay a single relaxed atomic
+/// load, mirroring the NO_COLOR flag in `ui::mod`.
+static CLASSIC: AtomicBool = AtomicBool::new(false);
+
+/// Select the active palette preset. Called once at startup.
+pub fn set_preset(preset: ThemePreset) {
+    CLASSIC.store(preset == ThemePreset::Classic, Ordering::Relaxed);
+}
+
+/// Whether the Classic (full-color) preset is active.
+pub fn is_classic() -> bool {
+    CLASSIC.load(Ordering::Relaxed)
+}
 
 // --- Base color accessors ---
 pub fn ok() -> Color {
@@ -53,10 +86,10 @@ pub fn label() -> Color {
     muted()
 }
 pub fn heading() -> Color {
-    warn()
+    if is_classic() { warn() } else { muted() }
 }
 pub fn key() -> Color {
-    warn()
+    if is_classic() { warn() } else { accent() }
 }
 
 // --- Network aliases ---
@@ -88,23 +121,29 @@ pub fn proto_other() -> Color {
 }
 
 // --- TCP state aliases ---
+// Muted preset: ESTABLISHED is the common case and reads as plain text;
+// only transitional states (a genuine signal) keep an attention color.
 pub fn tcp_established() -> Color {
-    ok()
+    if is_classic() { ok() } else { Color::Reset }
 }
 pub fn tcp_opening() -> Color {
     warn()
 }
 pub fn tcp_closing() -> Color {
-    accent()
+    if is_classic() { accent() } else { muted() }
 }
 pub fn tcp_waiting() -> Color {
-    special()
+    if is_classic() { special() } else { muted() }
 }
 pub fn tcp_closed() -> Color {
     muted()
 }
 
 // --- Field-level aliases (same color used everywhere a field appears) ---
+// Muted preset: addresses keep a calm color (they're the data being
+// monitored), the other identifying fields render in the terminal's
+// default foreground (`Color::Reset`), supporting context fades to
+// gray. Same address colors in both presets.
 pub fn field_local_addr() -> Color {
     accent()
 }
@@ -112,24 +151,28 @@ pub fn field_remote_addr() -> Color {
     info()
 }
 pub fn field_state() -> Color {
-    ok()
+    if is_classic() { ok() } else { Color::Reset }
 }
 pub fn field_service() -> Color {
-    warn()
+    if is_classic() { warn() } else { muted() }
 }
 pub fn field_location() -> Color {
-    special()
+    if is_classic() { special() } else { muted() }
 }
 pub fn field_process() -> Color {
-    ok()
+    if is_classic() { ok() } else { Color::Reset }
 }
 pub fn field_application() -> Color {
-    warn()
+    if is_classic() { warn() } else { muted() }
 }
 
 // --- Panel border ---
 pub fn border() -> Color {
-    special()
+    if is_classic() {
+        special()
+    } else {
+        Color::DarkGray
+    }
 }
 
 // --- Status bar styles ---
@@ -151,7 +194,7 @@ pub fn status_bar_success() -> Style {
         .add_modifier(Modifier::BOLD | Modifier::REVERSED)
 }
 pub fn status_bar_default() -> Style {
-    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) || !is_classic() {
         return Style::default().add_modifier(Modifier::REVERSED);
     }
     Style::default().fg(info()).add_modifier(Modifier::REVERSED)
