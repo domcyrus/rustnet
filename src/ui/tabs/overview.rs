@@ -805,14 +805,16 @@ fn draw_stats_panel(
             features.push("IPC scoped");
         }
 
+        // Rendered on its own line: appended to the status line it
+        // overflows the fixed-width sidebar ("…[Landlo" truncation).
         let available_indicator = if let Some(abi) = sandbox_info.landlock_abi {
             // The negotiated ABI tells you which restriction tier is active:
             // v4 = TCP block, v6 = + abstract-socket/signal scoping.
-            Span::styled(format!(" [Landlock ABI v{abi}]"), theme::fg(theme::muted()))
+            Span::styled(format!("Landlock ABI v{abi}"), theme::fg(theme::muted()))
         } else if sandbox_info.landlock_available {
-            Span::styled(" [kernel supported]", theme::fg(theme::muted()))
+            Span::styled("Landlock: kernel supported", theme::fg(theme::muted()))
         } else {
-            Span::styled(" [kernel unsupported]", theme::fg(theme::muted()))
+            Span::styled("Landlock: kernel unsupported", theme::fg(theme::muted()))
         };
 
         let uid = crate::network::privileges::effective_uid();
@@ -825,11 +827,13 @@ fn draw_stats_panel(
             (format!("Process: UID {uid}"), theme::fg(theme::ok()))
         };
 
-        let mut lines = vec![Line::from(vec![
-            Span::raw("Sandbox: "),
-            Span::styled(sandbox_info.status, status_style),
-            available_indicator,
-        ])];
+        let mut lines = vec![
+            Line::from(vec![
+                Span::raw("Sandbox: "),
+                Span::styled(sandbox_info.status, status_style),
+            ]),
+            Line::from(available_indicator),
+        ];
         if features.is_empty() {
             lines.push(Line::from(Span::styled(
                 "No restrictions active",
@@ -941,9 +945,11 @@ fn draw_stats_panel(
         }
 
         let is_elevated = crate::is_admin();
+        // "Process: Administrator" rather than "running as Administrator":
+        // the longer form overflows the fixed-width sidebar.
         let (priv_label, priv_style) = if is_elevated {
             (
-                "Process: running as Administrator".to_string(),
+                "Process: Administrator".to_string(),
                 theme::fg(theme::warn()),
             )
         } else {
