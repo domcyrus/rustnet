@@ -38,11 +38,38 @@ RELEASE_BIN="${RUSTNET_DIR}/target/release/rustnet"
 
 TRAFFIC_PID=""
 
-cleanup() {
+# Background traffic generator: HTTPS, DNS, ICMP, multiple processes.
+# Started fresh for each tape with a delay so that every generated
+# connection is born AFTER the tape's rustnet instance (and its eBPF
+# hooks) is up — connections whose process exits before rustnet starts
+# can never be attributed and would show as dead "-" rows.
+start_traffic() {
+    (
+        sleep 6
+        while true; do
+            curl -s -o /dev/null --max-time 4 https://example.com || true
+            curl -s -o /dev/null --max-time 4 https://github.com || true
+            curl -s -o /dev/null --max-time 4 https://wikipedia.org || true
+            curl -s -o /dev/null --max-time 4 https://ratatui.rs || true
+            dig +short +time=2 +tries=1 example.com >/dev/null 2>&1 || true
+            dig +short +time=2 +tries=1 github.com >/dev/null 2>&1 || true
+            ping -c 1 -W 1 1.1.1.1 >/dev/null 2>&1 || true
+            sleep 1
+        done
+    ) &
+    TRAFFIC_PID=$!
+}
+
+stop_traffic() {
     if [[ -n "${TRAFFIC_PID}" ]] && kill -0 "${TRAFFIC_PID}" 2>/dev/null; then
         kill "${TRAFFIC_PID}" 2>/dev/null || true
         wait "${TRAFFIC_PID}" 2>/dev/null || true
     fi
+    TRAFFIC_PID=""
+}
+
+cleanup() {
+    stop_traffic
     rm -f "${THROWAWAY_GIF}"
 }
 trap cleanup EXIT INT TERM
@@ -108,29 +135,19 @@ fi
 echo "Granting capture capabilities (sudo setcap)..."
 "${SUDO[@]}" setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' "${RELEASE_BIN}"
 
-# Background traffic generator: HTTPS, DNS, ICMP, multiple processes.
 mkdir -p "${SCREENSHOTS_DIR}"
-(
-    while true; do
-        curl -s -o /dev/null --max-time 4 https://example.com || true
-        curl -s -o /dev/null --max-time 4 https://github.com || true
-        curl -s -o /dev/null --max-time 4 https://wikipedia.org || true
-        curl -s -o /dev/null --max-time 4 https://ratatui.rs || true
-        dig +short +time=2 +tries=1 example.com >/dev/null 2>&1 || true
-        dig +short +time=2 +tries=1 github.com >/dev/null 2>&1 || true
-        ping -c 1 -W 1 1.1.1.1 >/dev/null 2>&1 || true
-        sleep 1
-    done
-) &
-TRAFFIC_PID=$!
 
 echo ""
 echo "Rendering demo GIF (vhs demo.tape)..."
+start_traffic
 (cd "${RUSTNET_DIR}" && vhs "${DEMO_TAPE}")
+stop_traffic
 
 echo ""
 echo "Rendering screenshots (vhs screenshots.tape)..."
+start_traffic
 (cd "${RUSTNET_DIR}" && vhs "${SCREENSHOTS_TAPE}")
+stop_traffic
 
 # Optimize the GIF. The lossy pass shrinks dithered/AA edges; flat
 # terminal colors are visually unaffected.

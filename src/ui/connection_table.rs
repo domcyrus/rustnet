@@ -395,7 +395,11 @@ pub(in crate::ui) fn connection_row<'a>(
                 if conn.is_historic {
                     Cell::from("closed").style(style_if_colored(theme::tcp_closed()))
                 } else {
-                    Cell::from(conn.state().into_owned()).style(style_if_colored(state_color(conn)))
+                    // Most states fit the fixed width; the odd long one
+                    // (e.g. "ECHO_REP(12345)") ellipsizes instead of
+                    // hard-clipping.
+                    let state = truncate_with_ellipsis(&conn.state(), col.width as usize);
+                    Cell::from(state).style(style_if_colored(state_color(conn)))
                 }
             }
             ColumnId::Bandwidth => bandwidth_cell(
