@@ -2,6 +2,14 @@
 
 This document is for maintainers releasing new versions of RustNet.
 
+## Changelog Maintenance (ongoing, not at release time)
+
+Notable changes are added to the `## [Unreleased]` section of `CHANGELOG.md` in
+the same PR that makes them — don't wait until release time and reconstruct the
+list from git history. Cutting a release then just renames that section (see
+step 3 below). `pre-release-check.sh` warns if `[Unreleased]` still has content
+after the rename, and the release workflow's notes extraction ignores it.
+
 ## Creating a New Release
 
 ### 1. Run Pre-Release Checks
@@ -34,12 +42,19 @@ This catches cross-platform and static linking issues before you invest time in 
 
 ### 3. Prepare the Release
 
-Update version in `Cargo.toml`, `rpm/rustnet.spec`, and update `CHANGELOG.md` with release notes:
+Update version in `Cargo.toml`, `rpm/rustnet.spec`, and turn the accumulated
+`[Unreleased]` changelog section into the release entry:
 
 ```bash
 # Update Cargo.toml version (e.g., version = "0.3.0")
 # Update rpm/rustnet.spec Version field (e.g., Version: 0.3.0)
-# Update CHANGELOG.md with new version section
+
+# In CHANGELOG.md:
+#   1. Rename "## [Unreleased]" to "## [0.3.0] - YYYY-MM-DD" (review/polish the entries)
+#   2. Add a fresh, empty "## [Unreleased]" section above it
+#   3. Update the comparison links at the bottom:
+#        [Unreleased]: https://github.com/domcyrus/rustnet/compare/v0.3.0...HEAD
+#        [0.3.0]: https://github.com/domcyrus/rustnet/compare/v0.2.0...v0.3.0
 
 # Update Cargo.lock and test the build
 cargo build --release
@@ -140,7 +155,7 @@ Before pushing the tag, ensure:
 - [ ] Version number updated in `Cargo.toml`
 - [ ] Version number updated in `rpm/rustnet.spec` (line 5: `Version: x.y.z`)
 - [ ] `Cargo.lock` updated (via `cargo build`)
-- [ ] `CHANGELOG.md` updated with release notes in format `## [x.y.z] - YYYY-MM-DD`
+- [ ] `CHANGELOG.md`: `[Unreleased]` renamed to `## [x.y.z] - YYYY-MM-DD`, a fresh empty `[Unreleased]` added, comparison links updated
 - [ ] All tests pass (`cargo test`)
 - [ ] Changes committed to main branch
 - [ ] Git tag created and pushed
