@@ -1173,7 +1173,20 @@ impl App {
         // Signal that process detection (including eBPF loading) is complete.
         // The main thread waits for this before dropping eBPF capabilities.
         let _ = process_ready_tx.send(());
-        let interval = Duration::from_secs(2); // Use default interval
+
+        // Fast/slow enrichment cadence. Young connections are retried on a
+        // quick tick so their process name appears almost immediately (the
+        // eBPF map entry exists from the moment the socket connects — a
+        // slower cadence only buys a visible "-" in the UI). Older
+        // stragglers (e.g. NAT-translated container traffic the lookup can
+        // never resolve) are retried only on the full pass so the fast
+        // tick stays cheap, and fully attributed connections are skipped
+        // entirely.
+        let tick = Duration::from_millis(250);
+        let full_pass_interval = Duration::from_secs(2);
+        // Connections younger than this are retried on every fast tick.
+        const YOUNG_CONNECTION_SECS: u64 = 10;
+        let mut last_full_pass = Instant::now() - full_pass_interval;
 
         // Build and set the detection status from the process lookup implementation
         // Only set if not already detected as pktap (to handle race conditions)
@@ -1223,30 +1236,36 @@ impl App {
                 last_refresh = Instant::now();
             }
 
+            let full_pass = last_full_pass.elapsed() >= full_pass_interval;
+            if full_pass {
+                last_full_pass = Instant::now();
+            }
+
             // Enrich connections without process info
             let mut enriched = 0;
             for mut entry in tracker.connections().iter_mut() {
+                // Fully attributed — nothing to do (names are permanent).
+                if entry.process_name.is_some() && entry.pid.is_some() {
+                    continue;
+                }
+                // Fast ticks only retry young connections; older ones wait
+                // for the full pass.
+                if !full_pass {
+                    let young = entry
+                        .created_at
+                        .elapsed()
+                        .map(|age| age.as_secs() < YOUNG_CONNECTION_SECS)
+                        .unwrap_or(true);
+                    if !young {
+                        continue;
+                    }
+                }
+
                 // Allow partial enrichment - fill in missing pieces without overwriting existing data
                 if let Some((pid, name)) = process_lookup.get_process_for_connection(&entry) {
                     let mut did_enrich = false;
 
-                    // Only set process name if it's missing
-                    if let Some(existing_name) = &entry.process_name {
-                        // Check if the existing name differs significantly (for debugging)
-                        let existing_normalized = existing_name
-                            .split_whitespace()
-                            .collect::<Vec<&str>>()
-                            .join(" ");
-                        let new_normalized =
-                            name.split_whitespace().collect::<Vec<&str>>().join(" ");
-
-                        if existing_normalized != new_normalized {
-                            debug!(
-                                "⚠️  Process name differs: existing='{}' vs lsof='{}'",
-                                existing_name, name
-                            );
-                        }
-                    } else {
+                    if entry.process_name.is_none() {
                         entry.process_name = Some(name.clone());
                         did_enrich = true;
                         debug!(
@@ -1255,20 +1274,10 @@ impl App {
                             name
                         );
                     }
-
-                    // Only set PID if it's missing
                     if entry.pid.is_none() {
                         entry.pid = Some(pid);
                         did_enrich = true;
                         debug!("✓ Set PID for connection {}: {}", entry.key(), pid);
-                    } else if entry.pid != Some(pid) {
-                        // PID differs - log for debugging
-                        debug!(
-                            "⚠️  PID differs for {}: existing={:?} vs lsof={}",
-                            entry.key(),
-                            entry.pid,
-                            pid
-                        );
                     }
 
                     if did_enrich {
@@ -1281,7 +1290,7 @@ impl App {
                 debug!("Enriched {} connections with process info", enriched);
             }
 
-            thread::sleep(interval);
+            thread::sleep(tick);
         }
 
         Ok(())

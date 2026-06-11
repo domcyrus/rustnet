@@ -47,6 +47,20 @@ struct
     __type(value, struct conn_info);
 } socket_map SEC(".maps");
 
+// Minimal CO-RE view of task_struct with only the fields we touch.
+// Deliberately NOT vmlinux.h's task_struct: referencing the full
+// definition makes clang emit its complete BTF (hundreds of types,
+// including forward declarations), which older clang (e.g. v10 in the
+// Ubuntu 20.04 cross images) encodes in a way libbpf-cargo's skeleton
+// generator rejects ("Cannot get alignment of type with kind Fwd").
+// CO-RE relocation matching ignores the ___local suffix, so accesses
+// through this type resolve against the real kernel task_struct.
+struct task_struct___local
+{
+    struct task_struct___local *group_leader;
+    char comm[TASK_COMM_LEN];
+} __attribute__((preserve_access_index));
+
 // Helper to populate process information
 static __always_inline void get_process_info(struct conn_info *info)
 {
@@ -57,7 +71,18 @@ static __always_inline void get_process_info(struct conn_info *info)
     info->uid = uid_gid >> 32;
     info->timestamp = bpf_ktime_get_ns();
 
-    bpf_get_current_comm(&info->comm, sizeof(info->comm));
+    // Record the thread-group leader's comm (the process name, e.g.
+    // "firefox") rather than the current thread's comm (e.g. firefox's
+    // "Socket Thread"). For processes that exit before userspace ever
+    // resolves the PID via /proc, this comm is the only name we will
+    // ever have, so it must be the process-level one.
+    struct task_struct___local *task =
+        (struct task_struct___local *)bpf_get_current_task();
+    long err = BPF_CORE_READ_STR_INTO(&info->comm, task, group_leader, comm);
+    if (err <= 0 || info->comm[0] == '\0')
+    {
+        bpf_get_current_comm(&info->comm, sizeof(info->comm));
+    }
 }
 
 // TCP connect tracking - use tcp_connect for better address capture

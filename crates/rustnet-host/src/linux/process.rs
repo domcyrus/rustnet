@@ -43,14 +43,35 @@ impl LinuxProcessLookup {
         })
     }
 
-    /// Get process name by PID from the cached procfs scan.
-    /// Returns None if PID not found (process may have exited or not yet scanned).
+    /// Get process name by PID. Tries the cached procfs scan first, then
+    /// falls back to reading `/proc/<pid>/comm` directly: the cache only
+    /// refreshes every few seconds, so a freshly started process — exactly
+    /// the case for short-lived tools like curl/dig — is often missing
+    /// from it while still being perfectly readable from /proc. One tiny
+    /// file read; the result is cached so repeated lookups stay cheap.
+    /// Returns None if the process has already exited and was never scanned.
     pub fn get_process_name_by_pid(&self, pid: u32) -> Option<String> {
-        self.pid_names
+        if let Some(name) = self
+            .pid_names
             .read()
             .expect("pid_names lock poisoned")
             .get(&pid)
             .cloned()
+        {
+            return Some(name);
+        }
+
+        let comm = fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+        let comm = comm.trim();
+        if comm.is_empty() {
+            return None;
+        }
+        let name = comm.to_string();
+        self.pid_names
+            .write()
+            .expect("pid_names lock poisoned")
+            .insert(pid, name.clone());
+        Some(name)
     }
 
     /// Build connection -> process mapping and PID -> name mapping
