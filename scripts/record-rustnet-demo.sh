@@ -88,6 +88,14 @@ fi
 [[ -f "${DEMO_TAPE}" ]] || { echo "Error: ${DEMO_TAPE} missing."; exit 1; }
 [[ -f "${SCREENSHOTS_TAPE}" ]] || { echo "Error: ${SCREENSHOTS_TAPE} missing."; exit 1; }
 
+# Validate sudo up front (before the potentially long build) so the run
+# doesn't die at the setcap step minutes in. Honors SUDO_ASKPASS when
+# the caller exports one; otherwise prompts on the terminal as usual.
+SUDO=(sudo)
+[[ -n "${SUDO_ASKPASS:-}" ]] && SUDO=(sudo -A)
+echo "setcap needs sudo; validating credentials..."
+"${SUDO[@]}" -v || { echo "Error: sudo authentication failed."; exit 1; }
+
 # Build release binary if missing or stale
 if [[ ! -x "${RELEASE_BIN}" ]] || [[ "${RUSTNET_DIR}/Cargo.lock" -nt "${RELEASE_BIN}" ]]; then
     echo "Building release binary..."
@@ -98,7 +106,7 @@ fi
 # File capabilities are dropped whenever cargo rewrites the binary, so
 # (re)apply them on every run.
 echo "Granting capture capabilities (sudo setcap)..."
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' "${RELEASE_BIN}"
+"${SUDO[@]}" setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' "${RELEASE_BIN}"
 
 # Background traffic generator: HTTPS, DNS, ICMP, multiple processes.
 mkdir -p "${SCREENSHOTS_DIR}"
