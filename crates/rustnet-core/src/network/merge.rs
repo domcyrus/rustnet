@@ -956,7 +956,6 @@ mod tests {
         use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
 
         ParsedPacket {
-            connection_key: "test".to_string(),
             protocol: Protocol::Tcp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),

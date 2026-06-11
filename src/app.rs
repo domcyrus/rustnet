@@ -421,6 +421,12 @@ pub struct App {
     /// Current connections snapshot for UI
     connections_snapshot: Arc<RwLock<Vec<Connection>>>,
 
+    /// Bumped by the snapshot thread after each snapshot write. Lets the UI
+    /// loop skip re-cloning and re-sorting an unchanged snapshot (the
+    /// snapshot refreshes every `refresh_interval` ms, the UI ticks every
+    /// 200ms — without this, most ticks redo identical work).
+    snapshot_generation: Arc<AtomicU64>,
+
     /// Whether to include historic connections in the snapshot
     show_historic: Arc<AtomicBool>,
 
@@ -558,6 +564,7 @@ impl App {
             should_stop: Arc::new(AtomicBool::new(false)),
             tracker: Arc::new(ConnectionTracker::new()),
             connections_snapshot: Arc::new(RwLock::new(Vec::new())),
+            snapshot_generation: Arc::new(AtomicU64::new(0)),
             show_historic: Arc::new(AtomicBool::new(false)),
             service_lookup: Arc::new(service_lookup),
             oui_lookup,
@@ -1031,6 +1038,11 @@ impl App {
                     // packet that panics a DPI parser cannot take down the
                     // whole pcap_rx thread and leave the monitor running
                     // blind.
+                    // One wall-clock read per batch instead of per packet.
+                    // Batches hold ≤100 packets and flush at least every
+                    // 100ms, so the timestamp skew is far below any
+                    // connection timeout or rate window.
+                    let batch_time = SystemTime::now();
                     let mut parsed_count = 0;
                     for packet_data in &batch {
                         let parse_result =
@@ -1042,6 +1054,7 @@ impl App {
                                 update_connection(
                                     &tracker,
                                     parsed,
+                                    batch_time,
                                     &stats,
                                     &json_log_path,
                                     dns_resolver.as_deref(),
@@ -1290,6 +1303,7 @@ impl App {
     /// Start snapshot provider thread for UI updates
     fn start_snapshot_provider(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let snapshot = Arc::clone(&self.connections_snapshot);
+        let snapshot_generation = Arc::clone(&self.snapshot_generation);
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let service_lookup = Arc::clone(&self.service_lookup);
@@ -1341,7 +1355,10 @@ impl App {
                         .connections()
                         .iter()
                         .filter_map(|entry| {
-                            let mut conn = entry.value().clone();
+                            // snapshot_clone: leave the live tracker as unique
+                            // owner of its rate samples, otherwise the next
+                            // per-packet update pays an Arc::make_mut deep copy.
+                            let mut conn = entry.value().snapshot_clone();
                             if enrich_and_filter(&mut conn, &service_lookup, filter_localhost)
                                 && conn.is_active()
                             {
@@ -1358,7 +1375,7 @@ impl App {
                             .historic()
                             .iter()
                             .filter_map(|entry| {
-                                let mut conn = entry.value().clone();
+                                let mut conn = entry.value().snapshot_clone();
                                 if enrich_and_filter(&mut conn, &service_lookup, filter_localhost) {
                                     Some(conn)
                                 } else {
@@ -1374,8 +1391,10 @@ impl App {
 
                     let filtered_count = snapshot_data.len();
 
-                    // Update snapshot
+                    // Update snapshot and publish the new generation so the
+                    // UI loop knows there is fresh data to re-sort.
                     *snapshot.write().unwrap() = snapshot_data;
+                    snapshot_generation.fetch_add(1, Ordering::Release);
 
                     // Update stats (only count active connections)
                     stats
@@ -1415,13 +1434,21 @@ impl App {
 
                     // Refresh rates for connections that may still have non-zero rates.
                     // Skip connections idle >30s whose rates are already zero.
+                    let sweep_start = Instant::now();
+                    let mut refreshed = 0usize;
                     for mut entry in tracker.connections().iter_mut() {
                         let conn = entry.value_mut();
                         let idle_secs = conn.last_activity.elapsed().unwrap_or_default().as_secs();
                         if idle_secs <= 30 || conn.has_nonzero_rates() {
                             conn.refresh_rates();
+                            refreshed += 1;
                         }
                     }
+                    debug!(
+                        "State refresh sweep took {:?} for {} refreshed connections",
+                        sweep_start.elapsed(),
+                        refreshed
+                    );
 
                     // Run every 1 second to balance responsiveness with performance
                     thread::sleep(Duration::from_secs(1));
@@ -1700,39 +1727,40 @@ impl App {
         self.get_filtered_connections("")
     }
 
+    /// Generation of the current snapshot; bumped on every snapshot rebuild.
+    /// The UI loop compares this against the last generation it consumed to
+    /// skip re-cloning and re-sorting unchanged data.
+    pub fn snapshot_generation(&self) -> u64 {
+        self.snapshot_generation.load(Ordering::Acquire)
+    }
+
     /// Get filtered connections for UI display
     pub fn get_filtered_connections(&self, filter_query: &str) -> Vec<Connection> {
-        let connections = self.connections_snapshot.read().unwrap().clone();
-
         // Filter out DNS PTR queries/responses when reverse DNS is enabled
         let hide_ptr_lookups = self.dns_resolver.is_some() && !self.config.show_ptr_lookups;
-
-        let connections: Vec<Connection> = if hide_ptr_lookups {
-            connections
-                .into_iter()
-                .filter(|conn| {
-                    // Hide DNS PTR queries/responses (used for reverse DNS lookups)
-                    if let Some(ref dpi) = conn.dpi_info
-                        && let ApplicationProtocol::Dns(ref dns_info) = dpi.application
-                        && dns_info.query_type == Some(DnsQueryType::PTR)
-                    {
-                        return false;
-                    }
-                    true
-                })
-                .collect()
+        let filter = if filter_query.trim().is_empty() {
+            None
         } else {
-            connections
+            Some(ConnectionFilter::parse(filter_query))
         };
 
-        if filter_query.trim().is_empty() {
-            return connections;
-        }
-
-        let filter = ConnectionFilter::parse(filter_query);
-        connections
-            .into_iter()
-            .filter(|conn| filter.matches(conn))
+        // Filter by reference under the read guard and clone only the
+        // matches, instead of cloning the whole snapshot first.
+        let snapshot = self.connections_snapshot.read().unwrap();
+        snapshot
+            .iter()
+            .filter(|conn| {
+                // Hide DNS PTR queries/responses (used for reverse DNS lookups)
+                if hide_ptr_lookups
+                    && let Some(ref dpi) = conn.dpi_info
+                    && let ApplicationProtocol::Dns(ref dns_info) = dpi.application
+                    && dns_info.query_type == Some(DnsQueryType::PTR)
+                {
+                    return false;
+                }
+                filter.as_ref().is_none_or(|f| f.matches(conn))
+            })
+            .cloned()
             .collect()
     }
 
@@ -1884,6 +1912,7 @@ impl App {
     /// Seed the UI snapshot directly. Tests only.
     #[cfg(test)]
     pub(crate) fn set_connections_snapshot_for_test(&self, snapshot: Vec<Connection>) {
+        self.snapshot_generation.fetch_add(1, Ordering::Release);
         *self.connections_snapshot.write().unwrap() = snapshot;
     }
 
@@ -1991,11 +2020,12 @@ impl App {
 fn update_connection(
     tracker: &ConnectionTracker,
     parsed: ParsedPacket,
+    now: SystemTime,
     stats: &AppStats,
     json_log_path: &Option<String>,
     dns_resolver: Option<&DnsResolver>,
 ) {
-    let outcome = tracker.ingest(&parsed);
+    let outcome = tracker.ingest_at(&parsed, now);
 
     // Fold TCP anomaly counts into the global statistics.
     if outcome.retransmits > 0 {

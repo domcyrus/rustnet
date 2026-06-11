@@ -17,7 +17,6 @@ pub use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
 /// Result of parsing a packet
 #[derive(Debug)]
 pub struct ParsedPacket {
-    pub connection_key: String,
     pub protocol: Protocol,
     pub local_addr: SocketAddr,
     pub remote_addr: SocketAddr,
@@ -28,6 +27,16 @@ pub struct ParsedPacket {
     pub dpi_result: Option<DpiResult>, // DPI results if available
     pub process_name: Option<String>,  // Process name from PKTAP metadata
     pub process_id: Option<u32>,       // Process ID from PKTAP metadata
+}
+
+impl ParsedPacket {
+    /// The flow identity this packet belongs to, derived from protocol and
+    /// addresses. `ConnectionKey` is `Copy`, so this costs nothing on the
+    /// per-packet path (no allocation, unlike the former `String` key field).
+    #[inline]
+    pub fn connection_key(&self) -> ConnectionKey {
+        ConnectionKey::new(self.protocol, self.local_addr, self.remote_addr)
+    }
 }
 
 /// Configuration for packet parsing
@@ -487,7 +496,6 @@ impl PacketParser {
         };
 
         Some(ParsedPacket {
-            connection_key: format!("ARP:{}-ARP:{}", local_addr, remote_addr),
             protocol: Protocol::Arp,
             local_addr,
             remote_addr,

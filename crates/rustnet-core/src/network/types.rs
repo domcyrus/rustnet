@@ -1390,24 +1390,46 @@ impl Default for TrafficHistory {
 }
 
 // ============================================================================
-// RTT Tracking Types (for latency measurement)
+// Connection Key
 // ============================================================================
 
-/// Key for tracking pending SYN packets
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Compact identity of a flow: protocol plus local/remote socket addresses.
+///
+/// Used as the connection-table key (and for matching pending TCP SYNs in RTT
+/// tracking). `Copy` and fixed-size, so per-packet key construction, hashing,
+/// and map lookups involve no heap allocation. The `Display` form matches the
+/// historical string key format (`"TCP:1.2.3.4:80-TCP:5.6.7.8:443"`) so log
+/// output is unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ConnectionKey {
+    pub protocol: Protocol,
     pub local_addr: SocketAddr,
     pub remote_addr: SocketAddr,
 }
 
 impl ConnectionKey {
-    pub fn new(local_addr: SocketAddr, remote_addr: SocketAddr) -> Self {
+    pub fn new(protocol: Protocol, local_addr: SocketAddr, remote_addr: SocketAddr) -> Self {
         Self {
+            protocol,
             local_addr,
             remote_addr,
         }
     }
 }
+
+impl std::fmt::Display for ConnectionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{}-{}:{}",
+            self.protocol, self.local_addr, self.protocol, self.remote_addr
+        )
+    }
+}
+
+// ============================================================================
+// RTT Tracking Types (for latency measurement)
+// ============================================================================
 
 /// Tracks pending SYN packets and recent RTT measurements
 #[derive(Debug)]
@@ -1603,6 +1625,11 @@ pub struct RateTracker {
     // Keep track of last byte counts for delta calculation
     last_bytes_sent: u64,
     last_bytes_received: u64,
+    // Running sums of the deltas currently held in `samples`, maintained on
+    // every push/pop. Keeps rate calculation O(1) instead of summing the
+    // whole window (up to `max_samples` entries) per refresh.
+    window_sent_total: u64,
+    window_received_total: u64,
 }
 
 impl RateTracker {
@@ -1620,6 +1647,8 @@ impl RateTracker {
             max_samples: 20_000,
             last_bytes_sent: 0,
             last_bytes_received: 0,
+            window_sent_total: 0,
+            window_received_total: 0,
         }
     }
 
@@ -1650,11 +1679,18 @@ impl RateTracker {
             delta_sent,
             delta_received,
         });
+        self.window_sent_total += delta_sent;
+        self.window_received_total += delta_received;
 
         // Lightweight overflow guard: drop oldest samples if we exceed the cap.
         // Full time-based pruning happens in prune() every ~1s.
         while samples.len() > self.max_samples {
-            samples.pop_front();
+            if let Some(old) = samples.pop_front() {
+                self.window_sent_total = self.window_sent_total.saturating_sub(old.delta_sent);
+                self.window_received_total = self
+                    .window_received_total
+                    .saturating_sub(old.delta_received);
+            }
         }
 
         // Update last values for next delta calculation
@@ -1667,19 +1703,41 @@ impl RateTracker {
     /// Called periodically (via `refresh_rates`) rather than per-packet.
     pub fn prune(&mut self) {
         let cutoff_time = self.last_update - self.window_duration;
+
+        // Fast path: nothing to prune. Checked through `&self.samples` so a
+        // no-op refresh never touches `Arc::make_mut` (which would deep-copy
+        // a shared buffer) or the pop loop.
+        let needs_prune = self.samples.len() > self.max_samples
+            || self
+                .samples
+                .front()
+                .is_some_and(|oldest| oldest.timestamp < cutoff_time);
+        if !needs_prune {
+            return;
+        }
+
         let samples = Arc::make_mut(&mut self.samples);
 
         while let Some(oldest) = samples.front() {
-            if oldest.timestamp < cutoff_time {
-                samples.pop_front();
-            } else {
+            if oldest.timestamp >= cutoff_time {
                 break;
+            }
+            if let Some(old) = samples.pop_front() {
+                self.window_sent_total = self.window_sent_total.saturating_sub(old.delta_sent);
+                self.window_received_total = self
+                    .window_received_total
+                    .saturating_sub(old.delta_received);
             }
         }
 
         // Limit total samples to prevent memory bloat
         while samples.len() > self.max_samples {
-            samples.pop_front();
+            if let Some(old) = samples.pop_front() {
+                self.window_sent_total = self.window_sent_total.saturating_sub(old.delta_sent);
+                self.window_received_total = self
+                    .window_received_total
+                    .saturating_sub(old.delta_received);
+            }
         }
     }
 
@@ -1695,19 +1753,18 @@ impl RateTracker {
 
     /// Get the incoming rate in bytes per second at a specific timestamp
     fn get_incoming_rate_bps_at(&self, now: Instant) -> f64 {
-        self.calculate_rate_from_deltas_at(now, |sample| sample.delta_received)
+        self.calculate_rate_from_deltas_at(now, self.window_received_total)
     }
 
     /// Get the outgoing rate in bytes per second at a specific timestamp
     fn get_outgoing_rate_bps_at(&self, now: Instant) -> f64 {
-        self.calculate_rate_from_deltas_at(now, |sample| sample.delta_sent)
+        self.calculate_rate_from_deltas_at(now, self.window_sent_total)
     }
 
-    /// Calculate rate using delta values for accurate sliding window calculation
-    fn calculate_rate_from_deltas_at<F>(&self, now: Instant, delta_getter: F) -> f64
-    where
-        F: Fn(&RateSample) -> u64,
-    {
+    /// Calculate rate from the running window total — O(1), no walk over the
+    /// sample buffer. `total_bytes` is the maintained sum of all deltas
+    /// currently in `samples` (each represents bytes transferred).
+    fn calculate_rate_from_deltas_at(&self, now: Instant, total_bytes: u64) -> f64 {
         if self.samples.is_empty() {
             return 0.0;
         }
@@ -1741,12 +1798,33 @@ impl RateTracker {
             return 0.0;
         }
 
-        // Sum ALL deltas in the window - each represents bytes transferred
-        let total_bytes: u64 = self.samples.iter().map(delta_getter).sum();
-
         // Simple sliding window average: total bytes over time span
         // No decay - just pure average like iftop's 10-second column
         total_bytes as f64 / time_span
+    }
+
+    /// Clone carrying the rate metadata but an empty sample buffer.
+    ///
+    /// A regular `clone()` shares the sample buffer via `Arc`, which forces
+    /// the next per-packet `update()` on the live tracker into an
+    /// `Arc::make_mut` deep copy of the whole window (up to `max_samples`
+    /// entries). Read-only consumers (UI snapshots, historic archives) never
+    /// look at raw samples — they read the cached `current_*_rate_bps`
+    /// fields on [`Connection`] — so they should use this instead and leave
+    /// the live tracker as the buffer's unique owner.
+    pub fn clone_without_samples(&self) -> Self {
+        Self {
+            samples: Arc::new(VecDeque::new()),
+            window_duration: self.window_duration,
+            last_update: self.last_update,
+            max_samples: self.max_samples,
+            last_bytes_sent: self.last_bytes_sent,
+            last_bytes_received: self.last_bytes_received,
+            // Zeroed alongside the empty buffer so the invariant
+            // `window totals == sum(samples)` holds for the copy.
+            window_sent_total: 0,
+            window_received_total: 0,
+        }
     }
 
     // Test-only methods for deterministic testing with controlled timestamps
@@ -1961,6 +2039,20 @@ impl Connection {
                 "{:?}:{}-{:?}:{}",
                 self.protocol, self.local_addr, self.protocol, self.remote_addr
             )
+        }
+    }
+
+    /// Cheap clone for read-only snapshots (UI, historic archive).
+    ///
+    /// Identical to `clone()` except the rate-tracker sample buffer is
+    /// dropped, so the live connection stays the unique owner of its
+    /// samples and the next per-packet rate update avoids a copy-on-write
+    /// deep copy. Consumers must read the cached `current_*_rate_bps`
+    /// fields rather than recompute rates from samples.
+    pub fn snapshot_clone(&self) -> Self {
+        Self {
+            rate_tracker: self.rate_tracker.clone_without_samples(),
+            ..self.clone()
         }
     }
 
@@ -2487,6 +2579,125 @@ mod tests {
         assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
         assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
         // Test single update - need at least 2 samples for rate
+    }
+
+    #[test]
+    fn test_rate_tracker_clone_without_samples_detaches_buffer() {
+        let mut tracker = RateTracker::new();
+        let start = Instant::now();
+        for i in 0..10_u64 {
+            tracker.update_at_time(start + Duration::from_millis(i * 100), i * 1000, i * 500);
+        }
+
+        let detached = tracker.clone_without_samples();
+
+        // The detached copy has no samples but keeps the rate metadata.
+        assert!(detached.samples.is_empty());
+        assert_eq!(detached.last_bytes_sent, tracker.last_bytes_sent);
+        assert_eq!(detached.last_bytes_received, tracker.last_bytes_received);
+        assert_eq!(detached.window_duration, tracker.window_duration);
+
+        // The live tracker stays unique owner of its buffer, so the next
+        // per-packet update takes the in-place fast path (no CoW deep copy).
+        assert_eq!(Arc::strong_count(&tracker.samples), 1);
+    }
+
+    #[test]
+    fn test_connection_snapshot_clone_preserves_cached_fields() {
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            local,
+            remote,
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        conn.bytes_sent = 1234;
+        conn.bytes_received = 5678;
+        conn.update_rates();
+        conn.current_incoming_rate_bps = 42.0;
+        conn.current_outgoing_rate_bps = 24.0;
+
+        let snap = conn.snapshot_clone();
+
+        assert_eq!(snap.bytes_sent, 1234);
+        assert_eq!(snap.bytes_received, 5678);
+        assert_eq!(snap.current_incoming_rate_bps, 42.0);
+        assert_eq!(snap.current_outgoing_rate_bps, 24.0);
+        assert_eq!(snap.local_addr, conn.local_addr);
+        assert_eq!(snap.remote_addr, conn.remote_addr);
+
+        // The snapshot must not share the sample buffer with the original.
+        assert_eq!(Arc::strong_count(&conn.rate_tracker.samples), 1);
+        assert!(snap.rate_tracker.samples.is_empty());
+    }
+
+    #[test]
+    fn test_rate_tracker_window_totals_match_brute_force_across_prunes() {
+        let window = Duration::from_millis(500);
+        let mut tracker = RateTracker::with_window_duration(window);
+        let start = Instant::now();
+
+        let mut bytes_sent = 0u64;
+        let mut bytes_recv = 0u64;
+        for i in 0..50u64 {
+            bytes_sent += 100 + i;
+            bytes_recv += 50 + i;
+            tracker.update_at_time(
+                start + Duration::from_millis(i * 40),
+                bytes_sent,
+                bytes_recv,
+            );
+            if i % 10 == 9 {
+                tracker.prune();
+            }
+        }
+        tracker.prune();
+
+        let brute_sent: u64 = tracker.samples.iter().map(|s| s.delta_sent).sum();
+        let brute_recv: u64 = tracker.samples.iter().map(|s| s.delta_received).sum();
+        assert_eq!(tracker.window_sent_total, brute_sent);
+        assert_eq!(tracker.window_received_total, brute_recv);
+    }
+
+    #[test]
+    fn test_rate_tracker_cap_eviction_keeps_totals_in_sync() {
+        let mut tracker = RateTracker::new();
+        tracker.max_samples = 8;
+        let start = Instant::now();
+
+        let mut sent = 0u64;
+        let mut recv = 0u64;
+        for i in 0..20u64 {
+            sent += 10 * (i + 1);
+            recv += 5 * (i + 1);
+            tracker.update_at_time(start + Duration::from_millis(i * 100), sent, recv);
+        }
+
+        assert!(tracker.samples.len() <= 8, "cap must be enforced");
+        let brute_sent: u64 = tracker.samples.iter().map(|s| s.delta_sent).sum();
+        let brute_recv: u64 = tracker.samples.iter().map(|s| s.delta_received).sum();
+        assert_eq!(tracker.window_sent_total, brute_sent);
+        assert_eq!(tracker.window_received_total, brute_recv);
+    }
+
+    #[test]
+    fn test_rate_tracker_prune_noop_avoids_cow() {
+        let mut tracker = RateTracker::new();
+        let start = Instant::now();
+        tracker.update_at_time(start, 100, 50);
+        tracker.update_at_time(start + Duration::from_millis(100), 200, 100);
+
+        // Share the buffer (as a full clone would), then prune with nothing
+        // prunable: the fast path must not deep-copy via Arc::make_mut.
+        let shared = tracker.clone();
+        tracker.prune();
+        assert_eq!(
+            Arc::strong_count(&tracker.samples),
+            2,
+            "no-op prune must not detach the shared buffer"
+        );
+        drop(shared);
     }
 
     #[test]
@@ -3211,11 +3422,12 @@ mod tests {
     fn test_rtt_tracker_record_syn() {
         let mut tracker = RttTracker::new();
         let key = ConnectionKey::new(
+            Protocol::Tcp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
         );
 
-        tracker.record_syn(key.clone());
+        tracker.record_syn(key);
         assert_eq!(tracker.pending_syns.len(), 1);
         assert!(tracker.pending_syns.contains_key(&key));
     }
@@ -3224,6 +3436,7 @@ mod tests {
     fn test_rtt_tracker_record_syn_ack_no_match() {
         let mut tracker = RttTracker::new();
         let key = ConnectionKey::new(
+            Protocol::Tcp,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
         );
@@ -3240,14 +3453,14 @@ mod tests {
         let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
 
         // Record SYN (outgoing: local -> remote)
-        let syn_key = ConnectionKey::new(local, remote);
+        let syn_key = ConnectionKey::new(Protocol::Tcp, local, remote);
         tracker.record_syn(syn_key);
 
         // Simulate some delay
         std::thread::sleep(Duration::from_millis(10));
 
         // Record SYN-ACK (same key - parser normalizes to local,remote)
-        let syn_ack_key = ConnectionKey::new(local, remote);
+        let syn_ack_key = ConnectionKey::new(Protocol::Tcp, local, remote);
         let rtt = tracker.record_syn_ack(&syn_ack_key);
 
         assert!(rtt.is_some());
@@ -3266,8 +3479,8 @@ mod tests {
         // Record multiple RTT measurements
         for port in 12345..12348 {
             let local_with_port = SocketAddr::new(local.ip(), port);
-            let key = ConnectionKey::new(local_with_port, remote);
-            tracker.record_syn(key.clone());
+            let key = ConnectionKey::new(Protocol::Tcp, local_with_port, remote);
+            tracker.record_syn(key);
             std::thread::sleep(Duration::from_millis(5));
             tracker.record_syn_ack(&key);
         }
