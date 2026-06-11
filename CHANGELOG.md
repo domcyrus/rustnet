@@ -5,6 +5,17 @@ All notable changes to RustNet will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Process attribution for short-lived and multithreaded processes** (Linux):
+  eBPF socket tracking now records the process name (thread-group leader)
+  instead of the calling thread's name, so connections from e.g. firefox or dig
+  no longer show up as "Socket Thread" or "isc-net-0000"; PID-to-name
+  resolution reads `/proc/<pid>/comm` on demand instead of waiting for the
+  periodic scan; and new connections are enriched on a fast 250ms tick, so
+  process names appear almost immediately instead of after up to 2 seconds
+
 ## [1.3.0] - 2026-05-05
 
 The headline of this release is a major TUI refresh. The tabs, stats panel, and details view have all been redesigned, with new per-field colors, a status dot, and address scope labels making it easier to read connections at a glance.
