@@ -11,12 +11,13 @@
 # rendering. The GIF Output is a throwaway and is deleted by the script.
 #
 # Beats and outputs:
-#   1. Overview                    -> assets/screenshots/overview.png
-#   2. Filter mode (/port:443)     -> assets/screenshots/filter.png
-#   3. Process grouping (a, Space) -> assets/screenshots/grouping.png
-#   4. Details (Enter)             -> assets/screenshots/details.png
-#   5. Graph (Tab x3)              -> assets/screenshots/graph.png
-#   6. Interfaces (i)              -> assets/screenshots/interfaces.png
+#   1. Overview                      -> assets/screenshots/overview.png
+#   2. Filter mode (/port:443)       -> assets/screenshots/filter.png
+#   3. Process grouping (a, Space)   -> assets/screenshots/grouping.png
+#   4. Details from a grouped child  -> assets/screenshots/details.png
+#      (shows the continuity strip + "grouped by process" badge)
+#   5. Graph (4)                     -> assets/screenshots/graph.png
+#   6. Interfaces (3)                -> assets/screenshots/interfaces.png
 
 Output assets/screenshots/_throwaway.gif
 
@@ -29,12 +30,14 @@ Set TypingSpeed 50ms
 Set Framerate 24
 Set PlaybackSpeed 1.0
 
+# Stay hidden until capture has warmed up so no shot catches the
+# empty/loading state.
 Hide
 Type "clear"
 Enter
 Type "sudo -A target/release/rustnet"
 Enter
-Sleep 2500ms
+Sleep 5s
 Show
 
 # 1. Overview
@@ -56,36 +59,36 @@ Sleep 500ms
 Escape
 Sleep 800ms
 
-# 3. Process grouping
+# 3. Process grouping: expand the selected group and step onto a child.
 Type "a"
 Sleep 1500ms
+Space
+Sleep 1000ms
 Down
 Sleep 400ms
-Space
-Sleep 1500ms
+Down
+Sleep 1000ms
 Screenshot "assets/screenshots/grouping.png"
 Sleep 500ms
-Type "a"
-Sleep 800ms
 
-# 4. Details
+# 4. Details from the grouped child: continuity strip + grouped badge.
 Enter
 Sleep 2500ms
 Screenshot "assets/screenshots/details.png"
 Sleep 500ms
 Escape
 Sleep 800ms
+Type "a"
+Sleep 800ms
 
 # 5. Graph
-Tab@400ms 3
+Type "4"
 Sleep 2500ms
 Screenshot "assets/screenshots/graph.png"
 Sleep 500ms
-Escape
-Sleep 800ms
 
 # 6. Interfaces
-Type "i"
+Type "3"
 Sleep 2500ms
 Screenshot "assets/screenshots/interfaces.png"
 Sleep 500ms
