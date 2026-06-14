@@ -21,6 +21,7 @@ path = "src/lib.rs"
 anyhow.workspace = true
 log.workspace = true
 dashmap = "6.2"
+rustc-hash = "2"
 crossbeam = "0.8"
 dns-lookup = "3.0"
 pnet_datalink = "0.35"

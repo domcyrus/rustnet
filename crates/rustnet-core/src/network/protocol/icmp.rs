@@ -41,7 +41,6 @@ pub fn parse(
     };
 
     Some(ParsedPacket {
-        connection_key: format!("ICMP:{}-ICMP:{}", local_addr, remote_addr),
         protocol: Protocol::Icmp,
         local_addr,
         remote_addr,
@@ -90,7 +89,6 @@ pub fn parse_v6(
     };
 
     Some(ParsedPacket {
-        connection_key: format!("ICMP:{}-ICMP:{}", local_addr, remote_addr),
         protocol: Protocol::Icmp,
         local_addr,
         remote_addr,

@@ -52,6 +52,23 @@ fn bench_snapshot(c: &mut Criterion) {
             },
         );
 
+        // Benchmark: snapshot_clone (drops rate samples) + collect — what
+        // start_snapshot_provider actually does now, leaving the live
+        // connections as unique owners of their sample buffers.
+        group.bench_with_input(
+            BenchmarkId::new("snapshot_clone_and_collect", n_conns),
+            &connections,
+            |b, connections| {
+                b.iter(|| {
+                    let snapshot: Vec<Connection> = connections
+                        .iter()
+                        .map(|entry| entry.value().snapshot_clone())
+                        .collect();
+                    snapshot
+                });
+            },
+        );
+
         // Benchmark: clone + collect + sort by created_at
         group.bench_with_input(
             BenchmarkId::new("clone_collect_sort", n_conns),

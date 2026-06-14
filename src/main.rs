@@ -540,12 +540,24 @@ where
     let mut stats = app.get_stats();
     let mut needs_data_refresh = true;
     let mut needs_regroup = false;
+    let mut last_seen_generation = u64::MAX; // force the first refresh
 
     loop {
         // Refresh connection data only when needed:
-        // - On timer tick (every 200ms) for live updates
+        // - On timer tick (every 200ms), but only if the snapshot actually
+        //   changed since we last consumed it (it rebuilds every
+        //   refresh-interval ms, so most ticks would re-clone and re-sort
+        //   identical data)
         // - When an event changes filter, sort, or data source
-        if needs_data_refresh || last_tick.elapsed() >= tick_rate {
+        let tick_elapsed = last_tick.elapsed() >= tick_rate;
+        let snapshot_generation = app.snapshot_generation();
+        if tick_elapsed {
+            // Keep counters (packets processed/dropped, etc.) live on every
+            // tick even when the connection list is unchanged.
+            stats = app.get_stats();
+            last_tick = std::time::Instant::now();
+        }
+        if needs_data_refresh || (tick_elapsed && snapshot_generation != last_seen_generation) {
             connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
                 app.get_connections()
             } else {
@@ -561,8 +573,7 @@ where
             } else {
                 Vec::new()
             };
-            stats = app.get_stats();
-            last_tick = std::time::Instant::now();
+            last_seen_generation = snapshot_generation;
             needs_data_refresh = false;
             needs_regroup = false;
         } else if needs_regroup {

@@ -2488,6 +2488,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbf2048e0e979efb2ca7b91c4f1a8d77c91853e9b987c94c555668a8994915ad"
 
 [[package]]
+name = "rustc-hash"
+version = "2.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2511,7 +2517,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-capture"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "log",
@@ -2520,7 +2526,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2532,11 +2538,12 @@ dependencies = [
  "maxminddb",
  "pnet_datalink",
  "ring",
+ "rustc-hash",
 ]
 
 [[package]]
 name = "rustnet-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "libbpf-cargo",
@@ -2571,6 +2578,7 @@ dependencies = [
  "pcap",
  "ratatui",
  "regex-lite",
+ "rustc-hash",
  "rustnet-capture",
  "rustnet-core",
  "rustnet-host",

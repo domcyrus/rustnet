@@ -59,7 +59,6 @@ pub fn parse(
     };
 
     Some(ParsedPacket {
-        connection_key: format!("IGMP:{}-IGMP:{}", local_addr, remote_addr),
         protocol: Protocol::Igmp,
         local_addr,
         remote_addr,

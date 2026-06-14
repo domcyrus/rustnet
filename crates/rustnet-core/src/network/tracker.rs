@@ -44,9 +44,39 @@ use crate::network::merge::{create_connection_from_packet, merge_packet_into_con
 use crate::network::parser::ParsedPacket;
 use crate::network::types::{ApplicationProtocol, Connection, ConnectionKey, Protocol, RttTracker};
 use dashmap::DashMap;
+use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
+
+/// The active connection table: flow key -> connection.
+///
+/// Keys are compact `Copy` structs, and the map uses FxHash — with a small
+/// fixed-size key, hashing is a handful of multiplies instead of SipHash over
+/// a formatted string. (Hash-flooding resistance isn't needed here: the table
+/// is bounded by `max_connections` and keyed by addresses, not attacker-chosen
+/// bytes of arbitrary length.)
+pub type ConnectionMap = DashMap<ConnectionKey, Connection, FxBuildHasher>;
+
+/// The historic (recently-closed) connection table.
+pub type HistoricMap = DashMap<HistoricKey, Connection, FxBuildHasher>;
+
+/// Identity of an archived (closed) connection: the flow key plus the
+/// connection's creation time, so multiple closed connections that reused the
+/// same 4-tuple don't clobber each other. (Replaces the former
+/// `"<key>:<created_at_nanos>"` string suffix.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HistoricKey {
+    pub key: ConnectionKey,
+    pub created_nanos: u128,
+}
+
+impl std::fmt::Display for HistoricKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.key, self.created_nanos)
+    }
+}
 
 /// Tuning knobs for a [`ConnectionTracker`].
 #[derive(Debug, Clone)]
@@ -86,7 +116,9 @@ impl Default for TrackerConfig {
 #[derive(Debug, Clone)]
 pub struct IngestOutcome {
     /// The (possibly QUIC-coalesced) key under which the connection is stored.
-    pub key: String,
+    /// `Copy`, and its `Display` form matches the historical string key
+    /// (`"TCP:1.2.3.4:80-TCP:5.6.7.8:443"`).
+    pub key: ConnectionKey,
     /// `true` if this packet created a new connection entry.
     pub created: bool,
     /// `true` if the packet was dropped because `max_connections` was reached
@@ -105,11 +137,18 @@ pub struct IngestOutcome {
 /// A live, lifecycle-managed table of network connections built from parsed
 /// packets. See the [module docs](self) for the intended usage.
 pub struct ConnectionTracker {
-    connections: DashMap<String, Connection>,
-    historic: DashMap<String, Connection>,
+    connections: ConnectionMap,
+    historic: HistoricMap,
     rtt: Mutex<RttTracker>,
-    quic_map: Mutex<HashMap<String, String>>,
+    quic_map: Mutex<HashMap<String, ConnectionKey>>,
     config: TrackerConfig,
+    /// Active-connection count maintained by `ingest_at`/`cleanup`/`clear`.
+    /// Lets the per-packet `max_connections` check be a single atomic load
+    /// instead of a `DashMap::len()` (which read-locks every shard) plus an
+    /// extra `contains_key` lookup. May transiently lag `connections.len()`
+    /// by a few entries under concurrent ingest near the limit — acceptable
+    /// for a flood-protection bound.
+    active_count: AtomicUsize,
 }
 
 impl ConnectionTracker {
@@ -121,11 +160,12 @@ impl ConnectionTracker {
     /// Create a tracker with custom [`TrackerConfig`].
     pub fn with_config(config: TrackerConfig) -> Self {
         Self {
-            connections: DashMap::new(),
-            historic: DashMap::new(),
+            connections: ConnectionMap::with_hasher(FxBuildHasher),
+            historic: HistoricMap::with_hasher(FxBuildHasher),
             rtt: Mutex::new(RttTracker::new()),
             quic_map: Mutex::new(HashMap::new()),
             config,
+            active_count: AtomicUsize::new(0),
         }
     }
 
@@ -147,23 +187,22 @@ impl ConnectionTracker {
     /// the packet's capture timestamp so `created_at`/`last_activity` and the
     /// `cleanup` timeout sweep operate on trace time, not real time.
     pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
-        let mut key = parsed.connection_key.clone();
+        let mut key = parsed.connection_key();
 
         // Track RTT for TCP connections using SYN/SYN-ACK timing.
         let mut measured_rtt: Option<Duration> = None;
         if parsed.protocol == Protocol::Tcp
             && let Some(tcp_header) = &parsed.tcp_header
         {
-            let conn_key = ConnectionKey::new(parsed.local_addr, parsed.remote_addr);
             if tcp_header.flags.syn && !tcp_header.flags.ack {
                 if let Ok(mut tracker) = self.rtt.lock() {
-                    tracker.record_syn(conn_key);
+                    tracker.record_syn(key);
                 }
             } else if tcp_header.flags.syn
                 && tcp_header.flags.ack
                 && let Ok(mut tracker) = self.rtt.lock()
             {
-                measured_rtt = tracker.record_syn_ack(&conn_key);
+                measured_rtt = tracker.record_syn_ack(&key);
             }
         }
 
@@ -176,20 +215,24 @@ impl ConnectionTracker {
             && let Ok(mut mapping) = self.quic_map.lock()
         {
             if let Some(existing_key) = mapping.get(conn_id_hex) {
-                key = existing_key.clone();
+                key = *existing_key;
             } else {
                 // Prevent unbounded growth of QUIC connection-ID mappings.
                 if mapping.len() >= self.config.max_quic_mappings {
                     mapping.clear();
                 }
-                mapping.insert(conn_id_hex.clone(), key.clone());
+                mapping.insert(conn_id_hex.clone(), key);
             }
         }
 
         // Prevent unbounded growth from port scans or connection floods. Only
-        // limit new connections; existing ones always get updated.
-        if !self.connections.contains_key(&key)
-            && self.connections.len() >= self.config.max_connections
+        // limit new connections; existing ones always get updated. The fast
+        // path is a single atomic load; only when at the cap do we pay a
+        // lookup to distinguish update-existing from drop-new. (Never call
+        // `len()` here or while holding an entry guard — it read-locks every
+        // shard.)
+        if self.active_count.load(Ordering::Relaxed) >= self.config.max_connections
+            && !self.connections.contains_key(&key)
         {
             return IngestOutcome {
                 key,
@@ -205,7 +248,7 @@ impl ConnectionTracker {
         let mut created = false;
         let mut deltas = (0u64, 0u64, 0u64);
         self.connections
-            .entry(key.clone())
+            .entry(key)
             .and_modify(|conn| {
                 deltas = merge_packet_into_connection(conn, parsed, now);
                 if let Some(rtt) = measured_rtt
@@ -222,6 +265,9 @@ impl ConnectionTracker {
                 }
                 conn
             });
+        if created {
+            self.active_count.fetch_add(1, Ordering::Relaxed);
+        }
 
         IngestOutcome {
             key,
@@ -243,47 +289,56 @@ impl ConnectionTracker {
     /// pre-archive form) so callers can emit close events or export them.
     pub fn cleanup(&self, now: SystemTime) -> Vec<Connection> {
         let mut removed: Vec<Connection> = Vec::new();
-        let mut removed_keys: Vec<String> = Vec::new();
-        let mut to_archive: Vec<(String, Connection)> = Vec::new();
+        let mut removed_keys: Vec<ConnectionKey> = Vec::new();
+        let mut to_archive: Vec<(HistoricKey, Connection)> = Vec::new();
+        let keep_historic = self.config.keep_historic;
 
         self.connections.retain(|key, conn| {
             let should_keep = !conn.should_cleanup(now);
             if !should_keep {
-                removed_keys.push(key.clone());
+                removed_keys.push(*key);
                 removed.push(conn.clone());
 
                 // Archive a historic copy. The historic key includes created_at
                 // so multiple closed connections sharing a 4-tuple don't clobber
-                // each other.
-                let mut historic = conn.clone();
-                historic.is_historic = true;
-                historic.closed_at = Some(now);
-                let historic_key = format!(
-                    "{}:{}",
-                    key,
-                    conn.created_at
-                        .duration_since(SystemTime::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_nanos()
-                );
-                to_archive.push((historic_key, historic));
+                // each other. snapshot_clone: historic connections never refresh
+                // their rates, so don't pin the (potentially large) sample
+                // buffer in the archive.
+                if keep_historic {
+                    let mut historic = conn.snapshot_clone();
+                    historic.is_historic = true;
+                    historic.closed_at = Some(now);
+                    let historic_key = HistoricKey {
+                        key: *key,
+                        created_nanos: conn
+                            .created_at
+                            .duration_since(SystemTime::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_nanos(),
+                    };
+                    to_archive.push((historic_key, historic));
+                }
             }
             should_keep
         });
+        if !removed.is_empty() {
+            self.active_count
+                .fetch_sub(removed.len(), Ordering::Relaxed);
+        }
 
-        if self.config.keep_historic {
+        if keep_historic {
             for (key, conn) in to_archive {
                 self.historic.insert(key, conn);
             }
 
             // Enforce max_historic by evicting oldest-closed first.
             if self.historic.len() > self.config.max_historic {
-                let mut entries: Vec<(String, SystemTime)> = self
+                let mut entries: Vec<(HistoricKey, SystemTime)> = self
                     .historic
                     .iter()
                     .map(|entry| {
                         let closed = entry.value().closed_at.unwrap_or(entry.value().created_at);
-                        (entry.key().clone(), closed)
+                        (*entry.key(), closed)
                     })
                     .collect();
                 entries.sort_by_key(|(_, closed)| *closed);
@@ -305,6 +360,14 @@ impl ConnectionTracker {
     }
 
     /// A point-in-time copy of the active connections.
+    ///
+    /// Note: this is a full clone, including each connection's rate-sample
+    /// buffer — the buffer is shared via `Arc`, so the *next* per-packet
+    /// update on a live connection pays a copy-on-write deep copy. Callers
+    /// that only need the cached `current_*_rate_bps` fields (any read-only
+    /// view) should prefer [`Connection::snapshot_clone`] over the entries of
+    /// [`connections`](Self::connections) to keep the packet path allocation-
+    /// free.
     pub fn snapshot(&self) -> Vec<Connection> {
         self.connections
             .iter()
@@ -338,6 +401,7 @@ impl ConnectionTracker {
     /// Drop all active and historic connections and reset RTT/QUIC state.
     pub fn clear(&self) {
         self.connections.clear();
+        self.active_count.store(0, Ordering::Relaxed);
         self.historic.clear();
         if let Ok(mut tracker) = self.rtt.lock() {
             tracker.clear();
@@ -357,13 +421,15 @@ impl ConnectionTracker {
     /// Use this for in-place enrichment (e.g. attaching process, DNS, or GeoIP
     /// information via `iter_mut`) or custom reads. Lifecycle changes should go
     /// through [`ingest`](Self::ingest) and [`cleanup`](Self::cleanup) so the
-    /// connection-count limit, RTT, and QUIC coalescing stay consistent.
-    pub fn connections(&self) -> &DashMap<String, Connection> {
+    /// connection-count limit, RTT, and QUIC coalescing stay consistent —
+    /// inserting or removing entries directly desyncs the internal counter
+    /// backing the `max_connections` check.
+    pub fn connections(&self) -> &ConnectionMap {
         &self.connections
     }
 
     /// Direct access to the historic (recently-closed) connection table.
-    pub fn historic(&self) -> &DashMap<String, Connection> {
+    pub fn historic(&self) -> &HistoricMap {
         &self.historic
     }
 
@@ -463,6 +529,39 @@ mod tests {
         // The existing flow still updates despite the limit.
         let a2 = tracker.ingest(&parse(&udp_frame(40000, 53)));
         assert!(!a2.dropped && !a2.created);
+    }
+
+    #[test]
+    fn connection_limit_recovers_after_cleanup() {
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            max_connections: 1,
+            ..TrackerConfig::default()
+        });
+        assert!(tracker.ingest(&parse(&udp_frame(40000, 53))).created);
+        assert!(tracker.ingest(&parse(&udp_frame(40001, 53))).dropped);
+
+        // Expire everything; the limit accounting must follow the removals.
+        tracker.cleanup(SystemTime::now() + Duration::from_secs(86_400));
+        assert_eq!(tracker.len(), 0);
+
+        let c = tracker.ingest(&parse(&udp_frame(40002, 53)));
+        assert!(
+            c.created && !c.dropped,
+            "slot freed by cleanup must be reusable"
+        );
+        assert_eq!(tracker.len(), 1);
+    }
+
+    #[test]
+    fn connection_limit_recovers_after_clear() {
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            max_connections: 1,
+            ..TrackerConfig::default()
+        });
+        assert!(tracker.ingest(&parse(&udp_frame(40000, 53))).created);
+        tracker.clear();
+        let b = tracker.ingest(&parse(&udp_frame(40001, 53)));
+        assert!(b.created && !b.dropped, "clear() must reset the limit");
     }
 
     #[test]

@@ -50,9 +50,13 @@ fn bench_rate_update(c: &mut Criterion) {
             },
         );
 
-        // Shared owner: simulates the case right after a snapshot clone,
-        // where two Arcs point to the same VecDeque. The first `update()`
-        // after a clone triggers a full VecDeque copy via Arc::make_mut.
+        // Shared owner: simulates the case right after a full clone, where
+        // two Arcs point to the same VecDeque while the snapshot is alive
+        // (in the app the UI holds it for a full refresh interval). The
+        // first `update()` then triggers a full VecDeque copy via
+        // Arc::make_mut. The snapshot is threaded through the routine and
+        // returned so it stays alive during the update and its drop isn't
+        // measured.
         group.bench_with_input(
             BenchmarkId::new("after_snapshot_clone", n_samples),
             &n_samples,
@@ -60,14 +64,41 @@ fn bench_rate_update(c: &mut Criterion) {
                 b.iter_batched(
                     || {
                         let conn = make_connection_with_samples(n);
-                        let _snapshot = conn.clone(); // create shared Arc
-                        conn
+                        let snapshot = conn.clone(); // shared Arc, kept alive
+                        (conn, snapshot)
                     },
-                    |mut conn| {
+                    |(mut conn, snapshot)| {
                         conn.bytes_sent += 100;
                         conn.bytes_received += 200;
                         conn.rate_tracker
                             .update(conn.bytes_sent, conn.bytes_received);
+                        (conn, snapshot)
+                    },
+                    criterion::BatchSize::SmallInput,
+                );
+            },
+        );
+
+        // Detached snapshot: what the snapshot thread actually does now —
+        // snapshot_clone() drops the sample buffer, so the live tracker
+        // stays unique owner and the next update takes the fast path even
+        // while the snapshot is alive.
+        group.bench_with_input(
+            BenchmarkId::new("after_snapshot_clone_detached", n_samples),
+            &n_samples,
+            |b, &n| {
+                b.iter_batched(
+                    || {
+                        let conn = make_connection_with_samples(n);
+                        let snapshot = conn.snapshot_clone(); // no shared samples
+                        (conn, snapshot)
+                    },
+                    |(mut conn, snapshot)| {
+                        conn.bytes_sent += 100;
+                        conn.bytes_received += 200;
+                        conn.rate_tracker
+                            .update(conn.bytes_sent, conn.bytes_received);
+                        (conn, snapshot)
                     },
                     criterion::BatchSize::SmallInput,
                 );
@@ -83,7 +114,9 @@ fn bench_rate_update(c: &mut Criterion) {
 fn bench_refresh_rates(c: &mut Criterion) {
     let mut group = c.benchmark_group("refresh_rates");
 
-    for n_samples in [0, 100, 1000, 5000] {
+    // 20000 = the sample cap: with O(1) window totals the curve must stay
+    // flat instead of growing with the sample count.
+    for n_samples in [0, 100, 1000, 5000, 20000] {
         group.bench_with_input(
             BenchmarkId::new("unique_owner", n_samples),
             &n_samples,
@@ -139,6 +172,29 @@ fn bench_snapshot_then_update(c: &mut Criterion) {
                         // Step 1: snapshot clone (simulates UI snapshot)
                         let _snapshot: Vec<Connection> = conns.to_vec();
                         // Step 2: mutate originals (simulates incoming packets)
+                        for conn in &mut conns {
+                            conn.bytes_sent += 100;
+                            conn.bytes_received += 200;
+                            conn.rate_tracker
+                                .update(conn.bytes_sent, conn.bytes_received);
+                        }
+                    },
+                    criterion::BatchSize::LargeInput,
+                );
+            },
+        );
+
+        // Same cycle but with snapshot_clone(): the snapshot detaches from
+        // the sample buffers, so step 2 never pays the CoW deep copy.
+        group.bench_with_input(
+            BenchmarkId::new("snapshot_clone_all_then_update_all", n_conns),
+            &connections,
+            |b, connections| {
+                b.iter_batched(
+                    || connections.clone(),
+                    |mut conns| {
+                        let _snapshot: Vec<Connection> =
+                            conns.iter().map(|c| c.snapshot_clone()).collect();
                         for conn in &mut conns {
                             conn.bytes_sent += 100;
                             conn.bytes_received += 200;
