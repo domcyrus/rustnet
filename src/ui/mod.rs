@@ -11,8 +11,8 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::Color,
     symbols,
-    text::{Line, Span},
-    widgets::{Block, Borders, Cell},
+    text::Line,
+    widgets::{Block, Borders},
 };
 
 use crate::app::{App, AppStats};
@@ -98,6 +98,8 @@ pub use state::{
 };
 pub(crate) use widgets::tabs_bar::{HELP_TAB_INDEX, TAB_COUNT};
 
+mod connection_table;
+
 mod sorting;
 pub use sorting::sort_connections;
 
@@ -114,15 +116,49 @@ mod effects;
 pub use effects::apply_effects;
 
 mod theme;
+pub use theme::{ThemePreset, set_preset as set_theme_preset};
 
-/// Standard panel chrome: rounded magenta border + title.
-/// Single source of truth for every framed pane in the UI.
+/// Standard panel chrome: rounded border + title. Kept for the few
+/// views that still frame themselves (Help reference card, loading
+/// splash); everything else uses [`section_header`].
 pub(crate) fn panel_block<'a, T: Into<Line<'a>>>(title: T) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
         .border_set(symbols::border::ROUNDED)
         .border_style(theme::fg(theme::border()))
         .title(title)
+}
+
+/// Borderless section chrome: renders an accent `▎` tick plus the given
+/// title on the top row of `area` and returns the remaining rows. This
+/// is rustnet's replacement for the old box-around-everything look; the
+/// ▎ glyph itself still marks the section start under NO_COLOR.
+/// Callers style their own title spans (bold base + muted metadata).
+pub(crate) fn section_header<'a, T: Into<Line<'a>>>(
+    f: &mut Frame,
+    area: ratatui::layout::Rect,
+    title: T,
+) -> ratatui::layout::Rect {
+    use ratatui::layout::Rect;
+    use ratatui::text::Span;
+    use ratatui::widgets::Paragraph;
+
+    if area.height == 0 {
+        return area;
+    }
+    let mut line: Line = title.into();
+    line.spans
+        .insert(0, Span::styled("▎", theme::fg(theme::accent())));
+    f.render_widget(
+        Paragraph::new(line),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    )
 }
 
 /// Resolve the cell color for a connection's State column.
@@ -142,9 +178,14 @@ pub(crate) fn state_color(conn: &Connection) -> Color {
 }
 
 /// Resolve the cell color for a DPI Application protocol.
-/// Mirrors the palette used in `draw_app_distribution`.
+/// Classic preset mirrors the palette used in `draw_app_distribution`;
+/// the muted preset renders detected applications as plain content so
+/// the `proto_*` palette stays a chart-only encoding.
 pub(crate) fn dpi_color(app: &crate::network::types::ApplicationProtocol) -> Color {
     use crate::network::types::ApplicationProtocol as AP;
+    if !theme::is_classic() {
+        return Color::Reset;
+    }
     match app {
         AP::Https(_) => theme::proto_https(),
         AP::Quic(_) => theme::proto_quic(),
@@ -153,37 +194,6 @@ pub(crate) fn dpi_color(app: &crate::network::types::ApplicationProtocol) -> Col
         AP::Ssh(_) => theme::proto_ssh(),
         _ => theme::field_application(),
     }
-}
-
-/// Build a right-aligned bandwidth `Line` with rx/tx colored independently:
-/// "{rx}↓/{tx}↑" where the rx half is green (rx) and the tx half is blue (tx).
-pub(crate) fn bandwidth_line<'a>(rx_text: String, tx_text: String) -> Line<'a> {
-    Line::from(vec![
-        Span::styled(rx_text, theme::fg(theme::rx())),
-        Span::raw("↓/"),
-        Span::styled(tx_text, theme::fg(theme::tx())),
-        Span::raw("↑"),
-    ])
-    .right_aligned()
-}
-
-/// Status indicator cell: filled dot for active connections (green/yellow/red
-/// by staleness), hollow dot for historic. Dual-encodes status via shape so
-/// the cue still works in NO_COLOR mode and for colorblind users.
-pub(crate) fn status_indicator_cell(conn: &Connection) -> Cell<'static> {
-    let (glyph, color) = if conn.is_historic {
-        ("○", theme::muted())
-    } else {
-        let staleness = conn.staleness_ratio();
-        if staleness >= 0.90 {
-            ("●", theme::err())
-        } else if staleness >= 0.75 {
-            ("●", theme::warn())
-        } else {
-            ("●", theme::ok())
-        }
-    };
-    Cell::from(glyph).style(theme::fg(color))
 }
 
 /// Draw the UI
@@ -204,23 +214,25 @@ pub fn draw(
         return Ok(());
     }
 
+    use widgets::filter_input::FILTER_INPUT_HEIGHT;
+    use widgets::tabs_bar::TABS_BAR_HEIGHT;
     let chunks = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // Tabs
-                Constraint::Min(0),    // Content
-                Constraint::Length(3), // Filter input area
-                Constraint::Length(1), // Status bar
+                Constraint::Length(TABS_BAR_HEIGHT),     // Tabs
+                Constraint::Min(0),                      // Content
+                Constraint::Length(FILTER_INPUT_HEIGHT), // Filter input area
+                Constraint::Length(1),                   // Status bar
             ])
             .split(f.area())
     } else {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3), // Tabs
-                Constraint::Min(0),    // Content
-                Constraint::Length(1), // Status bar
+                Constraint::Length(TABS_BAR_HEIGHT), // Tabs
+                Constraint::Min(0),                  // Content
+                Constraint::Length(1),               // Status bar
             ])
             .split(f.area())
     };
@@ -299,27 +311,26 @@ mod tests {
         use SortColumn::*;
 
         // Test the complete cycle without GeoIP (follows left-to-right visual order)
-        assert_eq!(CreatedAt.next(false), Protocol);
-        assert_eq!(Protocol.next(false), LocalAddress);
-        assert_eq!(LocalAddress.next(false), RemoteAddress);
-        assert_eq!(RemoteAddress.next(false), State); // Skips Location
-        assert_eq!(State.next(false), Service);
+        assert_eq!(CreatedAt.next(false), Process);
+        assert_eq!(Process.next(false), RemoteAddress);
+        assert_eq!(RemoteAddress.next(false), LocalAddress);
+        assert_eq!(LocalAddress.next(false), Service); // Skips Location
         assert_eq!(Service.next(false), Application);
-        assert_eq!(Application.next(false), BandwidthTotal);
-        assert_eq!(BandwidthTotal.next(false), Process);
-        assert_eq!(Process.next(false), CreatedAt); // Cycles back
+        assert_eq!(Application.next(false), State);
+        assert_eq!(State.next(false), BandwidthTotal);
+        assert_eq!(BandwidthTotal.next(false), CreatedAt); // Cycles back
     }
 
     #[test]
     fn test_sort_column_cycle_with_location() {
         use SortColumn::*;
 
-        // With GeoIP, Location appears between RemoteAddress and State
-        assert_eq!(RemoteAddress.next(true), Location);
-        assert_eq!(Location.next(true), State);
+        // With GeoIP, Location appears between LocalAddress and Service
+        assert_eq!(LocalAddress.next(true), Location);
+        assert_eq!(Location.next(true), Service);
         // Other transitions unchanged
-        assert_eq!(CreatedAt.next(true), Protocol);
-        assert_eq!(State.next(true), Service);
+        assert_eq!(CreatedAt.next(true), Process);
+        assert_eq!(Service.next(true), Application);
     }
 
     #[test]
@@ -337,7 +348,6 @@ mod tests {
         assert!(Application.default_direction());
         assert!(Service.default_direction());
         assert!(State.default_direction());
-        assert!(Protocol.default_direction());
         assert!(CreatedAt.default_direction());
     }
 
@@ -349,30 +359,30 @@ mod tests {
         assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
         assert!(ui_state.sort_ascending);
 
-        // Cycle to Protocol - should reset to ascending
+        // Cycle to Process - should reset to ascending
         ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::Protocol);
-        assert!(ui_state.sort_ascending); // Protocol defaults to ascending
-
-        // Cycle to LocalAddress - should reset to ascending
-        ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::LocalAddress);
-        assert!(ui_state.sort_ascending);
+        assert_eq!(ui_state.sort_column, SortColumn::Process);
+        assert!(ui_state.sort_ascending); // Process defaults to ascending
 
         // Cycle to RemoteAddress - should reset to ascending
         ui_state.cycle_sort_column();
         assert_eq!(ui_state.sort_column, SortColumn::RemoteAddress);
         assert!(ui_state.sort_ascending);
 
+        // Cycle to LocalAddress - should reset to ascending
+        ui_state.cycle_sort_column();
+        assert_eq!(ui_state.sort_column, SortColumn::LocalAddress);
+        assert!(ui_state.sort_ascending);
+
         // Skip ahead to Application
-        ui_state.cycle_sort_column(); // State
         ui_state.cycle_sort_column(); // Service
         ui_state.cycle_sort_column(); // Application
         assert_eq!(ui_state.sort_column, SortColumn::Application);
         assert!(ui_state.sort_ascending);
 
-        // Cycle to BandwidthTotal - should reset to descending
-        ui_state.cycle_sort_column();
+        // Cycle to State, then BandwidthTotal - should reset to descending
+        ui_state.cycle_sort_column(); // State
+        ui_state.cycle_sort_column(); // BandwidthTotal
         assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
         assert!(!ui_state.sort_ascending); // Bandwidth defaults to descending
     }
@@ -407,7 +417,6 @@ mod tests {
         assert_eq!(Application.display_name(), "Application");
         assert_eq!(Service.display_name(), "Service");
         assert_eq!(State.display_name(), "State");
-        assert_eq!(Protocol.display_name(), "Protocol");
     }
 
     #[test]
@@ -419,7 +428,7 @@ mod tests {
         assert!(ui_state.sort_ascending);
 
         // Cycle through columns to reach BandwidthTotal
-        // CreatedAt -> Protocol -> LocalAddress -> RemoteAddress -> State -> Service -> Application -> BandwidthTotal
+        // CreatedAt -> Process -> RemoteAddress -> LocalAddress -> Service -> Application -> State -> BandwidthTotal
         for _ in 0..7 {
             ui_state.cycle_sort_column();
         }
@@ -447,12 +456,12 @@ mod tests {
             "After second toggle, BandwidthTotal should be descending again"
         );
 
-        // Cycle to Process (next after BandwidthTotal)
+        // Cycle past BandwidthTotal wraps back to the CreatedAt default
         ui_state.cycle_sort_column();
-        assert_eq!(ui_state.sort_column, SortColumn::Process);
+        assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
         assert!(
             ui_state.sort_ascending,
-            "Process should default to ascending"
+            "CreatedAt should default to ascending"
         );
     }
 
@@ -605,7 +614,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut regions = ClickableRegions::default();
-        let output = render(80, 3, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
+        let output = render(80, 2, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
         insta::assert_snapshot!(output);
     }
 
@@ -616,7 +625,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut regions = ClickableRegions::default();
-        let output = render(80, 3, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
+        let output = render(80, 2, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
         insta::assert_snapshot!(output);
     }
 
@@ -627,7 +636,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut regions = ClickableRegions::default();
-        let output = render(80, 3, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
+        let output = render(80, 2, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
         insta::assert_snapshot!(output);
     }
 
@@ -639,7 +648,7 @@ mod snapshot_tests {
             filter_cursor_position: 0,
             ..Default::default()
         };
-        let output = render(80, 3, |f| draw_filter_input(f, &ui_state, f.area()));
+        let output = render(80, 1, |f| draw_filter_input(f, &ui_state, f.area()));
         insta::assert_snapshot!(output);
     }
 
@@ -651,7 +660,7 @@ mod snapshot_tests {
             filter_cursor_position: 8,
             ..Default::default()
         };
-        let output = render(80, 3, |f| draw_filter_input(f, &ui_state, f.area()));
+        let output = render(80, 1, |f| draw_filter_input(f, &ui_state, f.area()));
         insta::assert_snapshot!(output);
     }
 
@@ -663,7 +672,7 @@ mod snapshot_tests {
             filter_cursor_position: 0,
             ..Default::default()
         };
-        let output = render(80, 3, |f| draw_filter_input(f, &ui_state, f.area()));
+        let output = render(80, 1, |f| draw_filter_input(f, &ui_state, f.area()));
         insta::assert_snapshot!(output);
     }
 

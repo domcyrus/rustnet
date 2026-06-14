@@ -1,8 +1,6 @@
 ---
-source: src/ui.rs
-assertion_line: 5222
+source: src/ui/mod.rs
+assertion_line: 676
 expression: output
 ---
-╭Active Filter (Press Esc to clear)────────────────────────────────────────────╮
-│tcp port:443                                                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ / tcp port:443                                      filter active · Esc clears

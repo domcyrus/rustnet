@@ -9,7 +9,9 @@ use ratatui::layout::Rect;
 
 use crate::network::types::{Connection, Protocol};
 
-/// Sort column options for the connections table
+/// Sort column options for the connections table.
+/// Protocol (TCP/UDP) has no dedicated column anymore — it's merged into
+/// Application, whose comparator tie-breaks on protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortColumn {
     #[default]
@@ -22,30 +24,33 @@ pub enum SortColumn {
     Application,
     Service,
     State,
-    Protocol,
 }
 
 impl SortColumn {
-    /// Get the next sort column in the cycle (follows left-to-right visual order).
-    /// When `has_location` is true, Location is included between Remote Address and State.
+    /// Get the next sort column in the cycle (follows left-to-right visual
+    /// order: identifying columns first, status columns last). When
+    /// `has_location` is true, Location is included after Local Address.
+    ///
+    /// Columns hidden at narrow widths stay in the cycle — the active sort
+    /// is always named in the table's section title, so sorting by an
+    /// off-screen column is still discoverable.
     pub fn next(self, has_location: bool) -> Self {
         match self {
-            Self::CreatedAt => Self::Protocol,         // Column 1: Pro
-            Self::Protocol => Self::LocalAddress,      // Column 2: Local Address
-            Self::LocalAddress => Self::RemoteAddress, // Column 3: Remote Address
-            Self::RemoteAddress => {
+            Self::CreatedAt => Self::Process,          // Column 1: Process
+            Self::Process => Self::RemoteAddress,      // Column 2: Remote
+            Self::RemoteAddress => Self::LocalAddress, // Column 3: Local
+            Self::LocalAddress => {
                 if has_location {
                     Self::Location // Column 4: Loc (GeoIP)
                 } else {
-                    Self::State
+                    Self::Service
                 }
             }
-            Self::Location => Self::State,      // Column 5: State
-            Self::State => Self::Service,       // Column 6: Service
-            Self::Service => Self::Application, // Column 7: Application / Host
-            Self::Application => Self::BandwidthTotal, // Column 8: Down/Up (combined total)
-            Self::BandwidthTotal => Self::Process, // Column 9: Process
-            Self::Process => Self::CreatedAt,   // Back to default
+            Self::Location => Self::Service,     // Column 5: Service
+            Self::Service => Self::Application,  // Column 6: App (proto·application)
+            Self::Application => Self::State,    // Column 7: State
+            Self::State => Self::BandwidthTotal, // Column 8: ↓Rx/Tx↑ (combined total)
+            Self::BandwidthTotal => Self::CreatedAt, // Back to default
         }
     }
 
@@ -63,7 +68,6 @@ impl SortColumn {
             Self::Application => true,
             Self::Service => true,
             Self::State => true,
-            Self::Protocol => true,
             Self::CreatedAt => true, // Oldest first (current default behavior)
         }
     }
@@ -80,7 +84,6 @@ impl SortColumn {
             Self::Application => "Application",
             Self::Service => "Service",
             Self::State => "State",
-            Self::Protocol => "Protocol",
         }
     }
 }
@@ -120,6 +123,10 @@ pub enum ClickAction {
     SwitchTab(usize),
     /// Select a connection by index in the current sorted/filtered list
     SelectConnection(usize),
+    /// Select a connection by its stable key. Used where an index would
+    /// be ambiguous (the Details strip shows flat-list neighbors even
+    /// while grouping is enabled, where indices mean grouped rows).
+    SelectConnectionKey(String),
     /// Copy a field value to clipboard (label for feedback, value for clipboard)
     CopyField { label: String, value: String },
 }
@@ -187,6 +194,9 @@ pub struct UIState {
     pub last_click: Option<(u16, u16, std::time::Instant)>,
     /// Whether to show historic (closed) connections
     pub show_historic: bool,
+    /// Whether the System stats sidebar is visible on the Overview tab.
+    /// A layout preference, so deliberately not reset by `reset_view()`.
+    pub show_system_panel: bool,
     /// Number of visible rows in the connections table (updated after rendering)
     pub visible_rows: usize,
     /// Scroll offset for flat connection list (persisted for stable scrolling)
@@ -217,6 +227,7 @@ impl Default for UIState {
             has_geoip: false,
             last_click: None,
             show_historic: false,
+            show_system_panel: true,
             visible_rows: 10,
             scroll_offset: 0,
             grouped_scroll_offset: 0,

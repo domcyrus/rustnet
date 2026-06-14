@@ -19,8 +19,13 @@ use crate::network::types::{
 use crate::ui::{
     ClickableRegions, Component, ComponentContext,
     format::{format_rate, format_rate_compact},
-    panel_block, theme,
+    section_header, theme,
 };
+
+/// Bold default-foreground title span for a graph section header.
+fn graph_title(text: &str) -> Span<'_> {
+    Span::styled(text, Style::default().add_modifier(Modifier::BOLD))
+}
 
 /// Read-only graph tab. Aggregates traffic history, protocol mix,
 /// and TCP analytics every render — no per-tab state today.
@@ -54,12 +59,11 @@ pub(in crate::ui) fn draw_graph_tab(
 
     let traffic_history = app.get_traffic_history();
 
-    // Each panel gets its own Block::ALL border so the Graph tab matches the
-    // style of the connections table and the Details panes. No outer frame
-    // and no custom separator characters — ratatui's box-drawing renders
-    // cleanly without needing manual junctions.
+    // Each panel is a borderless section_header region; layout spacing
+    // provides the breathing room the old borders used to.
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
+        .spacing(1)
         .constraints([
             Constraint::Percentage(35), // Traffic chart (RX/TX legend is built into the chart)
             Constraint::Percentage(20), // Network health + TCP states
@@ -69,11 +73,13 @@ pub(in crate::ui) fn draw_graph_tab(
 
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
+        .spacing(2)
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(main_chunks[0]);
 
     let health_chunks = Layout::default()
         .direction(Direction::Horizontal)
+        .spacing(2)
         .constraints([
             Constraint::Percentage(35),
             Constraint::Percentage(35),
@@ -83,6 +89,7 @@ pub(in crate::ui) fn draw_graph_tab(
 
     let bottom_chunks = Layout::default()
         .direction(Direction::Horizontal)
+        .spacing(2)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(main_chunks[2]);
 
@@ -99,9 +106,7 @@ pub(in crate::ui) fn draw_graph_tab(
 
 /// Draw the full traffic chart with RX/TX lines
 fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let block = panel_block(" Traffic Over Time (60s) ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = section_header(f, area, graph_title(" Traffic Over Time (60s)"));
 
     if !history.has_enough_data() {
         let placeholder = Paragraph::new("Collecting data...").style(theme::fg(theme::muted()));
@@ -178,9 +183,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
 
 /// Draw connections count sparkline
 fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let block = panel_block(" Connections ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = section_header(f, area, graph_title(" Connections"));
 
     if !history.has_enough_data() {
         let placeholder = Paragraph::new("Collecting...").style(theme::fg(theme::muted()));
@@ -210,9 +213,7 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
 
 /// Draw application protocol distribution
 fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) {
-    let block = panel_block(" Application Distribution ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = section_header(f, area, graph_title(" Application Distribution"));
 
     let dist = AppProtocolDistribution::from_connections(connections);
     let percentages = dist.as_percentages();
@@ -272,9 +273,7 @@ fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) 
 fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
     use std::collections::HashMap;
 
-    let block = panel_block(" Top Processes ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = section_header(f, area, graph_title(" Top Processes"));
 
     // Aggregate traffic by process
     let mut process_traffic: HashMap<String, f64> = HashMap::new();
@@ -333,9 +332,7 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
 
 /// Draw the network health gauges with RTT and packet loss bars
 fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let block = panel_block(" Network Health ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = section_header(f, area, graph_title(" Network Health"));
 
     if !history.has_enough_data() {
         let placeholder = Paragraph::new("Collecting data...").style(theme::fg(theme::muted()));
@@ -447,9 +444,7 @@ fn draw_tcp_counters(f: &mut Frame, app: &App, area: Rect) {
     let out_of_order = stats.total_tcp_out_of_order.load(Ordering::Relaxed);
     let fast_retransmits = stats.total_tcp_fast_retransmits.load(Ordering::Relaxed);
 
-    let block = panel_block(" TCP Counters ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = section_header(f, area, graph_title(" TCP Counters"));
 
     // Color based on counts (higher = more concerning)
     let retrans_color = if retransmits == 0 {
@@ -553,9 +548,7 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
         .filter_map(|&name| state_counts.get(name).map(|&count| (name, count)))
         .collect();
 
-    let block = panel_block(" TCP States ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = section_header(f, area, graph_title(" TCP States"));
 
     if states.is_empty() {
         let text = Paragraph::new("No TCP connections").style(theme::fg(theme::muted()));

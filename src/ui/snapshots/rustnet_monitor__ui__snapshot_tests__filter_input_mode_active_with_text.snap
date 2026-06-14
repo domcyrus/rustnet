@@ -1,8 +1,6 @@
 ---
-source: src/ui.rs
-assertion_line: 5210
+source: src/ui/mod.rs
+assertion_line: 664
 expression: output
 ---
-╭Filter (↑↓/jk to navigate, Enter to confirm, Esc to cancel)───────────────────╮
-│port:443|                                                                     │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ / port:443|                           ↑↓ navigate · Enter confirm · Esc cancel

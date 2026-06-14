@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 673
+assertion_line: 648
 expression: output
 ---
- 'h' help | 1-5 jump | Tab/[/] cycle | '/' filter | 'a' group | 't' history | 'c' copy
+ 'h' help | 1-5 jump | Tab/[/] cycle | '/' filter | 'a' group | 't' history | 'i' info | 'c' copy

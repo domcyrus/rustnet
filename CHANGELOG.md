@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release redesigns the TUI around a calmer visual hierarchy. Many of the ideas
+came from a detailed UI review by [@joshka](https://github.com/joshka) (Ratatui
+maintainer) on our showcase submission
+([ratatui/ratatui-website#1118](https://github.com/ratatui/ratatui-website/pull/1118)) —
+thanks for the thoughtful feedback!
+
+### Added
+- **Theme Presets**: New `--theme` flag. The default `muted` preset keeps a single
+  cyan accent and reserves color for signals (state changes, staleness, live
+  bandwidth) and addresses; `--theme classic` restores the previous full-color palette
+- **System Sidebar Toggle**: The System panel now has a fixed width and can be
+  hidden with the `i` key (auto-hidden on narrow terminals)
+- **Details Continuity Strip**: The Details tab opens with a mini connection table
+  of the selected row and its neighbors; `j`/`k` flips through them without leaving
+  the tab, following the grouped order when process grouping is enabled
+
+### Changed
+- **Stable Column Layout**: Column widths depend only on the terminal width — they
+  no longer shift while scrolling. Narrow terminals hide low-priority columns
+  instead of truncating cells; wide terminals distribute the spare width so the
+  table spans the full screen with the bandwidth column flush right
+- **Merged Proto/App Column**: The Protocol column is merged into Application
+  ("TCP·HTTPS"), and the status-dot column is gone — staleness now lives entirely
+  in the row styling
+- **Custom Tab Bar and Borderless Sections**: Numbered tab bar with an accent
+  underline, a single-line filter prompt, and section headers in place of the
+  border-box-around-everything look
+
 ### Fixed
 - **Process attribution for short-lived and multithreaded processes** (Linux):
   eBPF socket tracking now records the process name (thread-group leader)

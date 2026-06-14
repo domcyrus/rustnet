@@ -1,45 +1,45 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 899
+assertion_line: 909
 expression: output
 ---
-╭ RustNet Monitor ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ Overview  ▏  Details  ▏  Interfaces  ▏  Graph  ▏  Help                                                                                   │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭ firefox → 140.82.121.4:443 (click to copy) ────────────────────────╮╭ Protocol & Metrics (click to copy) ────────────────────────────────╮
-│Protocol              TCP                                           ││TCP Analytics                                                       │
-│Status                Active (last seen <T> ago)                     ││TCP Retransmits       0                                             │
-│Local Address         192.168.1.10:51234                            ││Out-of-Order Packets  0                                             │
-│Remote Address        140.82.121.4:443                              ││Duplicate ACKs        0                                             │
-│Scope                 PUBLIC                                        ││Fast Retransmits      0                                             │
-│State                 ESTABLISHED                                   ││Window Size           0                                             │
-│Process               firefox                                       ││                                                                    │
-│PID                   2001                                          ││                                                                    │
-│Service               https                                         ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-│                                                                    ││                                                                    │
-╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────────╯
-╭Traffic Statistics (click to copy)────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│Bytes Sent            12.21 KB                                                                                                            │
-│Bytes Received        234.38 KB                                                                                                           │
-│Packets Sent          12                                                                                                                  │
-│Packets Received      234                                                                                                                 │
-│Current Rate (In)     -                                                                                                                   │
-│Current Rate (Out)    -                                                                                                                   │
-╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- 'h' help | 1-5 jump | Tab/[/] cycle | 'c' copy remote addr | Esc back to Overview
+ rustnet    1 Overview   2 Details   3 Interfaces   4 Graph   5 Help                                                                        
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Process                  Remote                       Local               Service    App                          State            Rx↓/Tx↑
+                                                                                                                                            
+> firefox (2001)           140.82.121.4:443             192.168.1.10:51234  https      TCP                          ESTABLISHED          -/-
+  systemd-resolved (820)   1.1.1.1:53                   192.168.1.10:53     dns        UDP                          UDP_ACTIVE           -/-
+  sshd (1500)              10.0.0.5:51022               192.168.1.10:22     ssh        TCP                          ESTABLISHED          -/-
+                                                                                                                                            
+▎ firefox → 140.82.121.4:443 · click a field to copy                                                                                        
+Protocol              TCP                                              TCP Analytics                                                        
+Status                Active (last seen <T> ago)                        TCP Retransmits       0                                              
+Local Address         192.168.1.10:51234                               Out-of-Order Packets  0                                              
+Remote Address        140.82.121.4:443                                 Duplicate ACKs        0                                              
+Scope                 PUBLIC                                           Fast Retransmits      0                                              
+State                 ESTABLISHED                                      Window Size           0                                              
+Process               firefox                                                                                                               
+PID                   2001                                                                                                                  
+Service               https                                                                                                                 
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+▎ Traffic Statistics                                                                                                                        
+Bytes Sent            12.21 KB                                                                                                              
+Bytes Received        234.38 KB                                                                                                             
+Packets Sent          12                                                                                                                    
+Packets Received      234                                                                                                                   
+Current Rate (In)     -                                                                                                                     
+Current Rate (Out)    -                                                                                                                     
+ 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | 'c' copy remote addr | Esc back

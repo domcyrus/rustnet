@@ -1,22 +1,22 @@
 //! Filter input line shown above the status bar whenever the user
 //! has either entered filter mode or has a persistent filter active.
+//! A single borderless row: accent " / " prompt, the query, and a
+//! muted right-side hint with the relevant keys.
 
 use ratatui::{
     Frame,
     layout::Rect,
-    widgets::{Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::Paragraph,
 };
 
-use crate::ui::{UIState, panel_block, theme};
+use crate::ui::{UIState, theme};
+
+/// Height of the filter line in rows.
+pub(crate) const FILTER_INPUT_HEIGHT: u16 = 1;
 
 pub(in crate::ui) fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
-    let title = if ui_state.filter_mode {
-        "Filter (↑↓/jk to navigate, Enter to confirm, Esc to cancel)"
-    } else {
-        "Active Filter (Press Esc to clear)"
-    };
-
-    let input_text = if ui_state.filter_mode {
+    let query = if ui_state.filter_mode {
         // Show cursor when in filter mode
         let mut display_query = ui_state.filter_query.clone();
         if ui_state.filter_cursor_position <= display_query.len() {
@@ -27,16 +27,20 @@ pub(in crate::ui) fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: 
         ui_state.filter_query.clone()
     };
 
-    let style = if ui_state.filter_mode {
-        theme::fg(theme::warn())
+    let hint = if ui_state.filter_mode {
+        "↑↓ navigate · Enter confirm · Esc cancel "
     } else {
-        theme::fg(theme::ok())
+        "filter active · Esc clears "
     };
 
-    let filter_input = Paragraph::new(input_text)
-        .block(panel_block(title))
-        .style(style)
-        .wrap(Wrap { trim: false });
+    let line = Line::from(vec![
+        Span::styled(" / ", theme::bold_fg(theme::accent())),
+        Span::raw(query),
+    ]);
+    let hint_line = Line::from(Span::styled(hint, theme::fg(theme::muted()))).right_aligned();
 
-    f.render_widget(filter_input, area);
+    // Hint first, query second: when the terminal is too narrow for both,
+    // the query (rendered later) wins the overlap.
+    f.render_widget(Paragraph::new(hint_line), area);
+    f.render_widget(Paragraph::new(line), area);
 }

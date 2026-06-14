@@ -110,6 +110,10 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
             Span::raw("Toggle display of historic (closed) connections"),
         ]),
         Line::from(vec![
+            Span::styled("i ", theme::fg(theme::key())),
+            Span::raw("Toggle the System info sidebar"),
+        ]),
+        Line::from(vec![
             Span::styled("r ", theme::fg(theme::key())),
             Span::raw("Reset view (grouping, sort, filter)"),
         ]),

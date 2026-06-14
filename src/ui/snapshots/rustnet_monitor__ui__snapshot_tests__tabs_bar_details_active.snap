@@ -1,8 +1,7 @@
 ---
-source: src/ui.rs
-assertion_line: 5177
+source: src/ui/mod.rs
+assertion_line: 629
 expression: output
 ---
-╭ RustNet Monitor ─────────────────────────────────────────────────────────────╮
-│ Overview  ▏  Details  ▏  Interfaces  ▏  Graph  ▏  Help                       │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ rustnet    1 Overview   2 Details   3 Interfaces   4 Graph   5 Help            
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────
