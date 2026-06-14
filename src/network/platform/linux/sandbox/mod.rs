@@ -14,12 +14,16 @@
 //! - Scope: abstract UNIX socket connects + signals to outside processes blocked
 //!   (kernel 6.12+, ABI v6)
 //! - Capabilities: CAP_NET_RAW, CAP_BPF, CAP_PERFMON dropped
-//! - Privileges: PR_SET_NO_NEW_PRIVS set (no privilege escalation via execve)
+//! - Privileges: PR_SET_NO_NEW_PRIVS set by rustnet itself (no privilege
+//!   escalation via execve). This is applied unconditionally — even with
+//!   `--no-sandbox` or when Landlock is unavailable — since it is privilege
+//!   hygiene rather than sandboxing and rustnet never execs on Linux.
 //!
 //! # Application Order
 //!
-//! 1. Drop capabilities (CAP_NET_RAW, CAP_BPF, CAP_PERFMON)
-//! 2. Apply Landlock (filesystem + network restrictions)
+//! 1. Set PR_SET_NO_NEW_PRIVS
+//! 2. Drop capabilities (CAP_NET_RAW, CAP_BPF, CAP_PERFMON)
+//! 3. Apply Landlock (filesystem + network restrictions)
 //!
 //! # Compatibility
 //!
@@ -47,6 +51,9 @@ pub enum SandboxMode {
 }
 
 /// Configuration for the sandbox
+// Without the landlock feature only the stub apply_sandbox() exists, which
+// reads just `mode`; the remaining fields are part of the shared API.
+#[cfg_attr(not(feature = "landlock"), allow(dead_code))]
 #[derive(Debug, Clone, Default)]
 pub struct SandboxConfig {
     /// Sandbox enforcement mode
@@ -60,6 +67,7 @@ pub struct SandboxConfig {
 }
 
 /// Result of sandbox application
+#[cfg_attr(not(feature = "landlock"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct SandboxResult {
     /// Overall status
@@ -81,9 +89,13 @@ pub struct SandboxResult {
     /// Effective Landlock ABI negotiated with the kernel (e.g. `Some(6)`), or
     /// `None` when Landlock is unavailable / not enforced
     pub landlock_effective_abi: Option<u8>,
+    /// Whether PR_SET_NO_NEW_PRIVS is set (applied even when the sandbox is
+    /// disabled)
+    pub no_new_privs: bool,
 }
 
 /// Status of sandbox application
+#[cfg_attr(not(feature = "landlock"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxStatus {
     /// Sandbox fully enforced (all requested restrictions applied)
@@ -92,6 +104,20 @@ pub enum SandboxStatus {
     PartiallyEnforced,
     /// Sandbox not applied (disabled, or kernel doesn't support)
     NotApplied,
+}
+
+/// Set PR_SET_NO_NEW_PRIVS: execve() can never grant new privileges
+/// (setuid/setgid bits, file capabilities). Irreversible and inherited by
+/// children/threads. The landlock crate sets this again in `restrict_self()`;
+/// setting it twice is a no-op.
+fn set_no_new_privs() -> std::io::Result<()> {
+    // SAFETY: prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) takes no pointers.
+    let rc = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 /// Apply the sandbox with the given configuration
@@ -109,15 +135,40 @@ pub enum SandboxStatus {
 pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
     use anyhow::Context;
 
+    // Set PR_SET_NO_NEW_PRIVS first, regardless of sandbox mode. This is
+    // privilege hygiene (blocks setuid/file-caps escalation via execve), not
+    // sandboxing, and rustnet never execs on Linux — so it applies even with
+    // --no-sandbox.
+    let no_new_privs = match set_no_new_privs() {
+        Ok(()) => {
+            log::info!("PR_SET_NO_NEW_PRIVS set");
+            true
+        }
+        Err(e) => {
+            log::warn!("Failed to set PR_SET_NO_NEW_PRIVS: {}", e);
+            false
+        }
+    };
+    if !no_new_privs && config.mode == SandboxMode::Strict {
+        return Err(anyhow::anyhow!(
+            "Strict mode requires PR_SET_NO_NEW_PRIVS to be settable"
+        ));
+    }
+
     // Check Landlock availability upfront
     let landlock_available = landlock::is_available();
 
     // Handle disabled mode
     if config.mode == SandboxMode::Disabled {
         log::info!("Sandbox disabled by configuration");
+        let message = if no_new_privs {
+            "Sandbox disabled by configuration (no-new-privs still set)"
+        } else {
+            "Sandbox disabled by configuration"
+        };
         return Ok(SandboxResult {
             status: SandboxStatus::NotApplied,
-            message: "Sandbox disabled by configuration".to_string(),
+            message: message.to_string(),
             cap_net_raw_dropped: false,
             ebpf_caps_dropped: false,
             landlock_available,
@@ -125,6 +176,7 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
             landlock_net_applied: false,
             landlock_scope_applied: false,
             landlock_effective_abi: None,
+            no_new_privs,
         });
     }
 
@@ -138,9 +190,15 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         landlock_net_applied: false,
         landlock_scope_applied: false,
         landlock_effective_abi: None,
+        no_new_privs,
     };
 
     let mut messages = Vec::new();
+    if no_new_privs {
+        messages.push("no-new-privs set".to_string());
+    } else {
+        messages.push("no-new-privs could not be set".to_string());
+    }
 
     // Step 0: Clear ambient capability set
     // Ambient caps survive execve() — clearing prevents child processes
@@ -273,11 +331,34 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
 
 /// Stub implementation when Landlock feature is disabled
 #[cfg(not(feature = "landlock"))]
-pub fn apply_sandbox(_config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
+pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
+    // PR_SET_NO_NEW_PRIVS is independent of Landlock support, so non-landlock
+    // builds still get the execve privilege lock.
+    let no_new_privs = match set_no_new_privs() {
+        Ok(()) => {
+            log::info!("PR_SET_NO_NEW_PRIVS set");
+            true
+        }
+        Err(e) => {
+            log::warn!("Failed to set PR_SET_NO_NEW_PRIVS: {}", e);
+            false
+        }
+    };
+    if !no_new_privs && config.mode == SandboxMode::Strict {
+        return Err(anyhow::anyhow!(
+            "Strict mode requires PR_SET_NO_NEW_PRIVS to be settable"
+        ));
+    }
+
     log::warn!("Landlock feature not compiled in");
+    let message = if no_new_privs {
+        "Landlock feature not compiled in (no-new-privs still set)"
+    } else {
+        "Landlock feature not compiled in"
+    };
     Ok(SandboxResult {
         status: SandboxStatus::NotApplied,
-        message: "Landlock feature not compiled in".to_string(),
+        message: message.to_string(),
         cap_net_raw_dropped: false,
         ebpf_caps_dropped: false,
         landlock_available: false,
@@ -285,5 +366,23 @@ pub fn apply_sandbox(_config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         landlock_net_applied: false,
         landlock_scope_applied: false,
         landlock_effective_abi: None,
+        no_new_privs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_no_new_privs_is_idempotent_and_sticks() {
+        // NNP is per-task and irreversible, but nothing in the test suite
+        // execs setuid binaries, so restricting the test process is safe
+        // (same precedent as the landlock restrict_self test).
+        set_no_new_privs().expect("first set_no_new_privs call");
+        set_no_new_privs().expect("second set_no_new_privs call (idempotent)");
+        // SAFETY: prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) takes no pointers.
+        let value = unsafe { libc::prctl(libc::PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) };
+        assert_eq!(value, 1, "NoNewPrivs should be set after set_no_new_privs");
+    }
 }

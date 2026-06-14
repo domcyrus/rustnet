@@ -147,7 +147,7 @@ pub fn build_cli() -> Command {
         .arg(
             Arg::new("no-sandbox")
                 .long("no-sandbox")
-                .help("Disable sandboxing")
+                .help("Disable sandboxing (on Linux, PR_SET_NO_NEW_PRIVS is still set)")
                 .action(clap::ArgAction::SetTrue),
         )
         .arg(

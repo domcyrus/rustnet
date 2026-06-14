@@ -52,9 +52,9 @@ RustNet 追求小而快。并不是每个协议或功能都适合放在核心工
   ```bash
   cargo fmt
   ```
-- **安全审计**：检查依赖中的已知漏洞
+- **安全审计**：检查依赖中的已知漏洞和策略违规
   ```bash
-  cargo audit
+  cargo deny check
   ```
 
 ## CI 检查<a id="ci-checks"></a>

@@ -52,9 +52,9 @@ Before submitting a PR, please ensure:
   ```bash
   cargo fmt
   ```
-- **Security audit**: Check for known vulnerabilities in dependencies
+- **Security audit**: Check for known vulnerabilities and policy violations in dependencies
   ```bash
-  cargo audit
+  cargo deny check
   ```
 
 ## CI Checks

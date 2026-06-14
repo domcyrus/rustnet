@@ -78,6 +78,9 @@ pub struct SandboxInfo {
     /// Effective Landlock ABI negotiated with the kernel (e.g. `Some(6)`), or `None`
     #[cfg(target_os = "linux")]
     pub landlock_abi: Option<u8>,
+    /// Whether PR_SET_NO_NEW_PRIVS is set (applied even with `--no-sandbox`)
+    #[cfg(target_os = "linux")]
+    pub no_new_privs: bool,
     // macOS-specific fields (Seatbelt)
     /// Whether Seatbelt sandbox was applied
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]

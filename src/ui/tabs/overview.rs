@@ -1159,6 +1159,9 @@ fn draw_stats_panel(
         if sandbox_info.scope_restricted {
             features.push("IPC scoped");
         }
+        if sandbox_info.no_new_privs {
+            features.push("No new privs");
+        }
 
         let available_indicator = if let Some(abi) = sandbox_info.landlock_abi {
             // The negotiated ABI tells you which restriction tier is active:

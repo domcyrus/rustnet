@@ -32,13 +32,14 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 | Network | 6.4+ | TCP bind/connect blocked (RustNet is passive) |
 | Capabilities | Any | `CAP_NET_RAW` dropped after pcap socket opened |
 | Capabilities | Any | `CAP_BPF`, `CAP_PERFMON` dropped after eBPF programs loaded |
-| Privileges | Any | `PR_SET_NO_NEW_PRIVS` prevents privilege escalation via setuid binaries |
+| Privileges | 3.5+ | `PR_SET_NO_NEW_PRIVS` set by RustNet itself — always, even with `--no-sandbox` — prevents privilege escalation via setuid binaries |
 
 ### How It Works
 
 1. **Initialization phase**: RustNet loads eBPF programs, opens packet capture handles, and creates log files
-2. **Capability drop**: `CAP_NET_RAW`, `CAP_BPF`, and `CAP_PERFMON` are removed from the process
-3. **Landlock**: Restricts filesystem and network access
+2. **Privilege lock**: `PR_SET_NO_NEW_PRIVS` is set (applied even when the sandbox is disabled)
+3. **Capability drop**: `CAP_NET_RAW`, `CAP_BPF`, and `CAP_PERFMON` are removed from the process
+4. **Landlock**: Restricts filesystem and network access
 
 ### Security Benefits
 
@@ -48,12 +49,13 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 - Cannot make outbound TCP connections (data exfiltration blocked)
 - Cannot bind TCP ports (reverse shell blocked)
 - Cannot create new raw sockets (capability dropped)
-- Cannot escalate privileges via setuid binaries (`PR_SET_NO_NEW_PRIVS`)
+- Cannot escalate privileges via setuid binaries (`PR_SET_NO_NEW_PRIVS`, set even with `--no-sandbox`)
 
 ### CLI Options
 
 ```
 --no-sandbox        Disable Landlock sandboxing and capability dropping
+                    (PR_SET_NO_NEW_PRIVS is still set)
 --sandbox-strict    Require full sandbox enforcement or exit
 ```
 
@@ -255,10 +257,10 @@ When using eBPF for enhanced process detection (default on Linux):
 
 ### Sandboxing as Root
 
-Both Landlock (Linux) and Seatbelt (macOS) enforce restrictions even when RustNet runs as root (UID 0). Once applied, the sandbox cannot be reversed from within the process — Landlock sets `PR_SET_NO_NEW_PRIVS` which is irreversible per-process.
+Both Landlock (Linux) and Seatbelt (macOS) enforce restrictions even when RustNet runs as root (UID 0). Once applied, the sandbox cannot be reversed from within the process — on Linux, RustNet sets `PR_SET_NO_NEW_PRIVS` directly before applying any restrictions (Landlock requires and would set it as well), which is irreversible per-process and applied even with `--no-sandbox`.
 
 However, sandboxing does **not** protect against supply chain attacks. A compromised binary would simply not apply the sandbox. Root can also:
-- Pass `--no-sandbox` to skip sandboxing entirely
+- Pass `--no-sandbox` to skip sandboxing entirely (except `PR_SET_NO_NEW_PRIVS`)
 - Unload the Landlock LSM kernel module
 - Disable SIP on macOS (which controls sandbox enforcement)
 - Use `ptrace` to modify a running process
@@ -270,7 +272,7 @@ For this reason, running with fine-grained capabilities (`setcap cap_net_raw=eip
 RustNet takes the following measures to protect against supply chain attacks:
 
 - **Dependency lockfile**: `Cargo.lock` is committed to the repository, pinning all transitive dependency versions and recording source checksums. This prevents silent version upgrades.
-- **Security audit**: `cargo audit` runs in CI on every push and pull request, checking dependencies against the RustSec Advisory Database.
+- **Security audit**: `cargo deny check` runs in CI on every push and pull request, checking dependencies against the RustSec Advisory Database and enforcing license, source, and wildcard-version policies (`deny.toml`). A scheduled daily workflow re-checks advisories against the committed `Cargo.lock`, so newly published advisories surface without requiring a push.
 - **CI action pinning**: All GitHub Actions are pinned by commit SHA (not tags), preventing tag-rewriting attacks on upstream actions.
 - **Conservative dependency policy**: New dependencies require justification and are reviewed for maintenance status and security track record (see `CONTRIBUTING.md`).
 - **Build-time integrity**: The Windows Npcap SDK download in `build.rs` is verified against a hardcoded SHA256 checksum.

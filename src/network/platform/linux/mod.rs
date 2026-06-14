@@ -3,7 +3,8 @@
 
 mod interface_stats;
 
-#[cfg(feature = "landlock")]
+// Always compiled: without the `landlock` feature the module still provides
+// the stub apply_sandbox() that sets PR_SET_NO_NEW_PRIVS.
 pub mod sandbox;
 
 pub use interface_stats::LinuxStatsProvider;

@@ -31,7 +31,9 @@ mod windows;
 pub use freebsd::FreeBSDStatsProvider;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxStatsProvider;
-#[cfg(all(target_os = "linux", feature = "landlock"))]
+// Not gated on the `landlock` feature: the sandbox module always compiles on
+// Linux (a non-landlock build still sets PR_SET_NO_NEW_PRIVS via the stub).
+#[cfg(target_os = "linux")]
 pub use linux::sandbox;
 #[cfg(target_os = "macos")]
 pub use macos::MacOSStatsProvider;
