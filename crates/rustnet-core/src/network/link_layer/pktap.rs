@@ -136,20 +136,23 @@ fn extract_process_name_from_bytes(bytes: &[u8; 20]) -> Option<String> {
     // Convert bytes to string, handling invalid UTF-8
     let raw_str = std::str::from_utf8(&bytes[..end_pos]).ok()?;
 
-    // Apply aggressive normalization
-    let normalized = raw_str
-        .chars()
-        .map(|c| {
-            if c.is_whitespace() || c.is_control() {
-                ' ' // Convert whitespace and control characters to space
-            } else {
-                c
+    // Apply aggressive normalization: treat every whitespace/control char as a
+    // separator, collapse runs into a single space, and trim the ends. Done in
+    // one pass into a single String (the previous chain allocated a String, then
+    // a Vec<&str>, then the joined String).
+    let mut normalized = String::with_capacity(raw_str.len());
+    for c in raw_str.chars() {
+        if c.is_whitespace() || c.is_control() {
+            if !normalized.is_empty() && !normalized.ends_with(' ') {
+                normalized.push(' ');
             }
-        })
-        .collect::<String>()
-        .split_whitespace() // Split on any whitespace
-        .collect::<Vec<&str>>()
-        .join(" "); // Join with single spaces
+        } else {
+            normalized.push(c);
+        }
+    }
+    if normalized.ends_with(' ') {
+        normalized.pop();
+    }
 
     if normalized.is_empty() || !normalized.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
         debug!(
@@ -221,6 +224,46 @@ mod tests {
     fn test_pktap_header_size() {
         // Ensure our struct size matches expectations
         assert!(mem::size_of::<PktapHeader>() >= 108);
+    }
+
+    fn name_bytes(s: &[u8]) -> [u8; 20] {
+        let mut b = [0u8; 20];
+        let n = s.len().min(20);
+        b[..n].copy_from_slice(&s[..n]);
+        b
+    }
+
+    #[test]
+    fn test_extract_process_name_null_padded() {
+        assert_eq!(
+            extract_process_name_from_bytes(&name_bytes(b"firefox")),
+            Some("firefox".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_process_name_trims_and_collapses() {
+        // Leading/trailing padding plus an internal run of mixed whitespace
+        // collapse to single spaces with trimmed ends.
+        assert_eq!(
+            extract_process_name_from_bytes(&name_bytes(b"  Google\t  Chrome  ")),
+            Some("Google Chrome".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_process_name_control_chars_are_separators() {
+        // A non-null control byte acts as a separator, not part of the name.
+        assert_eq!(
+            extract_process_name_from_bytes(&name_bytes(b"ab\x01cd")),
+            Some("ab cd".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_process_name_all_whitespace_rejected() {
+        assert!(extract_process_name_from_bytes(&name_bytes(b"   \t  ")).is_none());
+        assert!(extract_process_name_from_bytes(&name_bytes(b"")).is_none());
     }
 
     #[test]
