@@ -72,10 +72,18 @@ pub fn parse_by_dlt(
     process_id: Option<u32>,
 ) -> Option<ParsedPacket> {
     match dlt {
-        // DLT_NULL - BSD/macOS loopback with 4-byte header
+        // DLT_NULL - BSD/macOS loopback: a 4-byte address-family header (host
+        // byte order) precedes the raw IP packet, so strip it before parsing.
+        // The inner IP version nibble selects v4/v6, so the family value itself
+        // need not be decoded (its endianness varies by platform). Without this
+        // skip, raw IP parsing reads the family header's first byte as the IP
+        // version and silently drops every loopback packet.
         0 => {
             log::trace!("TUN/TAP: DLT_NULL (0)");
-            parse_tun(data, parser, process_name, process_id)
+            if data.len() < 4 {
+                return None;
+            }
+            parse_tun(&data[4..], parser, process_name, process_id)
         }
         // TAP devices use Ethernet (Layer 2)
         1 => {
@@ -164,5 +172,50 @@ mod tests {
 
         // TAP parsing should fail on empty packet
         assert!(parse_tap(&empty, &parser, None, None).is_none());
+    }
+
+    #[test]
+    fn test_parse_by_dlt_null_strips_loopback_family_header() {
+        use crate::network::parser::PacketParser;
+        use crate::network::types::Protocol;
+
+        let parser = PacketParser::new();
+
+        // Inner IPv4/UDP packet: 192.168.1.100:1234 -> 8.8.8.8:53 (DNS).
+        let inner_ip: &[u8] = &[
+            // IPv4 header (protocol 0x11 = UDP)
+            0x45, 0x00, 0x00, 0x20, 0x00, 0x01, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00, 192, 168, 1,
+            100, 8, 8, 8, 8, // UDP header: src 1234, dst 53
+            0x04, 0xd2, 0x00, 0x35, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+        ];
+
+        // A DLT_NULL frame is a 4-byte address-family header (AF_INET = 2, host
+        // byte order / little-endian here) followed by the raw IP packet.
+        let mut null_frame = vec![0x02, 0x00, 0x00, 0x00];
+        null_frame.extend_from_slice(inner_ip);
+
+        // The family header's first byte (0x02) has IP version nibble 0, so
+        // parsing the frame as raw IP without stripping the header drops it.
+        // This is exactly what the old DLT_NULL arm did.
+        assert!(
+            raw_ip::parse(&null_frame, &parser, None, None).is_none(),
+            "raw IP parse must fail when the 4-byte family header is not stripped",
+        );
+
+        // parse_by_dlt(DLT_NULL) must strip the header and parse the inner packet.
+        let parsed = parse_by_dlt(&null_frame, 0, &parser, None, None)
+            .expect("DLT_NULL loopback frame should parse after stripping the family header");
+        assert_eq!(parsed.protocol, Protocol::Udp);
+        // Orientation (which side is local) depends on configured local IPs, so
+        // assert on the port set rather than a fixed local/remote split.
+        let ports = [parsed.local_addr.port(), parsed.remote_addr.port()];
+        assert!(
+            ports.contains(&1234) && ports.contains(&53),
+            "inner UDP ports 1234/53 must survive the header strip, got {ports:?}",
+        );
+
+        // A truncated DLT_NULL frame (header only / shorter) must not panic.
+        assert!(parse_by_dlt(&[0x02, 0x00, 0x00, 0x00], 0, &parser, None, None).is_none());
+        assert!(parse_by_dlt(&[0x02, 0x00], 0, &parser, None, None).is_none());
     }
 }
