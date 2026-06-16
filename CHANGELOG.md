@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This release redesigns the TUI around a calmer visual hierarchy. Many of the ideas
+## [1.4.0] - 2026-06-16
+
+This release redesigns the TUI around a calmer visual hierarchy and, under the hood,
+splits RustNet into a Cargo workspace of reusable library crates. Many of the TUI ideas
 came from a detailed UI review by [@joshka](https://github.com/joshka) (Ratatui
 maintainer) on our showcase submission
 ([ratatui/ratatui-website#1118](https://github.com/ratatui/ratatui-website/pull/1118)) —
@@ -16,24 +19,41 @@ thanks for the thoughtful feedback!
 ### Added
 - **Theme Presets**: New `--theme` flag. The default `muted` preset keeps a single
   cyan accent and reserves color for signals (state changes, staleness, live
-  bandwidth) and addresses; `--theme classic` restores the previous full-color palette
+  bandwidth) and addresses; `--theme classic` restores the previous full-color palette (#377)
 - **System Sidebar Toggle**: The System panel now has a fixed width and can be
-  hidden with the `i` key (auto-hidden on narrow terminals)
+  hidden with the `i` key (auto-hidden on narrow terminals) (#377)
 - **Details Continuity Strip**: The Details tab opens with a mini connection table
   of the selected row and its neighbors; `j`/`k` flips through them without leaving
-  the tab, following the grouped order when process grouping is enabled
+  the tab, following the grouped order when process grouping is enabled (#377)
+- **Direct-Jump Tab Shortcuts**: Jump straight to a tab with keys `1`-`5`, with
+  bracket cycle aliases (#318, thanks @obchain)
+- **Connection List Scrollbar**: A scrollbar appears on the connection list when it
+  overflows the viewport (#365)
+- **FTP Deep Packet Inspection**: Detect the FTP control channel and extract command
+  and response metadata (#266, thanks @0xghost42)
+- **DNS / mDNS / LLMNR Response IPs**: Populate `response_ips` from A/AAAA answer
+  records and extend the extraction to mDNS and LLMNR responses (#319, #333, #341, thanks @0xghost42)
+- **Log Identity Banner**: Emit a program identity banner and the module target on
+  every log line for easier diagnostics (#320, thanks @0xghost42)
+- **Landlock v6 IPC Scoping** (Linux): Best-effort Landlock that scopes abstract-socket
+  and signal IPC on kernels that support it, falling back gracefully on older ABIs (#363)
+- **`no_new_privs` Always Set + cargo-deny**: Always set `no_new_privs` at startup, and
+  adopt `cargo-deny` for supply-chain and license auditing in CI (#382)
+- **openSUSE OBS Release Pipeline**: Automated openSUSE Build Service releases (#356)
 
 ### Changed
 - **Stable Column Layout**: Column widths depend only on the terminal width — they
   no longer shift while scrolling. Narrow terminals hide low-priority columns
   instead of truncating cells; wide terminals distribute the spare width so the
-  table spans the full screen with the bandwidth column flush right
+  table spans the full screen with the bandwidth column flush right (#377)
 - **Merged Proto/App Column**: The Protocol column is merged into Application
   ("TCP·HTTPS"), and the status-dot column is gone — staleness now lives entirely
-  in the row styling
+  in the row styling (#377)
 - **Custom Tab Bar and Borderless Sections**: Numbered tab bar with an accent
   underline, a single-line filter prompt, and section headers in place of the
-  border-box-around-everything look
+  border-box-around-everything look (#377)
+- **Dependencies**: Routine dependency and GitHub Actions updates across the cycle
+  (Dependabot, ~18 PRs)
 
 ### Fixed
 - **Process attribution for short-lived and multithreaded processes** (Linux):
@@ -42,7 +62,59 @@ thanks for the thoughtful feedback!
   no longer show up as "Socket Thread" or "isc-net-0000"; PID-to-name
   resolution reads `/proc/<pid>/comm` on demand instead of waiting for the
   periodic scan; and new connections are enriched on a fast 250ms tick, so
-  process names appear almost immediately instead of after up to 2 seconds
+  process names appear almost immediately instead of after up to 2 seconds (#376)
+- **DLT_NULL Link Layer**: Strip the 4-byte address-family header before parsing
+  DLT_NULL/loopback captures (#394, thanks @0xghost42)
+- **Terminal Restore on Panic**: Restore the terminal via a chained panic hook so a
+  panic no longer leaves the terminal in raw mode (#364)
+- **Scrollbar Thumb**: The scrollbar thumb now reaches the bottom at max scroll (#366)
+- **Landlock `/sys` Access**: Allow read access to `/sys` so interface statistics work
+  under the Landlock sandbox (#370)
+- **Filter Mode Backspace**: Handle raw backspace characters in filter mode (#335, thanks @iccccccccccccc)
+- **eBPF Error Surfacing**: Classify libbpf errors and surface them in the TUI (#255, #258)
+- **Native Builds**: Skip cross-compile library paths on native builds (#259)
+- **RPM Packaging**: Own the directories and hicolor icon dirs the package creates, and
+  require `libcap-progs` on openSUSE so the `%post` `setcap` runs (#357, #358, #359, #360)
+
+### Performance
+- **Per-Packet Allocations**: Cut per-packet allocations and snapshot copy-on-write
+  copies on the hot path (#380)
+- **Core Types**: Add `Protocol::as_str()` and drop per-row/per-filter `to_string`
+  allocations (#392, thanks @obchain)
+- **Connection Table**: Borrow the process name in `process_text` instead of cloning (#390, thanks @obchain)
+- **Sparklines / Parsers**: Single-allocation sparkline getters, fewer redundant
+  collects in the HTTP and SSH parsers, and removed redundant clones in the render path
+  and sandbox init (#339, #345, #355, thanks @obchain)
+
+### Internal
+- **Cargo Workspace Split**: RustNet is now a four-crate workspace — `rustnet-core`
+  (packet parsing, protocol/DPI types, link-layer, connection merging, DNS/GeoIP/OUI
+  lookups), `rustnet-capture` (libpcap/Npcap capture backend), `rustnet-host`
+  (per-connection process attribution), and the `rustnet-monitor` binary. The three
+  libraries are now published to crates.io alongside the binary (#367)
+
+### Documentation
+- **Simplified Chinese**: Added a Simplified Chinese README translation and translated
+  the rest of the docs, plus zh-CN openSUSE Tumbleweed install instructions
+  (#263 thanks @whtis, #277 thanks @luojiyin1987, #361)
+- **Install / Packaging Docs**: Nix and NixOS instructions and nixpkgs/NixOS-module
+  notes, Homebrew core formula pointer, Repology packaging overview, a Mermaid
+  architecture diagram, and a PR template with tightened contributor guidelines
+  (#264, #270, #281, #285, #286, #311, #332, #369)
+- **Ubuntu 26.04 (Resolute) PPA**: Added the Resolute PPA build (#254, #256)
+
+### Contributors
+
+Special thanks to the contributors in this release:
+- [@0xghost42](https://github.com/0xghost42) — FTP DPI, DNS/mDNS/LLMNR response-IP
+  extraction, the log identity banner, the DLT_NULL fix, and many DPI/eBPF refactors
+  (#266, #278, #279, #289, #290, #307, #309, #319, #320, #333, #341, #394)
+- [@obchain](https://github.com/obchain) — performance and allocation cleanups across
+  the DPI parsers, render path, and core types, plus direct-jump tab shortcuts
+  (#292, #294, #296, #301, #303, #317, #318, #327, #339, #345, #355, #390, #392)
+- [@iccccccccccccc](https://github.com/iccccccccccccc) — raw backspace handling in filter mode (#335)
+- [@whtis](https://github.com/whtis) (HaiTao Wu) — Simplified Chinese README translation (#263)
+- [@luojiyin1987](https://github.com/luojiyin1987) (luo jiyin) — Simplified Chinese documentation translation (#277)
 
 ## [1.3.0] - 2026-05-05
 
@@ -502,7 +574,8 @@ Special thanks to the external contributors in this release:
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/domcyrus/rustnet/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/domcyrus/rustnet/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/domcyrus/rustnet/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/domcyrus/rustnet/compare/v1.0.0...v1.1.0
