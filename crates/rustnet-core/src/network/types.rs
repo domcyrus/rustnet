@@ -14,15 +14,25 @@ pub enum Protocol {
     Arp,
 }
 
+impl Protocol {
+    /// The protocol's display name as a `&'static str`. Hot paths (the
+    /// connection-table render and the filter matcher) want the name as a
+    /// borrowed string; going through `Display`/`to_string` there allocates a
+    /// fresh `String` per row / per connection for no reason.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Protocol::Tcp => "TCP",
+            Protocol::Udp => "UDP",
+            Protocol::Icmp => "ICMP",
+            Protocol::Igmp => "IGMP",
+            Protocol::Arp => "ARP",
+        }
+    }
+}
+
 impl std::fmt::Display for Protocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Protocol::Tcp => write!(f, "TCP"),
-            Protocol::Udp => write!(f, "UDP"),
-            Protocol::Icmp => write!(f, "ICMP"),
-            Protocol::Igmp => write!(f, "IGMP"),
-            Protocol::Arp => write!(f, "ARP"),
-        }
+        f.write_str(self.as_str())
     }
 }
 
@@ -2365,6 +2375,23 @@ impl Connection {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn protocol_as_str_matches_display() {
+        for p in [
+            Protocol::Tcp,
+            Protocol::Udp,
+            Protocol::Icmp,
+            Protocol::Igmp,
+            Protocol::Arp,
+        ] {
+            // Display now delegates to as_str — they must stay identical so
+            // nothing reading protocol names (UI cells, filter, JSON) shifts.
+            assert_eq!(p.as_str(), p.to_string());
+        }
+        assert_eq!(Protocol::Tcp.as_str(), "TCP");
+        assert_eq!(Protocol::Arp.as_str(), "ARP");
+    }
 
     fn create_test_connection() -> Connection {
         Connection::new(
