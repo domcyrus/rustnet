@@ -93,7 +93,11 @@ jobs:
       - name: Get version
         id: version
         run: |
-          VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          # Read the binary's [package] version, not [workspace.package]. Since
+          # the workspace split, Cargo.toml has two `version =` lines and the
+          # workspace one (0.x libs) comes first, so `head -1` read the wrong
+          # value. Anchor on the [package] section.
+          VERSION=$(awk -F'"' '/^\[package\]/{p=1} p && /^version = /{print $2; exit}' Cargo.toml)
 
           # Add tarball suffix if provided (e.g., +ds1, +ds2)
           TARBALL_SUFFIX="${{ inputs.tarball_suffix }}"
@@ -144,7 +148,8 @@ jobs:
       - name: Build source package
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          BASE_VERSION=$(grep '^version = ' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          # Binary [package] version (drives the release tag to check out below).
+          BASE_VERSION=$(awk -F'"' '/^\[package\]/{p=1} p && /^version = /{print $2; exit}' Cargo.toml)
           PACKAGE_NAME="rustnet-monitor"
 
           # Create build directory
