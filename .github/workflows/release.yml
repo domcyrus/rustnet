@@ -761,9 +761,11 @@ jobs:
           Get-Command candle.exe -ErrorAction SilentlyContinue | Select-Object Source
           Get-Command light.exe -ErrorAction SilentlyContinue | Select-Object Source
 
-          # Create MSI package
+          # Create MSI package. `-p rustnet-monitor` is required since the
+          # workspace split: cargo-wix refuses to guess the package in a
+          # workspace ("Workspace detected. Please pass a package name.").
           Write-Host "Creating MSI package..."
-          cargo wix --no-build --nocapture --target ${{ matrix.target }}
+          cargo wix -p rustnet-monitor --no-build --nocapture --target ${{ matrix.target }}
 
           # Find and rename the MSI file
           $msiFiles = Get-ChildItem -Path "target\wix" -Filter "*.msi" -ErrorAction SilentlyContinue
