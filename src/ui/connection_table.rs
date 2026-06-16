@@ -422,7 +422,7 @@ pub(in crate::ui) fn connection_row<'a>(
 /// "TCP·HTTPS" compact, bare "TCP" without DPI info. The protocol half
 /// is muted so the detected application reads as the content.
 fn application_cell<'a>(conn: &Connection, width: u16, color_cells: bool) -> Cell<'a> {
-    let proto = conn.protocol.to_string();
+    let proto = conn.protocol.as_str();
 
     let Some(dpi) = conn.dpi_info.as_ref() else {
         let style = if color_cells {

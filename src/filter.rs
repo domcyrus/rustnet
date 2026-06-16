@@ -197,7 +197,7 @@ impl ConnectionFilter {
             FilterCriteria::DestinationIp(fv) => {
                 match_text(&connection.remote_addr.ip().to_string(), fv)
             }
-            FilterCriteria::Protocol(fv) => match_text(&connection.protocol.to_string(), fv),
+            FilterCriteria::Protocol(fv) => match_text(connection.protocol.as_str(), fv),
             FilterCriteria::Process(fv) => {
                 if let Some(ref process_name) = connection.process_name {
                     match_text(process_name, fv)
@@ -221,7 +221,7 @@ impl ConnectionFilter {
     /// Check if connection matches general text search across all fields
     fn matches_general(&self, connection: &Connection, fv: &FilterValue) -> bool {
         // Check basic connection info
-        if match_text(&connection.protocol.to_string(), fv)
+        if match_text(connection.protocol.as_str(), fv)
             || match_text(&connection.local_addr.to_string(), fv)
             || match_text(&connection.remote_addr.to_string(), fv)
         {
