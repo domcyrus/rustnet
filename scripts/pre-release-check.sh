@@ -28,7 +28,11 @@ echo
 # --- Version consistency ---
 echo "Version consistency:"
 
-CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
+# Read the binary's [package] version, NOT the [workspace.package] version.
+# Since the workspace split, Cargo.toml has two `version =` lines and the
+# workspace one (0.x libraries) comes first, so `grep '^version' | head -1`
+# would read the wrong value. Anchor on the [package] section instead.
+CARGO_VERSION=$(awk -F'"' '/^\[package\]/{p=1} p && /^version = /{print $2; exit}' Cargo.toml)
 RPM_VERSION=$(grep '^Version:' rpm/rustnet.spec | awk '{print $2}')
 
 if [ -n "$VERSION" ]; then
@@ -112,16 +116,26 @@ if [ "$CARGO_BENCHES" -gt 0 ]; then
   fi
 fi
 
-# Check that all include_bytes!() assets referenced at compile time are in Dockerfile
-for asset in $(grep -roh 'include_bytes!("[^"]*")' src/ 2>/dev/null | sed 's/include_bytes!("//;s/")//' | sort -u); do
-  # Resolve relative paths from src/ (portable, no GNU realpath needed)
-  resolved=$(cd src && python3 -c "import os.path; print(os.path.relpath(os.path.abspath('$asset'), '..'))" 2>/dev/null || echo "$asset")
+# Check that all include_bytes!()/include_str!() assets referenced at compile
+# time are present in the Dockerfile's COPY commands. Since the workspace split,
+# the baked-in assets (oui.gz, services) live under crates/rustnet-core/, not
+# src/, and the include path is relative to the file doing the include — so scan
+# both trees and resolve each path against its own source file's directory.
+ROOT=$(pwd)
+while IFS= read -r match; do
+  [ -z "$match" ] && continue
+  srcfile=${match%%:*}                       # path before the first ':'
+  asset=$(printf '%s\n' "$match" | sed -E 's/.*include_(bytes|str)!\("//; s/"\).*//')
+  srcdir=$(dirname "$srcfile")
+  # Resolve the include path (relative to srcfile) into a repo-root-relative path
+  # (portable, no GNU realpath needed).
+  resolved=$(cd "$srcdir" && python3 -c "import os.path,sys; print(os.path.relpath(os.path.abspath(sys.argv[1]), sys.argv[2]))" "$asset" "$ROOT" 2>/dev/null || echo "$asset")
   if grep -q "$resolved\|$(basename "$resolved")" Dockerfile; then
     pass "Dockerfile includes compile-time asset: $resolved"
   else
     fail "Compile-time asset $resolved not found in Dockerfile COPY commands"
   fi
-done
+done < <(grep -rno -E 'include_(bytes|str)!\("[^"]*"\)' src/ crates/*/src 2>/dev/null | sort -u || true)
 
 if docker info > /dev/null 2>&1; then
   echo
