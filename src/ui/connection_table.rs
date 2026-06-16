@@ -185,13 +185,14 @@ pub(in crate::ui) fn column_constraints(columns: &[Column]) -> Vec<Constraint> {
 
 /// Untruncated Process cell text: "name (pid)".
 fn process_text(conn: &Connection) -> String {
-    let name = conn
-        .process_name
-        .clone()
-        .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+    // Borrow the name; `format!` in the Some-pid arm (the common case)
+    // allocates its own String, so cloning out of the Option first just
+    // throws away a heap allocation per row per frame. Only the None-pid
+    // arm needs to materialize an owned String.
+    let name = conn.process_name.as_deref().unwrap_or(NONE_PLACEHOLDER);
     match conn.pid {
         Some(pid) => format!("{name} ({pid})"),
-        None => name,
+        None => name.to_string(),
     }
 }
 
@@ -653,5 +654,32 @@ mod tests {
             truncate_with_ellipsis("h\u{e9}ll\u{f6} w\u{f6}rld!", 6),
             "h\u{e9}ll\u{f6}\u{2026}"
         );
+    }
+
+    #[test]
+    fn process_text_formats_name_pid_and_placeholder() {
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            "[::1]:8080".parse().unwrap(),
+            "[::1]:443".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+
+        // name + pid -> "name (pid)"
+        conn.process_name = Some("firefox".to_string());
+        conn.pid = Some(1234);
+        assert_eq!(process_text(&conn), "firefox (1234)");
+
+        // name, no pid -> bare name
+        conn.pid = None;
+        assert_eq!(process_text(&conn), "firefox");
+
+        // no name -> placeholder (bare when pid absent)
+        conn.process_name = None;
+        assert_eq!(process_text(&conn), NONE_PLACEHOLDER);
+
+        // no name, with pid -> "placeholder (pid)"
+        conn.pid = Some(42);
+        assert_eq!(process_text(&conn), format!("{NONE_PLACEHOLDER} (42)"));
     }
 }
