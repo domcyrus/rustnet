@@ -72,25 +72,23 @@ pub(in crate::ui) fn draw_interface_stats(f: &mut Frame, app: &App, area: Rect) 
             theme::fg(theme::ok())
         };
 
-        // Get rate for this interface
-        let rx_rate_str = if let Some(rate) = rates.get(&stat.interface_name) {
-            format!("{}/s", format_bytes(rate.rx_bytes_per_sec))
-        } else {
-            "---".to_string()
-        };
-
-        let tx_rate_str = if let Some(rate) = rates.get(&stat.interface_name) {
-            format!("{}/s", format_bytes(rate.tx_bytes_per_sec))
-        } else {
-            "---".to_string()
-        };
+        // Get rate for this interface — single lookup shared by rx and tx.
+        let rate = rates.get(&stat.interface_name);
+        let rx_rate_str = rate.map_or_else(
+            || "---".to_string(),
+            |r| format!("{}/s", format_bytes(r.rx_bytes_per_sec)),
+        );
+        let tx_rate_str = rate.map_or_else(
+            || "---".to_string(),
+            |r| format!("{}/s", format_bytes(r.tx_bytes_per_sec)),
+        );
 
         let right = |s: String| Cell::from(Line::from(s).right_aligned());
         let right_styled = |s: String, style: Style| {
             Cell::from(Line::from(Span::styled(s, style)).right_aligned())
         };
         rows.push(Row::new(vec![
-            Cell::from(stat.interface_name.clone()),
+            Cell::from(stat.interface_name.as_str()),
             right(rx_rate_str),
             right(tx_rate_str),
             right(format!("{}", stat.rx_packets)),
@@ -120,7 +118,7 @@ pub(in crate::ui) fn draw_interface_stats(f: &mut Frame, app: &App, area: Rect) 
         ],
     )
     .header({
-        let right = |s: &str| Cell::from(Line::from(s.to_string()).right_aligned());
+        let right = |s: &'static str| Cell::from(Line::from(s).right_aligned());
         Row::new(vec![
             Cell::from("Interface"),
             right("RX Rate"),
