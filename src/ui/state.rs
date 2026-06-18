@@ -706,18 +706,16 @@ pub fn compute_grouped_rows<'a>(
 ) -> Vec<GroupedRow<'a>> {
     use std::collections::HashMap;
 
-    // Group connections by process name
-    let mut groups: HashMap<String, Vec<&Connection>> = HashMap::new();
+    // Group connections by process name, borrowing the name from each connection
+    // to avoid cloning N Strings just to use as HashMap keys.
+    let mut groups: HashMap<&'a str, Vec<&'a Connection>> = HashMap::new();
     for conn in connections {
-        let key = conn
-            .process_name
-            .clone()
-            .unwrap_or_else(|| "<unknown>".to_string());
+        let key = conn.process_name.as_deref().unwrap_or("<unknown>");
         groups.entry(key).or_default().push(conn);
     }
 
     // Build stats for each group in a single pass over each group's connections
-    let mut group_stats: Vec<(String, ProcessGroupStats, Vec<&Connection>)> = groups
+    let mut group_stats: Vec<(&'a str, ProcessGroupStats, Vec<&'a Connection>)> = groups
         .into_iter()
         .map(|(name, conns)| {
             let mut connection_count = 0usize;
@@ -761,9 +759,9 @@ pub fn compute_grouped_rows<'a>(
     // Build the flattened row list
     let mut rows = Vec::new();
     for (name, stats, conns) in group_stats {
-        let expanded = expanded_groups.contains(&name);
+        let expanded = expanded_groups.contains(name);
         rows.push(GroupedRow::Group {
-            process_name: name.clone(),
+            process_name: name.to_owned(),
             stats,
             expanded,
         });
@@ -772,7 +770,7 @@ pub fn compute_grouped_rows<'a>(
             let conn_count = conns.len();
             for (idx, conn) in conns.into_iter().enumerate() {
                 rows.push(GroupedRow::Connection {
-                    process_name: name.clone(),
+                    process_name: name.to_owned(),
                     connection: conn,
                     is_last_in_group: idx == conn_count - 1,
                 });
