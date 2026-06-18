@@ -530,20 +530,15 @@ fn draw_connections_list(
 /// same bold base, same muted metadata, so toggling grouping reads as
 /// a view change rather than a different screen.
 fn connections_title<'a>(ui_state: &UIState, grouped: bool, shown: usize) -> Line<'a> {
-    let mut base = if ui_state.show_historic {
-        "Active + Historic Connections".to_string()
-    } else {
-        "Active Connections".to_string()
+    let base: &'static str = match (ui_state.show_historic, grouped) {
+        (false, false) => " Active Connections",
+        (false, true) => " Active Connections · Grouped by Process",
+        (true, false) => " Active + Historic Connections",
+        (true, true) => " Active + Historic Connections · Grouped by Process",
     };
-    if grouped {
-        base.push_str(" · Grouped by Process");
-    }
     let counter = if grouped { "processes" } else { "shown" };
     let mut spans = vec![
-        Span::styled(
-            format!(" {base}"),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(base, Style::default().add_modifier(Modifier::BOLD)),
         Span::styled(format!(" · {shown} {counter}"), theme::fg(theme::muted())),
     ];
     if ui_state.sort_column != SortColumn::CreatedAt {
@@ -620,7 +615,7 @@ fn draw_grouped_connections_list(
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
                 let process_cell = Line::from(vec![
-                    Span::styled(connector.to_string(), theme::fg(theme::muted())),
+                    Span::styled(connector, theme::fg(theme::muted())),
                     Span::raw(pid),
                 ]);
                 connection_row(
