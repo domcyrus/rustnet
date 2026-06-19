@@ -3,6 +3,10 @@
 use log::{debug, warn};
 use std::mem;
 
+/// Largest valid Darwin PID. macOS wraps PIDs at 100000, so a live PID is
+/// always in `1..=99999`.
+const DARWIN_PID_MAX: u32 = 99_999;
+
 /// PKTAP header structure as defined by Apple
 /// Based on the LINKTYPE_PKTAP specification and Apple's pktap.h
 #[repr(C)]
@@ -69,10 +73,15 @@ impl PktapHeader {
         let process_name = extract_process_name_from_bytes(&self.pth_comm);
 
         // Extract PID - use pth_epid which is at the right offset (52)
-        // Based on our test, the PID was consistently at offset 52
-        let pid = if self.pth_epid != 0 && self.pth_epid < 65535 {
+        // Based on our test, the PID was consistently at offset 52.
+        // PKTAP is macOS-only and Darwin PIDs are at most five digits (the
+        // kernel wraps PIDs at 100000), so a valid PID is 1..=99999. The old
+        // `< 65535` ceiling was a u16 assumption that dropped legitimate high
+        // PIDs on busy systems, leaving those packets with no process
+        // attribution.
+        let pid = if self.pth_epid != 0 && self.pth_epid <= DARWIN_PID_MAX {
             Some(self.pth_epid)
-        } else if self.pth_pid != 0 && self.pth_pid < 65535 {
+        } else if self.pth_pid != 0 && self.pth_pid <= DARWIN_PID_MAX {
             Some(self.pth_pid)
         } else {
             None
@@ -233,5 +242,47 @@ mod tests {
         let mut bad_data = [0u8; 200];
         bad_data[0] = 50; // Length too small
         assert!(PktapHeader::from_bytes(&bad_data).is_none());
+    }
+
+    fn header_with_pids(epid: u32, pid: u32) -> PktapHeader {
+        PktapHeader {
+            pth_length: 108,
+            pth_type_next: 0,
+            pth_dlt: 0,
+            pth_ifname: [0u8; 24],
+            pth_flags: 0,
+            pth_protocol_family: 0,
+            pth_frame_pre_length: 0,
+            pth_frame_post_length: 0,
+            pth_iftype: 0,
+            pth_unit: 0,
+            pth_epid: epid,
+            pth_comm: [0u8; 20],
+            pth_svc_class: 0,
+            pth_flowid: 0,
+            pth_ipproto: 0,
+            pth_pid: pid,
+            pth_e_comm: [0u8; 20],
+        }
+    }
+
+    #[test]
+    fn test_get_process_info_accepts_high_pid() {
+        // PIDs above the old 65535 (u16) ceiling are valid on macOS (Darwin
+        // wraps PIDs at 100000); they must still be attributed, not dropped.
+        assert_eq!(
+            header_with_pids(70_000, 0).get_process_info().1,
+            Some(70_000)
+        );
+
+        // The pth_pid fallback path also honours a high PID when pth_epid is unset.
+        assert_eq!(
+            header_with_pids(0, 99_999).get_process_info().1,
+            Some(99_999)
+        );
+
+        // The zero sentinel and out-of-range garbage still yield no PID.
+        assert_eq!(header_with_pids(0, 0).get_process_info().1, None);
+        assert_eq!(header_with_pids(100_000, 0).get_process_info().1, None);
     }
 }
