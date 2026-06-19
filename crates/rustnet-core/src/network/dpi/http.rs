@@ -144,9 +144,9 @@ mod tests {
         // accepting truncated lines that the old `parts.len() >= 3` guard
         // would also have rejected.
         let truncated: [&[u8]; 3] = [
-            b"GET /index.html\r\n\r\n",    // only 2 tokens
-            b"GET\r\n\r\n",                // only 1 token
-            b"HTTP/1.1 200\r\n\r\n",       // only 2 tokens (response, no reason phrase)
+            b"GET /index.html\r\n\r\n", // only 2 tokens
+            b"GET\r\n\r\n",             // only 1 token
+            b"HTTP/1.1 200\r\n\r\n",    // only 2 tokens (response, no reason phrase)
         ];
         for payload in &truncated {
             assert!(
