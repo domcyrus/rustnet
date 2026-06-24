@@ -708,6 +708,22 @@ impl std::fmt::Display for DhcpMessageType {
     }
 }
 
+impl DhcpMessageType {
+    pub fn state_str(&self) -> Cow<'static, str> {
+        match self {
+            DhcpMessageType::Discover => Cow::Borrowed("DHCP_DISCOVER"),
+            DhcpMessageType::Offer => Cow::Borrowed("DHCP_OFFER"),
+            DhcpMessageType::Request => Cow::Borrowed("DHCP_REQUEST"),
+            DhcpMessageType::Decline => Cow::Borrowed("DHCP_DECLINE"),
+            DhcpMessageType::Ack => Cow::Borrowed("DHCP_ACK"),
+            DhcpMessageType::Nak => Cow::Borrowed("DHCP_NAK"),
+            DhcpMessageType::Release => Cow::Borrowed("DHCP_RELEASE"),
+            DhcpMessageType::Inform => Cow::Borrowed("DHCP_INFORM"),
+            DhcpMessageType::Unknown(v) => Cow::Owned(format!("DHCP_UNKNOWN({})", v)),
+        }
+    }
+}
+
 // SNMP-specific types
 #[derive(Debug, Clone)]
 pub struct SnmpInfo {
@@ -762,6 +778,22 @@ impl std::fmt::Display for SnmpPduType {
     }
 }
 
+impl SnmpPduType {
+    pub fn state_str(&self) -> &'static str {
+        match self {
+            SnmpPduType::GetRequest => "SNMP_GET",
+            SnmpPduType::GetNextRequest => "SNMP_GETNEXT",
+            SnmpPduType::GetResponse => "SNMP_RESPONSE",
+            SnmpPduType::SetRequest => "SNMP_SET",
+            SnmpPduType::Trap => "SNMP_TRAP",
+            SnmpPduType::GetBulkRequest => "SNMP_GETBULK",
+            SnmpPduType::InformRequest => "SNMP_INFORM",
+            SnmpPduType::TrapV2 => "SNMP_TRAPv2",
+            SnmpPduType::Report => "SNMP_REPORT",
+        }
+    }
+}
+
 // SSDP-specific types
 #[derive(Debug, Clone)]
 pub struct SsdpInfo {
@@ -786,6 +818,16 @@ impl std::fmt::Display for SsdpMethod {
     }
 }
 
+impl SsdpMethod {
+    pub fn state_str(&self) -> &'static str {
+        match self {
+            SsdpMethod::MSearch => "SSDP_M-SEARCH",
+            SsdpMethod::Notify => "SSDP_NOTIFY",
+            SsdpMethod::Response => "SSDP_RESPONSE",
+        }
+    }
+}
+
 // NetBIOS-specific types
 #[derive(Debug, Clone)]
 pub struct NetBiosInfo {
@@ -805,6 +847,15 @@ impl std::fmt::Display for NetBiosService {
         match self {
             NetBiosService::NameService => write!(f, "NS"),
             NetBiosService::DatagramService => write!(f, "DGM"),
+        }
+    }
+}
+
+impl NetBiosService {
+    pub fn state_str(&self) -> &'static str {
+        match self {
+            NetBiosService::NameService => "NETBIOS_NS",
+            NetBiosService::DatagramService => "NETBIOS_DGM",
         }
     }
 }
@@ -858,6 +909,17 @@ impl std::fmt::Display for StunMessageClass {
             StunMessageClass::Indication => write!(f, "Indication"),
             StunMessageClass::SuccessResponse => write!(f, "Success"),
             StunMessageClass::ErrorResponse => write!(f, "Error"),
+        }
+    }
+}
+
+impl StunMessageClass {
+    pub fn state_str(&self) -> &'static str {
+        match self {
+            StunMessageClass::Request => "STUN_Request",
+            StunMessageClass::Indication => "STUN_Indication",
+            StunMessageClass::SuccessResponse => "STUN_Success",
+            StunMessageClass::ErrorResponse => "STUN_Error",
         }
     }
 }
@@ -2134,21 +2196,15 @@ impl Connection {
                         } else {
                             "LLMNR_QUERY"
                         }),
-                        ApplicationProtocol::Dhcp(info) => {
-                            Cow::Owned(format!("DHCP_{}", info.message_type))
-                        }
-                        ApplicationProtocol::Snmp(info) => {
-                            Cow::Owned(format!("SNMP_{}", info.pdu_type))
-                        }
-                        ApplicationProtocol::Ssdp(info) => {
-                            Cow::Owned(format!("SSDP_{}", info.method))
-                        }
+                        ApplicationProtocol::Dhcp(info) => info.message_type.state_str(),
+                        ApplicationProtocol::Snmp(info) => Cow::Borrowed(info.pdu_type.state_str()),
+                        ApplicationProtocol::Ssdp(info) => Cow::Borrowed(info.method.state_str()),
                         ApplicationProtocol::NetBios(info) => {
-                            Cow::Owned(format!("NETBIOS_{}", info.service))
+                            Cow::Borrowed(info.service.state_str())
                         }
                         ApplicationProtocol::BitTorrent(_) => Cow::Borrowed("BT_UDP"),
                         ApplicationProtocol::Stun(info) => {
-                            Cow::Owned(format!("STUN_{}", info.message_class))
+                            Cow::Borrowed(info.message_class.state_str())
                         }
                         ApplicationProtocol::Mqtt(_) => Cow::Borrowed("MQTT_UDP"),
                         ApplicationProtocol::Ftp(_) => Cow::Borrowed("FTP_UDP"),
@@ -3639,5 +3695,81 @@ mod tests {
             "Connection struct is unexpectedly large: {} bytes",
             std::mem::size_of::<Connection>()
         );
+    }
+
+    #[test]
+    fn dhcp_state_str_known_variants_are_borrowed() {
+        use std::borrow::Cow;
+        let cases = [
+            (DhcpMessageType::Discover, "DHCP_DISCOVER"),
+            (DhcpMessageType::Offer, "DHCP_OFFER"),
+            (DhcpMessageType::Request, "DHCP_REQUEST"),
+            (DhcpMessageType::Decline, "DHCP_DECLINE"),
+            (DhcpMessageType::Ack, "DHCP_ACK"),
+            (DhcpMessageType::Nak, "DHCP_NAK"),
+            (DhcpMessageType::Release, "DHCP_RELEASE"),
+            (DhcpMessageType::Inform, "DHCP_INFORM"),
+        ];
+        for (variant, expected) in cases {
+            let s = variant.state_str();
+            assert!(matches!(s, Cow::Borrowed(_)), "{expected} must be Borrowed");
+            assert_eq!(s, expected);
+        }
+        // Unknown variant must be Owned and encode the byte value
+        let unknown = DhcpMessageType::Unknown(42).state_str();
+        assert!(matches!(unknown, Cow::Owned(_)));
+        assert_eq!(unknown, "DHCP_UNKNOWN(42)");
+    }
+
+    #[test]
+    fn snmp_state_str_matches_prefixed_display() {
+        let cases = [
+            SnmpPduType::GetRequest,
+            SnmpPduType::GetNextRequest,
+            SnmpPduType::GetResponse,
+            SnmpPduType::SetRequest,
+            SnmpPduType::Trap,
+            SnmpPduType::GetBulkRequest,
+            SnmpPduType::InformRequest,
+            SnmpPduType::TrapV2,
+            SnmpPduType::Report,
+        ];
+        for variant in cases {
+            let expected = format!("SNMP_{}", variant);
+            assert_eq!(variant.state_str(), expected, "variant = {variant}");
+        }
+    }
+
+    #[test]
+    fn ssdp_state_str_matches_prefixed_display() {
+        for variant in [
+            SsdpMethod::MSearch,
+            SsdpMethod::Notify,
+            SsdpMethod::Response,
+        ] {
+            let expected = format!("SSDP_{}", variant);
+            assert_eq!(variant.state_str(), expected, "variant = {variant}");
+        }
+    }
+
+    #[test]
+    fn netbios_state_str_matches_prefixed_display() {
+        for variant in [NetBiosService::NameService, NetBiosService::DatagramService] {
+            let expected = format!("NETBIOS_{}", variant);
+            assert_eq!(variant.state_str(), expected, "variant = {variant}");
+        }
+    }
+
+    #[test]
+    fn stun_state_str_matches_prefixed_display() {
+        for variant in [
+            StunMessageClass::Request,
+            StunMessageClass::Indication,
+            StunMessageClass::SuccessResponse,
+            StunMessageClass::ErrorResponse,
+        ] {
+            let expected = format!("STUN_{}", variant);
+            assert_eq!(variant.state_str(), expected, "variant = {variant}");
+        }
     }
 }
