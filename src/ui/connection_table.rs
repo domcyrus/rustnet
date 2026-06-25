@@ -16,6 +16,8 @@
 //! ellipsis only happens as a last resort at very narrow widths, after
 //! column hiding has already done its job.
 
+use std::borrow::Cow;
+
 use ratatui::layout::Constraint;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -197,13 +199,14 @@ fn process_text(conn: &Connection) -> String {
 }
 
 /// Untruncated Service cell text: service name or port number.
-fn service_text(conn: &Connection, ui_state: &UIState) -> String {
+fn service_text<'a>(conn: &'a Connection, ui_state: &UIState) -> Cow<'a, str> {
     if ui_state.show_port_numbers {
-        conn.remote_addr.port().to_string()
+        Cow::Owned(conn.remote_addr.port().to_string())
     } else {
-        conn.service_name
-            .clone()
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string())
+        match conn.service_name.as_deref() {
+            Some(name) => Cow::Borrowed(name),
+            None => Cow::Borrowed(NONE_PLACEHOLDER),
+        }
     }
 }
 
@@ -336,7 +339,7 @@ fn staleness_style(conn: &Connection) -> (Option<Style>, bool) {
 /// view passes the tree connector + PID since the group header above
 /// already names the process).
 pub(in crate::ui) fn connection_row<'a>(
-    conn: &Connection,
+    conn: &'a Connection,
     columns: &[Column],
     ui_state: &UIState,
     dns_resolver: Option<&DnsResolver>,
@@ -379,8 +382,8 @@ pub(in crate::ui) fn connection_row<'a>(
                 let location = conn
                     .geoip_info
                     .as_ref()
-                    .map(|g| g.country_display().to_string())
-                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+                    .map(|g| g.country_display())
+                    .unwrap_or(NONE_PLACEHOLDER);
                 Cell::from(location).style(style_if_colored(theme::field_location()))
             }
             ColumnId::Service => {
@@ -433,13 +436,12 @@ fn application_cell<'a>(conn: &Connection, width: u16, color_cells: bool) -> Cel
         return Cell::from(proto).style(style);
     };
 
-    let app = if width >= APP_WIDTH_FULL {
-        dpi.application.to_string()
-    } else {
-        dpi.application.sort_key().to_string()
-    };
     let budget = (width as usize).saturating_sub(proto.chars().count() + 1);
-    let app = truncate_with_ellipsis(&app, budget);
+    let app = if width >= APP_WIDTH_FULL {
+        truncate_with_ellipsis(&dpi.application.to_string(), budget)
+    } else {
+        truncate_with_ellipsis(dpi.application.sort_key(), budget)
+    };
     if color_cells {
         Cell::from(Line::from(vec![
             Span::styled(format!("{proto}·"), theme::fg(theme::muted())),
