@@ -367,8 +367,12 @@ fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<QuicInfo>, us
         );
         return (None, 0);
     }
-    let dcid = payload[offset..offset + dcid_len].to_vec();
-    quic_info.connection_id = dcid.clone();
+    // Remember the DCID byte-range so we can reborrow `payload` later instead
+    // of allocating a separate owned copy. The short-header path got the same
+    // fix in #317; the long-header path kept doing `to_vec().clone()` which
+    // allocated the DCID twice per packet.
+    let dcid_range = offset..offset + dcid_len;
+    quic_info.connection_id = payload[dcid_range.clone()].to_vec();
     quic_info.connection_id_hex = None;
     offset += dcid_len;
 
@@ -438,8 +442,15 @@ fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<QuicInfo>, us
         payload // Use what we have if packet extends beyond datagram
     };
 
-    // Extract TLS info from this packet
-    extract_tls_from_long_header_packet(packet_data, &mut quic_info, &dcid, version, packet_type);
+    // Extract TLS info from this packet. The DCID lives inside `payload`, so
+    // pass a borrowed slice instead of cloning the owned `connection_id` Vec.
+    extract_tls_from_long_header_packet(
+        packet_data,
+        &mut quic_info,
+        &payload[dcid_range],
+        version,
+        packet_type,
+    );
 
     (Some(quic_info), total_packet_size.min(payload.len()))
 }
