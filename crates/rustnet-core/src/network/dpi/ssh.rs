@@ -44,9 +44,15 @@ pub fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
     }
 
     // Detect SSH message types for connection state
-    // Look for SSH packet structures throughout the payload
+    // Look for SSH packet structures throughout the payload. A packet
+    // signature needs 6 bytes, so the last valid start offset is
+    // `len - 6`; the range end must therefore be `len - 5` (exclusive).
+    // Using `saturating_sub(6)` stopped at `len - 7` and never inspected
+    // the final 6-byte window, so a packet whose signature sat at the very
+    // end of the payload (including a payload that is exactly 6 bytes) was
+    // missed.
     let mut found_packet_state = false;
-    for i in 0..payload.len().saturating_sub(6) {
+    for i in 0..payload.len().saturating_sub(5) {
         if payload.len() >= i + 6 {
             // Validate this looks like a real SSH packet structure
             if is_valid_ssh_packet_at_offset(payload, i) {
@@ -514,5 +520,21 @@ mod tests {
         // The packet structure starts at offset 21, so message type is at offset 26
         // Should detect the SSH_MSG_USERAUTH_REQUEST (50/0x32) in the packet data
         assert_eq!(info.connection_state, SshConnectionState::Authentication);
+    }
+
+    #[test]
+    fn test_packet_state_at_last_window() {
+        // Banner (14 bytes) followed by a valid KEXINIT packet signature
+        // occupying exactly the final 6 bytes of the payload:
+        //   packet_len=12 (0x0000000C), padding_len=4 (0x04), msg_type=20 (0x14)
+        // The signature starts at offset len-6, i.e. the last valid start
+        // offset. The previous `saturating_sub(6)` loop bound stopped one
+        // offset short and never inspected this window, leaving the state at
+        // Banner; the scan must now reach it and report KeyExchange.
+        let payload = b"SSH-2.0-Test\r\n\x00\x00\x00\x0c\x04\x14";
+        assert_eq!(payload.len(), 20);
+        let info = analyze_ssh(payload, false).unwrap();
+        assert!(info.server_software.is_some());
+        assert_eq!(info.connection_state, SshConnectionState::KeyExchange);
     }
 }
