@@ -78,16 +78,16 @@ static CIPHER_SUITE_MAP: LazyLock<HashMap<u16, &'static str>> = LazyLock::new(||
     map.insert(0xc038, "TLS_ECDHE_PSK_WITH_AES_256_CBC_SHA384");
 
     // ARIA Cipher Suites (RFC 6209)
-    map.insert(0xc03c, "TLS_ECDHE_ECDSA_WITH_ARIA_128_GCM_SHA256");
-    map.insert(0xc03d, "TLS_ECDHE_ECDSA_WITH_ARIA_256_GCM_SHA384");
+    map.insert(0xc03c, "TLS_RSA_WITH_ARIA_128_CBC_SHA256");
+    map.insert(0xc03d, "TLS_RSA_WITH_ARIA_256_CBC_SHA384");
     map.insert(0xc060, "TLS_ECDHE_RSA_WITH_ARIA_128_GCM_SHA256");
     map.insert(0xc061, "TLS_ECDHE_RSA_WITH_ARIA_256_GCM_SHA384");
 
-    // Camellia Cipher Suites (RFC 5932)
-    map.insert(0xc072, "TLS_ECDHE_ECDSA_WITH_CAMELLIA_128_GCM_SHA256");
-    map.insert(0xc073, "TLS_ECDHE_ECDSA_WITH_CAMELLIA_256_GCM_SHA384");
-    map.insert(0xc076, "TLS_ECDHE_RSA_WITH_CAMELLIA_128_GCM_SHA256");
-    map.insert(0xc077, "TLS_ECDHE_RSA_WITH_CAMELLIA_256_GCM_SHA384");
+    // Camellia Cipher Suites (RFC 6367)
+    map.insert(0xc072, "TLS_ECDHE_ECDSA_WITH_CAMELLIA_128_CBC_SHA256");
+    map.insert(0xc073, "TLS_ECDHE_ECDSA_WITH_CAMELLIA_256_CBC_SHA384");
+    map.insert(0xc076, "TLS_ECDHE_RSA_WITH_CAMELLIA_128_CBC_SHA256");
+    map.insert(0xc077, "TLS_ECDHE_RSA_WITH_CAMELLIA_256_CBC_SHA384");
 
     // NULL encryption (for testing/debugging)
     map.insert(0x0001, "TLS_RSA_WITH_NULL_MD5");
@@ -186,5 +186,42 @@ mod tests {
     fn test_unknown_cipher_suite() {
         assert_eq!(get_cipher_suite_name(0xFFFF), None);
         assert_eq!(format_cipher_suite(0xFFFF), "0xFFFF");
+    }
+
+    #[test]
+    fn test_aria_camellia_iana_names() {
+        // 0xC03C/0xC03D are RSA + CBC per IANA / RFC 6209; the
+        // ECDHE_ECDSA ARIA GCM suites live at 0xC05C/0xC05D.
+        assert_eq!(
+            get_cipher_suite_name(0xc03c),
+            Some("TLS_RSA_WITH_ARIA_128_CBC_SHA256")
+        );
+        assert_eq!(
+            get_cipher_suite_name(0xc03d),
+            Some("TLS_RSA_WITH_ARIA_256_CBC_SHA384")
+        );
+        // 0xC060/0xC061 are ECDHE_RSA ARIA GCM (already correct).
+        assert_eq!(
+            get_cipher_suite_name(0xc060),
+            Some("TLS_ECDHE_RSA_WITH_ARIA_128_GCM_SHA256")
+        );
+        // 0xC072-0xC077 are CBC per IANA / RFC 6367; the matching
+        // Camellia GCM suites live at 0xC086/0xC087/0xC08A/0xC08B.
+        assert_eq!(
+            get_cipher_suite_name(0xc072),
+            Some("TLS_ECDHE_ECDSA_WITH_CAMELLIA_128_CBC_SHA256")
+        );
+        assert_eq!(
+            get_cipher_suite_name(0xc073),
+            Some("TLS_ECDHE_ECDSA_WITH_CAMELLIA_256_CBC_SHA384")
+        );
+        assert_eq!(
+            get_cipher_suite_name(0xc076),
+            Some("TLS_ECDHE_RSA_WITH_CAMELLIA_128_CBC_SHA256")
+        );
+        assert_eq!(
+            get_cipher_suite_name(0xc077),
+            Some("TLS_ECDHE_RSA_WITH_CAMELLIA_256_CBC_SHA384")
+        );
     }
 }
