@@ -886,7 +886,7 @@ pub struct QuicCloseInfo {
 
 #[derive(Debug, Clone)]
 pub struct QuicInfo {
-    pub version_string: Option<String>,
+    pub version_string: Option<Cow<'static, str>>,
     pub packet_type: QuicPacketType,
     pub connection_id: Vec<u8>,
     pub connection_id_hex: Option<String>,
@@ -969,16 +969,16 @@ impl fmt::Display for QuicConnectionState {
     }
 }
 
-fn quic_version_to_string(version: u32) -> Option<String> {
+fn quic_version_to_string(version: u32) -> Option<Cow<'static, str>> {
     match version {
-        0x00000001 => Some("v1".to_string()),
-        0x6b3343cf => Some("v2".to_string()),
-        0xff00001d => Some("draft-29".to_string()),
-        0xff00001c => Some("draft-28".to_string()),
-        0xff00001b => Some("draft-27".to_string()),
-        0x51303530 => Some("Q050".to_string()),
-        0x54303530 => Some("T050".to_string()),
-        v if (v >> 8) == 0xff0000 => Some(format!("draft-{}", v & 0xff)),
+        0x00000001 => Some(Cow::Borrowed("v1")),
+        0x6b3343cf => Some(Cow::Borrowed("v2")),
+        0xff00001d => Some(Cow::Borrowed("draft-29")),
+        0xff00001c => Some(Cow::Borrowed("draft-28")),
+        0xff00001b => Some(Cow::Borrowed("draft-27")),
+        0x51303530 => Some(Cow::Borrowed("Q050")),
+        0x54303530 => Some(Cow::Borrowed("T050")),
+        v if (v >> 8) == 0xff0000 => Some(Cow::Owned(format!("draft-{}", v & 0xff))),
         _ => None,
     }
 }
@@ -3639,5 +3639,38 @@ mod tests {
             "Connection struct is unexpectedly large: {} bytes",
             std::mem::size_of::<Connection>()
         );
+    }
+
+    #[test]
+    fn quic_version_string_known_versions_are_borrowed() {
+        use std::borrow::Cow;
+        let cases: &[(u32, &str)] = &[
+            (0x00000001, "v1"),
+            (0x6b3343cf, "v2"),
+            (0xff00001d, "draft-29"),
+            (0xff00001c, "draft-28"),
+            (0xff00001b, "draft-27"),
+            (0x51303530, "Q050"),
+            (0x54303530, "T050"),
+        ];
+        for &(version, expected) in cases {
+            let q = QuicInfo::new(version);
+            assert_eq!(
+                q.version_string.as_deref(),
+                Some(expected),
+                "version 0x{version:08x}"
+            );
+            // Known versions must not heap-allocate.
+            assert!(
+                matches!(q.version_string, Some(Cow::Borrowed(_))),
+                "version 0x{version:08x} should be Cow::Borrowed"
+            );
+        }
+        // Unknown version produces None.
+        assert_eq!(QuicInfo::new(0xdeadbeef).version_string, None);
+        // Dynamic draft variant uses Cow::Owned.
+        let dynamic = QuicInfo::new(0xff000020);
+        assert_eq!(dynamic.version_string.as_deref(), Some("draft-32"));
+        assert!(matches!(dynamic.version_string, Some(Cow::Owned(_))));
     }
 }

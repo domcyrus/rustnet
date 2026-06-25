@@ -721,12 +721,12 @@ pub(in crate::ui) fn draw_connection_details(
                         label_style,
                     );
                 }
-                if let Some(version) = info.version_string.as_ref() {
+                if let Some(version) = info.version_string.as_deref() {
                     push_detail_field(
                         &mut details_text,
                         &mut detail_fields,
                         "QUIC Version",
-                        version.clone(),
+                        version.to_owned(),
                         label_style,
                     );
                 }
