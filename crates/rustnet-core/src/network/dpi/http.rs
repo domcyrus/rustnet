@@ -22,24 +22,27 @@ pub fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
     // just to index `[0]` and `skip(1)` allocates one heap slice per parse.
     let mut lines = text.lines();
     let first_line = lines.next()?;
-    let parts: Vec<&str> = first_line.split_whitespace().collect();
+    // Consume the first-line tokens lazily via iterator to avoid the
+    // `split_whitespace().collect::<Vec<_>>()` heap allocation. HTTP start
+    // lines always have exactly 3 SP-delimited tokens (RFC 9112 §3), so
+    // three consecutive `next()` calls are sufficient — no Vec needed.
+    let mut tokens = first_line.split_whitespace();
+    let (tok0, tok1, tok2) = match (tokens.next(), tokens.next(), tokens.next()) {
+        (Some(a), Some(b), Some(c)) => (a, b, c),
+        _ => return None,
+    };
 
-    if parts.len() >= 3 {
-        if first_line.starts_with("HTTP/") {
-            // Response line: HTTP/1.1 200 OK
-            info.version = parse_http_version(parts[0]);
-            info.status_code = parts[1].parse::<u16>().ok();
-        } else if is_http_method(parts[0]) {
-            // Request line: GET /path HTTP/1.1 — outer `parts.len() >= 3`
-            // already guarantees `parts[2]` is in bounds.
-            info.method = Some(parts[0].to_string());
-            info.path = Some(parts[1].to_string());
-            info.version = parse_http_version(parts[2]);
-        } else {
-            return None; // Not valid HTTP
-        }
+    if first_line.starts_with("HTTP/") {
+        // Response line: HTTP/1.1 200 OK
+        info.version = parse_http_version(tok0);
+        info.status_code = tok1.parse::<u16>().ok();
+    } else if is_http_method(tok0) {
+        // Request line: GET /path HTTP/1.1
+        info.method = Some(tok0.to_string());
+        info.path = Some(tok1.to_string());
+        info.version = parse_http_version(tok2);
     } else {
-        return None;
+        return None; // Not valid HTTP
     }
 
     // Parse headers. HTTP field-names are case-insensitive (RFC 7230 §3.2),
@@ -124,6 +127,34 @@ mod tests {
 
         assert_eq!(info.status_code, Some(200));
         assert!(info.method.is_none());
+    }
+
+    #[test]
+    fn test_http_start_line_token_extraction() {
+        // Lock the lazy-iterator token extraction: all three tokens from a
+        // well-formed request line must be parsed without a Vec allocation.
+        let req = b"POST /api/v1/upload HTTP/1.1\r\nHost: api.example.com\r\n\r\n";
+        let info = analyze_http(req).expect("POST request should parse");
+        assert_eq!(info.method.as_deref(), Some("POST"));
+        assert_eq!(info.path.as_deref(), Some("/api/v1/upload"));
+        assert_eq!(info.host.as_deref(), Some("api.example.com"));
+
+        // A start line with fewer than 3 whitespace-delimited tokens must be
+        // rejected; this guards against the lazy `next()` chain silently
+        // accepting truncated lines that the old `parts.len() >= 3` guard
+        // would also have rejected.
+        let truncated: [&[u8]; 3] = [
+            b"GET /index.html\r\n\r\n", // only 2 tokens
+            b"GET\r\n\r\n",             // only 1 token
+            b"HTTP/1.1 200\r\n\r\n",    // only 2 tokens (response, no reason phrase)
+        ];
+        for payload in &truncated {
+            assert!(
+                analyze_http(payload).is_none(),
+                "truncated start line should not parse: {:?}",
+                std::str::from_utf8(payload).unwrap_or("<invalid utf8>")
+            );
+        }
     }
 
     #[test]
