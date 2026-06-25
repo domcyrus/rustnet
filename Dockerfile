@@ -1,6 +1,6 @@
 # Multi-stage Docker build for RustNet
 # Base images are pinned by digest for reproducible, tamper-evident builds.
-FROM rust:1.96-slim@sha256:4ddd2ebb0043566905e1e5e82ba7c66c03444b32ef16caa6bf5a20155d6ffb15 AS builder
+FROM rust:1.96-slim@sha256:6abf73f05806f36362d0ff2722f2250c6153398831edd0455e0e0baa1f78ecc7 AS builder
 
 # Install rustfmt component (required for eBPF compilation)
 RUN rustup component add rustfmt
