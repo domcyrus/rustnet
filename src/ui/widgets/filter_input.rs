@@ -3,6 +3,8 @@
 //! A single borderless row: accent " / " prompt, the query, and a
 //! muted right-side hint with the relevant keys.
 
+use std::borrow::Cow;
+
 use ratatui::{
     Frame,
     layout::Rect,
@@ -16,15 +18,15 @@ use crate::ui::{UIState, theme};
 pub(crate) const FILTER_INPUT_HEIGHT: u16 = 1;
 
 pub(in crate::ui) fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
-    let query = if ui_state.filter_mode {
+    let query: Cow<str> = if ui_state.filter_mode {
         // Show cursor when in filter mode
         let mut display_query = ui_state.filter_query.clone();
         if ui_state.filter_cursor_position <= display_query.len() {
             display_query.insert(ui_state.filter_cursor_position, '|');
         }
-        display_query
+        Cow::Owned(display_query)
     } else {
-        ui_state.filter_query.clone()
+        Cow::Borrowed(&ui_state.filter_query)
     };
 
     let hint = if ui_state.filter_mode {

@@ -26,6 +26,8 @@ pub(crate) const TABS_BAR_HEIGHT: u16 = 2;
 const BRAND: &str = " rustnet ";
 /// Gap between tab titles, in cells.
 const TAB_GAP: u16 = 3;
+/// Literal gap string — must be exactly `TAB_GAP` spaces.
+const GAP: &str = "   ";
 
 pub(in crate::ui) fn draw_tabs(
     f: &mut Frame,
@@ -39,7 +41,6 @@ pub(in crate::ui) fn draw_tabs(
         theme::fg(theme::border()),
     )];
 
-    let gap = " ".repeat(TAB_GAP as usize);
     let mut x_offset = area.x + BRAND.chars().count() as u16;
     for (i, title) in TAB_TITLES.iter().enumerate() {
         // Numbered titles: the 1-5 jump shortcut becomes discoverable.
@@ -47,15 +48,15 @@ pub(in crate::ui) fn draw_tabs(
         let label_width = label.chars().count() as u16;
         let active = i == ui_state.selected_tab;
 
-        title_spans.push(Span::raw(gap.clone()));
+        title_spans.push(Span::raw(GAP));
         if active {
             title_spans.push(Span::styled(
                 format!("{} ", i + 1),
                 theme::fg(theme::accent()),
             ));
-            title_spans.push(Span::styled((*title).to_string(), theme::primary()));
+            title_spans.push(Span::styled(*title, theme::primary()));
         } else {
-            title_spans.push(Span::styled(label.clone(), theme::fg(theme::muted())));
+            title_spans.push(Span::styled(label, theme::fg(theme::muted())));
         }
 
         underline_spans.push(Span::styled(
