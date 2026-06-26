@@ -257,19 +257,20 @@ fn decode_client_name(peer_id: &[u8]) -> Option<String> {
 
 /// Format version bytes into a dotted version string.
 fn format_version(bytes: &[u8]) -> String {
-    bytes
-        .iter()
-        .filter_map(|&b| {
-            if b.is_ascii_digit() {
-                Some((b - b'0').to_string())
-            } else if b.is_ascii_alphanumeric() {
-                Some((b as char).to_string())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(".")
+    // Keep ASCII alphanumeric bytes (digits are a subset, so both former
+    // branches produced `b as char`), joined by '.'. Build the string
+    // directly to avoid a per-byte String plus the intermediate Vec<String>.
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        if !b.is_ascii_alphanumeric() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('.');
+        }
+        out.push(b as char);
+    }
+    out
 }
 
 /// Encode bytes as a lowercase hex string.
