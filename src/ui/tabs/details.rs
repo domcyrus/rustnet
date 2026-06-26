@@ -4,6 +4,8 @@
 //! helpers that build the label/value lines and the click-to-copy
 //! registry.
 
+use std::fmt::Write as _;
+
 use anyhow::Result;
 use ratatui::{
     Frame,
@@ -1054,11 +1056,12 @@ pub(in crate::ui) fn draw_connection_details(
                     info.message_class.to_string(),
                     label_style,
                 );
-                let txn_id = info
-                    .transaction_id
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect::<String>();
+                let txn_id_bytes: &[u8] = &info.transaction_id;
+                let mut txn_id = String::with_capacity(txn_id_bytes.len() * 2);
+                for b in txn_id_bytes {
+                    // Infallible: writing to a String never returns Err.
+                    let _ = write!(txn_id, "{:02x}", b);
+                }
                 push_detail_field(
                     &mut details_text,
                     &mut detail_fields,
