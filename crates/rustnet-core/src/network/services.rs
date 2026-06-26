@@ -22,9 +22,20 @@ impl ServiceLookup {
 
     // Load services from embedded data.
     pub fn from_embedded() -> Result<Self> {
+        let services = Self::parse_services_data(SERVICES_DATA);
+        if services.is_empty() {
+            return Err(anyhow::anyhow!("No services found in embedded data"));
+        }
+        debug!("Loaded {} services from embedded data", services.len());
+
+        Ok(Self { services })
+    }
+
+    /// Parse `service-name port/protocol [aliases...]` lines into a lookup map.
+    fn parse_services_data(data: &str) -> HashMap<(u16, Protocol), String> {
         let mut services = HashMap::new();
 
-        for line in SERVICES_DATA.lines() {
+        for line in data.lines() {
             let line = line.trim();
 
             // Skip comments and empty lines
@@ -52,10 +63,12 @@ impl ServiceLookup {
                 Err(_) => continue,
             };
 
-            let protocol = match port_parts[1].to_lowercase().as_str() {
-                "tcp" => Protocol::Tcp,
-                "udp" => Protocol::Udp,
-                _ => continue,
+            let protocol = if port_parts[1].eq_ignore_ascii_case("tcp") {
+                Protocol::Tcp
+            } else if port_parts[1].eq_ignore_ascii_case("udp") {
+                Protocol::Udp
+            } else {
+                continue;
             };
 
             // Store the service
@@ -63,12 +76,8 @@ impl ServiceLookup {
                 .entry((port, protocol))
                 .or_insert_with(|| service_name.to_string());
         }
-        if services.is_empty() {
-            return Err(anyhow::anyhow!("No services found in embedded data"));
-        }
-        debug!("Loaded {} services from embedded data", services.len());
 
-        Ok(Self { services })
+        services
     }
 
     /// Create with common well-known services
@@ -144,5 +153,29 @@ mod tests {
         assert_eq!(lookup.lookup(443, Protocol::Tcp), Some("https"));
         assert_eq!(lookup.lookup(22, Protocol::Tcp), Some("ssh"));
         assert_eq!(lookup.lookup(53, Protocol::Udp), Some("dns"));
+    }
+
+    #[test]
+    fn test_parse_services_protocol_case_insensitive() {
+        // Protocol token classification must stay case-insensitive after dropping
+        // the per-entry `to_lowercase()` allocation in favor of `eq_ignore_ascii_case`.
+        let data = "alpha 80/TCP\nbeta 53/Udp\ngamma 443/tcp\ndelta 9999/sctp\n";
+        let services = ServiceLookup::parse_services_data(data);
+
+        assert_eq!(
+            services.get(&(80, Protocol::Tcp)).map(String::as_str),
+            Some("alpha")
+        );
+        assert_eq!(
+            services.get(&(53, Protocol::Udp)).map(String::as_str),
+            Some("beta")
+        );
+        assert_eq!(
+            services.get(&(443, Protocol::Tcp)).map(String::as_str),
+            Some("gamma")
+        );
+        // Unknown protocol tokens are still skipped.
+        assert!(!services.contains_key(&(9999, Protocol::Tcp)));
+        assert!(!services.contains_key(&(9999, Protocol::Udp)));
     }
 }
