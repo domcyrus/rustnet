@@ -270,18 +270,17 @@ fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) 
 }
 
 /// Draw top processes by bandwidth
-fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
+fn draw_top_processes<'a>(f: &mut Frame, connections: &'a [Connection], area: Rect) {
+    use std::borrow::Cow;
     use std::collections::HashMap;
 
     let inner = section_header(f, area, graph_title(" Top Processes"));
 
-    // Aggregate traffic by process
-    let mut process_traffic: HashMap<String, f64> = HashMap::new();
+    // Aggregate traffic by process; borrow process names from the connections
+    // slice to avoid cloning one String per connection per frame.
+    let mut process_traffic: HashMap<&'a str, f64> = HashMap::new();
     for conn in connections {
-        let name = conn
-            .process_name
-            .clone()
-            .unwrap_or_else(|| "Unknown".to_string());
+        let name = conn.process_name.as_deref().unwrap_or("Unknown");
         let traffic = conn.current_incoming_rate_bps + conn.current_outgoing_rate_bps;
         *process_traffic.entry(name).or_insert(0.0) += traffic;
     }
@@ -300,10 +299,10 @@ fn draw_top_processes(f: &mut Frame, connections: &[Connection], area: Rect) {
         .into_iter()
         .take(5)
         .map(|(name, rate)| {
-            let display_name = if name.len() > 20 {
-                format!("{}...", &name[..17])
+            let display_name: Cow<str> = if name.len() > 20 {
+                Cow::Owned(format!("{}...", &name[..17]))
             } else {
-                name
+                Cow::Borrowed(name)
             };
             Row::new(vec![
                 Cell::from(display_name),
