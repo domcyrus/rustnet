@@ -753,8 +753,11 @@ pub fn compute_grouped_rows<'a>(
         .collect();
 
     // Sort groups alphabetically by process name for stable ordering
-    // (sorting by bandwidth causes constant reordering as rates fluctuate)
-    group_stats.sort_by_key(|a| a.0.to_lowercase());
+    // (sorting by bandwidth causes constant reordering as rates fluctuate).
+    // `sort_by_cached_key` extracts the lowercase key once per group and
+    // sorts the cached keys; plain `sort_by_key` would re-run `to_lowercase`
+    // — allocating a fresh String — on every comparison (O(N log N) allocs).
+    group_stats.sort_by_cached_key(|a| a.0.to_lowercase());
 
     // Build the flattened row list
     let mut rows = Vec::new();
