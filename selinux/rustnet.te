@@ -39,7 +39,7 @@ domtrans_pattern(unconfined_t, rustnet_exec_t, rustnet_t)
 # Packet capture and eBPF setup. CAP_SYS_ADMIN remains as the legacy eBPF
 # fallback for older kernels, although COPR targets modern Fedora.
 allow rustnet_t self:capability { net_raw setpcap sys_admin };
-allow rustnet_t self:cap2 { bpf perfmon };
+allow rustnet_t self:capability2 { bpf perfmon };
 
 # libpcap packet capture and local socket inspection.
 allow rustnet_t self:packet_socket create_socket_perms;
