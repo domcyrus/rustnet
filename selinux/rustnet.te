@@ -2,6 +2,7 @@ policy_module(rustnet, 1.4.0)
 
 require {
 	type unconfined_t;
+	type user_home_t;
 	role unconfined_r;
 }
 
@@ -40,6 +41,7 @@ domtrans_pattern(unconfined_t, rustnet_exec_t, rustnet_t)
 # fallback for older kernels, although COPR targets modern Fedora.
 allow rustnet_t self:capability { net_raw setpcap sys_admin };
 allow rustnet_t self:capability2 { bpf perfmon };
+allow rustnet_t self:process setcap;
 
 # libpcap packet capture and local socket inspection.
 allow rustnet_t self:packet_socket create_socket_perms;
@@ -47,6 +49,11 @@ allow rustnet_t self:rawip_socket create_socket_perms;
 allow rustnet_t self:netlink_route_socket create_socket_perms;
 allow rustnet_t self:udp_socket create_socket_perms;
 allow rustnet_t self:tcp_socket create_stream_socket_perms;
+allow rustnet_t self:unix_dgram_socket create_socket_perms;
+
+# libbpf creates/reads/writes BPF maps and attaches kprobes through perf_event.
+allow rustnet_t self:bpf { map_create map_read map_write };
+allow rustnet_t self:perf_event { open kernel cpu write };
 
 # Reverse DNS through the configured resolver. This is intentionally the only
 # active network behavior rustnet needs beyond packet capture.
@@ -66,6 +73,8 @@ files_read_usr_files(rustnet_t)
 kernel_read_system_state(rustnet_t)
 kernel_read_network_state(rustnet_t)
 dev_read_sysfs(rustnet_t)
+userdom_search_user_home_dirs(rustnet_t)
+allow rustnet_t user_home_t:dir getattr;
 
 # Process attribution scans /proc/<pid>/comm and /proc/<pid>/fd for socket
 # ownership across user and system domains.
