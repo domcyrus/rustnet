@@ -1,6 +1,9 @@
 policy_module(rustnet, 1.4.0)
 
 require {
+	type data_home_t;
+	type gconf_home_t;
+	type sysfs_t;
 	type unconfined_t;
 	type user_home_t;
 	role unconfined_r;
@@ -46,15 +49,21 @@ allow rustnet_t self:process setcap;
 
 # libpcap packet capture and local socket inspection.
 allow rustnet_t self:packet_socket create_socket_perms;
+allow rustnet_t self:packet_socket map;
 allow rustnet_t self:rawip_socket create_socket_perms;
+allow rustnet_t self:netlink_generic_socket create_socket_perms;
+allow rustnet_t self:netlink_netfilter_socket create_socket_perms;
+allow rustnet_t self:netlink_rdma_socket create_socket_perms;
 allow rustnet_t self:netlink_route_socket create_socket_perms;
 allow rustnet_t self:udp_socket create_socket_perms;
 allow rustnet_t self:tcp_socket create_stream_socket_perms;
 allow rustnet_t self:unix_dgram_socket create_socket_perms;
+allow rustnet_t self:bluetooth_socket create_socket_perms;
 
 # libbpf creates/reads/writes BPF maps and attaches kprobes through perf_event.
-allow rustnet_t self:bpf { map_create map_read map_write };
+allow rustnet_t self:bpf { map_create map_read map_write prog_load prog_run };
 allow rustnet_t self:perf_event { open kernel cpu write };
+allow rustnet_t sysfs_t:file map;
 
 # Reverse DNS through the configured resolver. This is intentionally the only
 # active network behavior rustnet needs beyond packet capture.
@@ -75,7 +84,8 @@ kernel_read_system_state(rustnet_t)
 kernel_read_network_state(rustnet_t)
 dev_read_sysfs(rustnet_t)
 userdom_search_user_home_dirs(rustnet_t)
-allow rustnet_t user_home_t:dir getattr;
+allow rustnet_t user_home_t:dir { getattr search };
+allow rustnet_t { data_home_t gconf_home_t }:dir { getattr search };
 
 # Process attribution scans /proc/<pid>/comm and /proc/<pid>/fd for socket
 # ownership across user and system domains.
