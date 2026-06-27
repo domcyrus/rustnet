@@ -41,6 +41,7 @@ domtrans_pattern(unconfined_t, rustnet_exec_t, rustnet_t)
 # fallback for older kernels, although COPR targets modern Fedora.
 allow rustnet_t self:capability { net_raw setpcap sys_admin };
 allow rustnet_t self:capability2 { bpf perfmon };
+allow rustnet_t self:cap_userns sys_ptrace;
 allow rustnet_t self:process setcap;
 
 # libpcap packet capture and local socket inspection.
