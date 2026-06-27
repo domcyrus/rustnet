@@ -26,6 +26,10 @@ BuildRequires: elfutils-libelf-devel
 %endif
 BuildRequires: clang
 BuildRequires: llvm
+%if 0%{?fedora}
+BuildRequires: make
+BuildRequires: selinux-policy-devel
+%endif
 
 Requires: libpcap
 Requires: hicolor-icon-theme
@@ -38,6 +42,11 @@ Requires: libelf1
 Requires: libcap-progs
 %else
 Requires: elfutils-libelf
+Requires(post): libcap
+%if 0%{?fedora}
+Requires(post): policycoreutils
+Requires(postun): policycoreutils
+%endif
 %endif
 
 %description
@@ -77,6 +86,9 @@ Features:
 export RUSTFLAGS="%{build_rustflags}"
 # eBPF is now enabled by default, no need for explicit feature flag
 cargo build --release
+%if 0%{?fedora}
+make -C selinux
+%endif
 %endif
 
 %install
@@ -90,6 +102,10 @@ install -Dpm 0755 target/release/rustnet -t %{buildroot}%{_bindir}/
 install -Dpm 0644 crates/rustnet-core/assets/services -t %{buildroot}%{_datadir}/%{name}/
 install -Dpm 0644 resources/packaging/linux/graphics/rustnet.png -t %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/
 install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_datadir}/applications/
+%if 0%{?fedora}
+install -Dpm 0644 selinux/rustnet.pp %{buildroot}%{_datadir}/selinux/packages/%{name}/rustnet.pp
+install -Dpm 0644 selinux/rustnet.fc %{buildroot}%{_datadir}/selinux/packages/%{name}/rustnet.fc
+%endif
 
 %files
 %license LICENSE
@@ -102,6 +118,11 @@ install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_da
 %dir %{_datadir}/icons/hicolor/256x256/apps
 %{_datadir}/icons/hicolor/256x256/apps/rustnet.png
 %{_datadir}/applications/rustnet.desktop
+%if 0%{?fedora}
+%dir %{_datadir}/selinux/packages/%{name}
+%{_datadir}/selinux/packages/%{name}/rustnet.pp
+%{_datadir}/selinux/packages/%{name}/rustnet.fc
+%endif
 
 %post
 # Set capabilities for packet capture and eBPF support without requiring root/sudo
@@ -114,6 +135,22 @@ if command -v setcap >/dev/null 2>&1; then
         # Fallback for older kernels without CAP_BPF/CAP_PERFMON
         setcap 'cap_net_raw,cap_sys_admin+eip' %{_bindir}/rustnet || :
 fi
+%if 0%{?fedora}
+# Fedora COPR targets modern Fedora with SELinux enabled by default. Install the
+# policy in permissive mode first so users generate AVCs without broken capture
+# sessions; the module itself owns that permissive setting.
+if command -v semodule >/dev/null 2>&1 && [ -e /sys/fs/selinux/enforce ]; then
+    semodule -n -i %{_datadir}/selinux/packages/%{name}/rustnet.pp || :
+    command -v restorecon >/dev/null 2>&1 && restorecon -R %{_bindir}/rustnet %{_datadir}/%{name} /var/log/%{name} 2>/dev/null || :
+fi
+%endif
+
+%postun
+%if 0%{?fedora}
+if [ "$1" -eq 0 ] && command -v semodule >/dev/null 2>&1 && [ -e /sys/fs/selinux/enforce ]; then
+    semodule -n -r rustnet || :
+fi
+%endif
 
 %posttrans
 cat <<EOF
@@ -152,6 +189,16 @@ NETWORK PACKET CAPTURE PERMISSIONS:
     process detection. Check the TUI Statistics panel to see which detection
     method is active.
 
+%if 0%{?fedora}
+FEDORA SELINUX:
+  The Fedora COPR RPM installs a rustnet SELinux policy module in permissive
+  mode. It labels %{_bindir}/rustnet as rustnet_exec_t and transitions normal
+  interactive launches into rustnet_t for AVC collection. Review denials with:
+    sudo ausearch -m avc -ts recent
+
+  The RPM does not modify firewalld or nftables rules.
+
+%endif
   For more information, see the documentation at:
     %{_docdir}/%{name}/README.md
 

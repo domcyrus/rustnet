@@ -1,0 +1,3 @@
+/usr/bin/rustnet	--	gen_context(system_u:object_r:rustnet_exec_t,s0)
+/usr/share/rustnet(/.*)?	gen_context(system_u:object_r:usr_t,s0)
+/var/log/rustnet(/.*)?	gen_context(system_u:object_r:rustnet_log_t,s0)

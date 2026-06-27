@@ -7,6 +7,7 @@ RustNet processes untrusted network data, making defense-in-depth security criti
 ## Table of Contents
 
 - [Landlock Sandboxing (Linux)](#landlock-sandboxing-linux)
+- [Fedora SELinux Policy](#fedora-selinux-policy)
 - [Seatbelt Sandboxing (macOS)](#seatbelt-sandboxing-macos)
 - [FreeBSD Sandboxing](#freebsd-sandboxing)
 - [Privilege Drop and Job Object Sandboxing (Windows)](#privilege-drop-and-job-object-sandboxing-windows)
@@ -29,7 +30,7 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 | Restriction | Kernel Version | Description |
 |-------------|----------------|-------------|
 | Filesystem | 5.13+ | Only `/proc` readable (for process identification) |
-| Network | 6.4+ | TCP bind/connect blocked (RustNet is passive) |
+| Network | 6.7+ | TCP bind/connect blocked (RustNet is passive) |
 | Capabilities | Any | `CAP_NET_RAW` dropped after pcap socket opened |
 | Capabilities | Any | `CAP_BPF`, `CAP_PERFMON` dropped after eBPF programs loaded |
 | Privileges | 3.5+ | `PR_SET_NO_NEW_PRIVS` set by RustNet itself — always, even with `--no-sandbox` — prevents privilege escalation via setuid binaries |
@@ -46,7 +47,7 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 If an attacker exploits a vulnerability in DPI/packet parsing:
 - Cannot read arbitrary files (credentials, configs, etc.)
 - Cannot write to filesystem (except configured log paths)
-- Cannot make outbound TCP connections (data exfiltration blocked)
+- Cannot make outbound TCP connections (TCP exfiltration blocked)
 - Cannot bind TCP ports (reverse shell blocked)
 - Cannot create new raw sockets (capability dropped)
 - Cannot escalate privileges via setuid binaries (`PR_SET_NO_NEW_PRIVS`, set even with `--no-sandbox`)
@@ -63,8 +64,45 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 
 - **Kernel < 5.13**: Sandboxing skipped, warning logged
 - **Kernel 5.13-6.3**: Filesystem restrictions only
-- **Kernel 6.4+**: Full filesystem + network restrictions
+- **Kernel 6.7+**: Filesystem + TCP bind/connect restrictions
 - **Docker**: Landlock may be restricted; app continues normally
+
+## Fedora SELinux Policy
+
+The Fedora COPR RPM ships a `rustnet` SELinux policy module for modern Fedora
+systems. Fedora enables SELinux by default, so the RPM installs the module and
+restores the label on `/usr/bin/rustnet` during package installation.
+
+The first shipped policy is intentionally **permissive** for `rustnet_t`. This
+lets maintainers collect AVCs from real capture sessions without breaking users.
+After the policy is validated on supported Fedora releases, a follow-up change
+can remove the permissive rule and make the domain enforcing.
+
+### Policy Coverage
+
+| Restriction | Description |
+|-------------|-------------|
+| Domain transition | Normal Fedora interactive launches of `/usr/bin/rustnet` transition into `rustnet_t` |
+| Capabilities | Allows only the packet-capture/eBPF capabilities rustnet needs |
+| DNS | Allows reverse DNS through the configured resolver |
+| Filesystem | Labels `/usr/bin/rustnet` and supports a labelled `/var/log/rustnet` output directory |
+| Firewall | The RPM does **not** modify firewalld or nftables rules |
+
+Because the first policy is permissive, these rules are initially audit coverage,
+not hard denials. Enforced confinement comes after AVC review.
+
+### AVC Review
+
+```bash
+semodule -l | grep rustnet
+ls -Z /usr/bin/rustnet
+sudo ausearch -m avc -ts recent
+```
+
+Subnet-level egress policy, such as "allow RFC1918 but deny public IPs", is left
+to administrator-managed firewall or network policy. The RustNet RPM does not
+install host firewall rules because those can affect unrelated traffic when the
+tool is run as the invoking user or with sudo.
 
 ## Seatbelt Sandboxing (macOS)
 
@@ -213,11 +251,17 @@ The packet capture is opened in non-promiscuous, read-only mode.
 
 ## No External Communication
 
-RustNet operates entirely locally:
+RustNet has no telemetry or cloud backend:
 - No telemetry or analytics
-- No network requests (except monitored traffic)
 - No cloud services or remote APIs
-- All data stays on your system
+- GeoIP lookups use local MaxMind databases only
+
+By default, RustNet does perform reverse DNS (PTR) lookups for captured IP
+addresses through the system resolver. Disable those active DNS requests with:
+
+```bash
+rustnet --no-resolve-dns
+```
 
 ## Log File Privacy
 

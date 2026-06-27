@@ -248,15 +248,28 @@ sudo dnf copr enable domcyrus/rustnet
 # Install rustnet
 sudo dnf install rustnet
 
-# Run with sudo
-sudo rustnet
-
-# Optional: Grant capabilities to run without sudo (modern kernel 5.8+)
-sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
+# Run without sudo (capabilities are set by the RPM post-install script)
 rustnet
 ```
 
-**Important:** The COPR only supports Fedora 42 and 43 due to the Rust 1.88+ requirement. CentOS and RHEL don't have recent enough Rust compilers in their repositories. For those distributions, use the [.rpm packages](#redhatfedoracentos-rpm-packages) from GitHub releases or [build from source](#building-from-source).
+The COPR RPM also installs a Fedora SELinux policy module for `rustnet`. The
+module is loaded in **permissive** mode initially, so it records AVCs for policy
+review without blocking capture sessions. It does not modify firewalld or
+nftables rules.
+
+To inspect the installed policy state:
+
+```bash
+semodule -l | grep rustnet
+ls -Z /usr/bin/rustnet
+sudo ausearch -m avc -ts recent
+```
+
+**Important:** The COPR only supports modern Fedora releases that ship Rust
+1.88+ (currently Fedora 42 and 43). CentOS and RHEL don't have recent enough
+Rust compilers in their repositories. For those distributions, use the
+[.rpm packages](#redhatfedoracentos-rpm-packages) from GitHub releases or
+[build from source](#building-from-source).
 
 #### openSUSE Tumbleweed (OBS)
 

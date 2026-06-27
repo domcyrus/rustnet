@@ -1,0 +1,74 @@
+policy_module(rustnet, 1.4.0)
+
+require {
+	type unconfined_t;
+	role unconfined_r;
+}
+
+########################################
+#
+# Declarations
+#
+
+type rustnet_t;
+type rustnet_exec_t;
+domain_type(rustnet_t)
+domain_entry_file(rustnet_t, rustnet_exec_t)
+
+type rustnet_log_t;
+logging_log_file(rustnet_log_t)
+
+role unconfined_r types rustnet_t;
+
+# First COPR iteration: collect AVCs from real Fedora systems without breaking
+# users. Remove this after policy review and field testing.
+permissive rustnet_t;
+
+########################################
+#
+# Domain transition
+#
+
+domtrans_pattern(unconfined_t, rustnet_exec_t, rustnet_t)
+
+########################################
+#
+# Runtime permissions
+#
+
+# Packet capture and eBPF setup. CAP_SYS_ADMIN remains as the legacy eBPF
+# fallback for older kernels, although COPR targets modern Fedora.
+allow rustnet_t self:capability { net_raw setpcap sys_admin };
+allow rustnet_t self:cap2 { bpf perfmon };
+
+# libpcap packet capture and local socket inspection.
+allow rustnet_t self:packet_socket create_socket_perms;
+allow rustnet_t self:rawip_socket create_socket_perms;
+allow rustnet_t self:netlink_route_socket create_socket_perms;
+allow rustnet_t self:udp_socket create_socket_perms;
+allow rustnet_t self:tcp_socket create_stream_socket_perms;
+
+# Reverse DNS through the configured resolver. This is intentionally the only
+# active network behavior rustnet needs beyond packet capture.
+sysnet_dns_name_resolve(rustnet_t)
+corenet_tcp_connect_dns_port(rustnet_t)
+corenet_udp_sendrecv_dns_port(rustnet_t)
+
+# Dynamic linking, terminal UI, NSS, procfs/sysfs, and installed data.
+libs_use_ld_so(rustnet_t)
+libs_use_shared_libs(rustnet_t)
+term_use_all_terms(rustnet_t)
+userdom_use_user_terminals(rustnet_t)
+auth_use_nsswitch(rustnet_t)
+miscfiles_read_localization(rustnet_t)
+files_read_etc_files(rustnet_t)
+files_read_usr_files(rustnet_t)
+kernel_read_system_state(rustnet_t)
+kernel_read_network_state(rustnet_t)
+dev_read_sysfs(rustnet_t)
+
+# Optional logs under /var/log/rustnet for deployments that prefer a labelled
+# system log directory over current-directory logs.
+allow rustnet_t rustnet_log_t:dir manage_dir_perms;
+allow rustnet_t rustnet_log_t:file manage_file_perms;
+logging_log_filetrans(rustnet_t, rustnet_log_t, { dir file })
