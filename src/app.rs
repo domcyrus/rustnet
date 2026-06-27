@@ -2148,8 +2148,11 @@ mod open_log_file_tests {
 
     impl ScratchDir {
         fn new(tag: &str) -> Self {
-            let dir =
-                std::env::temp_dir().join(format!("rustnet-log-test-{}-{}", std::process::id(), tag));
+            let dir = std::env::temp_dir().join(format!(
+                "rustnet-log-test-{}-{}",
+                std::process::id(),
+                tag
+            ));
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             ScratchDir(dir)
@@ -2211,6 +2214,9 @@ mod open_log_file_tests {
 
         // The privileged write must not have been redirected through the link.
         let target_contents = std::fs::read_to_string(&target).unwrap();
-        assert!(target_contents.is_empty(), "symlink target must be untouched");
+        assert!(
+            target_contents.is_empty(),
+            "symlink target must be untouched"
+        );
     }
 }
