@@ -149,15 +149,66 @@ const MAX_PACKET_QUEUE: usize = 10_000;
 
 /// Open or create a file for appending with restrictive permissions (0o600 on Unix).
 ///
-/// Ensures log files containing connection metadata are not world-readable.
+/// Ensures log files containing connection metadata are not world-readable, and
+/// refuses to follow symlinks (`O_NOFOLLOW`) so a planted symlink can't redirect
+/// the privileged write elsewhere.
+///
+/// On failure this surfaces a single warning (rather than aborting the running
+/// monitor): the callers run in the per-event hot path, so silently dropping the
+/// error — as the previous `if let Ok(..)` did — would disable connection logging
+/// with no indication. We warn once to avoid per-event log spam.
 fn open_log_file(path: &str) -> std::io::Result<File> {
-    let file = OpenOptions::new().create(true).append(true).open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    let result = {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .mode(0o600)
+                .open(path)
+        }
+
+        #[cfg(not(unix))]
+        {
+            OpenOptions::new().create(true).append(true).open(path)
+        }
+    };
+
+    if let Err(ref e) = result {
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            // The log file is opened with O_NOFOLLOW, so a symlinked path is
+            // refused. Depending on privilege and `fs.protected_symlinks`, that
+            // surfaces as ELOOP (raw O_NOFOLLOW) or EACCES (kernel symlink
+            // protection denies first), so we mention symlinks for both rather
+            // than keying on a single errno.
+            #[cfg(unix)]
+            let symlink_hint = matches!(
+                e.raw_os_error(),
+                Some(code) if code == libc::ELOOP || code == libc::EACCES
+            );
+            #[cfg(not(unix))]
+            let symlink_hint = false;
+
+            if symlink_hint {
+                warn!(
+                    "Refusing to write log to '{}': {} (path may be a symlink; \
+                     symlinks are rejected via O_NOFOLLOW). Connection logging is disabled.",
+                    path, e
+                );
+            } else {
+                warn!(
+                    "Failed to open log file '{}': {}. Connection logging is disabled.",
+                    path, e
+                );
+            }
+        }
     }
-    Ok(file)
+
+    result
 }
 
 /// Helper function to log connection events as JSON
@@ -2080,5 +2131,92 @@ impl Drop for App {
         self.stop();
         // Give threads time to stop gracefully
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod open_log_file_tests {
+    use super::open_log_file;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    /// Per-test scratch directory under the system temp dir, removed on drop.
+    /// Avoids a `tempfile` dependency; uniqueness comes from the pid + the
+    /// caller-supplied tag (test names are unique).
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "rustnet-log-test-{}-{}",
+                std::process::id(),
+                tag
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            ScratchDir(dir)
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn creates_file_with_0600_permissions() {
+        let dir = ScratchDir::new("perms");
+        let path = dir.path("events.log");
+
+        let file = open_log_file(path.to_str().unwrap()).expect("fresh open should succeed");
+        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "new log file must be created mode 0o600");
+    }
+
+    #[test]
+    fn appends_rather_than_truncates() {
+        let dir = ScratchDir::new("append");
+        let path = dir.path("events.log");
+        let p = path.to_str().unwrap();
+
+        writeln!(open_log_file(p).unwrap(), "line1").unwrap();
+        writeln!(open_log_file(p).unwrap(), "line2").unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("line1"), "first write must be preserved");
+        assert!(contents.contains("line2"), "second write must be appended");
+    }
+
+    #[test]
+    fn refuses_symlinked_path() {
+        let dir = ScratchDir::new("symlink");
+        let target = dir.path("real_target.log");
+        let link = dir.path("evil.log");
+        std::fs::write(&target, b"").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = open_log_file(link.to_str().unwrap())
+            .expect_err("O_NOFOLLOW must refuse a symlinked path");
+
+        // As the symlink's owner (the test process), `fs.protected_symlinks`
+        // does not intervene, so this is the raw O_NOFOLLOW rejection: ELOOP.
+        assert_eq!(
+            err.raw_os_error(),
+            Some(libc::ELOOP),
+            "expected ELOOP from O_NOFOLLOW, got: {err}"
+        );
+
+        // The privileged write must not have been redirected through the link.
+        let target_contents = std::fs::read_to_string(&target).unwrap();
+        assert!(
+            target_contents.is_empty(),
+            "symlink target must be untouched"
+        );
     }
 }

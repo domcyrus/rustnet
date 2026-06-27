@@ -135,14 +135,8 @@ impl PacketParser {
     /// Create a new packet parser with default configuration
     /// Automatically detects local IP addresses from network interfaces
     pub fn new() -> Self {
-        let mut local_ips = std::collections::HashSet::new();
-        for iface in pnet_datalink::interfaces() {
-            for ip_network in iface.ips {
-                local_ips.insert(ip_network.ip());
-            }
-        }
         Self {
-            local_ips,
+            local_ips: collect_local_ips(),
             config: ParserConfig::default(),
             linktype: None,
             oui_lookup: None,
@@ -150,14 +144,8 @@ impl PacketParser {
     }
 
     pub fn with_config(config: ParserConfig) -> Self {
-        let mut local_ips = std::collections::HashSet::new();
-        for iface in pnet_datalink::interfaces() {
-            for ip_network in iface.ips {
-                local_ips.insert(ip_network.ip());
-            }
-        }
         Self {
-            local_ips,
+            local_ips: collect_local_ips(),
             config,
             linktype: None,
             oui_lookup: None,
@@ -671,6 +659,18 @@ impl PacketParser {
             }
         }
     }
+}
+
+fn collect_local_ips() -> std::collections::HashSet<IpAddr> {
+    let mut local_ips = std::collections::HashSet::new();
+    for iface in pnet_datalink::interfaces() {
+        for ip_network in iface.ips {
+            local_ips.insert(ip_network.ip());
+        }
+    }
+    local_ips.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    local_ips.insert(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    local_ips
 }
 
 #[cfg(test)]

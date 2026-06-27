@@ -8,6 +8,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
+const SOCKSTAT_PATH: &str = "/usr/bin/sockstat";
+
 pub struct FreeBSDProcessLookup {
     // Cache: ConnectionKey -> (pid, process_name)
     cache: RwLock<ProcessCache>,
@@ -73,7 +75,7 @@ impl FreeBSDProcessLookup {
         // -4: IPv4, -6: IPv6, -c: connected sockets, -l: listening sockets, -n: numeric
         let ipv6_flag = proto.ends_with('6');
 
-        let output = Command::new("sockstat")
+        let output = Command::new(SOCKSTAT_PATH)
             .arg(if ipv6_flag { "-6" } else { "-4" })
             .arg("-n") // numeric output
             .arg("-P")

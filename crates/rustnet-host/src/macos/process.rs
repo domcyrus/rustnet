@@ -9,6 +9,8 @@ use std::net::SocketAddr;
 use std::process::Command;
 use std::sync::RwLock;
 
+const LSOF_PATH: &str = "/usr/sbin/lsof";
+
 pub struct MacOSProcessLookup {
     cache: RwLock<HashMap<ConnectionKey, (u32, String)>>,
 }
@@ -26,7 +28,7 @@ impl MacOSProcessLookup {
         info!("Running lsof to get network connections");
 
         // Run lsof to get network connections
-        let output = Command::new("lsof")
+        let output = Command::new(LSOF_PATH)
             .args(["-i", "-n", "-P", "+c", "0"])
             .output()?;
 
