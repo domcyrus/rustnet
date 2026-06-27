@@ -728,8 +728,8 @@ cargo build --release
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
 ./target/release/rustnet
 
-# Legacy Linux (older kernels without CAP_BPF) - use CAP_SYS_ADMIN as fallback:
-sudo setcap 'cap_net_raw,cap_sys_admin+eip' ./target/release/rustnet
+# Packet capture only - eBPF falls back to procfs:
+sudo setcap 'cap_net_raw+eip' ./target/release/rustnet
 ./target/release/rustnet
 
 # Check TUI Statistics panel - should show "Process Detection: eBPF + procfs"
@@ -740,14 +740,14 @@ sudo setcap 'cap_net_raw,cap_sys_admin+eip' ./target/release/rustnet
 **Base capability (always required):**
 - `CAP_NET_RAW` - Raw socket access for read-only packet capture (non-promiscuous mode)
 
-**eBPF-specific capabilities (choose based on kernel version):**
-
-**Modern Linux (5.8+):**
+**eBPF-specific capabilities (Linux 5.8+):**
 - `CAP_BPF` - BPF program loading and map operations
 - `CAP_PERFMON` - Performance monitoring and tracing operations
 
 **Legacy Linux (pre-5.8):**
-- `CAP_SYS_ADMIN` - Required for BPF operations on older kernels without CAP_BPF support
+Older kernels require broad `CAP_SYS_ADMIN` for eBPF operations. RustNet does
+not recommend or automatically grant it. Use `CAP_NET_RAW` only and let process
+attribution fall back to procfs unless you explicitly accept the extra risk.
 
 **Note:** CAP_NET_ADMIN is NOT required. RustNet uses read-only packet capture without promiscuous mode.
 
@@ -803,8 +803,8 @@ getcap ~/.cargo/bin/rustnet
 # For system-wide installations:
 getcap $(which rustnet)
 
-# Modern (5.8+): Should show cap_net_raw,cap_bpf,cap_perfmon+eip
-# Legacy: Should show cap_net_raw,cap_sys_admin+eip
+# eBPF enabled: Should show cap_net_raw,cap_bpf,cap_perfmon+eip
+# Packet capture only: Should show cap_net_raw=eip
 
 # Test without sudo
 rustnet --help

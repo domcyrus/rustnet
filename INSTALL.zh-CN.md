@@ -716,8 +716,8 @@ cargo build --release
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
 ./target/release/rustnet
 
-# 旧版 Linux（无 CAP_BPF 的旧内核）- 使用 CAP_SYS_ADMIN 作为回退：
-sudo setcap 'cap_net_raw,cap_sys_admin+eip' ./target/release/rustnet
+# 仅包捕获（eBPF 会回退到 procfs）
+sudo setcap 'cap_net_raw+eip' ./target/release/rustnet
 ./target/release/rustnet
 
 # 检查 TUI 统计面板 - 应显示 "Process Detection: eBPF + procfs"
@@ -735,7 +735,8 @@ sudo setcap 'cap_net_raw,cap_sys_admin+eip' ./target/release/rustnet
 - `CAP_PERFMON` —— 性能监控和追踪操作
 
 **旧版 Linux（pre-5.8）：**
-- `CAP_SYS_ADMIN` —— 在没有 CAP_BPF 支持的老内核上进行 BPF 操作所需
+- eBPF 操作需要宽泛的 `CAP_SYS_ADMIN`。不建议默认授予它；请使用
+  `CAP_NET_RAW` 进行包捕获，并让 RustNet 回退到 procfs 进程检测，除非你明确接受该风险。
 
 **注意：** 不需要 CAP_NET_ADMIN。RustNet 使用不带混杂模式的只读数据包捕获。
 
@@ -792,7 +793,7 @@ getcap ~/.cargo/bin/rustnet
 getcap $(which rustnet)
 
 # 现代（5.8+）：应显示 cap_net_raw,cap_bpf,cap_perfmon+eip
-# 旧版：应显示 cap_net_raw,cap_sys_admin+eip
+# 如果 eBPF capability 不可用：应显示 cap_net_raw+eip
 
 # 不使用 sudo 测试
 rustnet --help

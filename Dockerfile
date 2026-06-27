@@ -95,9 +95,9 @@ LABEL org.opencontainers.image.licenses="Apache License, Version 2.0"
 # bounding set and can't be granted to a non-root user via file capabilities.
 # Enable eBPF by running as root with the extra caps (modern kernels 5.8+):
 #   docker run --user root --cap-add=BPF --cap-add=PERFMON rustnet
-# Older kernels use CAP_SYS_ADMIN instead of BPF+PERFMON:
-#   docker run --user root --cap-add=SYS_ADMIN rustnet
-# Without those, rustnet falls back to /proc-based process detection.
+# Legacy kernels require broad CAP_SYS_ADMIN for eBPF. RustNet does not
+# recommend granting it by default; without eBPF caps, rustnet falls back to
+# /proc-based process detection.
 # CAP_NET_ADMIN is NOT required (read-only, non-promiscuous capture).
 USER rustnet
 ENTRYPOINT ["rustnet"]
