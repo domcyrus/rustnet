@@ -22,6 +22,9 @@ domain_entry_file(rustnet_t, rustnet_exec_t)
 type rustnet_log_t;
 logging_log_file(rustnet_log_t)
 
+type rustnet_tmp_t;
+files_tmp_file(rustnet_tmp_t)
+
 role unconfined_r types rustnet_t;
 
 # First COPR iteration: collect AVCs from real Fedora systems without breaking
@@ -85,7 +88,8 @@ kernel_read_network_state(rustnet_t)
 dev_read_sysfs(rustnet_t)
 userdom_search_user_home_dirs(rustnet_t)
 allow rustnet_t user_home_t:dir { getattr search };
-allow rustnet_t { data_home_t gconf_home_t }:dir { getattr search };
+allow rustnet_t { data_home_t gconf_home_t }:dir { getattr read search open };
+allow rustnet_t data_home_t:file read_file_perms;
 
 # Process attribution scans /proc/<pid>/comm and /proc/<pid>/fd for socket
 # ownership across user and system domains.
@@ -96,3 +100,13 @@ domain_read_all_domains_state(rustnet_t)
 allow rustnet_t rustnet_log_t:dir manage_dir_perms;
 allow rustnet_t rustnet_log_t:file manage_file_perms;
 logging_log_filetrans(rustnet_t, rustnet_log_t, { dir file })
+
+# RustNet's diagnostic log default is ./logs/rustnet_*.log. When the current
+# directory is user-owned, transition a newly-created "logs" directory to the
+# rustnet log type rather than allowing broad writes to user_home_t files.
+allow rustnet_t user_home_t:dir { add_name write };
+filetrans_pattern(rustnet_t, user_home_t, rustnet_log_t, dir, "logs")
+
+# User-chosen PCAP/JSON exports are often written under /tmp during testing.
+allow rustnet_t rustnet_tmp_t:file manage_file_perms;
+files_tmp_filetrans(rustnet_t, rustnet_tmp_t, file)

@@ -64,6 +64,14 @@ Exercise:
 - `--pcap-export /tmp/rustnet-test.pcap`;
 - GeoIP databases under `/usr/share/GeoIP/` if available.
 
+When retesting output paths after a policy update, remove files/directories from
+previous permissive runs first so SELinux type transitions apply at creation
+time:
+
+```bash
+rm -rf logs /tmp/rustnet-test.pcap /tmp/rustnet-test.pcap.connections.jsonl
+```
+
 Review AVCs:
 
 ```bash

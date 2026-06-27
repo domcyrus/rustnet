@@ -103,6 +103,7 @@ install -Dpm 0644 crates/rustnet-core/assets/services -t %{buildroot}%{_datadir}
 install -Dpm 0644 resources/packaging/linux/graphics/rustnet.png -t %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/
 install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_datadir}/applications/
 %if 0%{?fedora}
+install -dpm 0750 %{buildroot}%{_localstatedir}/log/%{name}
 install -Dpm 0644 selinux/rustnet.pp %{buildroot}%{_datadir}/selinux/packages/%{name}/rustnet.pp
 install -Dpm 0644 selinux/rustnet.fc %{buildroot}%{_datadir}/selinux/packages/%{name}/rustnet.fc
 %endif
@@ -119,6 +120,7 @@ install -Dpm 0644 selinux/rustnet.fc %{buildroot}%{_datadir}/selinux/packages/%{
 %{_datadir}/icons/hicolor/256x256/apps/rustnet.png
 %{_datadir}/applications/rustnet.desktop
 %if 0%{?fedora}
+%dir %attr(0750,root,root) %{_localstatedir}/log/%{name}
 %dir %{_datadir}/selinux/packages/%{name}
 %{_datadir}/selinux/packages/%{name}/rustnet.pp
 %{_datadir}/selinux/packages/%{name}/rustnet.fc
