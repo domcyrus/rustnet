@@ -212,7 +212,7 @@ RustNet uses platform-specific APIs to associate network connections with proces
   - Multi-threaded applications show internal thread names
 - **Capability requirements:**
   - Modern Linux (5.8+): `CAP_NET_RAW` (packet capture), `CAP_BPF`, `CAP_PERFMON` (eBPF)
-  - Legacy Linux (pre-5.8): `CAP_NET_RAW` (packet capture), `CAP_SYS_ADMIN` (eBPF)
+  - Legacy Linux (pre-5.8): eBPF requires broad `CAP_SYS_ADMIN`; RustNet packages do not grant it automatically and fall back to procfs instead
   - Note: CAP_NET_ADMIN is NOT required (uses read-only, non-promiscuous packet capture)
 
 **Fallback Behavior:**

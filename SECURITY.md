@@ -191,14 +191,16 @@ Instead of running as root, grant only the required capabilities:
 # Modern Linux (5.8+): packet capture + eBPF
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)
 
-# Legacy Linux (pre-5.8): packet capture + eBPF
-sudo setcap 'cap_net_raw,cap_sys_admin+eip' $(which rustnet)
-
 # Packet capture only (no eBPF process detection)
 sudo setcap cap_net_raw+eip $(which rustnet)
 ```
 
-After sandbox application, `CAP_NET_RAW` is dropped - the process retains only the minimum privileges needed.
+Legacy pre-5.8 kernels required `CAP_SYS_ADMIN` for eBPF operations. RustNet
+does not grant this broad capability automatically; use `CAP_NET_RAW` only and
+let eBPF fall back to procfs unless you explicitly accept the extra risk.
+
+After sandbox application, `CAP_NET_RAW` and eBPF-loading capabilities are
+dropped - the process retains only the minimum privileges needed.
 
 ## Read-Only Operation
 

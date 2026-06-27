@@ -212,7 +212,7 @@ RustNet 使用平台特定的 API 将网络连接与进程关联：
   - 多线程应用显示内部线程名
 - **Linux capabilities 需求：**
   - 现代 Linux（5.8+）：`CAP_NET_RAW`（包捕获）、`CAP_BPF`、`CAP_PERFMON`（eBPF）
-  - 旧版 Linux（pre-5.8）：`CAP_NET_RAW`（包捕获）、`CAP_SYS_ADMIN`（eBPF）
+	  - 旧版 Linux（pre-5.8）：eBPF 需要宽泛的 `CAP_SYS_ADMIN`；RustNet 安装包不会自动授予它，并会回退到 procfs
   - 注意：不需要 CAP_NET_ADMIN（使用只读、非混杂包捕获）
 
 **回退行为：**
