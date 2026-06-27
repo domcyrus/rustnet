@@ -67,6 +67,10 @@ kernel_read_system_state(rustnet_t)
 kernel_read_network_state(rustnet_t)
 dev_read_sysfs(rustnet_t)
 
+# Process attribution scans /proc/<pid>/comm and /proc/<pid>/fd for socket
+# ownership across user and system domains.
+domain_read_all_domains_state(rustnet_t)
+
 # Optional logs under /var/log/rustnet for deployments that prefer a labelled
 # system log directory over current-directory logs.
 allow rustnet_t rustnet_log_t:dir manage_dir_perms;
