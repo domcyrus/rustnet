@@ -1455,7 +1455,7 @@ pub(in crate::ui) fn draw_connection_details(
         &mut traffic_text,
         &mut traffic_fields,
         "Current Rate (In)",
-        format_rate(conn.current_incoming_rate_bps),
+        format_rate(conn.current_incoming_rate_bps).into_owned(),
         label_style,
         rx_value_style,
     );
@@ -1463,7 +1463,7 @@ pub(in crate::ui) fn draw_connection_details(
         &mut traffic_text,
         &mut traffic_fields,
         "Current Rate (Out)",
-        format_rate(conn.current_outgoing_rate_bps),
+        format_rate(conn.current_outgoing_rate_bps).into_owned(),
         label_style,
         tx_value_style,
     );
