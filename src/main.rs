@@ -125,6 +125,31 @@ fn main() -> Result<()> {
         info!("Using GeoIP City database: {}", city_path);
     }
 
+    // Pre-create the PCAP export file and its sidecar JSONL (needed for Landlock
+    // permissions). This must be done BEFORE the sandbox is applied so the files
+    // exist when adding rules: Landlock requires an open FD to scope a rule to a
+    // file, so a not-yet-existing path falls back to granting write on the whole
+    // parent directory. Pre-creating keeps the write rule file-scoped. The PCAP
+    // writer later reopens the path with truncation, so a zero-byte file is fine.
+    //
+    // Done before terminal setup: pre-creation can fail hard (see below), and we
+    // want the error to print to a normal terminal rather than into the TUI
+    // alt-screen (which would also leave the terminal in raw mode).
+    if let Some(ref pcap_path) = config.pcap_export_file {
+        let jsonl_path = format!("{}.connections.jsonl", pcap_path);
+        for (label, path) in [("PCAP", pcap_path.as_str()), ("sidecar JSONL", &jsonl_path)] {
+            // Fail hard rather than continue: if we can't safely create the file
+            // (e.g. the path is a symlink, rejected by O_NOFOLLOW), aborting now
+            // is the only way the protection is meaningful. The PCAP itself is
+            // later written by libpcap's pcap_dump_open, which does NOT honor
+            // O_NOFOLLOW, so a warn-and-continue here would let libpcap follow an
+            // attacker-controlled symlink and write the capture there anyway.
+            precreate_private_file(path).map_err(|e| {
+                anyhow::anyhow!("Failed to pre-create {} file '{}': {}", label, path, e)
+            })?;
+        }
+    }
+
     // Set up terminal
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;
@@ -134,32 +159,6 @@ fn main() -> Result<()> {
     let mut app = app::App::new(config.clone())?;
     let process_ready_rx = app.start()?;
     info!("Application started");
-
-    // Pre-create the PCAP export file and its sidecar JSONL (needed for Landlock
-    // permissions). This must be done BEFORE the sandbox is applied so the files
-    // exist when adding rules: Landlock requires an open FD to scope a rule to a
-    // file, so a not-yet-existing path falls back to granting write on the whole
-    // parent directory. Pre-creating keeps the write rule file-scoped. The PCAP
-    // writer later reopens the path with truncation, so a zero-byte file is fine.
-    if let Some(ref pcap_path) = config.pcap_export_file {
-        let jsonl_path = format!("{}.connections.jsonl", pcap_path);
-        for (label, path) in [("PCAP", pcap_path.as_str()), ("sidecar JSONL", &jsonl_path)] {
-            match std::fs::File::create(path) {
-                Ok(_f) => {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        if let Err(e) = _f.set_permissions(std::fs::Permissions::from_mode(0o600)) {
-                            warn!("Failed to set {} file permissions: {}", label, e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!("Failed to pre-create {} file: {}", label, e);
-                }
-            }
-        }
-    }
 
     // Wait for process detection (including eBPF loading) to complete before
     // applying the sandbox, which drops CAP_BPF and CAP_PERFMON.
@@ -524,6 +523,26 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn precreate_private_file(path: &str) -> io::Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(0o600)
+            .open(path)
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::File::create(path)
+    }
 }
 
 /// Sort connections based on the specified column and direction
