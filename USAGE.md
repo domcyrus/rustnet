@@ -92,6 +92,7 @@ Options:
   -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
       --json-log <FILE>                  Enable JSON logging of connection events to specified file
       --pcap-export <FILE>               Export captured packets to PCAP file for Wireshark analysis
+      --pcapng-export <FILE>             Export captured packets to annotated PCAPNG file for Wireshark analysis
       --no-color                         Disable all colors in the UI (also respects NO_COLOR env var)
       --theme <PRESET>                   Color theme preset: "muted" (single accent, color reserved
                                          for signals, default) or "classic" (original full-color palette)
@@ -1120,6 +1121,18 @@ python scripts/pcap_enrich.py capture.pcap -o annotated.pcapng
 ```
 
 The annotated PCAPNG embeds process information as packet comments, visible in Wireshark's packet details.
+
+#### Native Annotated PCAPNG Export
+
+The `--pcapng-export` option writes a PCAPNG file directly with RustNet packet comments. This avoids the Python enrichment step when you want to open the capture in Wireshark immediately:
+
+```bash
+sudo rustnet -i eth0 --pcapng-export capture.pcapng
+```
+
+Packet comments are live best-effort annotations. RustNet waits briefly for process and GeoIP enrichment, then writes the packet even if attribution is still unavailable; packets may still have DPI/SNI, direction, or GeoIP comments without `process=`/`pid=` fields. Under heavy load, packets dropped before the processor stage or dropped by the bounded PCAPNG export queue will not appear in the PCAPNG, so a simultaneous `--pcap-export` file can contain packets missing from the PCAPNG. Packet blocks may be written out of capture order, but they keep their true capture timestamps and Wireshark can sort/display them by time.
+
+Use `--pcap-export` plus `capture.pcap.connections.jsonl` when cleanup-time metadata completeness matters more than a single annotated file.
 
 **Manual correlation:**
 

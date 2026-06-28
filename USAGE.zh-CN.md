@@ -92,6 +92,7 @@ Options:
   -l, --log-level <LEVEL>                设置日志级别（如果未提供，则不启用日志）
       --json-log <FILE>                  将连接事件以 JSON 格式记录到指定文件
       --pcap-export <FILE>               将捕获的数据包导出到 PCAP 文件供 Wireshark 分析
+      --pcapng-export <FILE>             将捕获的数据包导出为带注释的 PCAPNG 文件供 Wireshark 分析
       --no-color                         禁用 UI 中的所有颜色（同时尊重 NO_COLOR 环境变量）
       --theme <PRESET>                   颜色主题预设："muted"（单一强调色，颜色仅用于信号，默认）
                                          或 "classic"（原始全彩调色板）
@@ -1117,6 +1118,18 @@ python scripts/pcap_enrich.py capture.pcap -o annotated.pcapng
 ```
 
 注释 PCAPNG 将进程信息嵌入为数据包注释，在 Wireshark 的数据包详情中可见。
+
+#### 原生带注释 PCAPNG 导出<a id="native-annotated-pcapng-export"></a>
+
+`--pcapng-export` 选项会直接写出带 RustNet 数据包注释的 PCAPNG 文件。想立即在 Wireshark 中打开捕获文件时，可以省去 Python 富化步骤：
+
+```bash
+sudo rustnet -i eth0 --pcapng-export capture.pcapng
+```
+
+数据包注释是实时的 best-effort 标注。RustNet 会短暂等待进程和 GeoIP 补全，然后即使归因仍不可用也会写出数据包；因此有些注释可能只有 DPI/SNI、方向或 GeoIP 字段，而没有 `process=`/`pid=`。高负载下，在处理器阶段之前丢弃的数据包或被有界 PCAPNG 导出队列丢弃的数据包不会出现在 PCAPNG 中，所以同时生成的 `--pcap-export` 文件可能包含 PCAPNG 中缺失的数据包。Enhanced Packet Block 可能不是按捕获时间顺序写入，但保留真实捕获时间戳，Wireshark 可以按时间排序/显示。
+
+当清理阶段的元数据完整性比单个带注释文件更重要时，请使用 `--pcap-export` 加 `capture.pcap.connections.jsonl`。
 
 **手动关联：**
 

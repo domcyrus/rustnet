@@ -63,6 +63,7 @@ const PARAM_LOG_DIR: &str = "LOG_DIR";
 const PARAM_JSON_LOG_PATH: &str = "JSON_LOG_PATH";
 const PARAM_PCAP_PATH: &str = "PCAP_PATH";
 const PARAM_PCAP_JSONL_PATH: &str = "PCAP_JSONL_PATH";
+const PARAM_PCAPNG_PATH: &str = "PCAPNG_PATH";
 const PARAM_GEOIP_PATH_1: &str = "GEOIP_PATH_1";
 const PARAM_GEOIP_PATH_2: &str = "GEOIP_PATH_2";
 const PARAM_GEOIP_PATH_3: &str = "GEOIP_PATH_3";
@@ -120,14 +121,16 @@ const SBPL_PROFILE_BASE: &str = r#"(version 1)
     (subpath (param "GEOIP_PATH_3")))
 
 ;; Allow writes to configured output paths (log files, PCAP exports)
-;; These use more specific subpaths that take precedence over the deny rules
-;; above when the log/PCAP paths happen to be inside a user home directory.
+;; These use exact file paths, plus the configured log directory when present,
+;; that take precedence over the deny rules above when outputs happen to be
+;; inside a user home directory.
 (allow file-write*
     (literal (param "LOG_DIR"))
     (subpath (param "LOG_DIR"))
     (literal (param "JSON_LOG_PATH"))
     (literal (param "PCAP_PATH"))
-    (literal (param "PCAP_JSONL_PATH")))
+    (literal (param "PCAP_JSONL_PATH"))
+    (literal (param "PCAPNG_PATH")))
 
 ;; Block execution of all binaries except lsof
 ;; Prevents shell escapes (/bin/sh, /usr/bin/curl, etc.) if code execution
@@ -314,6 +317,15 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
         .context("pcap_jsonl path contains null byte")?
         .unwrap_or_else(|| devnull.clone());
 
+    let pcapng = config
+        .pcapng_export_path
+        .as_deref()
+        .map(resolve)
+        .map(CString::new)
+        .transpose()
+        .context("pcapng_export_path contains null byte")?
+        .unwrap_or_else(|| devnull.clone());
+
     // GeoIP database paths (up to 3 user-specified or auto-discovered paths)
     let geoip_paths: Vec<CString> = config
         .geoip_paths
@@ -347,6 +359,8 @@ fn build_parameters(config: &SandboxConfig) -> Result<Vec<CString>> {
         pcap,
         CString::new(PARAM_PCAP_JSONL_PATH).unwrap(),
         pcap_jsonl,
+        CString::new(PARAM_PCAPNG_PATH).unwrap(),
+        pcapng,
         CString::new(PARAM_GEOIP_PATH_1).unwrap(),
         geoip_1,
         CString::new(PARAM_GEOIP_PATH_2).unwrap(),
@@ -369,6 +383,7 @@ mod tests {
             log_dir: None,
             json_log_path: None,
             pcap_export_path: None,
+            pcapng_export_path: None,
             geoip_paths: vec![],
         };
         let params = build_parameters(&config).unwrap();
@@ -377,10 +392,11 @@ mod tests {
         assert_eq!(params[3].to_str().unwrap(), "/dev/null");
         assert_eq!(params[5].to_str().unwrap(), "/dev/null");
         assert_eq!(params[7].to_str().unwrap(), "/dev/null");
-        // GeoIP paths should also be /dev/null
         assert_eq!(params[9].to_str().unwrap(), "/dev/null");
+        // GeoIP paths should also be /dev/null
         assert_eq!(params[11].to_str().unwrap(), "/dev/null");
         assert_eq!(params[13].to_str().unwrap(), "/dev/null");
+        assert_eq!(params[15].to_str().unwrap(), "/dev/null");
     }
 
     #[test]
@@ -391,6 +407,7 @@ mod tests {
             log_dir: Some("/tmp/rustnet/logs".to_string()),
             json_log_path: Some("/tmp/rustnet/events.jsonl".to_string()),
             pcap_export_path: Some("/tmp/rustnet/capture.pcap".to_string()),
+            pcapng_export_path: Some("/tmp/rustnet/capture.pcapng".to_string()),
             geoip_paths: vec![],
         };
         let params = build_parameters(&config).unwrap();
@@ -399,6 +416,7 @@ mod tests {
         assert_eq!(params[2].to_str().unwrap(), PARAM_JSON_LOG_PATH);
         assert_eq!(params[4].to_str().unwrap(), PARAM_PCAP_PATH);
         assert_eq!(params[6].to_str().unwrap(), PARAM_PCAP_JSONL_PATH);
+        assert_eq!(params[8].to_str().unwrap(), PARAM_PCAPNG_PATH);
         // Values
         assert_eq!(params[1].to_str().unwrap(), "/tmp/rustnet/logs");
         assert_eq!(params[3].to_str().unwrap(), "/tmp/rustnet/events.jsonl");
@@ -407,6 +425,7 @@ mod tests {
             params[7].to_str().unwrap(),
             "/tmp/rustnet/capture.pcap.connections.jsonl"
         );
+        assert_eq!(params[9].to_str().unwrap(), "/tmp/rustnet/capture.pcapng");
     }
 
     #[test]
@@ -417,19 +436,20 @@ mod tests {
             log_dir: None,
             json_log_path: None,
             pcap_export_path: None,
+            pcapng_export_path: None,
             geoip_paths: vec![
                 "/usr/share/GeoIP".to_string(),
                 "/opt/homebrew/share/GeoIP".to_string(),
             ],
         };
         let params = build_parameters(&config).unwrap();
-        assert_eq!(params[8].to_str().unwrap(), PARAM_GEOIP_PATH_1);
-        assert_eq!(params[9].to_str().unwrap(), "/usr/share/GeoIP");
-        assert_eq!(params[10].to_str().unwrap(), PARAM_GEOIP_PATH_2);
-        assert_eq!(params[11].to_str().unwrap(), "/opt/homebrew/share/GeoIP");
+        assert_eq!(params[10].to_str().unwrap(), PARAM_GEOIP_PATH_1);
+        assert_eq!(params[11].to_str().unwrap(), "/usr/share/GeoIP");
+        assert_eq!(params[12].to_str().unwrap(), PARAM_GEOIP_PATH_2);
+        assert_eq!(params[13].to_str().unwrap(), "/opt/homebrew/share/GeoIP");
         // Third slot defaults to /dev/null
-        assert_eq!(params[12].to_str().unwrap(), PARAM_GEOIP_PATH_3);
-        assert_eq!(params[13].to_str().unwrap(), "/dev/null");
+        assert_eq!(params[14].to_str().unwrap(), PARAM_GEOIP_PATH_3);
+        assert_eq!(params[15].to_str().unwrap(), "/dev/null");
     }
 
     #[test]

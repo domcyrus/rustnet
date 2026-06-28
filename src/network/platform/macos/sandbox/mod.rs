@@ -44,6 +44,8 @@ pub struct SandboxConfig {
     pub json_log_path: Option<String>,
     /// PCAP export file path that needs write access
     pub pcap_export_path: Option<String>,
+    /// PCAPNG export file path that needs write access
+    pub pcapng_export_path: Option<String>,
     /// GeoIP database paths that need read access (may be under /Users)
     pub geoip_paths: Vec<String>,
 }

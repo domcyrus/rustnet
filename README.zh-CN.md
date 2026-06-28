@@ -45,7 +45,7 @@ RustNet 填补了简单连接工具(`netstat`、`ss`)与数据包分析器(`Wire
 - **以连接为中心的视图**：逐连接实时追踪状态、带宽与协议。
 - **SSH 友好**：TUI 可直接在 SSH 会话中运行，远端服务器上发生了什么一眼可见，不必转发 X11 或抓包再回传。
 
-RustNet 与抓包工具是互补关系。用 RustNet 看清*谁在发起连接*；若要深入取证，可用 `--pcap-export` 抓取附带进程信息的数据包，再借 `scripts/pcap_enrich.py` 富化后，在 Wireshark 中结合完整的 PID 与进程上下文分析。参见 [USAGE.zh-CN.md 的 PCAP 导出章节](USAGE.zh-CN.md#pcap-export) 与 [ARCHITECTURE.zh-CN.md 的同类工具对比章节](ARCHITECTURE.zh-CN.md#comparison-with-similar-tools)。
+RustNet 与抓包工具是互补关系。用 RustNet 看清*谁在发起连接*；若要直接在 Wireshark 中查看，可用 `--pcapng-export` 写出带 RustNet 数据包注释的 PCAPNG；若更重视清理阶段的元数据完整性，可用 `--pcap-export` 加 JSONL sidecar，再借 `scripts/pcap_enrich.py` 富化。参见 [USAGE.zh-CN.md 的 PCAP 导出章节](USAGE.zh-CN.md#pcap-export) 与 [ARCHITECTURE.zh-CN.md 的同类工具对比章节](ARCHITECTURE.zh-CN.md#comparison-with-similar-tools)。
 
 基于 ratatui、libpcap、eBPF(libbpf-rs)、DashMap、crossbeam、ring、MaxMind GeoLite2 与 Landlock 构建。完整依赖清单见 [ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md#dependencies)。
 
@@ -189,6 +189,7 @@ rustnet --show-localhost     # 显示 localhost 上的连接
 rustnet --no-resolve-dns     # 关闭反向 DNS 解析(默认开启)
 rustnet -r 500               # 设置刷新间隔(毫秒)
 rustnet --theme classic      # 原始全彩调色板(默认：muted)
+rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 ```
 
 权限配置详情见 [INSTALL.zh-CN.md](INSTALL.zh-CN.md)，完整参数说明见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。

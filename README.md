@@ -45,7 +45,7 @@ RustNet fills the gap between simple connection tools (`netstat`, `ss`) and pack
 - **Connection-centric view**: Track states, bandwidth, and protocols per connection in real-time
 - **SSH-friendly**: TUI works over SSH so you can quickly see what's happening on a remote server without forwarding X11 or capturing traffic
 
-RustNet complements packet capture tools. Use RustNet to see *what's making connections*. For deep forensic analysis, use `--pcap-export` to capture packets with process attribution, then enrich with `scripts/pcap_enrich.py` and analyze in Wireshark with full PID/process context. See [PCAP Export](USAGE.md#pcap-export) and [Comparison with Similar Tools](ARCHITECTURE.md#comparison-with-similar-tools) for details.
+RustNet complements packet capture tools. Use RustNet to see *what's making connections*. For direct Wireshark inspection, `--pcapng-export` writes live best-effort packet comments with PID/process context. For cleanup-time correlation, use `--pcap-export` plus the JSONL sidecar and optional `scripts/pcap_enrich.py`. See [PCAP Export](USAGE.md#pcap-export) and [Comparison with Similar Tools](ARCHITECTURE.md#comparison-with-similar-tools) for details.
 
 Built on ratatui, libpcap, eBPF (libbpf-rs), DashMap, crossbeam, ring, MaxMind GeoLite2, and Landlock. See [ARCHITECTURE.md](ARCHITECTURE.md#dependencies) for the full dependency breakdown.
 
@@ -189,6 +189,7 @@ rustnet --show-localhost     # Show localhost connections
 rustnet --no-resolve-dns     # Disable reverse DNS lookups (enabled by default)
 rustnet -r 500               # Set refresh interval (ms)
 rustnet --theme classic      # Original full-color palette (default: muted)
+rustnet --pcapng-export capture.pcapng  # Annotated PCAPNG for Wireshark
 ```
 
 See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.md) for complete options.
