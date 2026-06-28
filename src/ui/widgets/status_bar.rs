@@ -2,6 +2,8 @@
 //! transient confirmation prompts ("press q again to quit"),
 //! filtered-count messages, and clipboard feedback when relevant.
 
+use std::borrow::Cow;
+
 use ratatui::{Frame, layout::Rect, widgets::Paragraph};
 
 use crate::ui::{UIState, theme};
@@ -29,24 +31,24 @@ pub(in crate::ui) fn draw_status_bar(
     connection_count: usize,
     area: Rect,
 ) {
-    let status = if ui_state.quit_confirmation {
-        " Press 'q' again to quit or any other key to cancel ".to_string()
+    let status: Cow<'static, str> = if ui_state.quit_confirmation {
+        Cow::Borrowed(" Press 'q' again to quit or any other key to cancel ")
     } else if ui_state.clear_confirmation {
-        " Press 'x' again to clear all connections or any other key to cancel ".to_string()
+        Cow::Borrowed(" Press 'x' again to clear all connections or any other key to cancel ")
     } else if let Some((ref msg, ref time)) = ui_state.clipboard_message {
         // Show clipboard message for 3 seconds
         if time.elapsed().as_secs() < 3 {
-            format!(" {} ", msg)
+            Cow::Owned(format!(" {} ", msg))
         } else {
-            default_status_line(ui_state.selected_tab).to_string()
+            Cow::Borrowed(default_status_line(ui_state.selected_tab))
         }
     } else if !ui_state.filter_query.is_empty() {
-        format!(
+        Cow::Owned(format!(
             " 'h' help | 1-5 jump | Tab/[/] cycle | Showing {} filtered connections (Esc to clear) ",
             connection_count
-        )
+        ))
     } else {
-        default_status_line(ui_state.selected_tab).to_string()
+        Cow::Borrowed(default_status_line(ui_state.selected_tab))
     };
 
     let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {
