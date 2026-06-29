@@ -3,7 +3,7 @@
 //! optional `(?i)…` regex literals via `regex-lite`) and matches them
 //! against live `Connection` records.
 
-use crate::network::types::{ApplicationProtocol, Connection, ProtocolState};
+use crate::network::types::{ApplicationProtocol, Connection, ProtocolState, SshConnectionState};
 use regex_lite::Regex;
 
 /// How to match a text field (case-insensitive for literals; regex handles its own flags)
@@ -384,9 +384,17 @@ impl ConnectionFilter {
                     return true;
                 }
 
-                // Check connection state
-                let state_str = format!("{:?}", info.connection_state).to_lowercase();
-                if match_text(&state_str, fv) {
+                // Check connection state. `SshConnectionState` is a fieldless
+                // enum so its canonical lower-case form is a `&'static str` —
+                // skip the per-call `format!(...).to_lowercase()` allocs that
+                // re-derived it from the `Debug` impl on every filter eval.
+                let state_str = match info.connection_state {
+                    SshConnectionState::Banner => "banner",
+                    SshConnectionState::KeyExchange => "keyexchange",
+                    SshConnectionState::Authentication => "authentication",
+                    SshConnectionState::Established => "established",
+                };
+                if match_text(state_str, fv) {
                     return true;
                 }
 
@@ -770,6 +778,68 @@ mod tests {
             ProtocolState::Tcp(TcpState::Established),
         );
         assert!(!filter.matches(&conn2));
+    }
+
+    #[test]
+    fn test_ssh_connection_state_filter_matches_each_variant() {
+        use crate::network::types::*;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        use std::time::Instant;
+
+        let make_ssh_conn = |state: SshConnectionState| {
+            let mut conn = Connection::new(
+                Protocol::Tcp,
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 22),
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 22),
+                ProtocolState::Tcp(TcpState::Established),
+            );
+            conn.dpi_info = Some(DpiInfo {
+                application: ApplicationProtocol::Ssh(SshInfo {
+                    version: None,
+                    client_software: None,
+                    server_software: None,
+                    connection_state: state,
+                    algorithms: Vec::new(),
+                    auth_method: None,
+                }),
+                last_update_time: Instant::now(),
+            });
+            conn
+        };
+
+        // Each variant's canonical lower-case token must match the filter,
+        // and must not bleed across variants.
+        let cases = [
+            (SshConnectionState::Banner, "banner", "keyexchange"),
+            (SshConnectionState::KeyExchange, "keyexchange", "banner"),
+            (
+                SshConnectionState::Authentication,
+                "authentication",
+                "established",
+            ),
+            (
+                SshConnectionState::Established,
+                "established",
+                "authentication",
+            ),
+        ];
+        for (state, hit, miss) in cases {
+            let conn = make_ssh_conn(state.clone());
+            let f_hit = ConnectionFilter::parse(hit);
+            let f_miss = ConnectionFilter::parse(miss);
+            assert!(
+                f_hit.matches(&conn),
+                "{:?} should match `{}` filter",
+                state,
+                hit
+            );
+            assert!(
+                !f_miss.matches(&conn),
+                "{:?} should not match `{}` filter",
+                state,
+                miss
+            );
+        }
     }
 
     #[test]
