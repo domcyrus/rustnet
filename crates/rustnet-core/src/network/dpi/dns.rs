@@ -78,9 +78,16 @@ fn parse_question(payload: &[u8], start: usize) -> (Option<String>, Option<DnsQu
             break;
         }
 
-        if label_len >= 0xC0 {
+        if label_len & 0xC0 == 0xC0 {
             // Compressed name — skip for simplicity.
             offset += 2;
+            break;
+        }
+
+        // Reject reserved length-octet top bits (0x40 / 0x80) — neither a
+        // standard label nor a pointer (RFC 1035 §3.3). Stop the walk so the
+        // invalid bytes are not pulled into the name, matching skip_dns_name.
+        if label_len & 0xC0 != 0 {
             break;
         }
 
@@ -429,6 +436,31 @@ mod tests {
         assert_eq!(info.query_name, Some("example.com".to_string()));
         assert_eq!(info.query_type, Some(DnsQueryType::A));
         assert!(!info.is_response);
+    }
+
+    #[test]
+    fn test_question_rejects_reserved_label_bits() {
+        // A label octet whose top two bits are 01 (0x40) or 10 (0x80) is neither
+        // a standard label nor a compression pointer (RFC 1035 §3.3). The name
+        // walk must stop at it instead of reading it as a 64+ byte label and
+        // pulling the following bytes into query_name. skip_dns_name already
+        // rejects these; parse_question must be consistent.
+        let mut payload = vec![0u8; 12];
+        payload[5] = 1; // qdcount = 1
+        // valid "abc" label
+        payload.push(3);
+        payload.extend_from_slice(b"abc");
+        // reserved-bit label octet (0x40) followed by 64 bytes that must not be
+        // absorbed into the name
+        payload.push(0x40);
+        payload.extend_from_slice(&[b'x'; 64]);
+        // null terminator + QTYPE A / QCLASS IN
+        payload.push(0);
+        payload.extend_from_slice(&[0, 1, 0, 1]);
+
+        let info = analyze_dns(&payload).unwrap();
+        // Only the valid label before the reserved octet is kept.
+        assert_eq!(info.query_name, Some("abc".to_string()));
     }
 
     /// Helper: build a baseline question-section payload for `example.com / A`.
