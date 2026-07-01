@@ -1,5 +1,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use rustnet_monitor::network::parser::PacketParser;
+use std::path::Path;
 
 /// Load all raw packet bytes from the capture.pcap file.
 fn load_packets_from_pcap(path: &str) -> Vec<Vec<u8>> {
@@ -12,6 +13,19 @@ fn load_packets_from_pcap(path: &str) -> Vec<Vec<u8>> {
 }
 
 fn bench_parse_packet(c: &mut Criterion) {
+    if !Path::new("capture.pcap").exists() {
+        if std::env::var_os("CI").is_some()
+            || std::env::var_os("RUSTNET_REQUIRE_BENCH_PCAP").is_some()
+        {
+            panic!("capture.pcap fixture is required for packet_parsing benchmark");
+        }
+        eprintln!(
+            "Skipping packet_parsing benchmark: capture.pcap not found \
+             (set RUSTNET_REQUIRE_BENCH_PCAP=1 to require it)"
+        );
+        return;
+    }
+
     let packets = load_packets_from_pcap("capture.pcap");
     assert!(!packets.is_empty(), "capture.pcap must contain packets");
 

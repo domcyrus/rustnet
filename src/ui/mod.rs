@@ -757,6 +757,7 @@ mod snapshot_tests {
             bpf_filter: None,
             json_log_file: None,
             pcap_export_file: None,
+            pcapng_export_file: None,
             resolve_dns: false,
             show_ptr_lookups: false,
             geoip_country_path: None,

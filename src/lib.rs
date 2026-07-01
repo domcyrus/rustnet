@@ -56,7 +56,9 @@
 //! package managers listed in the README.
 
 pub mod app;
+pub mod cli;
 pub mod config;
+pub mod export;
 pub mod filter;
 pub mod network;
 pub mod ui;

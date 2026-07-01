@@ -77,13 +77,13 @@ On macOS 10.5+, RustNet uses [Seatbelt](https://theapplewiki.com/wiki/Dev:Seatbe
 | Outbound network | TCP/UDP outbound blocked; Unix sockets (Mach IPC) allowed |
 | Filesystem reads | User home directories blocked (`/Users`, `/var/root`); GeoIP paths explicitly allowed |
 | Filesystem writes | All user home directories blocked (`/Users`, `/var/root`) |
-| Filesystem writes | Only configured log and PCAP export paths writable |
+| Filesystem writes | Only configured log, PCAP, and PCAPNG export paths writable |
 | Process execution | All binaries blocked except `/usr/sbin/lsof` |
 
 ### How It Works
 
 1. **Initialization phase**: RustNet opens packet capture handles (BPF/PKTAP) and creates log files
-2. **Pre-create**: PCAP sidecar file (`.connections.jsonl`) is created before the sandbox so its path is already a valid allow target
+2. **Pre-create**: PCAP sidecar (`.connections.jsonl`) and PCAPNG export files are created before the sandbox so their paths are already valid allow targets
 3. **Sandbox application**: `sandbox_init_with_parameters` is called — already-open file descriptors survive unchanged, only future operations are restricted
 
 ### Profile Strategy
@@ -92,9 +92,9 @@ RustNet uses an **allow-default** SBPL profile with targeted denies. A deny-defa
 
 ### Output File Support
 
-`--json-log` and `--pcap-export` paths are passed to the SBPL profile as runtime parameters (`JSON_LOG_PATH`, `PCAP_PATH`, `PCAP_JSONL_PATH`). The profile grants an explicit `allow file-write*` rule on each path, which takes precedence over the broader `/Users` deny rule via SBPL specificity. Unused parameters default to `/dev/null`.
+`--json-log`, `--pcap-export`, and `--pcapng-export` paths are passed to the SBPL profile as runtime parameters (`JSON_LOG_PATH`, `PCAP_PATH`, `PCAP_JSONL_PATH`, `PCAPNG_PATH`). The profile grants an explicit `allow file-write*` rule on each path, which takes precedence over the broader `/Users` deny rule via SBPL specificity. Unused parameters default to `/dev/null`.
 
-Both flags work normally within the sandbox.
+All three flags work normally within the sandbox.
 
 ### Security Benefits
 

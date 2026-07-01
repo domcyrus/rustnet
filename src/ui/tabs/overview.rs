@@ -989,11 +989,14 @@ fn draw_stats_panel(
     // line as "Process Detection: …" — which would truncate on a narrow
     // right column. Reserve enough extra rows for the reason to wrap onto
     // a second visual line on typical terminal widths.
+    let pcap_export_enabled = app.is_pcap_export_enabled();
+    let pcapng_export_enabled = app.is_pcapng_export_enabled();
     let stats_height: u16 = if app.get_process_detection_status().is_degraded {
         15
     } else {
         13
-    };
+    } + if pcap_export_enabled { 4 } else { 0 }
+        + if pcapng_export_enabled { 7 } else { 0 };
 
     // Inside the frame, sections are separated by a 1-row gap (no inner
     // borders) so the right column reads as one cohesive panel with
@@ -1117,6 +1120,74 @@ fn draw_stats_panel(
             }
         },
     ]);
+
+    if pcap_export_enabled {
+        let written = stats
+            .pcap_records_written
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let capture_drops = stats
+            .packets_dropped
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        conn_stats_text.extend([
+            Line::from(""),
+            Line::from(Span::styled("PCAP Export", theme::fg(theme::heading()))),
+            Line::from(format!("  Written: {written}")),
+            if capture_drops > 0 {
+                Line::from(vec![
+                    Span::raw("  Capture Drops: "),
+                    Span::styled(format!("{capture_drops}"), theme::fg(theme::warn())),
+                ])
+            } else {
+                Line::from(format!("  Capture Drops: {capture_drops}"))
+            },
+        ]);
+    }
+
+    if pcapng_export_enabled {
+        let queued = stats
+            .pcapng_records_queued
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let written = stats
+            .pcapng_records_written
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let annotated = stats
+            .pcapng_records_annotated
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let unannotated = stats
+            .pcapng_records_unannotated
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let dropped = stats
+            .pcapng_records_dropped
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let errors = stats
+            .pcapng_export_errors
+            .load(std::sync::atomic::Ordering::Relaxed);
+
+        conn_stats_text.extend([
+            Line::from(""),
+            Line::from(Span::styled("PCAPNG Export", theme::fg(theme::heading()))),
+            Line::from(format!("  Written: {written}/{queued}")),
+            Line::from(format!("  Annotated: {annotated}")),
+            Line::from(format!("  Unannotated: {unannotated}")),
+            if dropped > 0 {
+                Line::from(vec![
+                    Span::raw("  Export Drops: "),
+                    Span::styled(format!("{dropped}"), theme::fg(theme::warn())),
+                ])
+            } else {
+                Line::from(format!("  Export Drops: {dropped}"))
+            },
+            if errors > 0 {
+                Line::from(vec![
+                    Span::raw("  Errors: "),
+                    Span::styled(format!("{errors}"), theme::fg(theme::err())),
+                ])
+            } else {
+                Line::from(format!("  Errors: {errors}"))
+            },
+        ]);
+    }
 
     // Wrap so the indented reason line for a degraded eBPF status (which can
     // be ~140 chars in the EbpfLoadFailed catch-all) flows to the next visual

@@ -16,6 +16,7 @@
 //! those bytes is `rustnet-core`'s job.
 use anyhow::{Result, anyhow};
 use pcap::{Active, Capture, Device, Error as PcapError};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Why the macOS PKTAP fast path could not be used during capture setup.
 ///
@@ -492,15 +493,30 @@ pub struct PacketReader {
     capture: Capture<Active>,
 }
 
+/// A captured link-layer frame with the timestamp reported by libpcap/Npcap.
+#[derive(Debug, Clone)]
+pub struct CapturedPacket {
+    pub data: Vec<u8>,
+    pub timestamp: SystemTime,
+    pub original_len: u32,
+}
+
 impl PacketReader {
     pub fn new(capture: Capture<Active>) -> Self {
         Self { capture }
     }
 
-    /// Read next packet, returning None on timeout
-    pub fn next_packet(&mut self) -> Result<Option<Vec<u8>>> {
+    /// Read next packet, returning None on timeout.
+    pub fn next_packet(&mut self) -> Result<Option<CapturedPacket>> {
         match self.capture.next_packet() {
-            Ok(packet) => Ok(Some(packet.data.to_vec())),
+            Ok(packet) => {
+                let ts = packet.header.ts;
+                Ok(Some(CapturedPacket {
+                    data: packet.data.to_vec(),
+                    timestamp: timeval_to_system_time(ts.tv_sec, ts.tv_usec),
+                    original_len: packet.header.len,
+                }))
+            }
             Err(PcapError::TimeoutExpired) => Ok(None),
             Err(e) => Err(e.into()),
         }
@@ -526,6 +542,20 @@ impl PacketReader {
         }
 
         Ok(capture_stats)
+    }
+}
+
+fn timeval_to_system_time<S, U>(secs: S, usecs: U) -> SystemTime
+where
+    S: Into<i64>,
+    U: Into<i64>,
+{
+    let secs = secs.into();
+    let usecs = usecs.into().clamp(0, 999_999);
+    if secs < 0 {
+        UNIX_EPOCH
+    } else {
+        UNIX_EPOCH + Duration::from_secs(secs as u64) + Duration::from_micros(usecs as u64)
     }
 }
 
