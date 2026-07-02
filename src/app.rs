@@ -1193,7 +1193,7 @@ impl App {
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 parser.parse_packet(&packet.data)
                             }));
-                        match parse_result {
+                        let key = match parse_result {
                             Ok(Some(parsed)) => {
                                 let outcome = update_connection(
                                     &tracker,
@@ -1203,64 +1203,39 @@ impl App {
                                     &json_log_path,
                                     dns_resolver.as_deref(),
                                 );
-                                if pcapng_enabled {
-                                    send_pcapng_record(
-                                        pcapng_tx.as_ref(),
-                                        &stats,
-                                        PcapngRecord {
-                                            data: packet.data,
-                                            timestamp: packet_timestamp,
-                                            original_len: packet_original_len,
-                                            key: if outcome.dropped {
-                                                None
-                                            } else {
-                                                Some(outcome.key)
-                                            },
-                                            deadline: if outcome.dropped {
-                                                Instant::now()
-                                            } else {
-                                                Instant::now() + PCAPNG_ATTRIBUTION_WAIT
-                                            },
-                                        },
-                                    );
-                                }
                                 parsed_count += 1;
-                            }
-                            Ok(None) => {
-                                if pcapng_enabled {
-                                    send_pcapng_record(
-                                        pcapng_tx.as_ref(),
-                                        &stats,
-                                        PcapngRecord {
-                                            data: packet.data,
-                                            timestamp: packet_timestamp,
-                                            original_len: packet_original_len,
-                                            key: None,
-                                            deadline: Instant::now(),
-                                        },
-                                    );
+                                if outcome.dropped {
+                                    None
+                                } else {
+                                    Some(outcome.key)
                                 }
                             }
+                            Ok(None) => None,
                             Err(_) => {
                                 warn!(
                                     "pcap_rx_{}: parser panicked on a packet ({} bytes); skipping",
                                     id,
                                     packet.data.len()
                                 );
-                                if pcapng_enabled {
-                                    send_pcapng_record(
-                                        pcapng_tx.as_ref(),
-                                        &stats,
-                                        PcapngRecord {
-                                            data: packet.data,
-                                            timestamp: packet_timestamp,
-                                            original_len: packet_original_len,
-                                            key: None,
-                                            deadline: Instant::now(),
-                                        },
-                                    );
-                                }
+                                None
                             }
+                        };
+                        if pcapng_enabled {
+                            send_pcapng_record(
+                                pcapng_tx.as_ref(),
+                                &stats,
+                                PcapngRecord {
+                                    data: packet.data,
+                                    timestamp: packet_timestamp,
+                                    original_len: packet_original_len,
+                                    key,
+                                    deadline: if key.is_some() {
+                                        Instant::now() + PCAPNG_ATTRIBUTION_WAIT
+                                    } else {
+                                        Instant::now()
+                                    },
+                                },
+                            );
                         }
                     }
 
@@ -1372,6 +1347,7 @@ impl App {
                                 &stats,
                             );
                             enforce_pcapng_retry_limits(
+                                &tracker,
                                 &mut writer,
                                 &mut pending,
                                 &mut pending_bytes,
@@ -1405,6 +1381,7 @@ impl App {
                         &stats,
                     );
                     enforce_pcapng_retry_limits(
+                        &tracker,
                         &mut writer,
                         &mut pending,
                         &mut pending_bytes,
@@ -2493,18 +2470,16 @@ fn handle_pcapng_record<W: Write>(
     pending_bytes: &mut usize,
     stats: &AppStats,
 ) {
-    if record.key.is_none() {
-        write_pcapng_record(writer, &record, None, stats);
-        return;
-    }
-    if let Some(comment) = pcapng_comment_if_process_attributed(&record, tracker) {
-        write_pcapng_record(writer, &record, Some(&comment), stats);
-    } else {
-        *pending_bytes = pending_bytes.saturating_add(record.data.len());
-        pending.push_back(record);
-    }
+    // Always enqueue so records leave in arrival order: an attributed packet
+    // must not be written ahead of an older packet still waiting for
+    // attribution, or the export file ends up out of timestamp order.
+    *pending_bytes = pending_bytes.saturating_add(record.data.len());
+    pending.push_back(record);
+    flush_ready_pcapng_records(tracker, writer, pending, pending_bytes, stats, false);
 }
 
+/// Write out pending records in FIFO order, stopping at the first record that
+/// is still waiting for process attribution (unless `force`d or expired).
 fn flush_ready_pcapng_records<W: Write>(
     tracker: &ConnectionTracker,
     writer: &mut PcapngWriter<W>,
@@ -2514,26 +2489,24 @@ fn flush_ready_pcapng_records<W: Write>(
     force: bool,
 ) {
     let now = Instant::now();
-    let scan_len = pending.len();
-    for _ in 0..scan_len {
-        let Some(record) = pending.pop_front() else {
-            break;
-        };
+    while let Some(record) = pending.front() {
+        let comment = pcapng_comment(record, tracker);
+        let attributed = comment.is_some();
         let expired = force || record.deadline <= now;
-        if let Some(comment) = pcapng_comment_if_process_attributed(&record, tracker) {
-            *pending_bytes = pending_bytes.saturating_sub(record.data.len());
-            write_pcapng_record(writer, &record, Some(&comment), stats);
-        } else if expired {
-            let comment = pcapng_comment_if_any_metadata(&record, tracker);
-            *pending_bytes = pending_bytes.saturating_sub(record.data.len());
-            write_pcapng_record(writer, &record, comment.as_deref(), stats);
-        } else {
-            pending.push_back(record);
+        if record.key.is_some() && !attributed && !expired {
+            break;
         }
+        let record = pending.pop_front().expect("front() was Some");
+        *pending_bytes = pending_bytes.saturating_sub(record.data.len());
+        // A record that expired unattributed may still have partial metadata
+        // (direction, DPI, GeoIP) worth annotating.
+        let comment = comment.or_else(|| pcapng_comment_if_any_metadata(&record, tracker));
+        write_pcapng_record(writer, &record, comment.as_deref(), stats);
     }
 }
 
 fn enforce_pcapng_retry_limits<W: Write>(
+    tracker: &ConnectionTracker,
     writer: &mut PcapngWriter<W>,
     pending: &mut VecDeque<PcapngRecord>,
     pending_bytes: &mut usize,
@@ -2542,7 +2515,8 @@ fn enforce_pcapng_retry_limits<W: Write>(
     while pending.len() > MAX_PCAPNG_RETRY_RECORDS || *pending_bytes > MAX_PCAPNG_RETRY_BYTES {
         if let Some(record) = pending.pop_front() {
             *pending_bytes = pending_bytes.saturating_sub(record.data.len());
-            write_pcapng_record(writer, &record, None, stats);
+            let comment = pcapng_comment_if_any_metadata(&record, tracker);
+            write_pcapng_record(writer, &record, comment.as_deref(), stats);
         } else {
             break;
         }
@@ -2578,10 +2552,9 @@ fn write_pcapng_record<W: Write>(
     }
 }
 
-fn pcapng_comment_if_process_attributed(
-    record: &PcapngRecord,
-    tracker: &ConnectionTracker,
-) -> Option<String> {
+/// Comment for a record whose connection already has process attribution;
+/// `None` while attribution is still pending (or for keyless records).
+fn pcapng_comment(record: &PcapngRecord, tracker: &ConnectionTracker) -> Option<String> {
     let key = record.key?;
     let conn = tracker.connections().get(&key)?;
     if conn.pid.is_none() && conn.process_name.is_none() {
@@ -2753,5 +2726,78 @@ mod open_log_file_tests {
             target_contents.is_empty(),
             "symlink target must be untouched"
         );
+    }
+}
+
+#[cfg(test)]
+mod pcapng_export_tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    fn record(data: u8, key: Option<ConnectionKey>, deadline: Instant) -> PcapngRecord {
+        PcapngRecord {
+            data: vec![data],
+            timestamp: std::time::UNIX_EPOCH,
+            original_len: 1,
+            key,
+            deadline,
+        }
+    }
+
+    /// Records must leave the pending queue in arrival order: a keyless
+    /// (immediately writable) record queued behind one still waiting for
+    /// attribution may not jump ahead of it in the export file.
+    #[test]
+    fn export_preserves_arrival_order_across_pending_records() {
+        let tracker = ConnectionTracker::new();
+        let stats = AppStats::default();
+        let mut out = Vec::new();
+        let mut writer = PcapngWriter::new(&mut out, 1, 1514, None).unwrap();
+        let mut pending = VecDeque::new();
+        let mut pending_bytes = 0usize;
+
+        let key = ConnectionKey::new(
+            Protocol::Tcp,
+            SocketAddr::from(([127, 0, 0, 1], 1000)),
+            SocketAddr::from(([127, 0, 0, 2], 2000)),
+        );
+        let far_deadline = Instant::now() + Duration::from_secs(3600);
+        handle_pcapng_record(
+            record(0xAA, Some(key), far_deadline),
+            &tracker,
+            &mut writer,
+            &mut pending,
+            &mut pending_bytes,
+            &stats,
+        );
+        handle_pcapng_record(
+            record(0xBB, None, Instant::now()),
+            &tracker,
+            &mut writer,
+            &mut pending,
+            &mut pending_bytes,
+            &stats,
+        );
+
+        // Both records are held: the head is still waiting for attribution.
+        assert_eq!(stats.pcapng_records_written.load(Ordering::Relaxed), 0);
+        assert_eq!(pending.len(), 2);
+
+        flush_ready_pcapng_records(
+            &tracker,
+            &mut writer,
+            &mut pending,
+            &mut pending_bytes,
+            &stats,
+            true,
+        );
+        writer.flush().unwrap();
+
+        assert_eq!(stats.pcapng_records_written.load(Ordering::Relaxed), 2);
+        assert!(pending.is_empty());
+        assert_eq!(pending_bytes, 0);
+        let pos_a = out.iter().position(|&b| b == 0xAA).unwrap();
+        let pos_b = out.iter().position(|&b| b == 0xBB).unwrap();
+        assert!(pos_a < pos_b, "records were written out of arrival order");
     }
 }

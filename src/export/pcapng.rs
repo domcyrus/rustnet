@@ -10,6 +10,7 @@ const SHB_MINOR: u16 = 0;
 const SECTION_LENGTH_UNSPECIFIED: i64 = -1;
 const OPT_ENDOFOPT: u16 = 0;
 const OPT_COMMENT: u16 = 1;
+const SHB_USERAPPL: u16 = 4;
 const IF_NAME: u16 = 2;
 const IF_TSRESOL: u16 = 9;
 const TSRESOL_MICROS: u8 = 6;
@@ -70,7 +71,7 @@ fn write_section_header<W: Write>(writer: &mut W) -> io::Result<()> {
     write_i64(&mut body, SECTION_LENGTH_UNSPECIFIED)?;
     write_option_string(
         &mut body,
-        OPT_COMMENT,
+        SHB_USERAPPL,
         concat!("rustnet ", env!("CARGO_PKG_VERSION")),
     )?;
     write_option_end(&mut body)?;
