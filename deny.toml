@@ -12,6 +12,16 @@ all-features = true
 # Vulnerabilities and unsound advisories are errors by default (v2 semantics).
 # Deny yanked crates so a withdrawn dependency pinned in Cargo.lock is caught.
 yanked = "deny"
+ignore = [
+    # quick-xml < 0.41.0 unbounded-allocation DoS when parsing untrusted XML.
+    # Only reachable via wayland-scanner (a build-time proc-macro) parsing the
+    # trusted, crate-bundled Wayland protocol XML files to generate code; it
+    # never parses attacker-controlled input at runtime. No upgrade path yet:
+    # wayland-scanner 0.31.8 pins quick-xml ^0.38.3. Revisit when wayland-scanner
+    # relaxes the requirement so quick-xml can move to >=0.41.0.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+]
 
 [licenses]
 # Workspace license is Apache-2.0. Allow-list derived from the locked
