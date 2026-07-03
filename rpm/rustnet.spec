@@ -104,15 +104,14 @@ install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_da
 %{_datadir}/applications/rustnet.desktop
 
 %post
-# Set capabilities for packet capture and eBPF support without requiring root/sudo
-# This allows rustnet to run as a normal user with enhanced eBPF process detection
+# Set narrow capabilities for packet capture and eBPF support without requiring root/sudo.
+# If eBPF capabilities are unavailable, fall back to packet capture only;
+# rustnet will degrade to procfs process detection rather than auto-grant CAP_SYS_ADMIN.
 if command -v setcap >/dev/null 2>&1; then
-    # Try modern capabilities first (Linux 5.8+)
     # CAP_NET_RAW: read-only packet capture (non-promiscuous mode)
     # CAP_BPF, CAP_PERFMON: eBPF support for enhanced process tracking
     setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' %{_bindir}/rustnet 2>/dev/null || \
-        # Fallback for older kernels without CAP_BPF/CAP_PERFMON
-        setcap 'cap_net_raw,cap_sys_admin+eip' %{_bindir}/rustnet || :
+        setcap 'cap_net_raw+eip' %{_bindir}/rustnet || :
 fi
 
 %posttrans
@@ -128,18 +127,18 @@ NETWORK PACKET CAPTURE PERMISSIONS:
   To verify permissions are set correctly:
     getcap %{_bindir}/rustnet
 
-  Expected output (modern Linux 5.8+):
+  Expected output (Linux 5.8+ with eBPF support):
     %{_bindir}/rustnet cap_net_raw,cap_bpf,cap_perfmon=eip
 
-  Or for legacy kernels (pre-5.8):
-    %{_bindir}/rustnet cap_net_raw,cap_sys_admin=eip
+  Or, if eBPF capabilities were unavailable during install:
+    %{_bindir}/rustnet cap_net_raw=eip
 
   If capabilities are not set, you can manually set them:
     # For modern Linux 5.8+ with eBPF support
     sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' %{_bindir}/rustnet
 
-    # Or for legacy kernels without CAP_BPF support
-    sudo setcap 'cap_net_raw,cap_sys_admin+eip' %{_bindir}/rustnet
+    # Packet capture only (eBPF falls back to procfs)
+    sudo setcap 'cap_net_raw+eip' %{_bindir}/rustnet
 
   Note: RustNet uses read-only packet capture (no promiscuous mode).
         CAP_NET_ADMIN is NOT required.

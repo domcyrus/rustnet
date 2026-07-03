@@ -42,7 +42,7 @@ pub enum DegradationReason {
     /// Missing CAP_PERFMON capability (Linux 5.8+)
     #[cfg(target_os = "linux")]
     MissingCapPerfmon,
-    /// Missing both CAP_BPF and CAP_PERFMON (and no CAP_SYS_ADMIN fallback)
+    /// Missing both CAP_BPF and CAP_PERFMON
     #[cfg(target_os = "linux")]
     MissingBpfCapabilities,
     /// eBPF feature not compiled in

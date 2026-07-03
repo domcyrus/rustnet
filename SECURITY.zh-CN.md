@@ -31,14 +31,14 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 | 文件系统 | 5.13+ | 仅 `/proc` 可读（用于进程识别） |
 | 网络 | 6.4+ | 禁止 TCP bind/connect（RustNet 为被动模式） |
 | Linux capabilities | 任意 | pcap socket 打开后丢弃 `CAP_NET_RAW` |
-| Linux capabilities | 任意 | eBPF 程序加载后丢弃 `CAP_BPF`、`CAP_PERFMON` |
+| Linux capabilities | 任意 | eBPF 程序加载后丢弃 `CAP_BPF`、`CAP_PERFMON`、`CAP_SYS_ADMIN` |
 | 特权 | 3.5+ | `PR_SET_NO_NEW_PRIVS` 由 RustNet 自身设置——始终生效，即使使用 `--no-sandbox`——防止通过 setuid 二进制文件提升特权 |
 
 ### 工作原理
 
 1. **初始化阶段**：RustNet 加载 eBPF 程序、打开包捕获句柄、创建日志文件
 2. **特权锁定**：设置 `PR_SET_NO_NEW_PRIVS`（即使禁用沙箱也会应用）
-3. **Linux capabilities 剥离**：移除 `CAP_NET_RAW`、`CAP_BPF` 和 `CAP_PERFMON`
+3. **Linux capabilities 剥离**：移除 `CAP_NET_RAW`、`CAP_BPF`、`CAP_PERFMON` 和 `CAP_SYS_ADMIN`
 4. **Landlock**：限制文件系统和网络访问
 
 ### 安全收益
@@ -191,14 +191,14 @@ RustNet 需要特权访问来捕获网络数据包：
 # 现代 Linux（5.8+）：包捕获 + eBPF
 sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' $(which rustnet)
 
-# 旧版 Linux（pre-5.8）：包捕获 + eBPF
-sudo setcap 'cap_net_raw,cap_sys_admin+eip' $(which rustnet)
-
-# 仅包捕获（无 eBPF 进程检测）
+# 仅包捕获（eBPF 会回退到 procfs）
 sudo setcap cap_net_raw+eip $(which rustnet)
 ```
 
-沙箱应用后，`CAP_NET_RAW` 会被丢弃——进程仅保留所需的最小特权。
+旧版 pre-5.8 内核需要宽泛的 `CAP_SYS_ADMIN` 才能执行 eBPF 操作。RustNet
+的安装包不会自动授予该 capability；除非你明确接受该风险，否则请只授予
+`CAP_NET_RAW` 并使用 procfs 回退。沙箱应用后，`CAP_NET_RAW` 和 eBPF
+加载相关 capabilities 会被丢弃——进程仅保留所需的最小特权。
 
 ## 只读操作<a id="read-only-operation"></a>
 
@@ -237,7 +237,7 @@ RustNet 完全在本地运行：
 
 使用 eBPF 进行增强型进程检测时（Linux 默认）：
 
-- 需要额外的 Linux capabilities（`CAP_BPF`、`CAP_PERFMON`）
+- 现代内核需要额外的 Linux capabilities（`CAP_BPF`、`CAP_PERFMON`）
 - eBPF 程序在加载前由内核验证
 - 仅限只读操作（不修改数据包）
 - 如果 eBPF 失败，自动回退到 procfs
