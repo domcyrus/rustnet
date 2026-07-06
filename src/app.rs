@@ -2701,6 +2701,24 @@ fn build_pcapng_comment(conn: &Connection) -> Option<String> {
     if let Some(pid) = conn.pid {
         fields.push(format!("pid={pid}"));
     }
+    #[cfg(feature = "kubernetes")]
+    if let Some(k8s) = &conn.k8s_info {
+        if let Some(name) = &k8s.pod_name {
+            fields.push(format!("pod={}", sanitize_comment_value(name)));
+        }
+        if let Some(ns) = &k8s.pod_namespace {
+            fields.push(format!("ns={}", sanitize_comment_value(ns)));
+        }
+        if let Some(uid) = &k8s.pod_uid {
+            fields.push(format!("pod_uid={}", sanitize_comment_value(uid)));
+        }
+        if let Some(name) = &k8s.container_name {
+            fields.push(format!("container={}", sanitize_comment_value(name)));
+        }
+        if let Some(id) = &k8s.container_id {
+            fields.push(format!("container_id={}", sanitize_comment_value(id)));
+        }
+    }
     if let Some(is_outgoing) = conn.connection_direction {
         fields.push(format!(
             "direction={}",
@@ -2863,6 +2881,40 @@ mod pcapng_export_tests {
             key,
             deadline,
         }
+    }
+
+    /// Kubernetes attribution must be carried into the per-packet comment so
+    /// annotated PCAPNG files are pod-aware without the sidecar JSONL.
+    #[cfg(feature = "kubernetes")]
+    #[test]
+    fn comment_includes_kubernetes_attribution() {
+        use crate::network::types::{K8sInfo, ProtocolState, TcpState};
+
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::from(([10, 0, 0, 1], 4000)),
+            SocketAddr::from(([10, 0, 0, 2], 443)),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        conn.k8s_info = Some(K8sInfo {
+            pod_uid: Some("c3b4d893-473e-43c2-8013-8ee2955a4630".to_string()),
+            pod_name: Some("nginx-86644db9cc-mf5lx".to_string()),
+            pod_namespace: Some("demo-traffic".to_string()),
+            container_id: Some(
+                "c16c7605305c854d8582a1db3d5bb3c4b6c89a08e914223e9d500682b3fb0b1b".to_string(),
+            ),
+            container_name: Some("nginx".to_string()),
+            cgroup_path: None,
+        });
+
+        let comment = build_pcapng_comment(&conn).expect("k8s info alone must produce a comment");
+        assert!(comment.contains("pod=nginx-86644db9cc-mf5lx"));
+        assert!(comment.contains("ns=demo-traffic"));
+        assert!(comment.contains("pod_uid=c3b4d893-473e-43c2-8013-8ee2955a4630"));
+        assert!(comment.contains("container=nginx"));
+        assert!(comment.contains(
+            "container_id=c16c7605305c854d8582a1db3d5bb3c4b6c89a08e914223e9d500682b3fb0b1b"
+        ));
     }
 
     /// Records must leave the pending queue in arrival order: a keyless

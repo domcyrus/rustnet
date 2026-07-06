@@ -107,6 +107,8 @@ Options:
   -V, --version                          Print version
 ```
 
+Builds compiled with the optional `kubernetes` feature (including the official Docker image) additionally expose `--kubernetes <MODE>`. See [`--kubernetes`](#--kubernetes-mode-optional-feature) below.
+
 ### Option Details
 
 #### `-i, --interface <INTERFACE>`
@@ -269,6 +271,38 @@ Enable logging with the specified level. Logging is **disabled by default**.
 
 Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`
 
+#### `--kubernetes <MODE>` (optional feature)
+
+Attribute connections to their owning Kubernetes pod and container. This flag only exists in builds compiled with the `kubernetes` cargo feature: the official Docker image (`ghcr.io/domcyrus/rustnet`) ships with it enabled, while native installs (cargo, Homebrew, deb/rpm) leave it off.
+
+**Modes:**
+
+- `auto` (default): Enable attribution only when RustNet itself is running inside a pod
+- `on`: Always enable (e.g. when running directly on a node)
+- `off`: Disable attribution
+
+When active, RustNet maps each connection's PID to its pod UID and container ID via cgroups (`/proc/<pid>/cgroup`) and resolves human-readable pod and container names from the kubelet log directories (`/var/log/containers`, `/var/log/pods`). This is runtime-agnostic and needs no CRI socket or kubelet credentials. Pod-owned sockets are attributed even when RustNet runs with `hostNetwork: true`, because the per-PID socket tables are network-namespace aware.
+
+Attribution is surfaced in:
+
+- The **Details tab**, as a "Kubernetes" section showing pod name, namespace, pod UID, container name, and container ID
+- **JSON logs** (`--json-log`) and the `--pcap-export` sidecar JSONL, as a `kubernetes` object per connection event
+- **PCAPNG packet comments** (`--pcapng-export`), as `pod=`, `ns=`, `pod_uid=`, `container=`, and `container_id=` fields
+- The `pod:`, `ns:`, and `container:` [filter keywords](#keyword-filters)
+
+**Running on a cluster:** the easiest way to use this is the [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) plugin (`kubectl krew install rustnet`). It launches RustNet as an ephemeral debug pod on a node using the official image, mounts the kubelet log directories read-only for name resolution, and cleans up the pod on exit. Since the plugin runs RustNet inside a pod, the default `auto` mode enables attribution without any flags.
+
+```bash
+# On a Kubernetes cluster: run as an ephemeral debug pod via the plugin
+kubectl rustnet --node worker-3
+
+# Native build with the feature enabled
+cargo build --release --features kubernetes
+
+# Force attribution on outside a pod (e.g. directly on a node)
+rustnet --kubernetes on
+```
+
 ## Keyboard Controls
 
 ### Navigation
@@ -381,6 +415,11 @@ Use keyword filters for targeted searches:
 | `app:` | `application:` | Detected application protocol | `app:ssh` matches SSH connections |
 | `state:` | | Protocol states | `state:established` matches established connections |
 | `proto:` | `protocol:` | Protocol type | `proto:tcp` matches TCP connections |
+| `pod:` | | Kubernetes pod name or UID * | `pod:nginx` matches nginx-86644db9cc-mf5lx |
+| `ns:` | `namespace:` | Kubernetes pod namespace * | `ns:kube-system` matches pods in kube-system |
+| `container:` | `cont:` | Kubernetes container name or ID * | `container:nginx` matches the nginx container |
+
+\* Requires a build with the `kubernetes` feature and active pod attribution. See [`--kubernetes`](#--kubernetes-mode-optional-feature).
 
 ### State Filtering
 
