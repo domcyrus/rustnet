@@ -33,8 +33,16 @@ COPY benches ./benches
 # bundled vmlinux headers compiled by its own build.rs.
 COPY crates ./crates
 
-# Build the application in release mode (eBPF is enabled by default on Linux)
-RUN cargo build --release
+# Build the application in release mode (eBPF is enabled by default on Linux).
+# Optional features can be added with --build-arg CARGO_FEATURES=kubernetes
+# (additive: default features stay on). The CI Kubernetes image variant passes
+# CARGO_FEATURES=kubernetes; the default image leaves it empty.
+ARG CARGO_FEATURES=""
+RUN if [ -n "$CARGO_FEATURES" ]; then \
+        cargo build --release --features "$CARGO_FEATURES"; \
+    else \
+        cargo build --release; \
+    fi
 
 # Runtime stage - use trixie-slim to match GLIBC version from builder
 # Pinned by digest for a reproducible, tamper-evident base image.

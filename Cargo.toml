@@ -132,6 +132,9 @@ linux-default = ["ebpf"]  # Deprecated: kept for backwards compatibility
 ebpf = ["rustnet-host/ebpf"]
 landlock = ["dep:landlock", "dep:caps"]
 macos-sandbox = []
+# Kubernetes pod and container resolution from cgroup paths and (Phase 2) the
+# on-disk kubelet pods directory. Linux-only at runtime; no extra dependencies.
+kubernetes = ["rustnet-core/kubernetes"]
 
 # Minimal cross configuration to override dependency conflicts
 [workspace.metadata.cross.build.env]

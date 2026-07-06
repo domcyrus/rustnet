@@ -125,6 +125,15 @@ fn main() -> Result<()> {
         info!("Using GeoIP City database: {}", city_path);
     }
 
+    // Kubernetes pod/container attribution mode (values validated by clap)
+    #[cfg(feature = "kubernetes")]
+    if let Some(mode) = matches.get_one::<String>("kubernetes")
+        && let Some(parsed) = network::kubernetes::KubernetesMode::parse(mode)
+    {
+        config.kubernetes_mode = parsed;
+        info!("Kubernetes attribution mode: {}", mode);
+    }
+
     // Pre-create the PCAP export file and its sidecar JSONL (needed for Landlock
     // permissions). This must be done BEFORE the sandbox is applied so the files
     // exist when adding rules: Landlock requires an open FD to scope a rule to a
@@ -200,10 +209,33 @@ fn main() -> Result<()> {
         // the entire CWD subtree (e.g. all of $HOME when rustnet is launched from
         // there), which defeats the point of the read-path whitelist. The concrete
         // GeoIP locations (resources/geoip2, XDG/system dirs) stay covered.
+        #[cfg(not(feature = "kubernetes"))]
         let read_paths: Vec<PathBuf> = GeoIpResolver::get_search_paths()
             .into_iter()
             .filter(|p| p.exists() && p.as_os_str() != ".")
             .collect();
+
+        // When Kubernetes attribution is enabled, the resolver also reads pod
+        // and container names from the kubelet log directories. /proc is
+        // already granted below for process lookup; these need explicit read
+        // access or the periodic metadata refresh would be denied once Landlock
+        // applies.
+        #[cfg(feature = "kubernetes")]
+        let read_paths: Vec<PathBuf> = {
+            let mut paths: Vec<PathBuf> = GeoIpResolver::get_search_paths()
+                .into_iter()
+                .filter(|p| p.exists() && p.as_os_str() != ".")
+                .collect();
+            if config.kubernetes_mode.enabled() {
+                for dir in ["/var/log/containers", "/var/log/pods"] {
+                    let pb = PathBuf::from(dir);
+                    if pb.exists() {
+                        paths.push(pb);
+                    }
+                }
+            }
+            paths
+        };
 
         let mut write_paths = Vec::new();
 

@@ -56,6 +56,7 @@ The experimental eBPF support provides efficient process identification but has 
 - **Real-time Process Updates**: Track process name changes and executable updates
 - **Container Support**: Better process identification within containerized environments
 - **Security Context**: Include process security attributes (capabilities, SELinux context, etc.)
+- **Cross-Namespace Attribution for Kubernetes**: The current procfs fallback reads `/proc/net/tcp` from the reader's network namespace, so under `hostNetwork: true` (as used by kubectl-rustnet) it never sees sockets owned by pods in their own netns. The kubernetes feature ships a scoped per-PID `/proc/<pid>/net/{tcp,tcp6,udp,udp6}` walker that covers TCP+UDP for kubepods PIDs, but it ticks at the enrichment interval and so misses sub-tick ephemeral flows. The complete fix lives in the eBPF layer: kprobes/fentry are netns-agnostic and fire at `connect()`/`accept()` time, but the current socket-tracker map is being pruned more aggressively than userspace can consume. Plan: extend map retention (or switch to a ring buffer of close events that userspace drains opportunistically), debug the "Map Lookup Miss" path under Kubernetes traffic patterns, and verify cross-namespace coverage end-to-end in a kind cluster. This work also benefits ICMP and raw-socket attribution, which procfs cannot reach.
 
 ## Features
 

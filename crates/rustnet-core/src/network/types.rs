@@ -1932,6 +1932,25 @@ fn smooth_rate(raw: f64, prev: f64) -> f64 {
     }
 }
 
+/// Kubernetes pod and container metadata attached to a connection when the
+/// owning process is part of a pod on the current node. Populated by the
+/// resolver in `network::kubernetes`; `None` when rustnet is not running
+/// inside (or with visibility into) a Kubernetes node.
+///
+/// `pod_uid`, `container_id`, and `cgroup_path` come from `/proc/<pid>/cgroup`.
+/// The human-readable `pod_name`, `pod_namespace`, and `container_name` are
+/// resolved from the on-disk kubelet pods directory when available.
+#[cfg(feature = "kubernetes")]
+#[derive(Debug, Clone, Default)]
+pub struct K8sInfo {
+    pub pod_uid: Option<String>,
+    pub pod_name: Option<String>,
+    pub pod_namespace: Option<String>,
+    pub container_id: Option<String>,
+    pub container_name: Option<String>,
+    pub cgroup_path: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Connection {
     // Core identification
@@ -1945,6 +1964,10 @@ pub struct Connection {
     // Process information
     pub pid: Option<u32>,
     pub process_name: Option<String>,
+
+    // Kubernetes attribution (pod/container), populated on K8s nodes
+    #[cfg(feature = "kubernetes")]
+    pub k8s_info: Option<K8sInfo>,
 
     // Connection direction: true = outgoing (local initiated), false = incoming (remote initiated)
     // Only set for TCP when we observe the handshake (SYN/SYN+ACK), None otherwise
@@ -2010,6 +2033,8 @@ impl Connection {
             protocol_state: state,
             pid: None,
             process_name: None,
+            #[cfg(feature = "kubernetes")]
+            k8s_info: None,
             connection_direction: None,
             bytes_sent: 0,
             bytes_received: 0,
