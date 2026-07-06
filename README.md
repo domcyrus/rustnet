@@ -36,6 +36,7 @@
 - **Smart connection lifecycle**: Protocol-aware timeouts with white → yellow → red staleness indicators. Toggle `t` to keep historic (closed) connections visible for forensics.
 - **Vim/fzf-style filtering**: `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, `proto:`, plus regex via `/(?i)pattern/`.
 - **GeoIP enrichment**: Country lookups via local MaxMind GeoLite2. No network calls.
+- **Kubernetes attribution** (optional `kubernetes` feature): connections mapped to their pod, namespace, and container, shown in the details pane, JSON/PCAPNG exports, and the `pod:`, `ns:`, `container:` filters. Enabled in the official Docker image; see [USAGE.md](USAGE.md#--kubernetes-mode-optional-feature).
 - **Cross-platform**: Linux, macOS, Windows, FreeBSD.
 
 ## Why RustNet?
