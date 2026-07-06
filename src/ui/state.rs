@@ -3,11 +3,53 @@
 //! looking at and acting on. No rendering happens here; tabs and widgets
 //! read these to know what to draw.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 
 use ratatui::layout::Rect;
 
 use crate::network::types::{Connection, Protocol};
+
+/// Scroll state for a pane that only learns its content and viewport
+/// size at render time (Details info panes, Help text, Interfaces
+/// table). Event handlers mutate `offset`; the draw path reports the
+/// real maximum through [`Self::clamp_for_render`] — a `Cell`, because
+/// drawing only holds `&UIState` — so the next scroll input clamps
+/// against what is actually on screen.
+#[derive(Debug, Default)]
+pub struct PaneScroll {
+    offset: u16,
+    max: Cell<u16>,
+}
+
+impl PaneScroll {
+    pub fn scroll_up(&mut self, lines: u16) {
+        self.offset = self.offset.saturating_sub(lines);
+    }
+
+    pub fn scroll_down(&mut self, lines: u16) {
+        self.offset = self.offset.saturating_add(lines).min(self.max.get());
+    }
+
+    pub fn scroll_to_top(&mut self) {
+        self.offset = 0;
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.offset = self.max.get();
+    }
+
+    pub fn reset(&mut self) {
+        self.offset = 0;
+    }
+
+    /// Record this render's maximum scroll offset and return the
+    /// (clamped) offset to draw with.
+    pub fn clamp_for_render(&self, max: u16) -> u16 {
+        self.max.set(max);
+        self.offset.min(max)
+    }
+}
 
 /// Sort column options for the connections table.
 /// Protocol (TCP/UDP) has no dedicated column anymore — it's merged into
@@ -203,6 +245,12 @@ pub struct UIState {
     pub scroll_offset: usize,
     /// Scroll offset for grouped connection list (persisted for stable scrolling)
     pub grouped_scroll_offset: usize,
+    /// Scroll state for the Details info panes (reset when the selection changes)
+    pub details_scroll: PaneScroll,
+    /// Scroll state for the Help tab text
+    pub help_scroll: PaneScroll,
+    /// Scroll state for the Interfaces table
+    pub interfaces_scroll: PaneScroll,
 }
 
 impl Default for UIState {
@@ -231,6 +279,9 @@ impl Default for UIState {
             visible_rows: 10,
             scroll_offset: 0,
             grouped_scroll_offset: 0,
+            details_scroll: PaneScroll::default(),
+            help_scroll: PaneScroll::default(),
+            interfaces_scroll: PaneScroll::default(),
         }
     }
 }
@@ -261,6 +312,16 @@ pub fn compute_scroll_offset(
 }
 
 impl UIState {
+    /// Set the selected connection key, resetting the Details pane
+    /// scroll when the selection actually changes so a newly selected
+    /// record always starts at the top.
+    pub fn set_connection_key(&mut self, key: Option<String>) {
+        if self.selected_connection_key != key {
+            self.details_scroll.reset();
+        }
+        self.selected_connection_key = key;
+    }
+
     /// Get the current selected connection index, if any
     pub fn get_selected_index(&self, connections: &[Connection]) -> Option<usize> {
         if let Some(ref selected_key) = self.selected_connection_key {
@@ -277,7 +338,7 @@ impl UIState {
     /// Set the selected connection to the one at the given index
     pub fn set_selected_by_index(&mut self, connections: &[Connection], index: usize) {
         if let Some(conn) = connections.get(index) {
-            self.selected_connection_key = Some(conn.key());
+            self.set_connection_key(Some(conn.key()));
         }
     }
 
@@ -405,7 +466,7 @@ impl UIState {
     pub fn ensure_valid_selection(&mut self, connections: &[Connection]) {
         if connections.is_empty() {
             log::debug!("ensure_valid_selection: connections list is empty, clearing selection");
-            self.selected_connection_key = None;
+            self.set_connection_key(None);
             return;
         }
 
@@ -601,14 +662,14 @@ impl UIState {
             match row {
                 GroupedRow::Group { process_name, .. } => {
                     self.selected_group = Some(process_name.clone());
-                    self.selected_connection_key = None;
+                    self.set_connection_key(None);
                 }
                 GroupedRow::Connection {
                     process_name,
                     connection,
                     ..
                 } => {
-                    self.selected_connection_key = Some(connection.key());
+                    self.set_connection_key(Some(connection.key()));
                     self.selected_group = Some(process_name.clone());
                 }
             }
@@ -679,7 +740,7 @@ impl UIState {
     pub fn ensure_valid_grouped_selection(&mut self, grouped_rows: &[GroupedRow]) {
         if grouped_rows.is_empty() {
             self.selected_group = None;
-            self.selected_connection_key = None;
+            self.set_connection_key(None);
             return;
         }
 
@@ -849,5 +910,47 @@ mod tests {
         assert_eq!(ui.selected_tab, TAB_COUNT - 1);
         ui.prev_tab();
         assert_eq!(ui.selected_tab, TAB_COUNT - 2);
+    }
+
+    #[test]
+    fn pane_scroll_clamps_to_render_reported_max() {
+        let mut scroll = PaneScroll::default();
+        // Before any render the max is 0, so scrolling down is a no-op.
+        scroll.scroll_down(5);
+        assert_eq!(scroll.clamp_for_render(10), 0);
+
+        // After a render reported max=10, downward scrolling sticks to it.
+        scroll.scroll_down(25);
+        assert_eq!(scroll.clamp_for_render(10), 10);
+
+        // A shorter record (smaller max) clamps the draw offset without
+        // mutating the handler-side state.
+        assert_eq!(scroll.clamp_for_render(3), 3);
+
+        scroll.scroll_up(1);
+        assert_eq!(scroll.clamp_for_render(10), 9);
+
+        scroll.scroll_to_bottom();
+        assert_eq!(scroll.clamp_for_render(10), 10);
+        scroll.scroll_to_top();
+        assert_eq!(scroll.clamp_for_render(10), 0);
+    }
+
+    #[test]
+    fn details_scroll_resets_when_selection_changes() {
+        let mut ui = UIState::default();
+        ui.details_scroll.clamp_for_render(20);
+        ui.details_scroll.scroll_down(7);
+
+        // Same key: scroll position survives (e.g. periodic refresh).
+        ui.set_connection_key(Some("a".to_string()));
+        ui.details_scroll.clamp_for_render(20);
+        ui.details_scroll.scroll_down(7);
+        ui.set_connection_key(Some("a".to_string()));
+        assert_eq!(ui.details_scroll.clamp_for_render(20), 7);
+
+        // New key: the new record starts at the top.
+        ui.set_connection_key(Some("b".to_string()));
+        assert_eq!(ui.details_scroll.clamp_for_render(20), 0);
     }
 }

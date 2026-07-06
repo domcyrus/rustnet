@@ -1,7 +1,9 @@
-//! Static help/legend tab — a paragraph of keybinds, mouse
-//! controls, colors, and filter examples. No state, no inputs.
+//! Help/legend tab — a scrollable paragraph of keybinds, mouse
+//! controls, colors, and filter examples. Scroll position lives in
+//! `UIState::help_scroll`.
 
 use anyhow::Result;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -10,10 +12,13 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-use crate::ui::{ClickableRegions, Component, ComponentContext, panel_block, theme};
+use crate::ui::{
+    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, UIState, panel_block,
+    theme, try_handle_pane_scroll, try_handle_pane_wheel, widgets::scrollbar::draw_scrollbar,
+};
 
-/// Stateless help tab. Zero-sized — held in the tabs vec like any
-/// other Component, even though it never mutates.
+/// Help tab. Zero-sized — the scroll offset it responds to lives in
+/// `UIState`, not here.
 pub(in crate::ui) struct HelpTab;
 
 impl Component for HelpTab {
@@ -21,14 +26,26 @@ impl Component for HelpTab {
         &mut self,
         f: &mut Frame,
         area: Rect,
-        _ctx: &ComponentContext<'_>,
+        ctx: &ComponentContext<'_>,
         _click_regions: &mut ClickableRegions,
     ) -> Result<()> {
-        draw_help(f, area)
+        draw_help(f, ctx.ui_state, area)
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        try_handle_pane_scroll(key, ctx.ui_state.visible_rows, &mut ctx.ui_state.help_scroll)
+    }
+
+    fn handle_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        ctx: &mut HandlerContext<'_>,
+    ) -> Option<Vec<Effect>> {
+        try_handle_pane_wheel(mouse, &mut ctx.ui_state.help_scroll)
     }
 }
 
-pub(in crate::ui) fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
+pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) -> Result<()> {
     let help_text: Vec<Line> = vec![
         Line::from(vec![
             Span::styled("RustNet Monitor ", theme::bold_fg(theme::ok())),
@@ -72,6 +89,10 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         Line::from(vec![
             Span::styled("Page Up/Down, Ctrl+B/F ", theme::fg(theme::key())),
             Span::raw("Navigate connections by page"),
+        ]),
+        Line::from(vec![
+            Span::styled("Ctrl+D/U ", theme::fg(theme::key())),
+            Span::raw("Scroll the Details info panes"),
         ]),
         Line::from(vec![
             Span::styled("c ", theme::fg(theme::key())),
@@ -172,7 +193,7 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         ]),
         Line::from(vec![
             Span::styled("  Scroll wheel ", theme::fg(theme::key())),
-            Span::raw("Navigate connection list"),
+            Span::raw("Navigate connection list / scroll Details, Interfaces, Help"),
         ]),
         Line::from(vec![
             Span::styled("  Double-click row ", theme::fg(theme::key())),
@@ -239,13 +260,33 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, area: Rect) -> Result<()> {
         Line::from(""),
     ];
 
+    // Scroll against the unwrapped line count. A handful of lines can
+    // wrap on very narrow terminals, making the true maximum slightly
+    // larger, but staying off the unstable rendered-line-info APIs is
+    // worth the last row or two of scroll range.
+    let total_lines = help_text.len();
+    let block = panel_block("Help");
+    let inner = block.inner(area);
+    let max_scroll = (total_lines as u16).saturating_sub(inner.height);
+    let scroll = ui_state.help_scroll.clamp_for_render(max_scroll);
+
     let help = Paragraph::new(help_text)
-        .block(panel_block("Help"))
+        .block(block)
         .style(Style::default())
         .wrap(Wrap { trim: true })
+        .scroll((scroll, 0))
         .alignment(ratatui::layout::Alignment::Left);
 
     f.render_widget(help, area);
+
+    // Scrollbar over the right border, spanning the inner rows.
+    draw_scrollbar(
+        f,
+        Rect::new(area.x, inner.y, area.width, inner.height),
+        total_lines,
+        scroll as usize,
+        inner.height as usize,
+    );
 
     Ok(())
 }

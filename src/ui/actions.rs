@@ -7,11 +7,11 @@
 
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use log::info;
 
 use crate::app::App;
-use crate::ui::{Effect, HandlerContext, UIState};
+use crate::ui::{Effect, HandlerContext, PaneScroll, UIState};
 
 /// Connection-list navigation + copy that's meaningful on both
 /// Overview and Details. Navigation flips which connection has
@@ -97,6 +97,45 @@ pub fn try_handle_connection_nav(
     }
 }
 
+/// Shared key handling for read-only scrollable panes (Help,
+/// Interfaces): line, page, and top/bottom movement on the usual
+/// vim-style keys. Claims only those keys; everything else falls
+/// through to the caller's global handling.
+pub fn try_handle_pane_scroll(
+    key: KeyEvent,
+    page_size: usize,
+    scroll: &mut PaneScroll,
+) -> Option<Vec<Effect>> {
+    let page = page_size.max(1) as u16;
+    match (key.code, key.modifiers) {
+        (KeyCode::Up, _) | (KeyCode::Char('k'), _) => scroll.scroll_up(1),
+        (KeyCode::Down, _) | (KeyCode::Char('j'), _) => scroll.scroll_down(1),
+        (KeyCode::PageUp, _) | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
+            scroll.scroll_up(page)
+        }
+        (KeyCode::PageDown, _) | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
+            scroll.scroll_down(page)
+        }
+        (KeyCode::Char('g'), KeyModifiers::NONE) | (KeyCode::Home, _) => scroll.scroll_to_top(),
+        (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) | (KeyCode::End, _) => {
+            scroll.scroll_to_bottom()
+        }
+        _ => return None,
+    }
+    Some(Vec::new())
+}
+
+/// Shared wheel handling for scrollable panes (Details info panes,
+/// Help, Interfaces).
+pub fn try_handle_pane_wheel(mouse: MouseEvent, scroll: &mut PaneScroll) -> Option<Vec<Effect>> {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => scroll.scroll_up(1),
+        MouseEventKind::ScrollDown => scroll.scroll_down(1),
+        _ => return None,
+    }
+    Some(Vec::new())
+}
+
 /// Handle the 'x' (clear all connections) key with two-press
 /// confirmation. First press flips `clear_confirmation` on; the
 /// second press (while it's on) actually clears.
@@ -109,7 +148,7 @@ pub fn clear_all_with_confirmation(ui_state: &mut UIState, app: &App) -> bool {
         app.clear_all_connections();
         ui_state.clear_confirmation = false;
         ui_state.show_historic = false;
-        ui_state.selected_connection_key = None;
+        ui_state.set_connection_key(None);
         ui_state.clipboard_message = Some(("All connections cleared".to_string(), Instant::now()));
         true
     } else {

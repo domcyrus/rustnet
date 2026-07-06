@@ -93,8 +93,8 @@ pub fn set_no_color(enabled: bool) {
 
 mod state;
 pub use state::{
-    ClickAction, ClickableRegions, GroupedRow, SortColumn, UIState, compute_grouped_rows,
-    compute_scroll_offset,
+    ClickAction, ClickableRegions, GroupedRow, PaneScroll, SortColumn, UIState,
+    compute_grouped_rows, compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::{HELP_TAB_INDEX, TAB_COUNT};
 
@@ -107,7 +107,10 @@ mod clipboard;
 pub use clipboard::copy_to_clipboard;
 
 mod actions;
-pub use actions::{clear_all_with_confirmation, try_handle_connection_nav};
+pub use actions::{
+    clear_all_with_confirmation, try_handle_connection_nav, try_handle_pane_scroll,
+    try_handle_pane_wheel,
+};
 
 mod component;
 pub use component::{Component, DrawContext as ComponentContext, Effect, HandlerContext};
@@ -601,8 +604,9 @@ mod snapshot_tests {
     #[test]
     fn help_tab() {
         use crate::ui::tabs::help::draw_help;
+        let ui_state = UIState::default();
         let output = render(100, 50, |f| {
-            draw_help(f, f.area()).expect("draw_help");
+            draw_help(f, &ui_state, f.area()).expect("draw_help");
         });
         insta::assert_snapshot!(output);
     }

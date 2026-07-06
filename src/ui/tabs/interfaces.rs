@@ -1,8 +1,10 @@
 //! Interfaces tab — full table of per-NIC counters (RX/TX rate,
 //! packets, errors, drops, collisions) sorted with the active
-//! capture interface first. Read-only, no input handling.
+//! capture interface first. Read-only apart from scrolling, which
+//! matters on Docker/VM hosts with dozens of bridge interfaces.
 
 use anyhow::Result;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
@@ -13,11 +15,14 @@ use ratatui::{
 
 use crate::app::App;
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, format::format_bytes, section_header, theme,
+    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, UIState,
+    format::format_bytes, section_header, theme, try_handle_pane_scroll, try_handle_pane_wheel,
+    widgets::scrollbar::draw_scrollbar,
 };
 
-/// Read-only interfaces tab. Stateless for now; the table is rebuilt
-/// from the App's interface-stats DashMap every render.
+/// Interfaces tab. The table is rebuilt from the App's
+/// interface-stats DashMap every render; the scroll offset lives in
+/// `UIState::interfaces_scroll`.
 pub(in crate::ui) struct InterfacesTab;
 
 impl Component for InterfacesTab {
@@ -28,11 +33,32 @@ impl Component for InterfacesTab {
         ctx: &ComponentContext<'_>,
         _click_regions: &mut ClickableRegions,
     ) -> Result<()> {
-        draw_interface_stats(f, ctx.app, area)
+        draw_interface_stats(f, ctx.app, ctx.ui_state, area)
+    }
+
+    fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        try_handle_pane_scroll(
+            key,
+            ctx.ui_state.visible_rows,
+            &mut ctx.ui_state.interfaces_scroll,
+        )
+    }
+
+    fn handle_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        ctx: &mut HandlerContext<'_>,
+    ) -> Option<Vec<Effect>> {
+        try_handle_pane_wheel(mouse, &mut ctx.ui_state.interfaces_scroll)
     }
 }
 
-pub(in crate::ui) fn draw_interface_stats(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
+pub(in crate::ui) fn draw_interface_stats(
+    f: &mut Frame,
+    app: &App,
+    ui_state: &UIState,
+    area: Rect,
+) -> Result<()> {
     let mut stats = app.get_interface_stats();
     let rates = app.get_interface_rates();
 
@@ -103,9 +129,28 @@ pub(in crate::ui) fn draw_interface_stats(f: &mut Frame, app: &App, area: Rect) 
         ]));
     }
 
-    // Create table
+    let inner = section_header(
+        f,
+        area,
+        ratatui::text::Span::styled(
+            " Interface Statistics",
+            Style::default().add_modifier(ratatui::style::Modifier::BOLD),
+        ),
+    );
+
+    // Window the rows against the scroll offset so hosts with dozens of
+    // bridge/veth interfaces can reach them all. The viewport excludes
+    // the table's header row.
+    let total_rows = rows.len();
+    let viewport = inner.height.saturating_sub(1) as usize;
+    let max_scroll = (total_rows as u16).saturating_sub(viewport as u16);
+    let scroll = ui_state.interfaces_scroll.clamp_for_render(max_scroll) as usize;
+    let windowed: Vec<Row> = rows.into_iter().skip(scroll).collect();
+
+    // Create table; reserve the two rightmost columns for a blank gap
+    // plus the scrollbar, mirroring the Overview table.
     let table = Table::new(
-        rows,
+        windowed,
         [
             Constraint::Length(14), // Interface
             Constraint::Length(12), // RX Bytes
@@ -137,15 +182,22 @@ pub(in crate::ui) fn draw_interface_stats(f: &mut Frame, app: &App, area: Rect) 
     })
     .style(Style::default());
 
-    let area = section_header(
-        f,
-        area,
-        ratatui::text::Span::styled(
-            " Interface Statistics",
-            Style::default().add_modifier(ratatui::style::Modifier::BOLD),
-        ),
+    let table_area = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width.saturating_sub(2),
+        inner.height,
     );
-    f.render_widget(table, area);
+    f.render_widget(table, table_area);
+
+    // Scrollbar tracks the row region (below the header row).
+    let rows_area = Rect::new(
+        inner.x,
+        inner.y + 1,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
+    draw_scrollbar(f, rows_area, total_rows, scroll, viewport);
 
     Ok(())
 }

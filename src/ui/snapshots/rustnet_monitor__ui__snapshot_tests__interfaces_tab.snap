@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 965
+assertion_line: 969
 expression: output
 ---
  rustnet    1 Overview   2 Details   3 Interfaces   4 Graph   5 Help                                                                        
@@ -32,4 +32,4 @@ eth0            512.00 KB/s  128.00 KB/s    1200000     800000         0        
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- 'h' help | 1-5 jump | Tab/[/] cycle | Esc back to Overview
+ 'h' help | 1-5 jump | Tab/[/] cycle | j/k scroll | Esc back to Overview

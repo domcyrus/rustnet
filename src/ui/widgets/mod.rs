@@ -4,5 +4,6 @@
 
 pub(super) mod filter_input;
 pub(super) mod loading;
+pub(super) mod scrollbar;
 pub(super) mod status_bar;
 pub(super) mod tabs_bar;

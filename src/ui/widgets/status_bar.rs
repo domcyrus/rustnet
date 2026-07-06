@@ -16,9 +16,11 @@ fn default_status_line(selected_tab: usize) -> &'static str {
         }
         // Details
         1 => {
-            " 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | 'c' copy remote addr | Esc back"
+            " 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | Ctrl-d/u scroll | 'c' copy remote addr | Esc back"
         }
-        // Interfaces / Graph / Help
+        // Interfaces / Help (both scroll with j/k)
+        2 | 4 => " 'h' help | 1-5 jump | Tab/[/] cycle | j/k scroll | Esc back to Overview",
+        // Graph
         _ => " 'h' help | 1-5 jump | Tab/[/] cycle | Esc back to Overview",
     }
 }
