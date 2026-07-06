@@ -1,0 +1,47 @@
+name: 'Upload artifact with retry'
+description: 'Upload an artifact, retrying once on transient failures (e.g. CreateArtifact network timeouts)'
+
+inputs:
+  name:
+    description: 'Artifact name'
+    required: true
+  path:
+    description: 'File(s), directory or wildcard pattern to upload'
+    required: true
+  if-no-files-found:
+    description: 'Behavior if no files are found at the provided path (warn/error/ignore)'
+    required: false
+    default: 'warn'
+  retention-days:
+    description: 'Days after which the artifact expires (0 = repository default)'
+    required: false
+    default: '0'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Upload artifact (attempt 1)
+      id: attempt1
+      continue-on-error: true
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+
+    - name: Wait before retry
+      if: steps.attempt1.outcome == 'failure'
+      shell: bash
+      run: sleep 30
+
+    - name: Upload artifact (attempt 2)
+      if: steps.attempt1.outcome == 'failure'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: ${{ inputs.name }}
+        path: ${{ inputs.path }}
+        if-no-files-found: ${{ inputs.if-no-files-found }}
+        retention-days: ${{ inputs.retention-days }}
+        # First attempt may have partially created the artifact before failing
+        overwrite: true
