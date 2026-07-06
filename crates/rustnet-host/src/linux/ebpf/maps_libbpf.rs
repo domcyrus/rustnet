@@ -157,6 +157,24 @@ impl From<ConnInfo> for ProcessInfo {
     }
 }
 
+/// Read CLOCK_MONOTONIC in nanoseconds — the same clock bpf_ktime_get_ns()
+/// uses to stamp map entries.
+fn monotonic_time_ns() -> Result<u64> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: ts is a valid, writable timespec for the duration of the call.
+    let ret = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    if ret != 0 {
+        return Err(anyhow::anyhow!(
+            "clock_gettime(CLOCK_MONOTONIC) failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok((ts.tv_sec as u64) * 1_000_000_000 + ts.tv_nsec as u64)
+}
+
 pub struct MapReader;
 
 impl MapReader {
@@ -191,12 +209,9 @@ impl MapReader {
 
     /// Clean up stale entries from the map based on timestamp
     pub fn cleanup_stale_entries(map: &libbpf_rs::Map, stale_threshold_ns: u64) -> Result<u32> {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let current_time_ns = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| anyhow::anyhow!("Time error: {}", e))?
-            .as_nanos() as u64;
+        // Entries are stamped by the BPF program with bpf_ktime_get_ns()
+        // (CLOCK_MONOTONIC), so compare against the same clock, not wall time.
+        let current_time_ns = monotonic_time_ns()?;
 
         let mut cleanup_count = 0u32;
         let mut keys_to_delete = Vec::new();
