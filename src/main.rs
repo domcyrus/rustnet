@@ -1,17 +1,12 @@
 use anyhow::Result;
 use log::{LevelFilter, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
+use rustnet_monitor::{app, cli, network, ui};
 use simplelog::{ConfigBuilder, WriteLogger};
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
-
-mod app;
-mod cli;
-mod filter;
-mod network;
-mod ui;
 
 fn main() -> Result<()> {
     // Check for required dependencies on Windows
@@ -68,6 +63,11 @@ fn main() -> Result<()> {
     if let Some(pcap_path) = matches.get_one::<String>("pcap-export") {
         config.pcap_export_file = Some(pcap_path.to_string());
         info!("PCAP export enabled: {}", pcap_path);
+    }
+
+    if let Some(pcapng_path) = matches.get_one::<String>("pcapng-export") {
+        config.pcapng_export_file = Some(pcapng_path.to_string());
+        info!("PCAPNG export enabled: {}", pcapng_path);
     }
 
     if let Some(bpf_filter) = matches.get_one::<String>("bpf-filter") {
@@ -159,13 +159,20 @@ fn main() -> Result<()> {
         }
     }
 
+    let mut output_handles = app::AppOutputHandles::default();
+    if let Some(ref pcapng_path) = config.pcapng_export_file {
+        output_handles.pcapng_export = Some(precreate_private_file(pcapng_path).map_err(|e| {
+            anyhow::anyhow!("Failed to pre-create PCAPNG file '{}': {}", pcapng_path, e)
+        })?);
+    }
+
     // Set up terminal
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;
     info!("Terminal UI initialized");
 
     // Create and start the application
-    let mut app = app::App::new(config.clone())?;
+    let mut app = app::App::new_with_output_handles(config.clone(), output_handles)?;
     let process_ready_rx = app.start()?;
     info!("Application started");
 
@@ -253,6 +260,10 @@ fn main() -> Result<()> {
         if let Some(pcap_path) = &config.pcap_export_file {
             write_paths.push(PathBuf::from(pcap_path));
             write_paths.push(PathBuf::from(format!("{}.connections.jsonl", pcap_path)));
+        }
+
+        if let Some(pcapng_path) = &config.pcapng_export_file {
+            write_paths.push(PathBuf::from(pcapng_path));
         }
 
         let sandbox_config = SandboxConfig {
@@ -360,6 +371,7 @@ fn main() -> Result<()> {
             log_dir,
             json_log_path: config.json_log_file,
             pcap_export_path: config.pcap_export_file,
+            pcapng_export_path: config.pcapng_export_file,
             geoip_paths,
         };
 

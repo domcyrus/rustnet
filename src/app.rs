@@ -18,8 +18,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::filter::ConnectionFilter;
 
+use crate::export::pcapng::{self, PcapngWriter};
 use crate::network::{
-    capture::{CaptureConfig, PacketReader, setup_packet_capture},
+    capture::{CaptureConfig, CapturedPacket, PacketReader, setup_packet_capture},
     dns::DnsResolver,
     geoip::{GeoIpConfig, GeoIpResolver},
     interface_stats::{InterfaceRates, InterfaceStats, InterfaceStatsProvider},
@@ -27,8 +28,10 @@ use crate::network::{
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
     services::ServiceLookup,
-    tracker::ConnectionTracker,
-    types::{ApplicationProtocol, Connection, DnsQueryType, Protocol, TrafficHistory},
+    tracker::{ConnectionTracker, IngestOutcome},
+    types::{
+        ApplicationProtocol, Connection, ConnectionKey, DnsQueryType, Protocol, TrafficHistory,
+    },
 };
 
 // Platform-specific interface stats provider
@@ -41,7 +44,7 @@ use crate::network::platform::MacOSStatsProvider as PlatformStatsProvider;
 #[cfg(target_os = "windows")]
 use crate::network::platform::WindowsStatsProvider as PlatformStatsProvider;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Sandbox status information for UI display
 #[cfg(any(
@@ -146,6 +149,19 @@ impl ProcessDetectionStatus {
 /// Maximum queued packets before backpressure drops packets.
 /// At ~1500 bytes per packet, 10,000 packets ≈ 15 MB of buffer.
 const MAX_PACKET_QUEUE: usize = 10_000;
+const MAX_PCAPNG_QUEUE: usize = 10_000;
+const MAX_PCAPNG_RETRY_RECORDS: usize = 10_000;
+const MAX_PCAPNG_RETRY_BYTES: usize = 64 * 1024 * 1024;
+const PCAPNG_ATTRIBUTION_WAIT: Duration = Duration::from_secs(2);
+
+#[derive(Debug)]
+struct PcapngRecord {
+    data: Vec<u8>,
+    timestamp: SystemTime,
+    original_len: u32,
+    key: Option<ConnectionKey>,
+    deadline: Instant,
+}
 
 /// Open or create a file for appending with restrictive permissions (0o600 on Unix).
 ///
@@ -209,6 +225,26 @@ fn open_log_file(path: &str) -> std::io::Result<File> {
     }
 
     result
+}
+
+fn system_time_to_timeval(timestamp: SystemTime) -> libc::timeval {
+    let duration = timestamp
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    #[cfg(unix)]
+    {
+        libc::timeval {
+            tv_sec: duration.as_secs() as libc::time_t,
+            tv_usec: duration.subsec_micros() as libc::suseconds_t,
+        }
+    }
+    #[cfg(windows)]
+    {
+        libc::timeval {
+            tv_sec: duration.as_secs() as libc::c_long,
+            tv_usec: duration.subsec_micros() as libc::c_long,
+        }
+    }
 }
 
 /// Helper function to log connection events as JSON
@@ -451,6 +487,8 @@ pub struct Config {
     pub json_log_file: Option<String>,
     /// PCAP export file path for Wireshark analysis
     pub pcap_export_file: Option<String>,
+    /// Annotated PCAPNG export file path for Wireshark analysis
+    pub pcapng_export_file: Option<String>,
     /// Enable reverse DNS resolution for IP addresses
     pub resolve_dns: bool,
     /// Show PTR lookup connections in UI (when DNS resolution is enabled)
@@ -478,6 +516,7 @@ impl Default for Config {
             bpf_filter: None, // No filter by default to see all packets
             json_log_file: None,
             pcap_export_file: None,
+            pcapng_export_file: None,
             resolve_dns: true,
             show_ptr_lookups: false,
             geoip_country_path: None,
@@ -488,6 +527,11 @@ impl Default for Config {
             kubernetes_mode: crate::network::kubernetes::KubernetesMode::default(),
         }
     }
+}
+
+#[derive(Default)]
+pub struct AppOutputHandles {
+    pub pcapng_export: Option<File>,
 }
 
 /// Application statistics
@@ -501,6 +545,13 @@ pub struct AppStats {
     pub total_tcp_retransmits: AtomicU64,
     pub total_tcp_out_of_order: AtomicU64,
     pub total_tcp_fast_retransmits: AtomicU64,
+    pub pcap_records_written: AtomicU64,
+    pub pcapng_records_queued: AtomicU64,
+    pub pcapng_records_written: AtomicU64,
+    pub pcapng_records_annotated: AtomicU64,
+    pub pcapng_records_unannotated: AtomicU64,
+    pub pcapng_records_dropped: AtomicU64,
+    pub pcapng_export_errors: AtomicU64,
 }
 
 impl Default for AppStats {
@@ -513,6 +564,13 @@ impl Default for AppStats {
             total_tcp_retransmits: AtomicU64::new(0),
             total_tcp_out_of_order: AtomicU64::new(0),
             total_tcp_fast_retransmits: AtomicU64::new(0),
+            pcap_records_written: AtomicU64::new(0),
+            pcapng_records_queued: AtomicU64::new(0),
+            pcapng_records_written: AtomicU64::new(0),
+            pcapng_records_annotated: AtomicU64::new(0),
+            pcapng_records_unannotated: AtomicU64::new(0),
+            pcapng_records_dropped: AtomicU64::new(0),
+            pcapng_export_errors: AtomicU64::new(0),
         }
     }
 }
@@ -561,6 +619,9 @@ pub struct App {
     /// Data link type for packet parsing (needed for PKTAP detection)
     linktype: Arc<RwLock<Option<i32>>>,
 
+    /// Set when capture setup fails before a linktype can be discovered.
+    capture_failed: Arc<AtomicBool>,
+
     /// Whether PKTAP is active (macOS only) - used to disable process enrichment
     pktap_active: Arc<AtomicBool>,
 
@@ -586,7 +647,11 @@ pub struct App {
     /// startup phase (`start`: capture/eBPF threads that need capabilities) and
     /// the worker phase (`start_workers`: the DPI parser threads, spawned after
     /// the sandbox is applied so they inherit it). Taken by `start_workers`.
-    packet_rx: Option<Receiver<Vec<Vec<u8>>>>,
+    packet_rx: Option<Receiver<Vec<CapturedPacket>>>,
+
+    /// Pre-created PCAPNG output file. Held until worker startup so the writer
+    /// thread can use the exact file handle allowed by the sandbox.
+    pcapng_export_file: Option<File>,
 
     /// Sandbox status (Linux Landlock / macOS Seatbelt / Windows restricted token)
     #[cfg(any(
@@ -600,6 +665,18 @@ pub struct App {
 impl App {
     /// Create a new application instance
     pub fn new(config: Config) -> Result<Self> {
+        if config.pcapng_export_file.is_some() {
+            anyhow::bail!(
+                "PCAPNG export requires a pre-created output handle; use App::new_with_output_handles"
+            );
+        }
+        Self::new_with_output_handles(config, AppOutputHandles::default())
+    }
+
+    pub fn new_with_output_handles(
+        config: Config,
+        mut output_handles: AppOutputHandles,
+    ) -> Result<Self> {
         // Load service definitions
         let service_lookup = ServiceLookup::from_embedded().unwrap_or_else(|e| {
             warn!("Failed to load embedded services: {}, using defaults", e);
@@ -685,6 +762,7 @@ impl App {
             is_loading: Arc::new(AtomicBool::new(true)),
             current_interface: Arc::new(RwLock::new(None)),
             linktype: Arc::new(RwLock::new(None)),
+            capture_failed: Arc::new(AtomicBool::new(false)),
             pktap_active: Arc::new(AtomicBool::new(false)),
             process_detection_status: Arc::new(RwLock::new(ProcessDetectionStatus::with_method(
                 "initializing...",
@@ -695,6 +773,7 @@ impl App {
             dns_resolver,
             geoip_resolver,
             packet_rx: None,
+            pcapng_export_file: output_handles.pcapng_export.take(),
             #[cfg(any(
                 target_os = "linux",
                 target_os = "windows",
@@ -748,8 +827,10 @@ impl App {
     pub fn start_workers(&mut self) -> Result<()> {
         let tracker = Arc::clone(&self.tracker);
 
+        let pcapng_tx = self.start_pcapng_export_thread(tracker.clone())?;
+
         // Start the DPI packet processing threads (drain the stashed channel).
-        self.start_packet_processors(tracker.clone())?;
+        self.start_packet_processors(tracker.clone(), pcapng_tx)?;
 
         // Start GeoIP enrichment thread
         self.start_geoip_enrichment_thread(tracker.clone())?;
@@ -787,8 +868,8 @@ impl App {
     /// `self.packet_rx` for [`App::start_packet_processors`], which runs in the
     /// worker phase after the sandbox has been applied.
     fn start_packet_capture_pipeline(&mut self) -> Result<()> {
-        // Create packet channel — sender batches packets, receiver gets Vec<Vec<u8>> per batch
-        let (packet_tx, packet_rx) = channel::bounded::<Vec<Vec<u8>>>(MAX_PACKET_QUEUE);
+        // Create packet channel — sender batches packets, receiver gets Vec<CapturedPacket> per batch
+        let (packet_tx, packet_rx) = channel::bounded::<Vec<CapturedPacket>>(MAX_PACKET_QUEUE);
 
         // Start capture thread
         self.start_capture_thread(packet_tx)?;
@@ -801,7 +882,11 @@ impl App {
 
     /// Spawn the DPI packet-processor threads, draining the channel stashed by
     /// [`App::start_packet_capture_pipeline`].
-    fn start_packet_processors(&mut self, tracker: Arc<ConnectionTracker>) -> Result<()> {
+    fn start_packet_processors(
+        &mut self,
+        tracker: Arc<ConnectionTracker>,
+        pcapng_tx: Option<Sender<PcapngRecord>>,
+    ) -> Result<()> {
         let packet_rx = self.packet_rx.take().ok_or_else(|| {
             anyhow::anyhow!("packet receiver missing; start() must run before start_workers()")
         })?;
@@ -813,14 +898,14 @@ impl App {
             .min(4);
 
         for i in 0..num_processors {
-            self.start_packet_processor(i, packet_rx.clone(), tracker.clone());
+            self.start_packet_processor(i, packet_rx.clone(), tracker.clone(), pcapng_tx.clone());
         }
 
         Ok(())
     }
 
     /// Start packet capture thread
-    fn start_capture_thread(&self, packet_tx: Sender<Vec<Vec<u8>>>) -> Result<()> {
+    fn start_capture_thread(&self, packet_tx: Sender<Vec<CapturedPacket>>) -> Result<()> {
         // Validate interface exists before spawning thread (fail fast)
         crate::network::capture::validate_interface(&self.config.interface)?;
 
@@ -834,8 +919,10 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let current_interface = Arc::clone(&self.current_interface);
         let linktype_storage = Arc::clone(&self.linktype);
+        let capture_failed = Arc::clone(&self.capture_failed);
         let _pktap_active = Arc::clone(&self.pktap_active);
         let pcap_export_file = self.config.pcap_export_file.clone();
+        capture_failed.store(false, Ordering::Relaxed);
 
         thread::Builder::new()
             .name("pcap_tx".to_string())
@@ -919,7 +1006,7 @@ impl App {
                     let mut packets_read = 0u64;
                     let mut last_log = Instant::now();
                     let mut last_stats_check = Instant::now();
-                    let mut batch: Vec<Vec<u8>> = Vec::with_capacity(100);
+                    let mut batch: Vec<CapturedPacket> = Vec::with_capacity(100);
                     let mut batch_deadline = Instant::now() + Duration::from_millis(100);
 
                     loop {
@@ -934,7 +1021,10 @@ impl App {
 
                                 // Log first packet immediately
                                 if packets_read == 1 {
-                                    info!("First packet captured! Size: {} bytes", packet.len());
+                                    info!(
+                                        "First packet captured! Size: {} bytes",
+                                        packet.data.len()
+                                    );
                                 }
 
                                 // Log every 10000 packets or every 5 seconds
@@ -947,29 +1037,17 @@ impl App {
 
                                 // Write to PCAP file if enabled
                                 if let Some(ref mut savefile) = pcap_savefile {
-                                    use std::time::{SystemTime, UNIX_EPOCH};
-                                    let now = SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                        .unwrap_or_default();
-                                    #[cfg(unix)]
-                                    let ts = libc::timeval {
-                                        tv_sec: now.as_secs() as libc::time_t,
-                                        tv_usec: now.subsec_micros() as libc::suseconds_t,
-                                    };
-                                    #[cfg(windows)]
-                                    let ts = libc::timeval {
-                                        tv_sec: now.as_secs() as libc::c_long,
-                                        tv_usec: now.subsec_micros() as libc::c_long,
-                                    };
+                                    let ts = system_time_to_timeval(packet.timestamp);
                                     let header = pcap::PacketHeader {
                                         ts,
-                                        caplen: packet.len() as u32,
-                                        len: packet.len() as u32,
+                                        caplen: packet.data.len() as u32,
+                                        len: packet.original_len.max(packet.data.len() as u32),
                                     };
                                     savefile.write(&pcap::Packet {
                                         header: &header,
-                                        data: &packet,
+                                        data: &packet.data,
                                     });
+                                    stats.pcap_records_written.fetch_add(1, Ordering::Relaxed);
                                 }
 
                                 batch.push(packet);
@@ -1049,6 +1127,7 @@ impl App {
                     );
                 }
                 Err(e) => {
+                    capture_failed.store(true, Ordering::Relaxed);
                     let error_msg = format!("{}", e);
 
                     // Check if this is a privilege error
@@ -1078,12 +1157,14 @@ impl App {
     fn start_packet_processor(
         &self,
         id: usize,
-        packet_rx: Receiver<Vec<Vec<u8>>>,
+        packet_rx: Receiver<Vec<CapturedPacket>>,
         tracker: Arc<ConnectionTracker>,
+        pcapng_tx: Option<Sender<PcapngRecord>>,
     ) {
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let linktype_storage = Arc::clone(&self.linktype);
+        let capture_failed = Arc::clone(&self.capture_failed);
         let json_log_path = self.config.json_log_file.clone();
         let dns_resolver = self.dns_resolver.clone();
         let oui_lookup = self.oui_lookup.clone();
@@ -1122,6 +1203,11 @@ impl App {
                         }
                         break parser;
                     }
+                    if capture_failed.load(Ordering::Relaxed) || should_stop.load(Ordering::Relaxed)
+                    {
+                        info!("pcap_rx_{} exiting before linktype was available", id);
+                        return;
+                    }
                     thread::sleep(Duration::from_millis(10));
                 };
                 let mut total_processed = 0u64;
@@ -1157,14 +1243,18 @@ impl App {
                     // connection timeout or rate window.
                     let batch_time = SystemTime::now();
                     let mut parsed_count = 0;
-                    for packet_data in &batch {
+                    let batch_len = batch.len();
+                    let pcapng_enabled = pcapng_tx.is_some();
+                    for packet in batch {
+                        let packet_timestamp = packet.timestamp;
+                        let packet_original_len = packet.original_len;
                         let parse_result =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                parser.parse_packet(packet_data)
+                                parser.parse_packet(&packet.data)
                             }));
-                        match parse_result {
+                        let key = match parse_result {
                             Ok(Some(parsed)) => {
-                                update_connection(
+                                let outcome = update_connection(
                                     &tracker,
                                     parsed,
                                     batch_time,
@@ -1173,22 +1263,45 @@ impl App {
                                     dns_resolver.as_deref(),
                                 );
                                 parsed_count += 1;
+                                if outcome.dropped {
+                                    None
+                                } else {
+                                    Some(outcome.key)
+                                }
                             }
-                            Ok(None) => {}
+                            Ok(None) => None,
                             Err(_) => {
                                 warn!(
                                     "pcap_rx_{}: parser panicked on a packet ({} bytes); skipping",
                                     id,
-                                    packet_data.len()
+                                    packet.data.len()
                                 );
+                                None
                             }
+                        };
+                        if pcapng_enabled {
+                            send_pcapng_record(
+                                pcapng_tx.as_ref(),
+                                &stats,
+                                PcapngRecord {
+                                    data: packet.data,
+                                    timestamp: packet_timestamp,
+                                    original_len: packet_original_len,
+                                    key,
+                                    deadline: if key.is_some() {
+                                        Instant::now() + PCAPNG_ATTRIBUTION_WAIT
+                                    } else {
+                                        Instant::now()
+                                    },
+                                },
+                            );
                         }
                     }
 
-                    total_processed += batch.len() as u64;
+                    total_processed += batch_len as u64;
                     stats
                         .packets_processed
-                        .fetch_add(batch.len() as u64, Ordering::Relaxed);
+                        .fetch_add(batch_len as u64, Ordering::Relaxed);
 
                     // Log progress
                     if total_processed.is_multiple_of(10000)
@@ -1208,6 +1321,156 @@ impl App {
                 );
             })
             .unwrap_or_else(|_| panic!("Failed to spawn pcap_rx_{} thread", id));
+    }
+
+    fn start_pcapng_export_thread(
+        &mut self,
+        tracker: Arc<ConnectionTracker>,
+    ) -> Result<Option<Sender<PcapngRecord>>> {
+        if self.config.pcapng_export_file.is_none() {
+            return Ok(None);
+        }
+
+        let stats = Arc::clone(&self.stats);
+        let Some(file) = self.pcapng_export_file.take() else {
+            warn!(
+                "PCAPNG export configured but no pre-created file handle was provided; skipping export"
+            );
+            stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+            return Ok(None);
+        };
+        let export_path = self.config.pcapng_export_file.clone().unwrap_or_default();
+        let (tx, rx) = channel::bounded::<PcapngRecord>(MAX_PCAPNG_QUEUE);
+        let should_stop = Arc::clone(&self.should_stop);
+        let linktype_storage = Arc::clone(&self.linktype);
+        let capture_failed = Arc::clone(&self.capture_failed);
+        let current_interface = Arc::clone(&self.current_interface);
+
+        thread::Builder::new()
+            .name("pcapng-export".to_string())
+            .spawn(move || {
+                info!("PCAPNG export thread starting: {}", export_path);
+                let linktype = loop {
+                    if let Some(linktype) = *linktype_storage.read().unwrap() {
+                        break Some(linktype);
+                    }
+                    if capture_failed.load(Ordering::Relaxed) {
+                        warn!(
+                            "PCAPNG export could not observe capture linktype because capture setup failed; writing empty fallback section"
+                        );
+                        stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+                        break None;
+                    }
+                    if should_stop.load(Ordering::Relaxed) {
+                        info!(
+                            "PCAPNG export did not observe capture linktype before shutdown; writing empty fallback section"
+                        );
+                        break None;
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                };
+                let if_name = current_interface.read().unwrap().clone();
+                let linktype = linktype.map(pcapng::linktype_to_u16).unwrap_or(1);
+                let writer = std::io::BufWriter::new(file);
+                let mut writer = match PcapngWriter::new(
+                    writer,
+                    linktype,
+                    CaptureConfig::default().snaplen as u32,
+                    if_name.as_deref(),
+                ) {
+                    Ok(writer) => writer,
+                    Err(e) => {
+                        error!("Failed to initialize PCAPNG writer: {}", e);
+                        stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                };
+
+                let mut pending = VecDeque::<PcapngRecord>::new();
+                let mut pending_bytes = 0usize;
+                let mut next_retry_scan = Instant::now() + Duration::from_millis(50);
+
+                loop {
+                    if should_stop.load(Ordering::Relaxed) && rx.is_empty() {
+                        break;
+                    }
+
+                    match rx.recv_timeout(Duration::from_millis(50)) {
+                        Ok(record) => {
+                            handle_pcapng_record(
+                                record,
+                                &tracker,
+                                &mut writer,
+                                &mut pending,
+                                &mut pending_bytes,
+                                &stats,
+                            );
+                            enforce_pcapng_retry_limits(
+                                &tracker,
+                                &mut writer,
+                                &mut pending,
+                                &mut pending_bytes,
+                                &stats,
+                            );
+                        }
+                        Err(crossbeam::channel::RecvTimeoutError::Timeout) => {}
+                        Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
+                    }
+
+                    if Instant::now() >= next_retry_scan {
+                        flush_ready_pcapng_records(
+                            &tracker,
+                            &mut writer,
+                            &mut pending,
+                            &mut pending_bytes,
+                            &stats,
+                            false,
+                        );
+                        next_retry_scan = Instant::now() + Duration::from_millis(50);
+                    }
+                }
+
+                while let Ok(record) = rx.try_recv() {
+                    handle_pcapng_record(
+                        record,
+                        &tracker,
+                        &mut writer,
+                        &mut pending,
+                        &mut pending_bytes,
+                        &stats,
+                    );
+                    enforce_pcapng_retry_limits(
+                        &tracker,
+                        &mut writer,
+                        &mut pending,
+                        &mut pending_bytes,
+                        &stats,
+                    );
+                }
+                flush_ready_pcapng_records(
+                    &tracker,
+                    &mut writer,
+                    &mut pending,
+                    &mut pending_bytes,
+                    &stats,
+                    true,
+                );
+                if let Err(e) = writer.flush() {
+                    error!("Failed to flush PCAPNG export: {}", e);
+                    stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+                }
+                let dropped = stats.pcapng_records_dropped.load(Ordering::Relaxed);
+                if dropped > 0 {
+                    warn!(
+                        "PCAPNG export dropped {} records under backpressure",
+                        dropped
+                    );
+                }
+                info!("PCAPNG export completed: {}", export_path);
+            })
+            .expect("Failed to spawn pcapng-export thread");
+
+        Ok(Some(tx))
     }
 
     /// Start process enrichment thread conditionally based on PKTAP status
@@ -1992,7 +2255,40 @@ impl App {
                     .total_tcp_fast_retransmits
                     .load(Ordering::Relaxed),
             ),
+            pcap_records_written: AtomicU64::new(
+                self.stats.pcap_records_written.load(Ordering::Relaxed),
+            ),
+            pcapng_records_queued: AtomicU64::new(
+                self.stats.pcapng_records_queued.load(Ordering::Relaxed),
+            ),
+            pcapng_records_written: AtomicU64::new(
+                self.stats.pcapng_records_written.load(Ordering::Relaxed),
+            ),
+            pcapng_records_annotated: AtomicU64::new(
+                self.stats.pcapng_records_annotated.load(Ordering::Relaxed),
+            ),
+            pcapng_records_unannotated: AtomicU64::new(
+                self.stats
+                    .pcapng_records_unannotated
+                    .load(Ordering::Relaxed),
+            ),
+            pcapng_records_dropped: AtomicU64::new(
+                self.stats.pcapng_records_dropped.load(Ordering::Relaxed),
+            ),
+            pcapng_export_errors: AtomicU64::new(
+                self.stats.pcapng_export_errors.load(Ordering::Relaxed),
+            ),
         }
+    }
+
+    /// Whether annotated PCAPNG export is active for this run.
+    pub fn is_pcapng_export_enabled(&self) -> bool {
+        self.config.pcapng_export_file.is_some()
+    }
+
+    /// Whether classic PCAP export is active for this run.
+    pub fn is_pcap_export_enabled(&self) -> bool {
+        self.config.pcap_export_file.is_some()
     }
 
     /// Check if application is still loading
@@ -2166,6 +2462,21 @@ impl App {
         self.stats
             .total_tcp_fast_retransmits
             .store(0, Ordering::Relaxed);
+        self.stats.pcap_records_written.store(0, Ordering::Relaxed);
+        self.stats.pcapng_records_queued.store(0, Ordering::Relaxed);
+        self.stats
+            .pcapng_records_written
+            .store(0, Ordering::Relaxed);
+        self.stats
+            .pcapng_records_annotated
+            .store(0, Ordering::Relaxed);
+        self.stats
+            .pcapng_records_unannotated
+            .store(0, Ordering::Relaxed);
+        self.stats
+            .pcapng_records_dropped
+            .store(0, Ordering::Relaxed);
+        self.stats.pcapng_export_errors.store(0, Ordering::Relaxed);
 
         info!("All connections cleared successfully");
     }
@@ -2208,7 +2519,7 @@ fn update_connection(
     stats: &AppStats,
     json_log_path: &Option<String>,
     dns_resolver: Option<&DnsResolver>,
-) {
+) -> IngestOutcome {
     let outcome = tracker.ingest_at(&parsed, now);
 
     // Fold TCP anomaly counts into the global statistics.
@@ -2233,7 +2544,7 @@ fn update_connection(
             "Connection limit reached, dropping new connection: {}",
             outcome.key
         );
-        return;
+        return outcome;
     }
 
     // Log a new-connection event if JSON logging is enabled.
@@ -2245,6 +2556,203 @@ fn update_connection(
             log_connection_event(log_path, "new_connection", conn.value(), None, dns_resolver);
         }
     }
+
+    outcome
+}
+
+fn send_pcapng_record(
+    pcapng_tx: Option<&Sender<PcapngRecord>>,
+    stats: &AppStats,
+    record: PcapngRecord,
+) {
+    let Some(tx) = pcapng_tx else {
+        return;
+    };
+    match tx.try_send(record) {
+        Ok(()) => {
+            stats.pcapng_records_queued.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(crossbeam::channel::TrySendError::Full(_)) => {
+            stats.pcapng_records_dropped.fetch_add(1, Ordering::Relaxed);
+            static WARNED: AtomicBool = AtomicBool::new(false);
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                warn!("PCAPNG export queue full; dropping export records under load");
+            }
+        }
+        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {}
+    }
+}
+
+fn handle_pcapng_record<W: Write>(
+    record: PcapngRecord,
+    tracker: &ConnectionTracker,
+    writer: &mut PcapngWriter<W>,
+    pending: &mut VecDeque<PcapngRecord>,
+    pending_bytes: &mut usize,
+    stats: &AppStats,
+) {
+    // Always enqueue so records leave in arrival order: an attributed packet
+    // must not be written ahead of an older packet still waiting for
+    // attribution, or the export file ends up out of timestamp order.
+    *pending_bytes = pending_bytes.saturating_add(record.data.len());
+    pending.push_back(record);
+    flush_ready_pcapng_records(tracker, writer, pending, pending_bytes, stats, false);
+}
+
+/// Write out pending records in FIFO order, stopping at the first record that
+/// is still waiting for process attribution (unless `force`d or expired).
+fn flush_ready_pcapng_records<W: Write>(
+    tracker: &ConnectionTracker,
+    writer: &mut PcapngWriter<W>,
+    pending: &mut VecDeque<PcapngRecord>,
+    pending_bytes: &mut usize,
+    stats: &AppStats,
+    force: bool,
+) {
+    let now = Instant::now();
+    while let Some(record) = pending.front() {
+        let comment = pcapng_comment(record, tracker);
+        let attributed = comment.is_some();
+        let expired = force || record.deadline <= now;
+        if record.key.is_some() && !attributed && !expired {
+            break;
+        }
+        let record = pending.pop_front().expect("front() was Some");
+        *pending_bytes = pending_bytes.saturating_sub(record.data.len());
+        // A record that expired unattributed may still have partial metadata
+        // (direction, DPI, GeoIP) worth annotating.
+        let comment = comment.or_else(|| pcapng_comment_if_any_metadata(&record, tracker));
+        write_pcapng_record(writer, &record, comment.as_deref(), stats);
+    }
+}
+
+fn enforce_pcapng_retry_limits<W: Write>(
+    tracker: &ConnectionTracker,
+    writer: &mut PcapngWriter<W>,
+    pending: &mut VecDeque<PcapngRecord>,
+    pending_bytes: &mut usize,
+    stats: &AppStats,
+) {
+    while pending.len() > MAX_PCAPNG_RETRY_RECORDS || *pending_bytes > MAX_PCAPNG_RETRY_BYTES {
+        if let Some(record) = pending.pop_front() {
+            *pending_bytes = pending_bytes.saturating_sub(record.data.len());
+            let comment = pcapng_comment_if_any_metadata(&record, tracker);
+            write_pcapng_record(writer, &record, comment.as_deref(), stats);
+        } else {
+            break;
+        }
+    }
+}
+
+fn write_pcapng_record<W: Write>(
+    writer: &mut PcapngWriter<W>,
+    record: &PcapngRecord,
+    comment: Option<&str>,
+    stats: &AppStats,
+) {
+    if let Err(e) =
+        writer.write_packet(record.timestamp, &record.data, record.original_len, comment)
+    {
+        stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            error!("Failed to write PCAPNG packet: {}", e);
+        }
+        return;
+    }
+
+    stats.pcapng_records_written.fetch_add(1, Ordering::Relaxed);
+    if comment.is_some() {
+        stats
+            .pcapng_records_annotated
+            .fetch_add(1, Ordering::Relaxed);
+    } else {
+        stats
+            .pcapng_records_unannotated
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Comment for a record whose connection already has process attribution;
+/// `None` while attribution is still pending (or for keyless records).
+fn pcapng_comment(record: &PcapngRecord, tracker: &ConnectionTracker) -> Option<String> {
+    let key = record.key?;
+    let conn = tracker.connections().get(&key)?;
+    if conn.pid.is_none() && conn.process_name.is_none() {
+        return None;
+    }
+    build_pcapng_comment(&conn)
+}
+
+fn pcapng_comment_if_any_metadata(
+    record: &PcapngRecord,
+    tracker: &ConnectionTracker,
+) -> Option<String> {
+    let key = record.key?;
+    let conn = tracker.connections().get(&key)?;
+    build_pcapng_comment(&conn)
+}
+
+fn build_pcapng_comment(conn: &Connection) -> Option<String> {
+    let mut fields = vec!["rustnet".to_string()];
+    if let Some(process) = &conn.process_name {
+        fields.push(format!("process={}", sanitize_comment_value(process)));
+    }
+    if let Some(pid) = conn.pid {
+        fields.push(format!("pid={pid}"));
+    }
+    if let Some(is_outgoing) = conn.connection_direction {
+        fields.push(format!(
+            "direction={}",
+            if is_outgoing { "outgoing" } else { "incoming" }
+        ));
+    }
+    if let Some(dpi) = &conn.dpi_info {
+        fields.push(format!(
+            "app={}",
+            sanitize_comment_value(&dpi.application.to_string())
+        ));
+        if let Some(domain) = dpi_domain(&dpi.application) {
+            fields.push(format!("sni={}", sanitize_comment_value(domain)));
+        }
+    }
+    if let Some(geoip) = &conn.geoip_info {
+        if let Some(country) = &geoip.country_code {
+            fields.push(format!("country={}", sanitize_comment_value(country)));
+        }
+        if let Some(asn) = geoip.asn {
+            fields.push(format!("asn={asn}"));
+        }
+    }
+    if fields.len() == 1 {
+        None
+    } else {
+        Some(fields.join(" "))
+    }
+}
+
+fn dpi_domain(application: &ApplicationProtocol) -> Option<&str> {
+    match application {
+        ApplicationProtocol::Dns(info) => info.query_name.as_deref(),
+        ApplicationProtocol::Http(info) => info.host.as_deref(),
+        ApplicationProtocol::Https(info) => info.tls_info.as_ref()?.sni.as_deref(),
+        ApplicationProtocol::Quic(info) => info.tls_info.as_ref()?.sni.as_deref(),
+        _ => None,
+    }
+}
+
+fn sanitize_comment_value(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .map(|c| {
+            if c.is_control() || c.is_whitespace() || c == '\0' {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    sanitized.trim_matches('_').to_string()
 }
 
 impl Drop for App {
@@ -2339,5 +2847,78 @@ mod open_log_file_tests {
             target_contents.is_empty(),
             "symlink target must be untouched"
         );
+    }
+}
+
+#[cfg(test)]
+mod pcapng_export_tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    fn record(data: u8, key: Option<ConnectionKey>, deadline: Instant) -> PcapngRecord {
+        PcapngRecord {
+            data: vec![data],
+            timestamp: std::time::UNIX_EPOCH,
+            original_len: 1,
+            key,
+            deadline,
+        }
+    }
+
+    /// Records must leave the pending queue in arrival order: a keyless
+    /// (immediately writable) record queued behind one still waiting for
+    /// attribution may not jump ahead of it in the export file.
+    #[test]
+    fn export_preserves_arrival_order_across_pending_records() {
+        let tracker = ConnectionTracker::new();
+        let stats = AppStats::default();
+        let mut out = Vec::new();
+        let mut writer = PcapngWriter::new(&mut out, 1, 1514, None).unwrap();
+        let mut pending = VecDeque::new();
+        let mut pending_bytes = 0usize;
+
+        let key = ConnectionKey::new(
+            Protocol::Tcp,
+            SocketAddr::from(([127, 0, 0, 1], 1000)),
+            SocketAddr::from(([127, 0, 0, 2], 2000)),
+        );
+        let far_deadline = Instant::now() + Duration::from_secs(3600);
+        handle_pcapng_record(
+            record(0xAA, Some(key), far_deadline),
+            &tracker,
+            &mut writer,
+            &mut pending,
+            &mut pending_bytes,
+            &stats,
+        );
+        handle_pcapng_record(
+            record(0xBB, None, Instant::now()),
+            &tracker,
+            &mut writer,
+            &mut pending,
+            &mut pending_bytes,
+            &stats,
+        );
+
+        // Both records are held: the head is still waiting for attribution.
+        assert_eq!(stats.pcapng_records_written.load(Ordering::Relaxed), 0);
+        assert_eq!(pending.len(), 2);
+
+        flush_ready_pcapng_records(
+            &tracker,
+            &mut writer,
+            &mut pending,
+            &mut pending_bytes,
+            &stats,
+            true,
+        );
+        writer.flush().unwrap();
+
+        assert_eq!(stats.pcapng_records_written.load(Ordering::Relaxed), 2);
+        assert!(pending.is_empty());
+        assert_eq!(pending_bytes, 0);
+        let pos_a = out.iter().position(|&b| b == 0xAA).unwrap();
+        let pos_b = out.iter().position(|&b| b == 0xBB).unwrap();
+        assert!(pos_a < pos_b, "records were written out of arrival order");
     }
 }

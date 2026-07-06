@@ -77,6 +77,13 @@ pub fn build_cli() -> Command {
                 .required(false),
         )
         .arg(
+            Arg::new("pcapng-export")
+                .long("pcapng-export")
+                .value_name("FILE")
+                .help("Export captured packets to annotated PCAPNG file for Wireshark analysis")
+                .required(false),
+        )
+        .arg(
             Arg::new("bpf-filter")
                 .short('f')
                 .long("bpf-filter")

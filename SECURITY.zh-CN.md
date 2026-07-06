@@ -77,13 +77,13 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 | 出站网络 | TCP/UDP 出站被阻止；Unix socket（Mach IPC）允许 |
 | 文件系统读取 | 禁止读取用户主目录（`/Users`、`/var/root`）；GeoIP 路径显式允许 |
 | 文件系统写入 | 禁止写入所有用户主目录（`/Users`、`/var/root`） |
-| 文件系统写入 | 仅配置的日志和 PCAP 导出路径可写 |
+| 文件系统写入 | 仅配置的日志、JSON log、PCAP 和 PCAPNG 导出路径可写 |
 | 进程执行 | 除 `/usr/sbin/lsof` 外，禁止执行所有二进制文件 |
 
 ### 工作原理
 
 1. **初始化阶段**：RustNet 打开包捕获句柄（BPF/PKTAP）并创建日志文件
-2. **预创建**：PCAP sidecar 文件（`.connections.jsonl`）在沙箱应用前创建，因此其路径已经是有效的允许目标
+2. **预创建**：PCAP sidecar 文件（`.connections.jsonl`）和 PCAPNG 输出文件在沙箱应用前创建，因此其路径已经是有效的允许目标
 3. **沙箱应用**：调用 `sandbox_init_with_parameters` — 已打开的文件描述符保持不变，仅限制未来的操作
 
 ### 配置文件策略
@@ -92,9 +92,9 @@ RustNet 使用 **默认允许** 的 SBPL 配置文件配合针对性拒绝。拒
 
 ### 输出文件支持
 
-`--json-log` 和 `--pcap-export` 路径通过运行时参数（`JSON_LOG_PATH`、`PCAP_PATH`、`PCAP_JSONL_PATH`）传递给 SBPL 配置文件。配置文件为每个路径授予显式的 `allow file-write*` 规则，该规则通过 SBPL 的特异性优先于更宽泛的 `/Users` 拒绝规则。未使用的参数默认为 `/dev/null`。
+`--json-log`、`--pcap-export` 和 `--pcapng-export` 路径通过运行时参数（`JSON_LOG_PATH`、`PCAP_PATH`、`PCAP_JSONL_PATH`、`PCAPNG_PATH`）传递给 SBPL 配置文件。配置文件为每个路径授予显式的 `allow file-write*` 规则，该规则通过 SBPL 的特异性优先于更宽泛的 `/Users` 拒绝规则。未使用的参数默认为 `/dev/null`。
 
-两个标志在沙箱内均可正常工作。
+三个标志在沙箱内均可正常工作。
 
 ### 安全收益
 

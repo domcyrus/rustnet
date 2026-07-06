@@ -81,6 +81,7 @@ flowchart LR
 - 按需应用 BPF 过滤器
 - 捕获原始数据包
 - 如果启用了 `--pcap-export`，将数据包流式写入 PCAP 文件（直接磁盘写入，无内存缓冲）
+- 如果启用了 `--pcapng-export`，将解析后的数据包送入带注释 PCAPNG writer（有界 best-effort 队列）
 - 将数据包发送到处理队列
 
 ### 2. 数据包处理器
@@ -413,7 +414,7 @@ netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
 | **eBPF 支持** | 是（Linux） | 否 | 否 | 否 | 否 | 是 | 否 |
 | **Landlock 沙箱** | 是（Linux） | 否 | 否 | 否 | 否 | 否 | 否 |
 | **JSON 事件日志** | 是 | 否 | 否 | 否 | 否 | 否 | 是 |
-| **PCAP 导出** | 是（+ 进程 sidecar） | 否 | 是 | 否 | 否 | 否 | 是 |
+| **PCAP 导出** | 是（PCAP + sidecar，或带注释 PCAPNG） | 否 | 是 | 否 | 否 | 否 | 是 |
 | **数据包捕获** | libpcap | Raw sockets | libpcap | libpcap | Kernel | Kernel | libpcap |
 
 ### 工具聚焦领域
@@ -436,7 +437,7 @@ netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
 | 将网络活动归因于特定应用 | RustNet |
 | 深度协议解析（3000+ 协议） | Wireshark |
 | 快速终端网络概览 | RustNet |
-| 保存带进程归因的捕获 | RustNet（`--pcap-export`） |
+| 保存带进程归因的捕获 | RustNet（`--pcap-export` 或 `--pcapng-export`） |
 | 保存捕获用于深度分析 | Wireshark/tcpdump |
 
 ### RustNet 与 Wireshark：不同的强项
@@ -452,7 +453,7 @@ Wireshark 在数据包捕获层（libpcap）运行——它看到原始网络流
 | 协议解析器 | ~15 个常见协议 | 3000+ 协议 |
 | 数据包级检查 | 仅元数据 | 完整 payload |
 | 界面 | TUI（终端） | GUI |
-| 捕获到文件 | 是（`--pcap-export`） | 是（原生） |
+| 捕获到文件 | 是（`--pcap-export`、`--pcapng-export`） | 是（原生） |
 
 两种工具都可以实时运行。根据你想看什么来选择：
 - **"是什么在发起这个连接？"** → RustNet
@@ -473,6 +474,9 @@ sudo rustnet -i eth0 --pcap-export capture.pcap
 # 用进程信息富化 PCAP 并创建注释过的 PCAPNG
 python scripts/pcap_enrich.py capture.pcap -o annotated.pcapng
 
+# 或者直接写出带 RustNet 数据包注释的 PCAPNG
+sudo rustnet -i eth0 --pcapng-export annotated.pcapng
+
 # 在 Wireshark 中打开 —— 数据包现在显示进程信息注释
 wireshark annotated.pcapng
 ```
@@ -481,6 +485,6 @@ wireshark annotated.pcapng
 - **RustNet 的进程归因**：知道哪个应用生成了每个数据包
 - **Wireshark 的深度分析**：3000+ 解析器的完整协议解析
 
-富化脚本将数据包与其 originating 进程关联，并将信息嵌入为 PCAPNG 数据包注释，在 Wireshark 的数据包详情窗格中可见。
+原生 PCAPNG 导出会直接嵌入实时 best-effort 数据包注释。富化脚本在清理阶段 sidecar 元数据完整性比捕获时生成单个文件更重要时仍然有用。
 
 详见 [USAGE.zh-CN.md - PCAP 导出](USAGE.zh-CN.md#pcap-export)。

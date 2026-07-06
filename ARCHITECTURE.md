@@ -81,6 +81,7 @@ Uses libpcap to capture raw packets from the network interface. This thread runs
 - Apply BPF filters if needed
 - Capture raw packets
 - Stream packets to PCAP file if `--pcap-export` is enabled (direct disk write, no memory buffering)
+- Feed parsed packets to the annotated PCAPNG writer if `--pcapng-export` is enabled (bounded best-effort queue)
 - Send packets to processing queue
 
 ### 2. Packet Processors
@@ -413,7 +414,7 @@ netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
 | **eBPF support** | Yes (Linux) | No | No | No | No | Yes | No |
 | **Landlock sandboxing** | Yes (Linux) | No | No | No | No | No | No |
 | **JSON event logging** | Yes | No | No | No | No | No | Yes |
-| **PCAP export** | Yes (+ process sidecar) | No | Yes | No | No | No | Yes |
+| **PCAP export** | Yes (+ process sidecar / annotated PCAPNG) | No | Yes | No | No | No | Yes |
 | **Packet capture** | libpcap | Raw sockets | libpcap | libpcap | Kernel | Kernel | libpcap |
 
 ### Tool Focus Areas
@@ -436,7 +437,7 @@ netstat     iftop     bandwhich     RustNet     tcpdump     Wireshark
 | Attribute network activity to specific applications | RustNet |
 | Deep protocol dissection (3000+ protocols) | Wireshark |
 | Quick terminal-based network overview | RustNet |
-| Save captures with process attribution | RustNet (`--pcap-export`) |
+| Save captures with process attribution | RustNet (`--pcap-export` or `--pcapng-export`) |
 | Save captures for deep analysis | Wireshark/tcpdump |
 
 ### RustNet and Wireshark: Different Strengths
@@ -470,8 +471,11 @@ sudo rustnet -i eth0 --pcap-export capture.pcap
 #   capture.pcap                    - Standard PCAP file
 #   capture.pcap.connections.jsonl  - Process attribution (PID, name, timestamps)
 
-# Enrich PCAP with process info and create annotated PCAPNG
-python scripts/pcap_enrich.py capture.pcap -o annotated.pcapng
+# Or write an annotated PCAPNG directly during live capture
+sudo rustnet -i eth0 --pcapng-export annotated.pcapng
+
+# Or enrich a classic PCAP after capture
+python scripts/pcap_enrich.py capture.pcap -o enriched.pcapng
 
 # Open in Wireshark - packets now show process info in comments
 wireshark annotated.pcapng
@@ -481,6 +485,6 @@ This workflow gives you the best of both worlds:
 - **RustNet's process attribution**: Know which application generated each packet
 - **Wireshark's deep analysis**: Full protocol dissection with 3000+ analyzers
 
-The enrichment script correlates packets with their originating processes and embeds the information as PCAPNG packet comments, visible in Wireshark's packet details pane.
+Native PCAPNG export embeds live best-effort packet comments directly. The enrichment script remains useful when cleanup-time sidecar metadata completeness is more important than producing a single file during capture.
 
 See [USAGE.md - PCAP Export](USAGE.md#pcap-export) for detailed documentation.

@@ -135,6 +135,9 @@ The experimental eBPF support provides efficient process identification but has 
   - Standard PCAP format compatible with Wireshark/tcpdump
   - Streaming JSONL sidecar with PID, process name, timestamps
   - Python enrichment script to create annotated PCAPNG
+- [x] **Native Annotated PCAPNG Export**: Export a Wireshark-ready PCAPNG file with live best-effort RustNet packet comments (`--pcapng-export`)
+  - Per-packet comments include process/PID, direction, DPI/SNI, and GeoIP/ASN when available
+  - Uses true capture timestamps and bounded attribution retry
 - [ ] **Enhanced PCAP Metadata**: Richer process information in sidecar file
   - Process executable full path (not just name)
   - Command line arguments
