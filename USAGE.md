@@ -290,11 +290,16 @@ Attribution is surfaced in:
 - **PCAPNG packet comments** (`--pcapng-export`), as `pod=`, `ns=`, `pod_uid=`, `container=`, and `container_id=` fields
 - The `pod:`, `ns:`, and `container:` [filter keywords](#keyword-filters)
 
+**Running on a cluster:** the easiest way to use this is the [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) plugin (`kubectl krew install rustnet`). It launches RustNet as an ephemeral debug pod on a node using the official image, mounts the kubelet log directories read-only for name resolution, and cleans up the pod on exit. Since the plugin runs RustNet inside a pod, the default `auto` mode enables attribution without any flags.
+
 ```bash
+# On a Kubernetes cluster: run as an ephemeral debug pod via the plugin
+kubectl rustnet --node worker-3
+
 # Native build with the feature enabled
 cargo build --release --features kubernetes
 
-# Force attribution on outside a pod
+# Force attribution on outside a pod (e.g. directly on a node)
 rustnet --kubernetes on
 ```
 
