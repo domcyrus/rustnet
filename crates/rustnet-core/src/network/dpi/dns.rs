@@ -68,6 +68,7 @@ fn skip_dns_name(payload: &[u8], start: usize) -> Option<usize> {
 fn parse_question(payload: &[u8], start: usize) -> (Option<String>, Option<DnsQueryType>, usize) {
     let mut offset = start;
     let mut name = String::new();
+    let mut name_over_limit = false;
 
     // Parse domain name (label-by-label, with light pointer handling — we
     // only need to terminate the walk, not fully resolve compressed labels).
@@ -95,17 +96,22 @@ fn parse_question(payload: &[u8], start: usize) -> (Option<String>, Option<DnsQu
             break;
         }
 
-        if !name.is_empty() {
-            name.push('.');
-        }
+        if !name_over_limit {
+            if !name.is_empty() {
+                name.push('.');
+            }
 
-        if let Ok(label) = std::str::from_utf8(&payload[offset + 1..offset + 1 + label_len]) {
-            name.push_str(label);
-        }
+            if let Ok(label) = std::str::from_utf8(&payload[offset + 1..offset + 1 + label_len]) {
+                name.push_str(label);
+            }
 
-        // Enforce RFC 1035 maximum name length.
-        if name.len() > MAX_DNS_NAME_LEN {
-            break;
+            // Enforce RFC 1035 maximum name length: stop accumulating, but
+            // keep walking the remaining labels so `offset` ends up past the
+            // whole QNAME — otherwise QTYPE/QCLASS would be read from name
+            // bytes and report a fabricated query type.
+            if name.len() > MAX_DNS_NAME_LEN {
+                name_over_limit = true;
+            }
         }
 
         offset += 1 + label_len;
@@ -414,6 +420,9 @@ mod tests {
             // Name should be truncated near the RFC limit, not the full 630+ chars
             assert!(name.len() <= MAX_DNS_NAME_LEN + 63 + 1);
         }
+        // The walk must still consume the whole QNAME so QTYPE is read from
+        // the right offset — not fabricated from mid-name bytes.
+        assert_eq!(info.query_type, Some(DnsQueryType::A));
     }
 
     #[test]

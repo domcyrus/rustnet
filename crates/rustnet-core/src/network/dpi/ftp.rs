@@ -27,30 +27,38 @@ const FTP_COMMANDS: &[&str] = &[
     "SIZE", "MDTM", "MLSD", "MLST",
 ];
 
+/// Commands accepted by the port-independent signature check. This is the
+/// subset of [`FTP_COMMANDS`] that no other common line-based protocol
+/// shares: SMTP claims `AUTH`/`QUIT`/`NOOP`/`HELP`, POP3 claims
+/// `USER`/`PASS`/`STAT`/`LIST`/`RETR`/`DELE`, and NNTP claims `MODE`, so
+/// matching those off port 21 would label mail and news flows as FTP.
+const FTP_DISTINCTIVE_COMMANDS: &[&str] = &[
+    "ACCT", "CWD", "CDUP", "SMNT", "REIN", "PORT", "PASV", "TYPE", "STRU", "STOR", "STOU", "APPE",
+    "ALLO", "REST", "RNFR", "RNTO", "ABOR", "RMD", "MKD", "PWD", "NLST", "SITE", "SYST", "FEAT",
+    "OPTS", "EPSV", "EPRT", "PBSZ", "PROT", "CCC", "SIZE", "MDTM", "MLSD", "MLST",
+];
+
 /// Cheap heuristic that returns `true` when a payload's first line plausibly
 /// belongs to the FTP control channel. Used so non-standard-port flows can
 /// still be classified.
+///
+/// Only distinctively-FTP commands count as a signature. Server replies
+/// (`220 <banner>`) are deliberately NOT matched here: the 3-digit reply
+/// grammar is shared verbatim by SMTP, POP3-era protocols, and NNTP, so
+/// off port 21 a reply line carries no FTP signal. Replies are still parsed
+/// by [`analyze_ftp`] on the port-21 path.
 pub fn is_ftp(payload: &[u8]) -> bool {
     let line = first_line(payload);
     if line.is_empty() {
         return false;
     }
-    // Server response: 3-digit code, then space or '-' (continuation marker).
-    if line.len() >= 4
-        && line[0].is_ascii_digit()
-        && line[1].is_ascii_digit()
-        && line[2].is_ascii_digit()
-        && (line[3] == b' ' || line[3] == b'-')
-    {
-        return true;
-    }
-    // Client request: known command (case-insensitive) followed by space, CRLF,
-    // or end-of-line.
     let upper = first_token_upper(line);
     if upper.is_empty() {
         return false;
     }
-    FTP_COMMANDS.iter().any(|cmd| cmd.as_bytes() == upper)
+    FTP_DISTINCTIVE_COMMANDS
+        .iter()
+        .any(|cmd| cmd.as_bytes() == upper)
 }
 
 /// Parse an FTP control-channel payload. Returns `None` when the payload does
@@ -71,6 +79,11 @@ pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
         && (line[3] == b' ' || line[3] == b'-')
     {
         let code = std::str::from_utf8(&line[0..3]).ok()?.parse::<u16>().ok()?;
+        // RFC 959 §4.2: the first digit is 1-5 and the second 0-5. Anything
+        // else ("999 hi") is not an FTP reply.
+        if !(1..=5).contains(&(code / 100)) || (code / 10) % 10 > 5 {
+            return None;
+        }
         let is_continuation = line[3] == b'-';
         let message = std::str::from_utf8(&line[4..])
             .ok()
@@ -208,8 +221,10 @@ mod tests {
 
     #[test]
     fn detects_server_greeting() {
+        // Replies are parsed on the port-21 path but are NOT a signature:
+        // the 3-digit grammar is shared with SMTP/POP3/NNTP.
         let payload = b"220 ProFTPD 1.3.7 Server (Example) [::ffff:10.0.0.1]\r\n";
-        assert!(is_ftp(payload));
+        assert!(!is_ftp(payload));
         let info = analyze_ftp(payload).expect("should parse");
         assert!(matches!(info.message_type, FtpMessageType::Response));
         assert_eq!(info.response_code, Some(220));
@@ -219,9 +234,32 @@ mod tests {
     #[test]
     fn detects_continuation_response() {
         let payload = b"220-Welcome to the FTP service.\r\n220 Ready.\r\n";
-        assert!(is_ftp(payload));
+        assert!(!is_ftp(payload));
         let info = analyze_ftp(payload).expect("should parse");
         assert_eq!(info.response_code, Some(220));
+    }
+
+    #[test]
+    fn signature_ignores_verbs_shared_with_mail_protocols() {
+        // SMTP traffic must not be classified as FTP off port 21.
+        assert!(!is_ftp(b"220 smtp.gmail.com ESMTP x1234\r\n"));
+        assert!(!is_ftp(b"EHLO mail.example.com\r\n"));
+        assert!(!is_ftp(b"AUTH LOGIN\r\n"));
+        // POP3 shares USER/PASS/RETR/LIST/DELE with FTP.
+        assert!(!is_ftp(b"USER alice\r\n"));
+        assert!(!is_ftp(b"RETR 1\r\n"));
+        // Distinctively-FTP commands still trigger the signature.
+        assert!(is_ftp(b"PASV\r\n"));
+        assert!(is_ftp(b"TYPE I\r\n"));
+        assert!(is_ftp(b"cwd /pub\r\n"));
+    }
+
+    #[test]
+    fn rejects_out_of_range_reply_codes() {
+        // RFC 959 reply codes are 1xx-5xx with second digit 0-5.
+        assert!(analyze_ftp(b"999 hello\r\n").is_none());
+        assert!(analyze_ftp(b"090 hello\r\n").is_none());
+        assert!(analyze_ftp(b"260-x\r\n").is_none());
     }
 
     #[test]

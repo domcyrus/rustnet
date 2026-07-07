@@ -2529,7 +2529,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-capture"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "log",
@@ -2538,7 +2538,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2555,7 +2555,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "libbpf-cargo",

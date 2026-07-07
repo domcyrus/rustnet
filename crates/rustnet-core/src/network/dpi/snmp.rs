@@ -62,32 +62,32 @@ pub fn analyze_snmp(payload: &[u8]) -> Option<SnmpInfo> {
     let version = parse_version(&payload[offset..offset + version_len])?;
     offset += version_len;
 
-    // Parse community string for v1/v2c (OCTET STRING)
-    let community = if matches!(version, SnmpVersion::V1 | SnmpVersion::V2c) {
-        if offset >= payload.len() || payload[offset] != BER_OCTET_STRING {
-            None
-        } else {
+    // Parse community string for v1/v2c (OCTET STRING). It is mandatory in
+    // both versions (RFC 1157 §4, RFC 3416), so its absence means the
+    // payload is not SNMP.
+    let (community, pdu_type) = match version {
+        SnmpVersion::V1 | SnmpVersion::V2c => {
+            if offset >= payload.len() || payload[offset] != BER_OCTET_STRING {
+                return None;
+            }
             offset += 1;
             let (comm_len, len_bytes) = parse_ber_length(&payload[offset..])?;
             offset += len_bytes;
 
             if offset + comm_len > payload.len() {
-                None
-            } else {
-                let community_bytes = &payload[offset..offset + comm_len];
-                offset += comm_len;
-                std::str::from_utf8(community_bytes)
-                    .ok()
-                    .map(|s| s.to_string())
+                return None;
             }
-        }
-    } else {
-        // v3 has different structure - skip community
-        None
-    };
+            let community_bytes = &payload[offset..offset + comm_len];
+            offset += comm_len;
+            let community = std::str::from_utf8(community_bytes)
+                .ok()
+                .map(|s| s.to_string());
 
-    // Find PDU type (context-specific tag 0xA0-0xA8)
-    let pdu_type = find_pdu_type(&payload[offset..])?;
+            // The PDU tag directly follows the community string.
+            (community, pdu_type_at(payload, offset)?)
+        }
+        SnmpVersion::V3 => (None, v3_pdu_type(payload, offset)?),
+    };
 
     Some(SnmpInfo {
         version,
@@ -142,28 +142,59 @@ fn parse_version(data: &[u8]) -> Option<SnmpVersion> {
     }
 }
 
-/// Find the PDU type in the remaining data
-fn find_pdu_type(data: &[u8]) -> Option<SnmpPduType> {
-    // Look for context-specific tags (0xA0-0xA8). Single pass: the match
-    // both gates non-PDU bytes (via `_ => continue`) and converts the tag
-    // into its variant, so we no longer carry a dead `Unknown(other)` arm
-    // shadowed by the outer range check.
-    for &byte in data.iter().take(50) {
-        let pdu_type = match byte {
-            PDU_GET_REQUEST => SnmpPduType::GetRequest,
-            PDU_GET_NEXT_REQUEST => SnmpPduType::GetNextRequest,
-            PDU_GET_RESPONSE => SnmpPduType::GetResponse,
-            PDU_SET_REQUEST => SnmpPduType::SetRequest,
-            PDU_TRAP_V1 => SnmpPduType::Trap,
-            PDU_GET_BULK_REQUEST => SnmpPduType::GetBulkRequest,
-            PDU_INFORM_REQUEST => SnmpPduType::InformRequest,
-            PDU_TRAP_V2 => SnmpPduType::TrapV2,
-            PDU_REPORT => SnmpPduType::Report,
-            _ => continue,
-        };
-        return Some(pdu_type);
+/// Read the PDU tag expected at exactly `offset`. Structural — never scans:
+/// a byte in the 0xA0-0xA8 range inside a length or INTEGER value (e.g. a
+/// request-id) must not be mistaken for a PDU tag.
+fn pdu_type_at(payload: &[u8], offset: usize) -> Option<SnmpPduType> {
+    let pdu_type = match *payload.get(offset)? {
+        PDU_GET_REQUEST => SnmpPduType::GetRequest,
+        PDU_GET_NEXT_REQUEST => SnmpPduType::GetNextRequest,
+        PDU_GET_RESPONSE => SnmpPduType::GetResponse,
+        PDU_SET_REQUEST => SnmpPduType::SetRequest,
+        PDU_TRAP_V1 => SnmpPduType::Trap,
+        PDU_GET_BULK_REQUEST => SnmpPduType::GetBulkRequest,
+        PDU_INFORM_REQUEST => SnmpPduType::InformRequest,
+        PDU_TRAP_V2 => SnmpPduType::TrapV2,
+        PDU_REPORT => SnmpPduType::Report,
+        _ => return None,
+    };
+    Some(pdu_type)
+}
+
+/// Walk the SNMPv3 message structure (RFC 3412 §6) to the PDU tag:
+/// msgGlobalData (SEQUENCE) and msgSecurityParameters (OCTET STRING) are
+/// skipped whole, then msgData is either a plaintext ScopedPDU — a SEQUENCE
+/// holding contextEngineID, contextName, and the PDU — or an encrypted
+/// OCTET STRING, in which case the PDU type is not visible.
+fn v3_pdu_type(payload: &[u8], offset: usize) -> Option<SnmpPduType> {
+    let offset = skip_tlv(payload, offset, BER_SEQUENCE)?; // msgGlobalData
+    let offset = skip_tlv(payload, offset, BER_OCTET_STRING)?; // msgSecurityParameters
+
+    match *payload.get(offset)? {
+        BER_SEQUENCE => {
+            // Plaintext ScopedPDU: enter the SEQUENCE, then skip
+            // contextEngineID and contextName.
+            let mut offset = offset + 1;
+            let (_, len_bytes) = parse_ber_length(&payload[offset..])?;
+            offset += len_bytes;
+            let offset = skip_tlv(payload, offset, BER_OCTET_STRING)?; // contextEngineID
+            let offset = skip_tlv(payload, offset, BER_OCTET_STRING)?; // contextName
+            pdu_type_at(payload, offset)
+        }
+        BER_OCTET_STRING => Some(SnmpPduType::Encrypted),
+        _ => None,
     }
-    None
+}
+
+/// Skip one TLV with the expected tag, returning the offset just past it.
+fn skip_tlv(payload: &[u8], offset: usize, expected_tag: u8) -> Option<usize> {
+    if *payload.get(offset)? != expected_tag {
+        return None;
+    }
+    let offset = offset + 1;
+    let (len, len_bytes) = parse_ber_length(&payload[offset..])?;
+    let end = offset.checked_add(len_bytes)?.checked_add(len)?;
+    (end <= payload.len()).then_some(end)
 }
 
 #[cfg(test)]
@@ -299,25 +330,95 @@ mod tests {
         assert_eq!(bytes, 3);
     }
 
-    #[test]
-    fn test_find_pdu_type_skips_non_pdu_bytes() {
-        // Leading bytes are non-PDU (request-ID INTEGER, length, etc.);
-        // the scan must skip past them and land on the GetBulkRequest tag.
-        let data = [0x02, 0x04, 0x00, 0x00, 0x00, 0x07, PDU_GET_BULK_REQUEST];
-        assert_eq!(find_pdu_type(&data), Some(SnmpPduType::GetBulkRequest));
+    /// Build an SNMPv3 message. `scoped_pdu_plaintext` selects between a
+    /// plaintext ScopedPDU (carrying a GetRequest) and an encrypted one.
+    fn build_snmp_v3(scoped_pdu_plaintext: bool) -> Vec<u8> {
+        let mut packet = Vec::new();
+
+        packet.push(BER_SEQUENCE);
+        let len_pos = packet.len();
+        packet.push(0x00);
+
+        // Version: INTEGER 3 (v3)
+        packet.push(BER_INTEGER);
+        packet.push(0x01);
+        packet.push(0x03);
+
+        // msgGlobalData SEQUENCE: msgID, msgMaxSize, msgFlags, msgSecurityModel.
+        // The msgID value 0x12A34456 deliberately contains a 0xA3 byte — the
+        // old scanning detector misread it as a SetRequest PDU tag.
+        packet.push(BER_SEQUENCE);
+        packet.push(0x10);
+        packet.push(BER_INTEGER);
+        packet.push(0x04);
+        packet.extend_from_slice(&[0x12, 0xA3, 0x44, 0x56]); // msgID
+        packet.push(BER_INTEGER);
+        packet.push(0x02);
+        packet.extend_from_slice(&[0x05, 0xDC]); // msgMaxSize 1500
+        packet.push(BER_OCTET_STRING);
+        packet.push(0x01);
+        packet.push(0x04); // msgFlags: reportable
+        packet.push(BER_INTEGER);
+        packet.push(0x01);
+        packet.push(0x03); // msgSecurityModel: USM
+
+        // msgSecurityParameters: opaque OCTET STRING
+        packet.push(BER_OCTET_STRING);
+        packet.push(0x02);
+        packet.extend_from_slice(&[0x30, 0x00]);
+
+        if scoped_pdu_plaintext {
+            // ScopedPDU SEQUENCE: contextEngineID, contextName, PDU
+            packet.push(BER_SEQUENCE);
+            packet.push(0x0D);
+            packet.push(BER_OCTET_STRING);
+            packet.push(0x02);
+            packet.extend_from_slice(&[0x80, 0x01]); // contextEngineID
+            packet.push(BER_OCTET_STRING);
+            packet.push(0x00); // contextName (empty)
+            packet.push(PDU_GET_REQUEST);
+            packet.push(0x05);
+            packet.push(BER_INTEGER);
+            packet.push(0x01);
+            packet.push(0x01); // request-id
+            packet.push(BER_SEQUENCE);
+            packet.push(0x00); // varbinds (empty)
+        } else {
+            // Encrypted ScopedPDU: opaque OCTET STRING
+            packet.push(BER_OCTET_STRING);
+            packet.push(0x04);
+            packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+        }
+
+        packet[len_pos] = (packet.len() - len_pos - 1) as u8;
+        packet
     }
 
     #[test]
-    fn test_find_pdu_type_returns_none_when_no_pdu() {
-        let data = [0x00, 0x01, 0x02, 0x03];
-        assert!(find_pdu_type(&data).is_none());
+    fn test_snmp_v3_plaintext_scoped_pdu() {
+        let packet = build_snmp_v3(true);
+        let info = analyze_snmp(&packet).expect("should parse");
+        assert_eq!(info.version, SnmpVersion::V3);
+        assert_eq!(info.community, None);
+        assert_eq!(info.pdu_type, SnmpPduType::GetRequest);
     }
 
     #[test]
-    fn test_find_pdu_type_caps_search_at_50_bytes() {
-        // PDU tag sits at offset 60 — beyond the cap, so it must not be found.
-        let mut data = vec![0x00u8; 60];
-        data.push(PDU_GET_REQUEST);
-        assert!(find_pdu_type(&data).is_none());
+    fn test_snmp_v3_encrypted_scoped_pdu() {
+        let packet = build_snmp_v3(false);
+        let info = analyze_snmp(&packet).expect("should parse");
+        assert_eq!(info.version, SnmpVersion::V3);
+        assert_eq!(info.pdu_type, SnmpPduType::Encrypted);
+    }
+
+    #[test]
+    fn test_pdu_tag_not_scanned_from_value_bytes() {
+        // A v1 message whose community is followed by a non-PDU byte must be
+        // rejected — the detector must not scan ahead for a 0xA0-0xA8 byte.
+        let mut packet = build_snmp_v1_get("public");
+        // Overwrite the PDU tag with an INTEGER tag: still not SNMP.
+        let pdu_pos = packet.iter().position(|&b| b == PDU_GET_REQUEST).unwrap();
+        packet[pdu_pos] = BER_INTEGER;
+        assert!(analyze_snmp(&packet).is_none());
     }
 }

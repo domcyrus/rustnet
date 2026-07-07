@@ -10,26 +10,23 @@ pub fn is_mqtt_packet(payload: &[u8]) -> bool {
     let packet_type = payload[0] >> 4;
     let flags = payload[0] & 0x0F;
 
-    // Valid MQTT packet types are 1-14
-    if !(1..=14).contains(&packet_type) {
+    // Valid MQTT packet types are 1-15 (AUTH=15 was added in MQTT 5)
+    if !(1..=15).contains(&packet_type) {
         return false;
     }
 
-    // Validate flags for packet types with fixed flag requirements (MQTT spec §2.1.2)
-    match packet_type {
-        1 | 2 | 4 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 => {
-            // CONNECT, CONNACK, PUBACK, PUBREL, PUBCOMP, SUBACK, UNSUBACK,
-            // PINGREQ/RESP, DISCONNECT must have flags = 0, except SUBSCRIBE(8)
-            // and UNSUBSCRIBE(10) which must have 0x02.
-            let expected = match packet_type {
-                8 | 10 => 0x02, // SUBSCRIBE, UNSUBSCRIBE require bit 1 set
-                _ => 0x00,
-            };
-            if flags != expected {
-                return false;
-            }
+    // Validate flags for packet types with fixed flag requirements (MQTT
+    // spec §2.1.2): every type except PUBLISH(3), whose flags carry
+    // DUP/QoS/RETAIN, has reserved flags — 0x02 for PUBREL(6),
+    // SUBSCRIBE(8), and UNSUBSCRIBE(10), 0x00 for the rest.
+    if packet_type != 3 {
+        let expected = match packet_type {
+            6 | 8 | 10 => 0x02,
+            _ => 0x00,
+        };
+        if flags != expected {
+            return false;
         }
-        _ => {} // PUBLISH(3), PUBREC(5) — flags carry DUP/QoS/RETAIN
     }
 
     // Validate remaining length encoding and check it's plausible
@@ -69,6 +66,9 @@ pub fn analyze_mqtt(payload: &[u8]) -> Option<MqttInfo> {
         2 => MqttPacketType::Connack,
         3 => MqttPacketType::Publish,
         4 => MqttPacketType::Puback,
+        5 => MqttPacketType::Pubrec,
+        6 => MqttPacketType::Pubrel,
+        7 => MqttPacketType::Pubcomp,
         8 => MqttPacketType::Subscribe,
         9 => MqttPacketType::Suback,
         10 => MqttPacketType::Unsubscribe,
@@ -76,6 +76,7 @@ pub fn analyze_mqtt(payload: &[u8]) -> Option<MqttInfo> {
         12 => MqttPacketType::Pingreq,
         13 => MqttPacketType::Pingresp,
         14 => MqttPacketType::Disconnect,
+        15 => MqttPacketType::Auth,
         _ => return None,
     };
 
@@ -436,11 +437,36 @@ mod tests {
     }
 
     #[test]
-    fn test_type_15_invalid() {
-        // Type 15 is reserved
+    fn test_type_15_auth() {
+        // Type 15 is AUTH in MQTT 5. Not signature-detected (only CONNECT
+        // is), but the port-based path must classify it.
         let pkt = vec![0xF0, 0x00];
         assert!(!is_mqtt_packet(&pkt));
-        assert!(analyze_mqtt(&pkt).is_none());
+        let info = analyze_mqtt(&pkt).unwrap();
+        assert_eq!(info.packet_type, MqttPacketType::Auth);
+    }
+
+    #[test]
+    fn test_qos2_flow_packets() {
+        // PUBREC / PUBREL / PUBCOMP make up the QoS 2 delivery flow;
+        // PUBREL carries the reserved flags 0x02 (MQTT spec §2.1.2).
+        let pubrec = vec![0x50, 0x02, 0x00, 0x01];
+        assert_eq!(
+            analyze_mqtt(&pubrec).unwrap().packet_type,
+            MqttPacketType::Pubrec
+        );
+
+        let pubrel = vec![0x62, 0x02, 0x00, 0x01];
+        assert_eq!(
+            analyze_mqtt(&pubrel).unwrap().packet_type,
+            MqttPacketType::Pubrel
+        );
+
+        let pubcomp = vec![0x70, 0x02, 0x00, 0x01];
+        assert_eq!(
+            analyze_mqtt(&pubcomp).unwrap().packet_type,
+            MqttPacketType::Pubcomp
+        );
     }
 
     #[test]

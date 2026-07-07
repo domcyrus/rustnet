@@ -6,7 +6,7 @@ resolver = "3"
 # `<field>.workspace = true`. The binary keeps its own `version` (it tracks the
 # user-facing 1.x release line, independent of the 0.x library crates).
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 authors = ["domcyrus"]
 edition = "2024"
 rust-version = "1.88.0" # Let-chains require Rust 1.88.0+
@@ -19,9 +19,9 @@ license = "Apache-2.0"
 # instead of one edit per member manifest. Members reference these with
 # `<dep>.workspace = true`.
 [workspace.dependencies]
-rustnet-core = { version = "0.2.0", path = "crates/rustnet-core" }
-rustnet-capture = { version = "0.2.0", path = "crates/rustnet-capture" }
-rustnet-host = { version = "0.2.0", path = "crates/rustnet-host" }
+rustnet-core = { version = "0.3.0", path = "crates/rustnet-core" }
+rustnet-capture = { version = "0.3.0", path = "crates/rustnet-capture" }
+rustnet-host = { version = "0.3.0", path = "crates/rustnet-host" }
 anyhow = "1.0"
 log = "0.4"
 
