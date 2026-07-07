@@ -610,6 +610,3 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, inner);
 }
-
-
-

@@ -33,7 +33,11 @@ impl Component for HelpTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        try_handle_pane_scroll(key, ctx.ui_state.visible_rows, &mut ctx.ui_state.help_scroll)
+        try_handle_pane_scroll(
+            key,
+            ctx.ui_state.visible_rows,
+            &mut ctx.ui_state.help_scroll,
+        )
     }
 
     fn handle_mouse(
