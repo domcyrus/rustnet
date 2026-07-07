@@ -19,6 +19,31 @@ const INITIAL_SALT_V2: &[u8] = &[
     0xf9, 0xbd, 0x2e, 0xd9,
 ];
 
+// Initial salt for IETF drafts 29-32 (and drafts 33-34 reused the v1 salt)
+const INITIAL_SALT_DRAFT_29: &[u8] = &[
+    0xaf, 0xbf, 0xec, 0x28, 0x99, 0x93, 0xd2, 0x4c, 0x9e, 0x97, 0x86, 0xf1, 0x9c, 0x61, 0x11, 0xe0,
+    0x43, 0x90, 0xa8, 0x99,
+];
+
+// Initial salt for IETF drafts 23-28 (also used by Facebook mvfst 0xfaceb002 = draft-27)
+const INITIAL_SALT_DRAFT_23: &[u8] = &[
+    0xc3, 0xee, 0xf7, 0x12, 0xc7, 0x2e, 0xbb, 0x5a, 0x11, 0xa7, 0xd2, 0x43, 0x2b, 0xb4, 0x63, 0x65,
+    0xbe, 0xf9, 0xf5, 0x02,
+];
+
+/// Select the Initial salt for a QUIC version (RFC 9001 §5.2, RFC 9369 §3.3.1,
+/// and the corresponding draft revisions).
+fn initial_salt_for_version(version: u32) -> &'static [u8] {
+    if is_quic_v2(version) {
+        return INITIAL_SALT_V2;
+    }
+    match version {
+        0xff00_001d..=0xff00_0020 => INITIAL_SALT_DRAFT_29, // drafts 29-32
+        0xff00_0017..=0xff00_001c | 0xface_b002 => INITIAL_SALT_DRAFT_23, // drafts 23-28, mvfst
+        _ => INITIAL_SALT_V1, // v1, drafts 33-34, and unknown versions
+    }
+}
+
 // ============================================================================
 // SNI Validation and Parsing Helpers
 // ============================================================================
@@ -251,23 +276,7 @@ fn merge_quic_packet_info(existing: Option<QuicInfo>, new: QuicInfo) -> QuicInfo
         None => new,
         Some(mut existing) => {
             // Prefer higher connection state
-            let existing_priority = match existing.connection_state {
-                QuicConnectionState::Unknown => 0,
-                QuicConnectionState::Initial => 1,
-                QuicConnectionState::Handshaking => 2,
-                QuicConnectionState::Connected => 3,
-                QuicConnectionState::Draining => 4,
-                QuicConnectionState::Closed => 5,
-            };
-            let new_priority = match new.connection_state {
-                QuicConnectionState::Unknown => 0,
-                QuicConnectionState::Initial => 1,
-                QuicConnectionState::Handshaking => 2,
-                QuicConnectionState::Connected => 3,
-                QuicConnectionState::Draining => 4,
-                QuicConnectionState::Closed => 5,
-            };
-            if new_priority > existing_priority {
+            if new.connection_state.priority() > existing.connection_state.priority() {
                 existing.connection_state = new.connection_state;
             }
 
@@ -309,9 +318,37 @@ fn merge_quic_packet_info(existing: Option<QuicInfo>, new: QuicInfo) -> QuicInfo
                 existing.version_string = new.version_string;
             }
 
-            // Merge crypto reassembler if present
-            if existing.crypto_reassembler.is_none() && new.crypto_reassembler.is_some() {
-                existing.crypto_reassembler = new.crypto_reassembler;
+            // Merge crypto reassemblers. Both packets can carry CRYPTO frames:
+            // a large ClientHello (e.g. with post-quantum key shares) is split
+            // across two Initial packets that are often coalesced into one
+            // datagram. Dropping the second packet's fragments would lose the
+            // tail of the ClientHello and with it the SNI.
+            match (&mut existing.crypto_reassembler, new.crypto_reassembler) {
+                (None, Some(new_reassembler)) => {
+                    existing.crypto_reassembler = Some(new_reassembler);
+                }
+                (Some(existing_reassembler), Some(new_reassembler)) => {
+                    for (&frag_offset, data) in new_reassembler.get_fragments() {
+                        if let Err(e) = existing_reassembler.add_fragment(frag_offset, data.clone())
+                        {
+                            warn!("QUIC: Failed to merge coalesced CRYPTO fragment: {}", e);
+                        }
+                    }
+
+                    // Re-extract if the merged fragments can improve on what we have
+                    let sni_missing_or_partial = existing
+                        .tls_info
+                        .as_ref()
+                        .and_then(|tls| tls.sni.as_ref())
+                        .is_none_or(|s| is_partial_sni(s));
+                    if sni_missing_or_partial
+                        && let Some(tls_info) =
+                            try_extract_tls_from_reassembler(existing_reassembler, false)
+                    {
+                        existing.tls_info = Some(tls_info);
+                    }
+                }
+                _ => {}
             }
 
             existing
@@ -396,6 +433,25 @@ fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<QuicInfo>, us
         return (None, 0);
     }
     offset += scid_len;
+
+    // Retry and Version Negotiation packets have no Length field: the retry
+    // token / supported-version list simply extends to the end of the
+    // datagram (RFC 9000 §17.2.5, RFC 8999 §6). Parsing a Length varint here
+    // would read garbage and misinterpret the trailing bytes as coalesced
+    // packets, so consume the rest of the datagram instead.
+    if matches!(
+        packet_type,
+        QuicPacketType::Retry | QuicPacketType::VersionNegotiation
+    ) {
+        extract_tls_from_long_header_packet(
+            payload,
+            &mut quic_info,
+            &payload[dcid_range],
+            version,
+            packet_type,
+        );
+        return (Some(quic_info), payload.len());
+    }
 
     // For Initial packets, parse token length
     if packet_type == QuicPacketType::Initial {
@@ -484,7 +540,12 @@ fn extract_tls_from_long_header_packet(
     match packet_type {
         QuicPacketType::Initial if dcid_len > 0 => {
             debug!("QUIC: Processing Initial packet with DCID len={}", dcid_len);
-            // Try to decrypt as client packet first (most likely to have SNI)
+            // Only client Initial packets are decryptable here: Initial keys
+            // are derived from the client's original DCID (RFC 9001 §5.2),
+            // and only client first-flight packets carry that value in their
+            // own DCID field. A server Initial's DCID is the client's SCID,
+            // so deriving keys from it can never succeed without
+            // connection-level state that remembers the original DCID.
             if let Some(decrypted_payload) = decrypt_client_initial_packet(payload, dcid, version) {
                 debug!("QUIC: Successfully decrypted Client Initial packet");
                 // Extract TLS info from decrypted payload using reassembly
@@ -493,30 +554,15 @@ fn extract_tls_from_long_header_packet(
                 {
                     quic_info.tls_info = Some(tls_info);
                     // This is a Client Initial packet with crypto frames - mark it for connection tracking
-                    if !dcid.is_empty() {
-                        quic_info.connection_id_hex = Some(connection_id_to_hex(dcid));
-                        debug!(
-                            "QUIC: Marking Client Initial packet with DCID {} for connection tracking",
-                            connection_id_to_hex(dcid)
-                        );
-                    }
-                }
-            } else if let Some(decrypted_payload) =
-                decrypt_server_initial_packet(payload, dcid, version)
-            {
-                debug!("QUIC: Successfully decrypted Server Initial packet");
-                // Server Initial rarely has SNI but may have ALPN or other TLS info
-                if let Some(tls_info) =
-                    process_crypto_frames_in_packet(&decrypted_payload, quic_info)
-                {
-                    quic_info.tls_info = Some(tls_info);
+                    quic_info.connection_id_hex = Some(connection_id_to_hex(dcid));
+                    debug!(
+                        "QUIC: Marking Client Initial packet with DCID {} for connection tracking",
+                        connection_id_to_hex(dcid)
+                    );
                 }
             } else {
                 debug!(
-                    "QUIC: Failed to decrypt Initial packet (tried both client and server keys)"
-                );
-                debug!(
-                    "QUIC: Packet details - DCID={:02x?}, version=0x{:08x}, payload_len={}",
+                    "QUIC: Failed to decrypt Initial packet as client first flight - DCID={:02x?}, version=0x{:08x}, payload_len={}",
                     dcid,
                     version,
                     payload.len()
@@ -554,6 +600,13 @@ fn parse_short_header_packet(payload: &[u8]) -> Option<QuicInfo> {
         return None;
     }
 
+    // A 1-RTT packet must have the fixed bit set (first byte 01xxxxxx,
+    // RFC 9000 §17.3.1). This also stops trailing garbage after a misparsed
+    // coalesced packet from being claimed as a Connected 1-RTT packet.
+    if (payload[0] & 0xc0) != 0x40 {
+        return None;
+    }
+
     // For short header, we don't have version info
     let mut quic_info = QuicInfo::new(0);
     quic_info.packet_type = QuicPacketType::OneRtt;
@@ -576,14 +629,8 @@ fn parse_short_header_packet(payload: &[u8]) -> Option<QuicInfo> {
 
 /// Decrypt a QUIC Client Initial packet (prioritized for SNI extraction)
 fn decrypt_client_initial_packet(packet: &[u8], dcid: &[u8], version: u32) -> Option<Vec<u8>> {
-    let salt = if is_quic_v2(version) {
-        INITIAL_SALT_V2
-    } else {
-        INITIAL_SALT_V1
-    };
-
     // Derive initial secret using HKDF
-    let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, salt);
+    let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, initial_salt_for_version(version));
     let initial_secret = salt.extract(dcid);
 
     // Derive client initial secret
@@ -602,38 +649,6 @@ fn decrypt_client_initial_packet(packet: &[u8], dcid: &[u8], version: u32) -> Op
     let result = try_decrypt_initial_with_secret(packet, &client_secret, version);
     if result.is_none() {
         debug!("QUIC: Client Initial decryption failed");
-    }
-    result
-}
-
-/// Decrypt a QUIC Server Initial packet
-fn decrypt_server_initial_packet(packet: &[u8], dcid: &[u8], version: u32) -> Option<Vec<u8>> {
-    let salt = if is_quic_v2(version) {
-        INITIAL_SALT_V2
-    } else {
-        INITIAL_SALT_V1
-    };
-
-    // Derive initial secret using HKDF
-    let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, salt);
-    let initial_secret = salt.extract(dcid);
-
-    // Derive server initial secret
-    let mut server_secret = [0u8; 32];
-    if !derive_secret(&initial_secret, b"server in", &mut server_secret) {
-        debug!("QUIC: Failed to derive server initial secret");
-        return None;
-    }
-
-    debug!(
-        "QUIC: Attempting server Initial decryption with DCID len={}",
-        dcid.len()
-    );
-
-    // Try to decrypt as a server Initial packet
-    let result = try_decrypt_initial_with_secret(packet, &server_secret, version);
-    if result.is_none() {
-        debug!("QUIC: Server Initial decryption failed");
     }
     result
 }
@@ -786,8 +801,39 @@ pub fn process_crypto_frames_in_packet(
     // Ensure we have a reassembler
     quic_info.ensure_reassembler();
 
-    let mut offset = 0;
     let mut found_crypto_frames = false;
+
+    // Even if the frame walk stops early on a malformed or truncated frame,
+    // CRYPTO fragments collected before that point are kept in the
+    // reassembler, so still attempt TLS extraction below.
+    if scan_packet_frames(payload, quic_info, &mut found_crypto_frames).is_none() {
+        debug!("QUIC: Frame walk stopped early on malformed or truncated frame");
+    }
+
+    if found_crypto_frames
+        && let Some(reassembler) = &mut quic_info.crypto_reassembler
+        && let Some(tls_info) = try_extract_tls_from_reassembler(reassembler, false)
+    {
+        debug!(
+            "QUIC: Successfully extracted TLS info: SNI={:?}",
+            tls_info.sni
+        );
+        quic_info.tls_info = Some(tls_info.clone());
+        return Some(tls_info);
+    }
+
+    None
+}
+
+/// Walk all frames in a decrypted packet payload, feeding CRYPTO frames into
+/// the reassembler. Returns `None` if a malformed or truncated frame forced
+/// the walk to stop before the end of the payload.
+fn scan_packet_frames(
+    payload: &[u8],
+    quic_info: &mut QuicInfo,
+    found_crypto_frames: &mut bool,
+) -> Option<()> {
+    let mut offset = 0;
 
     while offset < payload.len() {
         let frame_type_byte = payload[offset];
@@ -858,7 +904,7 @@ pub fn process_crypto_frames_in_packet(
             0x06 => {
                 // CRYPTO frame - this is what we're looking for!
                 debug!("QUIC: Found CRYPTO frame");
-                found_crypto_frames = true;
+                *found_crypto_frames = true;
                 quic_info.has_crypto_frame = true;
 
                 let (crypto_offset, bytes_read) = parse_variable_length_int(&payload[offset..])?;
@@ -1038,19 +1084,7 @@ pub fn process_crypto_frames_in_packet(
         }
     }
 
-    if found_crypto_frames
-        && let Some(reassembler) = &mut quic_info.crypto_reassembler
-        && let Some(tls_info) = try_extract_tls_from_reassembler(reassembler, false)
-    {
-        debug!(
-            "QUIC: Successfully extracted TLS info: SNI={:?}",
-            tls_info.sni
-        );
-        quic_info.tls_info = Some(tls_info.clone());
-        return Some(tls_info);
-    }
-
-    None
+    Some(())
 }
 
 /// Check if SNI is complete (not partial)
@@ -1946,8 +1980,10 @@ pub fn is_quic_packet(payload: &[u8]) -> bool {
     // Short header packet detection
     // Bit 7 is 0, bit 6 is 1 for short header (fixed bit)
     if (first_byte & 0xc0) == 0x40 {
-        // Additional heuristics for short header
-        return payload.len() >= 20 && payload.len() <= 1500;
+        // Minimum plausible 1-RTT packet: first byte + connection ID +
+        // packet number + AEAD tag. No upper bound: GSO/GRO capture can
+        // deliver datagrams well beyond the usual 1500-byte MTU.
+        return payload.len() >= 20;
     }
 
     false
@@ -2612,5 +2648,288 @@ mod tests {
             pkt.len(),
             "unparseable token length should cause us to treat the rest of the datagram as consumed"
         );
+    }
+
+    /// Decode a hex string, ignoring whitespace
+    fn from_hex(s: &str) -> Vec<u8> {
+        let cleaned: Vec<u8> = s.bytes().filter(u8::is_ascii_hexdigit).collect();
+        cleaned
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    /// RFC 9001 Appendix A.2: the complete protected client Initial packet
+    /// (DCID 0x8394c8f03e515708, packet number 2, 1200 bytes).
+    const RFC9001_CLIENT_INITIAL: &str = "
+        c000000001088394c8f03e5157080000449e7b9aec34d1b1c98dd7689fb8ec11
+        d242b123dc9bd8bab936b47d92ec356c0bab7df5976d27cd449f63300099f399
+        1c260ec4c60d17b31f8429157bb35a1282a643a8d2262cad67500cadb8e7378c
+        8eb7539ec4d4905fed1bee1fc8aafba17c750e2c7ace01e6005f80fcb7df6212
+        30c83711b39343fa028cea7f7fb5ff89eac2308249a02252155e2347b63d58c5
+        457afd84d05dfffdb20392844ae812154682e9cf012f9021a6f0be17ddd0c208
+        4dce25ff9b06cde535d0f920a2db1bf362c23e596d11a4f5a6cf3948838a3aec
+        4e15daf8500a6ef69ec4e3feb6b1d98e610ac8b7ec3faf6ad760b7bad1db4ba3
+        485e8a94dc250ae3fdb41ed15fb6a8e5eba0fc3dd60bc8e30c5c4287e53805db
+        059ae0648db2f64264ed5e39be2e20d82df566da8dd5998ccabdae053060ae6c
+        7b4378e846d29f37ed7b4ea9ec5d82e7961b7f25a9323851f681d582363aa5f8
+        9937f5a67258bf63ad6f1a0b1d96dbd4faddfcefc5266ba6611722395c906556
+        be52afe3f565636ad1b17d508b73d8743eeb524be22b3dcbc2c7468d54119c74
+        68449a13d8e3b95811a198f3491de3e7fe942b330407abf82a4ed7c1b311663a
+        c69890f4157015853d91e923037c227a33cdd5ec281ca3f79c44546b9d90ca00
+        f064c99e3dd97911d39fe9c5d0b23a229a234cb36186c4819e8b9c5927726632
+        291d6a418211cc2962e20fe47feb3edf330f2c603a9d48c0fcb5699dbfe58964
+        25c5bac4aee82e57a85aaf4e2513e4f05796b07ba2ee47d80506f8d2c25e50fd
+        14de71e6c418559302f939b0e1abd576f279c4b2e0feb85c1f28ff18f58891ff
+        ef132eef2fa09346aee33c28eb130ff28f5b766953334113211996d20011a198
+        e3fc433f9f2541010ae17c1bf202580f6047472fb36857fe843b19f5984009dd
+        c324044e847a4f4a0ab34f719595de37252d6235365e9b84392b061085349d73
+        203a4a13e96f5432ec0fd4a1ee65accdd5e3904df54c1da510b0ff20dcc0c77f
+        cb2c0e0eb605cb0504db87632cf3d8b4dae6e705769d1de354270123cb11450e
+        fc60ac47683d7b8d0f811365565fd98c4c8eb936bcab8d069fc33bd801b03ade
+        a2e1fbc5aa463d08ca19896d2bf59a071b851e6c239052172f296bfb5e724047
+        90a2181014f3b94a4e97d117b438130368cc39dbb2d198065ae3986547926cd2
+        162f40a29f0c3c8745c0f50fba3852e566d44575c29d39a03f0cda721984b6f4
+        40591f355e12d439ff150aab7613499dbd49adabc8676eef023b15b65bfc5ca0
+        6948109f23f350db82123535eb8a7433bdabcb909271a6ecbcb58b936a88cd4e
+        8f2e6ff5800175f113253d8fa9ca8885c2f552e657dc603f252e1a8e308f76f0
+        be79e2fb8f5d5fbbe2e30ecadd220723c8c0aea8078cdfcb3868263ff8f09400
+        54da48781893a7e49ad5aff4af300cd804a6b6279ab3ff3afb64491c85194aab
+        760d58a606654f9f4400e8b38591356fbf6425aca26dc85244259ff2b19c41b9
+        f96f3ca9ec1dde434da7d2d392b905ddf3d1f9af93d1af5950bd493f5aa731b4
+        056df31bd267b6b90a079831aaf579be0a39013137aac6d404f518cfd4684064
+        7e78bfe706ca4cf5e9c5453e9f7cfd2b8b4c8d169a44e55c88d4a9a7f9474241
+        e221af44860018ab0856972e194cd934";
+
+    /// RFC 9001 Appendix A.2: the CRYPTO frame carried by the client Initial
+    /// (frame header 06 00 40 f1 followed by a 241-byte ClientHello with
+    /// SNI example.com and ALPN "alpn").
+    const RFC9001_CLIENT_CRYPTO_FRAME: &str = "
+        060040f1010000ed0303ebf8fa56f12939b9584a3896472ec40bb863cfd3e868
+        04fe3a47f06a2b69484c00000413011302010000c000000010000e00000b6578
+        616d706c652e636f6dff01000100000a00080006001d0017001800100007000504616c706e
+        0005000501000000000033002600
+        24001d00209370b2c9caa47fbabaf4559fedba753de171fa71f50f1ce15d43e9
+        94ec74d748002b0003020304000d0010000e04030503060302030804080508
+        06002d00020101001c00024001003900320408ffffffffffffffff0504800
+        0ffff07048000ffff0801100104800075300901100f088394c8f03e5157080
+        6048000ffff";
+
+    /// RFC 9001 Appendix A.3: the protected server Initial packet
+    /// (zero-length DCID, SCID 0xf067a5502a4262b5).
+    const RFC9001_SERVER_INITIAL: &str = "
+        cf000000010008f067a5502a4262b5004075c0d95a482cd0991cd25b0aac406a
+        5816b6394100f37a1c69797554780bb38cc5a99f5ede4cf73c3ec2493a1839b3
+        dbcba3f6ea46c5b7684df3548e7ddeb9c3bf9c73cc3f3bded74b562bfb19fb84
+        022f8ef4cdd93795d77d06edbb7aaf2f58891850abbdca3d20398c276456cbc4
+        2158407dd074ee";
+
+    /// RFC 9001 Appendix A.4: a Retry packet responding to the client Initial.
+    const RFC9001_RETRY: &str =
+        "ff000000010008f067a5502a4262b5746f6b656e04a265ba2eff4d829058fb3f0f2496ba";
+
+    #[test]
+    fn test_rfc9001_a1_initial_key_derivation() {
+        let dcid = from_hex("8394c8f03e515708");
+        let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, initial_salt_for_version(1));
+        let initial_secret = salt.extract(&dcid);
+
+        let mut client_secret = [0u8; 32];
+        assert!(derive_secret(
+            &initial_secret,
+            b"client in",
+            &mut client_secret
+        ));
+        assert_eq!(
+            client_secret.to_vec(),
+            from_hex("c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea")
+        );
+
+        let mut key = [0u8; 16];
+        let mut iv = [0u8; 12];
+        let mut hp = [0u8; 16];
+        assert!(derive_packet_protection_key(&client_secret, &mut key, 1));
+        assert!(derive_packet_protection_iv(&client_secret, &mut iv, 1));
+        assert!(derive_header_protection_key(&client_secret, &mut hp, 1));
+        assert_eq!(key.to_vec(), from_hex("1f369613dd76d5467730efcbe3b1a22d"));
+        assert_eq!(iv.to_vec(), from_hex("fa044b2f42a3fd3b46fb255c"));
+        assert_eq!(hp.to_vec(), from_hex("9f50449e04a0e810283a1e9933adedd2"));
+    }
+
+    #[test]
+    fn test_rfc9001_a2_client_initial_end_to_end() {
+        let packet = from_hex(RFC9001_CLIENT_INITIAL);
+        assert_eq!(packet.len(), 1200);
+
+        let info = parse_quic_packet(&packet).expect("client Initial should parse");
+        assert_eq!(info.packet_type, QuicPacketType::Initial);
+        assert_eq!(info.connection_state, QuicConnectionState::Initial);
+        assert_eq!(info.connection_id, from_hex("8394c8f03e515708"));
+        assert!(
+            info.connection_id_hex.is_some(),
+            "decrypted client Initial should be marked for connection tracking"
+        );
+
+        let tls = info
+            .tls_info
+            .expect("decryption should yield ClientHello TLS info");
+        assert_eq!(tls.sni.as_deref(), Some("example.com"));
+        assert_eq!(tls.alpn, vec!["alpn".to_string()]);
+        assert_eq!(tls.version, Some(TlsVersion::Tls13));
+    }
+
+    #[test]
+    fn test_rfc9001_a3_server_initial_parses_without_tls() {
+        let packet = from_hex(RFC9001_SERVER_INITIAL);
+
+        let info = parse_quic_packet(&packet).expect("server Initial should parse");
+        assert_eq!(info.packet_type, QuicPacketType::Initial);
+        // The server Initial has a zero-length DCID; Initial keys derive from
+        // the client's original DCID, which this packet does not carry, so no
+        // TLS info can be extracted.
+        assert!(info.connection_id.is_empty());
+        assert!(info.tls_info.is_none());
+    }
+
+    #[test]
+    fn test_retry_packet_consumes_rest_of_datagram() {
+        let retry = from_hex(RFC9001_RETRY);
+
+        let (info, consumed) = parse_long_header_packet_with_length(&retry);
+        let info = info.expect("Retry packet should parse");
+        assert_eq!(info.packet_type, QuicPacketType::Retry);
+        assert_eq!(
+            consumed,
+            retry.len(),
+            "Retry has no Length field, must consume the whole datagram"
+        );
+
+        // Retry token bytes must not be misparsed as coalesced packets. A
+        // token byte with the short-header bit pattern previously flipped the
+        // connection state to Connected.
+        let mut datagram = retry.clone();
+        datagram.extend_from_slice(&[0x42; 32]);
+        let info = parse_quic_packet(&datagram).expect("datagram should parse");
+        assert_eq!(info.packet_type, QuicPacketType::Retry);
+        assert_eq!(info.connection_state, QuicConnectionState::Initial);
+    }
+
+    #[test]
+    fn test_version_negotiation_consumes_rest_of_datagram() {
+        let mut pkt = vec![0x80u8]; // long header form, no fixed bit required
+        pkt.extend_from_slice(&0u32.to_be_bytes()); // version 0 = negotiation
+        pkt.push(8);
+        pkt.extend_from_slice(&[0xaa; 8]); // DCID
+        pkt.push(0); // SCID len
+        // Supported versions list - must not be misread as a Length field
+        pkt.extend_from_slice(&1u32.to_be_bytes());
+        pkt.extend_from_slice(&0x6b3343cfu32.to_be_bytes());
+
+        let (info, consumed) = parse_long_header_packet_with_length(&pkt);
+        let info = info.expect("Version Negotiation packet should parse");
+        assert_eq!(info.packet_type, QuicPacketType::VersionNegotiation);
+        assert_eq!(consumed, pkt.len());
+    }
+
+    #[test]
+    fn test_short_header_requires_fixed_bit() {
+        assert!(parse_short_header_packet(&[0x00; 30]).is_none());
+        assert!(parse_short_header_packet(&[0x41; 30]).is_some());
+    }
+
+    #[test]
+    fn test_initial_salt_for_version_mapping() {
+        assert_eq!(initial_salt_for_version(0x00000001), INITIAL_SALT_V1);
+        assert_eq!(initial_salt_for_version(0x6b3343cf), INITIAL_SALT_V2);
+        assert_eq!(initial_salt_for_version(0xff00001d), INITIAL_SALT_DRAFT_29); // draft-29
+        assert_eq!(initial_salt_for_version(0xff000020), INITIAL_SALT_DRAFT_29); // draft-32
+        assert_eq!(initial_salt_for_version(0xff00001b), INITIAL_SALT_DRAFT_23); // draft-27
+        assert_eq!(initial_salt_for_version(0xfaceb002), INITIAL_SALT_DRAFT_23); // mvfst
+        assert_eq!(initial_salt_for_version(0xff000022), INITIAL_SALT_V1); // draft-34
+    }
+
+    /// Protect (encrypt) a client Initial packet with a 4-byte packet number
+    /// the way a real client would, so tests can exercise decryption end to
+    /// end (RFC 9001 §5.3, §5.4).
+    fn protect_client_initial(dcid: &[u8], packet_number: u32, frames: &[u8]) -> Vec<u8> {
+        let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, INITIAL_SALT_V1);
+        let initial_secret = salt.extract(dcid);
+        let mut client_secret = [0u8; 32];
+        assert!(derive_secret(
+            &initial_secret,
+            b"client in",
+            &mut client_secret
+        ));
+        let mut key = [0u8; 16];
+        let mut iv = [0u8; 12];
+        let mut hp = [0u8; 16];
+        assert!(derive_packet_protection_key(&client_secret, &mut key, 1));
+        assert!(derive_packet_protection_iv(&client_secret, &mut iv, 1));
+        assert!(derive_header_protection_key(&client_secret, &mut hp, 1));
+
+        let mut header = vec![0xc3]; // long header, Initial, pn_len = 4
+        header.extend_from_slice(&1u32.to_be_bytes());
+        header.push(dcid.len() as u8);
+        header.extend_from_slice(dcid);
+        header.push(0); // SCID len = 0
+        header.push(0); // token length = 0
+        let length = (4 + frames.len() + 16) as u16; // pn + frames + AEAD tag
+        header.extend_from_slice(&(0x4000u16 | length).to_be_bytes());
+        let pn_offset = header.len();
+        header.extend_from_slice(&packet_number.to_be_bytes());
+
+        let aead_key = LessSafeKey::new(UnboundKey::new(&aead::AES_128_GCM, &key).unwrap());
+        let mut nonce_bytes = iv;
+        for i in 0..4 {
+            nonce_bytes[11 - i] ^= ((u64::from(packet_number) >> (i * 8)) & 0xff) as u8;
+        }
+        let nonce = Nonce::assume_unique_for_key(nonce_bytes);
+        let mut ciphertext = frames.to_vec();
+        aead_key
+            .seal_in_place_append_tag(nonce, Aad::from(&header), &mut ciphertext)
+            .unwrap();
+
+        // With a 4-byte packet number the header protection sample is the
+        // first 16 bytes of the ciphertext.
+        let mask = aes_ecb_encrypt(&hp, &ciphertext[..16]).unwrap();
+        let mut packet = header;
+        packet[0] ^= mask[0] & 0x0f;
+        for i in 0..4 {
+            packet[pn_offset + i] ^= mask[1 + i];
+        }
+        packet.extend_from_slice(&ciphertext);
+        packet
+    }
+
+    /// A large ClientHello (e.g. with post-quantum key shares) is split
+    /// across multiple Initial packets that are coalesced into one datagram.
+    /// The CRYPTO fragments of every coalesced packet must be merged before
+    /// extracting the SNI - neither packet alone contains the full hostname.
+    #[test]
+    fn test_coalesced_initials_with_split_crypto_yield_sni() {
+        let crypto_frame = from_hex(RFC9001_CLIENT_CRYPTO_FRAME);
+        let client_hello = &crypto_frame[4..]; // strip frame header 06 00 40 f1
+
+        // Split inside the SNI hostname so packet 1 alone cannot yield it
+        let split = 60;
+        let (part1, part2) = client_hello.split_at(split);
+
+        let mut frames1 = vec![0x06, 0x00, part1.len() as u8]; // CRYPTO, offset 0
+        frames1.extend_from_slice(part1);
+        let mut frames2 = vec![0x06, split as u8]; // CRYPTO, offset 60
+        frames2.extend_from_slice(&(0x4000u16 | part2.len() as u16).to_be_bytes());
+        frames2.extend_from_slice(part2);
+
+        let dcid = from_hex("8394c8f03e515708");
+        let mut datagram = protect_client_initial(&dcid, 0, &frames1);
+        datagram.extend_from_slice(&protect_client_initial(&dcid, 1, &frames2));
+
+        let info = parse_quic_packet(&datagram).expect("coalesced datagram should parse");
+        assert_eq!(info.packet_type, QuicPacketType::Initial);
+        let tls = info
+            .tls_info
+            .expect("merged CRYPTO fragments should yield TLS info");
+        assert_eq!(tls.sni.as_deref(), Some("example.com"));
+        assert_eq!(tls.alpn, vec!["alpn".to_string()]);
     }
 }
