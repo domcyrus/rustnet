@@ -956,6 +956,22 @@ pub enum QuicConnectionState {
     Unknown,
 }
 
+impl QuicConnectionState {
+    /// Ordering used when merging observations: a connection only ever moves
+    /// forward through Unknown -> Initial -> Handshaking -> Connected ->
+    /// Draining -> Closed.
+    pub fn priority(self) -> u8 {
+        match self {
+            QuicConnectionState::Unknown => 0,
+            QuicConnectionState::Initial => 1,
+            QuicConnectionState::Handshaking => 2,
+            QuicConnectionState::Connected => 3,
+            QuicConnectionState::Draining => 4,
+            QuicConnectionState::Closed => 5,
+        }
+    }
+}
+
 impl fmt::Display for QuicConnectionState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -978,6 +994,8 @@ fn quic_version_to_string(version: u32) -> Option<Cow<'static, str>> {
         0xff00001b => Some(Cow::Borrowed("draft-27")),
         0x51303530 => Some(Cow::Borrowed("Q050")),
         0x54303530 => Some(Cow::Borrowed("T050")),
+        0xfaceb001 => Some(Cow::Borrowed("mvfst-22")),
+        0xfaceb002 => Some(Cow::Borrowed("mvfst-27")),
         v if (v >> 8) == 0xff0000 => Some(Cow::Owned(format!("draft-{}", v & 0xff))),
         _ => None,
     }

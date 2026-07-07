@@ -18,17 +18,6 @@ use crate::network::types::{
 /// flow cannot grow it without limit.
 const MAX_MERGED_RESPONSE_IPS: usize = 64;
 
-fn quic_state_priority(state: &QuicConnectionState) -> u8 {
-    match state {
-        QuicConnectionState::Unknown => 0,
-        QuicConnectionState::Initial => 1,
-        QuicConnectionState::Handshaking => 2,
-        QuicConnectionState::Connected => 3,
-        QuicConnectionState::Draining => 4,
-        QuicConnectionState::Closed => 5,
-    }
-}
-
 /// Update TCP connection state based on observed flags and current state
 /// This implements the TCP state machine according to RFC 793
 fn update_tcp_state(current_state: TcpState, flags: &TcpFlags, is_outgoing: bool) -> TcpState {
@@ -567,8 +556,8 @@ fn merge_https_info(old_info: &mut HttpsInfo, new_info: &HttpsInfo) {
 fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
     // Update connection state only if it progresses forward
     // State progression: Unknown -> Initial -> Handshaking -> Connected -> Draining -> Closed
-    let old_priority = quic_state_priority(&old_info.connection_state);
-    let new_priority = quic_state_priority(&new_info.connection_state);
+    let old_priority = old_info.connection_state.priority();
+    let new_priority = new_info.connection_state.priority();
 
     if new_priority > old_priority {
         debug!(
