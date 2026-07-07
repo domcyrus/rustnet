@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 909
+assertion_line: 913
 expression: output
 ---
  rustnet    1 Overview   2 Details   3 Interfaces   4 Graph   5 Help                                                                        
@@ -12,12 +12,12 @@ expression: output
   sshd (1500)              10.0.0.5:51022               192.168.1.10:22     ssh        TCP                          ESTABLISHED          -/-
                                                                                                                                             
 ▎ firefox → 140.82.121.4:443 · click a field to copy                                                                                        
-Protocol              TCP                                              TCP Analytics                                                        
-Status                Active (last seen <T> ago)                        TCP Retransmits       0                                              
-Local Address         192.168.1.10:51234                               Out-of-Order Packets  0                                              
-Remote Address        140.82.121.4:443                                 Duplicate ACKs        0                                              
-Scope                 PUBLIC                                           Fast Retransmits      0                                              
-State                 ESTABLISHED                                      Window Size           0                                              
+Protocol              TCP                                             TCP Analytics                                                         
+Status                Active (last seen <T> ago)                       TCP Retransmits       0                                               
+Local Address         192.168.1.10:51234                              Out-of-Order Packets  0                                               
+Remote Address        140.82.121.4:443                                Duplicate ACKs        0                                               
+Scope                 PUBLIC                                          Fast Retransmits      0                                               
+State                 ESTABLISHED                                     Window Size           0                                               
 Process               firefox                                                                                                               
 PID                   2001                                                                                                                  
 Service               https                                                                                                                 
@@ -42,4 +42,4 @@ Packets Sent          12
 Packets Received      234                                                                                                                   
 Current Rate (In)     -                                                                                                                     
 Current Rate (Out)    -                                                                                                                     
- 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | 'c' copy remote addr | Esc back
+ 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | Ctrl-d/u scroll | 'c' copy remote addr | Esc back

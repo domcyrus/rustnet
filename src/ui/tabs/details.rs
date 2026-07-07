@@ -23,7 +23,8 @@ use crate::ui::{
     connection_table::{build_header, column_constraints, connection_row, select_columns},
     dpi_color,
     format::{format_bytes, format_rate},
-    section_header, state_color, theme, try_handle_connection_nav,
+    section_header, state_color, theme, try_handle_connection_nav, try_handle_pane_wheel,
+    widgets::scrollbar::draw_scrollbar,
 };
 
 /// Padded width for detail labels so values line up vertically.
@@ -35,6 +36,11 @@ const DETAIL_LABEL_WIDTH: usize = 22;
 /// single column. With label width 22 plus reasonable values, ~50 cells
 /// per side is the readable floor.
 const DETAILS_SPLIT_MIN_WIDTH: u16 = 100;
+
+/// Rows scrolled per Ctrl+D / Ctrl+U press in the info panes. A fixed
+/// step rather than a half page — the pane height isn't known in the
+/// key handler, and a small constant feels consistent across sizes.
+const DETAILS_SCROLL_STEP: u16 = 5;
 
 /// Details tab. Pulls DNS resolver per-render from the app — no
 /// per-tab state today.
@@ -52,6 +58,22 @@ impl Component for DetailsTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
+        use crossterm::event::{KeyCode, KeyModifiers};
+
+        // Ctrl+D / Ctrl+U scroll the info panes when the record is
+        // taller than the pane (j/k etc. stay reserved for flipping
+        // between connections).
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('d'), KeyModifiers::CONTROL) => {
+                ctx.ui_state.details_scroll.scroll_down(DETAILS_SCROLL_STEP);
+                return Some(Vec::new());
+            }
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                ctx.ui_state.details_scroll.scroll_up(DETAILS_SCROLL_STEP);
+                return Some(Vec::new());
+            }
+            _ => {}
+        }
         // In grouped mode, flip through the grouped view's connection
         // sequence, skipping group headers — a header has no record to
         // show on this tab. Falls through to the shared flat-list
@@ -67,14 +89,13 @@ impl Component for DetailsTab {
 
     fn handle_mouse(
         &mut self,
-        _mouse: MouseEvent,
-        _ctx: &mut HandlerContext<'_>,
+        mouse: MouseEvent,
+        ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
-        // No tab-specific mouse handling beyond what the global
-        // ClickableRegions dispatch in main.rs already does (the
-        // 'click a field to copy' CopyField regions are registered
-        // during draw and routed there).
-        None
+        // Scroll wheel scrolls the info panes. Click events are still
+        // dispatched by main.rs through ClickableRegions (the 'click a
+        // field to copy' CopyField regions registered during draw).
+        try_handle_pane_wheel(mouse, &mut ctx.ui_state.details_scroll)
     }
 }
 
@@ -121,7 +142,9 @@ fn line_is_blank(line: &Line<'_>) -> bool {
 
 /// Register one click-to-copy region per non-empty field row in a Details
 /// pane. `inner` is the pane's *content* rect (the panes are borderless,
-/// so callers pass the area the text actually renders into).
+/// so callers pass the area the text actually renders into); `scroll` is
+/// the pane's current scroll offset, so regions land on the rows the
+/// fields actually occupy on screen.
 /// `skip_placeholder_values` mirrors the existing connection-info
 /// behavior of skipping NONE_PLACEHOLDER / empty values.
 fn register_detail_clicks(
@@ -129,13 +152,18 @@ fn register_detail_clicks(
     inner: Rect,
     fields: &[Option<(String, String)>],
     skip_placeholder_values: bool,
+    scroll: u16,
 ) {
     for (line_idx, entry) in fields.iter().enumerate() {
         if let Some((label, value)) = entry {
             if skip_placeholder_values && (value == NONE_PLACEHOLDER || value.is_empty()) {
                 continue;
             }
-            let row_y = inner.y + line_idx as u16;
+            // Rows scrolled off the top have no on-screen position.
+            let Some(visible_idx) = (line_idx as u16).checked_sub(scroll) else {
+                continue;
+            };
+            let row_y = inner.y + visible_idx;
             if row_y >= inner.y + inner.height {
                 break;
             }
@@ -1453,32 +1481,58 @@ pub(in crate::ui) fn draw_connection_details(
         }
     }
 
+    // Reserve the two rightmost columns of the info area (blank gap +
+    // scrollbar) and split the panes inside the remainder.
+    let panes_area = Rect::new(
+        info_area.x,
+        info_area.y,
+        info_area.width.saturating_sub(2),
+        info_area.height,
+    );
     let info_chunks: Vec<Rect> = if split_horizontally {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
             .spacing(2)
-            .split(info_area)
+            .split(panes_area)
             .to_vec()
     } else {
-        vec![info_area]
+        vec![panes_area]
     };
+
+    // Both panes share one scroll offset (Ctrl+D/U, mouse wheel) so
+    // they stay row-aligned; the taller pane bounds it.
+    let content_rows = details_text.len().max(right_text.len());
+    let max_scroll = (content_rows as u16).saturating_sub(info_area.height);
+    let scroll = ui_state.details_scroll.clamp_for_render(max_scroll);
 
     let left_para = Paragraph::new(details_text)
         .style(Style::default())
         // trim:false preserves any leading whitespace in labels rather than
         // collapsing it, which keeps the fixed-width label padding intact.
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
     f.render_widget(left_para, info_chunks[0]);
-    register_detail_clicks(click_regions, info_chunks[0], &detail_fields, true);
+    register_detail_clicks(click_regions, info_chunks[0], &detail_fields, true, scroll);
 
     if info_chunks.len() == 2 && !right_text.is_empty() {
         let right_para = Paragraph::new(right_text)
             .style(Style::default())
-            .wrap(Wrap { trim: false });
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0));
         f.render_widget(right_para, info_chunks[1]);
-        register_detail_clicks(click_regions, info_chunks[1], &right_fields, true);
+        register_detail_clicks(click_regions, info_chunks[1], &right_fields, true, scroll);
     }
+
+    // Scrollbar on the right edge of the info area; hidden when the
+    // record fits.
+    draw_scrollbar(
+        f,
+        info_area,
+        content_rows,
+        scroll as usize,
+        info_area.height as usize,
+    );
 
     // Traffic details - also track fields for click-to-copy
     let mut traffic_text: Vec<Line> = Vec::new();
@@ -1555,7 +1609,7 @@ pub(in crate::ui) fn draw_connection_details(
         .wrap(Wrap { trim: false });
 
     f.render_widget(traffic, traffic_area);
-    register_detail_clicks(click_regions, traffic_area, &traffic_fields, false);
+    register_detail_clicks(click_regions, traffic_area, &traffic_fields, false, 0);
 
     Ok(())
 }

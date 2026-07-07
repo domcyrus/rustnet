@@ -831,7 +831,7 @@ where
                                                 }
                                             }
                                         }
-                                        ui_state.selected_connection_key = Some(key);
+                                        ui_state.set_connection_key(Some(key));
                                     }
                                     ui::ClickAction::CopyField { label, value } => {
                                         copy_to_clipboard(

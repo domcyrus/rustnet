@@ -141,18 +141,29 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         .fold(0.0f64, |a, b| a.max(b))
         .max(1024.0); // Minimum 1 KB/s scale
 
-    let datasets = vec![
-        Dataset::default()
-            .marker(symbols::Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(theme::fg(theme::rx()))
-            .data(&rx_data),
-        Dataset::default()
-            .marker(symbols::Marker::Braille)
-            .graph_type(GraphType::Line)
-            .style(theme::fg(theme::tx()))
-            .data(&tx_data),
-    ];
+    let rx_dataset = Dataset::default()
+        .marker(symbols::Marker::Braille)
+        .graph_type(GraphType::Area)
+        .fill_to_y(0.0)
+        .style(theme::fg(theme::rx()))
+        .data(&rx_data);
+    let tx_dataset = Dataset::default()
+        .marker(symbols::Marker::Braille)
+        .graph_type(GraphType::Area)
+        .fill_to_y(0.0)
+        .style(theme::fg(theme::tx()))
+        .data(&tx_data);
+
+    // The fills are opaque (terminals can't alpha-blend), so draw the
+    // larger series first: the smaller one then layers fully visible in
+    // front while the larger still shows wherever it exceeds it.
+    let rx_total: f64 = rx_data.iter().map(|(_, y)| *y).sum();
+    let tx_total: f64 = tx_data.iter().map(|(_, y)| *y).sum();
+    let datasets = if rx_total >= tx_total {
+        vec![rx_dataset, tx_dataset]
+    } else {
+        vec![tx_dataset, rx_dataset]
+    };
 
     let chart = Chart::new(datasets)
         .x_axis(
@@ -191,10 +202,17 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
         return;
     }
 
-    // Layout: sparkline + current count label
+    // Layout: sparkline + current count label. The two blank rows in
+    // between mirror the traffic chart's axis line + time-label rows,
+    // so the sparkline's bottom aligns with the chart's plot area and
+    // the count label lines up with the chart's RX/TX legend.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Min(1),    // sparkline, level with the chart's data rows
+            Constraint::Length(2), // blank: chart's axis + label rows
+            Constraint::Length(1), // count label, level with the chart legend
+        ])
         .split(inner);
 
     let width = inner.width as usize;
@@ -208,7 +226,7 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
     // Current connection count label (active connections only)
     let current_count = conn_data.last().copied().unwrap_or(0);
     let label = Paragraph::new(format!("{} active connections", current_count));
-    f.render_widget(label, chunks[1]);
+    f.render_widget(label, chunks[2]);
 }
 
 /// Draw application protocol distribution
