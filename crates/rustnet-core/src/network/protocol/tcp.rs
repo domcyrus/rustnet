@@ -80,8 +80,13 @@ pub fn parse(
 
     let tcp_flags = parse_tcp_flags(flags);
 
-    // Calculate actual TCP payload length
+    // Calculate actual TCP payload length. A data offset below 5 is invalid
+    // (RFC 9293 §3.1) — treating it as a header length would make the
+    // payload overlap the header itself.
     let tcp_header_len = ((transport_data[12] >> 4) as usize) * 4;
+    if tcp_header_len < 20 {
+        return None;
+    }
     let tcp_payload_len = transport_data.len().saturating_sub(tcp_header_len) as u32;
 
     let tcp_header = TcpHeaderInfo {
@@ -120,7 +125,6 @@ pub fn parse(
 
     // Perform DPI if enabled and there's payload
     let dpi_result = if config.enable_dpi {
-        let tcp_header_len = ((transport_data[12] >> 4) as usize) * 4;
         if transport_data.len() > tcp_header_len {
             let payload = &transport_data[tcp_header_len..];
             dpi::analyze_tcp_packet(payload, local_addr.port(), remote_addr.port(), is_outgoing)

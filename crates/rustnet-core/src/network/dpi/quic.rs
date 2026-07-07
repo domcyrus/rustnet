@@ -1038,12 +1038,12 @@ fn scan_packet_frames(
                 } else {
                     None
                 };
-                offset = reason_end;
-                if offset > payload.len() {
-                    break;
-                }
 
-                // Store CONNECTION_CLOSE information in quic_info
+                // Store CONNECTION_CLOSE information in quic_info. This must
+                // happen before the truncation check below: the error code
+                // and frame type were parsed validly even when the reason
+                // phrase is cut off, and dropping them would lose the
+                // Draining/Closed state transition.
                 quic_info.connection_close = Some(crate::network::types::QuicCloseInfo {
                     frame_type: frame_type_byte,
                     error_code,
@@ -1062,6 +1062,11 @@ fn scan_packet_frames(
                     "QUIC: Detected CONNECTION_CLOSE frame type 0x{:02x}, error_code: {}, reason: {:?}",
                     frame_type_byte, error_code, reason
                 );
+
+                offset = reason_end;
+                if offset > payload.len() {
+                    break;
+                }
             }
 
             0x1e => {

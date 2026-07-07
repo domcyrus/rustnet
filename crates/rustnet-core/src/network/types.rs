@@ -320,6 +320,9 @@ pub enum MqttPacketType {
     Connack,
     Publish,
     Puback,
+    Pubrec,
+    Pubrel,
+    Pubcomp,
     Subscribe,
     Suback,
     Unsubscribe,
@@ -327,6 +330,7 @@ pub enum MqttPacketType {
     Pingreq,
     Pingresp,
     Disconnect,
+    Auth,
 }
 
 impl fmt::Display for MqttPacketType {
@@ -336,6 +340,9 @@ impl fmt::Display for MqttPacketType {
             MqttPacketType::Connack => write!(f, "CONNACK"),
             MqttPacketType::Publish => write!(f, "PUBLISH"),
             MqttPacketType::Puback => write!(f, "PUBACK"),
+            MqttPacketType::Pubrec => write!(f, "PUBREC"),
+            MqttPacketType::Pubrel => write!(f, "PUBREL"),
+            MqttPacketType::Pubcomp => write!(f, "PUBCOMP"),
             MqttPacketType::Subscribe => write!(f, "SUBSCRIBE"),
             MqttPacketType::Suback => write!(f, "SUBACK"),
             MqttPacketType::Unsubscribe => write!(f, "UNSUBSCRIBE"),
@@ -343,6 +350,7 @@ impl fmt::Display for MqttPacketType {
             MqttPacketType::Pingreq => write!(f, "PINGREQ"),
             MqttPacketType::Pingresp => write!(f, "PINGRESP"),
             MqttPacketType::Disconnect => write!(f, "DISCONNECT"),
+            MqttPacketType::Auth => write!(f, "AUTH"),
         }
     }
 }
@@ -744,6 +752,8 @@ pub enum SnmpPduType {
     InformRequest,
     TrapV2,
     Report,
+    /// SNMPv3 with an encrypted ScopedPDU — the PDU type is not visible.
+    Encrypted,
 }
 
 impl std::fmt::Display for SnmpPduType {
@@ -758,6 +768,7 @@ impl std::fmt::Display for SnmpPduType {
             SnmpPduType::InformRequest => write!(f, "INFORM"),
             SnmpPduType::TrapV2 => write!(f, "TRAPv2"),
             SnmpPduType::Report => write!(f, "REPORT"),
+            SnmpPduType::Encrypted => write!(f, "ENCRYPTED"),
         }
     }
 }
@@ -817,6 +828,10 @@ pub enum NetBiosOpcode {
     Wack,
     Refresh,
     Response,
+    /// Datagram Service message delivery (direct unique/group or broadcast).
+    Datagram,
+    /// Datagram Service error report.
+    Error,
     Unknown(u8),
 }
 
@@ -829,6 +844,8 @@ impl std::fmt::Display for NetBiosOpcode {
             NetBiosOpcode::Wack => write!(f, "WACK"),
             NetBiosOpcode::Refresh => write!(f, "Refresh"),
             NetBiosOpcode::Response => write!(f, "Response"),
+            NetBiosOpcode::Datagram => write!(f, "Datagram"),
+            NetBiosOpcode::Error => write!(f, "Error"),
             NetBiosOpcode::Unknown(v) => write!(f, "Unknown({})", v),
         }
     }

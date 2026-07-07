@@ -23,24 +23,31 @@ pub fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
     let mut lines = text.lines();
     let first_line = lines.next()?;
     // Consume the first-line tokens lazily via iterator to avoid the
-    // `split_whitespace().collect::<Vec<_>>()` heap allocation. HTTP start
-    // lines always have exactly 3 SP-delimited tokens (RFC 9112 §3), so
-    // three consecutive `next()` calls are sufficient — no Vec needed.
+    // `split_whitespace().collect::<Vec<_>>()` heap allocation. Requests
+    // have exactly 3 SP-delimited tokens; responses have 2 or 3 since the
+    // reason phrase is optional (RFC 9112 §4).
     let mut tokens = first_line.split_whitespace();
-    let (tok0, tok1, tok2) = match (tokens.next(), tokens.next(), tokens.next()) {
-        (Some(a), Some(b), Some(c)) => (a, b, c),
+    let (tok0, tok1) = match (tokens.next(), tokens.next()) {
+        (Some(a), Some(b)) => (a, b),
         _ => return None,
     };
 
     if first_line.starts_with("HTTP/") {
-        // Response line: HTTP/1.1 200 OK
-        info.version = parse_http_version(tok0);
-        info.status_code = tok1.parse::<u16>().ok();
+        // Response line: HTTP/1.1 200 OK — the reason phrase may be empty,
+        // but the status code must be a 3-digit number.
+        info.version = parse_http_version(tok0)?;
+        info.status_code = Some(
+            tok1.parse::<u16>()
+                .ok()
+                .filter(|c| (100..=599).contains(c))?,
+        );
     } else if is_http_method(tok0) {
-        // Request line: GET /path HTTP/1.1
+        // Request line: GET /path HTTP/1.1. The version token is required:
+        // SIP and RTSP share the same verbs ("OPTIONS sip:bob@example.com
+        // SIP/2.0"), so a method match alone is not HTTP.
+        info.version = parse_http_version(tokens.next()?)?;
         info.method = Some(tok0.to_string());
         info.path = Some(tok1.to_string());
-        info.version = parse_http_version(tok2);
     } else {
         return None; // Not valid HTTP
     }
@@ -97,12 +104,12 @@ fn is_http_method(s: &str) -> bool {
     )
 }
 
-fn parse_http_version(s: &str) -> HttpVersion {
+fn parse_http_version(s: &str) -> Option<HttpVersion> {
     match s {
-        "HTTP/1.0" => HttpVersion::Http10,
-        "HTTP/1.1" => HttpVersion::Http11,
-        "HTTP/2" => HttpVersion::Http2,
-        _ => HttpVersion::Http11,
+        "HTTP/1.0" => Some(HttpVersion::Http10),
+        "HTTP/1.1" => Some(HttpVersion::Http11),
+        "HTTP/2" => Some(HttpVersion::Http2),
+        _ => None,
     }
 }
 
@@ -139,14 +146,11 @@ mod tests {
         assert_eq!(info.path.as_deref(), Some("/api/v1/upload"));
         assert_eq!(info.host.as_deref(), Some("api.example.com"));
 
-        // A start line with fewer than 3 whitespace-delimited tokens must be
-        // rejected; this guards against the lazy `next()` chain silently
-        // accepting truncated lines that the old `parts.len() >= 3` guard
-        // would also have rejected.
-        let truncated: [&[u8]; 3] = [
+        // A truncated request line must be rejected: requests need all
+        // three tokens (method, target, version).
+        let truncated: [&[u8]; 2] = [
             b"GET /index.html\r\n\r\n", // only 2 tokens
             b"GET\r\n\r\n",             // only 1 token
-            b"HTTP/1.1 200\r\n\r\n",    // only 2 tokens (response, no reason phrase)
         ];
         for payload in &truncated {
             assert!(
@@ -155,6 +159,31 @@ mod tests {
                 std::str::from_utf8(payload).unwrap_or("<invalid utf8>")
             );
         }
+    }
+
+    #[test]
+    fn test_http_response_without_reason_phrase() {
+        // RFC 9112 §4: the reason phrase is optional. Real servers emit
+        // `HTTP/1.1 200 \r\n` (empty phrase) and some omit the trailing
+        // space entirely; both are valid responses.
+        for payload in [b"HTTP/1.1 200\r\n\r\n".as_slice(), b"HTTP/1.1 200 \r\n\r\n"] {
+            let info = analyze_http(payload).expect("reason phrase is optional");
+            assert_eq!(info.status_code, Some(200));
+        }
+    }
+
+    #[test]
+    fn test_non_http_text_protocols_rejected() {
+        // SIP and RTSP share request verbs with HTTP; the version token
+        // must be validated so they are not misclassified.
+        let sip = b"OPTIONS sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/TCP host\r\n\r\n";
+        assert!(analyze_http(sip).is_none());
+
+        let rtsp = b"OPTIONS rtsp://cam.local/stream RTSP/1.0\r\nCSeq: 1\r\n\r\n";
+        assert!(analyze_http(rtsp).is_none());
+
+        // A response-shaped line with a non-numeric status is not HTTP.
+        assert!(analyze_http(b"HTTP/1.1 OK 200\r\n\r\n").is_none());
     }
 
     #[test]

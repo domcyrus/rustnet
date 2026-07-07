@@ -104,8 +104,9 @@ pub fn analyze_tcp_packet(
     }
 
     // 6. Check for FTP control channel (port 21 plaintext / AUTH TLS upgrade,
-    //    or signature). Runs before more generic protocols since the start
-    //    line is unambiguous (3-digit reply code OR a small known command set).
+    //    or signature). Off port 21 only distinctively-FTP commands count as
+    //    a signature; 3-digit reply lines are shared with SMTP/POP3/NNTP and
+    //    are only classified on port 21.
     //
     //    Implicit FTPS on port 990 is intentionally NOT routed here: that
     //    flow is TLS from the very first byte and falls through to the

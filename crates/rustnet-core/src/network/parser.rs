@@ -301,6 +301,14 @@ impl PacketParser {
         // Actual packet size = link-layer header (offset bytes) + IP total length
         let actual_packet_len = offset + ip_total_length;
 
+        // Bytes 6-7: flags + fragment offset. A non-first fragment carries
+        // no transport header — parsing it would read mid-payload bytes as
+        // ports and fabricate connections.
+        let fragment_offset = u16::from_be_bytes([ip_data[6], ip_data[7]]) & 0x1FFF;
+        if fragment_offset != 0 {
+            return None;
+        }
+
         let protocol_num = ip_data[9];
         let src_ip = IpAddr::V4(Ipv4Addr::new(
             ip_data[12],
@@ -316,6 +324,11 @@ impl PacketParser {
         ));
 
         let ihl = ip_data[0] & 0x0F;
+        // IHL below 5 is invalid (the fixed header alone is 20 bytes);
+        // treating it as a header length would overlap header and payload.
+        if ihl < 5 {
+            return None;
+        }
         let ip_header_len = (ihl as usize) * 4;
 
         if ip_data.len() < ip_header_len {
@@ -387,9 +400,10 @@ impl PacketParser {
 
         let transport_data = &ip_data[40..];
 
-        // Handle extension headers if needed
+        // Handle extension headers if needed (`None` = non-first fragment,
+        // which carries no transport header)
         let (final_next_header, transport_offset) =
-            self.parse_ipv6_extension_headers(next_header, transport_data);
+            self.parse_ipv6_extension_headers(next_header, transport_data)?;
         // A crafted extension header can declare a length that runs past the
         // captured bytes, so `transport_offset` may exceed the slice length.
         // Clamp before slicing to avoid an out-of-bounds panic (one-packet DoS).
@@ -518,11 +532,24 @@ impl PacketParser {
         // For raw IP packets, there's no Ethernet header
         let actual_packet_len = u16::from_be_bytes([data[2], data[3]]) as usize;
 
+        // Bytes 6-7: flags + fragment offset. A non-first fragment carries
+        // no transport header — parsing it would read mid-payload bytes as
+        // ports and fabricate connections.
+        let fragment_offset = u16::from_be_bytes([data[6], data[7]]) & 0x1FFF;
+        if fragment_offset != 0 {
+            return None;
+        }
+
         let protocol_num = data[9];
         let src_ip = IpAddr::V4(Ipv4Addr::new(data[12], data[13], data[14], data[15]));
         let dst_ip = IpAddr::V4(Ipv4Addr::new(data[16], data[17], data[18], data[19]));
 
         let ihl = data[0] & 0x0F;
+        // IHL below 5 is invalid (the fixed header alone is 20 bytes);
+        // treating it as a header length would overlap header and payload.
+        if ihl < 5 {
+            return None;
+        }
         let ip_header_len = (ihl as usize) * 4;
 
         if data.len() < ip_header_len {
@@ -592,9 +619,10 @@ impl PacketParser {
 
         let transport_data = &data[40..];
 
-        // Handle extension headers if needed
+        // Handle extension headers if needed (`None` = non-first fragment,
+        // which carries no transport header)
         let (final_next_header, transport_offset) =
-            self.parse_ipv6_extension_headers(next_header, transport_data);
+            self.parse_ipv6_extension_headers(next_header, transport_data)?;
         // A crafted extension header can declare a length that runs past the
         // captured bytes, so `transport_offset` may exceed the slice length.
         // Clamp before slicing to avoid an out-of-bounds panic (one-packet DoS).
@@ -611,7 +639,15 @@ impl PacketParser {
         }
     }
 
-    fn parse_ipv6_extension_headers(&self, mut next_header: u8, data: &[u8]) -> (u8, usize) {
+    /// Walk the IPv6 extension-header chain. Returns the final next-header
+    /// value and the offset of the transport header, or `None` for a
+    /// non-first fragment: its "transport header" position holds mid-payload
+    /// bytes that must not be parsed as ports.
+    fn parse_ipv6_extension_headers(
+        &self,
+        mut next_header: u8,
+        data: &[u8],
+    ) -> Option<(u8, usize)> {
         let mut offset = 0;
 
         const HOP_BY_HOP: u8 = 0;
@@ -625,7 +661,7 @@ impl PacketParser {
             match next_header {
                 HOP_BY_HOP | ROUTING | DESTINATION_OPTIONS => {
                     if data.len() < offset + 2 {
-                        return (next_header, offset);
+                        return Some((next_header, offset));
                     }
                     next_header = data[offset];
                     let header_len = ((data[offset + 1] as usize) + 1) * 8;
@@ -633,29 +669,36 @@ impl PacketParser {
                 }
                 FRAGMENT => {
                     if data.len() < offset + 8 {
-                        return (next_header, offset);
+                        return Some((next_header, offset));
+                    }
+                    // Bytes 2-3: fragment offset (upper 13 bits). Only the
+                    // first fragment (offset 0) carries the transport header.
+                    let fragment_offset =
+                        u16::from_be_bytes([data[offset + 2], data[offset + 3]]) >> 3;
+                    if fragment_offset != 0 {
+                        return None;
                     }
                     next_header = data[offset];
                     offset += 8;
                 }
                 AUTHENTICATION => {
                     if data.len() < offset + 2 {
-                        return (next_header, offset);
+                        return Some((next_header, offset));
                     }
                     next_header = data[offset];
                     let header_len = ((data[offset + 1] as usize) + 2) * 4;
                     offset += header_len;
                 }
                 ENCAPSULATING_SECURITY => {
-                    return (next_header, offset);
+                    return Some((next_header, offset));
                 }
                 _ => {
-                    return (next_header, offset);
+                    return Some((next_header, offset));
                 }
             }
 
             if offset >= data.len() {
-                return (next_header, offset);
+                return Some((next_header, offset));
             }
         }
     }

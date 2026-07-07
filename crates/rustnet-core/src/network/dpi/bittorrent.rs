@@ -190,6 +190,17 @@ fn analyze_utp(payload: &[u8]) -> Option<BitTorrentInfo> {
         return None;
     }
 
+    // Real uTP connection IDs are randomly generated, so 0 is effectively
+    // never seen — but bytes 2-3 == 0 is exactly what a WireGuard handshake
+    // initiation looks like here (type byte 0x01 followed by three reserved
+    // zero bytes). Since this check runs on every unmatched UDP packet,
+    // require a non-zero connection ID so WireGuard rekeys are not
+    // classified as BitTorrent.
+    let connection_id = u16::from_be_bytes([payload[2], payload[3]]);
+    if connection_id == 0 {
+        return None;
+    }
+
     // Window size sanity check — 0 is valid for ST_RESET but otherwise should be non-zero
     let wnd_size = u32::from_be_bytes([payload[12], payload[13], payload[14], payload[15]]);
     if pkt_type != 3 && wnd_size == 0 {
@@ -517,9 +528,27 @@ mod tests {
         let mut payload = vec![0u8; UTP_HEADER_LEN];
         payload[0] = (pkt_type << 4) | (version & 0x0F);
         payload[1] = extension;
+        // connection_id at bytes 2-3: always random (non-zero) in real uTP
+        payload[2..4].copy_from_slice(&0x1234u16.to_be_bytes());
         // wnd_size at bytes 12-15
         payload[12..16].copy_from_slice(&wnd_size.to_be_bytes());
         payload
+    }
+
+    #[test]
+    fn test_utp_rejects_wireguard_handshake_initiation() {
+        // WireGuard handshake initiation: message type 0x01, three reserved
+        // zero bytes, then a random sender index and ephemeral key. It
+        // passes every other uTP field check (version 1, type ST_DATA,
+        // extension 0, non-zero bytes at the wnd_size position), so the
+        // zero connection-id bytes are what must reject it.
+        let mut payload = vec![0u8; 148];
+        payload[0] = 0x01; // type=1 (handshake initiation), reserved bytes 1-3 zero
+        for (i, byte) in payload.iter_mut().enumerate().skip(4) {
+            *byte = (i * 31 % 251 + 1) as u8; // arbitrary non-zero key material
+        }
+        assert!(analyze_utp(&payload).is_none());
+        assert!(analyze_udp_bittorrent(&payload).is_none());
     }
 
     #[test]
