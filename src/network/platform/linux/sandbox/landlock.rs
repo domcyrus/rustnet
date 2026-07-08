@@ -336,6 +336,7 @@ mod tests {
             block_network: true,
             read_paths: vec![],
             write_paths: vec![],
+            drop_uid: None,
         };
         let result = apply_landlock(&config).unwrap();
         assert!(!result.fs_applied);
@@ -355,6 +356,7 @@ mod tests {
             block_network: true,
             read_paths: vec![],
             write_paths: vec![],
+            drop_uid: None,
         };
         let result = apply_landlock(&config).expect("best-effort must not error");
         // scope can only be reported applied when fs was applied too

@@ -755,6 +755,9 @@ fn draw_stats_panel(
         if sandbox_info.ebpf_caps_dropped {
             features.push("eBPF caps dropped");
         }
+        if sandbox_info.uid_dropped {
+            features.push("Root UID dropped");
+        }
         if sandbox_info.fs_restricted {
             features.push("FS restricted");
         }

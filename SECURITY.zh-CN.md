@@ -32,6 +32,7 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 | 网络 | 6.4+ | 禁止 TCP bind/connect（RustNet 为被动模式） |
 | Linux capabilities | 任意 | pcap socket 打开后丢弃 `CAP_NET_RAW` |
 | Linux capabilities | 任意 | eBPF 程序加载后丢弃 `CAP_BPF`、`CAP_PERFMON`、`CAP_SYS_ADMIN` |
+| root uid | 任意 | 以 root 启动时（如 `sudo rustnet`），初始化完成后降权到调用用户（`SUDO_UID`/`SUDO_GID`）或 `nobody` |
 | 特权 | 3.5+ | `PR_SET_NO_NEW_PRIVS` 由 RustNet 自身设置——始终生效，即使使用 `--no-sandbox`——防止通过 setuid 二进制文件提升特权 |
 
 ### 工作原理
@@ -39,7 +40,8 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 1. **初始化阶段**：RustNet 加载 eBPF 程序、打开包捕获句柄、创建日志文件
 2. **特权锁定**：设置 `PR_SET_NO_NEW_PRIVS`（即使禁用沙箱也会应用）
 3. **Linux capabilities 剥离**：移除 `CAP_NET_RAW`、`CAP_BPF`、`CAP_PERFMON` 和 `CAP_SYS_ADMIN`
-4. **Landlock**：限制文件系统和网络访问
+4. **root uid 降权**：以 root 运行时，通过 `setresuid`/`setresgid` 切换到调用 sudo 的用户（或 `nobody`）。已打开的捕获 socket、eBPF 程序和日志/导出文件继续有效。在没有 Landlock 的内核上，这是主要的隔离手段
+5. **Landlock**：限制文件系统和网络访问
 
 ### 安全收益
 
@@ -50,14 +52,22 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 - 无法绑定 TCP 端口（阻止反向 shell）
 - 无法创建新的 raw socket（Linux capabilities 已剥离）
 - 无法通过 setuid 二进制文件提升特权（`PR_SET_NO_NEW_PRIVS`，即使使用 `--no-sandbox` 也会设置）
+- 不以 root 运行：使用 `sudo rustnet` 时进程会切换为调用用户，即使在没有 Landlock 的内核上，攻击者也无法获得 root
 
 ### CLI 选项
 
 ```
---no-sandbox        禁用 Landlock 沙箱和 Linux capabilities 剥离
+--no-sandbox        禁用 Landlock 沙箱、Linux capabilities 剥离和 root uid 降权
                     （仍会设置 PR_SET_NO_NEW_PRIVS）
 --sandbox-strict    要求完整沙箱强制生效，否则退出
+--no-uid-drop       初始化后保持 root 运行，
+                    不降权到 SUDO_UID/SUDO_GID（或 nobody）
 ```
+
+root uid 降权的权衡：降权后，procfs 回退路径的进程归属只能检查目标用户拥有的进程，
+`/var/log/pods` 下的 Kubernetes 日志目录也可能不可读。eBPF 快速路径（默认）不受影响。
+如果依赖纯 procfs 归属（如未启用 eBPF 的构建）且需要归属其他用户的进程，请使用
+`--no-uid-drop`。
 
 ### 优雅降级
 

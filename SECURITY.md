@@ -32,6 +32,7 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 | Network | 6.4+ | TCP bind/connect blocked (RustNet is passive) |
 | Capabilities | Any | `CAP_NET_RAW` dropped after pcap socket opened |
 | Capabilities | Any | `CAP_BPF`, `CAP_PERFMON` dropped after eBPF programs loaded |
+| Root uid | Any | When started as root (e.g. `sudo rustnet`), the process drops to the invoking user (`SUDO_UID`/`SUDO_GID`) or `nobody` after initialization |
 | Privileges | 3.5+ | `PR_SET_NO_NEW_PRIVS` set by RustNet itself — always, even with `--no-sandbox` — prevents privilege escalation via setuid binaries |
 
 ### How It Works
@@ -39,7 +40,8 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 1. **Initialization phase**: RustNet loads eBPF programs, opens packet capture handles, and creates log files
 2. **Privilege lock**: `PR_SET_NO_NEW_PRIVS` is set (applied even when the sandbox is disabled)
 3. **Capability drop**: `CAP_NET_RAW`, `CAP_BPF`, and `CAP_PERFMON` are removed from the process
-4. **Landlock**: Restricts filesystem and network access
+4. **Root uid drop**: when running as root, the process switches to the invoking sudo user (or `nobody`) via `setresuid`/`setresgid`. Already-open capture sockets, eBPF programs, and log/export files keep working. This matters most on kernels without Landlock, where the uid drop is the main containment
+5. **Landlock**: Restricts filesystem and network access
 
 ### Security Benefits
 
@@ -50,14 +52,24 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 - Cannot bind TCP ports (reverse shell blocked)
 - Cannot create new raw sockets (capability dropped)
 - Cannot escalate privileges via setuid binaries (`PR_SET_NO_NEW_PRIVS`, set even with `--no-sandbox`)
+- Does not run as root: under `sudo rustnet` the process continues as the invoking user, so even on kernels without Landlock a compromise does not yield root
 
 ### CLI Options
 
 ```
---no-sandbox        Disable Landlock sandboxing and capability dropping
-                    (PR_SET_NO_NEW_PRIVS is still set)
+--no-sandbox        Disable Landlock sandboxing, capability dropping, and the
+                    root uid drop (PR_SET_NO_NEW_PRIVS is still set)
 --sandbox-strict    Require full sandbox enforcement or exit
+--no-uid-drop       Keep running as root instead of dropping to
+                    SUDO_UID/SUDO_GID (or nobody) after initialization
 ```
+
+Trade-off of the root uid drop: the procfs fallback for process attribution can
+then only inspect processes owned by the target user, and Kubernetes log
+directories under `/var/log/pods` may become unreadable. The eBPF fast path
+(the default) is unaffected. If you rely on procfs-only attribution (e.g. a
+build without eBPF) and need to attribute other users' processes, use
+`--no-uid-drop`.
 
 ### Graceful Degradation
 
