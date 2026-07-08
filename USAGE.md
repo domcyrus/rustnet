@@ -104,7 +104,7 @@ Options:
       --no-sandbox                       Disable Landlock sandboxing (Linux only)
       --sandbox-strict                   Require full sandbox enforcement or exit (Linux only)
       --no-uid-drop                      Keep running as root instead of dropping to
-                                         SUDO_UID/SUDO_GID (or nobody) after initialization (Linux only)
+                                         SUDO_UID/SUDO_GID (or nobody) after initialization (Linux and macOS)
   -h, --help                             Print help
   -V, --version                          Print version
 ```

@@ -91,6 +91,9 @@ pub struct SandboxInfo {
     /// Whether Seatbelt sandbox was applied
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
     pub seatbelt_applied: bool,
+    /// Whether the root uid/gid were dropped (setuid to the sudo user or nobody)
+    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+    pub uid_dropped: bool,
     /// Whether filesystem write restrictions are applied
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
     pub fs_restricted: bool,

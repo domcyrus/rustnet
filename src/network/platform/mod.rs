@@ -35,8 +35,15 @@ pub use linux::LinuxStatsProvider;
 // Linux (a non-landlock build still sets PR_SET_NO_NEW_PRIVS via the stub).
 #[cfg(target_os = "linux")]
 pub use linux::sandbox;
+// Linux keeps privdrop inside the sandbox module; re-export it at the platform
+// level so callers can use `platform::privdrop` uniformly across platforms.
+#[cfg(target_os = "linux")]
+pub use linux::sandbox::privdrop;
 #[cfg(target_os = "macos")]
 pub use macos::MacOSStatsProvider;
+// Not gated on the `macos-sandbox` feature: the uid drop works without Seatbelt.
+#[cfg(target_os = "macos")]
+pub use macos::privdrop;
 #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
 pub use macos::sandbox;
 #[cfg(target_os = "windows")]

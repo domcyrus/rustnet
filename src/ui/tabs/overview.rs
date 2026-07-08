@@ -831,6 +831,9 @@ fn draw_stats_panel(
         if sandbox_info.seatbelt_applied {
             features.push("Seatbelt applied");
         }
+        if sandbox_info.uid_dropped {
+            features.push("Root UID dropped");
+        }
         if sandbox_info.fs_restricted {
             features.push("FS restricted");
         }
