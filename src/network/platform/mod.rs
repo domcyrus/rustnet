@@ -29,6 +29,10 @@ mod windows;
 // Re-export interface-stats providers and the sandbox entry points.
 #[cfg(target_os = "freebsd")]
 pub use freebsd::FreeBSDStatsProvider;
+// FreeBSD has no sandbox module yet (Capsicum planned); the uid drop is the
+// containment layer in the meantime.
+#[cfg(target_os = "freebsd")]
+pub use freebsd::privdrop;
 #[cfg(target_os = "linux")]
 pub use linux::LinuxStatsProvider;
 // Not gated on the `landlock` feature: the sandbox module always compiles on

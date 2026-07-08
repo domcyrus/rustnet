@@ -149,6 +149,17 @@ On Linux, clipboard requires access to Wayland sockets (`/run/user/UID/wayland-0
 
 FreeBSD does not currently have sandboxing enabled. A full Capsicum sandbox using `cap_enter()` with `libcasper` for privileged process lookup is planned — see [ROADMAP.md](ROADMAP.md) for details.
 
+### Root Uid Drop
+
+Until Capsicum lands, the primary containment on FreeBSD is a root privilege drop: when started as root (e.g. `sudo rustnet`), the process drops to the invoking user (`SUDO_UID`/`SUDO_GID`) or `nobody` after the BPF capture devices are open, via `setresuid`/`setresgid`. Already-open capture and log/export descriptors keep working, and pre-created export files are handed over to the target user. Note that `doas` does not set `SUDO_UID`, so doas users get the `nobody` fallback.
+
+Trade-off: process attribution uses `sockstat`, which as a non-root user only sees the target user's sockets. Use `--no-uid-drop` if you need attribution for other users' processes.
+
+```
+--no-uid-drop       Keep running as root instead of dropping to
+                    SUDO_UID/SUDO_GID (or nobody) after initialization
+```
+
 ## Privilege Drop and Job Object Sandboxing (Windows)
 
 On Windows, RustNet removes dangerous privileges from the process token and applies a Job Object to prevent child process creation after initialization.
