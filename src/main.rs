@@ -134,13 +134,14 @@ fn main() -> Result<()> {
         info!("Kubernetes attribution mode: {}", mode);
     }
 
-    // Resolve the identity to drop root to after privileged init (Linux and
-    // macOS): the invoking sudo user, or nobody when started as plain root.
+    // Resolve the identity to drop root to after privileged init (Linux,
+    // macOS, and FreeBSD): the invoking sudo user, or nobody when started as
+    // plain root.
     // Resolved before the export files are pre-created so they can be chowned
     // to the target user: they are created root-owned 0600 and are reopened by
     // path at runtime (libpcap savefile, sidecar JSONL appends), which would
     // fail after the drop if they stayed owned by root.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     let uid_drop_target = if matches.get_flag("no-uid-drop") {
         info!("Root uid drop disabled by --no-uid-drop");
         None
@@ -170,9 +171,9 @@ fn main() -> Result<()> {
             let file = precreate_private_file(path).map_err(|e| {
                 anyhow::anyhow!("Failed to pre-create {} file '{}': {}", label, path, e)
             })?;
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
             chown_to_uid_drop_target(&file, uid_drop_target, label, path);
-            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
             let _ = file;
         }
     }
@@ -182,7 +183,7 @@ fn main() -> Result<()> {
         let file = precreate_private_file(pcapng_path).map_err(|e| {
             anyhow::anyhow!("Failed to pre-create PCAPNG file '{}': {}", pcapng_path, e)
         })?;
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
         chown_to_uid_drop_target(&file, uid_drop_target, "PCAPNG", pcapng_path);
         output_handles.pcapng_export = Some(file);
     }
@@ -194,7 +195,7 @@ fn main() -> Result<()> {
 
     // Create and start the application
     let mut app = app::App::new_with_output_handles(config.clone(), output_handles)?;
-    let process_ready_rx = app.start()?;
+    let (process_ready_rx, capture_ready_rx) = app.start()?;
     info!("Application started");
 
     // Wait for process detection (including eBPF loading) to complete before
@@ -208,6 +209,21 @@ fn main() -> Result<()> {
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             warn!("Process detection thread exited early, applying sandbox anyway");
+        }
+    }
+
+    // Also wait for the capture thread to finish opening the capture device.
+    // The open runs on a background thread and needs the startup privileges;
+    // without this synchronization the uid drop (Linux/FreeBSD) or sandbox
+    // could win the race and the open would fail with EPERM, leaving the UI
+    // running with no traffic.
+    match capture_ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(()) => info!("Packet capture initialized, safe to apply sandbox"),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            warn!("Timed out waiting for packet capture init, applying sandbox anyway");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            warn!("Capture thread exited early, applying sandbox anyway");
         }
     }
 
@@ -381,6 +397,22 @@ fn main() -> Result<()> {
     };
     #[cfg(all(target_os = "macos", not(feature = "macos-sandbox")))]
     let _ = uid_dropped;
+
+    // Drop root privileges (FreeBSD only). Done after process detection init,
+    // when the BPF capture fds are open and nothing needs root anymore. There
+    // is no sandbox on FreeBSD yet (Capsicum is planned), so until then this
+    // is the primary containment.
+    #[cfg(target_os = "freebsd")]
+    if let Some(target) = uid_drop_target {
+        match network::platform::privdrop::drop_to(target) {
+            Ok(()) => info!(
+                "Dropped root privileges to uid {} gid {} (verified); sockstat process \
+                 attribution is now limited to that user's processes",
+                target.uid, target.gid
+            ),
+            Err(e) => warn!("Failed to drop root uid/gid: {}", e),
+        }
+    }
 
     // Apply Seatbelt sandbox (macOS only)
     // This must be done AFTER app.start() because:
@@ -643,7 +675,7 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
 /// be reopened by path after root privileges are dropped. Best-effort: on
 /// failure the drop still happens and the affected export degrades with a
 /// runtime warning when the reopen fails.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn chown_to_uid_drop_target(
     file: &fs::File,
     target: Option<network::platform::privdrop::DropTarget>,

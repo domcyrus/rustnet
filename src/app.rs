@@ -801,10 +801,15 @@ impl App {
     /// parser threads in the worker phase is what places the untrusted-input DPI
     /// code inside the sandbox — even when rustnet runs as root.
     ///
-    /// Returns a receiver that signals when process detection initialization
-    /// (including eBPF loading) is complete. The caller should wait on this
-    /// before applying the sandbox so eBPF has finished loading.
-    pub fn start(&mut self) -> Result<std::sync::mpsc::Receiver<()>> {
+    /// Returns two receivers that signal when privileged initialization is
+    /// complete: the first when process detection (including eBPF loading) is
+    /// ready, the second when the capture thread has opened the capture
+    /// device (or failed to). The caller should wait on both before applying
+    /// the sandbox or dropping root: the capture open runs on a background
+    /// thread and still needs the privileges.
+    pub fn start(
+        &mut self,
+    ) -> Result<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Receiver<()>)> {
         info!("Starting network monitor application");
 
         // Shared connection tracker (active + historic tables, RTT, QUIC)
@@ -812,7 +817,7 @@ impl App {
 
         // Phase 1: privileged init. Start the capture pipeline (opens the raw
         // socket and stashes the packet receiver for the worker phase).
-        self.start_packet_capture_pipeline()?;
+        let capture_ready_rx = self.start_packet_capture_pipeline()?;
 
         // Create channel to signal when process detection (incl. eBPF) is ready
         let (process_ready_tx, process_ready_rx) = std::sync::mpsc::sync_channel(1);
@@ -820,7 +825,7 @@ impl App {
         // Start process enrichment thread (but delay for PKTAP detection on macOS)
         self.start_process_enrichment_conditional(tracker.clone(), process_ready_tx)?;
 
-        Ok(process_ready_rx)
+        Ok((process_ready_rx, capture_ready_rx))
     }
 
     /// Start the worker threads: the DPI packet processors plus enrichment,
@@ -873,17 +878,20 @@ impl App {
     /// capture thread (which opens the raw socket). The receiver is stashed in
     /// `self.packet_rx` for [`App::start_packet_processors`], which runs in the
     /// worker phase after the sandbox has been applied.
-    fn start_packet_capture_pipeline(&mut self) -> Result<()> {
+    ///
+    /// Returns a receiver that fires once the capture thread has finished its
+    /// privileged setup (capture device opened, or setup failed).
+    fn start_packet_capture_pipeline(&mut self) -> Result<std::sync::mpsc::Receiver<()>> {
         // Create packet channel — sender batches packets, receiver gets Vec<CapturedPacket> per batch
         let (packet_tx, packet_rx) = channel::bounded::<Vec<CapturedPacket>>(MAX_PACKET_QUEUE);
 
         // Start capture thread
-        self.start_capture_thread(packet_tx)?;
+        let capture_ready_rx = self.start_capture_thread(packet_tx)?;
 
         // Stash the receiver; the processor threads are spawned post-sandbox.
         self.packet_rx = Some(packet_rx);
 
-        Ok(())
+        Ok(capture_ready_rx)
     }
 
     /// Spawn the DPI packet-processor threads, draining the channel stashed by
@@ -910,8 +918,15 @@ impl App {
         Ok(())
     }
 
-    /// Start packet capture thread
-    fn start_capture_thread(&self, packet_tx: Sender<Vec<CapturedPacket>>) -> Result<()> {
+    /// Start packet capture thread.
+    ///
+    /// Returns a receiver that fires once the capture device has been opened
+    /// (or the open failed). Callers use it to keep root privileges alive
+    /// until the open, which needs them, has actually happened.
+    fn start_capture_thread(
+        &self,
+        packet_tx: Sender<Vec<CapturedPacket>>,
+    ) -> Result<std::sync::mpsc::Receiver<()>> {
         // Validate interface exists before spawning thread (fail fast)
         crate::network::capture::validate_interface(&self.config.interface)?;
 
@@ -929,6 +944,10 @@ impl App {
         let _pktap_active = Arc::clone(&self.pktap_active);
         let pcap_export_file = self.config.pcap_export_file.clone();
         capture_failed.store(false, Ordering::Relaxed);
+
+        // Fires once the privileged part of capture setup is done (device
+        // opened or open failed), so the main thread can drop privileges.
+        let (capture_ready_tx, capture_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
 
         thread::Builder::new()
             .name("pcap_tx".to_string())
@@ -1007,6 +1026,10 @@ impl App {
                     } else {
                         None
                     };
+
+                    // Privileged setup is complete; the main thread may now
+                    // drop root / apply the sandbox.
+                    let _ = capture_ready_tx.send(());
 
                     let mut reader = PacketReader::new(capture);
                     let mut packets_read = 0u64;
@@ -1134,6 +1157,7 @@ impl App {
                 }
                 Err(e) => {
                     capture_failed.store(true, Ordering::Relaxed);
+                    let _ = capture_ready_tx.send(());
                     let error_msg = format!("{}", e);
 
                     // Check if this is a privilege error
@@ -1156,7 +1180,7 @@ impl App {
         })
         .expect("Failed to spawn pcap_tx thread");
 
-        Ok(())
+        Ok(capture_ready_rx)
     }
 
     /// Start a packet processor thread
