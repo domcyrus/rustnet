@@ -69,6 +69,9 @@ pub struct SandboxInfo {
     /// Whether CAP_BPF/CAP_PERFMON were dropped
     #[cfg(target_os = "linux")]
     pub ebpf_caps_dropped: bool,
+    /// Whether the root uid/gid were dropped (setresuid to the sudo user or nobody)
+    #[cfg(target_os = "linux")]
+    pub uid_dropped: bool,
     /// Whether Landlock is available on this kernel
     #[cfg(target_os = "linux")]
     pub landlock_available: bool,

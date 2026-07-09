@@ -103,6 +103,8 @@ Options:
   -f, --bpf-filter <FILTER>              BPF filter expression for packet capture
       --no-sandbox                       Disable Landlock sandboxing (Linux only)
       --sandbox-strict                   Require full sandbox enforcement or exit (Linux only)
+      --no-uid-drop                      Keep running as root instead of dropping to
+                                         SUDO_UID/SUDO_GID (or nobody) after initialization (Linux only)
   -h, --help                             Print help
   -V, --version                          Print version
 ```

@@ -134,6 +134,20 @@ fn main() -> Result<()> {
         info!("Kubernetes attribution mode: {}", mode);
     }
 
+    // Resolve the identity to drop root to after privileged init (Linux only):
+    // the invoking sudo user, or nobody when started as plain root. Resolved
+    // before the export files are pre-created so they can be chowned to the
+    // target user: they are created root-owned 0600 and are reopened by path
+    // at runtime (libpcap savefile, sidecar JSONL appends), which would fail
+    // after the drop if they stayed owned by root.
+    #[cfg(target_os = "linux")]
+    let uid_drop_target = if matches.get_flag("no-uid-drop") {
+        info!("Root uid drop disabled by --no-uid-drop");
+        None
+    } else {
+        network::platform::sandbox::privdrop::resolve_drop_target()
+    };
+
     // Pre-create the PCAP export file and its sidecar JSONL (needed for Landlock
     // permissions). This must be done BEFORE the sandbox is applied so the files
     // exist when adding rules: Landlock requires an open FD to scope a rule to a
@@ -153,17 +167,24 @@ fn main() -> Result<()> {
             // later written by libpcap's pcap_dump_open, which does NOT honor
             // O_NOFOLLOW, so a warn-and-continue here would let libpcap follow an
             // attacker-controlled symlink and write the capture there anyway.
-            precreate_private_file(path).map_err(|e| {
+            let file = precreate_private_file(path).map_err(|e| {
                 anyhow::anyhow!("Failed to pre-create {} file '{}': {}", label, path, e)
             })?;
+            #[cfg(target_os = "linux")]
+            chown_to_uid_drop_target(&file, uid_drop_target, label, path);
+            #[cfg(not(target_os = "linux"))]
+            let _ = file;
         }
     }
 
     let mut output_handles = app::AppOutputHandles::default();
     if let Some(ref pcapng_path) = config.pcapng_export_file {
-        output_handles.pcapng_export = Some(precreate_private_file(pcapng_path).map_err(|e| {
+        let file = precreate_private_file(pcapng_path).map_err(|e| {
             anyhow::anyhow!("Failed to pre-create PCAPNG file '{}': {}", pcapng_path, e)
-        })?);
+        })?;
+        #[cfg(target_os = "linux")]
+        chown_to_uid_drop_target(&file, uid_drop_target, "PCAPNG", pcapng_path);
+        output_handles.pcapng_export = Some(file);
     }
 
     // Set up terminal
@@ -271,6 +292,7 @@ fn main() -> Result<()> {
             block_network: true, // RustNet is passive, doesn't need TCP
             read_paths,
             write_paths,
+            drop_uid: uid_drop_target,
         };
 
         match apply_sandbox(&sandbox_config) {
@@ -286,6 +308,7 @@ fn main() -> Result<()> {
                     status: status_str.to_string(),
                     cap_dropped: result.cap_net_raw_dropped,
                     ebpf_caps_dropped: result.ebpf_caps_dropped,
+                    uid_dropped: result.uid_dropped,
                     landlock_available: result.landlock_available,
                     fs_restricted: result.landlock_fs_applied,
                     net_restricted: result.landlock_net_applied,
@@ -303,6 +326,7 @@ fn main() -> Result<()> {
                     status: "Error".to_string(),
                     cap_dropped: false,
                     ebpf_caps_dropped: false,
+                    uid_dropped: false,
                     landlock_available: false,
                     fs_restricted: false,
                     net_restricted: false,
@@ -567,6 +591,27 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Hand a pre-created export file over to the uid-drop target so it can still
+/// be reopened by path after root privileges are dropped. Best-effort: on
+/// failure the drop still happens and the affected export degrades with a
+/// runtime warning when the reopen fails.
+#[cfg(target_os = "linux")]
+fn chown_to_uid_drop_target(
+    file: &fs::File,
+    target: Option<network::platform::sandbox::privdrop::DropTarget>,
+    label: &str,
+    path: &str,
+) {
+    if let Some(target) = target
+        && let Err(e) = network::platform::sandbox::privdrop::chown_to_target(file, target)
+    {
+        warn!(
+            "Failed to chown {} file '{}' to uid {}: {} (the file may not be writable after the root uid drop)",
+            label, path, target.uid, e
+        );
+    }
 }
 
 fn precreate_private_file(path: &str) -> io::Result<fs::File> {

@@ -187,5 +187,17 @@ pub fn build_cli() -> Command {
                 .conflicts_with("no-sandbox"),
         );
 
+    #[cfg(target_os = "linux")]
+    let cmd = cmd.arg(
+        Arg::new("no-uid-drop")
+            .long("no-uid-drop")
+            .help(
+                "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
+                 after initialization. Keeping root lets the procfs fallback attribute \
+                 other users' processes when eBPF is unavailable",
+            )
+            .action(clap::ArgAction::SetTrue),
+    );
+
     cmd
 }
