@@ -1065,6 +1065,23 @@ sudo yum install make pkgconfig libpcap-devel elfutils-libelf-devel zlib-devel c
 
 参见：[ratatui#457](https://github.com/ratatui/ratatui/issues/457)、[gtop#21](https://github.com/aksakalli/gtop/issues/21)
 
+#### macOS：终端 CPU 占用高或图表有缺口（iTerm2）<a id="macos-high-terminal-cpu-or-gappy-graphs-iterm2"></a>
+
+RustNet 的图表使用 Unicode Braille 字符绘制。macOS 经典的等宽字体（Monaco、Menlo）不包含 Braille 字形，因此 iTerm2 会对每个图表单元格进行字体回退渲染。这不仅很慢（仅显示图表就可能占用 iTerm2 10-20% 的 CPU），回退字形还常常在波形中留下明显的缺口。
+
+**解决方案：** 为 iTerm2 的非 ASCII 文本指定一个包含 Braille 字形的字体：
+
+1. 安装一个 [Nerd Font](https://www.nerdfonts.com/)，例如：
+
+   ```bash
+   brew install --cask font-jetbrains-mono-nerd-font
+   ```
+
+2. 在 iTerm2 中：**Settings → Profiles → Text**，启用 **"Use a different font for non-ASCII text"**（为非 ASCII 文本使用不同的字体）并选择该 Nerd Font。常规文本保持当前字体不变；只有符号和图表字形使用新字体。
+3. 可选：**Settings → General → Preferences → "Maximize throughput"**（最大化吞吐量）将 iTerm2 的重绘率限制在 30 fps，可进一步降低频繁刷新的 TUI 应用的 CPU 占用。
+
+**替代方案：** 使用 GPU 加速的终端，如 [WezTerm](https://wezterm.org/)、[Ghostty](https://ghostty.org/) 或 [kitty](https://sw.kovidgoyal.net/kitty/)。它们渲染 RustNet 的 CPU 占用远低于 iTerm2，其中 WezTerm 内置 JetBrains Mono 及符号回退字体，图表开箱即用即可正确渲染。
+
 ### 获取帮助<a id="getting-help"></a>
 
 如果你遇到此处未涵盖的问题：

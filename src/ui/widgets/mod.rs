@@ -2,6 +2,7 @@
 //! tabs bar at the top, filter input + status bar at the bottom,
 //! and the loading screen shown during startup.
 
+pub(super) mod braille_graph;
 pub(super) mod filter_input;
 pub(super) mod loading;
 pub(super) mod scrollbar;

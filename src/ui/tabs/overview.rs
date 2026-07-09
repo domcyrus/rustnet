@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Sparkline, Table, Wrap},
+    widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, Wrap},
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -29,6 +29,7 @@ use crate::ui::{
     section_header,
     state::ProcessGroupStats,
     theme, try_handle_connection_nav,
+    widgets::braille_graph,
     widgets::scrollbar::draw_scrollbar,
 };
 
@@ -1232,6 +1233,36 @@ fn draw_stats_panel(
     Ok(())
 }
 
+/// One-row gradient braille wave for the sidebar traffic graphs,
+/// normalized to the 60s window peak and brightened toward the peak
+/// as the current rate approaches it.
+fn mini_wave(
+    samples: &[u64],
+    width: u16,
+    frac: f64,
+    window: usize,
+    wave: fn(f64) -> Color,
+) -> Vec<Line<'static>> {
+    let current = samples.last().copied().unwrap_or(0) as f64;
+    let max_val = samples
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(1024) // minimum 1 KB/s scale
+        as f64;
+    let ratio = (current / max_val).clamp(0.0, 1.0);
+    braille_graph::render(
+        samples,
+        width as usize,
+        1,
+        max_val,
+        frac,
+        window,
+        |intensity| wave((0.6 + 0.4 * ratio) * intensity),
+    )
+}
+
 /// Draw interface stats section with embedded traffic sparklines
 fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
     // Heading + sparklines (3 lines) + interface details (remaining).
@@ -1252,21 +1283,23 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
 
     let sections = &layout[1..];
 
-    // Draw traffic sparklines
+    // Draw traffic waves (single-row braille graphs, same gradient
+    // style as the Graph tab)
     let traffic_history = app.get_traffic_history();
-    let sparkline_width = sections[0].width.saturating_sub(8) as usize; // Leave room for labels
+    let frac = traffic_history.scroll_fraction();
+    let window = traffic_history.capacity();
 
     // Split sparkline area into rows
     let sparkline_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // RX sparkline
-            Constraint::Length(1), // TX sparkline
+            Constraint::Length(1), // RX wave
+            Constraint::Length(1), // TX wave
             Constraint::Length(1), // Current rates
         ])
         .split(sections[0]);
 
-    // RX row: label + sparkline
+    // RX row: label + wave
     let rx_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
@@ -1275,13 +1308,19 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
     let rx_label = Paragraph::new("RX").style(theme::fg(theme::rx()));
     f.render_widget(rx_label, rx_cols[0]);
 
-    let rx_data = traffic_history.get_rx_sparkline_data(sparkline_width);
-    let rx_sparkline = Sparkline::default()
-        .data(&rx_data)
-        .style(theme::fg(theme::rx()));
-    f.render_widget(rx_sparkline, rx_cols[1]);
+    let rx_data = traffic_history.get_rx_sparkline_data(usize::MAX);
+    f.render_widget(
+        Paragraph::new(mini_wave(
+            &rx_data,
+            rx_cols[1].width,
+            frac,
+            window,
+            theme::rx_wave,
+        )),
+        rx_cols[1],
+    );
 
-    // TX row: label + sparkline
+    // TX row: label + wave
     let tx_cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
@@ -1290,11 +1329,17 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
     let tx_label = Paragraph::new("TX").style(theme::fg(theme::tx()));
     f.render_widget(tx_label, tx_cols[0]);
 
-    let tx_data = traffic_history.get_tx_sparkline_data(sparkline_width);
-    let tx_sparkline = Sparkline::default()
-        .data(&tx_data)
-        .style(theme::fg(theme::tx()));
-    f.render_widget(tx_sparkline, tx_cols[1]);
+    let tx_data = traffic_history.get_tx_sparkline_data(usize::MAX);
+    f.render_widget(
+        Paragraph::new(mini_wave(
+            &tx_data,
+            tx_cols[1].width,
+            frac,
+            window,
+            theme::tx_wave,
+        )),
+        tx_cols[1],
+    );
 
     // Current rates row
     let (current_rx, current_tx) = rx_data

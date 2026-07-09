@@ -1,6 +1,5 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 913
 expression: output
 ---
  rustnet    1 Overview   2 Details   3 Interfaces   4 Graph   5 Help                                                                        
@@ -22,19 +21,6 @@ Process               firefox
 PID                   2001                                                                                                                  
 Service               https                                                                                                                 
                                                                                                                                             
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
 ▎ Traffic Statistics                                                                                                                        
 Bytes Sent            12.21 KB                                                                                                              
 Bytes Received        234.38 KB                                                                                                             
@@ -42,4 +28,17 @@ Packets Sent          12
 Packets Received      234                                                                                                                   
 Current Rate (In)     -                                                                                                                     
 Current Rate (Out)    -                                                                                                                     
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
  'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | Ctrl-d/u scroll | 'c' copy remote addr | Esc back

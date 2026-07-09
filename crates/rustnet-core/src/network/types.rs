@@ -1248,6 +1248,43 @@ impl TrafficHistory {
         self.samples.back().map(|s| s.packets_per_sec).unwrap_or(0)
     }
 
+    /// Configured ring-buffer capacity (the graph's sample window).
+    pub fn capacity(&self) -> usize {
+        self.max_samples
+    }
+
+    /// How far we are into the current sampling interval, in [0, 1].
+    /// Samples arrive on a ~1s cadence while the UI redraws faster;
+    /// graphs shift by this fraction so they scroll smoothly instead
+    /// of stepping once per sample. Measured against the actual gap
+    /// between the last two samples (the sampler thread drifts past
+    /// its nominal 1s period), so the fraction wraps to 0 exactly
+    /// when a new sample lands and the wave never jumps backward.
+    ///
+    /// Quantized to 2 steps per interval, matching the UI's 500ms idle
+    /// redraw heartbeat: redraws within the same step produce
+    /// byte-identical graph frames, so extra redraws (e.g. after input
+    /// events) diff to nothing. Terminal emulators repaint whenever
+    /// output arrives, so this rate directly sets the terminal's idle
+    /// CPU cost; keep it in sync with `redraw_interval` in main.rs.
+    pub fn scroll_fraction(&self) -> f64 {
+        const STEPS: f64 = 2.0;
+        let len = self.samples.len();
+        if len < 2 {
+            return 0.0;
+        }
+        let newest = &self.samples[len - 1];
+        let interval = newest
+            .timestamp
+            .duration_since(self.samples[len - 2].timestamp)
+            .as_secs_f64();
+        if interval <= 0.0 {
+            return 0.0;
+        }
+        let raw = (newest.timestamp.elapsed().as_secs_f64() / interval).clamp(0.0, 1.0);
+        (raw * STEPS).floor() / STEPS
+    }
+
     /// Get RX bytes/sec values for sparkline (newest last), smoothed with moving average
     pub fn get_rx_sparkline_data(&self, count: usize) -> Vec<u64> {
         // `samples` is filled push_back/pop_front, so `iter()` is already

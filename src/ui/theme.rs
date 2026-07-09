@@ -100,6 +100,116 @@ pub fn tx() -> Color {
     info()
 }
 
+// --- Traffic wave gradients (Graph tab) ---
+//
+// Truecolor 5-stop ramps for the braille traffic waves: deep hue at
+// the base of the wave, brighter at the crest (style borrowed from
+// github.com/programmersd21/flow). Each ramp stays inside a single
+// hue — RX is unmistakably green, TX unmistakably blue — and the
+// bright end stops well short of white so crests stay visible on
+// light backgrounds. Callers must wrap the result in `fg()` so
+// NO_COLOR still strips these.
+const RX_WAVE_STOPS: [(u8, u8, u8); 5] = [
+    (0x16, 0x65, 0x34), // deep green
+    (0x15, 0x80, 0x3D),
+    (0x16, 0xA3, 0x4A),
+    (0x22, 0xC5, 0x5E),
+    (0x4A, 0xDE, 0x80), // bright green crest
+];
+const TX_WAVE_STOPS: [(u8, u8, u8); 5] = [
+    (0x1E, 0x40, 0xAF), // deep blue
+    (0x1D, 0x4E, 0xD8),
+    (0x25, 0x63, 0xEB),
+    (0x3B, 0x82, 0xF6),
+    (0x60, 0xA5, 0xFA), // bright blue crest
+];
+const ACCENT_WAVE_STOPS: [(u8, u8, u8); 5] = [
+    (0x15, 0x5E, 0x75), // deep cyan
+    (0x0E, 0x74, 0x90),
+    (0x08, 0x91, 0xB2),
+    (0x06, 0xB6, 0xD4),
+    (0x22, 0xD3, 0xEE), // bright cyan crest
+];
+const WARN_WAVE_STOPS: [(u8, u8, u8); 5] = [
+    (0x92, 0x40, 0x0E), // deep amber
+    (0xB4, 0x53, 0x09),
+    (0xD9, 0x77, 0x06),
+    (0xF5, 0x9E, 0x0B),
+    (0xFB, 0xBF, 0x24), // bright amber
+];
+const ERR_WAVE_STOPS: [(u8, u8, u8); 5] = [
+    (0x99, 0x1B, 0x1B), // deep red
+    (0xB9, 0x1C, 0x1C),
+    (0xDC, 0x26, 0x26),
+    (0xEF, 0x44, 0x44),
+    (0xF8, 0x71, 0x71), // bright red
+];
+const SPECIAL_WAVE_STOPS: [(u8, u8, u8); 5] = [
+    (0x86, 0x19, 0x8F), // deep fuchsia
+    (0xA2, 0x1C, 0xAF),
+    (0xC0, 0x26, 0xD3),
+    (0xD9, 0x46, 0xEF),
+    (0xE8, 0x79, 0xF9), // bright fuchsia
+];
+const MUTED_WAVE_STOPS: [(u8, u8, u8); 5] = [
+    (0x37, 0x41, 0x51), // deep gray
+    (0x4B, 0x55, 0x63),
+    (0x6B, 0x72, 0x80),
+    (0x84, 0x8D, 0x9C),
+    (0x9C, 0xA3, 0xAF), // light gray
+];
+
+fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
+    (a as f64 + (b as f64 - a as f64) * t).round() as u8
+}
+
+/// Walk a 5-stop color ramp at `t` ∈ [0, 1] (4 linear segments).
+fn five_stop(stops: &[(u8, u8, u8); 5], t: f64) -> Color {
+    let seg = t.clamp(0.0, 1.0) * 4.0;
+    let i = (seg as usize).min(3);
+    let local = seg - i as f64;
+    let (a, b) = (stops[i], stops[i + 1]);
+    Color::Rgb(
+        lerp_channel(a.0, b.0, local),
+        lerp_channel(a.1, b.1, local),
+        lerp_channel(a.2, b.2, local),
+    )
+}
+
+/// RX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
+pub fn rx_wave(t: f64) -> Color {
+    five_stop(&RX_WAVE_STOPS, t)
+}
+/// TX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
+pub fn tx_wave(t: f64) -> Color {
+    five_stop(&TX_WAVE_STOPS, t)
+}
+/// Accent (cyan) wave gradient for non-directional graphs like the
+/// connection count, at intensity `t` (0 = dim base, 1 = crest).
+pub fn accent_wave(t: f64) -> Color {
+    five_stop(&ACCENT_WAVE_STOPS, t)
+}
+/// Green gradient for healthy/success bars (same ramp as RX).
+pub fn ok_wave(t: f64) -> Color {
+    five_stop(&RX_WAVE_STOPS, t)
+}
+/// Amber gradient for caution bars.
+pub fn warn_wave(t: f64) -> Color {
+    five_stop(&WARN_WAVE_STOPS, t)
+}
+/// Red gradient for critical bars.
+pub fn err_wave(t: f64) -> Color {
+    five_stop(&ERR_WAVE_STOPS, t)
+}
+/// Fuchsia gradient for special/distinct bars (DNS).
+pub fn special_wave(t: f64) -> Color {
+    five_stop(&SPECIAL_WAVE_STOPS, t)
+}
+/// Gray gradient for secondary/inactive bars.
+pub fn muted_wave(t: f64) -> Color {
+    five_stop(&MUTED_WAVE_STOPS, t)
+}
+
 // --- Protocol aliases ---
 pub fn proto_https() -> Color {
     ok()
@@ -164,6 +274,21 @@ pub fn field_process() -> Color {
 }
 pub fn field_application() -> Color {
     if is_classic() { warn() } else { muted() }
+}
+
+// --- Historic (closed) connection rows ---
+// Whole-row override; per-cell colors are dropped so the uniform gray
+// carries the signal. DarkGray reads as muted-but-present on both
+// light and dark backgrounds. DIM is deliberately NOT used when colors
+// are available: terminals disagree wildly on it (invisible on light
+// themes, barely-there in WezTerm dark). Under NO_COLOR it returns as
+// the only row-level cue, alongside the "closed" state text.
+pub fn historic_row() -> Style {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        Style::default().add_modifier(Modifier::DIM)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    }
 }
 
 // --- Panel border ---

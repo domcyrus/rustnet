@@ -5,7 +5,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Color, Style},
     widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
@@ -39,13 +39,18 @@ pub(in crate::ui) fn draw_scrollbar(
     let mut scrollbar_state = ScrollbarState::new(scroll_positions)
         .position(position)
         .viewport_content_length(viewport);
-    // Thumb in the default foreground so it matches the table content;
-    // only the track recedes into the chrome gray.
+    // Thumb in the terminal's default foreground so it matches the
+    // content; only the track recedes into the chrome gray. The fg
+    // must be set explicitly (`Color::Reset`), not left empty: ratatui
+    // styles are patches, and an empty patch lets the thumb inherit
+    // whatever color the underlying cells already have (on the Help
+    // tab the scrollbar rides the panel border, which is gray, and the
+    // thumb would blend into the track).
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)
         .track_style(theme::fg(theme::border()))
-        .thumb_style(Style::default());
+        .thumb_style(Style::default().fg(Color::Reset));
     f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
 

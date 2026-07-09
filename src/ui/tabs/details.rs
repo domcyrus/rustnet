@@ -24,6 +24,7 @@ use crate::ui::{
     dpi_color,
     format::{format_bytes, format_rate},
     section_header, state_color, theme, try_handle_connection_nav, try_handle_pane_wheel,
+    widgets::braille_graph,
     widgets::scrollbar::draw_scrollbar,
 };
 
@@ -41,6 +42,14 @@ const DETAILS_SPLIT_MIN_WIDTH: u16 = 100;
 /// step rather than a half page — the pane height isn't known in the
 /// key handler, and a small constant feels consistent across sizes.
 const DETAILS_SCROLL_STEP: u16 = 5;
+
+/// Cap on the info/traffic content width. On ultra-wide terminals an
+/// uncapped 50/50 pane split pushes the right pane (and the traffic
+/// wave panels) hundreds of cells away from the left column, making
+/// related fields read as scattered. ~140 keeps both info columns and
+/// the RX/TX waves adjacent; the continuity strip above stays full
+/// width to mirror the Overview table.
+const DETAILS_MAX_CONTENT_WIDTH: u16 = 140;
 
 /// Details tab. Pulls DNS resolver per-render from the app — no
 /// per-tab state today.
@@ -376,17 +385,13 @@ pub(in crate::ui) fn draw_connection_details(
     let conn_idx = ui_state.get_selected_index(connections).unwrap_or(0);
     let conn = &connections[conn_idx];
 
-    // Top: the continuity strip (same grid as Overview). Bottom: Traffic
-    // Statistics with a fixed shape (spacer + header + 6 rows). The
-    // connection information pane takes everything in between, which
-    // fits more of the per-protocol DPI fields without wrapping.
+    // Top: the continuity strip (same grid as Overview). The Traffic
+    // section is placed directly below the info panes (not pinned to
+    // the bottom of the screen), so the tab reads top-down without a
+    // void in the middle.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(STRIP_HEIGHT),
-            Constraint::Min(0),
-            Constraint::Length(8),
-        ])
+        .constraints([Constraint::Length(STRIP_HEIGHT), Constraint::Min(0)])
         .split(area);
 
     let strip_area = Rect::new(
@@ -403,8 +408,7 @@ pub(in crate::ui) fn draw_connection_details(
         has_country_db,
         click_regions,
     );
-    // Re-point the info/traffic split at the remaining chunks.
-    let chunks = [chunks[1], chunks[2]];
+    let body = chunks[1];
 
     // Connection details - build lines and field entries in parallel for click-to-copy.
     // All sections share a single label_style (muted gray); visual grouping comes
@@ -1449,7 +1453,11 @@ pub(in crate::ui) fn draw_connection_details(
         " · click a field to copy",
         theme::fg(theme::muted()),
     ));
-    let info_area = section_header(f, chunks[0], Line::from(band));
+    let info_area = section_header(f, body, Line::from(band));
+    let info_area = Rect {
+        width: info_area.width.min(DETAILS_MAX_CONTENT_WIDTH),
+        ..info_area
+    };
 
     // Drain right-pane sections (Application/DPI + TCP Analytics + RTT) out
     // of the main buffers when we have enough horizontal room to show two
@@ -1481,14 +1489,25 @@ pub(in crate::ui) fn draw_connection_details(
         }
     }
 
+    // The info panes take only the rows their content needs (clamped so
+    // the Traffic section below always fits); Traffic follows directly
+    // underneath instead of being pinned to the bottom of the screen.
+    // Section header + 6 content rows: the 6 stat fields on the left and
+    // the wave panels (1 header + 5 graph rows) bottom-align exactly.
+    const TRAFFIC_HEIGHT: u16 = 7;
+    let content_rows = details_text.len().max(right_text.len());
+    let info_h = (content_rows as u16)
+        .min(info_area.height.saturating_sub(TRAFFIC_HEIGHT + 1))
+        .max(1);
     // Reserve the two rightmost columns of the info area (blank gap +
     // scrollbar) and split the panes inside the remainder.
     let panes_area = Rect::new(
         info_area.x,
         info_area.y,
         info_area.width.saturating_sub(2),
-        info_area.height,
+        info_h,
     );
+
     let info_chunks: Vec<Rect> = if split_horizontally {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -1502,8 +1521,7 @@ pub(in crate::ui) fn draw_connection_details(
 
     // Both panes share one scroll offset (Ctrl+D/U, mouse wheel) so
     // they stay row-aligned; the taller pane bounds it.
-    let content_rows = details_text.len().max(right_text.len());
-    let max_scroll = (content_rows as u16).saturating_sub(info_area.height);
+    let max_scroll = (content_rows as u16).saturating_sub(info_h);
     let scroll = ui_state.details_scroll.clamp_for_render(max_scroll);
 
     let left_para = Paragraph::new(details_text)
@@ -1524,14 +1542,14 @@ pub(in crate::ui) fn draw_connection_details(
         register_detail_clicks(click_regions, info_chunks[1], &right_fields, true, scroll);
     }
 
-    // Scrollbar on the right edge of the info area; hidden when the
-    // record fits.
+    // Scrollbar on the right edge of the info area, spanning the pane
+    // rows; hidden when the record fits.
     draw_scrollbar(
         f,
-        info_area,
+        Rect::new(info_area.x, info_area.y, info_area.width, info_h),
         content_rows,
         scroll as usize,
-        info_area.height as usize,
+        info_h as usize,
     );
 
     // Traffic details - also track fields for click-to-copy
@@ -1589,27 +1607,63 @@ pub(in crate::ui) fn draw_connection_details(
         tx_value_style,
     );
 
-    // Blank spacer row, then the section header, then the 6 stat rows.
-    let traffic_area = Rect::new(
-        chunks[1].x,
-        chunks[1].y + 1,
-        chunks[1].width,
-        chunks[1].height.saturating_sub(1),
+    // Traffic section directly under the info panes: one blank spacer
+    // row, the section header, then the stat fields with per-connection
+    // RX/TX gradient waves alongside (when there's room).
+    let traffic_top = panes_area.y + info_h + 1;
+    let traffic_bottom = info_area.y + info_area.height;
+    if traffic_top >= traffic_bottom {
+        return Ok(());
+    }
+    let traffic_full = Rect::new(
+        info_area.x,
+        traffic_top,
+        info_area.width,
+        (traffic_bottom - traffic_top).min(TRAFFIC_HEIGHT),
     );
     let traffic_area = section_header(
         f,
-        traffic_area,
+        traffic_full,
         Span::styled(
             " Traffic Statistics",
             Style::default().add_modifier(Modifier::BOLD),
         ),
     );
+
+    // Stats column is sized for label width + value; the remaining
+    // width splits into the RX and TX wave panels.
+    const STATS_COL_WIDTH: u16 = 38;
+    let history = split_horizontally
+        .then(|| ctx.app.get_connection_rate_history(&conn.key()))
+        .flatten();
+
+    let stats_area = if let Some((rx, tx)) = &history {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Length(STATS_COL_WIDTH),
+                Constraint::Percentage(50),
+                Constraint::Percentage(50),
+            ])
+            .spacing(2)
+            .split(traffic_area);
+
+        let traffic_history = ctx.app.get_traffic_history();
+        let frac = traffic_history.scroll_fraction();
+        let window = traffic_history.capacity();
+        braille_graph::wave_panel(f, cols[1], rx, "↓ RX", frac, window, theme::rx_wave);
+        braille_graph::wave_panel(f, cols[2], tx, "↑ TX", frac, window, theme::tx_wave);
+        cols[0]
+    } else {
+        traffic_area
+    };
+
     let traffic = Paragraph::new(traffic_text)
         .style(Style::default())
         .wrap(Wrap { trim: false });
 
-    f.render_widget(traffic, traffic_area);
-    register_detail_clicks(click_regions, traffic_area, &traffic_fields, false, 0);
+    f.render_widget(traffic, stats_area);
+    register_detail_clicks(click_regions, stats_area, &traffic_fields, false, 0);
 
     Ok(())
 }

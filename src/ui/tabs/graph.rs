@@ -7,9 +7,8 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    symbols,
     text::{Line, Span},
-    widgets::{Axis, Cell, Chart, Dataset, GraphType, Paragraph, Row, Sparkline, Table},
+    widgets::{Cell, Paragraph, Row, Table},
 };
 
 use crate::app::App;
@@ -17,9 +16,8 @@ use crate::network::types::{
     AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory,
 };
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext,
-    format::{format_rate, format_rate_compact},
-    section_header, theme,
+    ClickableRegions, Component, ComponentContext, format::format_rate, section_header, theme,
+    widgets::braille_graph,
 };
 
 /// Bold default-foreground title span for a graph section header.
@@ -60,14 +58,17 @@ pub(in crate::ui) fn draw_graph_tab(
     let traffic_history = app.get_traffic_history();
 
     // Each panel is a borderless section_header region; layout spacing
-    // provides the breathing room the old borders used to.
+    // provides the breathing room the old borders used to. The health
+    // and distribution rows hold a handful of lines each, so they get
+    // fixed heights and the wave panels absorb the rest — percentage
+    // sizing left a large hole between sections on tall terminals.
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .spacing(1)
         .constraints([
-            Constraint::Percentage(35), // Traffic chart (RX/TX legend is built into the chart)
-            Constraint::Percentage(20), // Network health + TCP states
-            Constraint::Min(0),         // App distribution + top processes
+            Constraint::Min(8),     // Traffic + connections waves
+            Constraint::Length(10), // Network health + TCP counters/states
+            Constraint::Length(12), // App distribution + top processes
         ])
         .split(area);
 
@@ -104,7 +105,9 @@ pub(in crate::ui) fn draw_graph_tab(
     Ok(())
 }
 
-/// Draw the full traffic chart with RX/TX lines
+/// Draw the RX/TX traffic waves: two stacked braille area graphs with
+/// a vertical gradient (bright crest, saturated base), each header
+/// showing the current rate, a trend arrow, and the 60s peak.
 fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let inner = section_header(f, area, graph_title(" Traffic Over Time (60s)"));
 
@@ -114,85 +117,51 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         return;
     }
 
-    // Reserve a 1-cell legend strip at the bottom of the panel so RX/TX
-    // labels are always visible (ratatui's built-in chart legend gets hidden
-    // by `hidden_legend_constraints` when the chart area is small).
-    let layout = Layout::default()
+    // Blank row between the halves so the TX header doesn't sit
+    // directly on the RX wave's baseline.
+    let halves = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Length(1),
+            Constraint::Percentage(50),
+        ])
         .split(inner);
-    let chart_area = layout[0];
-    let legend_area = layout[1];
 
-    let legend = Paragraph::new(Line::from(vec![
-        Span::styled("▬ RX (incoming) ↓", theme::fg(theme::rx())),
-        Span::raw("   "),
-        Span::styled("▬ TX (outgoing) ↑", theme::fg(theme::tx())),
-    ]));
-    f.render_widget(legend, legend_area);
-
-    let (rx_data, tx_data) = history.get_chart_data();
-
-    // Find max value for Y axis scaling
-    let max_rate = rx_data
-        .iter()
-        .chain(tx_data.iter())
-        .map(|(_, y)| *y)
-        .fold(0.0f64, |a, b| a.max(b))
-        .max(1024.0); // Minimum 1 KB/s scale
-
-    let rx_dataset = Dataset::default()
-        .marker(symbols::Marker::Braille)
-        .graph_type(GraphType::Area)
-        .fill_to_y(0.0)
-        .style(theme::fg(theme::rx()))
-        .data(&rx_data);
-    let tx_dataset = Dataset::default()
-        .marker(symbols::Marker::Braille)
-        .graph_type(GraphType::Area)
-        .fill_to_y(0.0)
-        .style(theme::fg(theme::tx()))
-        .data(&tx_data);
-
-    // The fills are opaque (terminals can't alpha-blend), so draw the
-    // larger series first: the smaller one then layers fully visible in
-    // front while the larger still shows wherever it exceeds it.
-    let rx_total: f64 = rx_data.iter().map(|(_, y)| *y).sum();
-    let tx_total: f64 = tx_data.iter().map(|(_, y)| *y).sum();
-    let datasets = if rx_total >= tx_total {
-        vec![rx_dataset, tx_dataset]
-    } else {
-        vec![tx_dataset, rx_dataset]
-    };
-
-    let chart = Chart::new(datasets)
-        .x_axis(
-            Axis::default()
-                .title("Time")
-                .style(theme::fg(theme::muted()))
-                .bounds([-60.0, 0.0])
-                .labels(vec![
-                    Line::from("-60s"),
-                    Line::from("-30s"),
-                    Line::from("now"),
-                ]),
-        )
-        .y_axis(
-            Axis::default()
-                .title("Rate")
-                .style(theme::fg(theme::muted()))
-                .bounds([0.0, max_rate])
-                .labels(vec![
-                    Line::from("0"),
-                    Line::from(format_rate_compact(max_rate / 2.0)),
-                    Line::from(format_rate_compact(max_rate)),
-                ]),
-        );
-
-    f.render_widget(chart, chart_area);
+    let frac = history.scroll_fraction();
+    let window = history.capacity();
+    let rx = history.get_rx_sparkline_data(usize::MAX);
+    let tx = history.get_tx_sparkline_data(usize::MAX);
+    braille_graph::wave_panel(f, halves[0], &rx, "↓ RX", frac, window, theme::rx_wave);
+    braille_graph::wave_panel(f, halves[2], &tx, "↑ TX", frac, window, theme::tx_wave);
 }
 
-/// Draw connections count sparkline
+/// Horizontal bar with the same dark→bright glow as the waves: each
+/// filled cell walks the gradient from deep hue at the origin to the
+/// bright crest at the tip; the remainder renders as muted `░` track.
+fn gradient_bar(filled: usize, width: usize, ramp: fn(f64) -> Color) -> Vec<Span<'static>> {
+    let filled = filled.min(width);
+    let mut spans: Vec<Span> = (0..filled)
+        .map(|i| {
+            let t = if filled > 1 {
+                i as f64 / (filled - 1) as f64
+            } else {
+                1.0
+            };
+            Span::styled("█", theme::fg(ramp(0.15 + 0.85 * t)))
+        })
+        .collect();
+    if width > filled {
+        spans.push(Span::styled(
+            "░".repeat(width - filled),
+            theme::fg(theme::muted()),
+        ));
+    }
+    spans
+}
+
+/// Draw the connection-count wave: same gradient braille style as the
+/// traffic panels, in the accent (cyan) hue.
 fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let inner = section_header(f, area, graph_title(" Connections"));
 
@@ -202,31 +171,47 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
         return;
     }
 
-    // Layout: sparkline + current count label. The two blank rows in
-    // between mirror the traffic chart's axis line + time-label rows,
-    // so the sparkline's bottom aligns with the chart's plot area and
-    // the count label lines up with the chart's RX/TX legend.
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(1),    // sparkline, level with the chart's data rows
-            Constraint::Length(2), // blank: chart's axis + label rows
-            Constraint::Length(1), // count label, level with the chart legend
-        ])
-        .split(inner);
+    let conn_data = history.get_connection_sparkline_data(usize::MAX);
+    if inner.height < 2 || conn_data.is_empty() {
+        return;
+    }
 
-    let width = inner.width as usize;
-    let conn_data = history.get_connection_sparkline_data(width);
+    let current = *conn_data.last().unwrap();
+    let peak = conn_data.iter().copied().max().unwrap_or(0).max(1);
+    let ratio = current as f64 / peak as f64;
 
-    let sparkline = Sparkline::default()
-        .data(&conn_data)
-        .style(theme::fg(theme::accent()));
-    f.render_widget(sparkline, chunks[0]);
+    let left = vec![
+        Span::styled(
+            format!("{current} active"),
+            theme::bold_fg(theme::accent_wave(0.35 + 0.65 * ratio)),
+        ),
+        Span::styled(
+            format!(" {}", braille_graph::trend_glyph(&conn_data)),
+            theme::fg(theme::muted()),
+        ),
+    ];
+    let right = Span::styled(format!("peak {peak}"), theme::fg(theme::muted()));
+    f.render_widget(
+        Paragraph::new(braille_graph::spread_line(left, right, inner.width)),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
 
-    // Current connection count label (active connections only)
-    let current_count = conn_data.last().copied().unwrap_or(0);
-    let label = Paragraph::new(format!("{} active connections", current_count));
-    f.render_widget(label, chunks[2]);
+    let graph_area = Rect::new(
+        inner.x,
+        inner.y + 1,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
+    let lines = braille_graph::render(
+        &conn_data,
+        graph_area.width as usize,
+        graph_area.height as usize,
+        peak as f64,
+        history.scroll_fraction(),
+        history.capacity(),
+        |intensity| theme::accent_wave((0.6 + 0.4 * ratio) * intensity),
+    );
+    f.render_widget(Paragraph::new(lines), graph_area);
 }
 
 /// Draw application protocol distribution
@@ -254,26 +239,26 @@ fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) 
         }
 
         let filled = ((pct / 100.0) * bar_width as f64) as usize;
-        let bar: String = "█".repeat(filled) + &"░".repeat(bar_width.saturating_sub(filled));
 
-        let color = match label {
-            "HTTPS" => theme::proto_https(),
-            "QUIC" => theme::proto_quic(),
-            "HTTP" => theme::proto_http(),
-            "DNS" => theme::proto_dns(),
-            "SSH" => theme::proto_ssh(),
-            _ => theme::proto_other(),
+        let (color, ramp): (Color, fn(f64) -> Color) = match label {
+            "HTTPS" => (theme::proto_https(), theme::ok_wave),
+            "QUIC" => (theme::proto_quic(), theme::accent_wave),
+            "HTTP" => (theme::proto_http(), theme::warn_wave),
+            "DNS" => (theme::proto_dns(), theme::special_wave),
+            "SSH" => (theme::proto_ssh(), theme::tx_wave),
+            _ => (theme::proto_other(), theme::muted_wave),
         };
 
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(
                 format!("{:<width$}", label, width = LABEL_WIDTH),
                 theme::fg(color),
             ),
             Span::raw(" "),
-            Span::styled(bar, theme::fg(color)),
-            Span::raw(format!(" {:>5.1}%", pct)),
-        ]));
+        ];
+        spans.extend(gradient_bar(filled, bar_width, ramp));
+        spans.push(Span::raw(format!(" {:>5.1}%", pct)));
+        lines.push(Line::from(spans));
     }
 
     if lines.is_empty() {
@@ -388,22 +373,22 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let rtt_line = if let Some(rtt) = current_rtt {
         let rtt_pct = (rtt / RTT_MAX).min(1.0);
         let filled = (rtt_pct * bar_width as f64) as usize;
-        let empty = bar_width.saturating_sub(filled);
 
-        let color = if rtt < 50.0 {
-            theme::ok()
+        let (color, ramp): (Color, fn(f64) -> Color) = if rtt < 50.0 {
+            (theme::ok(), theme::ok_wave)
         } else if rtt < 150.0 {
-            theme::warn()
+            (theme::warn(), theme::warn_wave)
         } else {
-            theme::err()
+            (theme::err(), theme::err_wave)
         };
 
-        Line::from(vec![
-            Span::styled("  RTT  ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::styled("█".repeat(filled), theme::fg(color)),
-            Span::styled("░".repeat(empty), theme::fg(theme::muted())),
-            Span::styled(format!(" {:>6.1}ms", rtt), theme::fg(color)),
-        ])
+        let mut spans = vec![Span::styled(
+            "  RTT  ",
+            Style::default().add_modifier(Modifier::BOLD),
+        )];
+        spans.extend(gradient_bar(filled, bar_width, ramp));
+        spans.push(Span::styled(format!(" {:>6.1}ms", rtt), theme::fg(color)));
+        Line::from(spans)
     } else {
         Line::from(vec![
             Span::styled("  RTT  ", Style::default().add_modifier(Modifier::BOLD)),
@@ -415,25 +400,29 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     // Build Loss gauge
     let loss_pct = (current_loss / LOSS_MAX).min(1.0);
     let filled = (loss_pct * bar_width as f64) as usize;
-    let empty = bar_width.saturating_sub(filled);
 
-    let loss_color = if current_loss < 1.0 {
-        theme::ok()
+    let (loss_color, loss_ramp): (Color, fn(f64) -> Color) = if current_loss < 1.0 {
+        (theme::ok(), theme::ok_wave)
     } else if current_loss < 5.0 {
-        theme::warn()
+        (theme::warn(), theme::warn_wave)
     } else {
-        theme::err()
+        (theme::err(), theme::err_wave)
     };
 
-    let loss_line = Line::from(vec![
-        Span::styled("  Loss ", Style::default().add_modifier(Modifier::BOLD)),
-        Span::styled(
-            "█".repeat(filled.max(if current_loss > 0.0 { 1 } else { 0 })),
-            theme::fg(loss_color),
-        ),
-        Span::styled("░".repeat(empty.min(bar_width)), theme::fg(theme::muted())),
-        Span::styled(format!(" {:>6.2}%", current_loss), theme::fg(loss_color)),
-    ]);
+    let mut loss_spans = vec![Span::styled(
+        "  Loss ",
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    loss_spans.extend(gradient_bar(
+        filled.max(if current_loss > 0.0 { 1 } else { 0 }),
+        bar_width,
+        loss_ramp,
+    ));
+    loss_spans.push(Span::styled(
+        format!(" {:>6.2}%", current_loss),
+        theme::fg(loss_color),
+    ));
+    let loss_line = Line::from(loss_spans);
 
     // Build averages line
     let avg_line = Line::from(vec![
@@ -587,23 +576,27 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
         .take(max_rows)
         .map(|(name, count)| {
             let bar_len = (*count * bar_width).checked_div(max_count).unwrap_or(0);
-            let bar = "█".repeat(bar_len.max(1).min(bar_width));
 
-            // Color based on state health
-            let color = match *name {
-                "ESTAB" => theme::tcp_established(),
-                "SYN_SENT" | "SYN_RECV" => theme::tcp_opening(),
-                "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" => theme::tcp_closing(),
-                "CLOSE_WAIT" | "LAST_ACK" | "CLOSING" => theme::tcp_waiting(),
-                "CLOSED" => theme::tcp_closed(),
-                _ => Color::Reset,
+            // Label color keeps the semantic state alias; the bar
+            // itself glows in the matching gradient family.
+            let (color, ramp): (Color, fn(f64) -> Color) = match *name {
+                "ESTAB" => (theme::tcp_established(), theme::ok_wave),
+                "SYN_SENT" | "SYN_RECV" => (theme::tcp_opening(), theme::warn_wave),
+                "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" => {
+                    (theme::tcp_closing(), theme::muted_wave)
+                }
+                "CLOSE_WAIT" | "LAST_ACK" | "CLOSING" => (theme::tcp_waiting(), theme::muted_wave),
+                "CLOSED" => (theme::tcp_closed(), theme::muted_wave),
+                _ => (Color::Reset, theme::muted_wave),
             };
 
-            Line::from(vec![
-                Span::styled(format!("{:>10} ", name), theme::fg(color)),
-                Span::styled(bar, theme::fg(color)),
-                Span::raw(format!(" {:>4}", count)),
-            ])
+            let mut spans = vec![Span::styled(format!("{:>10} ", name), theme::fg(color))];
+            // No empty track here: rows are scaled to the max count,
+            // so a full-width track would just add noise.
+            let filled = bar_len.max(1).min(bar_width);
+            spans.extend(gradient_bar(filled, filled, ramp));
+            spans.push(Span::raw(format!(" {:>4}", count)));
+            Line::from(spans)
         })
         .collect();
 

@@ -1088,6 +1088,37 @@ If graphs and sparklines appear corrupted (showing question marks or garbled cha
 
 See also: [ratatui#457](https://github.com/ratatui/ratatui/issues/457), [gtop#21](https://github.com/aksakalli/gtop/issues/21)
 
+#### macOS: High Terminal CPU or Gappy Graphs (iTerm2)
+
+RustNet's graphs are drawn with Unicode Braille characters. The classic
+macOS monospace fonts (Monaco, Menlo) have no Braille glyphs, so iTerm2
+renders every graph cell through font fallback. This is slow (iTerm2 can
+use 10-20% CPU just displaying the graphs) and the fallback glyphs often
+leave visible gaps in the waves.
+
+**Solution:** Give iTerm2 a font with Braille coverage for non-ASCII text:
+
+1. Install a [Nerd Font](https://www.nerdfonts.com/), e.g.:
+
+   ```bash
+   brew install --cask font-jetbrains-mono-nerd-font
+   ```
+
+2. In iTerm2: **Settings → Profiles → Text**, enable **"Use a different
+   font for non-ASCII text"** and select the Nerd Font. Your regular
+   text keeps its current font; only symbols and graph glyphs use the
+   new one.
+3. Optional: **Settings → General → Preferences → "Maximize throughput"**
+   caps iTerm2's redraw rate at 30 fps, which further reduces CPU with
+   frequently updating TUIs.
+
+**Alternative:** Use a GPU-accelerated terminal such as
+[WezTerm](https://wezterm.org/), [Ghostty](https://ghostty.org/), or
+[kitty](https://sw.kovidgoyal.net/kitty/). These render RustNet with
+much lower CPU than iTerm2, and WezTerm ships JetBrains Mono with symbol
+fallback built in, so the graphs render correctly with zero
+configuration.
+
 ### Getting Help
 
 If you encounter issues not covered here:

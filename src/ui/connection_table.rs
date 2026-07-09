@@ -19,7 +19,7 @@
 use std::borrow::Cow;
 
 use ratatui::layout::Constraint;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Row};
 
@@ -334,13 +334,13 @@ pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UIState) ->
 }
 
 /// Row-level staleness styling shared by every connection row:
-/// fresh rows keep per-cell colors, historic rows keep them but fade
-/// under DIM, aging/critical rows drop cell colors so a whole-row
-/// yellow/red override carries the signal.
+/// fresh rows keep per-cell colors; historic and aging/critical rows
+/// drop cell colors so a whole-row override carries the signal
+/// (gray for historic, yellow/red for aging).
 fn staleness_style(conn: &Connection) -> (Option<Style>, bool) {
     let staleness = conn.staleness_ratio();
     if conn.is_historic {
-        (Some(Style::default().add_modifier(Modifier::DIM)), true)
+        (Some(theme::historic_row()), false)
     } else if staleness >= 0.90 {
         (Some(theme::fg(theme::err())), false)
     } else if staleness >= 0.75 {

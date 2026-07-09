@@ -691,7 +691,15 @@ where
     <B as ratatui::prelude::Backend>::Error: Send + Sync + 'static,
 {
     let tick_rate = Duration::from_millis(200);
+    // Idle redraw ceiling. Terminal emulators repaint whenever output
+    // arrives (iTerm2's renderer repaints the window on any content
+    // change), so the draw cadence directly sets the terminal's CPU
+    // cost. Input and data changes redraw immediately; graph animation
+    // and the live sidebar counters advance at this heartbeat.
+    let redraw_interval = Duration::from_millis(500);
     let mut last_tick = std::time::Instant::now();
+    let mut last_draw = std::time::Instant::now();
+    let mut needs_redraw = true; // first frame
     let mut ui_state = ui::UIState::default();
     let (has_country_db, _, _) = app.get_geoip_status();
     ui_state.has_geoip = has_country_db;
@@ -706,7 +714,7 @@ where
     let mut needs_regroup = false;
     let mut last_seen_generation = u64::MAX; // force the first refresh
 
-    loop {
+    'main: loop {
         // Refresh connection data only when needed:
         // - On timer tick (every 200ms), but only if the snapshot actually
         //   changed since we last consumed it (it rebuilds every
@@ -740,6 +748,7 @@ where
             last_seen_generation = snapshot_generation;
             needs_data_refresh = false;
             needs_regroup = false;
+            needs_redraw = true;
         } else if needs_regroup {
             // Only rebuild grouped rows from existing connections
             // (e.g., after expand/collapse or grouping toggle)
@@ -749,6 +758,7 @@ where
                 Vec::new()
             };
             needs_regroup = false;
+            needs_redraw = true;
         }
 
         // Ensure we have a valid selection (handles connection removals)
@@ -774,25 +784,40 @@ where
             );
         }
 
-        // Draw the UI
-        terminal.draw(|f| {
-            let grouped = if ui_state.grouping_enabled {
-                Some(grouped_rows.as_slice())
-            } else {
-                None
-            };
-            if let Err(err) = ui::draw(
-                f,
-                app,
-                &ui_state,
-                &connections,
-                grouped,
-                &stats,
-                &mut click_regions,
-            ) {
-                error!("UI draw error: {}", err);
-            }
-        })?;
+        // Draw the UI, but only when something warrants it: immediately
+        // after input or a data change, otherwise at the idle heartbeat.
+        // The sidebar counters are live atomics read at render time, so
+        // an unconditional draw here would emit fresh cells (and force a
+        // terminal repaint) on every 200ms tick even with nothing going on.
+        // The startup splash animates faster than the idle heartbeat, so
+        // it gets a shorter redraw interval for its ~1s lifetime.
+        let idle_redraw = if app.is_loading() {
+            Duration::from_millis(100)
+        } else {
+            redraw_interval
+        };
+        if needs_redraw || last_draw.elapsed() >= idle_redraw {
+            terminal.draw(|f| {
+                let grouped = if ui_state.grouping_enabled {
+                    Some(grouped_rows.as_slice())
+                } else {
+                    None
+                };
+                if let Err(err) = ui::draw(
+                    f,
+                    app,
+                    &ui_state,
+                    &connections,
+                    grouped,
+                    &stats,
+                    &mut click_regions,
+                ) {
+                    error!("UI draw error: {}", err);
+                }
+            })?;
+            last_draw = std::time::Instant::now();
+            needs_redraw = false;
+        }
 
         // Update visible rows for page navigation based on terminal height.
         // Chrome rows: tab bar (2) + section title (1) + table header incl.
@@ -807,20 +832,27 @@ where
             ui_state.visible_rows = (size.height as usize).saturating_sub(chrome);
         }
 
-        // Handle timeout for periodic updates
+        // Sleep until the next data tick or redraw heartbeat, whichever
+        // comes first, unless an event arrives earlier.
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
-            .unwrap_or(Duration::from_secs(0));
+            .unwrap_or(Duration::from_secs(0))
+            .min(idle_redraw.saturating_sub(last_draw.elapsed()));
 
         // Clear clipboard message after timeout
         if let Some((_, time)) = &ui_state.clipboard_message
             && time.elapsed().as_secs() >= 3
         {
             ui_state.clipboard_message = None;
+            needs_redraw = true;
         }
 
-        // Handle input events
-        if crossterm::event::poll(timeout)? {
+        // Handle input events, draining any queued burst (mouse motion,
+        // key auto-repeat) before the next iteration so a flood of
+        // events costs one redraw instead of one redraw per event.
+        let mut poll_timeout = timeout;
+        'events: while crossterm::event::poll(poll_timeout)? {
+            poll_timeout = Duration::ZERO;
             let event = crossterm::event::read()?;
             match event {
                 crossterm::event::Event::Mouse(mouse) => {
@@ -852,11 +884,13 @@ where
                         if outcome.needs_regroup {
                             needs_regroup = true;
                         }
-                        continue;
+                        needs_redraw = true;
+                        continue 'events;
                     }
 
                     if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                         {
+                            needs_redraw = true;
                             ui_state.quit_confirmation = false;
                             ui_state.clear_confirmation = false;
 
@@ -945,8 +979,9 @@ where
                     // On Linux/macOS, only Press events are reported
                     // Filter to only handle Press events for consistent cross-platform behavior
                     if key.kind != KeyEventKind::Press {
-                        continue;
+                        continue 'events;
                     }
+                    needs_redraw = true;
 
                     // Give the active tab's Component first crack
                     // at the key (including filter-mode input — OverviewTab
@@ -1007,7 +1042,7 @@ where
                             (KeyCode::Char('q'), _) => {
                                 if ui_state.quit_confirmation {
                                     info!("User confirmed application exit");
-                                    break;
+                                    break 'main;
                                 } else {
                                     info!("User requested quit - showing confirmation");
                                     ui_state.quit_confirmation = true;
@@ -1017,7 +1052,7 @@ where
                             // Ctrl+C always quits immediately
                             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                                 info!("User requested immediate exit with Ctrl+C");
-                                break;
+                                break 'main;
                             }
 
                             // Tab navigation (forward)
@@ -1078,9 +1113,12 @@ where
                         }
                     }
                 } // end Event::Key
-                _ => {} // ignore resize, focus, paste, etc.
+                crossterm::event::Event::Resize(..) => {
+                    needs_redraw = true;
+                }
+                _ => {} // ignore focus, paste, etc.
             } // end match event
-        } // end if poll
+        } // end event drain
     } // end loop
 
     Ok(())
