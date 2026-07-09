@@ -3,18 +3,18 @@
 //! `UIState::help_scroll`.
 
 use anyhow::Result;
-use crossterm::event::{KeyEvent, MouseEvent};
+use crossterm::event::{KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
     text::{Line, Span},
-    widgets::{Paragraph, Wrap},
+    widgets::{Padding, Paragraph, Wrap},
 };
 
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, HandlerContext, UIState, panel_block,
-    theme, try_handle_pane_scroll, try_handle_pane_wheel, widgets::scrollbar::draw_scrollbar,
+    theme, try_handle_pane_scroll, widgets::scrollbar::draw_scrollbar,
 };
 
 /// Help tab. Zero-sized — the scroll offset it responds to lives in
@@ -45,7 +45,17 @@ impl Component for HelpTab {
         mouse: MouseEvent,
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
-        try_handle_pane_wheel(mouse, &mut ctx.ui_state.help_scroll)
+        // Three lines per wheel tick: the Help text is a long static
+        // page, so the single-line step shared by the data panes feels
+        // sluggish here.
+        const WHEEL_STEP: u16 = 3;
+        let scroll = &mut ctx.ui_state.help_scroll;
+        match mouse.kind {
+            MouseEventKind::ScrollUp => scroll.scroll_up(WHEEL_STEP),
+            MouseEventKind::ScrollDown => scroll.scroll_down(WHEEL_STEP),
+            _ => return None,
+        }
+        Some(Vec::new())
     }
 }
 
@@ -269,13 +279,20 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
     // larger, but staying off the unstable rendered-line-info APIs is
     // worth the last row or two of scroll range.
     let total_lines = help_text.len();
-    let block = panel_block("Help");
-    let inner = block.inner(area);
-    let max_scroll = (total_lines as u16).saturating_sub(inner.height);
+    let inner_height = area.height.saturating_sub(2); // panel borders
+    let max_scroll = (total_lines as u16).saturating_sub(inner_height);
     let scroll = ui_state.help_scroll.clamp_for_render(max_scroll);
 
+    let title = if max_scroll > 0 {
+        "Help · ↑/↓ scroll"
+    } else {
+        "Help"
+    };
+    // Right padding keeps the text clear of the two rightmost inner
+    // columns: a blank gap and the scrollbar, same arrangement as the
+    // Overview table.
     let help = Paragraph::new(help_text)
-        .block(block)
+        .block(panel_block(title).padding(Padding::right(2)))
         .style(Style::default())
         .wrap(Wrap { trim: true })
         .scroll((scroll, 0))
@@ -283,13 +300,21 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
 
     f.render_widget(help, area);
 
-    // Scrollbar over the right border, spanning the inner rows.
+    // Scrollbar one column inside the panel border so the border line
+    // stays intact, inset one row top and bottom to clear the title
+    // row and rounded corners.
+    let track = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width.saturating_sub(1),
+        area.height.saturating_sub(2),
+    );
     draw_scrollbar(
         f,
-        Rect::new(area.x, inner.y, area.width, inner.height),
+        track,
         total_lines,
         scroll as usize,
-        inner.height as usize,
+        inner_height as usize,
     );
 
     Ok(())
