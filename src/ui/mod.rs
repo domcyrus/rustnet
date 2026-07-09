@@ -211,9 +211,18 @@ pub fn draw(
 ) -> Result<()> {
     click_regions.clear();
 
-    // If still loading, show loading screen
+    // If still loading, show loading screen. The splash clock starts on
+    // the first frame and is quantized to whole animation frames, so
+    // draws within one frame are byte-identical (cheap for the
+    // terminal) and the first frame is deterministic for tests.
     if app.is_loading() {
-        draw_loading_screen(f);
+        use std::sync::OnceLock;
+        use widgets::loading::FRAME_MS;
+        static SPLASH_START: OnceLock<std::time::Instant> = OnceLock::new();
+        let elapsed = SPLASH_START.get_or_init(std::time::Instant::now).elapsed();
+        let frame =
+            std::time::Duration::from_millis(elapsed.as_millis() as u64 / FRAME_MS * FRAME_MS);
+        draw_loading_screen(f, frame);
         return Ok(());
     }
 
@@ -597,7 +606,9 @@ mod snapshot_tests {
 
     #[test]
     fn loading_screen() {
-        let output = render(80, 20, draw_loading_screen);
+        let output = render(80, 20, |f| {
+            draw_loading_screen(f, std::time::Duration::ZERO);
+        });
         insta::assert_snapshot!(output);
     }
 

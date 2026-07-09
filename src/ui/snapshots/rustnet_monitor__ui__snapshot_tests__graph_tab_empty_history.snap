@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 999
+assertion_line: 1002
 expression: output
 ---
  rustnet    1 Overview   2 Details   3 Interfaces   4 Graph   5 Help                                                                        
@@ -27,11 +27,11 @@ Collecting data...                                 Retransmits         0        
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
 ▎ Application Distribution                                             ▎ Top Processes                                                      
 Other  ██████████████████████████████████████████████████████ 100.0%   No active processes                                                  
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

@@ -1,8 +1,9 @@
 ---
-source: src/ui.rs
-assertion_line: 5151
+source: src/ui/mod.rs
+assertion_line: 650
 expression: output
 ---
+                                                                                
                                                                                 
                                                                                 
                                                                                 
@@ -14,4 +15,8 @@ expression: output
 │                                                                              │
 │                       ⣾ Loading network connections...                       │
 │                                                                              │
+│                          This may take a few seconds                         │
+│                                                                              │
+│                   ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣶⣿⣿⣿⣿⣷⣤⡀⠀⠀⠀⠀⠀⢀⣠⣤⣤⣤⣄⡀⠀⠀⠀⠀⠀                   │
+│                   ⣀⣠⣴⣾⣿⣿⣿⣷⣦⣄⣀⣀⣠⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣀⣀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣶⣤⣀⣀⠀                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯

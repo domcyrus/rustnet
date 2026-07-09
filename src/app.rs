@@ -581,6 +581,27 @@ impl Default for AppStats {
     }
 }
 
+/// Ring buffers of per-connection RX/TX rates (bytes/sec), capped at
+/// the same 60-sample window as [`TrafficHistory`].
+#[derive(Debug, Clone, Default)]
+pub struct ConnRateHistory {
+    pub rx: VecDeque<u64>,
+    pub tx: VecDeque<u64>,
+}
+
+impl ConnRateHistory {
+    fn push(&mut self, rx: u64, tx: u64, cap: usize) {
+        if self.rx.len() >= cap {
+            self.rx.pop_front();
+        }
+        if self.tx.len() >= cap {
+            self.tx.pop_front();
+        }
+        self.rx.push_back(rx);
+        self.tx.push_back(tx);
+    }
+}
+
 /// Main application state
 pub struct App {
     /// Configuration
@@ -642,6 +663,14 @@ pub struct App {
 
     /// Traffic history for graph visualization
     traffic_history: Arc<RwLock<TrafficHistory>>,
+
+    /// Per-connection RX/TX rate history (bytes/sec, oldest→newest),
+    /// keyed by `Connection::key()`. Sampled by the traffic-history
+    /// thread on the same 1s cadence as `traffic_history`, so the
+    /// Details tab can draw per-connection waves that scroll in sync
+    /// with the aggregate graphs. Entries for vanished connections are
+    /// dropped each sample.
+    conn_rate_history: Arc<RwLock<HashMap<String, ConnRateHistory>>>,
 
     /// DNS resolver for reverse DNS lookups
     dns_resolver: Option<Arc<DnsResolver>>,
@@ -776,6 +805,7 @@ impl App {
             interface_stats: Arc::new(DashMap::new()),
             interface_rates: Arc::new(DashMap::new()),
             traffic_history: Arc::new(RwLock::new(TrafficHistory::new(60))), // 60 seconds of history
+            conn_rate_history: Arc::new(RwLock::new(HashMap::new())),
             dns_resolver,
             geoip_resolver,
             packet_rx: None,
@@ -861,12 +891,14 @@ impl App {
         // Start traffic history thread for graph visualization
         self.start_traffic_history_thread()?;
 
-        // Mark loading as complete after a short delay
+        // Mark loading as complete after a short delay. Slightly longer
+        // than strictly necessary so the animated splash reads as a
+        // deliberate intro instead of a flash.
         let is_loading = Arc::clone(&self.is_loading);
         thread::Builder::new()
             .name("startup_flag".to_string())
             .spawn(move || {
-                thread::sleep(Duration::from_millis(500));
+                thread::sleep(Duration::from_millis(1500));
                 is_loading.store(false, Ordering::Relaxed);
             })
             .expect("Failed to spawn startup_flag thread");
@@ -2006,6 +2038,7 @@ impl App {
     fn start_traffic_history_thread(&self) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
         let traffic_history = Arc::clone(&self.traffic_history);
+        let conn_rate_history = Arc::clone(&self.conn_rate_history);
         let interface_rates = Arc::clone(&self.interface_rates);
         let connections_snapshot = Arc::clone(&self.connections_snapshot);
         let stats = Arc::clone(&self.stats);
@@ -2037,10 +2070,29 @@ impl App {
                                 )
                             });
 
-                    // Get active connection count from snapshot (excludes historic)
+                    // Get active connection count from snapshot (excludes
+                    // historic) and record per-connection rate samples on
+                    // the same cadence as the aggregate history.
                     let connection_count = connections_snapshot
                         .read()
-                        .map(|snap| snap.iter().filter(|c| !c.is_historic).count())
+                        .map(|snap| {
+                            if let Ok(mut rates) = conn_rate_history.write() {
+                                let alive: std::collections::HashSet<String> = snap
+                                    .iter()
+                                    .filter(|c| !c.is_historic)
+                                    .map(|c| c.key())
+                                    .collect();
+                                rates.retain(|key, _| alive.contains(key));
+                                for conn in snap.iter().filter(|c| !c.is_historic) {
+                                    rates.entry(conn.key()).or_default().push(
+                                        conn.current_incoming_rate_bps as u64,
+                                        conn.current_outgoing_rate_bps as u64,
+                                        60,
+                                    );
+                                }
+                            }
+                            snap.iter().filter(|c| !c.is_historic).count()
+                        })
                         .unwrap_or(0);
 
                     // Get packet and retransmit counts (calculate deltas)
@@ -2258,6 +2310,18 @@ impl App {
     }
 
     /// Get traffic history for graph visualization
+    /// RX/TX rate history for one connection (by `Connection::key()`),
+    /// as (rx, tx) bytes/sec vectors oldest→newest. None until the
+    /// traffic-history thread has sampled the connection at least once.
+    pub fn get_connection_rate_history(&self, key: &str) -> Option<(Vec<u64>, Vec<u64>)> {
+        self.conn_rate_history.read().ok()?.get(key).map(|h| {
+            (
+                h.rx.iter().copied().collect(),
+                h.tx.iter().copied().collect(),
+            )
+        })
+    }
+
     pub fn get_traffic_history(&self) -> TrafficHistory {
         self.traffic_history
             .read()
