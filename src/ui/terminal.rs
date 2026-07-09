@@ -20,9 +20,6 @@ pub fn setup_terminal<B: ratatui::backend::Backend>(backend: B) -> Result<Termin
 where
     <B as ratatui::backend::Backend>::Error: Send + Sync + 'static,
 {
-    let mut terminal = RatatuiTerminal::new(backend)?;
-    terminal.clear()?;
-    terminal.hide_cursor()?;
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(
         std::io::stdout(),
@@ -30,6 +27,15 @@ where
         crossterm::event::EnableMouseCapture
     )?;
     install_panic_hook();
+    let mut terminal = RatatuiTerminal::new(backend)?;
+    // Clear via the backend, not `Terminal::clear()`: since ratatui 0.30 the
+    // latter queries the cursor position (ESC[6n) and errors out after a 2s
+    // timeout on terminals that never reply (e.g. the FreeBSD vt console),
+    // aborting startup. The backend clear is a plain clear-screen write. It
+    // also runs after entering the alternate screen, so the user's primary
+    // screen is left untouched.
+    terminal.backend_mut().clear()?;
+    terminal.hide_cursor()?;
     Ok(terminal)
 }
 
