@@ -195,7 +195,7 @@ fn main() -> Result<()> {
 
     // Create and start the application
     let mut app = app::App::new_with_output_handles(config.clone(), output_handles)?;
-    let process_ready_rx = app.start()?;
+    let (process_ready_rx, capture_ready_rx) = app.start()?;
     info!("Application started");
 
     // Wait for process detection (including eBPF loading) to complete before
@@ -209,6 +209,21 @@ fn main() -> Result<()> {
         }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             warn!("Process detection thread exited early, applying sandbox anyway");
+        }
+    }
+
+    // Also wait for the capture thread to finish opening the capture device.
+    // The open runs on a background thread and needs the startup privileges;
+    // without this synchronization the uid drop (Linux/FreeBSD) or sandbox
+    // could win the race and the open would fail with EPERM, leaving the UI
+    // running with no traffic.
+    match capture_ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
+        Ok(()) => info!("Packet capture initialized, safe to apply sandbox"),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            warn!("Timed out waiting for packet capture init, applying sandbox anyway");
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            warn!("Capture thread exited early, applying sandbox anyway");
         }
     }
 
