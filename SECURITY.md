@@ -91,12 +91,14 @@ On macOS 10.5+, RustNet uses [Seatbelt](https://theapplewiki.com/wiki/Dev:Seatbe
 | Filesystem writes | All user home directories blocked (`/Users`, `/var/root`) |
 | Filesystem writes | Only configured log, PCAP, and PCAPNG export paths writable |
 | Process execution | All binaries blocked except `/usr/sbin/lsof` |
+| Root uid | When started as root (e.g. `sudo rustnet`), the process drops to the invoking user (`SUDO_UID`/`SUDO_GID`) or `nobody` after initialization |
 
 ### How It Works
 
 1. **Initialization phase**: RustNet opens packet capture handles (BPF/PKTAP) and creates log files
-2. **Pre-create**: PCAP sidecar (`.connections.jsonl`) and PCAPNG export files are created before the sandbox so their paths are already valid allow targets
-3. **Sandbox application**: `sandbox_init_with_parameters` is called — already-open file descriptors survive unchanged, only future operations are restricted
+2. **Pre-create**: PCAP sidecar (`.connections.jsonl`) and PCAPNG export files are created before the sandbox so their paths are already valid allow targets, and are handed over to the uid-drop target so they stay writable after the drop
+3. **Root uid drop**: when running as root, the process switches to the invoking sudo user (or `nobody`) via `setgid`/`setuid`. Already-open capture and log/export descriptors keep working
+4. **Sandbox application**: `sandbox_init_with_parameters` is called; already-open file descriptors survive unchanged, only future operations are restricted
 
 ### Profile Strategy
 
@@ -116,13 +118,22 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 - Cannot make outbound TCP/UDP connections (data exfiltration blocked)
 - Cannot open new raw network sockets
 - Cannot execute binaries (no shell escapes via `/bin/sh`, `/usr/bin/curl`, etc.)
+- Does not run as root: under `sudo rustnet` the process continues as the invoking user
 
 ### CLI Options
 
 ```
---no-sandbox        Disable Seatbelt sandboxing
+--no-sandbox        Disable Seatbelt sandboxing and the root uid drop
 --sandbox-strict    Require full sandbox enforcement or exit
+--no-uid-drop       Keep running as root instead of dropping to
+                    SUDO_UID/SUDO_GID (or nobody) after initialization
 ```
+
+Trade-off of the root uid drop: the default PKTAP attribution path is
+unaffected (process metadata arrives in-band on the already-open capture fd),
+but the lsof fallback (active when PKTAP is unavailable, e.g. with an explicit
+`--interface`) then only sees the target user's processes. Use `--no-uid-drop`
+if you rely on lsof attribution for other users' processes.
 
 ### Why BestEffort is Default
 

@@ -104,7 +104,7 @@ Options:
       --no-sandbox                       禁用 Landlock 沙箱（仅限 Linux）
       --sandbox-strict                   要求完整沙箱强制执行，否则退出（仅限 Linux）
       --no-uid-drop                      初始化后保持 root 运行，不降权到
-                                         SUDO_UID/SUDO_GID（或 nobody）（仅限 Linux）
+                                         SUDO_UID/SUDO_GID（或 nobody）（仅限 Linux 和 macOS）
   -h, --help                             打印帮助
   -V, --version                          打印版本
 ```

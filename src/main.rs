@@ -134,18 +134,18 @@ fn main() -> Result<()> {
         info!("Kubernetes attribution mode: {}", mode);
     }
 
-    // Resolve the identity to drop root to after privileged init (Linux only):
-    // the invoking sudo user, or nobody when started as plain root. Resolved
-    // before the export files are pre-created so they can be chowned to the
-    // target user: they are created root-owned 0600 and are reopened by path
-    // at runtime (libpcap savefile, sidecar JSONL appends), which would fail
-    // after the drop if they stayed owned by root.
-    #[cfg(target_os = "linux")]
+    // Resolve the identity to drop root to after privileged init (Linux and
+    // macOS): the invoking sudo user, or nobody when started as plain root.
+    // Resolved before the export files are pre-created so they can be chowned
+    // to the target user: they are created root-owned 0600 and are reopened by
+    // path at runtime (libpcap savefile, sidecar JSONL appends), which would
+    // fail after the drop if they stayed owned by root.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let uid_drop_target = if matches.get_flag("no-uid-drop") {
         info!("Root uid drop disabled by --no-uid-drop");
         None
     } else {
-        network::platform::sandbox::privdrop::resolve_drop_target()
+        network::platform::privdrop::resolve_drop_target()
     };
 
     // Pre-create the PCAP export file and its sidecar JSONL (needed for Landlock
@@ -170,9 +170,9 @@ fn main() -> Result<()> {
             let file = precreate_private_file(path).map_err(|e| {
                 anyhow::anyhow!("Failed to pre-create {} file '{}': {}", label, path, e)
             })?;
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             chown_to_uid_drop_target(&file, uid_drop_target, label, path);
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             let _ = file;
         }
     }
@@ -182,7 +182,7 @@ fn main() -> Result<()> {
         let file = precreate_private_file(pcapng_path).map_err(|e| {
             anyhow::anyhow!("Failed to pre-create PCAPNG file '{}': {}", pcapng_path, e)
         })?;
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         chown_to_uid_drop_target(&file, uid_drop_target, "PCAPNG", pcapng_path);
         output_handles.pcapng_export = Some(file);
     }
@@ -338,6 +338,50 @@ fn main() -> Result<()> {
         }
     }
 
+    // Drop root privileges (macOS only). Done after process detection init
+    // (capture fds are open, PKTAP is set up) and BEFORE Seatbelt, so the
+    // profile does not need to allow the setuid/setgid syscalls. Compiled
+    // without the macos-sandbox feature too; only the flag lookups depend on
+    // the feature (the flags do not exist in non-sandbox builds).
+    #[cfg(target_os = "macos")]
+    let uid_dropped = {
+        #[cfg(feature = "macos-sandbox")]
+        let (skip, strict) = (
+            matches.get_flag("no-sandbox"),
+            matches.get_flag("sandbox-strict"),
+        );
+        #[cfg(not(feature = "macos-sandbox"))]
+        let (skip, strict) = (false, false);
+
+        match uid_drop_target {
+            Some(target) if !skip => match network::platform::privdrop::drop_to(target) {
+                Ok(()) => {
+                    info!(
+                        "Dropped root privileges to uid {} gid {} (verified); lsof-fallback \
+                         process attribution is now limited to that user's processes (PKTAP \
+                         attribution unaffected)",
+                        target.uid, target.gid
+                    );
+                    true
+                }
+                Err(e) => {
+                    if strict {
+                        return Err(e.context("Strict mode requires the root uid drop to succeed"));
+                    }
+                    warn!("Failed to drop root uid/gid: {}", e);
+                    false
+                }
+            },
+            Some(_) => {
+                info!("Root uid drop skipped (--no-sandbox)");
+                false
+            }
+            None => false,
+        }
+    };
+    #[cfg(all(target_os = "macos", not(feature = "macos-sandbox")))]
+    let _ = uid_dropped;
+
     // Apply Seatbelt sandbox (macOS only)
     // This must be done AFTER app.start() because:
     // - Packet capture handles need to be opened first (BPF/PKTAP fds survive the sandbox)
@@ -417,6 +461,7 @@ fn main() -> Result<()> {
                     seatbelt_applied: result.seatbelt_applied,
                     fs_restricted: result.fs_restricted,
                     net_restricted: result.net_blocked,
+                    uid_dropped,
                 });
             }
             Err(e) => {
@@ -429,6 +474,7 @@ fn main() -> Result<()> {
                     seatbelt_applied: false,
                     fs_restricted: false,
                     net_restricted: false,
+                    uid_dropped,
                 });
             }
         }
@@ -597,15 +643,15 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
 /// be reopened by path after root privileges are dropped. Best-effort: on
 /// failure the drop still happens and the affected export degrades with a
 /// runtime warning when the reopen fails.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn chown_to_uid_drop_target(
     file: &fs::File,
-    target: Option<network::platform::sandbox::privdrop::DropTarget>,
+    target: Option<network::platform::privdrop::DropTarget>,
     label: &str,
     path: &str,
 ) {
     if let Some(target) = target
-        && let Err(e) = network::platform::sandbox::privdrop::chown_to_target(file, target)
+        && let Err(e) = network::platform::privdrop::chown_to_target(file, target)
     {
         warn!(
             "Failed to chown {} file '{}' to uid {}: {} (the file may not be writable after the root uid drop)",
