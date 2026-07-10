@@ -212,6 +212,13 @@ impl ClickableRegions {
 pub struct UIState {
     pub selected_tab: usize,
     pub selected_connection_key: Option<String>,
+    /// Cached positions for the selected key. Each lookup validates the hint
+    /// against the current row before using it, so sorting and filtering keep
+    /// key-based selection semantics without repeatedly scanning the full list.
+    #[doc(hidden)]
+    pub selected_connection_index_hint: Cell<Option<usize>>,
+    #[doc(hidden)]
+    pub selected_grouped_index_hint: Cell<Option<usize>>,
     pub show_help: bool,
     pub quit_confirmation: bool,
     pub clear_confirmation: bool,
@@ -258,6 +265,8 @@ impl Default for UIState {
         Self {
             selected_tab: 0,
             selected_connection_key: None,
+            selected_connection_index_hint: Cell::new(None),
+            selected_grouped_index_hint: Cell::new(None),
             show_help: false,
             quit_confirmation: false,
             clear_confirmation: false,
@@ -318,6 +327,8 @@ impl UIState {
     pub fn set_connection_key(&mut self, key: Option<String>) {
         if self.selected_connection_key != key {
             self.details_scroll.reset();
+            self.selected_connection_index_hint.set(None);
+            self.selected_grouped_index_hint.set(None);
         }
         self.selected_connection_key = key;
     }
@@ -325,9 +336,19 @@ impl UIState {
     /// Get the current selected connection index, if any
     pub fn get_selected_index(&self, connections: &[Connection]) -> Option<usize> {
         if let Some(ref selected_key) = self.selected_connection_key {
-            connections
+            if let Some(index) = self.selected_connection_index_hint.get()
+                && connections
+                    .get(index)
+                    .is_some_and(|conn| conn.key() == *selected_key)
+            {
+                return Some(index);
+            }
+
+            let index = connections
                 .iter()
-                .position(|conn| conn.key() == *selected_key)
+                .position(|conn| conn.key() == *selected_key);
+            self.selected_connection_index_hint.set(index);
+            index
         } else if !connections.is_empty() {
             Some(0) // Default to first connection
         } else {
@@ -339,6 +360,7 @@ impl UIState {
     pub fn set_selected_by_index(&mut self, connections: &[Connection], index: usize) {
         if let Some(conn) = connections.get(index) {
             self.set_connection_key(Some(conn.key()));
+            self.selected_connection_index_hint.set(Some(index));
         }
     }
 
@@ -463,11 +485,11 @@ impl UIState {
     }
 
     /// Ensure we have a valid selection when connections list changes
-    pub fn ensure_valid_selection(&mut self, connections: &[Connection]) {
+    pub fn ensure_valid_selection(&mut self, connections: &[Connection]) -> Option<usize> {
         if connections.is_empty() {
             log::debug!("ensure_valid_selection: connections list is empty, clearing selection");
             self.set_connection_key(None);
-            return;
+            return None;
         }
 
         let current_index = self.get_selected_index(connections);
@@ -481,6 +503,9 @@ impl UIState {
         if self.selected_connection_key.is_none() || current_index.is_none() {
             log::debug!("ensure_valid_selection: selecting first connection (index 0)");
             self.set_selected_by_index(connections, 0);
+            Some(0)
+        } else {
+            current_index
         }
     }
 
@@ -627,7 +652,23 @@ impl UIState {
     /// Get the current selected index in the grouped rows
     pub fn get_selected_grouped_index(&self, grouped_rows: &[GroupedRow]) -> Option<usize> {
         if grouped_rows.is_empty() {
+            self.selected_grouped_index_hint.set(None);
             return None;
+        }
+
+        if let Some(index) = self.selected_grouped_index_hint.get()
+            && let Some(row) = grouped_rows.get(index)
+        {
+            let matches = if let Some(ref selected_key) = self.selected_connection_key {
+                matches!(row, GroupedRow::Connection { connection, .. } if connection.key() == *selected_key)
+            } else if let Some(ref selected_group) = self.selected_group {
+                matches!(row, GroupedRow::Group { process_name, .. } if process_name == selected_group)
+            } else {
+                false
+            };
+            if matches {
+                return Some(index);
+            }
         }
 
         // First check if we have a selected connection that's visible
@@ -636,6 +677,7 @@ impl UIState {
                 if let GroupedRow::Connection { connection, .. } = row
                     && connection.key() == *selected_key
                 {
+                    self.selected_grouped_index_hint.set(Some(idx));
                     return Some(idx);
                 }
             }
@@ -647,6 +689,7 @@ impl UIState {
                 if let GroupedRow::Group { process_name, .. } = row
                     && process_name == selected_group
                 {
+                    self.selected_grouped_index_hint.set(Some(idx));
                     return Some(idx);
                 }
             }
@@ -663,6 +706,7 @@ impl UIState {
                 GroupedRow::Group { process_name, .. } => {
                     self.selected_group = Some(process_name.clone());
                     self.set_connection_key(None);
+                    self.selected_grouped_index_hint.set(Some(index));
                 }
                 GroupedRow::Connection {
                     process_name,
@@ -671,6 +715,7 @@ impl UIState {
                 } => {
                     self.set_connection_key(Some(connection.key()));
                     self.selected_group = Some(process_name.clone());
+                    self.selected_grouped_index_hint.set(Some(index));
                 }
             }
         }
@@ -737,20 +782,23 @@ impl UIState {
     }
 
     /// Ensure valid selection in grouped view
-    pub fn ensure_valid_grouped_selection(&mut self, grouped_rows: &[GroupedRow]) {
+    pub fn ensure_valid_grouped_selection(&mut self, grouped_rows: &[GroupedRow]) -> Option<usize> {
         if grouped_rows.is_empty() {
             self.selected_group = None;
             self.set_connection_key(None);
-            return;
+            return None;
         }
 
         // If no group is selected, or current selection is not visible, reset to first row
         // This handles the case when grouping is first enabled
-        let needs_init = self.selected_group.is_none()
-            || self.get_selected_grouped_index(grouped_rows).is_none();
+        let current_index = self.get_selected_grouped_index(grouped_rows);
+        let needs_init = self.selected_group.is_none() || current_index.is_none();
 
         if needs_init {
             self.set_selected_grouped_by_index(grouped_rows, 0);
+            Some(0)
+        } else {
+            current_index
         }
     }
 
@@ -846,6 +894,18 @@ pub fn compute_grouped_rows<'a>(
 mod tests {
     use super::*;
     use crate::ui::{HELP_TAB_INDEX, TAB_COUNT};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn test_connection(port: u16, process: &str) -> Connection {
+        let mut connection = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443),
+            crate::network::types::ProtocolState::Tcp(crate::network::types::TcpState::Established),
+        );
+        connection.process_name = Some(process.to_string());
+        connection
+    }
 
     #[test]
     fn jump_to_tab_sets_selected_and_help_flag() {
@@ -952,5 +1012,39 @@ mod tests {
         // New key: the new record starts at the top.
         ui.set_connection_key(Some("b".to_string()));
         assert_eq!(ui.details_scroll.clamp_for_render(20), 0);
+    }
+
+    #[test]
+    fn selection_hint_recovers_after_reordering() {
+        let mut connections = vec![
+            test_connection(1000, "first"),
+            test_connection(1001, "second"),
+        ];
+        let mut ui = UIState::default();
+        ui.set_selected_by_index(&connections, 1);
+        assert_eq!(ui.selected_connection_index_hint.get(), Some(1));
+
+        connections.swap(0, 1);
+
+        assert_eq!(ui.get_selected_index(&connections), Some(0));
+        assert_eq!(ui.selected_connection_index_hint.get(), Some(0));
+    }
+
+    #[test]
+    fn grouped_selection_hint_recovers_after_rows_shift() {
+        let connections = vec![
+            test_connection(1000, "alpha"),
+            test_connection(1001, "beta"),
+        ];
+        let expanded = HashSet::from(["alpha".to_string(), "beta".to_string()]);
+        let rows = compute_grouped_rows(&connections, &expanded);
+        let mut ui = UIState::default();
+        ui.set_selected_grouped_by_index(&rows, 3);
+        assert_eq!(ui.selected_grouped_index_hint.get(), Some(3));
+
+        let rows = compute_grouped_rows(&connections, &HashSet::from(["beta".to_string()]));
+
+        assert_eq!(ui.get_selected_grouped_index(&rows), Some(2));
+        assert_eq!(ui.selected_grouped_index_hint.get(), Some(2));
     }
 }

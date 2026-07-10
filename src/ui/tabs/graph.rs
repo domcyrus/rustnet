@@ -2,6 +2,8 @@
 //! health, TCP counters, TCP state distribution, application
 //! protocol distribution, and top processes by bandwidth.
 
+use std::collections::HashMap;
+
 use anyhow::Result;
 use ratatui::{
     Frame,
@@ -19,6 +21,70 @@ use crate::ui::{
     ClickableRegions, Component, ComponentContext, format::format_rate, section_header, theme,
     widgets::braille_graph,
 };
+
+const TCP_STATE_NAMES: [&str; 11] = [
+    "ESTAB",
+    "SYN_SENT",
+    "SYN_RECV",
+    "FIN_WAIT1",
+    "FIN_WAIT2",
+    "TIME_WAIT",
+    "CLOSE_WAIT",
+    "LAST_ACK",
+    "CLOSING",
+    "CLOSED",
+    "UNKNOWN",
+];
+
+/// Data used by the connection-derived graph panels. Building it once keeps
+/// the render cost to one pass over active connections.
+struct GraphAnalytics<'a> {
+    app_distribution: AppProtocolDistribution,
+    process_traffic: HashMap<&'a str, f64>,
+    tcp_state_counts: [usize; TCP_STATE_NAMES.len()],
+}
+
+impl<'a> GraphAnalytics<'a> {
+    fn from_connections(connections: &'a [Connection]) -> Self {
+        let mut analytics = Self {
+            app_distribution: AppProtocolDistribution::default(),
+            process_traffic: HashMap::new(),
+            tcp_state_counts: [0; TCP_STATE_NAMES.len()],
+        };
+
+        for conn in connections.iter().filter(|conn| !conn.is_historic) {
+            analytics.app_distribution.record_connection(conn);
+
+            let name = conn.process_name.as_deref().unwrap_or("Unknown");
+            let traffic = conn.current_incoming_rate_bps + conn.current_outgoing_rate_bps;
+            *analytics.process_traffic.entry(name).or_insert(0.0) += traffic;
+
+            if conn.protocol == Protocol::Tcp
+                && let ProtocolState::Tcp(state) = &conn.protocol_state
+            {
+                analytics.tcp_state_counts[tcp_state_index(state)] += 1;
+            }
+        }
+
+        analytics
+    }
+}
+
+fn tcp_state_index(state: &TcpState) -> usize {
+    match state {
+        TcpState::Established => 0,
+        TcpState::SynSent => 1,
+        TcpState::SynReceived => 2,
+        TcpState::FinWait1 => 3,
+        TcpState::FinWait2 => 4,
+        TcpState::TimeWait => 5,
+        TcpState::CloseWait => 6,
+        TcpState::LastAck => 7,
+        TcpState::Closing => 8,
+        TcpState::Closed => 9,
+        TcpState::Unknown => 10,
+    }
+}
 
 /// Bold default-foreground title span for a graph section header.
 fn graph_title(text: &str) -> Span<'_> {
@@ -47,14 +113,7 @@ pub(in crate::ui) fn draw_graph_tab(
     connections: &[Connection],
     area: Rect,
 ) -> Result<()> {
-    // Filter out historic connections — graph should only show alive connections
-    let active_connections: Vec<Connection> = connections
-        .iter()
-        .filter(|c| !c.is_historic)
-        .cloned()
-        .collect();
-    let connections = &active_connections;
-
+    let analytics = GraphAnalytics::from_connections(connections);
     let traffic_history = app.get_traffic_history();
 
     // Each panel is a borderless section_header region; layout spacing
@@ -98,9 +157,9 @@ pub(in crate::ui) fn draw_graph_tab(
     draw_connections_sparkline(f, &traffic_history, top_chunks[1]);
     draw_health_chart(f, &traffic_history, health_chunks[0]);
     draw_tcp_counters(f, app, health_chunks[1]);
-    draw_tcp_states(f, connections, health_chunks[2]);
-    draw_app_distribution(f, connections, bottom_chunks[0]);
-    draw_top_processes(f, connections, bottom_chunks[1]);
+    draw_tcp_states(f, &analytics.tcp_state_counts, health_chunks[2]);
+    draw_app_distribution(f, &analytics.app_distribution, bottom_chunks[0]);
+    draw_top_processes(f, &analytics.process_traffic, bottom_chunks[1]);
 
     Ok(())
 }
@@ -215,10 +274,9 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
 }
 
 /// Draw application protocol distribution
-fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) {
+fn draw_app_distribution(f: &mut Frame, dist: &AppProtocolDistribution, area: Rect) {
     let inner = section_header(f, area, graph_title(" Application Distribution"));
 
-    let dist = AppProtocolDistribution::from_connections(connections);
     let percentages = dist.as_percentages();
 
     // Filter out zero-count protocols and create bars.
@@ -273,34 +331,18 @@ fn draw_app_distribution(f: &mut Frame, connections: &[Connection], area: Rect) 
 }
 
 /// Draw top processes by bandwidth
-fn draw_top_processes<'a>(f: &mut Frame, connections: &'a [Connection], area: Rect) {
+fn draw_top_processes(f: &mut Frame, process_traffic: &HashMap<&str, f64>, area: Rect) {
     use std::borrow::Cow;
-    use std::collections::HashMap;
 
     let inner = section_header(f, area, graph_title(" Top Processes"));
 
-    // Aggregate traffic by process; borrow process names from the connections
-    // slice to avoid cloning one String per connection per frame.
-    let mut process_traffic: HashMap<&'a str, f64> = HashMap::new();
-    for conn in connections {
-        let name = conn.process_name.as_deref().unwrap_or("Unknown");
-        let traffic = conn.current_incoming_rate_bps + conn.current_outgoing_rate_bps;
-        *process_traffic.entry(name).or_insert(0.0) += traffic;
-    }
-
-    // Sort by traffic descending, filter out processes with no traffic
-    let mut sorted: Vec<_> = process_traffic
-        .into_iter()
-        .filter(|(_, rate)| *rate > 0.0)
-        .collect();
-    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let top_processes = select_top_processes(process_traffic, 5);
 
     // Create rows for top 5 processes. Process name absorbs whatever width is
     // left after the fixed-width Rate column, and Rate is right-aligned so the
     // numbers form a clean right edge.
-    let rows: Vec<Row> = sorted
+    let rows: Vec<Row> = top_processes
         .into_iter()
-        .take(5)
         .map(|(name, rate)| {
             let display_name: Cow<str> = if name.len() > 20 {
                 Cow::Owned(format!("{}...", &name[..17]))
@@ -330,6 +372,24 @@ fn draw_top_processes<'a>(f: &mut Frame, connections: &'a [Connection], area: Re
     );
 
     f.render_widget(table, inner);
+}
+
+fn select_top_processes<'a>(
+    process_traffic: &HashMap<&'a str, f64>,
+    limit: usize,
+) -> Vec<(&'a str, f64)> {
+    let mut processes: Vec<_> = process_traffic
+        .iter()
+        .filter_map(|(&name, &rate)| (rate > 0.0).then_some((name, rate)))
+        .collect();
+    let compare = |a: &(&str, f64), b: &(&str, f64)| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(b.0));
+
+    if processes.len() > limit {
+        processes.select_nth_unstable_by(limit, compare);
+        processes.truncate(limit);
+    }
+    processes.sort_unstable_by(compare);
+    processes
 }
 
 /// Draw the network health gauges with RTT and packet loss bars
@@ -506,52 +566,12 @@ fn draw_tcp_counters(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// Draw TCP connection states breakdown
-fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
-    use std::collections::HashMap;
-
-    // Count TCP states
-    let mut state_counts: HashMap<&str, usize> = HashMap::new();
-    for conn in connections {
-        if conn.protocol == Protocol::Tcp
-            && let ProtocolState::Tcp(tcp_state) = &conn.protocol_state
-        {
-            let state_name = match tcp_state {
-                TcpState::Established => "ESTAB",
-                TcpState::SynSent => "SYN_SENT",
-                TcpState::SynReceived => "SYN_RECV",
-                TcpState::FinWait1 => "FIN_WAIT1",
-                TcpState::FinWait2 => "FIN_WAIT2",
-                TcpState::TimeWait => "TIME_WAIT",
-                TcpState::CloseWait => "CLOSE_WAIT",
-                TcpState::LastAck => "LAST_ACK",
-                TcpState::Closing => "CLOSING",
-                TcpState::Closed => "CLOSED",
-                TcpState::Unknown => "UNKNOWN",
-            };
-            *state_counts.entry(state_name).or_insert(0) += 1;
-        }
-    }
-
-    // Fixed order based on connection lifecycle (most important first)
-    const STATE_ORDER: &[&str] = &[
-        "ESTAB",
-        "SYN_SENT",
-        "SYN_RECV",
-        "FIN_WAIT1",
-        "FIN_WAIT2",
-        "TIME_WAIT",
-        "CLOSE_WAIT",
-        "LAST_ACK",
-        "CLOSING",
-        "CLOSED",
-        "LISTEN",
-        "UNKNOWN",
-    ];
-
+fn draw_tcp_states(f: &mut Frame, state_counts: &[usize; TCP_STATE_NAMES.len()], area: Rect) {
     // Build ordered list with only non-zero counts
-    let states: Vec<_> = STATE_ORDER
+    let states: Vec<_> = TCP_STATE_NAMES
         .iter()
-        .filter_map(|&name| state_counts.get(name).map(|&count| (name, count)))
+        .zip(state_counts)
+        .filter_map(|(&name, &count)| (count > 0).then_some((name, count)))
         .collect();
 
     let inner = section_header(f, area, graph_title(" TCP States"));
@@ -602,4 +622,77 @@ fn draw_tcp_states(f: &mut Frame, connections: &[Connection], area: Rect) {
 
     let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, inner);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn test_connection(
+        port: u16,
+        process: &str,
+        rate: f64,
+        state: TcpState,
+        historic: bool,
+    ) -> Connection {
+        let mut connection = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443),
+            ProtocolState::Tcp(state),
+        );
+        connection.process_name = Some(process.to_string());
+        connection.current_incoming_rate_bps = rate;
+        connection.is_historic = historic;
+        connection
+    }
+
+    #[test]
+    fn analytics_aggregate_active_connections_once() {
+        let connections = vec![
+            test_connection(1000, "alpha", 10.0, TcpState::Established, false),
+            test_connection(1001, "alpha", 20.0, TcpState::TimeWait, false),
+            test_connection(1002, "beta", 5.0, TcpState::Established, false),
+            test_connection(1003, "old", 100.0, TcpState::Closed, true),
+        ];
+
+        let analytics = GraphAnalytics::from_connections(&connections);
+
+        assert_eq!(analytics.app_distribution.total(), 3);
+        assert_eq!(analytics.process_traffic.get("alpha"), Some(&30.0));
+        assert_eq!(analytics.process_traffic.get("beta"), Some(&5.0));
+        assert!(!analytics.process_traffic.contains_key("old"));
+        assert_eq!(
+            analytics.tcp_state_counts[tcp_state_index(&TcpState::Established)],
+            2
+        );
+        assert_eq!(
+            analytics.tcp_state_counts[tcp_state_index(&TcpState::TimeWait)],
+            1
+        );
+        assert_eq!(
+            analytics.tcp_state_counts[tcp_state_index(&TcpState::Closed)],
+            0
+        );
+    }
+
+    #[test]
+    fn top_process_selection_only_sorts_the_requested_prefix() {
+        let traffic = HashMap::from([
+            ("one", 1.0),
+            ("two", 2.0),
+            ("three", 3.0),
+            ("four", 4.0),
+            ("five", 5.0),
+            ("six", 6.0),
+            ("seven", 7.0),
+            ("eight", 8.0),
+        ]);
+
+        let top = select_top_processes(&traffic, 3);
+
+        assert_eq!(top, vec![("eight", 8.0), ("seven", 7.0), ("six", 6.0)]);
+        assert!(select_top_processes(&traffic, 0).is_empty());
+    }
 }
