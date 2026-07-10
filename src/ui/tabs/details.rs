@@ -51,6 +51,12 @@ const DETAILS_SCROLL_STEP: u16 = 5;
 /// width to mirror the Overview table.
 const DETAILS_MAX_CONTENT_WIDTH: u16 = 140;
 
+/// Rows reserved for the Application card before the Transport Health card.
+/// The current protocol decoders expose at most eight application fields. The
+/// right pane trims the first separator, so eleven buffered rows leave ten
+/// visible rows and align Transport Health with Network Context on the left.
+const APPLICATION_CARD_ROWS: usize = 11;
+
 /// Details tab. Pulls DNS resolver per-render from the app — no
 /// per-tab state today.
 pub(in crate::ui) struct DetailsTab;
@@ -142,6 +148,21 @@ fn push_detail_field_styled<'a>(
         Span::styled(value.clone(), value_style),
     ]));
     fields.push(Some((label.to_string(), value)));
+}
+
+/// Pad a detail section to a stable height. Padding rows deliberately have no
+/// click target and render as whitespace in the borderless card layout.
+fn pad_detail_section<'a>(
+    lines: &mut Vec<Line<'a>>,
+    fields: &mut Vec<Option<(String, String)>>,
+    section_start: usize,
+    target_rows: usize,
+) {
+    let missing = target_rows.saturating_sub(lines.len().saturating_sub(section_start));
+    for _ in 0..missing {
+        lines.push(Line::from(""));
+        fields.push(None);
+    }
 }
 
 /// True when a line is empty (used to trim leading separator on the right pane).
@@ -417,9 +438,18 @@ pub(in crate::ui) fn draw_connection_details(
     let mut details_text: Vec<Line> = Vec::new();
     let mut detail_fields: Vec<Option<(String, String)>> = Vec::new();
     // Index ranges in details_text/detail_fields that should move to the
-    // right pane when the layout splits horizontally (Application/DPI fields,
-    // TCP Analytics + RTT). Pushed in source order; drained in reverse later.
+    // right pane when the layout splits horizontally (Application fields and
+    // Transport Health). Pushed in source order; drained in reverse later.
     let mut right_ranges: Vec<std::ops::Range<usize>> = Vec::new();
+
+    // Unlike regular sections, the first card starts without a blank separator.
+    // Together with the fixed Network Context card below this gives the left
+    // dashboard column a stable 17-row footprint.
+    details_text.push(Line::from(Span::styled(
+        "Connection",
+        theme::bold_fg(theme::heading()),
+    )));
+    detail_fields.push(None);
 
     push_detail_field(
         &mut details_text,
@@ -539,88 +569,98 @@ pub(in crate::ui) fn draw_connection_details(
         theme::fg(theme::field_service()),
     );
 
-    // Add reverse DNS hostnames if available (skip ARP to avoid feedback loop)
-    if let Some(resolver) = dns_resolver.filter(|_| conn.protocol != Protocol::Arp) {
-        let local_hostname = resolver.get_hostname(&conn.local_addr.ip());
-        let remote_hostname = resolver.get_hostname(&conn.remote_addr.ip());
+    // Network enrichment is a fixed card. Fields remain in the same rows even
+    // while asynchronous DNS and GeoIP data arrives, which prevents the lower
+    // dashboard and traffic section from jumping during connection navigation.
+    let (local_hostname, remote_hostname) = dns_resolver
+        .filter(|_| conn.protocol != Protocol::Arp)
+        .map(|resolver| {
+            (
+                resolver.get_hostname(&conn.local_addr.ip()),
+                resolver.get_hostname(&conn.remote_addr.ip()),
+            )
+        })
+        .unwrap_or((None, None));
 
-        if local_hostname.is_some() || remote_hostname.is_some() {
-            push_detail_section(&mut details_text, &mut detail_fields, "Hostnames");
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Local Hostname",
-                local_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-                label_style,
-                theme::fg(theme::field_local_addr()),
-            );
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Remote Hostname",
-                remote_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-                label_style,
-                theme::fg(theme::field_remote_addr()),
-            );
-        }
-    }
+    let country = conn
+        .geoip_info
+        .as_ref()
+        .and_then(|geoip| {
+            geoip.country_name.as_ref().map(|name| {
+                geoip
+                    .country_code
+                    .as_ref()
+                    .map(|cc| format!("{} ({})", name, cc))
+                    .unwrap_or_else(|| name.clone())
+            })
+        })
+        .or_else(|| {
+            conn.geoip_info
+                .as_ref()
+                .and_then(|geoip| geoip.country_code.clone())
+        })
+        .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+    let city = conn
+        .geoip_info
+        .as_ref()
+        .and_then(|geoip| geoip.city.clone())
+        .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+    let asn = conn
+        .geoip_info
+        .as_ref()
+        .and_then(|geoip| {
+            geoip.asn.map(|asn| {
+                geoip
+                    .as_org
+                    .as_ref()
+                    .map(|org| format!("AS{} ({})", asn, org))
+                    .unwrap_or_else(|| format!("AS{}", asn))
+            })
+        })
+        .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
 
-    // Add GeoIP information if available
-    if let Some(ref geoip) = conn.geoip_info
-        && (geoip.country_code.is_some() || geoip.asn.is_some() || geoip.city.is_some())
-    {
-        let location_value_style = theme::fg(theme::field_location());
-        push_detail_section(&mut details_text, &mut detail_fields, "Geolocation");
-        if let Some(ref country_name) = geoip.country_name {
-            let country_display = if let Some(ref cc) = geoip.country_code {
-                format!("{} ({})", country_name, cc)
-            } else {
-                country_name.clone()
-            };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Country",
-                country_display,
-                label_style,
-                location_value_style,
-            );
-        } else if let Some(ref cc) = geoip.country_code {
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Country",
-                cc.clone(),
-                label_style,
-                location_value_style,
-            );
-        }
-        if let Some(ref city) = geoip.city {
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "City",
-                city.clone(),
-                label_style,
-                location_value_style,
-            );
-        }
-        if let Some(asn) = geoip.asn {
-            let asn_display = if let Some(ref org) = geoip.as_org {
-                format!("AS{} ({})", asn, org)
-            } else {
-                format!("AS{}", asn)
-            };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "ASN",
-                asn_display,
-                label_style,
-                location_value_style,
-            );
-        }
-    }
+    push_detail_section(&mut details_text, &mut detail_fields, "Network Context");
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "Local Hostname",
+        local_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+        theme::fg(theme::field_local_addr()),
+    );
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "Remote Hostname",
+        remote_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+        theme::fg(theme::field_remote_addr()),
+    );
+    let location_value_style = theme::fg(theme::field_location());
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "Country",
+        country,
+        label_style,
+        location_value_style,
+    );
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "City",
+        city,
+        label_style,
+        location_value_style,
+    );
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "ASN",
+        asn,
+        label_style,
+        location_value_style,
+    );
 
     // Kubernetes attribution (pod / container) when the owning process is in
     // a kubepods cgroup. Only rendered when the resolver populated `k8s_info`.
@@ -692,12 +732,12 @@ pub(in crate::ui) fn draw_connection_details(
     // Add DPI / application protocol information. Section heading carries
     // both the label and the protocol so we don't need a redundant
     // "Application: <proto>" field below.
+    let application_start = details_text.len();
     if let Some(dpi) = &conn.dpi_info {
-        let dpi_start = details_text.len();
         push_detail_section_styled(
             &mut details_text,
             &mut detail_fields,
-            format!("Application: {}", dpi.application),
+            format!("Application: {}", dpi.application.sort_key()),
             theme::bold_fg(dpi_color(&dpi.application)),
         );
 
@@ -1293,12 +1333,8 @@ pub(in crate::ui) fn draw_connection_details(
                 }
             }
         }
-        right_ranges.push(dpi_start..details_text.len());
-    }
-
-    // Add ARP details if this is an ARP connection
-    if let ProtocolState::Arp(arp_info) = &conn.protocol_state {
-        push_detail_section(&mut details_text, &mut detail_fields, "ARP");
+    } else if let ProtocolState::Arp(arp_info) = &conn.protocol_state {
+        push_detail_section(&mut details_text, &mut detail_fields, "Application: ARP");
         push_detail_field(
             &mut details_text,
             &mut detail_fields,
@@ -1345,70 +1381,113 @@ pub(in crate::ui) fn draw_connection_details(
             arp_info.target_ip.to_string(),
             label_style,
         );
+    } else {
+        push_detail_section(&mut details_text, &mut detail_fields, "Application");
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Detected",
+            NONE_PLACEHOLDER.to_string(),
+            label_style,
+        );
     }
 
-    // TCP Analytics + initial RTT live under a single heading so the right
-    // pane reads as one cohesive "transport metrics" block.
-    if conn.tcp_analytics.is_some() || conn.initial_rtt.is_some() {
-        let metrics_start = details_text.len();
-        push_detail_section(&mut details_text, &mut detail_fields, "TCP Analytics");
-        if let Some(analytics) = &conn.tcp_analytics {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "TCP Retransmits",
-                analytics.retransmit_count.to_string(),
-                label_style,
-            );
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Out-of-Order Packets",
-                analytics.out_of_order_count.to_string(),
-                label_style,
-            );
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Duplicate ACKs",
-                analytics.duplicate_ack_count.to_string(),
-                label_style,
-            );
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Fast Retransmits",
-                analytics.fast_retransmit_count.to_string(),
-                label_style,
-            );
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Window Size",
-                analytics.last_window_size.to_string(),
-                label_style,
-            );
-        }
-        if let Some(rtt) = conn.initial_rtt {
-            let rtt_ms = rtt.as_secs_f64() * 1000.0;
-            let rtt_color = if rtt_ms < 50.0 {
-                theme::ok()
-            } else if rtt_ms < 150.0 {
-                theme::warn()
-            } else {
-                theme::err()
-            };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Initial RTT",
-                format!("{:.1}ms", rtt_ms),
-                label_style,
-                theme::fg(rtt_color),
-            );
-        }
-        right_ranges.push(metrics_start..details_text.len());
+    // Short application records keep their whitespace inside the card instead
+    // of pulling Transport Health and Traffic Statistics upward. All current
+    // decoders fit within this budget, including FTP's eight detail fields.
+    pad_detail_section(
+        &mut details_text,
+        &mut detail_fields,
+        application_start,
+        APPLICATION_CARD_ROWS,
+    );
+    right_ranges.push(application_start..details_text.len());
+
+    // Transport Health is also a fixed card. Non-TCP connections retain the
+    // same field positions with muted placeholders, so switching protocols no
+    // longer changes the dashboard geometry.
+    let metrics_start = details_text.len();
+    push_detail_section(&mut details_text, &mut detail_fields, "Transport Health");
+    if let Some(rtt) = conn.initial_rtt {
+        let rtt_ms = rtt.as_secs_f64() * 1000.0;
+        let rtt_color = if rtt_ms < 50.0 {
+            theme::ok()
+        } else if rtt_ms < 150.0 {
+            theme::warn()
+        } else {
+            theme::err()
+        };
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Initial RTT",
+            format!("{:.1}ms", rtt_ms),
+            label_style,
+            theme::fg(rtt_color),
+        );
+    } else {
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Initial RTT",
+            NONE_PLACEHOLDER.to_string(),
+            label_style,
+        );
     }
+    if let Some(analytics) = &conn.tcp_analytics {
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "TCP Retransmits",
+            analytics.retransmit_count.to_string(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Out-of-Order Packets",
+            analytics.out_of_order_count.to_string(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Duplicate ACKs",
+            analytics.duplicate_ack_count.to_string(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Fast Retransmits",
+            analytics.fast_retransmit_count.to_string(),
+            label_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Window Size",
+            analytics.last_window_size.to_string(),
+            label_style,
+        );
+    } else {
+        for label in [
+            "TCP Retransmits",
+            "Out-of-Order Packets",
+            "Duplicate ACKs",
+            "Fast Retransmits",
+            "Window Size",
+        ] {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                label,
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+    }
+    right_ranges.push(metrics_start..details_text.len());
 
     // Continuity: the header band echoes the selected row so users feel
     // like they zoomed into the Overview entry rather than landed on a
@@ -1459,14 +1538,14 @@ pub(in crate::ui) fn draw_connection_details(
         ..info_area
     };
 
-    // Drain right-pane sections (Application/DPI + TCP Analytics + RTT) out
+    // Drain the Application and Transport Health cards out
     // of the main buffers when we have enough horizontal room to show two
     // columns side by side. The right pane always renders when split, even
     // if the connection has no DPI / TCP analytics, so the layout stays
     // consistent across connection types. Below the width threshold the
     // panel collapses back to a single column so narrow terminals stay
     // readable. The right pane needs no title of its own — its content
-    // starts with the bold "Application: …" / "TCP Analytics" headings.
+    // starts with the bold Application and Transport Health headings.
     let split_horizontally = info_area.width >= DETAILS_SPLIT_MIN_WIDTH;
     let mut right_text: Vec<Line> = Vec::new();
     let mut right_fields: Vec<Option<(String, String)>> = Vec::new();
@@ -1489,11 +1568,11 @@ pub(in crate::ui) fn draw_connection_details(
         }
     }
 
-    // The info panes take only the rows their content needs (clamped so
-    // the Traffic section below always fits); Traffic follows directly
-    // underneath instead of being pinned to the bottom of the screen.
-    // Section header + 6 content rows: the 6 stat fields on the left and
-    // the wave panels (1 header + 5 graph rows) bottom-align exactly.
+    // The normal wide layout resolves to fixed-height dashboard cards, while
+    // optional feature sections can still increase the content height. Clamp
+    // the result so the Traffic section below always fits.
+    // Section header + 6 content rows: direction header, totals summary,
+    // and four graph rows in each of the two aligned traffic cards.
     const TRAFFIC_HEIGHT: u16 = 7;
     let content_rows = details_text.len().max(right_text.len());
     let info_h = (content_rows as u16)
@@ -1524,11 +1603,12 @@ pub(in crate::ui) fn draw_connection_details(
     let max_scroll = (content_rows as u16).saturating_sub(info_h);
     let scroll = ui_state.details_scroll.clamp_for_render(max_scroll);
 
+    // Card rows must stay one terminal row tall. Long hostnames, SNI values,
+    // and identifiers are clipped at the pane edge instead of wrapping and
+    // displacing every anchor below them. The complete value remains available
+    // through click-to-copy.
     let left_para = Paragraph::new(details_text)
         .style(Style::default())
-        // trim:false preserves any leading whitespace in labels rather than
-        // collapsing it, which keeps the fixed-width label padding intact.
-        .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
     f.render_widget(left_para, info_chunks[0]);
     register_detail_clicks(click_regions, info_chunks[0], &detail_fields, true, scroll);
@@ -1536,7 +1616,6 @@ pub(in crate::ui) fn draw_connection_details(
     if info_chunks.len() == 2 && !right_text.is_empty() {
         let right_para = Paragraph::new(right_text)
             .style(Style::default())
-            .wrap(Wrap { trim: false })
             .scroll((scroll, 0));
         f.render_widget(right_para, info_chunks[1]);
         register_detail_clicks(click_regions, info_chunks[1], &right_fields, true, scroll);
@@ -1630,40 +1709,107 @@ pub(in crate::ui) fn draw_connection_details(
         ),
     );
 
-    // Stats column is sized for label width + value; the remaining
-    // width splits into the RX and TX wave panels.
-    const STATS_COL_WIDTH: u16 = 38;
-    let history = split_horizontally
-        .then(|| ctx.app.get_connection_rate_history(&conn.key()))
-        .flatten();
+    if split_horizontally {
+        // Reuse the exact dashboard rectangles rather than recomputing a
+        // percentage split. This guarantees that RX begins under Connection
+        // and TX begins under Application and Transport Health.
+        let cols = [
+            Rect::new(
+                info_chunks[0].x,
+                traffic_area.y,
+                info_chunks[0].width,
+                traffic_area.height,
+            ),
+            Rect::new(
+                info_chunks[1].x,
+                traffic_area.y,
+                info_chunks[1].width,
+                traffic_area.height,
+            ),
+        ];
 
-    let stats_area = if let Some((rx, tx)) = &history {
-        let cols = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(STATS_COL_WIDTH),
-                Constraint::Percentage(50),
-                Constraint::Percentage(50),
-            ])
-            .spacing(2)
-            .split(traffic_area);
+        let history = ctx.app.get_connection_rate_history(&conn.key());
+        let fallback_rx = [conn.current_incoming_rate_bps.max(0.0) as u64];
+        let fallback_tx = [conn.current_outgoing_rate_bps.max(0.0) as u64];
+        let (rx, tx): (&[u64], &[u64]) = history
+            .as_ref()
+            .map(|(rx, tx)| (rx.as_slice(), tx.as_slice()))
+            .unwrap_or((&fallback_rx, &fallback_tx));
+
+        let rx_total = format_bytes(conn.bytes_received);
+        let tx_total = format_bytes(conn.bytes_sent);
+        let rx_summary = Line::from(vec![
+            Span::styled("Total ", label_style),
+            Span::styled(rx_total.clone(), rx_value_style),
+            Span::styled("  ·  ", theme::fg(theme::muted())),
+            Span::styled(format!("{} packets", conn.packets_received), rx_value_style),
+        ]);
+        let tx_summary = Line::from(vec![
+            Span::styled("Total ", label_style),
+            Span::styled(tx_total.clone(), tx_value_style),
+            Span::styled("  ·  ", theme::fg(theme::muted())),
+            Span::styled(format!("{} packets", conn.packets_sent), tx_value_style),
+        ]);
 
         let traffic_history = ctx.app.get_traffic_history();
         let frac = traffic_history.scroll_fraction();
         let window = traffic_history.capacity();
-        braille_graph::wave_panel(f, cols[1], rx, "↓ RX", frac, window, theme::rx_wave);
-        braille_graph::wave_panel(f, cols[2], tx, "↑ TX", frac, window, theme::tx_wave);
-        cols[0]
+        braille_graph::wave_panel(
+            f,
+            cols[0],
+            rx,
+            "↓ RX",
+            braille_graph::WavePanelOptions::new(frac, window).with_summary(rx_summary),
+            theme::rx_wave,
+        );
+        braille_graph::wave_panel(
+            f,
+            cols[1],
+            tx,
+            "↑ TX",
+            braille_graph::WavePanelOptions::new(frac, window).with_summary(tx_summary),
+            theme::tx_wave,
+        );
+
+        for (area, label, rate, total, packets) in [
+            (
+                cols[0],
+                "Current Rate (In)",
+                format_rate(conn.current_incoming_rate_bps),
+                rx_total,
+                conn.packets_received,
+            ),
+            (
+                cols[1],
+                "Current Rate (Out)",
+                format_rate(conn.current_outgoing_rate_bps),
+                tx_total,
+                conn.packets_sent,
+            ),
+        ] {
+            click_regions.register(
+                Rect::new(area.x, area.y, area.width, 1),
+                ClickAction::CopyField {
+                    label: label.to_string(),
+                    value: rate,
+                },
+            );
+            click_regions.register(
+                Rect::new(area.x, area.y + 1, area.width, 1),
+                ClickAction::CopyField {
+                    label: "Traffic Total".to_string(),
+                    value: format!("{total}, {packets} packets"),
+                },
+            );
+        }
     } else {
-        traffic_area
-    };
-
-    let traffic = Paragraph::new(traffic_text)
-        .style(Style::default())
-        .wrap(Wrap { trim: false });
-
-    f.render_widget(traffic, stats_area);
-    register_detail_clicks(click_regions, stats_area, &traffic_fields, false, 0);
+        // Narrow terminals keep the readable single-column field list.
+        let traffic = Paragraph::new(traffic_text)
+            .style(Style::default())
+            .wrap(Wrap { trim: false });
+        f.render_widget(traffic, traffic_area);
+        register_detail_clicks(click_regions, traffic_area, &traffic_fields, false, 0);
+    }
 
     Ok(())
 }

@@ -11,32 +11,32 @@ expression: output
   sshd (1500)              10.0.0.5:51022               192.168.1.10:22     ssh        TCP                          ESTABLISHED          -/-
                                                                                                                                             
 ▎ firefox → 140.82.121.4:443 · click a field to copy                                                                                        
-Protocol              TCP                                             TCP Analytics                                                         
-Status                Active (last seen <T> ago)                       TCP Retransmits       0                                               
-Local Address         192.168.1.10:51234                              Out-of-Order Packets  0                                               
-Remote Address        140.82.121.4:443                                Duplicate ACKs        0                                               
-Scope                 PUBLIC                                          Fast Retransmits      0                                               
-State                 ESTABLISHED                                     Window Size           0                                               
+Connection                                                            Application                                                           
+Protocol              TCP                                             Detected              -                                               
+Status                Active (last seen <T> ago)                                                                                             
+Local Address         192.168.1.10:51234                                                                                                    
+Remote Address        140.82.121.4:443                                                                                                      
+Scope                 PUBLIC                                                                                                                
+State                 ESTABLISHED                                                                                                           
 Process               firefox                                                                                                               
 PID                   2001                                                                                                                  
 Service               https                                                                                                                 
                                                                                                                                             
+Network Context                                                       Transport Health                                                      
+Local Hostname        -                                               Initial RTT           -                                               
+Remote Hostname       -                                               TCP Retransmits       0                                               
+Country               -                                               Out-of-Order Packets  0                                               
+City                  -                                               Duplicate ACKs        0                                               
+ASN                   -                                               Fast Retransmits      0                                               
+                                                                      Window Size           0                                               
+                                                                                                                                            
 ▎ Traffic Statistics                                                                                                                        
-Bytes Sent            12.21 KB                                                                                                              
-Bytes Received        234.38 KB                                                                                                             
-Packets Sent          12                                                                                                                    
-Packets Received      234                                                                                                                   
-Current Rate (In)     -                                                                                                                     
-Current Rate (Out)    -                                                                                                                     
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
+↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
+Total 234.38 KB  ·  234 packets                                       Total 12.21 KB  ·  12 packets                                         
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
