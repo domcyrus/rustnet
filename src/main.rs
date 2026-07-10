@@ -795,9 +795,8 @@ where
 
         // Ensure we have a valid selection (handles connection removals)
         if ui_state.grouping_enabled {
-            ui_state.ensure_valid_grouped_selection(&grouped_rows);
             let selected_idx = ui_state
-                .get_selected_grouped_index(&grouped_rows)
+                .ensure_valid_grouped_selection(&grouped_rows)
                 .unwrap_or(0);
             ui_state.grouped_scroll_offset = ui::compute_scroll_offset(
                 selected_idx,
@@ -806,8 +805,7 @@ where
                 grouped_rows.len(),
             );
         } else {
-            ui_state.ensure_valid_selection(&connections);
-            let selected_idx = ui_state.get_selected_index(&connections).unwrap_or(0);
+            let selected_idx = ui_state.ensure_valid_selection(&connections).unwrap_or(0);
             ui_state.scroll_offset = ui::compute_scroll_offset(
                 selected_idx,
                 ui_state.scroll_offset,

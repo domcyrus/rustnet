@@ -1613,34 +1613,38 @@ pub struct AppProtocolDistribution {
 }
 
 impl AppProtocolDistribution {
+    /// Add one connection to the distribution.
+    pub fn record_connection(&mut self, conn: &Connection) {
+        if let Some(dpi_info) = &conn.dpi_info {
+            match &dpi_info.application {
+                ApplicationProtocol::Https(_) => self.https_count += 1,
+                ApplicationProtocol::Http(_) => self.http_count += 1,
+                ApplicationProtocol::Quic(_) => self.quic_count += 1,
+                ApplicationProtocol::Dns(_) => self.dns_count += 1,
+                ApplicationProtocol::Ssh(_) => self.ssh_count += 1,
+                ApplicationProtocol::Ntp(_)
+                | ApplicationProtocol::Mdns(_)
+                | ApplicationProtocol::Llmnr(_)
+                | ApplicationProtocol::Dhcp(_)
+                | ApplicationProtocol::Snmp(_)
+                | ApplicationProtocol::Ssdp(_)
+                | ApplicationProtocol::NetBios(_)
+                | ApplicationProtocol::BitTorrent(_)
+                | ApplicationProtocol::Stun(_)
+                | ApplicationProtocol::Mqtt(_)
+                | ApplicationProtocol::Ftp(_) => self.other_count += 1,
+            }
+        } else {
+            self.other_count += 1;
+        }
+    }
+
     /// Calculate distribution from a list of connections
     pub fn from_connections(connections: &[Connection]) -> Self {
         let mut dist = Self::default();
 
         for conn in connections {
-            if let Some(dpi_info) = &conn.dpi_info {
-                match &dpi_info.application {
-                    ApplicationProtocol::Https(_) => dist.https_count += 1,
-                    ApplicationProtocol::Http(_) => dist.http_count += 1,
-                    ApplicationProtocol::Quic(_) => dist.quic_count += 1,
-                    ApplicationProtocol::Dns(_) => dist.dns_count += 1,
-                    ApplicationProtocol::Ssh(_) => dist.ssh_count += 1,
-                    // New protocols counted as "other" for now
-                    ApplicationProtocol::Ntp(_)
-                    | ApplicationProtocol::Mdns(_)
-                    | ApplicationProtocol::Llmnr(_)
-                    | ApplicationProtocol::Dhcp(_)
-                    | ApplicationProtocol::Snmp(_)
-                    | ApplicationProtocol::Ssdp(_)
-                    | ApplicationProtocol::NetBios(_)
-                    | ApplicationProtocol::BitTorrent(_)
-                    | ApplicationProtocol::Stun(_)
-                    | ApplicationProtocol::Mqtt(_)
-                    | ApplicationProtocol::Ftp(_) => dist.other_count += 1,
-                }
-            } else {
-                dist.other_count += 1;
-            }
+            dist.record_connection(conn);
         }
 
         dist
