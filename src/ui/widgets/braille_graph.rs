@@ -16,6 +16,32 @@ use ratatui::{
 
 use crate::ui::{format::format_rate, theme};
 
+/// Width of rate values in wave-panel headers. This fits values through
+/// `999.99 GB/s` and keeps both the trend glyph and `peak` label anchored as
+/// formatted values cross digit and unit boundaries.
+const HEADER_RATE_WIDTH: usize = 11;
+
+pub(in crate::ui) struct WavePanelOptions {
+    summary: Option<Line<'static>>,
+    frac: f64,
+    window: usize,
+}
+
+impl WavePanelOptions {
+    pub(in crate::ui) fn new(frac: f64, window: usize) -> Self {
+        Self {
+            summary: None,
+            frac,
+            window,
+        }
+    }
+
+    pub(in crate::ui) fn with_summary(mut self, summary: Line<'static>) -> Self {
+        self.summary = Some(summary);
+        self
+    }
+}
+
 /// Unicode braille bit for a dot at (dx, dy) inside one cell.
 /// dx: 0 = left column, 1 = right column; dy: 0 = top … 3 = bottom.
 /// Dots 7/8 (the bottom row) live in the high bits — this is the
@@ -177,18 +203,27 @@ pub(in crate::ui) fn spread_line(
     Line::from(left)
 }
 
+fn format_header_rate(rate: f64) -> String {
+    let rate = format_rate(rate);
+    format!("{rate:<HEADER_RATE_WIDTH$}")
+}
+
+fn format_peak_rate(rate: f64) -> String {
+    let rate = format_rate(rate);
+    format!("peak {rate:>HEADER_RATE_WIDTH$}")
+}
+
 /// One rate direction as a complete panel: a header line (label, the
-/// current rate, a trend arrow, and the window peak) over a gradient
-/// braille wave. The wave is normalized to the window peak; row
-/// brightness also scales with how close the current rate is to that
-/// peak, so the panel glows under load and dims when idle.
+/// current rate, a trend arrow, and the window peak), an optional summary
+/// line, then a gradient braille wave. The wave is normalized to the window
+/// peak; row brightness also scales with how close the current rate is to
+/// that peak, so the panel glows under load and dims when idle.
 pub(in crate::ui) fn wave_panel(
     f: &mut Frame,
     area: Rect,
     samples: &[u64],
     label: &str,
-    frac: f64,
-    window: usize,
+    options: WavePanelOptions,
     wave: fn(f64) -> Color,
 ) {
     if area.height < 2 || samples.is_empty() {
@@ -203,34 +238,39 @@ pub(in crate::ui) fn wave_panel(
     let value_color = wave(0.35 + 0.65 * speed_ratio);
     let left = vec![
         Span::styled(format!("{label} "), theme::bold_fg(wave(0.4))),
-        Span::styled(format_rate(current), theme::bold_fg(value_color)),
+        Span::styled(format_header_rate(current), theme::bold_fg(value_color)),
         Span::styled(
             format!(" {}", trend_glyph(samples)),
             theme::fg(theme::muted()),
         ),
     ];
-    let right = Span::styled(
-        format!("peak {}", format_rate(peak)),
-        theme::fg(theme::muted()),
-    );
+    let right = Span::styled(format_peak_rate(peak), theme::fg(theme::muted()));
     f.render_widget(
         Paragraph::new(spread_line(left, right, area.width)),
         Rect::new(area.x, area.y, area.width, 1),
     );
 
+    let summary_height = u16::from(options.summary.is_some() && area.height >= 3);
+    if let Some(summary) = options.summary.filter(|_| summary_height == 1) {
+        f.render_widget(
+            Paragraph::new(summary),
+            Rect::new(area.x, area.y + 1, area.width, 1),
+        );
+    }
+
     let graph_area = Rect::new(
         area.x,
-        area.y + 1,
+        area.y + 1 + summary_height,
         area.width,
-        area.height.saturating_sub(1),
+        area.height.saturating_sub(1 + summary_height),
     );
     let lines = render(
         samples,
         graph_area.width as usize,
         graph_area.height as usize,
         max_val,
-        frac,
-        window,
+        options.frac,
+        options.window,
         |intensity| wave((0.6 + 0.4 * speed_ratio) * intensity),
     );
     f.render_widget(Paragraph::new(lines), graph_area);
@@ -348,5 +388,17 @@ mod tests {
         assert_eq!(trend_glyph(&[0, 100, 200, 300, 400, 500]), "↗");
         assert_eq!(trend_glyph(&[500, 400, 300, 200, 100, 0]), "↘");
         assert_eq!(trend_glyph(&[300, 300, 300, 300, 300, 300]), "→");
+    }
+
+    #[test]
+    fn wave_header_rate_slots_keep_a_constant_width() {
+        let rates = [0.0, 730.0, 1_020.0, 12_345.0, 2_500_000.0];
+        for rate in rates {
+            assert_eq!(format_header_rate(rate).chars().count(), HEADER_RATE_WIDTH);
+            assert_eq!(
+                format_peak_rate(rate).chars().count(),
+                "peak ".len() + HEADER_RATE_WIDTH
+            );
+        }
     }
 }

@@ -758,6 +758,7 @@ mod snapshot_tests {
     // snapshots stay stable across runs.
 
     use crate::app::{App, Config};
+    use crate::network::geoip::GeoIpInfo;
     use crate::network::interface_stats::{InterfaceRates, InterfaceStats};
     use crate::network::types::{Connection, Protocol, ProtocolState, TcpState, TrafficHistory};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -926,6 +927,106 @@ mod snapshot_tests {
         }, {
             insta::assert_snapshot!(output);
         });
+    }
+
+    #[test]
+    fn details_tab_keeps_section_anchors_across_metadata_shapes() {
+        let app = test_app();
+        let mut connections = sample_connections();
+        connections[0].geoip_info = Some(GeoIpInfo {
+            country_code: Some("DE".to_string()),
+            country_name: Some("Germany".to_string()),
+            city: Some("Falkenstein".to_string()),
+            postal_code: None,
+            asn: Some(24_940),
+            as_org: Some("Hetzner Online GmbH".to_string()),
+        });
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+
+        let render_selected = |selected: usize| {
+            let ui_state = UIState {
+                selected_tab: 1,
+                selected_connection_key: Some(connections[selected].key()),
+                ..Default::default()
+            };
+            let mut click_regions = ClickableRegions::default();
+            render(140, 40, |f| {
+                draw(
+                    f,
+                    &app,
+                    &ui_state,
+                    &connections,
+                    None,
+                    &stats,
+                    &mut click_regions,
+                )
+                .expect("draw details");
+            })
+        };
+
+        let enriched_tcp = render_selected(0);
+        let plain_udp = render_selected(1);
+        assert!(
+            enriched_tcp
+                .lines()
+                .any(|line| line.contains("Network Context") && line.contains("Transport Health")),
+            "second-row card headings should share one visual anchor"
+        );
+        let card_header = enriched_tcp
+            .lines()
+            .find(|line| line.contains("Connection") && line.contains("Application"))
+            .expect("missing dashboard card header");
+        let traffic_header = enriched_tcp
+            .lines()
+            .find(|line| line.contains("↓ RX") && line.contains("↑ TX"))
+            .expect("missing traffic card header");
+        let cell_position = |line: &str, needle: &str| {
+            let byte_index = line.find(needle).unwrap();
+            line[..byte_index].chars().count()
+        };
+        let left_card_x = cell_position(card_header, "Connection");
+        let right_card_x = cell_position(card_header, "Application");
+        let rx_x = cell_position(traffic_header, "↓ RX");
+        let tx_x = cell_position(traffic_header, "↑ TX");
+        assert_eq!(
+            rx_x, left_card_x,
+            "RX must align with the left dashboard card"
+        );
+        assert_eq!(
+            tx_x, right_card_x,
+            "TX must align with the right dashboard card"
+        );
+        let peak_positions: Vec<usize> = traffic_header
+            .match_indices("peak")
+            .map(|(byte_index, _)| traffic_header[..byte_index].chars().count())
+            .collect();
+        assert_eq!(peak_positions.len(), 2);
+        assert_eq!(
+            peak_positions[0] - rx_x,
+            peak_positions[1] - tx_x,
+            "peak labels must use the same offset within both traffic cards"
+        );
+        for heading in [
+            "Connection",
+            "Network Context",
+            "Application",
+            "Transport Health",
+            "Traffic Statistics",
+        ] {
+            let enriched_row = enriched_tcp
+                .lines()
+                .position(|line| line.contains(heading))
+                .unwrap_or_else(|| panic!("missing {heading} in enriched render"));
+            let plain_row = plain_udp
+                .lines()
+                .position(|line| line.contains(heading))
+                .unwrap_or_else(|| panic!("missing {heading} in plain render"));
+            assert_eq!(
+                enriched_row, plain_row,
+                "{heading} moved between enriched TCP and plain UDP records"
+            );
+        }
     }
 
     #[test]

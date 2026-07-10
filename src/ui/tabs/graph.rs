@@ -132,8 +132,22 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let window = history.capacity();
     let rx = history.get_rx_sparkline_data(usize::MAX);
     let tx = history.get_tx_sparkline_data(usize::MAX);
-    braille_graph::wave_panel(f, halves[0], &rx, "↓ RX", frac, window, theme::rx_wave);
-    braille_graph::wave_panel(f, halves[2], &tx, "↑ TX", frac, window, theme::tx_wave);
+    braille_graph::wave_panel(
+        f,
+        halves[0],
+        &rx,
+        "↓ RX",
+        braille_graph::WavePanelOptions::new(frac, window),
+        theme::rx_wave,
+    );
+    braille_graph::wave_panel(
+        f,
+        halves[2],
+        &tx,
+        "↑ TX",
+        braille_graph::WavePanelOptions::new(frac, window),
+        theme::tx_wave,
+    );
 }
 
 /// Horizontal bar with the same dark→bright glow as the waves: each
