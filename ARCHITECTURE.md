@@ -20,7 +20,7 @@ RustNet is a Cargo workspace of four crates. The analysis logic, capture backend
 
 | Crate | Type | Responsibility |
 | --- | --- | --- |
-| [`rustnet-core`](crates/rustnet-core) | library | Platform- and capture-independent analysis core: packet parsing, protocol/connection types, deep packet inspection, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups, and a reusable `ConnectionTracker` (live table + RTT + QUIC coalescing + lifecycle) for headless tools. Operates only on byte slices and parsed structures -- no libpcap, raw sockets, or OS process tables. |
+| [`rustnet-core`](crates/rustnet-core) | library | Platform- and capture-independent analysis core: packet parsing, protocol/connection types, deep packet inspection, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups, a reusable `ConnectionTracker`, and bounded retained process-activity accounting. Operates only on byte slices and parsed structures, with no libpcap, raw sockets, or OS process tables. |
 | [`rustnet-capture`](crates/rustnet-capture) | library | libpcap/Npcap packet-capture backend: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame `PacketReader`. |
 | [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution behind one `ProcessLookup` trait: eBPF/procfs on Linux, PKTAP/lsof on macOS, the IP Helper API on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
 | `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, app event loop, sandboxing (Landlock/Seatbelt), and interface statistics. Dogfoods `ConnectionTracker` as the single source of truth. |
@@ -59,15 +59,21 @@ flowchart LR
     CH([Crossbeam Channel])
     PP[Packet Processors<br/>Thread 0..N]
     PE[Process Enrichment<br/>Platform API]
-    DM[(DashMap)]
+    DM[(Active Connections)]
+    HI[(Historic Pool<br/>up to 5,000)]
     SP[Snapshot Provider]
     UI[/RwLock&lt;Vec&lt;Connection&gt;&gt;<br/>for UI/]
     CT[Cleanup Thread]
+    PA[Process Activity Sampler]
+    PS[/Process Activity Snapshot/]
 
     PC -- packets --> CH --> PP --> DM
     PE --> DM
     DM --> SP --> UI
     DM --> CT
+    CT --> HI
+    HI --> SP
+    SP --> PA --> PS
 ```
 
 ## Key Components
@@ -258,6 +264,16 @@ The tool automatically detects and lists available network interfaces using plat
 - **macOS**: Uses `getifaddrs()` system call
 - **Windows**: Uses `GetAdaptersInfo()` from IP Helper API
 - **All platforms**: Falls back to pcap's `pcap_findalldevs()` when native methods fail
+
+### Process Activity Accounting
+
+`ProcessActivityTracker` receives active and retained historic connections from the existing snapshot provider once per second. It calculates current rates, a 60-second window, peaks, retained totals, bandwidth shares, connection counts, and bounded destination summaries per process identity.
+
+The interface-statistics collector keeps a compact 60-second counter window per interface. Activity coverage compares captured process bytes with interface bytes over that shared duration instead of dividing independently sampled instantaneous rates.
+
+The cleanup thread already moves closed rows into `ConnectionTracker`'s historic pool, which retains up to 5,000 connections. Activity reuses that pool as its source of truth. It does not keep a second copy of full connections or run a separate sampling thread. Only compact rate histories, peaks, and the latest process snapshot remain Activity-specific. Historic overflow is folded into bounded process and destination buckets for each sample.
+
+Activity and the connection UI are fed by the same active and historic sources. This keeps short-lived helper processes visible after exit until their historic rows are evicted or the user clears the connections.
 
 ## Performance Considerations
 

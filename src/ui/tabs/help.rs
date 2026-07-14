@@ -89,7 +89,7 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
         Line::from(vec![
             Span::styled("1-5 ", theme::fg(theme::key())),
             Span::raw(
-                "Jump directly to a tab (1=Overview, 2=Details, 3=Interfaces, 4=Graph, 5=Help)",
+                "Jump directly to a tab (1=Overview, 2=Details, 3=Activity, 4=Graph, 5=Help)",
             ),
         ]),
         Line::from(vec![
@@ -118,7 +118,7 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
         ]),
         Line::from(vec![
             Span::styled("d ", theme::fg(theme::key())),
-            Span::raw("Toggle between hostnames and IP addresses (when --resolve-dns)"),
+            Span::raw("Toggle hostnames/IPs on Overview or Egress (TX)/Ingress (RX) on Activity"),
         ]),
         Line::from(vec![
             Span::styled("s ", theme::fg(theme::key())),
@@ -146,7 +146,7 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
         ]),
         Line::from(vec![
             Span::styled("i ", theme::fg(theme::key())),
-            Span::raw("Toggle the System info sidebar"),
+            Span::raw("Toggle System info on Overview or interface details on Activity"),
         ]),
         Line::from(vec![
             Span::styled("r ", theme::fg(theme::key())),
@@ -181,8 +181,8 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
             Span::raw("Full details for selected connection"),
         ]),
         Line::from(vec![
-            Span::styled("  Interfaces ", theme::fg(theme::ok())),
-            Span::raw("Network interface statistics"),
+            Span::styled("  Activity ", theme::fg(theme::ok())),
+            Span::raw("Process egress/ingress, bandwidth shares, connections, and interface pulse"),
         ]),
         Line::from(vec![
             Span::styled("  Graph ", theme::fg(theme::ok())),
@@ -191,6 +191,31 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
         Line::from(vec![
             Span::styled("  Help ", theme::fg(theme::ok())),
             Span::raw("This help screen"),
+        ]),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "Activity concepts:",
+            theme::bold_fg(theme::accent()),
+        )]),
+        Line::from(vec![
+            Span::styled("  Egress (TX) / Ingress (RX) ", theme::fg(theme::key())),
+            Span::raw("Traffic sent from or received by the local process"),
+        ]),
+        Line::from(vec![
+            Span::styled("  60s coverage ", theme::fg(theme::key())),
+            Span::raw("Captured connection traffic divided by interface traffic"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Retained ", theme::fg(theme::key())),
+            Span::raw("Active traffic plus up to 5,000 recently closed connections"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Process attribution ", theme::fg(theme::key())),
+            Span::raw("Traffic mapped to a PID or process name; unresolved bytes are Unknown"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Top remote peer ", theme::fg(theme::key())),
+            Span::raw("Highest-volume remote endpoint for the selected direction"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
@@ -207,7 +232,7 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
         ]),
         Line::from(vec![
             Span::styled("  Scroll wheel ", theme::fg(theme::key())),
-            Span::raw("Navigate connection list / scroll Details, Interfaces, Help"),
+            Span::raw("Navigate connection list / scroll Details, Activity interfaces, Help"),
         ]),
         Line::from(vec![
             Span::styled("  Double-click row ", theme::fg(theme::key())),

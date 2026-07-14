@@ -18,8 +18,10 @@ use crate::network::types::{
     AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory,
 };
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, format::format_rate, section_header, theme,
-    widgets::braille_graph,
+    ClickableRegions, Component, ComponentContext,
+    format::format_rate,
+    section_header, theme,
+    widgets::{braille_graph, glow_bar},
 };
 
 const TCP_STATE_NAMES: [&str; 11] = [
@@ -212,27 +214,6 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
 /// Horizontal bar with the same dark→bright glow as the waves: each
 /// filled cell walks the gradient from deep hue at the origin to the
 /// bright crest at the tip; the remainder renders as muted `░` track.
-fn gradient_bar(filled: usize, width: usize, ramp: fn(f64) -> Color) -> Vec<Span<'static>> {
-    let filled = filled.min(width);
-    let mut spans: Vec<Span> = (0..filled)
-        .map(|i| {
-            let t = if filled > 1 {
-                i as f64 / (filled - 1) as f64
-            } else {
-                1.0
-            };
-            Span::styled("█", theme::fg(ramp(0.15 + 0.85 * t)))
-        })
-        .collect();
-    if width > filled {
-        spans.push(Span::styled(
-            "░".repeat(width - filled),
-            theme::fg(theme::muted()),
-        ));
-    }
-    spans
-}
-
 /// Draw the connection-count wave: same gradient braille style as the
 /// traffic panels, in the accent (cyan) hue.
 fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rect) {
@@ -328,7 +309,7 @@ fn draw_app_distribution(f: &mut Frame, dist: &AppProtocolDistribution, area: Re
             ),
             Span::raw(" "),
         ];
-        spans.extend(gradient_bar(filled, bar_width, ramp));
+        spans.extend(glow_bar::from_filled(filled, bar_width, ramp));
         spans.push(Span::raw(format!(" {:>5.1}%", pct)));
         lines.push(Line::from(spans));
     }
@@ -346,8 +327,6 @@ fn draw_app_distribution(f: &mut Frame, dist: &AppProtocolDistribution, area: Re
 
 /// Draw top processes by bandwidth
 fn draw_top_processes(f: &mut Frame, process_traffic: &HashMap<&str, f64>, area: Rect) {
-    use std::borrow::Cow;
-
     let inner = section_header(f, area, graph_title(" Top Processes"));
 
     let top_processes = select_top_processes(process_traffic, 5);
@@ -358,10 +337,10 @@ fn draw_top_processes(f: &mut Frame, process_traffic: &HashMap<&str, f64>, area:
     let rows: Vec<Row> = top_processes
         .into_iter()
         .map(|(name, rate)| {
-            let display_name: Cow<str> = if name.len() > 20 {
-                Cow::Owned(format!("{}...", &name[..17]))
+            let display_name = if name.chars().count() > 20 {
+                format!("{}...", name.chars().take(17).collect::<String>())
             } else {
-                Cow::Borrowed(name)
+                name.to_string()
             };
             Row::new(vec![
                 Cell::from(display_name),
@@ -460,7 +439,7 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
             "  RTT  ",
             Style::default().add_modifier(Modifier::BOLD),
         )];
-        spans.extend(gradient_bar(filled, bar_width, ramp));
+        spans.extend(glow_bar::from_filled(filled, bar_width, ramp));
         spans.push(Span::styled(format!(" {:>6.1}ms", rtt), theme::fg(color)));
         Line::from(spans)
     } else {
@@ -487,7 +466,7 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         "  Loss ",
         Style::default().add_modifier(Modifier::BOLD),
     )];
-    loss_spans.extend(gradient_bar(
+    loss_spans.extend(glow_bar::from_filled(
         filled.max(if current_loss > 0.0 { 1 } else { 0 }),
         bar_width,
         loss_ramp,
@@ -628,7 +607,7 @@ fn draw_tcp_states(f: &mut Frame, state_counts: &[usize; TCP_STATE_NAMES.len()],
             // No empty track here: rows are scaled to the max count,
             // so a full-width track would just add noise.
             let filled = bar_len.max(1).min(bar_width);
-            spans.extend(gradient_bar(filled, filled, ramp));
+            spans.extend(glow_bar::from_filled(filled, filled, ramp));
             spans.push(Span::raw(format!(" {:>4}", count)));
             Line::from(spans)
         })

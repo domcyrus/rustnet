@@ -1,6 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 1080
+assertion_line: 1121
 expression: output
 ---
                                                                                 
@@ -15,7 +15,7 @@ expression: output
 │                                                                              │
 │                       ⣾ Loading network connections...                       │
 │                                                                              │
-│                          This may take a few seconds                         │
+│                   Preparing capture and process attribution                  │
 │                                                                              │
 │                   ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣶⣿⣿⣿⣿⣷⣤⡀⠀⠀⠀⠀⠀⢀⣠⣤⣤⣤⣄⡀⠀⠀⠀⠀⠀                   │
 │                   ⣀⣠⣴⣾⣿⣿⣿⣷⣦⣄⣀⣀⣠⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣀⣀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣶⣤⣀⣀⠀                   │

@@ -14,6 +14,7 @@ This guide covers detailed usage of RustNet, including command-line options, key
 - [Sorting](#sorting)
 - [Process Grouping](#process-grouping)
 - [Network Statistics Panel](#network-statistics-panel)
+- [Process Activity](#process-activity)
 - [Interface Statistics](#interface-statistics)
 - [Connection Lifecycle & Visual Indicators](#connection-lifecycle--visual-indicators)
 - [Logging](#logging)
@@ -320,7 +321,7 @@ rustnet --kubernetes on
 
 - `Tab` or `]` - Next tab
 - `Shift+Tab` or `[` - Previous tab
-- `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Interfaces / Graph / Help
+- `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Activity / Graph / Help
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
 - `h` - Toggle help screen
@@ -329,11 +330,11 @@ rustnet --kubernetes on
 
 - `c` - Copy remote address to clipboard
 - `p` - Toggle between service names and port numbers
-- `d` - Toggle between hostnames and IP addresses (disabled by `--no-resolve-dns`)
+- `d` - Toggle hostnames/IPs on Overview or Egress (TX)/Ingress (RX) on Activity
 - `/` - Enter filter mode (vim-style search with real-time results)
 - `x` - Clear all connections and reset statistics (press twice to confirm)
 - `t` - Toggle display of historic (closed) connections
-- `i` - Toggle the System info sidebar
+- `i` - Toggle the System info sidebar on Overview or interface details on Activity
 - `r` - Reset view to defaults (clears grouping, sort, filter, and historic)
 
 ### Process Grouping
@@ -739,6 +740,25 @@ Fast retransmit frequency indicates how well TCP is recovering from packet loss 
 - SYN and FIN flags are properly accounted for in sequence number tracking (each consumes 1 sequence number)
 - Only TCP connections show analytics; UDP, ICMP, and other protocols do not have these metrics
 
+## Process Activity
+
+The Activity tab derives bounded process traffic totals from active connections and RustNet's existing pool of up to 5,000 retained historic connections. A short-lived uploader remains visible after its socket closes, until its historic connection is evicted or the connections are cleared. Press `3` to open it.
+
+The main process table switches between Egress (TX) and Ingress (RX) and shows:
+
+- Current and peak rates, plus the process share of captured traffic in the selected direction over the rolling 60-second window
+- Retained bytes in the selected direction, including active and retained historic connections
+- Active and total connection counts
+- Unique remote destinations and the highest-volume remote peer
+- Process attribution coverage, with unresolved traffic grouped as `Unknown`
+- Rolling 60-second process traffic as a percentage of interface traffic in the selected direction
+
+Traffic Pulse shows the current captured rate, but calculates coverage from captured bytes and interface-counter bytes over the same rolling 60-second window. This avoids the large fluctuations caused by comparing independently sampled instantaneous rates. Coverage divides the captured total by the interface total and caps the displayed percentage at 100%, because slightly different window endpoints or counter visibility can otherwise produce small overages. Both raw totals remain visible for diagnosis. When RustNet captures one named interface, it compares directly with that interface. With multi-interface capture, RustNet compares against a host-wide interface aggregate and prefixes the value with `~` because VPN and virtual interface counters can overlap.
+
+Press `d` to switch between Egress (TX, blue) and Ingress (RX, green), `s` to cycle the Activity sort metric, `S` to reverse its order, and `i` to toggle the detailed interface table.
+
+For a quick security review, sort Egress by the rolling or retained byte count, look for an unexpected high-volume process, and inspect its top remote peer. Retained traffic keeps a short-lived uploader visible after its socket closes.
+
 ## Interface Statistics
 
 RustNet provides real-time network interface statistics across all supported platforms (Linux, macOS, FreeBSD, Windows). Interface stats are displayed in two locations:
@@ -751,8 +771,8 @@ RustNet provides real-time network interface statistics across all supported pla
 - Displays: `InterfaceName: X KB/s ↓ / Y KB/s ↑`
 - Shows cumulative totals: `Errors (Total): N  Drops (Total): M`
 
-**Interfaces Tab (Detailed View):**
-- Press `i` to toggle the Interface Statistics view
+**Activity Tab (Detailed View):**
+- Press `3` for Activity, then `i` to toggle the Interface Statistics view
 - Shows a detailed table of all network interfaces
 - Displays comprehensive metrics for each interface
 
@@ -834,7 +854,7 @@ High error/drop counts may indicate:
 - macOS/Linux: Shows interfaces with recent traffic (`rx_bytes > 0 || tx_bytes > 0 || rx_packets > 0 || tx_packets > 0`)
 - Special interfaces (`any`, `pktap`): Shows all interfaces with any activity
 
-**Interfaces Tab:**
+**Activity Interface Details:**
 - Shows all detected interfaces that pass the platform-specific filters
 - Sorts to show the currently captured interface first (highlighted)
 - Other interfaces appear in alphabetical order

@@ -13,7 +13,7 @@ use ratatui::{
 
 use crate::ui::{ClickAction, ClickableRegions, UIState, theme};
 
-pub(crate) const TAB_TITLES: [&str; 5] = ["Overview", "Details", "Interfaces", "Graph", "Help"];
+pub(crate) const TAB_TITLES: [&str; 5] = ["Overview", "Details", "Activity", "Graph", "Help"];
 /// Total number of tabs (kept in sync with `TAB_TITLES`).
 pub(crate) const TAB_COUNT: usize = TAB_TITLES.len();
 /// Index of the Help tab. Lets `UIState::jump_to_tab` keep `show_help` in

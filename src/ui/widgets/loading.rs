@@ -48,7 +48,7 @@ pub(in crate::ui) fn draw_loading_screen(f: &mut Frame, elapsed: Duration) {
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "This may take a few seconds",
+            "Preparing capture and process attribution",
             theme::fg(theme::muted()),
         )]),
     ];

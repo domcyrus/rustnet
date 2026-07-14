@@ -19,7 +19,7 @@
 #   4. Details from a grouped child  -> assets/screenshots/details.png
 #      (shows the continuity strip + "grouped by process" badge)
 #   5. Graph (4)                     -> assets/screenshots/graph.png
-#   6. Interfaces (3)                -> assets/screenshots/interfaces.png
+#   6. Activity (3)                  -> assets/screenshots/interfaces.png
 
 Output assets/screenshots/_throwaway.gif
 
@@ -89,7 +89,7 @@ Sleep 2500ms
 Screenshot "assets/screenshots/graph.png"
 Sleep 500ms
 
-# 6. Interfaces
+# 6. Activity
 Type "3"
 Sleep 2500ms
 Screenshot "assets/screenshots/interfaces.png"

@@ -12,7 +12,7 @@ use serde_json::json;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -23,10 +23,13 @@ use crate::network::{
     capture::{CaptureConfig, CapturedPacket, PacketReader, setup_packet_capture},
     dns::DnsResolver,
     geoip::{GeoIpConfig, GeoIpResolver},
-    interface_stats::{InterfaceRates, InterfaceStats, InterfaceStatsProvider},
+    interface_stats::{
+        InterfaceRates, InterfaceStats, InterfaceStatsProvider, InterfaceTrafficWindow,
+    },
     oui::OuiLookup,
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
+    process_activity::{ProcessActivitySnapshot, ProcessActivityTracker},
     services::ServiceLookup,
     tracker::{ConnectionTracker, IngestOutcome},
     types::{
@@ -159,6 +162,7 @@ const MAX_PCAPNG_QUEUE: usize = 10_000;
 const MAX_PCAPNG_RETRY_RECORDS: usize = 10_000;
 const MAX_PCAPNG_RETRY_BYTES: usize = 64 * 1024 * 1024;
 const PCAPNG_ATTRIBUTION_WAIT: Duration = Duration::from_secs(2);
+const STARTUP_SPLASH_DURATION: Duration = Duration::from_millis(750);
 
 #[derive(Debug)]
 struct PcapngRecord {
@@ -661,6 +665,14 @@ pub struct App {
     /// Interface rates (per-second rates)
     interface_rates: Arc<DashMap<String, InterfaceRates>>,
 
+    /// Traffic transferred over the latest rolling 60-second interface window.
+    interface_traffic_windows: Arc<DashMap<String, InterfaceTrafficWindow>>,
+
+    /// Cumulative interface samples backing the rolling traffic windows.
+    /// Shared with the clear path so both sides of Activity coverage reset
+    /// atomically instead of the polling thread restoring pre-clear samples.
+    interface_traffic_history: Arc<Mutex<HashMap<String, VecDeque<InterfaceStats>>>>,
+
     /// Traffic history for graph visualization
     traffic_history: Arc<RwLock<TrafficHistory>>,
 
@@ -671,6 +683,9 @@ pub struct App {
     /// with the aggregate graphs. Entries for vanished connections are
     /// dropped each sample.
     conn_rate_history: Arc<RwLock<HashMap<String, ConnRateHistory>>>,
+
+    /// Process traffic derived from active and bounded historic connections.
+    process_activity: Arc<RwLock<ProcessActivityTracker>>,
 
     /// DNS resolver for reverse DNS lookups
     dns_resolver: Option<Arc<DnsResolver>>,
@@ -804,8 +819,11 @@ impl App {
             ))),
             interface_stats: Arc::new(DashMap::new()),
             interface_rates: Arc::new(DashMap::new()),
+            interface_traffic_windows: Arc::new(DashMap::new()),
+            interface_traffic_history: Arc::new(Mutex::new(HashMap::new())),
             traffic_history: Arc::new(RwLock::new(TrafficHistory::new(60))), // 60 seconds of history
             conn_rate_history: Arc::new(RwLock::new(HashMap::new())),
+            process_activity: Arc::new(RwLock::new(ProcessActivityTracker::new())),
             dns_resolver,
             geoip_resolver,
             packet_rx: None,
@@ -891,14 +909,13 @@ impl App {
         // Start traffic history thread for graph visualization
         self.start_traffic_history_thread()?;
 
-        // Mark loading as complete after a short delay. Slightly longer
-        // than strictly necessary so the animated splash reads as a
-        // deliberate intro instead of a flash.
+        // Required capture and attribution initialization is already complete.
+        // Keep the splash briefly so it reads as an intentional transition.
         let is_loading = Arc::clone(&self.is_loading);
         thread::Builder::new()
             .name("startup_flag".to_string())
             .spawn(move || {
-                thread::sleep(Duration::from_millis(1500));
+                thread::sleep(STARTUP_SPLASH_DURATION);
                 is_loading.store(false, Ordering::Relaxed);
             })
             .expect("Failed to spawn startup_flag thread");
@@ -1816,9 +1833,11 @@ impl App {
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let service_lookup = Arc::clone(&self.service_lookup);
+        let process_activity = Arc::clone(&self.process_activity);
         let show_historic = Arc::clone(&self.show_historic);
         let filter_localhost = self.config.filter_localhost;
         let refresh_interval = Duration::from_millis(self.config.refresh_interval);
+        let loop_interval = refresh_interval.min(Duration::from_secs(1));
 
         let enrich_and_filter = move |conn: &mut Connection,
                                       service_lookup: &ServiceLookup,
@@ -1849,6 +1868,8 @@ impl App {
             .name("snapshot_ui".to_string())
             .spawn(move || {
                 info!("Snapshot provider thread started");
+                let mut last_ui_publish: Option<Instant> = None;
+                let mut last_activity_sample: Option<Instant> = None;
 
                 loop {
                     if should_stop.load(Ordering::Relaxed) {
@@ -1900,16 +1921,54 @@ impl App {
 
                     let filtered_count = snapshot_data.len();
 
-                    // Update snapshot and publish the new generation so the
-                    // UI loop knows there is fresh data to re-sort.
-                    *snapshot.write().unwrap() = snapshot_data;
-                    snapshot_generation.fetch_add(1, Ordering::Release);
+                    let activity_due = last_activity_sample
+                        .is_none_or(|sampled| sampled.elapsed() >= Duration::from_secs(1));
+                    if activity_due {
+                        if let Ok(mut activity) = process_activity.write() {
+                            tracker.with_retained_sources(|active, historic| {
+                                let include = |conn: &Connection| {
+                                    !(filter_localhost
+                                        && conn.local_addr.ip().is_loopback()
+                                        && conn.remote_addr.ip().is_loopback())
+                                };
+                                activity.observe_sources(
+                                    SystemTime::now(),
+                                    |observe| {
+                                        for entry in active.iter() {
+                                            let conn = entry.value();
+                                            if include(conn) {
+                                                observe(conn);
+                                            }
+                                        }
+                                    },
+                                    |observe| {
+                                        for entry in historic.iter() {
+                                            let conn = entry.value();
+                                            if include(conn) {
+                                                observe(conn);
+                                            }
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                        last_activity_sample = Some(Instant::now());
+                    }
 
-                    // Update stats (only count active connections)
-                    stats
-                        .connections_tracked
-                        .store(total_connections as u64, Ordering::Relaxed);
-                    *stats.last_update.write().unwrap() = Instant::now();
+                    let ui_publish_due = last_ui_publish
+                        .is_none_or(|published| published.elapsed() >= refresh_interval);
+                    if ui_publish_due {
+                        // Publish the connection vector used by the UI.
+                        *snapshot.write().unwrap() = snapshot_data;
+                        snapshot_generation.fetch_add(1, Ordering::Release);
+                        last_ui_publish = Some(Instant::now());
+
+                        // Update stats (only count active connections)
+                        stats
+                            .connections_tracked
+                            .store(total_connections as u64, Ordering::Relaxed);
+                        *stats.last_update.write().unwrap() = Instant::now();
+                    }
 
                     debug!(
                         "Snapshot updated in {:?} - Total: {}, Filtered: {}",
@@ -1918,7 +1977,7 @@ impl App {
                         filtered_count
                     );
 
-                    thread::sleep(refresh_interval);
+                    thread::sleep(loop_interval);
                 }
             })
             .expect("Failed to spawn snapshot_ui thread");
@@ -1973,6 +2032,8 @@ impl App {
         let should_stop = Arc::clone(&self.should_stop);
         let interface_stats = Arc::clone(&self.interface_stats);
         let interface_rates = Arc::clone(&self.interface_rates);
+        let interface_traffic_windows = Arc::clone(&self.interface_traffic_windows);
+        let interface_traffic_history = Arc::clone(&self.interface_traffic_history);
 
         thread::Builder::new()
             .name("ifstats_poll".to_string())
@@ -1995,9 +2056,13 @@ impl App {
                     // Collect stats from all interfaces
                     match provider.get_all_stats() {
                         Ok(stats_vec) => {
+                            let mut stats_history = interface_traffic_history
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
                             // Clear old entries
                             interface_stats.clear();
                             interface_rates.clear();
+                            interface_traffic_windows.clear();
 
                             for stat in stats_vec {
                                 // Calculate rates if we have previous data
@@ -2009,8 +2074,26 @@ impl App {
                                 // Store current stats
                                 let name = stat.interface_name.clone();
                                 interface_stats.insert(name.clone(), stat.clone());
-                                previous_stats.insert(name, stat);
+                                previous_stats.insert(name.clone(), stat.clone());
+
+                                let history = stats_history.entry(name.clone()).or_default();
+                                history.push_back(stat.clone());
+                                while history.len() > 2
+                                    && history.get(1).is_some_and(|sample| {
+                                        stat.timestamp
+                                            .duration_since(sample.timestamp)
+                                            .unwrap_or_default()
+                                            >= Duration::from_secs(60)
+                                    })
+                                {
+                                    history.pop_front();
+                                }
+                                if let Some(oldest) = history.front() {
+                                    interface_traffic_windows
+                                        .insert(name, stat.traffic_since(oldest));
+                                }
                             }
+                            stats_history.retain(|name, _| interface_stats.contains_key(name));
                         }
                         Err(e) => {
                             if !warned_collect_failure {
@@ -2309,6 +2392,22 @@ impl App {
             .collect()
     }
 
+    /// Get traffic transferred over each interface's rolling 60-second window.
+    pub fn get_interface_traffic_windows(&self) -> HashMap<String, InterfaceTrafficWindow> {
+        self.interface_traffic_windows
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().clone()))
+            .collect()
+    }
+
+    /// Get the latest retained process traffic snapshot.
+    pub fn get_process_activity_snapshot(&self) -> ProcessActivitySnapshot {
+        self.process_activity
+            .read()
+            .map(|activity| activity.snapshot())
+            .unwrap_or_default()
+    }
+
     /// Get traffic history for graph visualization
     /// RX/TX rate history for one connection (by `Connection::key()`),
     /// as (rx, tx) bytes/sec vectors oldest→newest. None until the
@@ -2514,10 +2613,34 @@ impl App {
         self.interface_rates.insert(name.to_string(), rates);
     }
 
+    /// Seed an interface's rolling traffic window. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_interface_traffic_window_for_test(
+        &self,
+        name: &str,
+        window: InterfaceTrafficWindow,
+    ) {
+        self.interface_traffic_windows
+            .insert(name.to_string(), window);
+    }
+
     /// Override the traffic history ring. Tests only.
     #[cfg(test)]
     pub(crate) fn set_traffic_history_for_test(&self, history: TrafficHistory) {
         *self.traffic_history.write().unwrap() = history;
+    }
+
+    /// Feed a deterministic process-activity sample. Tests only.
+    #[cfg(test)]
+    pub(crate) fn observe_process_activity_for_test(
+        &self,
+        connections: &[Connection],
+        now: SystemTime,
+    ) {
+        self.process_activity
+            .write()
+            .unwrap()
+            .observe_connections(connections, now);
     }
 
     /// Clear all connections and related data, starting fresh
@@ -2544,6 +2667,21 @@ impl App {
         if let Ok(mut history) = self.traffic_history.write() {
             history.clear();
         }
+
+        if let Ok(mut activity) = self.process_activity.write() {
+            activity.clear();
+        }
+
+        // Keep the process and interface sides of Activity coverage on the
+        // same post-clear window. Holding this lock prevents the collector
+        // from republishing a window based on pre-clear samples.
+        let mut interface_history = self
+            .interface_traffic_history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        interface_history.clear();
+        self.interface_traffic_windows.clear();
+        drop(interface_history);
 
         // Reset statistics counters
         self.stats.packets_processed.store(0, Ordering::Relaxed);
@@ -2872,6 +3010,70 @@ impl Drop for App {
         self.stop();
         // Give threads time to stop gracefully
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod activity_reset_tests {
+    use super::*;
+    use crate::network::types::{ProtocolState, TcpState};
+    use std::net::SocketAddr;
+
+    fn interface_sample(timestamp: SystemTime, rx_bytes: u64, tx_bytes: u64) -> InterfaceStats {
+        InterfaceStats {
+            interface_name: "eth0".to_string(),
+            rx_bytes,
+            tx_bytes,
+            rx_packets: 0,
+            tx_packets: 0,
+            rx_errors: 0,
+            tx_errors: 0,
+            rx_dropped: 0,
+            tx_dropped: 0,
+            collisions: 0,
+            timestamp,
+        }
+    }
+
+    #[test]
+    fn clear_resets_both_activity_coverage_windows() {
+        let app = App::new(Config {
+            enable_dpi: false,
+            resolve_dns: false,
+            disable_geoip: true,
+            ..Config::default()
+        })
+        .unwrap();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::from(([192, 0, 2, 1], 40_000)),
+            SocketAddr::from(([198, 51, 100, 1], 443)),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        conn.bytes_sent = 2_000;
+        app.observe_process_activity_for_test(&[conn], now);
+
+        let first = interface_sample(now, 1_000, 500);
+        let second = interface_sample(now + Duration::from_secs(30), 5_000, 2_500);
+        app.interface_traffic_history
+            .lock()
+            .unwrap()
+            .insert("eth0".to_string(), VecDeque::from([first, second]));
+        app.interface_traffic_windows.insert(
+            "eth0".to_string(),
+            InterfaceTrafficWindow {
+                rx_bytes: 4_000,
+                tx_bytes: 2_000,
+                sampled_for: Duration::from_secs(30),
+            },
+        );
+
+        app.clear_all_connections();
+
+        assert_eq!(app.get_process_activity_snapshot().window_tx_bytes, 0);
+        assert!(app.get_interface_traffic_windows().is_empty());
+        assert!(app.interface_traffic_history.lock().unwrap().is_empty());
     }
 }
 

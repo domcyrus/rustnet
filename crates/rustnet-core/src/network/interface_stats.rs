@@ -1,5 +1,5 @@
 use std::io;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// Statistics for a network interface
 #[derive(Debug, Clone)]
@@ -37,6 +37,24 @@ impl InterfaceStats {
                 as u64,
         }
     }
+
+    /// Calculate traffic transferred between two cumulative snapshots.
+    pub fn traffic_since(&self, previous: &InterfaceStats) -> InterfaceTrafficWindow {
+        let sampled_for = self
+            .timestamp
+            .duration_since(previous.timestamp)
+            .unwrap_or_default();
+
+        if sampled_for.is_zero() {
+            return InterfaceTrafficWindow::default();
+        }
+
+        InterfaceTrafficWindow {
+            rx_bytes: self.rx_bytes.saturating_sub(previous.rx_bytes),
+            tx_bytes: self.tx_bytes.saturating_sub(previous.tx_bytes),
+            sampled_for,
+        }
+    }
 }
 
 /// Rate calculations for interface statistics
@@ -44,6 +62,14 @@ impl InterfaceStats {
 pub struct InterfaceRates {
     pub rx_bytes_per_sec: u64,
     pub tx_bytes_per_sec: u64,
+}
+
+/// Traffic transferred over a rolling interface-counter window.
+#[derive(Debug, Clone, Default)]
+pub struct InterfaceTrafficWindow {
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub sampled_for: Duration,
 }
 
 /// Trait for platform-specific interface statistics providers
@@ -158,5 +184,35 @@ mod tests {
         // Should result in 0 due to saturating_sub
         assert_eq!(rates.rx_bytes_per_sec, 0);
         assert_eq!(rates.tx_bytes_per_sec, 0);
+    }
+
+    #[test]
+    fn test_traffic_since() {
+        let t1 = SystemTime::now();
+        let t2 = t1 + Duration::from_secs(60);
+        let first = InterfaceStats {
+            interface_name: "test".to_string(),
+            rx_bytes: 1_000,
+            tx_bytes: 500,
+            rx_packets: 0,
+            tx_packets: 0,
+            rx_errors: 0,
+            tx_errors: 0,
+            rx_dropped: 0,
+            tx_dropped: 0,
+            collisions: 0,
+            timestamp: t1,
+        };
+        let second = InterfaceStats {
+            rx_bytes: 9_000,
+            tx_bytes: 2_500,
+            timestamp: t2,
+            ..first.clone()
+        };
+
+        let window = second.traffic_since(&first);
+        assert_eq!(window.rx_bytes, 8_000);
+        assert_eq!(window.tx_bytes, 2_000);
+        assert_eq!(window.sampled_for, Duration::from_secs(60));
     }
 }

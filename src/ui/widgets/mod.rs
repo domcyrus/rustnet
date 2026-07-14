@@ -4,6 +4,7 @@
 
 pub(super) mod braille_graph;
 pub(super) mod filter_input;
+pub(super) mod glow_bar;
 pub(super) mod loading;
 pub(super) mod scrollbar;
 pub(super) mod status_bar;

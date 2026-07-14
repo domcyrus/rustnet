@@ -1,5 +1,5 @@
 //! Terminal user interface built on `ratatui` + `crossterm`: tabbed
-//! layout (overview, connections, interfaces, details), sortable tables
+//! layout (overview, details, process activity, graphs), sortable tables
 //! with adjustable columns, sparkline/chart bandwidth widgets, and
 //! keyboard-driven filter and navigation.
 
@@ -29,7 +29,7 @@ use widgets::{
 
 mod tabs;
 use tabs::{
-    details::DetailsTab, graph::GraphTab, help::HelpTab, interfaces::InterfacesTab,
+    activity::ActivityTab, details::DetailsTab, graph::GraphTab, help::HelpTab,
     overview::OverviewTab,
 };
 
@@ -42,7 +42,7 @@ use tabs::{
 /// filter input widget), so when `filter_mode` is on the dispatch
 /// routes to `OverviewTab` regardless of the visible tab. This
 /// keeps filter typing working when the user has switched to
-/// Details / Interfaces / Graph / Help while a filter is being
+/// Details / Activity / Graph / Help while a filter is being
 /// edited.
 pub fn dispatch_key(
     tab: usize,
@@ -55,7 +55,7 @@ pub fn dispatch_key(
     match tab {
         0 => OverviewTab.handle_key(key, ctx),
         1 => DetailsTab.handle_key(key, ctx),
-        2 => InterfacesTab.handle_key(key, ctx),
+        2 => ActivityTab.handle_key(key, ctx),
         3 => GraphTab.handle_key(key, ctx),
         4 => HelpTab.handle_key(key, ctx),
         _ => None,
@@ -73,7 +73,7 @@ pub fn dispatch_mouse(
     match tab {
         0 => OverviewTab.handle_mouse(mouse, ctx),
         1 => DetailsTab.handle_mouse(mouse, ctx),
-        2 => InterfacesTab.handle_mouse(mouse, ctx),
+        2 => ActivityTab.handle_mouse(mouse, ctx),
         3 => GraphTab.handle_mouse(mouse, ctx),
         4 => HelpTab.handle_mouse(mouse, ctx),
         _ => None,
@@ -93,8 +93,8 @@ pub fn set_no_color(enabled: bool) {
 
 mod state;
 pub use state::{
-    ClickAction, ClickableRegions, GroupedRow, PaneScroll, SortColumn, UIState,
-    compute_grouped_rows, compute_scroll_offset,
+    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, PaneScroll,
+    SortColumn, UIState, compute_grouped_rows, compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::{HELP_TAB_INDEX, TAB_COUNT};
 
@@ -268,7 +268,7 @@ pub fn draw(
     match ui_state.selected_tab {
         0 => OverviewTab.draw(f, content_area, &comp_ctx, click_regions)?,
         1 => DetailsTab.draw(f, content_area, &comp_ctx, click_regions)?,
-        2 => InterfacesTab.draw(f, content_area, &comp_ctx, click_regions)?,
+        2 => ActivityTab.draw(f, content_area, &comp_ctx, click_regions)?,
         3 => GraphTab.draw(f, content_area, &comp_ctx, click_regions)?,
         4 => HelpTab.draw(f, content_area, &comp_ctx, click_regions)?,
         _ => {}
@@ -709,6 +709,16 @@ mod snapshot_tests {
     }
 
     #[test]
+    fn status_bar_activity_tab() {
+        let ui_state = UIState {
+            selected_tab: 2,
+            ..Default::default()
+        };
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
     fn status_bar_help_tab() {
         let ui_state = UIState {
             selected_tab: 4,
@@ -759,7 +769,7 @@ mod snapshot_tests {
 
     use crate::app::{App, Config};
     use crate::network::geoip::GeoIpInfo;
-    use crate::network::interface_stats::{InterfaceRates, InterfaceStats};
+    use crate::network::interface_stats::{InterfaceRates, InterfaceStats, InterfaceTrafficWindow};
     use crate::network::types::{Connection, Protocol, ProtocolState, TcpState, TrafficHistory};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::time::{Duration, SystemTime};
@@ -1030,7 +1040,7 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn interfaces_tab() {
+    fn activity_interface_details() {
         let app = test_app();
         app.set_connections_snapshot_for_test(sample_connections());
         app.set_interface_stats_for_test(
@@ -1058,7 +1068,8 @@ mod snapshot_tests {
         );
 
         let ui_state = UIState {
-            selected_tab: 2, // Interfaces
+            selected_tab: 2, // Activity
+            activity_show_interfaces: true,
             ..Default::default()
         };
         let connections = app.get_connections();
@@ -1075,7 +1086,7 @@ mod snapshot_tests {
                 &stats,
                 &mut click_regions,
             )
-            .expect("draw interfaces");
+            .expect("draw Activity interface details");
         });
 
         insta::with_settings!({
@@ -1083,6 +1094,73 @@ mod snapshot_tests {
         }, {
             insta::assert_snapshot!(output);
         });
+    }
+
+    fn seeded_activity_app() -> App {
+        let app = test_app();
+        let mut connections = sample_connections();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        app.observe_process_activity_for_test(&connections, now);
+        connections[0].bytes_sent += 5_000_000;
+        connections[0].bytes_received += 3_000_000;
+        connections[1].bytes_sent += 32_000;
+        connections[1].bytes_received += 64_000;
+        connections[2].bytes_sent += 1_000_000;
+        connections[2].bytes_received += 500_000;
+        app.observe_process_activity_for_test(&connections, now + Duration::from_secs(2));
+        app.set_connections_snapshot_for_test(connections);
+        app.set_interface_rates_for_test(
+            "eth0",
+            InterfaceRates {
+                rx_bytes_per_sec: 2_097_152,
+                tx_bytes_per_sec: 4_194_304,
+            },
+        );
+        app.set_interface_traffic_window_for_test(
+            "eth0",
+            InterfaceTrafficWindow {
+                rx_bytes: 4_194_304,
+                tx_bytes: 8_388_608,
+                sampled_for: Duration::from_secs(2),
+            },
+        );
+        app
+    }
+
+    fn render_activity(app: &App, direction: ActivityDirection) -> String {
+        let ui_state = UIState {
+            selected_tab: 2,
+            activity_direction: direction,
+            ..Default::default()
+        };
+        let connections = app.get_connections();
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        render(150, 40, |f| {
+            draw(
+                f,
+                app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw process Activity");
+        })
+    }
+
+    #[test]
+    fn activity_tab_process_egress() {
+        let app = seeded_activity_app();
+        insta::assert_snapshot!(render_activity(&app, ActivityDirection::Egress));
+    }
+
+    #[test]
+    fn activity_tab_process_ingress() {
+        let app = seeded_activity_app();
+        insta::assert_snapshot!(render_activity(&app, ActivityDirection::Ingress));
     }
 
     #[test]

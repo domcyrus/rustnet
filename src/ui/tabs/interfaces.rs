@@ -1,10 +1,6 @@
-//! Interfaces tab — full table of per-NIC counters (RX/TX rate,
-//! packets, errors, drops, collisions) sorted with the active
-//! capture interface first. Read-only apart from scrolling, which
-//! matters on Docker/VM hosts with dozens of bridge interfaces.
+//! Detailed per-interface table used as the Activity tab's secondary view.
 
 use anyhow::Result;
-use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
@@ -15,43 +11,8 @@ use ratatui::{
 
 use crate::app::App;
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, UIState,
-    format::format_bytes, section_header, theme, try_handle_pane_scroll, try_handle_pane_wheel,
-    widgets::scrollbar::draw_scrollbar,
+    UIState, format::format_bytes, section_header, theme, widgets::scrollbar::draw_scrollbar,
 };
-
-/// Interfaces tab. The table is rebuilt from the App's
-/// interface-stats DashMap every render; the scroll offset lives in
-/// `UIState::interfaces_scroll`.
-pub(in crate::ui) struct InterfacesTab;
-
-impl Component for InterfacesTab {
-    fn draw(
-        &mut self,
-        f: &mut Frame,
-        area: Rect,
-        ctx: &ComponentContext<'_>,
-        _click_regions: &mut ClickableRegions,
-    ) -> Result<()> {
-        draw_interface_stats(f, ctx.app, ctx.ui_state, area)
-    }
-
-    fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        try_handle_pane_scroll(
-            key,
-            ctx.ui_state.visible_rows,
-            &mut ctx.ui_state.interfaces_scroll,
-        )
-    }
-
-    fn handle_mouse(
-        &mut self,
-        mouse: MouseEvent,
-        ctx: &mut HandlerContext<'_>,
-    ) -> Option<Vec<Effect>> {
-        try_handle_pane_wheel(mouse, &mut ctx.ui_state.interfaces_scroll)
-    }
-}
 
 pub(in crate::ui) fn draw_interface_stats(
     f: &mut Frame,

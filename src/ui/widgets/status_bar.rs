@@ -8,8 +8,8 @@ use crate::ui::{UIState, theme};
 
 /// Status bar text per tab. Only Overview exposes connection-list shortcuts
 /// (/, a, t, c); other tabs show just what actually works there.
-fn default_status_line(selected_tab: usize) -> &'static str {
-    match selected_tab {
+fn default_status_line(ui_state: &UIState) -> &'static str {
+    match ui_state.selected_tab {
         // Overview
         0 => {
             " 'h' help | 1-5 jump | Tab/[/] cycle | '/' filter | 'a' group | 't' history | 'i' info | 'c' copy"
@@ -18,8 +18,15 @@ fn default_status_line(selected_tab: usize) -> &'static str {
         1 => {
             " 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | Ctrl-d/u scroll | 'c' copy remote addr | Esc back"
         }
-        // Interfaces / Help (both scroll with j/k)
-        2 | 4 => " 'h' help | 1-5 jump | Tab/[/] cycle | j/k scroll | Esc back to Overview",
+        // Activity
+        2 if ui_state.activity_show_interfaces => {
+            " 'h' help | 1-5 jump | Tab/[/] cycle | j/k scroll | 'i' process activity | Esc back"
+        }
+        2 => {
+            " 'h' help | 1-5 jump | Tab/[/] cycle | 'd' TX/RX | 's' sort | 'S' order | 'i' interfaces | Esc back"
+        }
+        // Help
+        4 => " 'h' help | 1-5 jump | Tab/[/] cycle | j/k scroll | Esc back to Overview",
         // Graph
         _ => " 'h' help | 1-5 jump | Tab/[/] cycle | Esc back to Overview",
     }
@@ -40,7 +47,7 @@ pub(in crate::ui) fn draw_status_bar(
         if time.elapsed().as_secs() < 3 {
             format!(" {} ", msg)
         } else {
-            default_status_line(ui_state.selected_tab).to_string()
+            default_status_line(ui_state).to_string()
         }
     } else if !ui_state.filter_query.is_empty() {
         format!(
@@ -48,7 +55,7 @@ pub(in crate::ui) fn draw_status_bar(
             connection_count
         )
     } else {
-        default_status_line(ui_state.selected_tab).to_string()
+        default_status_line(ui_state).to_string()
     };
 
     let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {

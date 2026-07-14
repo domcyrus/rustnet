@@ -28,6 +28,6 @@ pub use rustnet_capture as capture;
 // tests, benches, and external consumers.
 #[allow(unused_imports)]
 pub use rustnet_core::network::{
-    bogon, dns, dpi, geoip, interface_stats, link_layer, merge, oui, parser, protocol, services,
-    tracker, types,
+    bogon, dns, dpi, geoip, interface_stats, link_layer, merge, oui, parser, process_activity,
+    protocol, services, tracker, types,
 };
