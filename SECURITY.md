@@ -308,7 +308,7 @@ For this reason, running with fine-grained capabilities (`setcap cap_net_raw=eip
 RustNet takes the following measures to protect against supply chain attacks:
 
 - **Dependency lockfile**: `Cargo.lock` is committed to the repository, pinning all transitive dependency versions and recording source checksums. This prevents silent version upgrades.
-- **Security audit**: `cargo deny check` runs in CI on every push and pull request, checking dependencies against the RustSec Advisory Database and enforcing license, source, and wildcard-version policies (`deny.toml`). A scheduled daily workflow re-checks advisories against the committed `Cargo.lock`, so newly published advisories surface without requiring a push.
+- **Security audit**: `cargo audit` runs in CI on every push and pull request, checking dependencies against the RustSec Advisory Database and detecting yanked releases. A scheduled daily workflow re-checks the committed `Cargo.lock`, so newly published advisories and yanks surface without requiring a push.
 - **CI action pinning**: All GitHub Actions are pinned by commit SHA (not tags), preventing tag-rewriting attacks on upstream actions.
 - **Conservative dependency policy**: New dependencies require justification and are reviewed for maintenance status and security track record (see `CONTRIBUTING.md`).
 - **Build-time integrity**: The Windows Npcap SDK download in `build.rs` is verified against a hardcoded SHA256 checksum.
