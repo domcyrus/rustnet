@@ -34,9 +34,9 @@ git pull origin main
 ```
 
 1. Go to [Actions > Test Platform Builds](../../actions/workflows/test-platform-builds.yml)
-2. Click "Run workflow"
-3. Select `all` to test all platforms (including static Linux builds)
-4. Wait for the workflow to complete successfully
+2. Click "Run workflow" (it builds all platforms, including static Linux builds,
+   and also triggers a FreeBSD test build in the rustnet-bsd repo)
+3. Wait for the workflow to complete successfully
 
 This catches cross-platform and static linking issues before you invest time in release prep.
 
