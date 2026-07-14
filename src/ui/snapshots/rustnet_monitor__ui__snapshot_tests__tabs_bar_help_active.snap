@@ -1,7 +1,6 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 640
 expression: output
 ---
- rustnet    1 Overview   2 Details   3 Interfaces   4 Graph   5 Help            
-──────────────────────────────────────────────────────────────━━━━━━────────────
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help              
+────────────────────────────────────────────────────────────━━━━━━──────────────

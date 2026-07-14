@@ -46,8 +46,8 @@ use crate::network::types::{ApplicationProtocol, Connection, ConnectionKey, Prot
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
 /// The active connection table: flow key -> connection.
@@ -139,6 +139,9 @@ pub struct IngestOutcome {
 pub struct ConnectionTracker {
     connections: ConnectionMap,
     historic: HistoricMap,
+    /// Coordinates moves between the active and historic maps with readers
+    /// that need one consistent retained-connection view.
+    lifecycle: RwLock<()>,
     rtt: Mutex<RttTracker>,
     quic_map: Mutex<HashMap<String, ConnectionKey>>,
     config: TrackerConfig,
@@ -162,6 +165,7 @@ impl ConnectionTracker {
         Self {
             connections: ConnectionMap::with_hasher(FxBuildHasher),
             historic: HistoricMap::with_hasher(FxBuildHasher),
+            lifecycle: RwLock::new(()),
             rtt: Mutex::new(RttTracker::new()),
             quic_map: Mutex::new(HashMap::new()),
             config,
@@ -288,6 +292,10 @@ impl ConnectionTracker {
     /// mappings are dropped. Returns the removed connections (in their original,
     /// pre-archive form) so callers can emit close events or export them.
     pub fn cleanup(&self, now: SystemTime) -> Vec<Connection> {
+        let _lifecycle = self
+            .lifecycle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut removed: Vec<Connection> = Vec::new();
         let mut removed_keys: Vec<ConnectionKey> = Vec::new();
         let mut to_archive: Vec<(HistoricKey, Connection)> = Vec::new();
@@ -383,6 +391,22 @@ impl ConnectionTracker {
             .collect()
     }
 
+    /// Inspect the active and historic maps as one consistent retained view.
+    ///
+    /// Cleanup cannot move a connection between the maps while `inspect` is
+    /// running. Packet updates may still update active rows through DashMap's
+    /// per-entry locking.
+    pub fn with_retained_sources<R>(
+        &self,
+        inspect: impl FnOnce(&ConnectionMap, &HistoricMap) -> R,
+    ) -> R {
+        let _lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inspect(&self.connections, &self.historic)
+    }
+
     /// Number of active connections.
     pub fn len(&self) -> usize {
         self.connections.len()
@@ -400,6 +424,10 @@ impl ConnectionTracker {
 
     /// Drop all active and historic connections and reset RTT/QUIC state.
     pub fn clear(&self) {
+        let _lifecycle = self
+            .lifecycle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.connections.clear();
         self.active_count.store(0, Ordering::Relaxed);
         self.historic.clear();
@@ -582,6 +610,49 @@ mod tests {
             1,
             "removed conn archived as historic"
         );
+    }
+
+    #[test]
+    fn retained_source_view_is_atomic_across_cleanup() {
+        let tracker = std::sync::Arc::new(ConnectionTracker::new());
+        tracker.ingest(&parse(&udp_frame(40000, 53)));
+
+        let (active_scanned_tx, active_scanned_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let reader_tracker = std::sync::Arc::clone(&tracker);
+        let reader = std::thread::spawn(move || {
+            reader_tracker.with_retained_sources(|active, historic| {
+                let active_count = active.iter().count();
+                active_scanned_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                active_count + historic.iter().count()
+            })
+        });
+
+        active_scanned_rx.recv().unwrap();
+        let (cleanup_started_tx, cleanup_started_rx) = std::sync::mpsc::channel();
+        let (cleanup_done_tx, cleanup_done_rx) = std::sync::mpsc::channel();
+        let cleanup_tracker = std::sync::Arc::clone(&tracker);
+        let cleanup = std::thread::spawn(move || {
+            cleanup_started_tx.send(()).unwrap();
+            let removed = cleanup_tracker.cleanup(SystemTime::now() + Duration::from_secs(86_400));
+            cleanup_done_tx.send(removed.len()).unwrap();
+        });
+
+        cleanup_started_rx.recv().unwrap();
+        assert!(
+            cleanup_done_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "cleanup must wait for the retained source view"
+        );
+        release_tx.send(()).unwrap();
+
+        assert_eq!(reader.join().unwrap(), 1);
+        assert_eq!(cleanup_done_rx.recv().unwrap(), 1);
+        cleanup.join().unwrap();
+        assert_eq!(tracker.len(), 0);
+        assert_eq!(tracker.historic_len(), 1);
     }
 
     #[test]

@@ -34,6 +34,6 @@ pub mod network;
 // `rustnet_core::network::types`. The `network` module remains the canonical
 // home and keeps internal `crate::network::*` paths working unchanged.
 pub use network::{
-    bogon, dns, dpi, geoip, interface_stats, link_layer, merge, oui, parser, protocol, services,
-    tracker, types,
+    bogon, dns, dpi, geoip, interface_stats, link_layer, merge, oui, parser, process_activity,
+    protocol, services, tracker, types,
 };

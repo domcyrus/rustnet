@@ -10,8 +10,90 @@ use ratatui::layout::Rect;
 
 use crate::network::types::{Connection, Protocol};
 
+/// Traffic direction emphasized by the process activity view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActivityDirection {
+    #[default]
+    Egress,
+    Ingress,
+}
+
+impl ActivityDirection {
+    pub fn toggle(self) -> Self {
+        match self {
+            Self::Egress => Self::Ingress,
+            Self::Ingress => Self::Egress,
+        }
+    }
+
+    pub fn display_name_with_rate(self) -> &'static str {
+        match self {
+            Self::Egress => "Egress (TX)",
+            Self::Ingress => "Ingress (RX)",
+        }
+    }
+
+    pub fn rate_label(self) -> &'static str {
+        match self {
+            Self::Egress => "TX",
+            Self::Ingress => "RX",
+        }
+    }
+}
+
+/// Sort modes for the process activity view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActivitySort {
+    #[default]
+    RetainedTx,
+    WindowTx,
+    CurrentTx,
+    PeakTx,
+    Connections,
+    Destinations,
+    Process,
+}
+
+impl ActivitySort {
+    pub fn next(self) -> Self {
+        match self {
+            Self::RetainedTx => Self::WindowTx,
+            Self::WindowTx => Self::CurrentTx,
+            Self::CurrentTx => Self::PeakTx,
+            Self::PeakTx => Self::Connections,
+            Self::Connections => Self::Destinations,
+            Self::Destinations => Self::Process,
+            Self::Process => Self::RetainedTx,
+        }
+    }
+
+    pub fn display_name(self, direction: ActivityDirection) -> &'static str {
+        match self {
+            Self::RetainedTx => match direction {
+                ActivityDirection::Egress => "Retained TX",
+                ActivityDirection::Ingress => "Retained RX",
+            },
+            Self::WindowTx => match direction {
+                ActivityDirection::Egress => "60s TX",
+                ActivityDirection::Ingress => "60s RX",
+            },
+            Self::CurrentTx => match direction {
+                ActivityDirection::Egress => "TX Rate",
+                ActivityDirection::Ingress => "RX Rate",
+            },
+            Self::PeakTx => match direction {
+                ActivityDirection::Egress => "Peak TX",
+                ActivityDirection::Ingress => "Peak RX",
+            },
+            Self::Connections => "Connections",
+            Self::Destinations => "Destinations",
+            Self::Process => "Process",
+        }
+    }
+}
+
 /// Scroll state for a pane that only learns its content and viewport
-/// size at render time (Details info panes, Help text, Interfaces
+/// size at render time (Details info panes, Help text, Activity interface
 /// table). Event handlers mutate `offset`; the draw path reports the
 /// real maximum through [`Self::clamp_for_render`] — a `Cell`, because
 /// drawing only holds `&UIState` — so the next scroll input clamps
@@ -256,8 +338,17 @@ pub struct UIState {
     pub details_scroll: PaneScroll,
     /// Scroll state for the Help tab text
     pub help_scroll: PaneScroll,
-    /// Scroll state for the Interfaces table
+    /// Scroll state for the Activity tab's interface table
     pub interfaces_scroll: PaneScroll,
+    /// Activity tab subview. False shows process activity; true shows the
+    /// original detailed interface table.
+    pub activity_show_interfaces: bool,
+    /// Process traffic direction emphasized by Activity.
+    pub activity_direction: ActivityDirection,
+    /// Active process-activity sort mode.
+    pub activity_sort: ActivitySort,
+    /// Sort direction for the process-activity table.
+    pub activity_sort_ascending: bool,
 }
 
 impl Default for UIState {
@@ -291,6 +382,10 @@ impl Default for UIState {
             details_scroll: PaneScroll::default(),
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
+            activity_show_interfaces: false,
+            activity_direction: ActivityDirection::default(),
+            activity_sort: ActivitySort::default(),
+            activity_sort_ascending: false,
         }
     }
 }
@@ -609,6 +704,9 @@ impl UIState {
         self.filter_cursor_position = 0;
         self.show_historic = false;
         self.scroll_offset = 0;
+        self.activity_sort = ActivitySort::default();
+        self.activity_sort_ascending = false;
+        self.activity_direction = ActivityDirection::default();
         self.grouped_scroll_offset = 0;
     }
 
@@ -994,6 +1092,17 @@ mod tests {
         assert_eq!(scroll.clamp_for_render(10), 10);
         scroll.scroll_to_top();
         assert_eq!(scroll.clamp_for_render(10), 0);
+    }
+
+    #[test]
+    fn activity_direction_keeps_semantic_and_counter_names_paired() {
+        let direction = ActivityDirection::Egress;
+        assert_eq!(direction.display_name_with_rate(), "Egress (TX)");
+        assert_eq!(direction.toggle(), ActivityDirection::Ingress);
+        assert_eq!(
+            ActivitySort::RetainedTx.display_name(ActivityDirection::Ingress),
+            "Retained RX"
+        );
     }
 
     #[test]

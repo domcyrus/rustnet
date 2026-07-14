@@ -2,7 +2,7 @@
 source: src/ui/mod.rs
 expression: output
 ---
- rustnet    1 Overview   2 Details   3 Interfaces   4 Graph   5 Help                                                                        
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                          
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
   Process                  Remote                       Local               Service    App                          State            Rx↓/Tx↑
                                                                                                                                             

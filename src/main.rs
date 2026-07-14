@@ -1102,7 +1102,7 @@ where
                             // numeric-jump convention used by htop, tmux, etc.).
                             // Tab indices match `TAB_TITLES` in
                             // `ui::widgets::tabs_bar`: Overview, Details,
-                            // Interfaces, Graph, Help.
+                            // Activity, Graph, Help.
                             (KeyCode::Char('1'), KeyModifiers::NONE) => ui_state.jump_to_tab(0),
                             (KeyCode::Char('2'), KeyModifiers::NONE) => ui_state.jump_to_tab(1),
                             (KeyCode::Char('3'), KeyModifiers::NONE) => ui_state.jump_to_tab(2),
@@ -1122,7 +1122,7 @@ where
 
                             // x and Esc keep cross-tab fallbacks here so
                             // clear / filter-clear / tab-back still work
-                            // from Details / Interfaces / Graph / Help
+                            // from Details / Activity / Graph / Help
                             // (OverviewTab only claims them on Overview).
                             (KeyCode::Char('x'), _)
                                 if clear_all_with_confirmation(&mut ui_state, app) =>

@@ -16,6 +16,7 @@ pub mod link_layer;
 pub mod merge;
 pub mod oui;
 pub mod parser;
+pub mod process_activity;
 pub mod protocol;
 pub mod services;
 pub mod tracker;

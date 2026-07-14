@@ -1,0 +1,45 @@
+---
+source: src/ui/mod.rs
+assertion_line: 1062
+expression: "render_activity(&app, ActivityDirection::Ingress)"
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                                    
+─────────────────────────────────────━━━━━━━━━━───────────────────────────────────────────────────────────────────────────────────────────────────────
+▎ Traffic Pulse                                                                                                                                       
+TX now 2.88 MB/s   60s captured 5.85 MB / eth0 8.00 MB   73.1% observed                                                                               
+TX 60s coverage ███████████████████████████████████████████████████████████████████████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    
+RX now 1.70 MB/s   60s captured 3.67 MB / eth0 4.00 MB   91.8% observed                                                                               
+RX 60s coverage ███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████░░░░░░░░░░░    
+retained TX 5.85 MB   RX 3.67 MB                                                                                                                      
+process attribution TX 100.0%  unknown 0 B   RX 100.0%  unknown 0 B                                                                                   
+60s coverage = captured ÷ interface  |  Retained = active + recent closed  |  Attribution = mapped to PID/name                                        
+                                                                                                                                                      
+                                                                                                                                                      
+▎ Top Processes: Ingress (RX)  Retained RX ↓                                                                                                          
+Process                  Pulse               RX now     Peak RX    60s % Iface 60s      RX 60s    Retained     Conns   Remote Top remote peer         
+firefox (2001)           ████████████░░   1.43 MB/s   1.43 MB/s    84.1%     77.2%     3.09 MB     3.09 MB       1/1        1 140.82.121.4:443        
+sshd (1500)              ██░░░░░░░░░░░░ 244.14 KB/s 244.14 KB/s    14.1%     12.9%   529.30 KB   529.30 KB       1/1        1 10.0.0.5:51022          
+systemd-resolved (820)   ░░░░░░░░░░░░░░  31.25 KB/s  31.25 KB/s     1.8%      1.6%    65.82 KB    65.82 KB       1/1        1 1.1.1.1:53              
+curl (9876)              ░░░░░░░░░░░░░░           -           -     0.0%      0.0%     1.50 KB     1.50 KB       1/1        1 151.101.1.195:443       
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+▎ Ingress (RX) Share (60s)                                                             ▎ Interface Pulse: RX                                          
+firefox (2001)     █████████████████████████████████████████████████░░░░░░░░░  84.1%   eth0       ████████████████████████████████████ ↑4.0M ↓2.0M    
+sshd (1500)        ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  14.1%                                                                  
+systemd-resolved … █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   1.8%                                                                  
+curl (9876)        ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   0.0%                                                                  
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+                                                                                                                                                      
+ 'h' help | 1-5 jump | Tab/[/] cycle | 'd' TX/RX | 's' sort | 'S' order | 'i' interfaces | Esc back

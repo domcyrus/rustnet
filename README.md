@@ -82,12 +82,14 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for technical information.
 </details>
 
 <details>
-<summary><b>Interface Statistics Monitoring</b></summary>
+<summary><b>Process Activity and Interface Monitoring</b></summary>
 
-RustNet provides real-time network interface statistics across all supported platforms:
+RustNet combines process-level traffic accounting with real-time network interface statistics:
 
 - **Overview Tab**: Shows active interfaces with current rates, errors, and drops
-- **Interfaces Tab** (press `3`): Detailed table with comprehensive metrics for all interfaces
+- **Activity Tab** (press `3`): Ranks processes by Egress (TX) or Ingress (RX), including retained and rolling traffic, rates, shares, connections, and destinations
+- **Security Workflow**: Sort by Egress, identify an unexpected uploader, then inspect its top remote peer and retained traffic even after the connection closes
+- **Interface Details** (press `i` on Activity): Shows the original comprehensive metrics for every interface
 - **Cross-Platform**: Linux (sysfs), macOS/FreeBSD (getifaddrs), Windows (GetIfTable2 API)
 - **Smart Filtering**: Windows automatically excludes virtual/filter adapters
 
@@ -112,7 +114,7 @@ Stats are collected every 2 seconds in a background thread with minimal performa
   </tr>
   <tr>
     <td align="center"><strong>Graph</strong><br>Traffic chart, app distribution, top processes<br><img src="./assets/screenshots/graph.png" width="400"></td>
-    <td align="center"><strong>Interfaces</strong><br>Per-interface RX/TX history with errors and drops<br><img src="./assets/screenshots/interfaces.png" width="400"></td>
+    <td align="center"><strong>Activity</strong><br>Process egress/ingress, 60-second coverage, attribution, and remote peers<br><img src="./assets/screenshots/interfaces.png" width="400"></td>
   </tr>
 </table>
 
@@ -209,21 +211,21 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `x` | Clear all connections (press twice to confirm) |
 | `Tab` or `]` | Next tab |
 | `Shift+Tab` or `[` | Previous tab |
-| `1`–`5` | Jump to Overview / Details / Interfaces / Graph / Help |
+| `1`–`5` | Jump to Overview / Details / Activity / Graph / Help |
 | `↑/k` `↓/j` | Navigate up/down |
 | `g` `G` | Jump to first/last connection |
 | `Enter` | View connection details |
 | `Esc` | Go back or clear filter |
 | `c` | Copy remote address |
 | `p` | Toggle service names/ports |
-| `d` | Toggle hostnames/IPs |
+| `d` | Toggle hostnames/IPs on Overview or Egress/Ingress on Activity |
 | `s` `S` | Cycle sort columns / toggle direction |
 | `a` | Toggle process grouping |
 | `Space` | Expand/collapse process group |
 | `←/→` or `h/l` | Collapse/expand group |
 | `PageUp/PageDown` or `Ctrl+B/F` | Page navigation |
 | `t` | Toggle historic (closed) connections |
-| `i` | Toggle the System info sidebar |
+| `i` | Toggle System info on Overview or interface details on Activity |
 | `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |
 | `h` | Toggle help |

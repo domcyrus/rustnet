@@ -80,12 +80,14 @@ cargo build --release --no-default-features
 </details>
 
 <details>
-<summary><b>网络接口统计监控</b></summary>
+<summary><b>进程活动与网络接口监控</b></summary>
 
-RustNet 在所有支持的平台上提供实时的网络接口统计：
+RustNet 将进程级流量计量与实时网络接口统计整合在一起：
 
 - **概览标签页**：展示当前活跃的接口，包含速率、错误数与丢包数
-- **接口标签页**(按 `3`)：以详细表格呈现各接口的完整指标
+- **活动标签页**(按 `3`)：按出站 (TX) 或入站 (RX) 查看进程排名，包括保留流量与滚动流量、速率、占比、连接数和目的地
+- **安全工作流**：按出站流量排序，找出异常上传进程，然后检查其流量最大的远端对端；即使连接关闭，仍可查看保留流量
+- **接口详情**(在活动标签页按 `i`)：显示原有的各接口完整指标表格
 - **跨平台**：Linux(sysfs)、macOS / FreeBSD(getifaddrs)、Windows(GetIfTable2 API)
 - **智能过滤**：Windows 上自动剔除虚拟 / 过滤类适配器
 
@@ -110,7 +112,7 @@ RustNet 在所有支持的平台上提供实时的网络接口统计：
   </tr>
   <tr>
     <td align="center"><strong>图表</strong><br>流量曲线、应用分布、Top 进程<br><img src="./assets/screenshots/graph.png" width="400"></td>
-    <td align="center"><strong>接口</strong><br>各接口 RX / TX 历史曲线、错误与丢包<br><img src="./assets/screenshots/interfaces.png" width="400"></td>
+    <td align="center"><strong>活动</strong><br>进程出站/入站、60 秒覆盖率、归属信息与远端对端<br><img src="./assets/screenshots/interfaces.png" width="400"></td>
   </tr>
 </table>
 
@@ -205,21 +207,21 @@ rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 | `x` | 清空所有连接(连按两次确认) |
 | `Tab` 或 `]` | 下一个标签页 |
 | `Shift+Tab` 或 `[` | 上一个标签页 |
-| `1`–`5` | 直接跳转到 Overview / Details / Interfaces / Graph / Help |
+| `1`–`5` | 直接跳转到 Overview / Details / Activity / Graph / Help |
 | `↑/k` `↓/j` | 上下移动 |
 | `g` `G` | 跳到第一条 / 最后一条连接 |
 | `Enter` | 查看连接详情 |
 | `Esc` | 返回或清除过滤器 |
 | `c` | 复制远端地址 |
 | `p` | 在服务名与端口之间切换 |
-| `d` | 在主机名与 IP 之间切换 |
+| `d` | 在概览中切换主机名/IP，或在活动标签页切换出站/入站 |
 | `s` `S` | 切换排序列 / 切换排序方向 |
 | `a` | 切换按进程分组 |
 | `Space` | 展开 / 折叠进程分组 |
 | `←/→` 或 `h/l` | 折叠 / 展开当前分组 |
 | `PageUp/PageDown` 或 `Ctrl+B/F` | 翻页 |
 | `t` | 切换是否显示历史（已关闭）连接 |
-| `i` | 切换 System 信息侧边栏 |
+| `i` | 在概览中切换 System 信息，或在活动标签页切换接口详情 |
 | `r` | 重置视图(分组、排序、过滤) |
 | `/` | 进入过滤模式 |
 | `h` | 切换帮助 |
