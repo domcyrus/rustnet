@@ -1,10 +1,8 @@
 name: Security audit
 
-# Scheduled advisory check against the committed Cargo.lock. PR/push CI
-# (rust.yml) already runs the full `cargo deny check`, but new RustSec
-# advisories can be published against an unchanged lockfile — this catches
-# those without requiring a push. Licenses/bans/sources can only change with
-# a lockfile change, so the scheduled job checks advisories only.
+# Scheduled dependency check against the committed Cargo.lock. PR/push CI
+# (rust.yml) already runs `cargo audit`, but new RustSec advisories and yanks
+# can affect an unchanged lockfile. This catches them without requiring a push.
 
 on:
   schedule:
@@ -19,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
       - name: Check RustSec advisories
-        uses: EmbarkStudios/cargo-deny-action@bb137d7af7e4fb67e5f82a49c4fce4fad40782fe # v2.0.20
-        with:
-          command: check advisories
+        run: cargo audit
