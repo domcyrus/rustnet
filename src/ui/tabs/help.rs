@@ -256,12 +256,16 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
             Span::raw("Active connection (< 75% of timeout)"),
         ]),
         Line::from(vec![
-            Span::styled("  Yellow ", theme::fg(theme::key())),
-            Span::raw("Stale connection (75-90% of timeout)"),
+            Span::styled("  Yellow", theme::fg(theme::expiry_glow(0.0))),
+            Span::styled(" → ", theme::fg(theme::muted())),
+            Span::styled("Orange", theme::fg(theme::expiry_glow(0.5))),
+            Span::styled(" → ", theme::fg(theme::muted())),
+            Span::styled("Red ", theme::fg(theme::expiry_glow(1.0))),
+            Span::raw("Connection nearing timeout (75-100%; intensifies toward removal)"),
         ]),
         Line::from(vec![
-            Span::styled("  Red ", theme::fg(theme::err())),
-            Span::raw("Critical - will be removed soon (> 90% of timeout)"),
+            Span::styled("  Gray ", theme::historic_row()),
+            Span::raw("Historic (closed) connection"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(

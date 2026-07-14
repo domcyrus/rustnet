@@ -49,7 +49,7 @@ pub(in crate::ui) fn draw_status_bar(
         } else {
             default_status_line(ui_state).to_string()
         }
-    } else if !ui_state.filter_query.is_empty() {
+    } else if ui_state.has_active_filter() {
         format!(
             " 'h' help | 1-5 jump | Tab/[/] cycle | Showing {} filtered connections (Esc to clear) ",
             connection_count

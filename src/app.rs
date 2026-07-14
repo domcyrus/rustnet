@@ -47,7 +47,7 @@ use crate::network::platform::MacOSStatsProvider as PlatformStatsProvider;
 #[cfg(target_os = "windows")]
 use crate::network::platform::WindowsStatsProvider as PlatformStatsProvider;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Sandbox status information for UI display
 #[cfg(any(
@@ -542,6 +542,61 @@ impl Default for Config {
 #[derive(Default)]
 pub struct AppOutputHandles {
     pub pcapng_export: Option<File>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ConnectionCounts {
+    pub tcp: usize,
+    pub udp: usize,
+    pub active: usize,
+    pub historic: usize,
+    pub processes: usize,
+    pub tcp_retransmits: u64,
+    pub tcp_out_of_order: u64,
+    pub tcp_fast_retransmits: u64,
+    pub tcp_flows_with_analytics: usize,
+}
+
+impl ConnectionCounts {
+    pub(crate) fn from_connections<'a>(
+        connections: impl IntoIterator<Item = &'a Connection>,
+    ) -> Self {
+        let mut counts = Self::default();
+        let mut processes: HashSet<&str> = HashSet::new();
+
+        for connection in connections {
+            if let Some(analytics) = &connection.tcp_analytics {
+                counts.tcp_retransmits += analytics.retransmit_count;
+                counts.tcp_out_of_order += analytics.out_of_order_count;
+                counts.tcp_fast_retransmits += analytics.fast_retransmit_count;
+                counts.tcp_flows_with_analytics += 1;
+            }
+
+            if connection.is_historic {
+                counts.historic += 1;
+                continue;
+            }
+
+            counts.active += 1;
+            match connection.protocol {
+                Protocol::Tcp => counts.tcp += 1,
+                Protocol::Udp => counts.udp += 1,
+                _ => {}
+            }
+            processes.insert(connection.process_name.as_deref().unwrap_or("<unknown>"));
+        }
+
+        counts.processes = processes.len();
+        counts
+    }
+}
+
+fn is_ptr_lookup(connection: &Connection) -> bool {
+    matches!(
+        connection.dpi_info.as_ref().map(|dpi| &dpi.application),
+        Some(ApplicationProtocol::Dns(dns_info))
+            if dns_info.query_type == Some(DnsQueryType::PTR)
+    )
 }
 
 /// Application statistics
@@ -2346,6 +2401,17 @@ impl App {
         self.snapshot_generation.load(Ordering::Acquire)
     }
 
+    /// Count the unfiltered UI snapshot without cloning connection records.
+    pub(crate) fn get_connection_counts(&self) -> ConnectionCounts {
+        let hide_ptr_lookups = self.dns_resolver.is_some() && !self.config.show_ptr_lookups;
+        let snapshot = self.connections_snapshot.read().unwrap();
+        ConnectionCounts::from_connections(
+            snapshot
+                .iter()
+                .filter(|connection| !hide_ptr_lookups || !is_ptr_lookup(connection)),
+        )
+    }
+
     /// Get filtered connections for UI display
     pub fn get_filtered_connections(&self, filter_query: &str) -> Vec<Connection> {
         // Filter out DNS PTR queries/responses when reverse DNS is enabled
@@ -2363,11 +2429,7 @@ impl App {
             .iter()
             .filter(|conn| {
                 // Hide DNS PTR queries/responses (used for reverse DNS lookups)
-                if hide_ptr_lookups
-                    && let Some(ref dpi) = conn.dpi_info
-                    && let ApplicationProtocol::Dns(ref dns_info) = dpi.application
-                    && dns_info.query_type == Some(DnsQueryType::PTR)
-                {
+                if hide_ptr_lookups && is_ptr_lookup(conn) {
                     return false;
                 }
                 filter.as_ref().is_none_or(|f| f.matches(conn))

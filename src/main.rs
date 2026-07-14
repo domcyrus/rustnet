@@ -762,7 +762,7 @@ where
             last_tick = std::time::Instant::now();
         }
         if needs_data_refresh || (tick_elapsed && snapshot_generation != last_seen_generation) {
-            connections = if ui_state.filter_query.is_empty() && !ui_state.filter_mode {
+            connections = if !ui_state.has_active_filter() && !ui_state.filter_mode {
                 app.get_connections()
             } else {
                 app.get_filtered_connections(&ui_state.filter_query)
@@ -854,7 +854,7 @@ where
         // margin (2) + status bar (1) = 6, plus the filter line (1) when a
         // filter is being edited or active.
         if let Ok(size) = terminal.size() {
-            let chrome = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
+            let chrome = if ui_state.filter_mode || ui_state.has_active_filter() {
                 7
             } else {
                 6
