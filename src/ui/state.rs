@@ -416,6 +416,11 @@ pub fn compute_scroll_offset(
 }
 
 impl UIState {
+    /// Whether the query changes the displayed connection set.
+    pub fn has_active_filter(&self) -> bool {
+        !self.filter_query.trim().is_empty()
+    }
+
     /// Set the selected connection key, resetting the Details pane
     /// scroll when the selection actually changes so a newly selected
     /// record always starts at the top.
@@ -612,6 +617,9 @@ impl UIState {
 
     /// Exit filter mode
     pub fn exit_filter_mode(&mut self) {
+        if !self.has_active_filter() {
+            self.filter_query.clear();
+        }
         self.filter_mode = false;
         self.filter_cursor_position = 0;
     }
@@ -1003,6 +1011,23 @@ mod tests {
         );
         connection.process_name = Some(process.to_string());
         connection
+    }
+
+    #[test]
+    fn whitespace_only_filter_is_inactive_and_cleared_on_exit() {
+        let mut ui = UIState {
+            filter_mode: true,
+            filter_query: "   ".to_string(),
+            filter_cursor_position: 3,
+            ..UIState::default()
+        };
+
+        assert!(!ui.has_active_filter());
+        ui.exit_filter_mode();
+
+        assert!(!ui.filter_mode);
+        assert!(ui.filter_query.is_empty());
+        assert_eq!(ui.filter_cursor_position, 0);
     }
 
     #[test]

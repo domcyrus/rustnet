@@ -158,6 +158,13 @@ const MUTED_WAVE_STOPS: [(u8, u8, u8); 5] = [
     (0x84, 0x8D, 0x9C),
     (0x9C, 0xA3, 0xAF), // light gray
 ];
+const EXPIRY_GLOW_STOPS: [(u8, u8, u8); 5] = [
+    (0xFA, 0xCC, 0x15), // bright yellow warning
+    (0xFB, 0xBF, 0x24),
+    (0xFB, 0x92, 0x3C),
+    (0xF8, 0x71, 0x71),
+    (0xFF, 0x2D, 0x55), // vivid red at removal
+];
 
 fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
     (a as f64 + (b as f64 - a as f64) * t).round() as u8
@@ -208,6 +215,10 @@ pub fn special_wave(t: f64) -> Color {
 /// Gray gradient for secondary/inactive bars.
 pub fn muted_wave(t: f64) -> Color {
     five_stop(&MUTED_WAVE_STOPS, t)
+}
+/// Yellow-to-red glow for connections nearing their removal timeout.
+pub fn expiry_glow(t: f64) -> Color {
+    five_stop(&EXPIRY_GLOW_STOPS, t)
 }
 
 // --- Protocol aliases ---

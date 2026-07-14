@@ -228,7 +228,7 @@ pub fn draw(
 
     use widgets::filter_input::FILTER_INPUT_HEIGHT;
     use widgets::tabs_bar::TABS_BAR_HEIGHT;
-    let chunks = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
+    let chunks = if ui_state.filter_mode || ui_state.has_active_filter() {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -252,7 +252,7 @@ pub fn draw(
     draw_tabs(f, ui_state, chunks[0], click_regions);
 
     let content_area = chunks[1];
-    let (filter_area, status_area) = if ui_state.filter_mode || !ui_state.filter_query.is_empty() {
+    let (filter_area, status_area) = if ui_state.filter_mode || ui_state.has_active_filter() {
         (Some(chunks[2]), chunks[3])
     } else {
         (None, chunks[2])
@@ -897,13 +897,117 @@ mod snapshot_tests {
         ]
     }
 
-    // Overview snapshots are intentionally omitted: the stats sidebar
-    // renders a Security panel whose text comes from platform-specific
-    // code paths (Seatbelt on macOS, Landlock on Linux, Restricted Token
-    // on Windows) plus the running user's UID, making byte-stable
-    // snapshots non-portable. Splitting the Security panel into its own
-    // function would let us snapshot it with a stub `SandboxInfo`, then
-    // add overview snapshots back.
+    // Full Overview snapshots omit the System sidebar because its Security
+    // text follows platform-specific code paths and includes the running
+    // user's UID. The connection canvas remains portable and is covered in
+    // both flat and process-aggregate modes below.
+
+    fn overview_connections() -> Vec<Connection> {
+        let mut connections = sample_connections();
+        connections[0].current_incoming_rate_bps = 3_200_000.0;
+        connections[0].current_outgoing_rate_bps = 950_000.0;
+        connections[1].current_incoming_rate_bps = 48_000.0;
+        connections[1].current_outgoing_rate_bps = 84_000.0;
+        connections[2].current_incoming_rate_bps = 420_000.0;
+        connections[2].current_outgoing_rate_bps = 1_800_000.0;
+        connections
+    }
+
+    fn render_overview(grouped: bool) -> String {
+        let app = test_app();
+        let connections = overview_connections();
+        app.set_connections_snapshot_for_test(connections.clone());
+        let ui_state = UIState {
+            grouping_enabled: grouped,
+            show_system_panel: false,
+            visible_rows: 18,
+            ..Default::default()
+        };
+        let grouped_rows =
+            grouped.then(|| compute_grouped_rows(&connections, &ui_state.expanded_groups));
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        render(140, 26, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                grouped_rows.as_deref(),
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw overview");
+        })
+    }
+
+    #[test]
+    fn overview_live_connections() {
+        insta::assert_snapshot!(render_overview(false));
+    }
+
+    #[test]
+    fn overview_process_aggregate() {
+        insta::assert_snapshot!(render_overview(true));
+    }
+
+    #[test]
+    fn overview_statistics_count_distinct_active_processes() {
+        let app = test_app();
+        let mut connections = overview_connections();
+        connections[3].process_name = Some("firefox".to_string());
+        app.set_connections_snapshot_for_test(connections.clone());
+        let ui_state = UIState::default();
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw overview statistics");
+        });
+
+        assert!(output.contains("Processes: 3"));
+    }
+
+    #[test]
+    fn overview_filter_count_does_not_change_statistics_totals() {
+        let app = test_app();
+        let connections = overview_connections();
+        app.set_connections_snapshot_for_test(connections.clone());
+        let filtered = vec![connections[0].clone()];
+        let ui_state = UIState {
+            filter_query: "process:firefox".to_string(),
+            ..Default::default()
+        };
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &filtered,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw filtered overview statistics");
+        });
+
+        assert!(output.contains("Live Connections · 1 shown"));
+        assert!(output.contains("Processes: 4"));
+        assert!(output.contains("Total Connections: 4"));
+    }
 
     #[test]
     fn details_tab_tcp_https() {

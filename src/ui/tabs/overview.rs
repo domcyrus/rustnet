@@ -15,9 +15,9 @@ use ratatui::{
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use log::{debug, info};
 
-use crate::app::{App, AppStats};
+use crate::app::{App, AppStats, ConnectionCounts};
 use crate::network::dns::DnsResolver;
-use crate::network::types::{Connection, Protocol};
+use crate::network::types::Connection;
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER, SortColumn, UIState, clear_all_with_confirmation,
@@ -407,7 +407,12 @@ fn draw_overview(
     }
 
     if show_system_panel {
-        draw_stats_panel(f, ctx.connections, ctx.stats, ctx.app, chunks[1])?;
+        let connection_counts = if ctx.ui_state.has_active_filter() {
+            ctx.app.get_connection_counts()
+        } else {
+            ConnectionCounts::from_connections(ctx.connections)
+        };
+        draw_stats_panel(f, connection_counts, ctx.stats, ctx.app, chunks[1])?;
     }
 
     Ok(())
@@ -426,7 +431,11 @@ fn draw_connections_list(
     let area = section_header(
         f,
         area,
-        connections_title(ui_state, false, connections.len()),
+        connections_title(
+            ui_state,
+            false,
+            ui_state.has_active_filter().then_some(connections.len()),
+        ),
     );
 
     // Virtualization window first: the Remote column sizes itself to the
@@ -487,26 +496,31 @@ fn draw_connections_list(
     }
 }
 
-/// Shared section title for the flat and grouped connection tables —
-/// same bold base, same muted metadata, so toggling grouping reads as
-/// a view change rather than a different screen.
-fn connections_title<'a>(ui_state: &UIState, grouped: bool, shown: usize) -> Line<'a> {
-    let mut base = if ui_state.show_historic {
-        "Active + Historic Connections".to_string()
-    } else {
-        "Active Connections".to_string()
+/// Shared section title for the flat and grouped connection tables. The
+/// visual grammar stays consistent while aggregate mode names its view.
+fn connections_title<'a>(
+    ui_state: &UIState,
+    grouped: bool,
+    filtered_count: Option<usize>,
+) -> Line<'a> {
+    let base = match (grouped, ui_state.show_historic) {
+        (true, true) => "Process Aggregate · active + historic",
+        (true, false) => "Process Aggregate",
+        (false, true) => "Live + Historic Connections",
+        (false, false) => "Live Connections",
     };
-    if grouped {
-        base.push_str(" · Grouped by Process");
+    let mut spans = vec![Span::styled(
+        format!(" {base}"),
+        Style::default().add_modifier(Modifier::BOLD),
+    )];
+    if let Some(shown) = filtered_count {
+        let counter = if grouped { "processes" } else { "shown" };
+        spans.push(Span::styled(
+            format!(" · {shown} {counter}"),
+            theme::fg(theme::muted()),
+        ));
     }
-    let counter = if grouped { "processes" } else { "shown" };
-    let mut spans = vec![
-        Span::styled(
-            format!(" {base}"),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!(" · {shown} {counter}"), theme::fg(theme::muted())),
-    ];
+
     if ui_state.sort_column != SortColumn::CreatedAt {
         let direction = if ui_state.sort_ascending {
             "↑"
@@ -539,10 +553,12 @@ fn draw_grouped_connections_list(
     click_regions: &mut ClickableRegions,
 ) {
     // Borderless: one title row, then the table (same chrome as flat).
-    let group_count = grouped_rows
-        .iter()
-        .filter(|row| matches!(row, GroupedRow::Group { .. }))
-        .count();
+    let group_count = ui_state.has_active_filter().then(|| {
+        grouped_rows
+            .iter()
+            .filter(|row| matches!(row, GroupedRow::Group { .. }))
+            .count()
+    });
     let area = section_header(f, area, connections_title(ui_state, true, group_count));
 
     // Virtualization: only build Row objects for the visible window
@@ -641,9 +657,8 @@ fn draw_grouped_connections_list(
     }
 }
 
-/// A process-group header row rendered on the shared grid: ▾/▸ + name +
-/// count in the Process column, TCP/UDP breakdown in State, aggregate
-/// bandwidth in the Bandwidth column; other cells stay empty.
+/// A process-group header row rendered on the shared grid: name and count in
+/// Process, protocol totals in State, and aggregate rates in Bandwidth.
 fn group_header_row<'a>(
     columns: &[Column],
     process_name: &str,
@@ -716,7 +731,7 @@ fn render_section_separator(f: &mut Frame, area: Rect) {
 
 fn draw_stats_panel(
     f: &mut Frame,
-    connections: &[Connection],
+    connection_counts: ConnectionCounts,
     stats: &AppStats,
     app: &App,
     area: Rect,
@@ -950,7 +965,7 @@ fn draw_stats_panel(
     // 1 line for the "Security" heading + one line per content line.
     let security_height = 1u16 + security_text.len() as u16;
 
-    // The Statistics block is normally 13 lines. When process detection is
+    // The Statistics block is normally 14 lines. When process detection is
     // degraded we render the warning as two indented lines (header +
     // reason) so the often-long reason text isn't crammed onto the same
     // line as "Process Detection: …" — which would truncate on a narrow
@@ -959,9 +974,9 @@ fn draw_stats_panel(
     let pcap_export_enabled = app.is_pcap_export_enabled();
     let pcapng_export_enabled = app.is_pcapng_export_enabled();
     let stats_height: u16 = if app.get_process_detection_status().is_degraded {
-        15
+        16
     } else {
-        13
+        14
     } + if pcap_export_enabled { 4 } else { 0 }
         + if pcapng_export_enabled { 7 } else { 0 };
 
@@ -980,18 +995,6 @@ fn draw_stats_panel(
             Constraint::Min(0),               // Traffic + interface details
         ])
         .split(inner_area);
-
-    // Connection statistics (only count active connections, not historic)
-    let tcp_count = connections
-        .iter()
-        .filter(|c| !c.is_historic && c.protocol == Protocol::Tcp)
-        .count();
-    let udp_count = connections
-        .iter()
-        .filter(|c| !c.is_historic && c.protocol == Protocol::Udp)
-        .count();
-    let active_count = connections.iter().filter(|c| !c.is_historic).count();
-    let historic_count = connections.iter().filter(|c| c.is_historic).count();
 
     let interface_name = app
         .get_current_interface()
@@ -1050,13 +1053,14 @@ fn draw_stats_panel(
     // Add remaining stats
     conn_stats_text.extend([
         Line::from(""),
-        Line::from(format!("TCP Connections: {}", tcp_count)),
-        Line::from(format!("UDP Connections: {}", udp_count)),
-        Line::from(format!("Total Connections: {}", active_count)),
+        Line::from(format!("TCP Connections: {}", connection_counts.tcp)),
+        Line::from(format!("UDP Connections: {}", connection_counts.udp)),
+        Line::from(format!("Processes: {}", connection_counts.processes)),
+        Line::from(format!("Total Connections: {}", connection_counts.active)),
     ]);
-    if historic_count > 0 {
+    if connection_counts.historic > 0 {
         conn_stats_text.push(Line::from(Span::styled(
-            format!("Historic: {}", historic_count),
+            format!("Historic: {}", connection_counts.historic),
             theme::fg(theme::muted()),
         )));
     }
@@ -1167,20 +1171,6 @@ fn draw_stats_panel(
     render_section_separator(f, chunks[1]);
 
     // Network statistics (TCP analytics)
-    let mut tcp_retransmits: u64 = 0;
-    let mut tcp_out_of_order: u64 = 0;
-    let mut tcp_fast_retransmits: u64 = 0;
-    let mut tcp_connections_with_analytics = 0;
-
-    for conn in connections {
-        if let Some(analytics) = &conn.tcp_analytics {
-            tcp_retransmits += analytics.retransmit_count;
-            tcp_out_of_order += analytics.out_of_order_count;
-            tcp_fast_retransmits += analytics.fast_retransmit_count;
-            tcp_connections_with_analytics += 1;
-        }
-    }
-
     let total_retransmits = stats
         .total_tcp_retransmits
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -1198,19 +1188,19 @@ fn draw_stats_panel(
         ]),
         Line::from(format!(
             "TCP Retransmits: {} / {}",
-            tcp_retransmits, total_retransmits
+            connection_counts.tcp_retransmits, total_retransmits
         )),
         Line::from(format!(
             "Out-of-Order: {} / {}",
-            tcp_out_of_order, total_out_of_order
+            connection_counts.tcp_out_of_order, total_out_of_order
         )),
         Line::from(format!(
             "Fast Retransmits: {} / {}",
-            tcp_fast_retransmits, total_fast_retransmits
+            connection_counts.tcp_fast_retransmits, total_fast_retransmits
         )),
         Line::from(format!(
             "Active TCP Flows: {}",
-            tcp_connections_with_analytics
+            connection_counts.tcp_flows_with_analytics
         )),
     ];
 
@@ -1448,11 +1438,51 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{handle_filter_mode_key, is_filter_backspace_char};
+    use super::{connections_title, handle_filter_mode_key, is_filter_backspace_char};
     use crate::{
         app::{App, Config},
         ui::{ClickableRegions, HandlerContext, UIState},
     };
+
+    fn title_text(line: ratatui::text::Line<'_>) -> String {
+        line.spans
+            .into_iter()
+            .map(|span| span.content.into_owned())
+            .collect::<Vec<_>>()
+            .concat()
+    }
+
+    #[test]
+    fn connection_titles_only_show_counts_for_active_filters() {
+        let unfiltered = UIState::default();
+        assert_eq!(
+            title_text(connections_title(&unfiltered, false, None)),
+            " Live Connections"
+        );
+
+        let filtered = UIState {
+            filter_query: "port:443".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            title_text(connections_title(&filtered, false, Some(7))),
+            " Live Connections · 7 shown"
+        );
+        assert_eq!(
+            title_text(connections_title(&filtered, true, Some(3))),
+            " Process Aggregate · 3 processes"
+        );
+
+        let whitespace = UIState {
+            filter_query: "   ".to_string(),
+            ..Default::default()
+        };
+        assert!(!whitespace.has_active_filter());
+        assert_eq!(
+            title_text(connections_title(&whitespace, false, None)),
+            " Live Connections"
+        );
+    }
 
     #[test]
     fn filter_mode_treats_terminal_backspace_variants_as_backspace() {

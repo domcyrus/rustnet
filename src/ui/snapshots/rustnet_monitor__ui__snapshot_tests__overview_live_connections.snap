@@ -1,0 +1,30 @@
+---
+source: src/ui/mod.rs
+expression: render_overview(false)
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                          
+────────────━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+▎ Live Connections                                                                                                                          
+  Process                  Remote                      Local               Service    App                         State            Rx↓/Tx↑  
+                                                                                                                                            
+> firefox (2001)           140.82.121.4:443            192.168.1.10:51234  https      TCP                         ESTABLISHED    3.1M/928K  
+  systemd-resolved (820)   1.1.1.1:53                  192.168.1.10:53     dns        UDP                         UDP_ACTIVE       47K/82K  
+  sshd (1500)              10.0.0.5:51022              192.168.1.10:22     ssh        TCP                         ESTABLISHED    410K/1.7M  
+  curl (9876)              151.101.1.195:443           192.168.1.10:60123  https      TCP                         TIME_WAIT            -/-  
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ 'h' help | 1-5 jump | Tab/[/] cycle | '/' filter | 'a' group | 't' history | 'i' info | 'c' copy
