@@ -166,6 +166,9 @@ const EXPIRY_GLOW_STOPS: [(u8, u8, u8); 5] = [
     (0xFF, 0x2D, 0x55), // vivid red at removal
 ];
 
+const EXPIRY_WARNING_START: f32 = 0.75;
+const EXPIRY_CRITICAL_START: f32 = 0.90;
+
 fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
     (a as f64 + (b as f64 - a as f64) * t).round() as u8
 }
@@ -219,6 +222,17 @@ pub fn muted_wave(t: f64) -> Color {
 /// Yellow-to-red glow for connections nearing their removal timeout.
 pub fn expiry_glow(t: f64) -> Color {
     five_stop(&EXPIRY_GLOW_STOPS, t)
+}
+
+/// Map connection staleness to the expiry glow. The row turns yellow at 75%
+/// of its timeout, stays yellow through the warning window, then intensifies
+/// toward red during the final 10% before removal.
+pub fn expiry_glow_intensity(staleness: f32) -> Option<f64> {
+    (staleness >= EXPIRY_WARNING_START).then(|| {
+        f64::from(
+            ((staleness - EXPIRY_CRITICAL_START) / (1.0 - EXPIRY_CRITICAL_START)).clamp(0.0, 1.0),
+        )
+    })
 }
 
 // --- Protocol aliases ---

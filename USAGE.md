@@ -753,6 +753,22 @@ The main process table switches between Egress (TX) and Ingress (RX) and shows:
 - Process attribution coverage, with unresolved traffic grouped as `Unknown`
 - Rolling 60-second process traffic as a percentage of interface traffic in the selected direction
 
+The table adapts to the available terminal width, so narrower terminals hide some columns. Its columns mean:
+
+| Column | Meaning |
+|---|---|
+| **Process** | Process name and PID. Traffic without process attribution is grouped as `Unknown`. |
+| **Pulse** | Relative share of the selected direction's rolling 60-second captured traffic. |
+| **TX now / RX now** | Current traffic rate for the process in the selected direction. |
+| **Peak TX / Peak RX** | Highest observed current rate while the process remains in the retained Activity view. |
+| **60s %** | Process share of all captured process traffic in the selected direction over the rolling 60-second window. |
+| **Iface 60s** | Process traffic over 60 seconds as a percentage of the matching interface traffic. A `~` prefix indicates an approximate host-wide comparison for multi-interface capture. |
+| **TX 60s / RX 60s** | Captured bytes attributed to the process in the selected direction over the rolling 60-second window. |
+| **Retained** | Total bytes across the process's active and retained historic connections in the selected direction. This is bounded retained data, not a lifetime counter. |
+| **Conns** | `active/total`, for example `41/66` means 41 active connections and 66 retained connections in total. The total includes active plus recently completed historic connections. |
+| **Remote** | Number of unique remote socket endpoints across the retained connections. An endpoint is an IP address plus port, so one host contacted on two ports counts as two remotes. Repeated connections to the same endpoint count once. A `+` suffix means the count exceeded the 256-destination display cap. |
+| **Top remote peer** | Remote endpoint with the most retained traffic in the selected direction. |
+
 Traffic Pulse shows the current captured rate, but calculates coverage from captured bytes and interface-counter bytes over the same rolling 60-second window. This avoids the large fluctuations caused by comparing independently sampled instantaneous rates. Coverage divides the captured total by the interface total and caps the displayed percentage at 100%, because slightly different window endpoints or counter visibility can otherwise produce small overages. Both raw totals remain visible for diagnosis. When RustNet captures one named interface, it compares directly with that interface. With multi-interface capture, RustNet compares against a host-wide interface aggregate and prefixes the value with `~` because VPN and virtual interface counters can overlap.
 
 Press `d` to switch between Egress (TX, blue) and Ingress (RX, green), `s` to cycle the Activity sort metric, `S` to reverse its order, and `i` to toggle the detailed interface table.

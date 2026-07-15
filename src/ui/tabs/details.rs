@@ -480,7 +480,7 @@ pub(in crate::ui) fn draw_connection_details(
     } else {
         // Mirror the historic Status line for active connections so the
         // user can see how recently traffic moved on this connection.
-        // Color follows the same staleness buckets as the Overview row
+        // Color follows the same staleness progression as the Overview row
         // styling so the cue is consistent across views.
         let ago = conn.last_activity.elapsed().unwrap_or_default();
         let active_display = if ago.as_secs() < 60 {
@@ -489,13 +489,9 @@ pub(in crate::ui) fn draw_connection_details(
             format!("Active (last seen {}m ago)", ago.as_secs() / 60)
         };
         let staleness = conn.staleness_ratio();
-        let active_color = if staleness >= 0.90 {
-            theme::err()
-        } else if staleness >= 0.75 {
-            theme::warn()
-        } else {
-            theme::ok()
-        };
+        let active_color = theme::expiry_glow_intensity(staleness)
+            .map(theme::expiry_glow)
+            .unwrap_or_else(theme::ok);
         push_detail_field_styled(
             &mut details_text,
             &mut detail_fields,
@@ -1509,10 +1505,8 @@ pub(in crate::ui) fn draw_connection_details(
         Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::DIM | Modifier::BOLD)
-    } else if staleness >= 0.90 {
-        theme::bold_fg(theme::err())
-    } else if staleness >= 0.75 {
-        theme::bold_fg(theme::warn())
+    } else if let Some(intensity) = theme::expiry_glow_intensity(staleness) {
+        theme::bold_fg(theme::expiry_glow(intensity))
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
@@ -1752,7 +1746,15 @@ pub(in crate::ui) fn draw_connection_details(
         ]);
 
         let traffic_history = ctx.app.get_traffic_history();
-        let frac = traffic_history.scroll_fraction();
+        // A fallback contains no time series to advance. Driving its single
+        // point with the aggregate sampling clock makes it move left, then
+        // snap right on every tick, which is especially visible immediately
+        // after a connection becomes historic.
+        let frac = if history.is_some() {
+            traffic_history.scroll_fraction()
+        } else {
+            0.0
+        };
         let window = traffic_history.capacity();
         braille_graph::wave_panel(
             f,

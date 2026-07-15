@@ -261,7 +261,9 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
             Span::styled("Orange", theme::fg(theme::expiry_glow(0.5))),
             Span::styled(" → ", theme::fg(theme::muted())),
             Span::styled("Red ", theme::fg(theme::expiry_glow(1.0))),
-            Span::raw("Connection nearing timeout (75-100%; intensifies toward removal)"),
+            Span::raw(
+                "Connection nearing timeout (75-100%; holds yellow to 90%, then intensifies)",
+            ),
         ]),
         Line::from(vec![
             Span::styled("  Gray ", theme::historic_row()),

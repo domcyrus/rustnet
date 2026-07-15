@@ -333,24 +333,14 @@ pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UIState) ->
     Row::new(cells).height(1).bottom_margin(1)
 }
 
-const EXPIRY_WARNING_START: f32 = 0.75;
-
-fn expiry_glow_intensity(staleness: f32) -> Option<f64> {
-    (staleness >= EXPIRY_WARNING_START).then(|| {
-        f64::from(
-            ((staleness - EXPIRY_WARNING_START) / (1.0 - EXPIRY_WARNING_START)).clamp(0.0, 1.0),
-        )
-    })
-}
-
 /// Row-level staleness styling shared by every connection row. Fresh rows
-/// keep per-cell colors. Historic rows turn gray, while expiring rows move
-/// continuously from bright yellow through orange to vivid red.
+/// keep per-cell colors. Historic rows turn gray, while expiring rows stay
+/// yellow through the warning window and intensify toward red near removal.
 fn staleness_style(conn: &Connection) -> (Option<Style>, bool) {
     let staleness = conn.staleness_ratio();
     if conn.is_historic {
         (Some(theme::historic_row()), false)
-    } else if let Some(intensity) = expiry_glow_intensity(staleness) {
+    } else if let Some(intensity) = theme::expiry_glow_intensity(staleness) {
         let color = theme::expiry_glow(intensity);
         let style = if intensity >= 0.6 {
             theme::bold_fg(color)
@@ -529,11 +519,14 @@ mod tests {
 
     #[test]
     fn expiry_glow_tracks_the_removal_window() {
-        assert_eq!(expiry_glow_intensity(0.74), None);
-        assert_eq!(expiry_glow_intensity(0.75), Some(0.0));
-        assert_eq!(expiry_glow_intensity(0.875), Some(0.5));
-        assert_eq!(expiry_glow_intensity(1.0), Some(1.0));
-        assert_eq!(expiry_glow_intensity(1.5), Some(1.0));
+        assert_eq!(theme::expiry_glow_intensity(0.74), None);
+        assert_eq!(theme::expiry_glow_intensity(0.75), Some(0.0));
+        assert_eq!(theme::expiry_glow_intensity(0.89), Some(0.0));
+        assert_eq!(theme::expiry_glow_intensity(0.90), Some(0.0));
+        let midpoint = theme::expiry_glow_intensity(0.95).unwrap();
+        assert!((midpoint - 0.5).abs() < 0.000_001);
+        assert_eq!(theme::expiry_glow_intensity(1.0), Some(1.0));
+        assert_eq!(theme::expiry_glow_intensity(1.5), Some(1.0));
         assert_eq!(theme::expiry_glow(0.0), Color::Rgb(0xFA, 0xCC, 0x15));
         assert_eq!(theme::expiry_glow(0.5), Color::Rgb(0xFB, 0x92, 0x3C));
         assert_eq!(theme::expiry_glow(1.0), Color::Rgb(0xFF, 0x2D, 0x55));
