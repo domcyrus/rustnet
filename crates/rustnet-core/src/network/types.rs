@@ -1327,9 +1327,21 @@ impl TrafficHistory {
         if data.len() < window || window == 0 {
             return data.to_vec();
         }
-        data.windows(window)
-            .map(|w| w.iter().sum::<u64>() / window as u64)
-            .collect()
+
+        // Keep one output for every retained sample. Dropping the first
+        // `window - 1` points leaves a permanent gap at the left edge when a
+        // full history is rendered against its fixed-capacity time window.
+        let mut smoothed = Vec::with_capacity(data.len());
+        let mut sum = 0u128;
+        for (index, &value) in data.iter().enumerate() {
+            sum += u128::from(value);
+            if index >= window {
+                sum -= u128::from(data[index - window]);
+            }
+            let sample_count = (index + 1).min(window) as u128;
+            smoothed.push((sum / sample_count) as u64);
+        }
+        smoothed
     }
 
     /// Get data for Chart widget: (time_offset, rate) pairs, smoothed with moving average
@@ -2528,6 +2540,21 @@ mod tests {
         // Empty history: empty out, no panic.
         let empty = TrafficHistory::new(10);
         assert!(empty.get_connection_sparkline_data(5).is_empty());
+    }
+
+    #[test]
+    fn sparkline_smoothing_preserves_the_full_history_window() {
+        let mut history = TrafficHistory::new(5);
+        for i in 1u64..=5 {
+            history.add_sample(i * 10, i * 100, 1, 0, 0, None);
+        }
+
+        let rx = history.get_rx_sparkline_data(usize::MAX);
+        let tx = history.get_tx_sparkline_data(usize::MAX);
+        assert_eq!(rx, vec![10, 15, 20, 30, 40]);
+        assert_eq!(tx, vec![100, 150, 200, 300, 400]);
+        assert_eq!(rx.len(), history.capacity());
+        assert_eq!(tx.len(), history.capacity());
     }
 
     #[test]

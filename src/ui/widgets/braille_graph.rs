@@ -113,7 +113,8 @@ fn smooth_columns(cols: &[f64]) -> Vec<f64> {
 ///
 /// `frac` ∈ [0, 1] is how far we are into the current sampling
 /// interval; it shifts the wave left by a sub-cell amount each frame
-/// so the graph scrolls smoothly instead of stepping once per sample.
+/// so the graph scrolls smoothly instead of stepping once per sample. A
+/// single sample stays fixed because there is no advancing series to scroll.
 ///
 /// Each row is one solid-colored `Line`; `row_color` maps `intensity`
 /// (1.0 at the crest row, →0 at the base) to a gradient color.
@@ -141,7 +142,12 @@ pub(in crate::ui) fn render(
     } else {
         0.0
     };
-    let right = (samples.len() - 1) as f64 + frac.clamp(0.0, 1.0);
+    let scroll = if samples.len() > 1 {
+        frac.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let right = (samples.len() - 1) as f64 + scroll;
     let cols: Vec<f64> = (0..dots_x)
         .map(|x| {
             let pos = right - (dots_x - 1 - x) as f64 * per_dot;
@@ -354,6 +360,18 @@ mod tests {
         let cells: Vec<char> = bottom.chars().collect();
         assert_eq!(cells[0], '\u{2800}', "left edge should be blank");
         assert_eq!(*cells.last().unwrap(), '⣿', "right edge should be full");
+    }
+
+    #[test]
+    fn single_sample_does_not_oscillate_with_scroll_fraction() {
+        let render_at = |frac| {
+            render(&[100], 30, 2, 100.0, frac, 60, |_| {
+                ratatui::style::Color::Reset
+            })
+        };
+
+        assert_eq!(render_at(0.0), render_at(0.5));
+        assert_eq!(render_at(0.0), render_at(1.0));
     }
 
     #[test]

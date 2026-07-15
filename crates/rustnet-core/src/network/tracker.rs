@@ -316,6 +316,12 @@ impl ConnectionTracker {
                     let mut historic = conn.snapshot_clone();
                     historic.is_historic = true;
                     historic.closed_at = Some(now);
+                    // Cached rates describe live traffic. Carrying them into a
+                    // closed record makes Overview and Details report traffic
+                    // that can no longer occur, and leaves a moving fallback
+                    // point after the live rate history is retired.
+                    historic.current_incoming_rate_bps = 0.0;
+                    historic.current_outgoing_rate_bps = 0.0;
                     let historic_key = HistoricKey {
                         key: *key,
                         created_nanos: conn
@@ -598,6 +604,11 @@ mod tests {
         tracker.ingest(&parse(&udp_frame(40000, 53)));
         assert_eq!(tracker.len(), 1);
 
+        for mut entry in tracker.connections().iter_mut() {
+            entry.current_incoming_rate_bps = 2048.0;
+            entry.current_outgoing_rate_bps = 1024.0;
+        }
+
         // A far-future `now` forces every connection past its timeout.
         let far_future = SystemTime::now() + Duration::from_secs(86_400);
         let removed = tracker.cleanup(far_future);
@@ -610,6 +621,9 @@ mod tests {
             1,
             "removed conn archived as historic"
         );
+        let historic = tracker.historic().iter().next().unwrap();
+        assert_eq!(historic.current_incoming_rate_bps, 0.0);
+        assert_eq!(historic.current_outgoing_rate_bps, 0.0);
     }
 
     #[test]
