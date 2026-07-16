@@ -288,10 +288,10 @@ RustNet 在移除连接前会先用智能超时机制与颜色给出预警：
 **按协议设定的超时：**
 - **HTTP / HTTPS**：10 分钟(支持 keep-alive)
 - **SSH**：30 分钟(适配长会话)
-- **TCP 活跃**：10 分钟；**TCP 空闲**：5 分钟
+- **普通 TCP 已建立连接**：5 分钟
 - **QUIC 已连接**：3 分钟(若对端通过 transport 参数声明了 idle timeout，则以对端为准);`Initial` / `Handshaking` 阶段：60 秒
 - **DNS**：30 秒
-- **TCP CLOSED**：5 秒
+- **TCP CLOSED**：15 秒归档宽限期
 
 举例：一条 HTTP 连接会在第 7.5 分钟变黄，第 9 分钟变红，第 10 分钟被移除。
 

@@ -167,8 +167,13 @@ pub fn merge_packet_into_connection(
     now: SystemTime,
 ) -> (u64, u64, u64) {
     let mut tcp_events = (0, 0, 0); // (retransmits, out_of_order, fast_retransmits)
-    // Update timing
-    conn.last_activity = now;
+    let was_terminal = conn.is_terminal();
+
+    // Record every observed packet. Terminal cleanup uses terminal_since, so
+    // late teardown retransmissions update last seen data without postponing
+    // archival.
+    let observation_time = conn.last_activity.max(now);
+    conn.last_activity = observation_time;
 
     // Update packet counts and bytes
     if parsed.is_outgoing {
@@ -316,6 +321,15 @@ pub fn merge_packet_into_connection(
         }
     }
 
+    let is_terminal = conn.is_terminal();
+    if is_terminal {
+        if !was_terminal || conn.terminal_since.is_none() {
+            conn.terminal_since = Some(observation_time);
+        }
+    } else {
+        conn.terminal_since = None;
+    }
+
     // Update rate calculations
     update_connection_rates(conn);
 
@@ -415,6 +429,7 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
 
     conn.created_at = now;
     conn.last_activity = now;
+    conn.terminal_since = conn.is_terminal().then_some(now);
 
     // Initialize the rate tracker with the initial byte counts
     // This prevents incorrect delta calculation on the first update

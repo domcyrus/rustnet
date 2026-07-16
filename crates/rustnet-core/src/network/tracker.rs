@@ -50,6 +50,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, SystemTime};
 
+/// Recently archived TCP tuples remain tombstoned briefly so delayed teardown
+/// packets do not create phantom established connections.
+const RECENTLY_CLOSED_TTL: Duration = Duration::from_secs(30);
+
 /// The active connection table: flow key -> connection.
 ///
 /// Keys are compact `Copy` structs, and the map uses FxHash — with a small
@@ -124,6 +128,12 @@ pub struct IngestOutcome {
     /// `true` if the packet was dropped because `max_connections` was reached
     /// (the connection did not already exist and was not inserted).
     pub dropped: bool,
+    /// `true` when a delayed packet matched a recently archived TCP tuple and
+    /// was intentionally not turned into a new active connection.
+    pub ignored_late: bool,
+    /// Previous live generation archived by a strong new-session signal.
+    /// Historic storage receives an immutable snapshot of this connection.
+    pub archived: Option<Connection>,
     /// New TCP retransmissions detected by this packet.
     pub retransmits: u64,
     /// New out-of-order TCP segments detected by this packet.
@@ -144,6 +154,7 @@ pub struct ConnectionTracker {
     lifecycle: RwLock<()>,
     rtt: Mutex<RttTracker>,
     quic_map: Mutex<HashMap<String, ConnectionKey>>,
+    recently_closed: Mutex<HashMap<ConnectionKey, SystemTime>>,
     config: TrackerConfig,
     /// Active-connection count maintained by `ingest_at`/`cleanup`/`clear`.
     /// Lets the per-packet `max_connections` check be a single atomic load
@@ -168,6 +179,7 @@ impl ConnectionTracker {
             lifecycle: RwLock::new(()),
             rtt: Mutex::new(RttTracker::new()),
             quic_map: Mutex::new(HashMap::new()),
+            recently_closed: Mutex::new(HashMap::new()),
             config,
             active_count: AtomicUsize::new(0),
         }
@@ -191,44 +203,66 @@ impl ConnectionTracker {
     /// the packet's capture timestamp so `created_at`/`last_activity` and the
     /// `cleanup` timeout sweep operate on trace time, not real time.
     pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
-        let mut key = parsed.connection_key();
-
         // Track RTT for TCP connections using SYN/SYN-ACK timing.
         let mut measured_rtt: Option<Duration> = None;
+        let base_key = parsed.connection_key();
         if parsed.protocol == Protocol::Tcp
             && let Some(tcp_header) = &parsed.tcp_header
         {
             if tcp_header.flags.syn && !tcp_header.flags.ack {
                 if let Ok(mut tracker) = self.rtt.lock() {
-                    tracker.record_syn(key);
+                    tracker.record_syn(base_key);
                 }
             } else if tcp_header.flags.syn
                 && tcp_header.flags.ack
                 && let Ok(mut tracker) = self.rtt.lock()
             {
-                measured_rtt = tracker.record_syn_ack(&key);
+                measured_rtt = tracker.record_syn_ack(&base_key);
             }
         }
 
-        // For QUIC packets, coalesce by connection ID so connection migration
-        // (address change) maps back to the original connection key.
-        if parsed.protocol == Protocol::Udp
-            && let Some(dpi_result) = &parsed.dpi_result
-            && let ApplicationProtocol::Quic(quic_info) = &dpi_result.application
-            && let Some(conn_id_hex) = &quic_info.connection_id_hex
-            && let Ok(mut mapping) = self.quic_map.lock()
-        {
-            if let Some(existing_key) = mapping.get(conn_id_hex) {
-                key = *existing_key;
-            } else {
-                // Prevent unbounded growth of QUIC connection-ID mappings.
-                if mapping.len() >= self.config.max_quic_mappings {
-                    mapping.clear();
-                }
-                mapping.insert(conn_id_hex.clone(), key);
-            }
+        // A read guard makes ordinary packet updates atomic with cleanup. The
+        // uncommon generation-split path drops it and reacquires a write guard
+        // so retained-source readers also see one consistent move.
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = self.resolve_connection_key(parsed);
+
+        if !self.connections.contains_key(&key) && self.is_recent_late_packet(key, parsed, now) {
+            return IngestOutcome {
+                key,
+                created: false,
+                dropped: false,
+                ignored_late: true,
+                archived: None,
+                retransmits: 0,
+                out_of_order: 0,
+                fast_retransmits: 0,
+                measured_rtt,
+            };
         }
 
+        let starts_new_generation = self
+            .connections
+            .get(&key)
+            .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
+        if starts_new_generation {
+            drop(lifecycle);
+            return self.ingest_new_generation(parsed, now, key, measured_rtt);
+        }
+
+        self.ingest_into_active(parsed, now, key, measured_rtt)
+    }
+
+    fn ingest_into_active(
+        &self,
+        parsed: &ParsedPacket,
+        now: SystemTime,
+        key: ConnectionKey,
+        measured_rtt: Option<Duration>,
+    ) -> IngestOutcome {
         // Prevent unbounded growth from port scans or connection floods. Only
         // limit new connections; existing ones always get updated. The fast
         // path is a single atomic load; only when at the cap do we pay a
@@ -242,6 +276,8 @@ impl ConnectionTracker {
                 key,
                 created: false,
                 dropped: true,
+                ignored_late: false,
+                archived: None,
                 retransmits: 0,
                 out_of_order: 0,
                 fast_retransmits: 0,
@@ -277,10 +313,231 @@ impl ConnectionTracker {
             key,
             created,
             dropped: false,
+            ignored_late: false,
+            archived: None,
             retransmits: deltas.0,
             out_of_order: deltas.1,
             fast_retransmits: deltas.2,
             measured_rtt,
+        }
+    }
+
+    fn ingest_new_generation(
+        &self,
+        parsed: &ParsedPacket,
+        now: SystemTime,
+        key: ConnectionKey,
+        measured_rtt: Option<Duration>,
+    ) -> IngestOutcome {
+        let _lifecycle = self
+            .lifecycle
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut replacement_now = now;
+
+        let still_needs_split = self
+            .connections
+            .get(&key)
+            .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
+        let archived = if still_needs_split {
+            self.connections.remove(&key).map(|(_, conn)| {
+                // Historic keys include `created_at`, so two generations of
+                // the same tuple must not share a creation timestamp. This is
+                // possible when several captured packets use one batch time.
+                if replacement_now <= conn.created_at {
+                    replacement_now = conn
+                        .created_at
+                        .checked_add(Duration::from_nanos(1))
+                        .unwrap_or(replacement_now);
+                }
+                self.active_count.fetch_sub(1, Ordering::Relaxed);
+                self.archive_snapshot(key, &conn, now);
+                self.record_recently_closed(key, &conn, now);
+                self.remove_quic_mappings_for_key(key);
+                conn
+            })
+        } else {
+            None
+        };
+
+        // Cleanup may have removed the old generation while this packet was
+        // waiting to acquire the write guard. Reassociate any visible QUIC ID
+        // before creating the replacement.
+        self.associate_quic_id(parsed, key);
+        let mut outcome = self.ingest_into_active(parsed, replacement_now, key, measured_rtt);
+        outcome.archived = archived;
+        self.enforce_historic_limit();
+        self.prune_recently_closed(now);
+        outcome
+    }
+
+    fn resolve_connection_key(&self, parsed: &ParsedPacket) -> ConnectionKey {
+        let mut key = parsed.connection_key();
+        let Some(conn_id_hex) = Self::parsed_quic_id(parsed) else {
+            return key;
+        };
+        let Ok(mut mapping) = self.quic_map.lock() else {
+            return key;
+        };
+        if let Some(existing_key) = mapping.get(conn_id_hex) {
+            key = *existing_key;
+        } else {
+            if mapping.len() >= self.config.max_quic_mappings {
+                mapping.clear();
+            }
+            mapping.insert(conn_id_hex.to_string(), key);
+        }
+        key
+    }
+
+    fn parsed_quic_id(parsed: &ParsedPacket) -> Option<&str> {
+        let dpi = parsed.dpi_result.as_ref()?;
+        let ApplicationProtocol::Quic(quic) = &dpi.application else {
+            return None;
+        };
+        quic.connection_id_hex.as_deref()
+    }
+
+    fn associate_quic_id(&self, parsed: &ParsedPacket, key: ConnectionKey) {
+        let Some(conn_id_hex) = Self::parsed_quic_id(parsed) else {
+            return;
+        };
+        if let Ok(mut mapping) = self.quic_map.lock() {
+            if mapping.len() >= self.config.max_quic_mappings {
+                mapping.clear();
+            }
+            mapping.insert(conn_id_hex.to_string(), key);
+        }
+    }
+
+    fn packet_starts_new_generation(conn: &Connection, parsed: &ParsedPacket) -> bool {
+        if !conn.is_closing_or_terminal() {
+            return false;
+        }
+        match parsed.protocol {
+            Protocol::Tcp => parsed
+                .tcp_header
+                .as_ref()
+                .is_some_and(|header| header.flags.syn),
+            Protocol::Udp => {
+                let Some(new_id) = Self::parsed_quic_id(parsed) else {
+                    return false;
+                };
+                let Some(dpi) = conn.dpi_info.as_ref() else {
+                    return false;
+                };
+                let ApplicationProtocol::Quic(old_quic) = &dpi.application else {
+                    return false;
+                };
+                old_quic
+                    .connection_id_hex
+                    .as_deref()
+                    .is_some_and(|old_id| old_id != new_id)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_recent_late_packet(
+        &self,
+        key: ConnectionKey,
+        parsed: &ParsedPacket,
+        now: SystemTime,
+    ) -> bool {
+        if parsed.protocol != Protocol::Tcp {
+            return false;
+        }
+        let Some(header) = parsed.tcp_header.as_ref() else {
+            return false;
+        };
+        let is_teardown_only = !header.flags.syn
+            && (header.flags.fin
+                || header.flags.rst
+                || (header.flags.ack && header.payload_len == 0));
+        if !is_teardown_only {
+            return false;
+        }
+        self.recently_closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&key)
+            .is_some_and(|closed_at| {
+                now.duration_since(*closed_at).unwrap_or_default() <= RECENTLY_CLOSED_TTL
+            })
+    }
+
+    fn archive_snapshot(&self, key: ConnectionKey, conn: &Connection, now: SystemTime) {
+        if !self.config.keep_historic {
+            return;
+        }
+        let mut historic = conn.snapshot_clone();
+        historic.is_historic = true;
+        historic.closed_at = Some(now);
+        let historic_key = HistoricKey {
+            key,
+            created_nanos: conn
+                .created_at
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        };
+        self.historic.insert(historic_key, historic);
+    }
+
+    fn enforce_historic_limit(&self) {
+        if self.historic.len() <= self.config.max_historic {
+            return;
+        }
+        let mut entries: Vec<(HistoricKey, SystemTime)> = self
+            .historic
+            .iter()
+            .map(|entry| {
+                let closed = entry.value().closed_at.unwrap_or(entry.value().created_at);
+                (*entry.key(), closed)
+            })
+            .collect();
+        entries.sort_by_key(|(_, closed)| *closed);
+        let to_remove = self.historic.len() - self.config.max_historic;
+        for (key, _) in entries.into_iter().take(to_remove) {
+            self.historic.remove(&key);
+        }
+    }
+
+    fn record_recently_closed(&self, key: ConnectionKey, conn: &Connection, now: SystemTime) {
+        if !conn.is_terminal() {
+            return;
+        }
+        self.recently_closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, now);
+    }
+
+    fn prune_recently_closed(&self, now: SystemTime) {
+        let mut recently_closed = self
+            .recently_closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recently_closed.retain(|_, closed_at| {
+            now.duration_since(*closed_at).unwrap_or_default() <= RECENTLY_CLOSED_TTL
+        });
+        let max_entries = self.config.max_historic.max(1);
+        if recently_closed.len() > max_entries {
+            let mut entries: Vec<(ConnectionKey, SystemTime)> = recently_closed
+                .iter()
+                .map(|(key, closed_at)| (*key, *closed_at))
+                .collect();
+            entries.sort_by_key(|(_, closed_at)| *closed_at);
+            let to_remove = recently_closed.len() - max_entries;
+            for (key, _) in entries.into_iter().take(to_remove) {
+                recently_closed.remove(&key);
+            }
+        }
+    }
+
+    fn remove_quic_mappings_for_key(&self, key: ConnectionKey) {
+        if let Ok(mut mapping) = self.quic_map.lock() {
+            mapping.retain(|_, conn_key| *conn_key != key);
         }
     }
 
@@ -332,6 +589,9 @@ impl ConnectionTracker {
         if !removed.is_empty() {
             self.active_count
                 .fetch_sub(removed.len(), Ordering::Relaxed);
+            for (key, conn) in removed_keys.iter().zip(&removed) {
+                self.record_recently_closed(*key, conn, now);
+            }
         }
 
         if keep_historic {
@@ -339,22 +599,7 @@ impl ConnectionTracker {
                 self.historic.insert(key, conn);
             }
 
-            // Enforce max_historic by evicting oldest-closed first.
-            if self.historic.len() > self.config.max_historic {
-                let mut entries: Vec<(HistoricKey, SystemTime)> = self
-                    .historic
-                    .iter()
-                    .map(|entry| {
-                        let closed = entry.value().closed_at.unwrap_or(entry.value().created_at);
-                        (*entry.key(), closed)
-                    })
-                    .collect();
-                entries.sort_by_key(|(_, closed)| *closed);
-                let to_remove = self.historic.len() - self.config.max_historic;
-                for (key, _) in entries.into_iter().take(to_remove) {
-                    self.historic.remove(&key);
-                }
-            }
+            self.enforce_historic_limit();
         }
 
         // Clean up QUIC connection-ID mappings pointing at removed connections.
@@ -363,6 +608,7 @@ impl ConnectionTracker {
         {
             mapping.retain(|_, conn_key| !removed_keys.contains(conn_key));
         }
+        self.prune_recently_closed(now);
 
         removed
     }
@@ -437,6 +683,10 @@ impl ConnectionTracker {
         if let Ok(mut mapping) = self.quic_map.lock() {
             mapping.clear();
         }
+        self.recently_closed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     /// The tracker's configuration.
@@ -513,6 +763,38 @@ mod tests {
         PacketParser::new()
             .parse_packet(frame)
             .expect("frame should parse")
+    }
+
+    fn tcp_packet(syn: bool, ack: bool, fin: bool, rst: bool, is_outgoing: bool) -> ParsedPacket {
+        use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
+        use crate::network::types::{ProtocolState, TcpState};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Tcp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
+            protocol_state: ProtocolState::Tcp(TcpState::Unknown),
+            tcp_header: Some(TcpHeaderInfo {
+                seq: 1_000,
+                ack: 2_000,
+                window: 65_535,
+                flags: TcpFlags {
+                    syn,
+                    ack,
+                    fin,
+                    rst,
+                    psh: false,
+                    urg: false,
+                },
+                payload_len: 0,
+            }),
+            is_outgoing,
+            packet_len: 60,
+            dpi_result: None,
+            process_name: None,
+            process_id: None,
+        }
     }
 
     #[test]
@@ -610,6 +892,184 @@ mod tests {
             1,
             "removed conn archived as historic"
         );
+    }
+
+    #[test]
+    fn traffic_refreshes_a_stale_nonterminal_connection() {
+        let tracker = ConnectionTracker::new();
+        let packet = parse(&udp_frame(40000, 9999));
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        tracker.ingest_at(&packet, started);
+
+        assert!(
+            tracker
+                .cleanup(started + Duration::from_secs(59))
+                .is_empty()
+        );
+        tracker.ingest_at(&packet, started + Duration::from_secs(59));
+        assert!(
+            tracker
+                .cleanup(started + Duration::from_secs(61))
+                .is_empty()
+        );
+        assert_eq!(tracker.len(), 1);
+    }
+
+    #[test]
+    fn terminal_retransmissions_do_not_postpone_archival() {
+        let tracker = ConnectionTracker::new();
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        tracker.ingest_at(&tcp_packet(false, false, false, true, true), started);
+        tracker.ingest_at(
+            &tcp_packet(false, true, false, false, false),
+            started + Duration::from_secs(10),
+        );
+
+        let conn = tracker.connections().iter().next().unwrap();
+        assert_eq!(conn.last_activity, started + Duration::from_secs(10));
+        assert_eq!(conn.terminal_since, Some(started));
+        drop(conn);
+
+        let removed = tracker.cleanup(started + Duration::from_secs(16));
+        assert_eq!(removed.len(), 1);
+        assert_eq!(tracker.historic_len(), 1);
+    }
+
+    #[test]
+    fn syn_after_terminal_state_starts_a_new_generation() {
+        use crate::network::types::{ProtocolState, TcpState};
+
+        let tracker = ConnectionTracker::new();
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        tracker.ingest_at(&tcp_packet(false, false, false, true, true), started);
+
+        let outcome = tracker.ingest_at(&tcp_packet(true, false, false, false, true), started);
+        assert!(outcome.created);
+        assert!(outcome.archived.is_some());
+        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.historic_len(), 1);
+
+        let active = tracker.connections().iter().next().unwrap();
+        assert_eq!(
+            active.created_at,
+            started + Duration::from_nanos(1),
+            "a same-batch replacement needs a distinct historic identity"
+        );
+        assert!(matches!(
+            active.protocol_state,
+            ProtocolState::Tcp(TcpState::SynSent)
+        ));
+        assert!(!active.is_historic);
+        drop(active);
+
+        let historic = tracker.historic().iter().next().unwrap();
+        assert_eq!(historic.created_at, started);
+        assert!(historic.is_historic);
+        assert_eq!(historic.closed_at, Some(started));
+        drop(historic);
+
+        tracker.cleanup(started + Duration::from_secs(61));
+        assert_eq!(
+            tracker.historic_len(),
+            2,
+            "archiving the replacement must not overwrite the old generation"
+        );
+    }
+
+    #[test]
+    fn delayed_ack_after_archival_is_not_a_phantom_connection() {
+        let tracker = ConnectionTracker::new();
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        tracker.ingest_at(&tcp_packet(false, false, false, true, true), started);
+        tracker.cleanup(started + Duration::from_secs(16));
+
+        let outcome = tracker.ingest_at(
+            &tcp_packet(false, true, false, false, false),
+            started + Duration::from_secs(17),
+        );
+        assert!(outcome.ignored_late);
+        assert!(!outcome.created);
+        assert!(tracker.is_empty());
+        assert_eq!(tracker.historic_len(), 1);
+    }
+
+    #[test]
+    fn payload_after_terminal_archival_starts_a_new_generation() {
+        let tracker = ConnectionTracker::new();
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        tracker.ingest_at(&tcp_packet(false, false, false, true, true), started);
+        tracker.cleanup(started + Duration::from_secs(16));
+
+        let mut packet = tcp_packet(false, true, false, false, false);
+        packet.tcp_header.as_mut().unwrap().payload_len = 100;
+        let outcome = tracker.ingest_at(&packet, started + Duration::from_secs(17));
+
+        assert!(!outcome.ignored_late);
+        assert!(outcome.created);
+        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.historic_len(), 1);
+    }
+
+    #[test]
+    fn traffic_after_idle_archival_starts_a_new_generation_immediately() {
+        let tracker = ConnectionTracker::new();
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        tracker.ingest_at(&tcp_packet(false, true, false, false, true), started);
+        tracker.cleanup(started + Duration::from_secs(301));
+
+        let outcome = tracker.ingest_at(
+            &tcp_packet(false, true, false, false, false),
+            started + Duration::from_secs(302),
+        );
+        assert!(!outcome.ignored_late);
+        assert!(outcome.created);
+        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.historic_len(), 1);
+    }
+
+    #[test]
+    fn midstream_ack_is_allowed_after_recent_tombstone_expires() {
+        use crate::network::types::{ProtocolState, TcpState};
+
+        let tracker = ConnectionTracker::new();
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        tracker.ingest_at(&tcp_packet(false, false, false, true, true), started);
+        tracker.cleanup(started + Duration::from_secs(16));
+
+        let outcome = tracker.ingest_at(
+            &tcp_packet(false, true, false, false, false),
+            started + Duration::from_secs(47),
+        );
+        assert!(!outcome.ignored_late);
+        assert!(outcome.created);
+        let active = tracker.connections().iter().next().unwrap();
+        assert!(matches!(
+            active.protocol_state,
+            ProtocolState::Tcp(TcpState::Established)
+        ));
+    }
+
+    #[test]
+    fn new_activity_does_not_mutate_a_historic_snapshot() {
+        let tracker = ConnectionTracker::new();
+        let packet = parse(&udp_frame(40000, 9999));
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        tracker.ingest_at(&packet, started);
+        tracker.cleanup(started + Duration::from_secs(61));
+
+        let historic_before = tracker.historic_snapshot().pop().unwrap();
+        tracker.ingest_at(&packet, started + Duration::from_secs(62));
+        tracker.ingest_at(&packet, started + Duration::from_secs(63));
+        let historic_after = tracker.historic_snapshot().pop().unwrap();
+
+        assert_eq!(historic_after.bytes_sent, historic_before.bytes_sent);
+        assert_eq!(
+            historic_after.bytes_received,
+            historic_before.bytes_received
+        );
+        assert_eq!(historic_after.last_activity, historic_before.last_activity);
+        assert_eq!(historic_after.closed_at, historic_before.closed_at);
+        assert_eq!(tracker.len(), 1);
     }
 
     #[test]

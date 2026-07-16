@@ -149,10 +149,9 @@ Removes inactive connections using smart, protocol-aware timeouts. This prevents
 #### TCP Connections
 - **HTTP/HTTPS** (detected via DPI): **10 minutes** - supports HTTP keep-alive
 - **SSH** (detected via DPI): **30 minutes** - accommodates long interactive sessions
-- **Active established** (< 1 min idle): **10 minutes**
-- **Idle established** (> 1 min idle): **5 minutes**
+- **Generic established**: **5 minutes**
 - **TIME_WAIT**: 30 seconds - standard TCP timeout
-- **CLOSED**: 5 seconds - rapid cleanup
+- **CLOSED**: 15 seconds - terminal archival grace
 - **SYN_SENT, FIN_WAIT, etc.**: 30-60 seconds
 
 #### UDP Connections
@@ -164,10 +163,16 @@ Removes inactive connections using smart, protocol-aware timeouts. This prevents
 
 #### QUIC Connections (Detected State)
 - **Connected**: 3 minutes default, or the peer's `max_idle_timeout` transport parameter when present
-- **With CONNECTION_CLOSE frame**: 1-10 seconds (based on close type)
+- **With CONNECTION_CLOSE frame**: 15 seconds
 - **Initial/Handshaking**: 60 seconds - allow connection establishment
-- **Draining**: 10 seconds - RFC 9000 draining period
-- **Closed**: 1 second - immediate cleanup
+- **Draining/Closed**: 15 seconds - terminal archival grace
+
+Terminal connections retain the timestamp of their first terminal state.
+Repeated teardown packets update final counters without postponing archival.
+When a new TCP SYN reuses a closing tuple, cleanup and packet ingestion perform
+one lifecycle-safe transition: the old generation is archived immutably and a
+fresh live generation is created. A bounded 30-second tombstone prevents late
+TCP teardown packets from creating phantom established rows.
 
 **Visual Staleness Indicators:**
 

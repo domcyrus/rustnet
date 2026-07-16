@@ -14,8 +14,16 @@ pub fn sort_connections(connections: &mut [Connection], sort_column: SortColumn,
 
             SortColumn::BandwidthTotal => {
                 // Compare combined up+down bandwidth, handle NaN cases
-                let a_total = a.current_incoming_rate_bps + a.current_outgoing_rate_bps;
-                let b_total = b.current_incoming_rate_bps + b.current_outgoing_rate_bps;
+                let a_total = if a.is_historic {
+                    0.0
+                } else {
+                    a.current_incoming_rate_bps + a.current_outgoing_rate_bps
+                };
+                let b_total = if b.is_historic {
+                    0.0
+                } else {
+                    b.current_incoming_rate_bps + b.current_outgoing_rate_bps
+                };
                 a_total
                     .partial_cmp(&b_total)
                     .unwrap_or(std::cmp::Ordering::Equal)
@@ -77,4 +85,36 @@ pub fn sort_connections(connections: &mut [Connection], sort_column: SortColumn,
             ordering.reverse()
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::types::{Protocol, ProtocolState};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn connection(port: u16) -> Connection {
+        Connection::new(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443),
+            ProtocolState::Udp,
+        )
+    }
+
+    #[test]
+    fn historic_cached_rate_does_not_affect_bandwidth_sort() {
+        let mut live = connection(40_000);
+        live.current_incoming_rate_bps = 1.0;
+
+        let mut historic = connection(40_001);
+        historic.is_historic = true;
+        historic.current_incoming_rate_bps = 1_000.0;
+
+        let mut connections = vec![historic, live];
+        sort_connections(&mut connections, SortColumn::BandwidthTotal, false);
+
+        assert!(!connections[0].is_historic);
+        assert!(connections[1].is_historic);
+    }
 }

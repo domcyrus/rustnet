@@ -908,10 +908,9 @@ RustNet adjusts connection timeouts based on the protocol and detected applicati
 #### TCP Connections
 - **HTTP/HTTPS** (detected via DPI): **10 minutes** - supports HTTP keep-alive
 - **SSH** (detected via DPI): **30 minutes** - accommodates long interactive sessions
-- **Active established** (< 1 min idle): **10 minutes**
-- **Idle established** (> 1 min idle): **5 minutes**
+- **Generic established**: **5 minutes**
 - **TIME_WAIT**: 30 seconds - standard TCP timeout
-- **CLOSED**: 5 seconds - rapid cleanup
+- **CLOSED**: 15 seconds - terminal archival grace
 - **SYN_SENT, FIN_WAIT, etc.**: 30-60 seconds
 
 #### UDP Connections
@@ -921,17 +920,19 @@ RustNet adjusts connection timeouts based on the protocol and detected applicati
 
 #### QUIC Connections (Detected State)
 - **Connected**: **3 minutes** default (or uses idle timeout from transport parameters if available)
-- **With CONNECTION_CLOSE frame**: 1-10 seconds (based on close type)
+- **With CONNECTION_CLOSE frame**: 15 seconds
 - **Initial/Handshaking**: 60 seconds - allow connection establishment
-- **Draining**: 10 seconds - RFC 9000 draining period
+- **Draining/Closed**: 15 seconds - terminal archival grace
 
-### Activity-Based Adjustment
+Every packet resets the idle timer for nonterminal connections. Terminal TCP
+and QUIC connections use the time when they first entered their terminal state,
+so repeated FIN, ACK, RST, or close packets do not postpone archival.
 
-Connections showing recent packet activity get longer timeouts:
-- **Last packet < 60 seconds ago**: Uses "active" timeout (longer)
-- **Last packet > 60 seconds ago**: Uses "idle" timeout (shorter)
-
-This ensures active connections stay visible while idle connections are cleaned up more quickly.
+A new TCP SYN observed against a closing connection starts a new live
+generation and archives the previous generation as an immutable historic
+record. Delayed teardown-only TCP packets matching a recently archived
+terminal connection are ignored for 30 seconds rather than creating a phantom
+established row.
 
 ### Why Connections Disappear
 
@@ -940,7 +941,11 @@ A connection is removed when:
 2. The connection enters a **closed state** (TCP CLOSED, QUIC CLOSED)
 3. **Explicit close frames** detected (QUIC CONNECTION_CLOSE)
 
-**Note**: Rate indicators (bandwidth display) show *decaying* traffic based on recent activity. A connection may show declining bandwidth (yellow bars) but remain in the list until it exceeds its idle timeout. This is intentional - the visual decay gives you time to see the connection winding down before it's removed.
+**Note**: Rate indicators show decaying traffic based on recent activity. A
+connection may show declining bandwidth while it approaches its idle or
+terminal timeout. Historic rows show `n/a` for current bandwidth because a
+closed connection has no live rate; final byte and packet totals remain
+available in Details.
 
 ### Historic Connections
 
@@ -952,6 +957,7 @@ When a connection is cleaned up, it is archived into a historic connections pool
 
 - **Active connections** display normally with standard color indicators
 - **Historic connections** appear in **dim gray** to clearly distinguish them from active connections
+- **Historic bandwidth** displays as `n/a`; final byte and packet totals remain available
 - The table title changes to **"Active + Historic Connections"** when historic mode is on
 
 **Details view:**
