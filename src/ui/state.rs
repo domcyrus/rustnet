@@ -732,11 +732,12 @@ impl UIState {
 
     /// Toggle expansion of the currently selected group
     pub fn toggle_group_expansion(&mut self) {
-        if let Some(ref group_name) = self.selected_group {
-            if self.expanded_groups.contains(group_name) {
-                self.expanded_groups.remove(group_name);
+        if let Some(group_name) = self.selected_group.clone() {
+            if self.expanded_groups.contains(&group_name) {
+                self.expanded_groups.remove(&group_name);
+                self.set_connection_key(None);
             } else {
-                self.expanded_groups.insert(group_name.clone());
+                self.expanded_groups.insert(group_name);
             }
         }
     }
@@ -750,8 +751,10 @@ impl UIState {
 
     /// Collapse the currently selected group
     pub fn collapse_selected_group(&mut self) {
-        if let Some(ref group_name) = self.selected_group {
-            self.expanded_groups.remove(group_name);
+        if let Some(group_name) = self.selected_group.clone()
+            && self.expanded_groups.remove(&group_name)
+        {
+            self.set_connection_key(None);
         }
     }
 
@@ -885,6 +888,20 @@ impl UIState {
         let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
         let new_index = (current_index + page_size).min(grouped_rows.len() - 1);
         self.set_selected_grouped_by_index(grouped_rows, new_index);
+    }
+
+    /// Move selection to the first row in grouped view
+    pub fn move_selection_to_first_grouped(&mut self, grouped_rows: &[GroupedRow]) {
+        if !grouped_rows.is_empty() {
+            self.set_selected_grouped_by_index(grouped_rows, 0);
+        }
+    }
+
+    /// Move selection to the last row in grouped view
+    pub fn move_selection_to_last_grouped(&mut self, grouped_rows: &[GroupedRow]) {
+        if !grouped_rows.is_empty() {
+            self.set_selected_grouped_by_index(grouped_rows, grouped_rows.len() - 1);
+        }
     }
 
     /// Ensure valid selection in grouped view
@@ -1180,5 +1197,28 @@ mod tests {
 
         assert_eq!(ui.get_selected_grouped_index(&rows), Some(2));
         assert_eq!(ui.selected_grouped_index_hint.get(), Some(2));
+    }
+
+    #[test]
+    fn collapsing_group_from_connection_selects_group_header() {
+        let connections = vec![
+            test_connection(1000, "alpha"),
+            test_connection(1001, "alpha"),
+        ];
+        let mut ui = UIState {
+            grouping_enabled: true,
+            expanded_groups: HashSet::from(["alpha".to_string()]),
+            ..UIState::default()
+        };
+        let rows = compute_grouped_rows(&connections, &ui.expanded_groups);
+        ui.set_selected_grouped_by_index(&rows, 1);
+        assert!(!ui.is_group_selected());
+
+        ui.toggle_group_expansion();
+
+        assert!(!ui.expanded_groups.contains("alpha"));
+        assert!(ui.is_group_selected());
+        let collapsed_rows = compute_grouped_rows(&connections, &ui.expanded_groups);
+        assert_eq!(ui.get_selected_grouped_index(&collapsed_rows), Some(0));
     }
 }

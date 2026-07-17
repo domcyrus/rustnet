@@ -71,11 +71,23 @@ pub fn try_handle_connection_nav(
             Some(Vec::new())
         }
         (KeyCode::Char('g'), KeyModifiers::NONE) => {
-            ctx.ui_state.move_selection_to_first(ctx.connections);
+            if ctx.ui_state.grouping_enabled
+                && let Some(rows) = ctx.grouped_rows
+            {
+                ctx.ui_state.move_selection_to_first_grouped(rows);
+            } else {
+                ctx.ui_state.move_selection_to_first(ctx.connections);
+            }
             Some(Vec::new())
         }
         (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
-            ctx.ui_state.move_selection_to_last(ctx.connections);
+            if ctx.ui_state.grouping_enabled
+                && let Some(rows) = ctx.grouped_rows
+            {
+                ctx.ui_state.move_selection_to_last_grouped(rows);
+            } else {
+                ctx.ui_state.move_selection_to_last(ctx.connections);
+            }
             Some(Vec::new())
         }
         // Copy selected connection's remote address — works wherever
@@ -155,5 +167,87 @@ pub fn clear_all_with_confirmation(ui_state: &mut UIState, app: &App) -> bool {
         info!("User requested clear - showing confirmation");
         ui_state.clear_confirmation = true;
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    use super::*;
+    use crate::{
+        app::Config,
+        network::types::{Connection, Protocol, ProtocolState, TcpState},
+        ui::{ClickableRegions, GroupedRow, compute_grouped_rows},
+    };
+
+    fn test_connection(port: u16, process: &str) -> Connection {
+        let mut connection = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        connection.process_name = Some(process.to_string());
+        connection
+    }
+
+    #[test]
+    fn grouped_boundary_navigation_uses_visible_rows() {
+        let app = App::new(Config {
+            resolve_dns: false,
+            disable_geoip: true,
+            ..Config::default()
+        })
+        .expect("create app");
+        let connections = vec![
+            test_connection(1000, "beta"),
+            test_connection(1001, "alpha"),
+            test_connection(1002, "beta"),
+            test_connection(1003, "alpha"),
+        ];
+        let mut ui_state = UIState {
+            grouping_enabled: true,
+            expanded_groups: ["alpha".to_string(), "beta".to_string()]
+                .into_iter()
+                .collect(),
+            ..UIState::default()
+        };
+        let grouped_rows = compute_grouped_rows(&connections, &ui_state.expanded_groups);
+        let click_regions = ClickableRegions::default();
+        ui_state.set_selected_grouped_by_index(&grouped_rows, 1);
+        let mut ctx = HandlerContext {
+            app: &app,
+            ui_state: &mut ui_state,
+            connections: &connections,
+            grouped_rows: Some(&grouped_rows),
+            click_regions: &click_regions,
+        };
+
+        let effects = try_handle_connection_nav(
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+            &mut ctx,
+        );
+        assert!(matches!(effects, Some(effects) if effects.is_empty()));
+        assert_eq!(
+            ctx.ui_state.get_selected_grouped_index(&grouped_rows),
+            Some(0)
+        );
+        assert!(matches!(grouped_rows[0], GroupedRow::Group { .. }));
+
+        ctx.ui_state.set_selected_grouped_by_index(&grouped_rows, 1);
+        let effects = try_handle_connection_nav(
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            &mut ctx,
+        );
+        assert!(matches!(effects, Some(effects) if effects.is_empty()));
+        assert_eq!(
+            ctx.ui_state.get_selected_grouped_index(&grouped_rows),
+            Some(grouped_rows.len() - 1)
+        );
+        assert!(matches!(
+            grouped_rows.last(),
+            Some(GroupedRow::Connection { .. })
+        ));
     }
 }
