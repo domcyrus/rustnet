@@ -426,11 +426,17 @@ pub(in crate::ui) fn connection_row<'a>(
                     Cell::from(state).style(style_if_colored(state_color(conn)))
                 }
             }
-            ColumnId::Bandwidth => bandwidth_cell(
-                conn.current_incoming_rate_bps,
-                conn.current_outgoing_rate_bps,
-                color_cells,
-            ),
+            ColumnId::Bandwidth => {
+                if conn.is_historic {
+                    Cell::from(Line::from("n/a").right_aligned())
+                } else {
+                    bandwidth_cell(
+                        conn.current_incoming_rate_bps,
+                        conn.current_outgoing_rate_bps,
+                        color_cells,
+                    )
+                }
+            }
         })
         .collect();
 

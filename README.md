@@ -292,10 +292,10 @@ RustNet uses smart timeouts and visual warnings before removing connections:
 **Protocol-aware timeouts:**
 - **HTTP/HTTPS**: 10 minutes (supports keep-alive)
 - **SSH**: 30 minutes (long sessions)
-- **TCP active**: 10 minutes, idle: 5 minutes
+- **Generic TCP established**: 5 minutes
 - **QUIC connected**: 3 minutes (or peer's transport-param idle timeout, when present); `Initial`/`Handshaking`: 60 seconds
 - **DNS**: 30 seconds
-- **TCP CLOSED**: 5 seconds
+- **TCP CLOSED**: 15-second archival grace
 
 Example: An HTTP connection turns yellow at 7.5 min, red at 9 min, and is removed at 10 min.
 

@@ -2001,6 +2001,11 @@ const RATE_BLEND_PREV: f64 = 0.4;
 /// Rates below this snap to zero to avoid perpetual sub-byte trickle.
 const RATE_ZERO_THRESHOLD: f64 = 1.0;
 
+/// Minimum time a terminal connection remains in the live table before it is
+/// archived. This is long enough for the 10-second rate window and its display
+/// smoothing to settle, while still removing completed flows promptly.
+const TERMINAL_ARCHIVE_GRACE: Duration = Duration::from_secs(15);
+
 /// Smooth a rate value for display/sort stability.
 /// - Rising: take the new value immediately (accurate throughput).
 /// - Falling to zero: aggressive decay (~3 refreshes / 3s to clear).
@@ -2070,6 +2075,10 @@ pub struct Connection {
     // Timing
     pub created_at: SystemTime,
     pub last_activity: SystemTime,
+    /// First observation that placed the connection in a terminal state.
+    /// Later teardown retransmissions may update `last_activity`, but they do
+    /// not move this deadline and therefore cannot postpone archival.
+    pub terminal_since: Option<SystemTime>,
 
     // Service identification
     pub service_name: Option<String>,
@@ -2113,6 +2122,11 @@ impl Connection {
         } else {
             None
         };
+        let terminal_since = matches!(
+            &state,
+            ProtocolState::Tcp(TcpState::TimeWait | TcpState::Closed)
+        )
+        .then_some(now);
 
         Self {
             protocol,
@@ -2130,6 +2144,7 @@ impl Connection {
             packets_received: 0,
             created_at: now,
             last_activity: now,
+            terminal_since,
             service_name: None,
             dpi_info: None,
             rate_tracker: RateTracker::new(),
@@ -2179,14 +2194,72 @@ impl Connection {
         }
     }
 
-    /// Check if connection is active (had activity in the last minute)
+    /// Check whether this is a live connection that has not reached its
+    /// protocol-aware cleanup deadline.
     pub fn is_active(&self) -> bool {
-        self.last_activity.elapsed().unwrap_or_default() < Duration::from_secs(300)
+        !self.is_historic && !self.should_cleanup(SystemTime::now())
     }
 
     /// Get time since last activity
     pub fn idle_time(&self) -> Duration {
         self.last_activity.elapsed().unwrap_or_default()
+    }
+
+    /// Whether the observed transport state is terminal. Closing TCP states
+    /// that can still carry legitimate shutdown traffic are intentionally not
+    /// included until they reach TIME_WAIT or CLOSED.
+    pub fn is_terminal(&self) -> bool {
+        match &self.protocol_state {
+            ProtocolState::Tcp(state) => matches!(state, TcpState::TimeWait | TcpState::Closed),
+            ProtocolState::Udp => self.dpi_info.as_ref().is_some_and(|dpi| {
+                matches!(
+                    &dpi.application,
+                    ApplicationProtocol::Quic(quic)
+                        if quic.connection_close.is_some()
+                            || matches!(
+                                quic.connection_state,
+                                QuicConnectionState::Draining | QuicConnectionState::Closed
+                            )
+                )
+            }),
+            _ => false,
+        }
+    }
+
+    /// Whether a strong new-session signal should start a fresh generation
+    /// instead of being merged into this connection.
+    pub fn is_closing_or_terminal(&self) -> bool {
+        match &self.protocol_state {
+            ProtocolState::Tcp(state) => matches!(
+                state,
+                TcpState::FinWait1
+                    | TcpState::FinWait2
+                    | TcpState::CloseWait
+                    | TcpState::LastAck
+                    | TcpState::TimeWait
+                    | TcpState::Closing
+                    | TcpState::Closed
+            ),
+            ProtocolState::Udp => self.is_terminal(),
+            _ => false,
+        }
+    }
+
+    /// Timestamp used to determine cleanup eligibility and staleness color.
+    /// Terminal connections use their first terminal observation so duplicate
+    /// FIN, ACK, RST, or close traffic cannot keep them live indefinitely.
+    fn cleanup_reference_time(&self) -> SystemTime {
+        if self.is_terminal() {
+            self.terminal_since.unwrap_or(self.last_activity)
+        } else {
+            self.last_activity
+        }
+    }
+
+    /// Time elapsed on the cleanup clock at a supplied timestamp.
+    pub fn cleanup_age(&self, now: SystemTime) -> Duration {
+        now.duration_since(self.cleanup_reference_time())
+            .unwrap_or_default()
     }
 
     /// Get display state with enhanced UDP/QUIC visibility
@@ -2414,15 +2487,13 @@ impl Connection {
                     }
                 }
 
-                // Default established connection timeouts (increased from 300s/180s)
-                if self.idle_time() < Duration::from_secs(60) {
-                    Duration::from_secs(600) // 10 minutes for active connections (was 5 min)
-                } else {
-                    Duration::from_secs(300) // 5 minutes for idle established (was 3 min)
-                }
+                // Every packet already resets last_activity, so one explicit
+                // generic idle timeout is clearer than changing the deadline
+                // after the first minute of inactivity.
+                Duration::from_secs(300)
             }
             TcpState::TimeWait => Duration::from_secs(30), // Standard TCP TIME_WAIT
-            TcpState::Closed => Duration::from_secs(5),    // Quick cleanup for closed
+            TcpState::Closed => TERMINAL_ARCHIVE_GRACE,
             TcpState::FinWait1 | TcpState::FinWait2 => Duration::from_secs(60), // Allow for proper close sequence
             TcpState::CloseWait | TcpState::LastAck => Duration::from_secs(60),
             TcpState::SynSent | TcpState::SynReceived => Duration::from_secs(60), // Connection establishment
@@ -2434,12 +2505,8 @@ impl Connection {
     /// Get QUIC-specific timeout based on connection state and close frames
     fn get_quic_timeout(&self, quic: &QuicInfo) -> Duration {
         // First check if we've detected a CONNECTION_CLOSE frame
-        if let Some(close_info) = &quic.connection_close {
-            return match close_info.frame_type {
-                0x1c => Duration::from_secs(10), // Transport close - allow draining period
-                0x1d => Duration::from_secs(1),  // Application close - immediate cleanup
-                _ => Duration::from_secs(5),     // Unknown close type
-            };
+        if quic.connection_close.is_some() {
+            return TERMINAL_ARCHIVE_GRACE;
         }
 
         // Use state-based timeout if no close frame
@@ -2458,8 +2525,7 @@ impl Connection {
                     Duration::from_secs(180)
                 }
             }
-            QuicConnectionState::Draining => Duration::from_secs(10), // RFC 9000: ~3 * PTO
-            QuicConnectionState::Closed => Duration::from_secs(1),    // Immediate cleanup
+            QuicConnectionState::Draining | QuicConnectionState::Closed => TERMINAL_ARCHIVE_GRACE,
             QuicConnectionState::Unknown => Duration::from_secs(120), // Conservative default
         }
     }
@@ -2467,7 +2533,7 @@ impl Connection {
     /// Check if this connection should be cleaned up based on its timeout
     pub fn should_cleanup(&self, now: SystemTime) -> bool {
         let timeout = self.get_timeout();
-        now.duration_since(self.last_activity).unwrap_or_default() > timeout
+        self.cleanup_age(now) > timeout
     }
 
     /// Get the staleness level as a percentage (0.0 to 1.0+)
@@ -2478,7 +2544,7 @@ impl Connection {
     /// - >1.0 = should have been cleaned up already
     pub fn staleness_ratio(&self) -> f32 {
         let timeout = self.get_timeout();
-        let idle = self.idle_time();
+        let idle = self.cleanup_reference_time().elapsed().unwrap_or_default();
 
         idle.as_secs_f32() / timeout.as_secs_f32()
     }
@@ -3352,13 +3418,13 @@ mod tests {
     fn test_dynamic_timeout_tcp() {
         let mut conn = create_test_connection();
 
-        // Test established connection timeout (updated from 300s to 600s)
+        // Generic established connections use one explicit idle timeout.
         conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
-        assert_eq!(conn.get_timeout(), Duration::from_secs(600)); // Active established (was 300)
+        assert_eq!(conn.get_timeout(), Duration::from_secs(300));
 
-        // Test idle established connection (updated from 180s to 300s)
+        // The timeout no longer changes after the first minute.
         conn.last_activity = SystemTime::now() - Duration::from_secs(120);
-        assert_eq!(conn.get_timeout(), Duration::from_secs(300)); // Idle established (was 180)
+        assert_eq!(conn.get_timeout(), Duration::from_secs(300));
 
         // Test TIME_WAIT
         conn.protocol_state = ProtocolState::Tcp(TcpState::TimeWait);
@@ -3366,7 +3432,7 @@ mod tests {
 
         // Test closed connections
         conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
-        assert_eq!(conn.get_timeout(), Duration::from_secs(5));
+        assert_eq!(conn.get_timeout(), Duration::from_secs(15));
     }
 
     #[test]
@@ -3390,7 +3456,7 @@ mod tests {
             last_update_time: Instant::now(),
         });
 
-        assert_eq!(conn.get_timeout(), Duration::from_secs(10)); // Draining period
+        assert_eq!(conn.get_timeout(), Duration::from_secs(15));
 
         // Test application close
         let mut quic_app_close = QuicInfo::new(0x00000001);
@@ -3404,7 +3470,7 @@ mod tests {
             last_update_time: Instant::now(),
         });
 
-        assert_eq!(conn.get_timeout(), Duration::from_secs(1)); // Immediate cleanup
+        assert_eq!(conn.get_timeout(), Duration::from_secs(15));
     }
 
     #[test]
@@ -3441,16 +3507,16 @@ mod tests {
 
         // Test TCP closed connection cleanup
         conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
-        conn.last_activity = now - Duration::from_secs(10); // Beyond 5s timeout for closed
+        conn.last_activity = now - Duration::from_secs(20); // Beyond terminal archive grace
         assert!(conn.should_cleanup(now));
 
-        // Test established connection within timeout (updated timeout from 300s to 600s)
+        // Test established connection within timeout
         conn.protocol_state = ProtocolState::Tcp(TcpState::Established);
-        conn.last_activity = now - Duration::from_secs(100); // Within 600s timeout
+        conn.last_activity = now - Duration::from_secs(100); // Within 300s timeout
         assert!(!conn.should_cleanup(now));
 
-        // Test established connection beyond timeout (updated timeout to 600s)
-        conn.last_activity = now - Duration::from_secs(700); // Beyond 600s timeout
+        // Test established connection beyond timeout
+        conn.last_activity = now - Duration::from_secs(350); // Beyond 300s timeout
         assert!(conn.should_cleanup(now));
     }
 
@@ -3518,11 +3584,11 @@ mod tests {
             ratio
         );
 
-        // Test CLOSED (5s timeout)
+        // Test CLOSED (15s terminal archive grace)
         conn.protocol_state = ProtocolState::Tcp(TcpState::Closed);
 
-        // At 75% of 5s = 3.75s
-        conn.last_activity = SystemTime::now() - Duration::from_secs(4);
+        // At 75% of 15s = 11.25s
+        conn.last_activity = SystemTime::now() - Duration::from_secs(12);
         let ratio = conn.staleness_ratio();
         assert!(
             ratio >= 0.75,

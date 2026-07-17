@@ -1300,6 +1300,7 @@ impl App {
         let linktype_storage = Arc::clone(&self.linktype);
         let capture_failed = Arc::clone(&self.capture_failed);
         let json_log_path = self.config.json_log_file.clone();
+        let pcap_export_path = self.config.pcap_export_file.clone();
         let dns_resolver = self.dns_resolver.clone();
         let oui_lookup = self.oui_lookup.clone();
         let parser_config = ParserConfig {
@@ -1394,10 +1395,11 @@ impl App {
                                     batch_time,
                                     &stats,
                                     &json_log_path,
+                                    &pcap_export_path,
                                     dns_resolver.as_deref(),
                                 );
                                 parsed_count += 1;
-                                if outcome.dropped {
+                                if outcome.dropped || outcome.ignored_late {
                                     None
                                 } else {
                                     Some(outcome.key)
@@ -1944,9 +1946,7 @@ impl App {
                             // owner of its rate samples, otherwise the next
                             // per-packet update pays an Arc::make_mut deep copy.
                             let mut conn = entry.value().snapshot_clone();
-                            if enrich_and_filter(&mut conn, &service_lookup, filter_localhost)
-                                && conn.is_active()
-                            {
+                            if enrich_and_filter(&mut conn, &service_lookup, filter_localhost) {
                                 Some(conn)
                             } else {
                                 None
@@ -2362,13 +2362,13 @@ impl App {
 
                     // Log cleanup reason for debugging
                     let conn_timeout = conn.get_timeout();
-                    let idle_time = now.duration_since(conn.last_activity).unwrap_or_default();
+                    let cleanup_age = conn.cleanup_age(now);
                     debug!(
-                        "Cleanup: Removing {} connection {} -> {} (idle: {:?}, timeout: {:?}, state: {})",
+                        "Cleanup: Removing {} connection {} -> {} (cleanup age: {:?}, timeout: {:?}, state: {})",
                         conn.protocol,
                         conn.local_addr,
                         conn.remote_addr,
-                        idle_time,
+                        cleanup_age,
                         conn_timeout,
                         conn.state()
                     );
@@ -2812,6 +2812,7 @@ fn update_connection(
     now: SystemTime,
     stats: &AppStats,
     json_log_path: &Option<String>,
+    pcap_export_path: &Option<String>,
     dns_resolver: Option<&DnsResolver>,
 ) -> IngestOutcome {
     let outcome = tracker.ingest_at(&parsed, now);
@@ -2839,6 +2840,36 @@ fn update_connection(
             outcome.key
         );
         return outcome;
+    }
+    if outcome.ignored_late {
+        debug!(
+            "Ignoring delayed packet for recently archived connection: {}",
+            outcome.key
+        );
+        return outcome;
+    }
+
+    if let Some(conn) = &outcome.archived {
+        let duration_secs = now
+            .duration_since(conn.created_at)
+            .map(|duration| duration.as_secs())
+            .ok();
+        if let Some(log_path) = json_log_path {
+            log_connection_event(
+                log_path,
+                "connection_closed",
+                conn,
+                duration_secs,
+                dns_resolver,
+            );
+        }
+        if let Some(pcap_path) = pcap_export_path {
+            log_pcap_connection(pcap_path, conn);
+        }
+        debug!(
+            "Archived prior connection generation before creating a new one: {}",
+            outcome.key
+        );
     }
 
     // Log a new-connection event if JSON logging is enabled.

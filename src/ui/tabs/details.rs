@@ -1631,6 +1631,16 @@ pub(in crate::ui) fn draw_connection_details(
 
     let rx_value_style = theme::fg(theme::rx());
     let tx_value_style = theme::fg(theme::tx());
+    let current_in_rate = if conn.is_historic {
+        "n/a".to_string()
+    } else {
+        format_rate(conn.current_incoming_rate_bps)
+    };
+    let current_out_rate = if conn.is_historic {
+        "n/a".to_string()
+    } else {
+        format_rate(conn.current_outgoing_rate_bps)
+    };
     push_detail_field_styled(
         &mut traffic_text,
         &mut traffic_fields,
@@ -1667,7 +1677,7 @@ pub(in crate::ui) fn draw_connection_details(
         &mut traffic_text,
         &mut traffic_fields,
         "Current Rate (In)",
-        format_rate(conn.current_incoming_rate_bps),
+        current_in_rate.clone(),
         label_style,
         rx_value_style,
     );
@@ -1675,7 +1685,7 @@ pub(in crate::ui) fn draw_connection_details(
         &mut traffic_text,
         &mut traffic_fields,
         "Current Rate (Out)",
-        format_rate(conn.current_outgoing_rate_bps),
+        current_out_rate.clone(),
         label_style,
         tx_value_style,
     );
@@ -1722,9 +1732,21 @@ pub(in crate::ui) fn draw_connection_details(
             ),
         ];
 
-        let history = ctx.app.get_connection_rate_history(&conn.key());
-        let fallback_rx = [conn.current_incoming_rate_bps.max(0.0) as u64];
-        let fallback_tx = [conn.current_outgoing_rate_bps.max(0.0) as u64];
+        let history = if conn.is_historic {
+            None
+        } else {
+            ctx.app.get_connection_rate_history(&conn.key())
+        };
+        let fallback_rx = [if conn.is_historic {
+            0
+        } else {
+            conn.current_incoming_rate_bps.max(0.0) as u64
+        }];
+        let fallback_tx = [if conn.is_historic {
+            0
+        } else {
+            conn.current_outgoing_rate_bps.max(0.0) as u64
+        }];
         let (rx, tx): (&[u64], &[u64]) = history
             .as_ref()
             .map(|(rx, tx)| (rx.as_slice(), tx.as_slice()))
@@ -1777,14 +1799,14 @@ pub(in crate::ui) fn draw_connection_details(
             (
                 cols[0],
                 "Current Rate (In)",
-                format_rate(conn.current_incoming_rate_bps),
+                current_in_rate,
                 rx_total,
                 conn.packets_received,
             ),
             (
                 cols[1],
                 "Current Rate (Out)",
-                format_rate(conn.current_outgoing_rate_bps),
+                current_out_rate,
                 tx_total,
                 conn.packets_sent,
             ),
