@@ -113,7 +113,7 @@ impl Component for OverviewTab {
 
             // --- Group expand / collapse ---
             (KeyCode::Char(' '), _)
-                if ctx.ui_state.grouping_enabled && ctx.ui_state.is_group_selected() =>
+                if ctx.ui_state.grouping_enabled && ctx.ui_state.selected_group.is_some() =>
             {
                 ctx.ui_state.toggle_group_expansion();
                 Some(vec![Effect::Regroup])
@@ -1436,13 +1436,30 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        collections::HashSet,
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+    };
+
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{connections_title, handle_filter_mode_key, is_filter_backspace_char};
+    use super::{OverviewTab, connections_title, handle_filter_mode_key, is_filter_backspace_char};
     use crate::{
         app::{App, Config},
-        ui::{ClickableRegions, HandlerContext, UIState},
+        network::types::{Connection, Protocol, ProtocolState, TcpState},
+        ui::{ClickableRegions, Component, Effect, HandlerContext, UIState, compute_grouped_rows},
     };
+
+    fn test_connection(port: u16, process: &str) -> Connection {
+        let mut connection = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        connection.process_name = Some(process.to_string());
+        connection
+    }
 
     fn title_text(line: ratatui::text::Line<'_>) -> String {
         line.spans
@@ -1524,5 +1541,43 @@ mod tests {
         assert!(ctx.ui_state.filter_mode);
         assert!(ctx.ui_state.filter_query.is_empty());
         assert_eq!(ctx.ui_state.filter_cursor_position, 0);
+    }
+
+    #[test]
+    fn space_collapses_parent_group_from_connection_row() {
+        let app = App::new(Config {
+            resolve_dns: false,
+            disable_geoip: true,
+            ..Config::default()
+        })
+        .expect("create app");
+        let connections = vec![
+            test_connection(1000, "alpha"),
+            test_connection(1001, "alpha"),
+        ];
+        let mut ui_state = UIState {
+            grouping_enabled: true,
+            expanded_groups: HashSet::from(["alpha".to_string()]),
+            ..UIState::default()
+        };
+        let grouped_rows = compute_grouped_rows(&connections, &ui_state.expanded_groups);
+        ui_state.set_selected_grouped_by_index(&grouped_rows, 1);
+        let click_regions = ClickableRegions::default();
+        let mut ctx = HandlerContext {
+            app: &app,
+            ui_state: &mut ui_state,
+            connections: &connections,
+            grouped_rows: Some(&grouped_rows),
+            click_regions: &click_regions,
+        };
+
+        let effects = OverviewTab.handle_key(
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            &mut ctx,
+        );
+
+        assert!(matches!(effects.as_deref(), Some([Effect::Regroup])));
+        assert!(!ctx.ui_state.expanded_groups.contains("alpha"));
+        assert!(ctx.ui_state.is_group_selected());
     }
 }
