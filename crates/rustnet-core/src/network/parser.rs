@@ -5,11 +5,15 @@ use crate::network::link_layer;
 use crate::network::link_layer::ethernet;
 #[cfg(target_os = "macos")]
 use crate::network::link_layer::pktap;
+use crate::network::local_addresses::collect_local_ips;
 use crate::network::oui::OuiLookup;
 use crate::network::protocol;
 use crate::network::protocol::TransportParams;
 use crate::network::types::*;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::{Duration, Instant};
+
+const AMBIGUOUS_ENDPOINT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 
 // Re-export TCP types
 pub use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
@@ -117,9 +121,11 @@ impl ParserConfig {
     }
 }
 
-/// Packet parser - stateless, thread-safe
+/// Packet parser with a refreshable snapshot of the host's local addresses.
 pub struct PacketParser {
     local_ips: std::collections::HashSet<IpAddr>,
+    last_local_ip_refresh: Instant,
+    last_ambiguous_endpoint_refresh: Option<Instant>,
     config: ParserConfig,
     linktype: Option<i32>, // DLT linktype - 149 means PKTAP on macOS
     oui_lookup: Option<OuiLookup>,
@@ -137,6 +143,8 @@ impl PacketParser {
     pub fn new() -> Self {
         Self {
             local_ips: collect_local_ips(),
+            last_local_ip_refresh: Instant::now(),
+            last_ambiguous_endpoint_refresh: None,
             config: ParserConfig::default(),
             linktype: None,
             oui_lookup: None,
@@ -146,6 +154,8 @@ impl PacketParser {
     pub fn with_config(config: ParserConfig) -> Self {
         Self {
             local_ips: collect_local_ips(),
+            last_local_ip_refresh: Instant::now(),
+            last_ambiguous_endpoint_refresh: None,
             config,
             linktype: None,
             oui_lookup: None,
@@ -184,6 +194,34 @@ impl PacketParser {
         }
 
         self
+    }
+
+    /// Refresh the local-address snapshot from the operating system.
+    ///
+    /// Returns `true` when the set changed. Capture workers call this
+    /// periodically so DHCP renewals, VPN interfaces, and IPv6 privacy-address
+    /// rotation do not leave endpoint orientation stale for the lifetime of
+    /// the process.
+    pub fn refresh_local_ips(&mut self) -> bool {
+        self.refresh_local_ips_with(collect_local_ips)
+    }
+
+    /// Refresh the local-address snapshot once `interval` has elapsed.
+    pub fn refresh_local_ips_if_due(&mut self, interval: Duration) -> bool {
+        if self.last_local_ip_refresh.elapsed() < interval {
+            return false;
+        }
+        self.refresh_local_ips()
+    }
+
+    /// Parse a packet and retry once after refreshing local addresses when
+    /// neither unicast endpoint is known to be local.
+    ///
+    /// This self-heals the first packet observed after an address is added,
+    /// rather than waiting for the periodic refresh. Refresh attempts caused
+    /// by unrelated forwarded traffic are rate-limited.
+    pub fn parse_packet_with_refresh(&mut self, data: &[u8]) -> Option<ParsedPacket> {
+        self.parse_packet_with_local_ip_collector(data, collect_local_ips)
     }
 
     /// Parse a raw packet using the appropriate link-layer parser
@@ -233,6 +271,61 @@ impl PacketParser {
         // Fallback: try Ethernet parsing if no linktype or unknown linktype
         log::debug!("Using fallback Ethernet parsing");
         link_layer::ethernet::parse(data, self, None, None)
+    }
+
+    fn parse_packet_with_local_ip_collector<F>(
+        &mut self,
+        data: &[u8],
+        collector: F,
+    ) -> Option<ParsedPacket>
+    where
+        F: FnOnce() -> std::collections::HashSet<IpAddr>,
+    {
+        let parsed = self.parse_packet(data)?;
+        let local_ip = parsed.local_addr.ip();
+        let remote_ip = parsed.remote_addr.ip();
+
+        if self.local_ips.contains(&local_ip)
+            || self.local_ips.contains(&remote_ip)
+            || !is_unicast_endpoint(local_ip)
+            || !is_unicast_endpoint(remote_ip)
+        {
+            return Some(parsed);
+        }
+
+        let now = Instant::now();
+        if self
+            .last_ambiguous_endpoint_refresh
+            .is_some_and(|last| now.duration_since(last) < AMBIGUOUS_ENDPOINT_REFRESH_INTERVAL)
+        {
+            return Some(parsed);
+        }
+        self.last_ambiguous_endpoint_refresh = Some(now);
+
+        if self.refresh_local_ips_with(collector) {
+            self.parse_packet(data)
+        } else {
+            Some(parsed)
+        }
+    }
+
+    fn refresh_local_ips_with<F>(&mut self, collector: F) -> bool
+    where
+        F: FnOnce() -> std::collections::HashSet<IpAddr>,
+    {
+        let refreshed = collector();
+        self.last_local_ip_refresh = Instant::now();
+        if refreshed == self.local_ips {
+            return false;
+        }
+
+        log::debug!(
+            "Local address set changed: {} -> {} address(es)",
+            self.local_ips.len(),
+            refreshed.len()
+        );
+        self.local_ips = refreshed;
+        true
     }
 
     #[cfg(target_os = "macos")]
@@ -704,16 +797,11 @@ impl PacketParser {
     }
 }
 
-fn collect_local_ips() -> std::collections::HashSet<IpAddr> {
-    let mut local_ips = std::collections::HashSet::new();
-    for iface in pnet_datalink::interfaces() {
-        for ip_network in iface.ips {
-            local_ips.insert(ip_network.ip());
-        }
+fn is_unicast_endpoint(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => !ip.is_unspecified() && !ip.is_multicast() && ip != Ipv4Addr::BROADCAST,
+        IpAddr::V6(ip) => !ip.is_unspecified() && !ip.is_multicast(),
     }
-    local_ips.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
-    local_ips.insert(IpAddr::V6(Ipv6Addr::LOCALHOST));
-    local_ips
 }
 
 #[cfg(test)]
@@ -957,6 +1045,49 @@ mod tests {
         let parser = PacketParser::new();
         // Should have at least loopback
         assert!(!parser.local_ips.is_empty(), "Should detect local IPs");
+    }
+
+    #[test]
+    fn ambiguous_ipv6_packet_refreshes_local_addresses_and_reorients_endpoints() {
+        let mut parser = create_parser_with_linktype(1);
+        parser.local_ips.clear();
+        parser.local_ips.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        parser.local_ips.insert(IpAddr::V6(Ipv6Addr::LOCALHOST));
+        let packet = ethernet_ipv6_tcp();
+
+        let stale = parser.parse_packet(&packet).expect("packet should parse");
+        assert!(!stale.is_outgoing);
+        assert_eq!(stale.local_addr.port(), 80);
+
+        let new_local = IpAddr::V6("2001:db8::1".parse().expect("valid fixture address"));
+        let corrected = parser
+            .parse_packet_with_local_ip_collector(&packet, || {
+                [
+                    IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    IpAddr::V6(Ipv6Addr::LOCALHOST),
+                    new_local,
+                ]
+                .into_iter()
+                .collect()
+            })
+            .expect("packet should be reparsed");
+
+        assert!(corrected.is_outgoing);
+        assert_eq!(corrected.local_addr.ip(), new_local);
+        assert_eq!(corrected.local_addr.port(), 1234);
+        assert_eq!(corrected.remote_addr.port(), 80);
+    }
+
+    #[test]
+    fn refresh_replaces_addresses_that_are_no_longer_assigned() {
+        let mut parser = create_parser_with_linktype(1);
+        let old = IpAddr::V6("2001:db8::1".parse().expect("valid old address"));
+        let new = IpAddr::V6("2001:db8::2".parse().expect("valid new address"));
+        parser.local_ips = [old].into_iter().collect();
+
+        assert!(parser.refresh_local_ips_with(|| [new].into_iter().collect()));
+        assert!(!parser.local_ips.contains(&old));
+        assert!(parser.local_ips.contains(&new));
     }
 
     // ====== Edge Cases ======

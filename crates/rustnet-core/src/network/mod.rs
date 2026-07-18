@@ -13,6 +13,7 @@ pub mod dpi;
 pub mod geoip;
 pub mod interface_stats;
 pub mod link_layer;
+mod local_addresses;
 pub mod merge;
 pub mod oui;
 pub mod parser;

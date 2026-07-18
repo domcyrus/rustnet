@@ -262,8 +262,15 @@ RustNet 使用平台特定的 API 将网络连接与进程关联：
 
 - **Linux**：使用 `netlink` 或回退到 `/sys/class/net/`
 - **macOS**：使用 `getifaddrs()` 系统调用
-- **Windows**：使用 IP Helper API 的 `GetAdaptersInfo()`
+- **Windows**：使用 IP Helper API（`GetAdaptersInfo()` 用于列出接口，
+  `GetAdaptersAddresses()` 用于获取解析器所需的完整 IPv4/IPv6 本地地址集合）
 - **所有平台**：当原生方法失败时回退到 pcap 的 `pcap_findalldevs()`
+
+数据包端点方向判定会维护当前分配给主机的地址快照。数据包处理线程每 30 秒刷新一次；
+当两个单播端点都无法识别为本地地址时，还会以限速方式立即刷新，并重新解析该数据包一次。
+因此，DHCP 地址变化、VPN 连接、网络漫游以及 IPv6 隐私地址轮换后，流量方向仍能正确判定。
+在 Windows 上，`GetAdaptersAddresses()` 会补充 `pnet_datalink` 仅包含 IPv4 的适配器数据，
+从而纳入临时和稳定的 IPv6 地址。
 
 ### 进程活动计量
 

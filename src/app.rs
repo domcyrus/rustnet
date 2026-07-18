@@ -1358,7 +1358,7 @@ impl App {
                 }
 
                 // Wait for linktype to be available
-                let parser = loop {
+                let mut parser = loop {
                     if let Some(linktype) = *linktype_storage.read().unwrap() {
                         let mut parser = PacketParser::with_config(parser_config.clone())
                             .with_linktype(linktype);
@@ -1376,6 +1376,7 @@ impl App {
                 };
                 let mut total_processed = 0u64;
                 let mut last_log = Instant::now();
+                const LOCAL_ADDRESS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
                 loop {
                     if should_stop.load(Ordering::Relaxed) {
@@ -1406,6 +1407,7 @@ impl App {
                     // 100ms, so the timestamp skew is far below any
                     // connection timeout or rate window.
                     let batch_time = SystemTime::now();
+                    parser.refresh_local_ips_if_due(LOCAL_ADDRESS_REFRESH_INTERVAL);
                     let mut parsed_count = 0;
                     let batch_len = batch.len();
                     let pcapng_enabled = pcapng_tx.is_some();
@@ -1414,7 +1416,7 @@ impl App {
                         let packet_original_len = packet.original_len;
                         let parse_result =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                parser.parse_packet(&packet.data)
+                                parser.parse_packet_with_refresh(&packet.data)
                             }));
                         let key = match parse_result {
                             Ok(Some(parsed)) => {

@@ -267,8 +267,16 @@ The tool automatically detects and lists available network interfaces using plat
 
 - **Linux**: Uses `netlink` or falls back to `/sys/class/net/`
 - **macOS**: Uses `getifaddrs()` system call
-- **Windows**: Uses `GetAdaptersInfo()` from IP Helper API
+- **Windows**: Uses IP Helper APIs (`GetAdaptersInfo()` for interface listing and
+  `GetAdaptersAddresses()` for the parser's complete IPv4/IPv6 local-address set)
 - **All platforms**: Falls back to pcap's `pcap_findalldevs()` when native methods fail
+
+Packet endpoint orientation maintains a snapshot of the addresses currently assigned to
+the host. Packet-processing workers refresh it every 30 seconds and, when neither unicast
+endpoint is recognized as local, perform a rate-limited refresh and retry that packet once.
+This keeps direction detection correct across DHCP changes, VPN connections, roaming, and
+IPv6 privacy-address rotation. On Windows, `GetAdaptersAddresses()` supplements
+`pnet_datalink`'s IPv4-only adapter data so temporary and stable IPv6 addresses are included.
 
 ### Process Activity Accounting
 

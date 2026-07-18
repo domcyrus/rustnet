@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Dynamic local-address detection**: Refresh endpoint-orientation addresses after
+  network changes and retry ambiguous unicast packets once. On Windows, supplement
+  the IPv4-only adapter data with `GetAdaptersAddresses()` so IPv6 traffic is not
+  shown with reversed local and remote endpoints.
+
 ## [1.4.0] - 2026-06-16
 
 This release redesigns the TUI around a calmer visual hierarchy and, under the hood,

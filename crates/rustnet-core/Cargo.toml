@@ -30,6 +30,14 @@ flate2 = "1"
 ring = "0.17"
 aes = "0.9"
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
+
 [features]
 # Adds the Kubernetes pod/container metadata (`K8sInfo`) to `Connection`.
 # Resolution itself lives in the rustnet binary; no extra dependencies.
