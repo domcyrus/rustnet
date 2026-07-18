@@ -165,6 +165,13 @@ const MAX_PCAPNG_RETRY_BYTES: usize = 64 * 1024 * 1024;
 const PCAPNG_ATTRIBUTION_WAIT: Duration = Duration::from_secs(2);
 const STARTUP_SPLASH_DURATION: Duration = Duration::from_millis(750);
 const LIVE_RATE_INTERVAL: Duration = Duration::from_millis(500);
+/// Shortest measurement window that may be converted into a per-second rate.
+/// The traffic-history thread's first pass measures only the few milliseconds
+/// since its baselines were initialized; dividing the startup burst of
+/// connection creations by such a sliver window turns a handful of events
+/// into a thousands-per-second outlier that pins the graph ceiling for the
+/// whole 60s history window. Keep this at half of [`LIVE_RATE_INTERVAL`].
+const MIN_RATE_SAMPLE_SECONDS: f64 = 0.25;
 const TRAFFIC_HISTORY_SECONDS: usize = 60;
 const TRAFFIC_HISTORY_CAPACITY: usize = TRAFFIC_HISTORY_SECONDS * 2;
 
@@ -2278,24 +2285,13 @@ impl App {
                     let sampled_at = Instant::now();
                     let sample_seconds =
                         sampled_at.duration_since(previous_sample_at).as_secs_f64();
-                    let per_second = |delta: u64| {
-                        if sample_seconds > 0.0 {
-                            (delta as f64 / sample_seconds).round() as u64
-                        } else {
-                            0
-                        }
-                    };
-                    let per_second_tenths = |delta: u64| {
-                        if sample_seconds > 0.0 {
-                            (delta as f64 * 10.0 / sample_seconds).round() as u64
-                        } else {
-                            0
-                        }
-                    };
-                    let packets_per_sec = per_second(packets_delta);
-                    let retransmits_per_sec = per_second(retransmits_delta);
-                    let opened_per_sec_tenths = per_second_tenths(connections_created_delta);
-                    let closed_per_sec_tenths = per_second_tenths(connections_archived_delta);
+                    let packets_per_sec = per_second_rate(packets_delta, sample_seconds, 1.0);
+                    let retransmits_per_sec =
+                        per_second_rate(retransmits_delta, sample_seconds, 1.0);
+                    let opened_per_sec_tenths =
+                        per_second_rate(connections_created_delta, sample_seconds, 10.0);
+                    let closed_per_sec_tenths =
+                        per_second_rate(connections_archived_delta, sample_seconds, 10.0);
 
                     prev_packets = current_packets;
                     prev_retransmits = current_retransmits;
@@ -2887,6 +2883,16 @@ impl App {
     }
 }
 
+/// Convert a counter delta into a per-second rate in the given unit scale
+/// (1.0 for whole units, 10.0 for tenths). Windows shorter than
+/// [`MIN_RATE_SAMPLE_SECONDS`] yield 0 instead of an amplified outlier.
+fn per_second_rate(delta: u64, elapsed_seconds: f64, unit_scale: f64) -> u64 {
+    if elapsed_seconds < MIN_RATE_SAMPLE_SECONDS {
+        return 0;
+    }
+    (delta as f64 * unit_scale / elapsed_seconds).round() as u64
+}
+
 /// Update or create a connection from a parsed packet.
 ///
 /// The connection table, RTT tracking, QUIC coalescing, and the connection
@@ -3277,6 +3283,27 @@ mod connection_lifecycle_tests {
 
         assert_eq!(stats.total_connections_created.load(Ordering::Relaxed), 2);
         assert_eq!(stats.total_connections_archived.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[cfg(test)]
+mod live_rate_sampling_tests {
+    use super::*;
+
+    /// The traffic-history thread's first pass measures only its own setup
+    /// time; a startup burst divided by that sliver must not become a
+    /// thousands-per-second outlier that pins the graph scale.
+    #[test]
+    fn sliver_measurement_windows_produce_no_rate() {
+        assert_eq!(per_second_rate(1, 0.001, 10.0), 0);
+        assert_eq!(per_second_rate(500, 0.01, 1.0), 0);
+    }
+
+    #[test]
+    fn full_windows_produce_per_second_rates() {
+        assert_eq!(per_second_rate(5, 0.5, 1.0), 10);
+        assert_eq!(per_second_rate(1, 0.5, 10.0), 20);
+        assert_eq!(per_second_rate(0, 0.5, 10.0), 0);
     }
 }
 
