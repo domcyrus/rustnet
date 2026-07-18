@@ -10,7 +10,8 @@ best strategy each platform offers, with graceful fallbacks:
 
 - **Linux** — eBPF socket tracking (with the `ebpf` feature) and a procfs fallback.
 - **macOS** — PKTAP packet metadata when available (no lookup needed), else `lsof`.
-- **Windows** — the IP Helper API (`GetExtendedTcpTable` / `...UdpTable`).
+- **Windows** — kernel ETW events with an IP Helper API
+  (`GetExtendedTcpTable` / `...UdpTable`) fallback.
 - **FreeBSD** — `sockstat`.
 
 ```rust

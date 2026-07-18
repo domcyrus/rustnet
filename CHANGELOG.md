@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Event-driven Windows Process Attribution**: Use kernel network and process ETW
+  events to retain connection ownership for short-lived processes, with IP Helper
+  polling as reconciliation and fallback. IPv6 UDP ownership is now included.
+
 ### Fixed
 - **Dynamic local-address detection**: Refresh endpoint-orientation addresses after
   network changes and retry ambiguous unicast packets once. On Windows, supplement

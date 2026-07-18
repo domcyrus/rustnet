@@ -349,11 +349,19 @@ fn is_filter_backspace_char(c: char, modifiers: KeyModifiers) -> bool {
 
 /// Fixed width of the System stats sidebar. A constant (rather than a
 /// percentage) keeps it from ballooning on wide terminals; it just fits
-/// the longest stat lines ("Process Detection: …").
+/// the longest stat lines.
 const SYSTEM_PANEL_WIDTH: u16 = 34;
 /// Below this Overview width the sidebar is dropped even when toggled
 /// on — the connection table needs the room more.
 const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
+
+fn detection_method_label(method: &str) -> &str {
+    match method {
+        "windows-etw+iphlpapi" => "ETW + IP Helper",
+        "windows-iphlpapi" => "IP Helper",
+        _ => method,
+    }
+}
 
 fn draw_overview(
     f: &mut Frame,
@@ -965,12 +973,8 @@ fn draw_stats_panel(
     // 1 line for the "Security" heading + one line per content line.
     let security_height = 1u16 + security_text.len() as u16;
 
-    // The Statistics block is normally 14 lines. When process detection is
-    // degraded we render the warning as two indented lines (header +
-    // reason) so the often-long reason text isn't crammed onto the same
-    // line as "Process Detection: …" — which would truncate on a narrow
-    // right column. Reserve enough extra rows for the reason to wrap onto
-    // a second visual line on typical terminal widths.
+    // The Statistics block is normally 14 lines. Degraded process detection
+    // adds two compact, indented lines for the unavailable feature and impact.
     let pcap_export_enabled = app.is_pcap_export_enabled();
     let pcapng_export_enabled = app.is_pcapng_export_enabled();
     let stats_height: u16 = if app.get_process_detection_status().is_degraded {
@@ -1003,7 +1007,9 @@ fn draw_stats_panel(
     let detection_status = app.get_process_detection_status();
     let (link_layer_type, is_tunnel) = app.get_link_layer_info();
 
-    // Build process detection line(s) with color based on status
+    // Build process detection lines with a human-facing method label. The
+    // platform implementations use stable machine identifiers internally,
+    // but strings such as "windows-iphlpapi" are too noisy for this sidebar.
     let process_detection_color = if detection_status.is_degraded {
         theme::warn()
     } else {
@@ -1019,18 +1025,16 @@ fn draw_stats_panel(
             if is_tunnel { " (Tunnel)" } else { "" }
         )),
         Line::from(vec![
-            Span::raw("Process Detection: "),
+            Span::raw("Detection: "),
             Span::styled(
-                detection_status.method.clone(),
+                detection_method_label(&detection_status.method),
                 theme::fg(process_detection_color),
             ),
         ]),
     ];
 
-    // Add degradation warning on two lines if degraded: a short header line
-    // ("eBPF unavailable:") and the reason on its own indented line. Long
-    // reasons (e.g. raw libbpf error text in EbpfLoadFailed) would otherwise
-    // overflow the narrow right column and get clipped.
+    // Keep the warning and its impact separate. This avoids constructions like
+    // "ETW unavailable: ETW unavailable" and wraps predictably in narrow panes.
     if detection_status.is_degraded {
         let feature = detection_status
             .unavailable_feature
@@ -1041,11 +1045,11 @@ fn draw_stats_panel(
             .as_deref()
             .unwrap_or("insufficient permissions");
         conn_stats_text.push(Line::from(Span::styled(
-            format!("  {feature} unavailable:"),
+            format!("  {feature} unavailable"),
             theme::fg(theme::muted()),
         )));
         conn_stats_text.push(Line::from(Span::styled(
-            format!("    {reason}"),
+            format!("  {reason}"),
             theme::fg(theme::muted()),
         )));
     }
@@ -1484,8 +1488,9 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::{
-        MINI_WAVE_INTENSITY, OverviewTab, connections_title, handle_filter_mode_key,
-        is_filter_backspace_char, mini_wave, mini_wave_ceiling, mini_wave_window, smooth_mini_wave,
+        MINI_WAVE_INTENSITY, OverviewTab, connections_title, detection_method_label,
+        handle_filter_mode_key, is_filter_backspace_char, mini_wave, mini_wave_ceiling,
+        mini_wave_window, smooth_mini_wave,
     };
     use crate::{
         app::{App, Config},
@@ -1513,6 +1518,16 @@ mod tests {
             .map(|span| span.content.into_owned())
             .collect::<Vec<_>>()
             .concat()
+    }
+
+    #[test]
+    fn windows_detection_methods_use_human_facing_labels() {
+        assert_eq!(
+            detection_method_label("windows-etw+iphlpapi"),
+            "ETW + IP Helper"
+        );
+        assert_eq!(detection_method_label("windows-iphlpapi"), "IP Helper");
+        assert_eq!(detection_method_label("procfs"), "procfs");
     }
 
     #[test]

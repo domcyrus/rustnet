@@ -765,13 +765,43 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/local/bin/rustnet
 rustnet
 ```
 
-### Windows Permission Setup
+### Windows Permission and Process Attribution Setup<a id="windows-permission-setup"></a>
 
-Windows support is currently limited, but when available:
+Windows has two independent permission paths:
 
-- RustNet will require **Administrator privileges**
-- Must install **WinPcap** or **Npcap** for packet capture
-- Run Command Prompt or PowerShell "As Administrator"
+1. **Packet capture** uses Npcap. Whether RustNet must run as Administrator is
+   determined by the options selected when Npcap was installed. If Npcap was
+   configured to restrict capture to administrators, start Command Prompt,
+   PowerShell, or Windows Terminal with **Run as administrator**. Otherwise a
+   standard-user process can capture packets.
+2. **Process attribution** prefers Event Tracing for Windows (ETW) and always
+   keeps the IP Helper API available for reconciliation and fallback.
+
+At startup RustNet attempts to subscribe to the Windows kernel network and
+process ETW providers. The Overview tab reports the resulting mode:
+
+| Detection display | Meaning |
+|---|---|
+| `ETW + IP Helper` | Event-driven attribution is active. ETW catches short-lived processes; IP Helper fills cache misses and reconciles current sockets. |
+| `IP Helper` | ETW could not be started. RustNet continues without failing, using `GetExtendedTcpTable` and `GetExtendedUdpTable`. Very short-lived processes may be missed between table snapshots. |
+
+An Administrator shell is the most compatible way to enable ETW. A local
+administrator can instead grant a user trace-session rights by adding that user
+to the built-in **Performance Log Users** group (SID `S-1-5-32-559`). Sign out
+and back in after changing group membership. Provider security policy can still
+deny a particular ETW provider, so check the Overview tab rather than assuming
+ETW is active.
+
+ETW authorization and Npcap authorization are separate. Membership in
+**Performance Log Users** does not grant packet-capture access, and a
+non-administrator can still use IP Helper process attribution when ETW is
+unavailable. No manual fallback option is necessary: RustNet selects the best
+available mode automatically.
+
+Some rows may remain `<unknown>` even with ETW. Examples include ARP and ICMP
+traffic without a socket owner, system-owned traffic, packets seen before the
+ETW session started, and events for which Windows does not expose a readable
+process image.
 
 ### Verifying Permissions
 

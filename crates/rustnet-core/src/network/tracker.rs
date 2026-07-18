@@ -54,6 +54,12 @@ use std::time::{Duration, SystemTime};
 /// packets do not create phantom established connections.
 const RECENTLY_CLOSED_TTL: Duration = Duration::from_secs(30);
 
+/// Tombstone capacity floor. `max_historic` sizes the user-facing archive,
+/// but tombstones guard correctness, so a tiny or zero `max_historic` must
+/// not strip them and reopen the phantom-connection window. Entries are a
+/// key and a timestamp; the TTL above bounds how long any of them live.
+const RECENTLY_CLOSED_MIN_ENTRIES: usize = 1024;
+
 /// The active connection table: flow key -> connection.
 ///
 /// Keys are compact `Copy` structs, and the map uses FxHash — with a small
@@ -521,7 +527,7 @@ impl ConnectionTracker {
         recently_closed.retain(|_, closed_at| {
             now.duration_since(*closed_at).unwrap_or_default() <= RECENTLY_CLOSED_TTL
         });
-        let max_entries = self.config.max_historic.max(1);
+        let max_entries = self.config.max_historic.max(RECENTLY_CLOSED_MIN_ENTRIES);
         if recently_closed.len() > max_entries {
             let mut entries: Vec<(ConnectionKey, SystemTime)> = recently_closed
                 .iter()
@@ -1140,6 +1146,44 @@ mod tests {
         let removed = tracker.cleanup(far_future);
         assert_eq!(removed.len(), 1);
         assert_eq!(tracker.historic_len(), 0, "historic disabled");
+    }
+
+    /// `max_historic` sizes the user-facing archive; it must not shrink the
+    /// tombstone table below the floor, or closing more flows than the cap
+    /// lets delayed teardown packets resurrect phantom connections.
+    #[test]
+    fn zero_max_historic_keeps_tombstones_for_all_closed_flows() {
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            keep_historic: false,
+            max_historic: 0,
+            ..TrackerConfig::default()
+        });
+
+        let start = SystemTime::now();
+        for port in [40_000u16, 40_001] {
+            let mut syn = tcp_packet(true, false, false, false, true);
+            syn.local_addr.set_port(port);
+            tracker.ingest_at(&syn, start);
+            let mut rst = tcp_packet(false, false, false, true, true);
+            rst.local_addr.set_port(port);
+            tracker.ingest_at(&rst, start + Duration::from_secs(1));
+        }
+        assert_eq!(tracker.len(), 2);
+
+        let closed_at = start + Duration::from_secs(86_400);
+        let removed = tracker.cleanup(closed_at);
+        assert_eq!(removed.len(), 2);
+
+        for port in [40_000u16, 40_001] {
+            let mut late_fin = tcp_packet(false, true, true, false, true);
+            late_fin.local_addr.set_port(port);
+            let outcome = tracker.ingest_at(&late_fin, closed_at + Duration::from_secs(1));
+            assert!(
+                outcome.ignored_late,
+                "delayed teardown for port {port} must hit a tombstone"
+            );
+        }
+        assert!(tracker.is_empty(), "no phantom connections may be created");
     }
 
     #[test]
