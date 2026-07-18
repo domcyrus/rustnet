@@ -181,6 +181,12 @@ struct PcapngRecord {
     timestamp: SystemTime,
     original_len: u32,
     key: Option<ConnectionKey>,
+    /// `created_at` of the connection that owned `key` when the packet was
+    /// queued. Live keys are tuple-only, so a comment lookup at flush time
+    /// must verify the tuple still belongs to the same generation; otherwise
+    /// a rapidly reused tuple annotates this packet with the metadata of a
+    /// connection it never belonged to.
+    conn_created_at: Option<SystemTime>,
     deadline: Instant,
 }
 
@@ -663,9 +669,25 @@ pub struct ConnRateHistory {
     pub tx: VecDeque<u64>,
     rx_scale: GraphScale,
     tx_scale: GraphScale,
+    generation: Option<SystemTime>,
 }
 
 impl ConnRateHistory {
+    /// Push one sample for the connection generation stamped `created_at`.
+    /// Live connection keys are tuple-only, so a replacement generation reuses
+    /// its predecessor's map entry; a new generation resets the rings — and
+    /// the sticky graph scales — instead of inheriting the old connection's
+    /// graph and ceiling.
+    fn push_for_generation(&mut self, created_at: SystemTime, rx: u64, tx: u64, cap: usize) {
+        if self.generation != Some(created_at) {
+            *self = Self {
+                generation: Some(created_at),
+                ..Self::default()
+            };
+        }
+        self.push(rx, tx, cap);
+    }
+
     fn push(&mut self, rx: u64, tx: u64, cap: usize) {
         if self.rx.len() >= cap {
             self.rx.pop_front();
@@ -1445,6 +1467,9 @@ impl App {
                             }
                         };
                         if pcapng_enabled {
+                            let conn_created_at = key.and_then(|key| {
+                                tracker.connections().get(&key).map(|conn| conn.created_at)
+                            });
                             send_pcapng_record(
                                 pcapng_tx.as_ref(),
                                 &stats,
@@ -1453,6 +1478,7 @@ impl App {
                                     timestamp: packet_timestamp,
                                     original_len: packet_original_len,
                                     key,
+                                    conn_created_at,
                                     deadline: if key.is_some() {
                                         Instant::now() + PCAPNG_ATTRIBUTION_WAIT
                                     } else {
@@ -2256,7 +2282,8 @@ impl App {
                                     .collect();
                                 rates.retain(|key, _| alive.contains(key));
                                 for conn in snap.iter().filter(|c| !c.is_historic) {
-                                    rates.entry(conn.key()).or_default().push(
+                                    rates.entry(conn.key()).or_default().push_for_generation(
+                                        conn.created_at,
                                         conn.current_incoming_rate_bps as u64,
                                         conn.current_outgoing_rate_bps as u64,
                                         TRAFFIC_HISTORY_CAPACITY,
@@ -3102,18 +3129,29 @@ fn write_pcapng_record<W: Write>(
 fn pcapng_comment(record: &PcapngRecord, tracker: &ConnectionTracker) -> Option<String> {
     let key = record.key?;
     let conn = tracker.connections().get(&key)?;
+    if record.conn_created_at != Some(conn.created_at) {
+        return None;
+    }
     if conn.pid.is_none() && conn.process_name.is_none() {
         return None;
     }
     build_pcapng_comment(&conn)
 }
 
+/// Like [`pcapng_comment`], but without requiring process attribution. Both
+/// lookups reject a connection whose `created_at` differs from the one the
+/// packet was queued under: live keys are tuple-only, so a rapidly reused
+/// tuple would otherwise annotate this packet with a later generation's
+/// metadata.
 fn pcapng_comment_if_any_metadata(
     record: &PcapngRecord,
     tracker: &ConnectionTracker,
 ) -> Option<String> {
     let key = record.key?;
     let conn = tracker.connections().get(&key)?;
+    if record.conn_created_at != Some(conn.created_at) {
+        return None;
+    }
     build_pcapng_comment(&conn)
 }
 
@@ -3459,6 +3497,28 @@ mod open_log_file_tests {
 }
 
 #[cfg(test)]
+mod conn_rate_history_tests {
+    use super::*;
+
+    /// Live connection keys are tuple-only, so a replacement generation lands
+    /// on its predecessor's map entry; it must start with a fresh graph
+    /// instead of inheriting the old connection's history.
+    #[test]
+    fn replacement_generation_starts_with_fresh_rate_history() {
+        let mut history = ConnRateHistory::default();
+        let first_generation = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        history.push_for_generation(first_generation, 1_000_000, 2_000_000, 10);
+        history.push_for_generation(first_generation, 1_000_000, 2_000_000, 10);
+        assert_eq!(history.rx.len(), 2);
+
+        let second_generation = first_generation + Duration::from_secs(5);
+        history.push_for_generation(second_generation, 10, 20, 10);
+        assert_eq!(history.rx, [10]);
+        assert_eq!(history.tx, [20]);
+    }
+}
+
+#[cfg(test)]
 mod pcapng_export_tests {
     use super::*;
     use std::net::SocketAddr;
@@ -3469,8 +3529,59 @@ mod pcapng_export_tests {
             timestamp: std::time::UNIX_EPOCH,
             original_len: 1,
             key,
+            conn_created_at: None,
             deadline,
         }
+    }
+
+    /// A queued record must only be annotated with metadata from the exact
+    /// connection generation it was captured under; a reused tuple's newer
+    /// generation must not claim it.
+    #[test]
+    fn annotation_requires_matching_connection_generation() {
+        use crate::network::{
+            protocol::tcp::{TcpFlags, TcpHeaderInfo},
+            types::{ProtocolState, TcpState},
+        };
+
+        let tracker = ConnectionTracker::new();
+        let outcome = tracker.ingest(&ParsedPacket {
+            protocol: Protocol::Tcp,
+            local_addr: SocketAddr::from(([192, 0, 2, 9], 41_000)),
+            remote_addr: SocketAddr::from(([198, 51, 100, 9], 443)),
+            tcp_header: Some(TcpHeaderInfo {
+                seq: 1,
+                ack: 0,
+                window: 65_535,
+                flags: TcpFlags {
+                    syn: true,
+                    ack: false,
+                    fin: false,
+                    rst: false,
+                    psh: false,
+                    urg: false,
+                },
+                payload_len: 0,
+            }),
+            protocol_state: ProtocolState::Tcp(TcpState::Unknown),
+            is_outgoing: true,
+            packet_len: 60,
+            dpi_result: None,
+            process_name: None,
+            process_id: None,
+        });
+        let key = outcome.key;
+        tracker.connections().get_mut(&key).unwrap().process_name = Some("nginx".to_string());
+        let created_at = tracker.connections().get(&key).unwrap().created_at;
+
+        let mut matching = record(0xAA, Some(key), Instant::now());
+        matching.conn_created_at = Some(created_at);
+        assert!(pcapng_comment(&matching, &tracker).is_some());
+
+        let mut stale = record(0xBB, Some(key), Instant::now());
+        stale.conn_created_at = Some(created_at - Duration::from_secs(1));
+        assert!(pcapng_comment(&stale, &tracker).is_none());
+        assert!(pcapng_comment_if_any_metadata(&stale, &tracker).is_none());
     }
 
     /// Kubernetes attribution must be carried into the per-packet comment so
