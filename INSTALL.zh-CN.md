@@ -754,13 +754,37 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/local/bin/rustnet
 rustnet
 ```
 
-### Windows 权限配置<a id="windows-permission-setup"></a>
+### Windows 权限与进程归属配置<a id="windows-permission-setup"></a>
 
-Windows 支持目前有限，但可用时：
+Windows 上有两套相互独立的权限：
 
-- RustNet 需要 **Administrator 特权**
-- 必须安装 **WinPcap** 或 **Npcap** 用于数据包捕获
-- 以 Administrator 身份运行命令提示符或 PowerShell
+1. **数据包捕获**使用 Npcap。RustNet 是否必须以 Administrator 身份运行，
+   取决于安装 Npcap 时选择的选项。如果 Npcap 被配置为仅允许管理员捕获，
+   请使用**以管理员身份运行**启动命令提示符、PowerShell 或 Windows Terminal；
+   否则标准用户进程也可以捕获数据包。
+2. **进程归属**优先使用 Windows 事件跟踪（ETW），并始终保留 IP Helper API
+   用于校准和回退。
+
+启动时，RustNet 会尝试订阅 Windows 内核网络与进程 ETW provider。概览标签页会显示实际使用的模式：
+
+| Detection 显示 | 含义 |
+|---|---|
+| `ETW + IP Helper` | 事件驱动的进程归属已启用。ETW 可捕获短生命周期进程，IP Helper 用于补全缓存未命中项并校准当前 socket。 |
+| `IP Helper` | ETW 无法启动。RustNet 不会因此退出，而是继续使用 `GetExtendedTcpTable` 和 `GetExtendedUdpTable`；在两次表快照之间结束的极短生命周期进程可能会被遗漏。 |
+
+以 Administrator 身份运行是启用 ETW 兼容性最好的方式。作为权限更小的
+替代方案，本地管理员可以将用户加入内置的 **Performance Log Users（性能日志用户）**
+组（SID `S-1-5-32-559`），然后让该用户注销并重新登录。特定 ETW provider
+仍可能被系统安全策略拒绝，因此应以概览标签页显示的模式为准，而不要假定
+ETW 一定已启用。
+
+ETW 授权与 Npcap 授权彼此独立。加入 **Performance Log Users** 不会授予
+数据包捕获权限；ETW 不可用时，非管理员仍可使用 IP Helper 进行进程归属。
+无需手动选择回退选项，RustNet 会自动使用当前可用的最佳模式。
+
+即使 ETW 已启用，仍可能出现少量 `<unknown>`。常见情况包括没有 socket
+所有者的 ARP 与 ICMP 流量、系统所有的流量、ETW 会话启动前已经观察到的数据包，
+以及 Windows 不允许读取进程映像的事件。
 
 ### 验证权限<a id="verifying-permissions"></a>
 

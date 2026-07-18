@@ -10,7 +10,8 @@
 //!   fallback.
 //! - **macOS** — PKTAP packet metadata when available (capture provides it
 //!   directly, so lookup is a no-op), otherwise `lsof`.
-//! - **Windows** — the IP Helper API (`GetExtendedTcpTable`/`...UdpTable`).
+//! - **Windows** — kernel ETW events with an IP Helper API
+//!   (`GetExtendedTcpTable`/`...UdpTable`) fallback.
 //! - **FreeBSD** — `sockstat`.
 //!
 //! When a platform can't use its optimal method, [`ProcessLookup::get_degradation_reason`]
@@ -83,6 +84,10 @@ pub enum DegradationReason {
     /// Specific interface requested (PKTAP only works with pktap pseudo-device)
     #[cfg(target_os = "macos")]
     InterfaceSpecified,
+    // Windows ETW reason
+    /// Kernel ETW could not be started; IP Helper polling remains available.
+    #[cfg(target_os = "windows")]
+    EtwUnavailable,
 }
 
 impl DegradationReason {
@@ -128,6 +133,8 @@ impl DegradationReason {
             Self::BpfFilterIncompatible => Cow::Borrowed("BPF filter incompatible"),
             #[cfg(target_os = "macos")]
             Self::InterfaceSpecified => Cow::Borrowed("interface specified"),
+            #[cfg(target_os = "windows")]
+            Self::EtwUnavailable => Cow::Borrowed("May miss short-lived processes"),
         }
     }
 
@@ -152,6 +159,8 @@ impl DegradationReason {
             | Self::NoBpfDeviceAccess
             | Self::BpfFilterIncompatible
             | Self::InterfaceSpecified => Some("PKTAP"),
+            #[cfg(target_os = "windows")]
+            Self::EtwUnavailable => Some("ETW"),
         }
     }
 }

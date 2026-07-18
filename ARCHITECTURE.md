@@ -22,7 +22,7 @@ RustNet is a Cargo workspace of four crates. The analysis logic, capture backend
 | --- | --- | --- |
 | [`rustnet-core`](crates/rustnet-core) | library | Platform- and capture-independent analysis core: packet parsing, protocol/connection types, deep packet inspection, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups, a reusable `ConnectionTracker`, and bounded retained process-activity accounting. Operates only on byte slices and parsed structures, with no libpcap, raw sockets, or OS process tables. |
 | [`rustnet-capture`](crates/rustnet-capture) | library | libpcap/Npcap packet-capture backend: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame `PacketReader`. |
-| [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution behind one `ProcessLookup` trait: eBPF/procfs on Linux, PKTAP/lsof on macOS, the IP Helper API on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
+| [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution behind one `ProcessLookup` trait: eBPF/procfs on Linux, PKTAP/lsof on macOS, ETW/IP Helper on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
 | `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, app event loop, sandboxing (Landlock/Seatbelt), and interface statistics. Dogfoods `ConnectionTracker` as the single source of truth. |
 
 The package is named `rustnet-monitor` because the `rustnet` crate name is taken on crates.io; the installed binary is `rustnet`.
@@ -251,15 +251,18 @@ RustNet uses platform-specific APIs to associate network connections with proces
 
 #### Windows
 
-**IP Helper API:**
-- Uses `GetExtendedTcpTable` and `GetExtendedUdpTable` from Windows IP Helper API
-- Retrieves connection tables with process IDs
-- Supports both IPv4 and IPv6 connections
-- Resolves process names using `OpenProcess` and `QueryFullProcessImageNameW`
+**ETW + IP Helper API:**
+- Starts a real-time user trace for the kernel network and process providers
+- Consumes TCP/UDP events with their process IDs, direction, and connection tuples
+- Caches tuple ownership and process lifecycle metadata so short-lived processes remain attributable after exit
+- Uses `GetExtendedTcpTable` and `GetExtendedUdpTable` for reconciliation, cache misses, and complete fallback when ETW cannot start
+- Supports TCP and UDP over both IPv4 and IPv6
+- Resolves process names using lifecycle events or `OpenProcess` and `QueryFullProcessImageNameW`
 
 **Requirements:**
-- May require Administrator privileges depending on system configuration
-- Requires Npcap or WinPcap for packet capture
+- Starting the ETW session may require Administrator or **Performance Log Users** membership, subject to provider security policy
+- ETW failure does not stop capture; the detection method becomes `IP Helper`, which is snapshot-based and can miss short-lived processes
+- Npcap is required for packet capture, and its capture permissions are independent of ETW permissions
 
 ### Network Interfaces
 
@@ -369,7 +372,7 @@ RustNet is built with the following key dependencies:
 - **libbpf-rs** (Linux) - eBPF program loading and management
 - **landlock** (Linux) - Filesystem and network sandboxing
 - **caps** (Linux) - Linux capability management
-- **windows** (Windows) - Windows API bindings for IP Helper API
+- **windows** (Windows) - Windows API bindings for ETW and IP Helper API
 
 ### Utilities
 
