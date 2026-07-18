@@ -11,7 +11,7 @@ use crate::ConnectionKey;
 use anyhow::{Result, anyhow};
 use ferrisetw::parser::Parser;
 use ferrisetw::provider::Provider;
-use ferrisetw::trace::UserTrace;
+use ferrisetw::trace::{UserTrace, stop_trace_by_name};
 use ferrisetw::{EventRecord, SchemaLocator};
 use rustnet_core::network::types::Protocol;
 use std::collections::HashMap;
@@ -21,6 +21,12 @@ use std::time::{Duration, Instant};
 
 const NETWORK_PROVIDER: &str = "7dd42a49-5329-4832-8dfd-43d979153a88";
 const PROCESS_PROVIDER: &str = "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716";
+// A fixed session name lets a new run stop the orphaned session a crashed or
+// killed previous run left behind in the kernel.
+const TRACE_NAME: &str = "RustNet-ProcessAttribution";
+// Microsoft-Windows-Kernel-Process WINEVENT_KEYWORD_PROCESS: process start
+// and stop only, not the far noisier thread and image-load events.
+const PROCESS_KEYWORD_PROCESS: u64 = 0x10;
 const ENTRY_TTL: Duration = Duration::from_secs(60);
 const PROCESS_NAME_TTL: Duration = Duration::from_secs(120);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(5);
@@ -56,6 +62,19 @@ impl Default for CacheInner {
     }
 }
 
+impl CacheInner {
+    fn cleanup_if_due(&mut self, now: Instant) {
+        if now.duration_since(self.last_cleanup) < CLEANUP_INTERVAL {
+            return;
+        }
+        self.connections
+            .retain(|_, entry| now.duration_since(entry.seen) <= ENTRY_TTL);
+        self.process_names
+            .retain(|_, entry| now.duration_since(entry.seen) <= PROCESS_NAME_TTL);
+        self.last_cleanup = now;
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct EtwProcessCache {
     inner: RwLock<CacheInner>,
@@ -77,21 +96,32 @@ impl EtwProcessCache {
             return;
         }
 
+        let now = Instant::now();
         let mut inner = self.inner.write().unwrap_or_else(|poisoned| {
             log::warn!("Windows ETW process cache lock was poisoned, recovering data");
             poisoned.into_inner()
         });
+        inner.cleanup_if_due(now);
         let name = executable_name(&name);
+        // Connections only carry the placeholder name when the pid resolved to
+        // one earlier, so most lifecycle events (unrelated processes) skip the
+        // full scan.
+        let had_placeholder = inner
+            .process_names
+            .get(&pid)
+            .is_some_and(|entry| entry.name == UNKNOWN_PROCESS_NAME);
         inner.process_names.insert(
             pid,
             TimedProcessName {
                 name: name.clone(),
-                seen: Instant::now(),
+                seen: now,
             },
         );
-        for entry in inner.connections.values_mut() {
-            if entry.pid == pid && entry.name == UNKNOWN_PROCESS_NAME {
-                entry.name.clone_from(&name);
+        if had_placeholder {
+            for entry in inner.connections.values_mut() {
+                if entry.pid == pid && entry.name == UNKNOWN_PROCESS_NAME {
+                    entry.name.clone_from(&name);
+                }
             }
         }
     }
@@ -106,7 +136,7 @@ impl EtwProcessCache {
         // Send/receive ETW events can arrive for every packet. Once a tuple is
         // attributed, avoid a write lock and allocations until its retention
         // window expires.
-        {
+        let known_name = {
             let inner = self.inner.read().unwrap_or_else(|poisoned| {
                 log::warn!("Windows ETW process cache lock was poisoned, recovering data");
                 poisoned.into_inner()
@@ -116,28 +146,31 @@ impl EtwProcessCache {
             }) {
                 return;
             }
-        }
+            inner
+                .process_names
+                .get(&pid)
+                .map(|entry| entry.name.clone())
+        };
+
+        // The OpenProcess/QueryFullProcessImageNameW pair is too slow to run
+        // under the write lock; concurrent lookups would stall behind it.
+        let resolved_name = known_name.or_else(|| get_process_name_from_pid(pid));
 
         let mut inner = self.inner.write().unwrap_or_else(|poisoned| {
             log::warn!("Windows ETW process cache lock was poisoned, recovering data");
             poisoned.into_inner()
         });
+        inner.cleanup_if_due(now);
 
-        if now.duration_since(inner.last_cleanup) >= CLEANUP_INTERVAL {
-            inner
-                .connections
-                .retain(|_, entry| now.duration_since(entry.seen) <= ENTRY_TTL);
-            inner
-                .process_names
-                .retain(|_, entry| now.duration_since(entry.seen) <= PROCESS_NAME_TTL);
-            inner.last_cleanup = now;
-        }
-
-        let name = inner
-            .process_names
-            .get(&pid)
-            .map(|entry| entry.name.clone())
-            .or_else(|| get_process_name_from_pid(pid))
+        let name = resolved_name
+            // A lifecycle event may have supplied the name while the lock was
+            // released.
+            .or_else(|| {
+                inner
+                    .process_names
+                    .get(&pid)
+                    .map(|entry| entry.name.clone())
+            })
             .unwrap_or_else(|| UNKNOWN_PROCESS_NAME.to_string());
 
         inner.process_names.insert(
@@ -183,12 +216,19 @@ impl EtwAttribution {
 
         let process_cache = cache;
         let process_provider = Provider::by_guid(PROCESS_PROVIDER)
+            .any(PROCESS_KEYWORD_PROCESS)
             .add_callback(move |record, schema_locator| {
                 process_lifecycle_event(record, schema_locator, &process_cache)
             })
             .build();
 
+        // Sessions outlive their owning process; without this, a crashed run
+        // would leak its session until reboot. Failure is fine: it means no
+        // orphan exists.
+        let _ = stop_trace_by_name(TRACE_NAME);
+
         let trace = UserTrace::new()
+            .named(TRACE_NAME.to_string())
             .enable(network_provider)
             .enable(process_provider)
             .start_and_process()
@@ -253,6 +293,13 @@ fn process_lifecycle_event(
     schema_locator: &SchemaLocator,
     cache: &EtwProcessCache,
 ) {
+    // 1 = ProcessStart, 2 = ProcessStop. Other events on this provider (image
+    // load/unload in particular) also carry ProcessID + ImageName, but there
+    // ImageName is the loaded DLL, which must not become the process name.
+    if !matches!(record.event_id(), 1 | 2) {
+        return;
+    }
+
     let Ok(schema) = schema_locator.event_schema(record) else {
         return;
     };

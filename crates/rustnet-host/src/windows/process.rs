@@ -10,7 +10,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::windows::ffi::OsStringExt;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use windows::Win32::Foundation::{CloseHandle, ERROR_INSUFFICIENT_BUFFER, WIN32_ERROR};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, WIN32_ERROR,
+};
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
     MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID, MIB_UDP6ROW_OWNER_PID, MIB_UDP6TABLE_OWNER_PID,
@@ -24,7 +26,20 @@ use windows::Win32::System::Threading::{
 const UNKNOWN_PROCESS_NAME: &str = "Unknown";
 
 type ProcessMap = HashMap<ConnectionKey, (u32, String)>;
-type ProcessNameCache = HashMap<u32, String>;
+// None marks a PID whose process no longer exists, so repeated rows for it
+// skip the OpenProcess retry within one refresh pass.
+type ProcessNameCache = HashMap<u32, Option<String>>;
+
+enum ProcessNameLookup {
+    Named(String),
+    // The process exists but denies PROCESS_QUERY_LIMITED_INFORMATION
+    // (protected/system processes) — the kernel-provided owner PID is real.
+    Denied,
+    // OpenProcess says the PID is gone. IP Helper rows can outlive their
+    // owner (TIME_WAIT, terminated UDP binders), and the PID may already
+    // have been reused by an unrelated process.
+    Gone,
+}
 
 fn allocate_table_buffer(size: u32) -> Vec<u32> {
     // IP Helper writes structs aligned to u32. Vec<u8> does not promise that
@@ -504,13 +519,11 @@ impl ProcessLookup for WindowsProcessLookup {
     fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
         let key = ConnectionKey::from_connection(conn);
 
-        // ETW records the owner at the instant of the network operation and is
-        // therefore the authoritative fast path for short-lived processes.
-        if let Some(process) = self.etw_cache.lookup(&key) {
-            return Some(process);
-        }
-
-        // Try cache first - handle poisoned lock gracefully
+        // A fresh IP Helper snapshot reflects the kernel's current socket
+        // owner and takes precedence over the ETW tuple cache, whose entries
+        // can be up to ENTRY_TTL old and outlive a port reuse. ETW wins when
+        // the table has no row: processes that exited between refreshes.
+        let mut table_is_fresh = false;
         {
             let cache = match self.cache.read() {
                 Ok(cache) => cache,
@@ -521,6 +534,7 @@ impl ProcessLookup for WindowsProcessLookup {
             };
 
             if cache.last_refresh.elapsed() < Duration::from_secs(2) {
+                table_is_fresh = true;
                 if let Some(process_info) = cache.lookup.get(&key) {
                     log::trace!(
                         "✓ Cache hit: {:?} {} -> {} => {:?}",
@@ -547,6 +561,22 @@ impl ProcessLookup for WindowsProcessLookup {
             }
         }
 
+        if table_is_fresh {
+            // The current table has no row for this tuple, so the socket is
+            // already gone — exactly the case the ETW cache exists for.
+            return self.etw_cache.lookup(&key);
+        }
+
+        // Serving an ETW hit here skips the refresh syscalls entirely, but
+        // only a real name is worth that: for a placeholder the table may
+        // still do better.
+        let etw_process = self.etw_cache.lookup(&key);
+        if let Some(process) = &etw_process
+            && process.1 != UNKNOWN_PROCESS_NAME
+        {
+            return etw_process;
+        }
+
         // Cache is stale or miss, refresh
         if self.refresh().is_ok() {
             let cache = match self.cache.read() {
@@ -571,9 +601,9 @@ impl ProcessLookup for WindowsProcessLookup {
                     key.remote_addr
                 );
             }
-            result.or_else(|| self.etw_cache.lookup(&key))
+            result.or(etw_process)
         } else {
-            None
+            etw_process
         }
     }
 
@@ -629,18 +659,23 @@ fn cache_process(
 ) {
     // PID 0 is used for TCP rows whose owner is no longer available (for
     // example TIME_WAIT), so treating it as a process would create false
-    // attribution. For every real PID, preserve the kernel-provided owner even
-    // when Windows denies access to the executable image.
+    // attribution. The same applies when the owning process has already
+    // exited. Access-denied is different: the process is alive, so preserve
+    // the kernel-provided owner PID even without a name.
     if pid == 0 {
         return;
     }
 
-    let process_name = process_names
+    let resolved = process_names
         .entry(pid)
-        .or_insert_with(|| {
-            get_process_name_from_pid(pid).unwrap_or_else(|| UNKNOWN_PROCESS_NAME.to_string())
-        })
-        .clone();
+        .or_insert_with(|| match query_process_name(pid) {
+            ProcessNameLookup::Named(name) => Some(name),
+            ProcessNameLookup::Denied => Some(UNKNOWN_PROCESS_NAME.to_string()),
+            ProcessNameLookup::Gone => None,
+        });
+    let Some(process_name) = resolved.clone() else {
+        return;
+    };
 
     log::trace!(
         "Cached: {:?} {} -> {} (PID: {}, {})",
@@ -654,11 +689,24 @@ fn cache_process(
 }
 
 pub(super) fn get_process_name_from_pid(pid: u32) -> Option<String> {
+    match query_process_name(pid) {
+        ProcessNameLookup::Named(name) => Some(name),
+        ProcessNameLookup::Denied | ProcessNameLookup::Gone => None,
+    }
+}
+
+fn query_process_name(pid: u32) -> ProcessNameLookup {
     unsafe {
         // Open process with query information access
         let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
             Ok(h) => h,
-            Err(_) => return None,
+            Err(error) => {
+                return if error.code() == ERROR_ACCESS_DENIED.to_hresult() {
+                    ProcessNameLookup::Denied
+                } else {
+                    ProcessNameLookup::Gone
+                };
+            }
         };
 
         // Query process image name
@@ -684,11 +732,13 @@ pub(super) fn get_process_name_from_pid(pid: u32) -> Option<String> {
 
             // Extract just the filename
             if let Some(filename) = path_str.split('\\').next_back() {
-                return Some(filename.to_string());
+                return ProcessNameLookup::Named(filename.to_string());
             }
         }
 
-        None
+        // The open succeeded, so the process is alive; only the name query
+        // failed.
+        ProcessNameLookup::Denied
     }
 }
 
@@ -699,7 +749,7 @@ mod tests {
     use std::net::UdpSocket;
 
     #[test]
-    fn preserves_pid_when_process_name_is_unavailable() {
+    fn skips_rows_whose_owner_no_longer_exists() {
         let key = ConnectionKey {
             protocol: Protocol::Udp,
             local_addr: "127.0.0.1:12345".parse().unwrap(),
@@ -710,9 +760,26 @@ mod tests {
 
         cache_process(&mut cache, &mut process_names, key.clone(), u32::MAX);
 
+        assert_eq!(cache.get(&key), None);
+    }
+
+    #[test]
+    fn preserves_pid_when_process_name_is_unavailable() {
+        let key = ConnectionKey {
+            protocol: Protocol::Udp,
+            local_addr: "127.0.0.1:12346".parse().unwrap(),
+            remote_addr: "0.0.0.0:0".parse().unwrap(),
+        };
+        let mut cache = ProcessMap::new();
+        let mut process_names = ProcessNameCache::new();
+
+        // PID 4 is the System process: always alive, but its image name is
+        // not queryable via QueryFullProcessImageNameW.
+        cache_process(&mut cache, &mut process_names, key.clone(), 4);
+
         assert_eq!(
             cache.get(&key),
-            Some(&(u32::MAX, UNKNOWN_PROCESS_NAME.to_string()))
+            Some(&(4, UNKNOWN_PROCESS_NAME.to_string()))
         );
     }
 

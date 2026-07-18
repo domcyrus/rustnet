@@ -1764,6 +1764,10 @@ impl App {
         let full_pass_interval = Duration::from_secs(2);
         // Connections younger than this are retried on every fast tick.
         const YOUNG_CONNECTION_SECS: u64 = 10;
+        // Placeholder name that lookups store for a PID whose image name
+        // could not be resolved (yet). Kept eligible for re-enrichment so the
+        // resolver can upgrade it once the real name is known.
+        const UNKNOWN_PROCESS_NAME: &str = "Unknown";
         let mut last_full_pass = Instant::now() - full_pass_interval;
 
         // Build and set the detection status from the process lookup implementation
@@ -1830,8 +1834,14 @@ impl App {
             // Enrich connections without process info
             let mut enriched = 0;
             for mut entry in tracker.connections().iter_mut() {
-                // Fully attributed — nothing to do (names are permanent).
-                if entry.process_name.is_some() && entry.pid.is_some() {
+                // Fully attributed — nothing to do (real names are permanent,
+                // placeholders stay eligible for an upgrade).
+                if entry.pid.is_some()
+                    && entry
+                        .process_name
+                        .as_deref()
+                        .is_some_and(|name| name != UNKNOWN_PROCESS_NAME)
+                {
                     continue;
                 }
                 // Fast ticks only retry young connections; older ones wait
@@ -1851,7 +1861,9 @@ impl App {
                 if let Some((pid, name)) = process_lookup.get_process_for_connection(&entry) {
                     let mut did_enrich = false;
 
-                    if entry.process_name.is_none() {
+                    let upgrades_placeholder = name != UNKNOWN_PROCESS_NAME
+                        && entry.process_name.as_deref() == Some(UNKNOWN_PROCESS_NAME);
+                    if entry.process_name.is_none() || upgrades_placeholder {
                         entry.process_name = Some(name.clone());
                         did_enrich = true;
                         debug!(
