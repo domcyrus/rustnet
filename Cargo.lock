@@ -2663,6 +2663,7 @@ dependencies = [
  "pnet_datalink",
  "ring",
  "rustc-hash",
+ "windows",
 ]
 
 [[package]]
