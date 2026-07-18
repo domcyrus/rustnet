@@ -156,7 +156,7 @@ pub(in crate::ui) fn draw_graph_tab(
         .split(main_chunks[2]);
 
     draw_traffic_chart(f, &traffic_history, top_chunks[0]);
-    draw_connections_sparkline(f, &traffic_history, top_chunks[1]);
+    draw_connection_lifecycle(f, &traffic_history, top_chunks[1]);
     draw_health_chart(f, &traffic_history, health_chunks[0]);
     draw_tcp_counters(f, app, health_chunks[1]);
     draw_tcp_states(f, &analytics.tcp_state_counts, health_chunks[2]);
@@ -198,7 +198,7 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         halves[0],
         &rx,
         "↓ RX",
-        braille_graph::WavePanelOptions::new(frac, window),
+        braille_graph::WavePanelOptions::new(frac, window).with_max_val(history.rx_graph_ceiling()),
         theme::rx_wave,
     );
     braille_graph::wave_panel(
@@ -206,18 +206,13 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         halves[2],
         &tx,
         "↑ TX",
-        braille_graph::WavePanelOptions::new(frac, window),
+        braille_graph::WavePanelOptions::new(frac, window).with_max_val(history.tx_graph_ceiling()),
         theme::tx_wave,
     );
 }
 
-/// Horizontal bar with the same dark→bright glow as the waves: each
-/// filled cell walks the gradient from deep hue at the origin to the
-/// bright crest at the tip; the remainder renders as muted `░` track.
-/// Draw the connection-count wave: same gradient braille style as the
-/// traffic panels, in the accent (cyan) hue.
-fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let inner = section_header(f, area, graph_title(" Connections"));
+fn draw_connection_lifecycle(f: &mut Frame, history: &TrafficHistory, area: Rect) {
+    let inner = section_header(f, area, graph_title(" Connection Lifecycle"));
 
     if !history.has_enough_data() {
         let placeholder = Paragraph::new("Collecting...").style(theme::fg(theme::muted()));
@@ -225,47 +220,131 @@ fn draw_connections_sparkline(f: &mut Frame, history: &TrafficHistory, area: Rec
         return;
     }
 
-    let conn_data = history.get_connection_sparkline_data(usize::MAX);
-    if inner.height < 2 || conn_data.is_empty() {
+    if inner.height == 0 {
         return;
     }
 
-    let current = *conn_data.last().unwrap();
-    let peak = conn_data.iter().copied().max().unwrap_or(0).max(1);
-    let ratio = current as f64 / peak as f64;
-
-    let left = vec![
+    let (active, retained) = history.latest_connection_counts();
+    let summary = Line::from(vec![
         Span::styled(
-            format!("{current} active"),
-            theme::bold_fg(theme::accent_wave(0.35 + 0.65 * ratio)),
+            format!("{active} active"),
+            theme::bold_fg(theme::accent_wave(0.8)),
         ),
-        Span::styled(
-            format!(" {}", braille_graph::trend_glyph(&conn_data)),
-            theme::fg(theme::muted()),
-        ),
-    ];
-    let right = Span::styled(format!("peak {peak}"), theme::fg(theme::muted()));
+        Span::styled("  ", theme::fg(theme::muted())),
+        Span::styled(format!("{retained} retained"), theme::fg(theme::muted())),
+    ]);
     f.render_widget(
-        Paragraph::new(braille_graph::spread_line(left, right, inner.width)),
+        Paragraph::new(summary),
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
 
-    let graph_area = Rect::new(
+    let waves_area = Rect::new(
         inner.x,
         inner.y + 1,
         inner.width,
         inner.height.saturating_sub(1),
     );
+    let halves = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Length(1),
+            Constraint::Percentage(50),
+        ])
+        .split(waves_area);
+    let opened = history.get_opened_sparkline_data(usize::MAX);
+    let closed = history.get_closed_sparkline_data(usize::MAX);
+    draw_lifecycle_wave(
+        f,
+        halves[0],
+        &opened,
+        "OPENED",
+        LifecycleWaveOptions {
+            max_val: history.opened_graph_ceiling(),
+            frac: history.scroll_fraction(),
+            window: history.capacity(),
+            wave: theme::special_wave,
+        },
+    );
+    draw_lifecycle_wave(
+        f,
+        halves[2],
+        &closed,
+        "CLOSED",
+        LifecycleWaveOptions {
+            max_val: history.closed_graph_ceiling(),
+            frac: history.scroll_fraction(),
+            window: history.capacity(),
+            wave: theme::muted_wave,
+        },
+    );
+}
+
+struct LifecycleWaveOptions {
+    max_val: f64,
+    frac: f64,
+    window: usize,
+    wave: fn(f64) -> Color,
+}
+
+fn draw_lifecycle_wave(
+    f: &mut Frame,
+    area: Rect,
+    samples: &[u64],
+    label: &str,
+    options: LifecycleWaveOptions,
+) {
+    if area.height < 2 || samples.is_empty() {
+        return;
+    }
+
+    let current = samples.last().copied().unwrap_or(0);
+    let peak = samples.iter().copied().max().unwrap_or(0);
+    let speed_ratio = (current as f64 / options.max_val.max(1.0)).clamp(0.0, 1.0);
+    let left = vec![
+        Span::styled(format!("{label} "), theme::bold_fg((options.wave)(0.4))),
+        Span::styled(
+            format_lifecycle_rate(current),
+            theme::bold_fg((options.wave)(0.35 + 0.65 * speed_ratio)),
+        ),
+        Span::styled(
+            format!(" {}", braille_graph::trend_glyph(samples)),
+            theme::fg(theme::muted()),
+        ),
+    ];
+    let right = Span::styled(
+        format!("peak {}", format_lifecycle_rate(peak)),
+        theme::fg(theme::muted()),
+    );
+    f.render_widget(
+        Paragraph::new(braille_graph::spread_line(left, right, area.width)),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+
+    let graph_area = Rect::new(
+        area.x,
+        area.y + 1,
+        area.width,
+        area.height.saturating_sub(1),
+    );
     let lines = braille_graph::render(
-        &conn_data,
+        samples,
         graph_area.width as usize,
         graph_area.height as usize,
-        peak as f64,
-        history.scroll_fraction(),
-        history.capacity(),
-        |intensity| theme::accent_wave((0.6 + 0.4 * ratio) * intensity),
+        options.max_val.max(1.0),
+        options.frac,
+        options.window,
+        options.wave,
     );
     f.render_widget(Paragraph::new(lines), graph_area);
+}
+
+fn format_lifecycle_rate(rate_tenths: u64) -> String {
+    if rate_tenths.is_multiple_of(10) {
+        format!("{}/s", rate_tenths / 10)
+    } else {
+        format!("{}.{}/s", rate_tenths / 10, rate_tenths % 10)
+    }
 }
 
 /// Draw application protocol distribution
@@ -687,5 +766,12 @@ mod tests {
 
         assert_eq!(top, vec![("eight", 8.0), ("seven", 7.0), ("six", 6.0)]);
         assert!(select_top_processes(&traffic, 0).is_empty());
+    }
+
+    #[test]
+    fn lifecycle_rates_keep_low_activity_visible() {
+        assert_eq!(format_lifecycle_rate(0), "0/s");
+        assert_eq!(format_lifecycle_rate(2), "0.2/s");
+        assert_eq!(format_lifecycle_rate(20), "2/s");
     }
 }

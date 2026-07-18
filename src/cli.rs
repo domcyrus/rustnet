@@ -45,7 +45,7 @@ pub fn build_cli() -> Command {
                 .value_name("MILLISECONDS")
                 .help("UI refresh interval in milliseconds")
                 .value_parser(clap::value_parser!(u64))
-                .default_value("1000")
+                .default_value("500")
                 .required(false),
         )
         .arg(
@@ -224,4 +224,18 @@ pub fn build_cli() -> Command {
     );
 
     cmd
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_interval_defaults_to_500ms() {
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet"])
+            .expect("default CLI arguments should parse");
+
+        assert_eq!(matches.get_one::<u64>("refresh-interval"), Some(&500));
+    }
 }

@@ -33,7 +33,8 @@ use crate::network::{
     services::ServiceLookup,
     tracker::{ConnectionTracker, IngestOutcome},
     types::{
-        ApplicationProtocol, Connection, ConnectionKey, DnsQueryType, Protocol, TrafficHistory,
+        ApplicationProtocol, Connection, ConnectionKey, ConnectionLifecycleSample, DnsQueryType,
+        GraphScale, Protocol, TrafficHistory,
     },
 };
 
@@ -163,6 +164,9 @@ const MAX_PCAPNG_RETRY_RECORDS: usize = 10_000;
 const MAX_PCAPNG_RETRY_BYTES: usize = 64 * 1024 * 1024;
 const PCAPNG_ATTRIBUTION_WAIT: Duration = Duration::from_secs(2);
 const STARTUP_SPLASH_DURATION: Duration = Duration::from_millis(750);
+const LIVE_RATE_INTERVAL: Duration = Duration::from_millis(500);
+const TRAFFIC_HISTORY_SECONDS: usize = 60;
+const TRAFFIC_HISTORY_CAPACITY: usize = TRAFFIC_HISTORY_SECONDS * 2;
 
 #[derive(Debug)]
 struct PcapngRecord {
@@ -521,7 +525,7 @@ impl Default for Config {
         Self {
             interface: None,
             filter_localhost: true,
-            refresh_interval: 1000,
+            refresh_interval: 500,
             enable_dpi: true,
             bpf_filter: None, // No filter by default to see all packets
             json_log_file: None,
@@ -605,6 +609,8 @@ pub struct AppStats {
     pub packets_processed: AtomicU64,
     pub packets_dropped: AtomicU64,
     pub connections_tracked: AtomicU64,
+    pub total_connections_created: AtomicU64,
+    pub total_connections_archived: AtomicU64,
     pub last_update: RwLock<Instant>,
     // TCP analytics totals (since program start)
     pub total_tcp_retransmits: AtomicU64,
@@ -625,6 +631,8 @@ impl Default for AppStats {
             packets_processed: AtomicU64::new(0),
             packets_dropped: AtomicU64::new(0),
             connections_tracked: AtomicU64::new(0),
+            total_connections_created: AtomicU64::new(0),
+            total_connections_archived: AtomicU64::new(0),
             last_update: RwLock::new(Instant::now()),
             total_tcp_retransmits: AtomicU64::new(0),
             total_tcp_out_of_order: AtomicU64::new(0),
@@ -641,11 +649,13 @@ impl Default for AppStats {
 }
 
 /// Ring buffers of per-connection RX/TX rates (bytes/sec), capped at
-/// the same 60-sample window as [`TrafficHistory`].
+/// the same 60-second window as [`TrafficHistory`].
 #[derive(Debug, Clone, Default)]
 pub struct ConnRateHistory {
     pub rx: VecDeque<u64>,
     pub tx: VecDeque<u64>,
+    rx_scale: GraphScale,
+    tx_scale: GraphScale,
 }
 
 impl ConnRateHistory {
@@ -658,7 +668,19 @@ impl ConnRateHistory {
         }
         self.rx.push_back(rx);
         self.tx.push_back(tx);
+        self.rx_scale
+            .update_peak(self.rx.iter().copied().max().unwrap_or(0));
+        self.tx_scale
+            .update_peak(self.tx.iter().copied().max().unwrap_or(0));
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnRateHistorySnapshot {
+    pub rx: Vec<u64>,
+    pub tx: Vec<u64>,
+    pub rx_graph_ceiling: f64,
+    pub tx_graph_ceiling: f64,
 }
 
 /// Main application state
@@ -733,7 +755,7 @@ pub struct App {
 
     /// Per-connection RX/TX rate history (bytes/sec, oldest→newest),
     /// keyed by `Connection::key()`. Sampled by the traffic-history
-    /// thread on the same 1s cadence as `traffic_history`, so the
+    /// thread on the same 500ms cadence as `traffic_history`, so the
     /// Details tab can draw per-connection waves that scroll in sync
     /// with the aggregate graphs. Entries for vanished connections are
     /// dropped each sample.
@@ -876,7 +898,7 @@ impl App {
             interface_rates: Arc::new(DashMap::new()),
             interface_traffic_windows: Arc::new(DashMap::new()),
             interface_traffic_history: Arc::new(Mutex::new(HashMap::new())),
-            traffic_history: Arc::new(RwLock::new(TrafficHistory::new(60))), // 60 seconds of history
+            traffic_history: Arc::new(RwLock::new(TrafficHistory::new(TRAFFIC_HISTORY_CAPACITY))),
             conn_rate_history: Arc::new(RwLock::new(HashMap::new())),
             process_activity: Arc::new(RwLock::new(ProcessActivityTracker::new())),
             dns_resolver,
@@ -2073,8 +2095,8 @@ impl App {
                         refreshed
                     );
 
-                    // Run every 1 second to balance responsiveness with performance
-                    thread::sleep(Duration::from_secs(1));
+                    // Keep idle-rate decay aligned with the live graph cadence.
+                    thread::sleep(LIVE_RATE_INTERVAL);
                 }
             })
             .expect("Failed to spawn state_refresh thread");
@@ -2163,8 +2185,8 @@ impl App {
                         }
                     }
 
-                    // Refresh every 2 seconds
-                    thread::sleep(Duration::from_secs(2));
+                    // Keep interface rates fresh for the live graphs.
+                    thread::sleep(LIVE_RATE_INTERVAL);
                 }
             })
             .expect("Failed to spawn ifstats_poll thread");
@@ -2188,8 +2210,13 @@ impl App {
                 info!("Traffic history thread started");
 
                 // Track previous values for delta calculation
-                let mut prev_packets: u64 = 0;
-                let mut prev_retransmits: u64 = 0;
+                let mut prev_packets = stats.packets_processed.load(Ordering::Relaxed);
+                let mut prev_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
+                let mut prev_connections_created =
+                    stats.total_connections_created.load(Ordering::Relaxed);
+                let mut prev_connections_archived =
+                    stats.total_connections_archived.load(Ordering::Relaxed);
+                let mut previous_sample_at = Instant::now();
 
                 loop {
                     if should_stop.load(Ordering::Relaxed) {
@@ -2225,7 +2252,7 @@ impl App {
                                     rates.entry(conn.key()).or_default().push(
                                         conn.current_incoming_rate_bps as u64,
                                         conn.current_outgoing_rate_bps as u64,
-                                        60,
+                                        TRAFFIC_HISTORY_CAPACITY,
                                     );
                                 }
                             }
@@ -2236,30 +2263,68 @@ impl App {
                     // Get packet and retransmit counts (calculate deltas)
                     let current_packets = stats.packets_processed.load(Ordering::Relaxed);
                     let current_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
+                    let current_connections_created =
+                        stats.total_connections_created.load(Ordering::Relaxed);
+                    let current_connections_archived =
+                        stats.total_connections_archived.load(Ordering::Relaxed);
 
                     let packets_delta = current_packets.saturating_sub(prev_packets);
                     let retransmits_delta = current_retransmits.saturating_sub(prev_retransmits);
+                    let connections_created_delta =
+                        current_connections_created.saturating_sub(prev_connections_created);
+                    let connections_archived_delta =
+                        current_connections_archived.saturating_sub(prev_connections_archived);
+
+                    let sampled_at = Instant::now();
+                    let sample_seconds =
+                        sampled_at.duration_since(previous_sample_at).as_secs_f64();
+                    let per_second = |delta: u64| {
+                        if sample_seconds > 0.0 {
+                            (delta as f64 / sample_seconds).round() as u64
+                        } else {
+                            0
+                        }
+                    };
+                    let per_second_tenths = |delta: u64| {
+                        if sample_seconds > 0.0 {
+                            (delta as f64 * 10.0 / sample_seconds).round() as u64
+                        } else {
+                            0
+                        }
+                    };
+                    let packets_per_sec = per_second(packets_delta);
+                    let retransmits_per_sec = per_second(retransmits_delta);
+                    let opened_per_sec_tenths = per_second_tenths(connections_created_delta);
+                    let closed_per_sec_tenths = per_second_tenths(connections_archived_delta);
 
                     prev_packets = current_packets;
                     prev_retransmits = current_retransmits;
+                    prev_connections_created = current_connections_created;
+                    prev_connections_archived = current_connections_archived;
+                    previous_sample_at = sampled_at;
 
                     // Get average RTT from tracker (last 1 second window)
                     let avg_rtt_ms = tracker.take_average_rtt(1);
 
                     // Add sample to traffic history
                     if let Ok(mut history) = traffic_history.write() {
-                        history.add_sample(
+                        history.add_sample_with_lifecycle(
                             total_rx,
                             total_tx,
-                            connection_count,
-                            packets_delta,
-                            retransmits_delta,
+                            ConnectionLifecycleSample {
+                                active: connection_count,
+                                retained: tracker.historic_len(),
+                                opened_per_sec_tenths,
+                                closed_per_sec_tenths,
+                            },
+                            packets_per_sec,
+                            retransmits_per_sec,
                             avg_rtt_ms,
                         );
                     }
 
-                    // Update every 1 second
-                    thread::sleep(Duration::from_secs(1));
+                    // Update twice per second for a more responsive graph.
+                    thread::sleep(LIVE_RATE_INTERVAL);
                 }
             })
             .expect("Failed to spawn graph_ui thread");
@@ -2319,6 +2384,7 @@ impl App {
         let json_log_path = self.config.json_log_file.clone();
         let pcap_export_path = self.config.pcap_export_file.clone();
         let dns_resolver = self.dns_resolver.clone();
+        let stats = Arc::clone(&self.stats);
 
         thread::Builder::new()
             .name("cleanup_thread".to_string())
@@ -2336,6 +2402,9 @@ impl App {
                 // we layer the app's close-event logging on the returned set.
                 let now = SystemTime::now();
                 let removed = tracker.cleanup(now);
+                stats
+                    .total_connections_archived
+                    .fetch_add(removed.len() as u64, Ordering::Relaxed);
 
                 for conn in &removed {
                     // Calculate connection duration
@@ -2474,13 +2543,17 @@ impl App {
     /// RX/TX rate history for one connection (by `Connection::key()`),
     /// as (rx, tx) bytes/sec vectors oldest→newest. None until the
     /// traffic-history thread has sampled the connection at least once.
-    pub fn get_connection_rate_history(&self, key: &str) -> Option<(Vec<u64>, Vec<u64>)> {
-        self.conn_rate_history.read().ok()?.get(key).map(|h| {
-            (
-                h.rx.iter().copied().collect(),
-                h.tx.iter().copied().collect(),
-            )
-        })
+    pub fn get_connection_rate_history(&self, key: &str) -> Option<ConnRateHistorySnapshot> {
+        self.conn_rate_history
+            .read()
+            .ok()?
+            .get(key)
+            .map(|history| ConnRateHistorySnapshot {
+                rx: history.rx.iter().copied().collect(),
+                tx: history.tx.iter().copied().collect(),
+                rx_graph_ceiling: history.rx_scale.ceiling(),
+                tx_graph_ceiling: history.tx_scale.ceiling(),
+            })
     }
 
     pub fn get_traffic_history(&self) -> TrafficHistory {
@@ -2497,6 +2570,14 @@ impl App {
             packets_dropped: AtomicU64::new(self.stats.packets_dropped.load(Ordering::Relaxed)),
             connections_tracked: AtomicU64::new(
                 self.stats.connections_tracked.load(Ordering::Relaxed),
+            ),
+            total_connections_created: AtomicU64::new(
+                self.stats.total_connections_created.load(Ordering::Relaxed),
+            ),
+            total_connections_archived: AtomicU64::new(
+                self.stats
+                    .total_connections_archived
+                    .load(Ordering::Relaxed),
             ),
             last_update: RwLock::new(*self.stats.last_update.read().unwrap()),
             total_tcp_retransmits: AtomicU64::new(
@@ -2749,6 +2830,12 @@ impl App {
         self.stats.packets_processed.store(0, Ordering::Relaxed);
         self.stats.packets_dropped.store(0, Ordering::Relaxed);
         self.stats.connections_tracked.store(0, Ordering::Relaxed);
+        self.stats
+            .total_connections_created
+            .store(0, Ordering::Relaxed);
+        self.stats
+            .total_connections_archived
+            .store(0, Ordering::Relaxed);
         self.stats.total_tcp_retransmits.store(0, Ordering::Relaxed);
         self.stats
             .total_tcp_out_of_order
@@ -2850,6 +2937,9 @@ fn update_connection(
     }
 
     if let Some(conn) = &outcome.archived {
+        stats
+            .total_connections_archived
+            .fetch_add(1, Ordering::Relaxed);
         let duration_secs = now
             .duration_since(conn.created_at)
             .map(|duration| duration.as_secs())
@@ -2874,6 +2964,9 @@ fn update_connection(
 
     // Log a new-connection event if JSON logging is enabled.
     if outcome.created {
+        stats
+            .total_connections_created
+            .fetch_add(1, Ordering::Relaxed);
         debug!("New connection detected: {}", outcome.key);
         if let Some(log_path) = json_log_path
             && let Some(conn) = tracker.connections().get(&outcome.key)
@@ -3103,6 +3196,87 @@ impl Drop for App {
         self.stop();
         // Give threads time to stop gracefully
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod connection_lifecycle_tests {
+    use super::*;
+    use crate::network::{
+        protocol::tcp::{TcpFlags, TcpHeaderInfo},
+        types::{ProtocolState, TcpState},
+    };
+    use std::net::SocketAddr;
+
+    fn tcp_packet(flags: TcpFlags) -> ParsedPacket {
+        ParsedPacket {
+            protocol: Protocol::Tcp,
+            local_addr: SocketAddr::from(([192, 0, 2, 1], 40_000)),
+            remote_addr: SocketAddr::from(([198, 51, 100, 1], 443)),
+            tcp_header: Some(TcpHeaderInfo {
+                seq: 1_000,
+                ack: 0,
+                window: 65_535,
+                flags,
+                payload_len: 0,
+            }),
+            protocol_state: ProtocolState::Tcp(TcpState::Unknown),
+            is_outgoing: true,
+            packet_len: 60,
+            dpi_result: None,
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    fn flags(syn: bool, rst: bool) -> TcpFlags {
+        TcpFlags {
+            syn,
+            rst,
+            ack: false,
+            fin: false,
+            psh: false,
+            urg: false,
+        }
+    }
+
+    #[test]
+    fn lifecycle_counters_record_new_and_replaced_generations() {
+        let tracker = ConnectionTracker::new();
+        let stats = AppStats::default();
+        let no_log = None;
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+        update_connection(
+            &tracker,
+            tcp_packet(flags(true, false)),
+            started,
+            &stats,
+            &no_log,
+            &no_log,
+            None,
+        );
+        update_connection(
+            &tracker,
+            tcp_packet(flags(false, true)),
+            started + Duration::from_secs(1),
+            &stats,
+            &no_log,
+            &no_log,
+            None,
+        );
+        update_connection(
+            &tracker,
+            tcp_packet(flags(true, false)),
+            started + Duration::from_secs(2),
+            &stats,
+            &no_log,
+            &no_log,
+            None,
+        );
+
+        assert_eq!(stats.total_connections_created.load(Ordering::Relaxed), 2);
+        assert_eq!(stats.total_connections_archived.load(Ordering::Relaxed), 1);
     }
 }
 

@@ -102,33 +102,31 @@ pub fn tx() -> Color {
 
 // --- Traffic wave gradients (Graph tab) ---
 //
-// Truecolor 5-stop ramps for the braille traffic waves: deep hue at
-// the base of the wave, brighter at the crest (style borrowed from
-// github.com/programmersd21/flow). Each ramp stays inside a single
-// hue — RX is unmistakably green, TX unmistakably blue — and the
-// bright end stops well short of white so crests stay visible on
-// light backgrounds. Callers must wrap the result in `fg()` so
-// NO_COLOR still strips these.
+// Truecolor 5-stop ramps for the braille traffic waves: saturated color at
+// the base, brighter neighboring hues through the body, and a white-hot crest
+// for the terminal-glow effect used by github.com/programmersd21/flow. RX uses
+// Flow's cool download ramp and TX uses its green upload ramp. Callers must
+// wrap the result in `fg()` so NO_COLOR still strips these.
 const RX_WAVE_STOPS: [(u8, u8, u8); 5] = [
-    (0x16, 0x65, 0x34), // deep green
-    (0x15, 0x80, 0x3D),
-    (0x16, 0xA3, 0x4A),
-    (0x22, 0xC5, 0x5E),
-    (0x4A, 0xDE, 0x80), // bright green crest
+    (0x3B, 0x82, 0xF6), // vibrant blue
+    (0x63, 0x66, 0xF1),
+    (0x06, 0xB6, 0xD4),
+    (0x00, 0xF5, 0xD4),
+    (0xFF, 0xFF, 0xFF), // white-hot crest
 ];
 const TX_WAVE_STOPS: [(u8, u8, u8); 5] = [
-    (0x1E, 0x40, 0xAF), // deep blue
-    (0x1D, 0x4E, 0xD8),
-    (0x25, 0x63, 0xEB),
-    (0x3B, 0x82, 0xF6),
-    (0x60, 0xA5, 0xFA), // bright blue crest
+    (0x10, 0xB9, 0x81), // emerald green
+    (0x22, 0xC5, 0x5E),
+    (0x84, 0xCC, 0x16),
+    (0xA3, 0xE6, 0x35),
+    (0xFF, 0xFF, 0xFF), // white-hot crest
 ];
 const ACCENT_WAVE_STOPS: [(u8, u8, u8); 5] = [
-    (0x15, 0x5E, 0x75), // deep cyan
-    (0x0E, 0x74, 0x90),
-    (0x08, 0x91, 0xB2),
+    (0x08, 0x91, 0xB2), // saturated cyan
     (0x06, 0xB6, 0xD4),
-    (0x22, 0xD3, 0xEE), // bright cyan crest
+    (0x22, 0xD3, 0xEE),
+    (0x67, 0xE8, 0xF9),
+    (0xFF, 0xFF, 0xFF), // white-hot crest
 ];
 const WARN_WAVE_STOPS: [(u8, u8, u8); 5] = [
     (0x92, 0x40, 0x0E), // deep amber
@@ -387,5 +385,21 @@ pub fn bold_underline_fg(color: Color) -> Style {
         Style::default()
             .fg(color)
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn primary_wave_ramps_match_flow_direction_colors() {
+        let white = Color::Rgb(0xFF, 0xFF, 0xFF);
+
+        assert_eq!(rx_wave(0.0), Color::Rgb(0x3B, 0x82, 0xF6));
+        assert_eq!(tx_wave(0.0), Color::Rgb(0x10, 0xB9, 0x81));
+        assert_eq!(rx_wave(1.0), white);
+        assert_eq!(tx_wave(1.0), white);
+        assert_eq!(accent_wave(1.0), white);
     }
 }
