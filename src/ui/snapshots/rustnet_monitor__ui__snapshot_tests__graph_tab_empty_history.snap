@@ -4,7 +4,7 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                          
 ──────────────────────────────────────────────────━━━━━━━───────────────────────────────────────────────────────────────────────────────────
-▎ Traffic Over Time (60s)                                                                         ▎ Connections                             
+▎ Traffic Over Time (60s)                                                                         ▎ Connection Lifecycle                    
 Collecting data...                                                                                Collecting...                             
                                                                                                                                             
                                                                                                                                             

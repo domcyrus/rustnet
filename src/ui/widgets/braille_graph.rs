@@ -25,6 +25,7 @@ pub(in crate::ui) struct WavePanelOptions {
     summary: Option<Line<'static>>,
     frac: f64,
     window: usize,
+    max_val: Option<f64>,
 }
 
 impl WavePanelOptions {
@@ -33,11 +34,17 @@ impl WavePanelOptions {
             summary: None,
             frac,
             window,
+            max_val: None,
         }
     }
 
     pub(in crate::ui) fn with_summary(mut self, summary: Line<'static>) -> Self {
         self.summary = Some(summary);
+        self
+    }
+
+    pub(in crate::ui) fn with_max_val(mut self, max_val: f64) -> Self {
+        self.max_val = Some(max_val);
         self
     }
 }
@@ -84,19 +91,17 @@ fn sample_at(samples: &[u64], pos: f64) -> f64 {
 fn smooth_columns(cols: &[f64]) -> Vec<f64> {
     const W: [f64; 5] = [1.0, 2.0, 3.0, 2.0, 1.0];
     let n = cols.len();
+    if n == 0 {
+        return Vec::new();
+    }
     (0..n)
         .map(|i| {
             let mut sum = 0.0;
-            let mut total = 0.0;
             for (k, w) in W.iter().enumerate() {
-                if let Some(j) = (i + k).checked_sub(2)
-                    && j < n
-                {
-                    sum += cols[j] * w;
-                    total += w;
-                }
+                let j = (i as isize + k as isize - 2).clamp(0, n as isize - 1) as usize;
+                sum += cols[j] * w;
             }
-            sum / total
+            sum / W.iter().sum::<f64>()
         })
         .collect()
 }
@@ -222,8 +227,8 @@ fn format_peak_rate(rate: f64) -> String {
 /// One rate direction as a complete panel: a header line (label, the
 /// current rate, a trend arrow, and the window peak), an optional summary
 /// line, then a gradient braille wave. The wave is normalized to the window
-/// peak; row brightness also scales with how close the current rate is to
-/// that peak, so the panel glows under load and dims when idle.
+/// peak, while row colors stay anchored to vertical height so rate changes do
+/// not recolor the entire history.
 pub(in crate::ui) fn wave_panel(
     f: &mut Frame,
     area: Rect,
@@ -238,7 +243,7 @@ pub(in crate::ui) fn wave_panel(
 
     let current = *samples.last().unwrap() as f64;
     let peak = samples.iter().copied().max().unwrap_or(0) as f64;
-    let max_val = peak.max(1024.0); // minimum 1 KB/s scale
+    let max_val = options.max_val.unwrap_or(peak).max(1024.0);
     let speed_ratio = (current / max_val).clamp(0.0, 1.0);
 
     let value_color = wave(0.35 + 0.65 * speed_ratio);
@@ -277,7 +282,7 @@ pub(in crate::ui) fn wave_panel(
         max_val,
         options.frac,
         options.window,
-        |intensity| wave((0.6 + 0.4 * speed_ratio) * intensity),
+        wave,
     );
     f.render_widget(Paragraph::new(lines), graph_area);
 }

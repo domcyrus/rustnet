@@ -1223,9 +1223,51 @@ fn draw_stats_panel(
     Ok(())
 }
 
-/// One-row gradient braille wave for the sidebar traffic graphs,
-/// normalized to the 60s window peak and brightened toward the peak
-/// as the current rate approaches it.
+/// One-row braille wave for the sidebar traffic graphs. Keep its color at a
+/// stable point in the ramp because this compact graph has no vertical rows
+/// over which to distribute a gradient.
+const MINI_WAVE_INTENSITY: f64 = 0.6;
+const MINI_WAVE_SMOOTHING_SAMPLES: usize = 4;
+const MINI_WAVE_SCALE_PERCENTILE: usize = 90;
+const MINI_WAVE_MIN_CEILING: u64 = 1024;
+
+/// The full graph preserves short bursts, but a one-cell-high wave has only
+/// four vertical dot levels. A longer trailing average prevents small traffic
+/// changes from blinking individual dots on and off in the Overview sidebar.
+fn smooth_mini_wave(samples: &[u64]) -> Vec<u64> {
+    let mut smoothed = Vec::with_capacity(samples.len());
+    let mut sum = 0u128;
+    for (index, &value) in samples.iter().enumerate() {
+        sum += u128::from(value);
+        if index >= MINI_WAVE_SMOOTHING_SAMPLES {
+            sum -= u128::from(samples[index - MINI_WAVE_SMOOTHING_SAMPLES]);
+        }
+        let count = (index + 1).min(MINI_WAVE_SMOOTHING_SAMPLES) as u128;
+        smoothed.push((sum / count) as u64);
+    }
+    smoothed
+}
+
+fn mini_wave_window(width: u16, history_window: usize) -> usize {
+    history_window.min(width as usize * 2)
+}
+
+fn mini_wave_ceiling(samples: &[u64], visible_window: usize) -> f64 {
+    let start = samples.len().saturating_sub(visible_window);
+    let mut visible = samples[start..].to_vec();
+    if visible.is_empty() {
+        return MINI_WAVE_MIN_CEILING as f64;
+    }
+
+    visible.sort_unstable();
+    let rank = (visible.len() * MINI_WAVE_SCALE_PERCENTILE).div_ceil(100);
+    let representative = visible[rank.saturating_sub(1).min(visible.len() - 1)];
+    representative
+        .max(MINI_WAVE_MIN_CEILING)
+        .checked_next_power_of_two()
+        .unwrap_or(u64::MAX) as f64
+}
+
 fn mini_wave(
     samples: &[u64],
     width: u16,
@@ -1233,23 +1275,19 @@ fn mini_wave(
     window: usize,
     wave: fn(f64) -> Color,
 ) -> Vec<Line<'static>> {
-    let current = samples.last().copied().unwrap_or(0) as f64;
-    let max_val = samples
-        .iter()
-        .copied()
-        .max()
-        .unwrap_or(0)
-        .max(1024) // minimum 1 KB/s scale
-        as f64;
-    let ratio = (current / max_val).clamp(0.0, 1.0);
+    // A braille cell has two horizontal dots. Keep one traffic sample per dot
+    // in this compact graph so advancing the ring translates existing crests
+    // instead of resampling them against shifting fractional boundaries.
+    let visible_window = mini_wave_window(width, window);
+    let ceiling = mini_wave_ceiling(samples, visible_window);
     braille_graph::render(
         samples,
         width as usize,
         1,
-        max_val,
+        ceiling,
         frac,
-        window,
-        |intensity| wave((0.6 + 0.4 * ratio) * intensity),
+        visible_window,
+        |intensity| wave(MINI_WAVE_INTENSITY * intensity),
     )
 }
 
@@ -1295,10 +1333,11 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(sparkline_rows[0]);
 
-    let rx_label = Paragraph::new("RX").style(theme::fg(theme::rx()));
+    let rx_label = Paragraph::new("RX").style(theme::fg(theme::rx_wave(MINI_WAVE_INTENSITY)));
     f.render_widget(rx_label, rx_cols[0]);
 
-    let rx_data = traffic_history.get_rx_sparkline_data(usize::MAX);
+    let rx_rates = traffic_history.get_rx_sparkline_data(usize::MAX);
+    let rx_data = smooth_mini_wave(&rx_rates);
     f.render_widget(
         Paragraph::new(mini_wave(
             &rx_data,
@@ -1316,10 +1355,11 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(sparkline_rows[1]);
 
-    let tx_label = Paragraph::new("TX").style(theme::fg(theme::tx()));
+    let tx_label = Paragraph::new("TX").style(theme::fg(theme::tx_wave(MINI_WAVE_INTENSITY)));
     f.render_widget(tx_label, tx_cols[0]);
 
-    let tx_data = traffic_history.get_tx_sparkline_data(usize::MAX);
+    let tx_rates = traffic_history.get_tx_sparkline_data(usize::MAX);
+    let tx_data = smooth_mini_wave(&tx_rates);
     f.render_widget(
         Paragraph::new(mini_wave(
             &tx_data,
@@ -1332,21 +1372,21 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
     );
 
     // Current rates row
-    let (current_rx, current_tx) = rx_data
+    let (current_rx, current_tx) = rx_rates
         .last()
-        .zip(tx_data.last())
+        .zip(tx_rates.last())
         .map(|(rx, tx)| (*rx, *tx))
         .unwrap_or((0, 0));
 
     let rates_text = Line::from(vec![
         Span::styled(
             format!("↓{}/s", format_bytes(current_rx)),
-            theme::fg(theme::rx()),
+            theme::fg(theme::rx_wave(MINI_WAVE_INTENSITY)),
         ),
         Span::raw(" "),
         Span::styled(
             format!("↑{}/s", format_bytes(current_tx)),
-            theme::fg(theme::tx()),
+            theme::fg(theme::tx_wave(MINI_WAVE_INTENSITY)),
         ),
     ]);
     let rates_para = Paragraph::new(rates_text);
@@ -1443,11 +1483,17 @@ mod tests {
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-    use super::{OverviewTab, connections_title, handle_filter_mode_key, is_filter_backspace_char};
+    use super::{
+        MINI_WAVE_INTENSITY, OverviewTab, connections_title, handle_filter_mode_key,
+        is_filter_backspace_char, mini_wave, mini_wave_ceiling, mini_wave_window, smooth_mini_wave,
+    };
     use crate::{
         app::{App, Config},
         network::types::{Connection, Protocol, ProtocolState, TcpState},
-        ui::{ClickableRegions, Component, Effect, HandlerContext, UIState, compute_grouped_rows},
+        ui::{
+            ClickableRegions, Component, Effect, HandlerContext, UIState, compute_grouped_rows,
+            theme,
+        },
     };
 
     fn test_connection(port: u16, process: &str) -> Connection {
@@ -1467,6 +1513,46 @@ mod tests {
             .map(|span| span.content.into_owned())
             .collect::<Vec<_>>()
             .concat()
+    }
+
+    #[test]
+    fn mini_wave_color_does_not_follow_latest_rate() {
+        let quiet = mini_wave(&[64, 128], 12, 0.0, 120, theme::rx_wave);
+        let busy = mini_wave(&[64, 1024], 12, 0.0, 120, theme::rx_wave);
+        let expected = Some(theme::rx_wave(MINI_WAVE_INTENSITY));
+
+        assert_eq!(quiet[0].spans[0].style.fg, expected);
+        assert_eq!(busy[0].spans[0].style.fg, expected);
+    }
+
+    #[test]
+    fn mini_wave_uses_a_longer_trailing_average() {
+        assert_eq!(
+            smooth_mini_wave(&[0, 0, 0, 400, 400]),
+            vec![0, 0, 0, 100, 200]
+        );
+        assert_eq!(smooth_mini_wave(&[100; 6]), vec![100; 6]);
+    }
+
+    #[test]
+    fn mini_wave_uses_one_sample_per_horizontal_dot() {
+        assert_eq!(mini_wave_window(40, 120), 80);
+        assert_eq!(mini_wave_window(80, 120), 120);
+        assert_eq!(mini_wave_window(0, 120), 0);
+    }
+
+    #[test]
+    fn mini_wave_scale_ignores_isolated_surges() {
+        let mut isolated = vec![4_096; 120];
+        isolated[20] = 1_000_000;
+        assert_eq!(mini_wave_ceiling(&isolated, 80), 4_096.0);
+
+        isolated[119] = 1_000_000;
+        assert_eq!(mini_wave_ceiling(&isolated, 80), 4_096.0);
+
+        let mut sustained = vec![4_096; 80];
+        sustained[70..].fill(1_000_000);
+        assert_eq!(mini_wave_ceiling(&sustained, 80), 1_048_576.0);
     }
 
     #[test]

@@ -1749,8 +1749,16 @@ pub(in crate::ui) fn draw_connection_details(
         }];
         let (rx, tx): (&[u64], &[u64]) = history
             .as_ref()
-            .map(|(rx, tx)| (rx.as_slice(), tx.as_slice()))
+            .map(|history| (history.rx.as_slice(), history.tx.as_slice()))
             .unwrap_or((&fallback_rx, &fallback_tx));
+        let rx_graph_ceiling = history.as_ref().map_or_else(
+            || fallback_rx[0].max(1024) as f64,
+            |history| history.rx_graph_ceiling,
+        );
+        let tx_graph_ceiling = history.as_ref().map_or_else(
+            || fallback_tx[0].max(1024) as f64,
+            |history| history.tx_graph_ceiling,
+        );
 
         let rx_total = format_bytes(conn.bytes_received);
         let tx_total = format_bytes(conn.bytes_sent);
@@ -1783,7 +1791,9 @@ pub(in crate::ui) fn draw_connection_details(
             cols[0],
             rx,
             "↓ RX",
-            braille_graph::WavePanelOptions::new(frac, window).with_summary(rx_summary),
+            braille_graph::WavePanelOptions::new(frac, window)
+                .with_summary(rx_summary)
+                .with_max_val(rx_graph_ceiling),
             theme::rx_wave,
         );
         braille_graph::wave_panel(
@@ -1791,7 +1801,9 @@ pub(in crate::ui) fn draw_connection_details(
             cols[1],
             tx,
             "↑ TX",
-            braille_graph::WavePanelOptions::new(frac, window).with_summary(tx_summary),
+            braille_graph::WavePanelOptions::new(frac, window)
+                .with_summary(tx_summary)
+                .with_max_val(tx_graph_ceiling),
             theme::tx_wave,
         );
 

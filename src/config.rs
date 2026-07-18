@@ -32,7 +32,7 @@ impl Default for Config {
             interface: None,
             language: "en".to_string(),
             geoip_db_path: None,
-            refresh_interval: 1000,
+            refresh_interval: 500,
             show_locations: true,
             filter_localhost: true,
             packet_processing_interval_ms: 0, // Default to continuous processing (minimal sleep)

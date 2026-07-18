@@ -86,7 +86,7 @@ Options:
   -i, --interface <INTERFACE>            Network interface to monitor
       --no-localhost                     Filter out localhost connections (default: filtered)
       --show-localhost                   Show localhost connections (overrides default filtering)
-  -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 1000]
+  -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 500]
       --no-dpi                           Disable deep packet inspection
       --no-resolve-dns                   Disable reverse DNS lookups (enabled by default)
       --show-ptr-lookups                 Show PTR lookup connections (hidden by default)
@@ -180,9 +180,8 @@ This is useful for reducing noise in the connection list, as most users don't ne
 Set the UI refresh rate in milliseconds. Lower values provide more responsive updates but increase CPU usage.
 
 **Recommendations:**
-- **Default (1000ms)**: Good balance for most users
-- **High-traffic networks (2000ms)**: Reduce CPU usage on busy networks
-- **Real-time monitoring (500ms)**: More responsive updates for quick analysis
+- **Default (500ms)**: Smooth live graphs and responsive updates
+- **High-traffic networks (1000-2000ms)**: Reduce CPU usage on busy networks
 - **Low-end systems (2000-3000ms)**: Reduce load on resource-constrained machines
 
 #### `--no-dpi`
@@ -812,7 +811,7 @@ RustNet provides real-time network interface statistics across all supported pla
 
 **All Platforms:**
 - All counters (bytes, packets, errors, drops) are cumulative from boot/interface up
-- Rates (bytes/sec) are calculated from snapshots taken every 2 seconds
+- Rates (bytes/sec) are calculated from snapshots taken every 500ms
 - Loopback interface is included for monitoring local traffic
 
 **Windows:**

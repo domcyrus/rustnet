@@ -729,6 +729,10 @@ where
     // cost. Input and data changes redraw immediately; graph animation
     // and the live sidebar counters advance at this heartbeat.
     let redraw_interval = Duration::from_millis(500);
+    // Full-size traffic waves scroll between 500ms samples in smaller
+    // increments. The one-row Overview waves keep the lower idle repaint rate
+    // because their four-dot vertical resolution makes faster motion flicker.
+    let wave_redraw_interval = Duration::from_millis(200);
     let mut last_tick = std::time::Instant::now();
     let mut last_draw = std::time::Instant::now();
     let mut needs_redraw = true; // first frame
@@ -823,6 +827,8 @@ where
         // it gets a shorter redraw interval for its ~1s lifetime.
         let idle_redraw = if app.is_loading() {
             Duration::from_millis(100)
+        } else if matches!(ui_state.selected_tab, 1 | 3) {
+            wave_redraw_interval
         } else {
             redraw_interval
         };

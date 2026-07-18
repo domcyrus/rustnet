@@ -86,7 +86,7 @@ Options:
   -i, --interface <INTERFACE>            要监控的网络接口
       --no-localhost                     过滤掉 localhost 连接（默认：已过滤）
       --show-localhost                   显示 localhost 连接（覆盖默认过滤）
-  -r, --refresh-interval <MILLISECONDS>  UI 刷新间隔，单位为毫秒 [默认：1000]
+  -r, --refresh-interval <MILLISECONDS>  UI 刷新间隔，单位为毫秒 [默认：500]
       --no-dpi                           禁用深度包检测
       --no-resolve-dns                   禁用反向 DNS 查找（默认启用）
       --show-ptr-lookups                 显示 PTR 查找连接（默认隐藏）
@@ -178,9 +178,8 @@ RustNet 自动检测 TUN/TAP 接口并相应调整数据包解析。接口类型
 以毫秒为单位设置 UI 刷新率。较低的值提供更灵敏的更新，但会增加 CPU 使用率。
 
 **建议：**
-- **默认（1000ms）**：大多数用户的良好平衡
-- **高流量网络（2000ms）**：在繁忙网络上降低 CPU 使用率
-- **实时监控（500ms）**：更灵敏的更新，适合快速分析
+- **默认（500ms）**：流畅的实时图表和灵敏的更新
+- **高流量网络（1000-2000ms）**：在繁忙网络上降低 CPU 使用率
 - **低端系统（2000-3000ms）**：降低资源受限机器上的负载
 
 #### `--no-dpi`<a id="--no-dpi"></a>
@@ -754,7 +753,7 @@ RustNet 在所有支持的平台上（Linux、macOS、FreeBSD、Windows）提供
 
 **所有平台：**
 - 所有计数器（字节、数据包、错误、丢弃）自启动/接口上线以来累计
-- 速率（字节/秒）根据每 2 秒采集的快照计算
+- 速率（字节/秒）根据每 500ms 采集的快照计算
 - 包含回环接口用于监控本地流量
 
 **Windows：**

@@ -131,7 +131,7 @@ See [Platform-Specific Implementations](#platform-specific-implementations) for 
 
 ### 4. Snapshot Provider
 
-Creates consistent snapshots of connection data for the UI at regular intervals (default: 1 second). This ensures the UI has a stable view of connections without race conditions.
+Creates consistent snapshots of connection data for the UI at regular intervals (default: 500ms). This ensures the UI has a stable view of connections without race conditions.
 
 **Responsibilities:**
 - Read from DashMap at configured intervals
@@ -183,7 +183,7 @@ Connections change color based on proximity to timeout:
 
 ### 6. Rate Refresh Thread
 
-Updates bandwidth calculations every second with gentle decay. This provides smooth bandwidth visualization without abrupt changes.
+Updates bandwidth calculations every 500ms with gentle decay. This provides smooth bandwidth visualization without abrupt changes.
 
 **Responsibilities:**
 - Calculate bytes/second for download and upload
@@ -272,7 +272,7 @@ The tool automatically detects and lists available network interfaces using plat
 
 ### Process Activity Accounting
 
-`ProcessActivityTracker` receives active and retained historic connections from the existing snapshot provider once per second. It calculates current rates, a 60-second window, peaks, retained totals, bandwidth shares, connection counts, and bounded destination summaries per process identity.
+`ProcessActivityTracker` receives active and retained historic connections from the existing snapshot provider every 500ms. It calculates current rates, a 60-second window, peaks, retained totals, bandwidth shares, connection counts, and bounded destination summaries per process identity.
 
 The interface-statistics collector keeps a compact 60-second counter window per interface. Activity coverage compares captured process bytes with interface bytes over that shared duration instead of dividing independently sampled instantaneous rates.
 
@@ -314,10 +314,10 @@ Deep packet inspection can be disabled with `--no-dpi` for lower overhead:
 ### Configurable Intervals
 
 Adjust refresh rates based on your needs:
-- **UI refresh**: Default 1000ms (adjustable with `--refresh-interval`)
+- **UI refresh**: Default 500ms (adjustable with `--refresh-interval`)
 - **Process enrichment**: Every 2 seconds
 - **Cleanup check**: Every 5 seconds
-- **Rate calculation**: Every 1 second
+- **Rate calculation**: Every 500ms
 
 ### Memory Management
 
