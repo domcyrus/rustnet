@@ -14,6 +14,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::{Duration, Instant};
 
 const AMBIGUOUS_ENDPOINT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
+const AMBIGUOUS_ENDPOINT_REFRESH_MAX_INTERVAL: Duration = Duration::from_secs(60);
 
 // Re-export TCP types
 pub use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
@@ -126,6 +127,7 @@ pub struct PacketParser {
     local_ips: std::collections::HashSet<IpAddr>,
     last_local_ip_refresh: Instant,
     last_ambiguous_endpoint_refresh: Option<Instant>,
+    unchanged_ambiguous_refreshes: u32,
     config: ParserConfig,
     linktype: Option<i32>, // DLT linktype - 149 means PKTAP on macOS
     oui_lookup: Option<OuiLookup>,
@@ -145,6 +147,7 @@ impl PacketParser {
             local_ips: collect_local_ips(),
             last_local_ip_refresh: Instant::now(),
             last_ambiguous_endpoint_refresh: None,
+            unchanged_ambiguous_refreshes: 0,
             config: ParserConfig::default(),
             linktype: None,
             oui_lookup: None,
@@ -156,6 +159,7 @@ impl PacketParser {
             local_ips: collect_local_ips(),
             last_local_ip_refresh: Instant::now(),
             last_ambiguous_endpoint_refresh: None,
+            unchanged_ambiguous_refreshes: 0,
             config,
             linktype: None,
             oui_lookup: None,
@@ -219,7 +223,8 @@ impl PacketParser {
     ///
     /// This self-heals the first packet observed after an address is added,
     /// rather than waiting for the periodic refresh. Refresh attempts caused
-    /// by unrelated forwarded traffic are rate-limited.
+    /// by unrelated forwarded traffic are rate-limited with exponential
+    /// backoff while they keep observing no change.
     pub fn parse_packet_with_refresh(&mut self, data: &[u8]) -> Option<ParsedPacket> {
         self.parse_packet_with_local_ip_collector(data, collect_local_ips)
     }
@@ -296,7 +301,7 @@ impl PacketParser {
         let now = Instant::now();
         if self
             .last_ambiguous_endpoint_refresh
-            .is_some_and(|last| now.duration_since(last) < AMBIGUOUS_ENDPOINT_REFRESH_INTERVAL)
+            .is_some_and(|last| now.duration_since(last) < self.ambiguous_refresh_interval())
         {
             return Some(parsed);
         }
@@ -305,8 +310,24 @@ impl PacketParser {
         if self.refresh_local_ips_with(collector) {
             self.parse_packet(data)
         } else {
+            self.unchanged_ambiguous_refreshes =
+                self.unchanged_ambiguous_refreshes.saturating_add(1);
             Some(parsed)
         }
+    }
+
+    /// Interval between ambiguous-endpoint refresh attempts.
+    ///
+    /// Sustained traffic with no local endpoint (e.g. subnet-directed
+    /// broadcasts, which `is_unicast_endpoint` cannot recognize without prefix
+    /// information, or mirrored traffic) would otherwise re-enumerate
+    /// interfaces every second forever, so each fruitless refresh doubles the
+    /// interval up to a cap. Any refresh that observes a change resets it.
+    fn ambiguous_refresh_interval(&self) -> Duration {
+        let factor = 1u32 << self.unchanged_ambiguous_refreshes.min(6);
+        AMBIGUOUS_ENDPOINT_REFRESH_INTERVAL
+            .saturating_mul(factor)
+            .min(AMBIGUOUS_ENDPOINT_REFRESH_MAX_INTERVAL)
     }
 
     fn refresh_local_ips_with<F>(&mut self, collector: F) -> bool
@@ -325,6 +346,7 @@ impl PacketParser {
             refreshed.len()
         );
         self.local_ips = refreshed;
+        self.unchanged_ambiguous_refreshes = 0;
         true
     }
 
@@ -1088,6 +1110,72 @@ mod tests {
         assert!(parser.refresh_local_ips_with(|| [new].into_iter().collect()));
         assert!(!parser.local_ips.contains(&old));
         assert!(parser.local_ips.contains(&new));
+    }
+
+    #[test]
+    fn ambiguous_refresh_is_rate_limited_between_packets() {
+        use std::cell::Cell;
+
+        let mut parser = create_parser_with_linktype(1);
+        parser.local_ips.clear();
+        parser.local_ips.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let packet = ethernet_ipv6_tcp();
+        let collector_calls = Cell::new(0u32);
+        let unchanged_collector = || {
+            collector_calls.set(collector_calls.get() + 1);
+            [IpAddr::V4(Ipv4Addr::LOCALHOST)].into_iter().collect()
+        };
+
+        parser
+            .parse_packet_with_local_ip_collector(&packet, unchanged_collector)
+            .expect("packet should parse");
+        parser
+            .parse_packet_with_local_ip_collector(&packet, unchanged_collector)
+            .expect("packet should parse");
+
+        assert_eq!(
+            collector_calls.get(),
+            1,
+            "second ambiguous packet within the refresh interval must not re-enumerate"
+        );
+    }
+
+    #[test]
+    fn fruitless_ambiguous_refreshes_back_off_exponentially() {
+        let mut parser = create_parser_with_linktype(1);
+        assert_eq!(parser.ambiguous_refresh_interval(), Duration::from_secs(1));
+
+        parser.unchanged_ambiguous_refreshes = 3;
+        assert_eq!(parser.ambiguous_refresh_interval(), Duration::from_secs(8));
+
+        parser.unchanged_ambiguous_refreshes = 100;
+        assert_eq!(
+            parser.ambiguous_refresh_interval(),
+            AMBIGUOUS_ENDPOINT_REFRESH_MAX_INTERVAL
+        );
+
+        let new = IpAddr::V6("2001:db8::99".parse().expect("valid address"));
+        assert!(parser.refresh_local_ips_with(|| [new].into_iter().collect()));
+        assert_eq!(
+            parser.unchanged_ambiguous_refreshes, 0,
+            "a refresh that observes a change must reset the backoff"
+        );
+    }
+
+    #[test]
+    fn periodic_refresh_waits_for_interval() {
+        let mut parser = create_parser_with_linktype(1);
+        let bogus = IpAddr::V6("2001:db8::dead".parse().expect("valid address"));
+        parser.local_ips = [bogus].into_iter().collect();
+
+        assert!(!parser.refresh_local_ips_if_due(Duration::from_secs(3600)));
+        assert!(
+            parser.local_ips.contains(&bogus),
+            "snapshot must be untouched before the interval elapses"
+        );
+
+        assert!(parser.refresh_local_ips_if_due(Duration::ZERO));
+        assert!(!parser.local_ips.contains(&bogus));
     }
 
     // ====== Edge Cases ======

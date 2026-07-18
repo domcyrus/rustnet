@@ -15,10 +15,21 @@ pub(crate) fn collect_local_ips() -> HashSet<IpAddr> {
     #[cfg(windows)]
     match windows_unicast_addresses() {
         Ok(addresses) => local_ips.extend(addresses),
-        Err(code) => log::debug!(
-            "GetAdaptersAddresses failed while refreshing local addresses: {}",
-            code
-        ),
+        Err(code) => {
+            // Warn once so a persistent failure is visible at default log
+            // levels without repeating every refresh interval.
+            static FAILURE_LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            let message = format!(
+                "GetAdaptersAddresses failed while refreshing local addresses: {code}; \
+                 IPv6 endpoint orientation may be degraded"
+            );
+            if FAILURE_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                log::debug!("{message}");
+            } else {
+                log::warn!("{message}");
+            }
+        }
     }
 
     local_ips.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
@@ -46,10 +57,10 @@ fn windows_unicast_addresses() -> Result<Vec<IpAddr>, u32> {
     let mut requested_size = INITIAL_BUFFER_SIZE;
 
     for _ in 0..MAX_ATTEMPTS {
-        // `Vec<usize>` gives the buffer sufficient alignment for the linked
-        // adapter structures returned by Windows.
-        let word_count = requested_size.div_ceil(size_of::<usize>());
-        let mut buffer = vec![0usize; word_count];
+        // `IP_ADAPTER_ADDRESSES_LH` contains 8-byte-aligned fields, so the
+        // buffer must be 8-byte aligned even on 32-bit targets.
+        let word_count = requested_size.div_ceil(size_of::<u64>());
+        let mut buffer = vec![0u64; word_count];
         let mut buffer_size = size_of_val(buffer.as_slice()) as u32;
         let adapters = buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
 
