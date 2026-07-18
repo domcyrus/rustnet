@@ -4,7 +4,7 @@ version.workspace = true
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Per-connection process attribution for rustnet: eBPF/procfs on Linux, PKTAP/lsof on macOS, IP Helper on Windows, sockstat on FreeBSD, behind one ProcessLookup trait"
+description = "Per-connection process attribution for rustnet: eBPF/procfs on Linux, PKTAP/lsof on macOS, ETW/IP Helper on Windows, sockstat on FreeBSD, behind one ProcessLookup trait"
 repository.workspace = true
 homepage.workspace = true
 documentation = "https://docs.rs/rustnet-host"
@@ -33,6 +33,7 @@ procfs = "0.18"
 libbpf-rs = { version = "0.26", optional = true }
 
 [target.'cfg(windows)'.dependencies]
+ferrisetw = "1.2"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",

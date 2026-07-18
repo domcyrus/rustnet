@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Event-driven Windows Process Attribution**: Use kernel network and process ETW
+  events to retain connection ownership for short-lived processes, with IP Helper
+  polling as reconciliation and fallback. IPv6 UDP ownership is now included.
+
 ## [1.4.0] - 2026-06-16
 
 This release redesigns the TUI around a calmer visual hierarchy and, under the hood,
