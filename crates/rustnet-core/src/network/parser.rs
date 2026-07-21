@@ -695,6 +695,16 @@ impl PacketParser {
 
         let transport_data = &data[ip_header_len..];
 
+        // Same trailing-bytes problem as the Ethernet path: cooked captures
+        // (Linux SLL/SLL2) keep the Ethernet padding of short frames, so trim
+        // to the declared Total Length. Keep the untrimmed slice when the
+        // field is unusable (0 under TSO/LRO, or below the header length), and
+        // clamp to what was captured when the snaplen truncated the packet.
+        let transport_data = match actual_packet_len.checked_sub(ip_header_len) {
+            Some(payload_len) => &transport_data[..payload_len.min(transport_data.len())],
+            None => transport_data,
+        };
+
         let params =
             TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
@@ -755,6 +765,16 @@ impl PacketParser {
         ));
 
         let transport_data = &data[40..];
+
+        // Same trailing-bytes problem as the Ethernet path: trim to the
+        // declared Payload Length. A zero means the field carries no usable
+        // length (TSO/LRO, or a jumbogram whose real size lives in a
+        // Hop-by-Hop option, RFC 2675), so the untrimmed slice is kept then.
+        let transport_data = if ipv6_payload_length == 0 {
+            transport_data
+        } else {
+            &transport_data[..ipv6_payload_length.min(transport_data.len())]
+        };
 
         // Handle extension headers if needed (`None` = non-first fragment,
         // which carries no transport header)
@@ -1348,6 +1368,41 @@ mod tests {
 
         let parsed = parser.parse_packet(&packet).unwrap();
         assert_eq!(parsed.tcp_header.unwrap().payload_len, 4);
+    }
+
+    #[test]
+    fn test_sll_padding_is_not_counted_as_tcp_payload() {
+        let parser = create_parser_with_linktype(113); // LINUX_SLL
+        // Cooked captures keep the Ethernet padding of short frames, so the
+        // bytes past the IP Total Length must be trimmed here as well.
+        let mut packet = linux_sll_ipv4_tcp();
+        packet.extend_from_slice(&[0x00; 6]);
+
+        let parsed = parser.parse_packet(&packet).unwrap();
+        assert_eq!(parsed.tcp_header.unwrap().payload_len, 0);
+    }
+
+    #[test]
+    fn test_raw_ip_trailing_bytes_are_not_read_as_tcp_payload() {
+        let parser = create_parser_with_linktype(12); // DLT_RAW
+        // Raw IP capture: strip the Ethernet header from the fixture and
+        // append bytes past the datagram end.
+        let mut packet = ethernet_ipv4_tcp_syn()[14..].to_vec();
+        packet.extend_from_slice(b"SSH-2.0-OpenSSH_9.6\r\n");
+
+        let parsed = parser.parse_packet(&packet).unwrap();
+        assert_eq!(parsed.tcp_header.unwrap().payload_len, 0);
+        assert!(parsed.dpi_result.is_none());
+    }
+
+    #[test]
+    fn test_raw_ipv6_padding_is_not_counted_as_tcp_payload() {
+        let parser = create_parser_with_linktype(12); // DLT_RAW
+        let mut packet = ethernet_ipv6_tcp()[14..].to_vec();
+        packet.extend_from_slice(&[0x00; 6]);
+
+        let parsed = parser.parse_packet(&packet).unwrap();
+        assert_eq!(parsed.tcp_header.unwrap().payload_len, 0);
     }
 
     #[test]
