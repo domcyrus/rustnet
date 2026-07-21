@@ -39,7 +39,11 @@ readme = "README.md"
 license.workspace = true
 keywords = ["network", "monitoring", "tui", "ebpf", "packet-capture"]
 categories = ["command-line-utilities", "network-programming", "visualization"]
-exclude = [".github/", "scripts/", "tests/", "*.log", "target/", ".gitignore"]
+# assets/ (README gif and screenshots, ~9 MB) pushed the crate past the
+# crates.io 10 MB upload limit at v1.5.0; crates.io rewrites the README's
+# relative image links to the GitHub repo, so excluding them changes nothing
+# on the crate page.
+exclude = [".github/", "assets/", "scripts/", "tests/", "*.log", "target/", ".gitignore"]
 
 [lib]
 name = "rustnet_monitor"
