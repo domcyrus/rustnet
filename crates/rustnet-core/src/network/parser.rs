@@ -452,6 +452,17 @@ impl PacketParser {
 
         let transport_data = &ip_data[ip_header_len..];
 
+        // A captured frame can carry bytes past the end of the IP datagram:
+        // Ethernet pads anything below the 60-byte minimum, and some senders
+        // append trailers. Those bytes are not transport payload, so trim the
+        // slice to the declared Total Length. Keep the untrimmed slice when the
+        // field is unusable (0 under TSO/LRO, or below the header length), and
+        // clamp to what was captured when the snaplen truncated the packet.
+        let transport_data = match ip_total_length.checked_sub(ip_header_len) {
+            Some(payload_len) => &transport_data[..payload_len.min(transport_data.len())],
+            None => transport_data,
+        };
+
         let params =
             TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
@@ -514,6 +525,17 @@ impl PacketParser {
         ));
 
         let transport_data = &ip_data[40..];
+
+        // Same trailing-bytes problem as IPv4: trim to the declared Payload
+        // Length so Ethernet padding is not read as transport payload. A zero
+        // means the field carries no usable length (TSO/LRO, or a jumbogram
+        // whose real size lives in a Hop-by-Hop option, RFC 2675), so the
+        // untrimmed slice is kept in that case.
+        let transport_data = if ipv6_payload_length == 0 {
+            transport_data
+        } else {
+            &transport_data[..ipv6_payload_length.min(transport_data.len())]
+        };
 
         // Handle extension headers if needed (`None` = non-first fragment,
         // which carries no transport header)
@@ -1259,5 +1281,86 @@ mod tests {
         let parsed = parser.parse_packet(&packet).unwrap();
         // IPv6: 14 (Ethernet) + 40 (IPv6 header) + 20 (payload) = 74
         assert_eq!(parsed.packet_len, 74);
+    }
+
+    #[test]
+    fn test_ethernet_padding_is_not_counted_as_tcp_payload() {
+        let parser = create_parser_with_linktype(1);
+        // A bare SYN is 54 bytes on the wire, so the NIC pads it to the
+        // 60-byte Ethernet minimum. Those 6 bytes sit past the end of the
+        // IP datagram and must not be reported as payload.
+        let mut packet = ethernet_ipv4_tcp_syn();
+        assert_eq!(packet.len(), 54);
+        packet.extend_from_slice(&[0x00; 6]);
+
+        let parsed = parser.parse_packet(&packet).unwrap();
+        assert_eq!(parsed.tcp_header.unwrap().payload_len, 0);
+    }
+
+    #[test]
+    fn test_trailing_bytes_are_not_read_as_tcp_payload() {
+        let parser = create_parser_with_linktype(1);
+        // The IPv4 Total Length still says 40 (header + bare TCP header), so
+        // everything appended here is outside the datagram. Reading it as
+        // payload would hand DPI bytes the sender never put in the segment.
+        let mut packet = ethernet_ipv4_tcp_syn();
+        packet.extend_from_slice(b"SSH-2.0-OpenSSH_9.6\r\n");
+
+        let parsed = parser.parse_packet(&packet).unwrap();
+        assert_eq!(parsed.tcp_header.unwrap().payload_len, 0);
+        assert!(parsed.dpi_result.is_none());
+    }
+
+    #[test]
+    fn test_ipv6_padding_is_not_counted_as_tcp_payload() {
+        let parser = create_parser_with_linktype(1);
+        // IPv6 Payload Length is 20 (TCP header only); the appended bytes are
+        // past the end of the datagram.
+        let mut packet = ethernet_ipv6_tcp();
+        packet.extend_from_slice(&[0x00; 6]);
+
+        let parsed = parser.parse_packet(&packet).unwrap();
+        assert_eq!(parsed.tcp_header.unwrap().payload_len, 0);
+    }
+
+    #[test]
+    fn test_real_payload_is_preserved() {
+        let parser = create_parser_with_linktype(1);
+        // Total Length 0x002c = 44: 20 IPv4 + 20 TCP + 4 payload bytes.
+        let mut packet = ethernet_ipv4_tcp_syn();
+        packet[16] = 0x00;
+        packet[17] = 0x2c;
+        packet.extend_from_slice(b"data");
+
+        let parsed = parser.parse_packet(&packet).unwrap();
+        assert_eq!(parsed.tcp_header.unwrap().payload_len, 4);
+    }
+
+    #[test]
+    fn test_truncated_capture_keeps_captured_payload() {
+        let parser = create_parser_with_linktype(1);
+        // Total Length claims 1500 bytes but the snaplen cut the capture
+        // short. The payload must be what was captured, not what was claimed.
+        let mut packet = ethernet_ipv4_tcp_syn();
+        packet[16] = 0x05;
+        packet[17] = 0xdc;
+        packet.extend_from_slice(b"data");
+
+        let parsed = parser.parse_packet(&packet).unwrap();
+        assert_eq!(parsed.tcp_header.unwrap().payload_len, 4);
+    }
+
+    #[test]
+    fn test_zero_total_length_keeps_full_payload() {
+        let parser = create_parser_with_linktype(1);
+        // TSO/LRO can hand up a segment with Total Length 0. The field is
+        // unusable, so the captured bytes are kept rather than dropped.
+        let mut packet = ethernet_ipv4_tcp_syn();
+        packet[16] = 0x00;
+        packet[17] = 0x00;
+        packet.extend_from_slice(b"data");
+
+        let parsed = parser.parse_packet(&packet).unwrap();
+        assert_eq!(parsed.tcp_header.unwrap().payload_len, 4);
     }
 }
