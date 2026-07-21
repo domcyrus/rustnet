@@ -2,7 +2,7 @@
 
 Name:    rustnet
 # renovate: datasource=github-releases depName=domcyrus/rustnet extractVersion=true
-Version: 1.4.0
+Version: 1.5.0
 Release: 1%{?dist}
 Summary: Per-process network monitoring TUI with deep packet inspection
 License: Apache-2.0

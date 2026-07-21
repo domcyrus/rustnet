@@ -7,16 +7,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-21
+
+This release makes RustNet Kubernetes-aware: connections can be attributed to their
+owning pod and container, and the new native PCAPNG export writes Wireshark-ready
+captures with process, DPI, GeoIP, and pod annotations. A new Activity view ranks
+processes by traffic, the graphs got a gradient braille overhaul, Windows process
+attribution went event-driven with ETW, and rustnet now drops root privileges after
+initialization on Linux, macOS, and FreeBSD.
+
 ### Added
+- **Kubernetes Pod/Container Attribution**: New optional `kubernetes` feature
+  (off by default, no extra dependencies) that attributes connections to their
+  owning pod and container on a node, including `hostNetwork` pods. Pod, namespace,
+  and container appear in the Details pane, JSONL/PCAPNG exports, and the new
+  `pod:`, `ns:`, and `container:` filter keywords. The container image enables the
+  feature by default (#299, #450)
+- **Native Annotated PCAPNG Export**: New `--pcapng-export FILE` writes a
+  Wireshark-ready PCAPNG file whose packet comments carry best-effort process, PID,
+  direction, DPI/SNI, and GeoIP metadata, preserving libpcap timestamps and original
+  packet lengths. The Overview panel reports export progress and annotation stats (#432)
+- **Process Activity View**: The Interfaces tab is now a process-focused Activity
+  view (key `3`) ranking egress and ingress traffic with 60-second share bars,
+  retained totals, connection counts, and top remote peers; `d` flips direction,
+  `s` changes the sort metric, and `i` opens the detailed interface table (#465)
+- **Gradient Braille Graphs and Adaptive Rendering**: Flow-inspired braille area
+  graphs with gradient ramps across the Graph tab, Overview mini graphs, and
+  per-connection Details waves, plus a draw-on-demand main loop with event
+  coalescing that roughly halves terminal-emulator CPU (#459)
+- **Pane Scrolling and Filled Traffic Chart**: Details, Help, and Interfaces tabs
+  scroll with mouse wheel and vim keys instead of silently clipping, and the
+  traffic chart renders RX/TX as filled areas (#452)
 - **Event-driven Windows Process Attribution**: Use kernel network and process ETW
   events to retain connection ownership for short-lived processes, with IP Helper
-  polling as reconciliation and fallback. IPv6 UDP ownership is now included.
+  polling as reconciliation and fallback. IPv6 UDP ownership is now included (#474)
+
+### Security
+- **Drop Root Privileges After Initialization**: Under sudo, rustnet now drops to
+  `SUDO_UID`/`SUDO_GID` (or `nobody` for plain root) once capture and eBPF are
+  initialized on Linux, macOS, and FreeBSD, so a DPI compromise no longer runs as
+  root. Opt out with the new `--no-uid-drop` flag; `--sandbox-strict` fails hard if
+  the drop fails. Trade-offs are documented in SECURITY.md (#456, #457, #458)
+- **No More `CAP_SYS_ADMIN` Auto-Grant**: DEB/RPM installs no longer grant the
+  broad `cap_sys_admin` eBPF fallback capability; on pre-5.8 kernels process
+  detection degrades to procfs instead (#431)
+- **Hardened File Writes**: Log and capture files are created atomically with
+  `O_NOFOLLOW` and mode `0600`, and `lsof`/`sockstat` are invoked by absolute path
+  to prevent symlink and `$PATH` attacks (#430)
 
 ### Fixed
 - **Dynamic local-address detection**: Refresh endpoint-orientation addresses after
   network changes and retry ambiguous unicast packets once. On Windows, supplement
   the IPv4-only adapter data with `GetAdaptersAddresses()` so IPv6 traffic is not
-  shown with reversed local and remote endpoints.
+  shown with reversed local and remote endpoints (#475)
+- **Transport Payload Length**: Trim the transport slice to the IP datagram length,
+  so Ethernet frame padding no longer produces phantom 6-byte payloads, false
+  retransmission counts, resurrected closed connections, or DPI misclassification
+  from trailing bytes (#479, thanks @0xghost42)
+- **Connection Lifecycle**: Reused connection tuples no longer inherit their
+  predecessor's process/DPI metadata in PCAPNG annotations or rate history in
+  Details; immutable history is preserved across tuple reuse; UI-side expiry no
+  longer hides tracked connections; rows stay yellow through the whole warning
+  window; and the recently-closed tombstone table keeps a capacity floor for tiny
+  archive configs (#469, #470, #473)
+- **Grouped Overview Navigation**: Space collapses or expands a process group from
+  a child row, and `g`/`G` jump to the first and last visible rows in grouped
+  mode (#471)
+- **Live Graph Rendering**: Graphs sample and redraw more frequently with stable
+  scaling, so waves no longer wobble or flatten after spikes, and the connection
+  count graph now shows opened/closed lifecycle activity (#472)
+- **Overview Status Polish**: Clarified filtered result counts, kept Statistics
+  totals unfiltered with process counts, and added an expiry color gradient with a
+  matching Help legend (#466)
+- **Stable Details Layout**: The Details tab uses fixed Connection, Network
+  Context, Application, and Transport Health cards with placeholder rows, so
+  sections no longer shift while navigating (#462)
+- **Help Scrollbar**: Restored the inset Help scrollbar and the `Help · ↑/↓ scroll`
+  title hint (#460)
+- **QUIC DPI**: Parse Retry and Version Negotiation packets correctly, merge CRYPTO
+  fragments across coalesced Initial packets (restoring SNI for large ClientHellos),
+  and use the right Initial salts for draft/mvfst versions (#453)
+- **Protocol Detection Switches**: Correct DPI misclassifications (SIP/RTSP as
+  HTTP, SMTP as FTP, WireGuard as BitTorrent uTP), add MQTT QoS 2/AUTH types and
+  structural SNMPv3 parsing, fix NetBIOS datagram offsets, and drop non-first IP
+  fragments at the parser (#454)
+- **DNS Label Parsing**: Reject RFC 1035 reserved label top-bits in
+  `parse_question`, matching `skip_dns_name` (#434, thanks @0xghost42)
+- **SSH State Detection**: Inspect the final 6-byte packet window, so signatures at
+  the end of the payload are no longer missed (#406, thanks @0xghost42)
+- **TLS Cipher Names**: Correct six mislabeled ARIA and Camellia cipher-suite
+  names (#404, thanks @0xghost42)
+- **macOS PKTAP PIDs**: Accept PIDs up to Darwin's 99999 ceiling instead of
+  dropping attribution for PIDs at or above 65535 (#415, thanks @0xghost42)
+- **eBPF Map Cleanup**: Compare map timestamps against `CLOCK_MONOTONIC` instead of
+  wall-clock time, so cleanup no longer flushes the entire map and attribution no
+  longer silently falls back to procfs (#451)
+
+### Performance
+- **Ratatui Hot Paths**: Cache selected row positions, aggregate Graph tab metrics
+  in one borrowed pass, and select only the top process rows instead of sorting
+  every process (#461)
+- **HTTP Parser**: Drop the per-packet `Vec` allocation in the HTTP start-line
+  parser (#402, thanks @0xghost42)
+
+### Internal
+- **Library Crates 0.4.0**: `rustnet-core`, `rustnet-capture`, and `rustnet-host`
+  are released as 0.4.0 with the new Kubernetes, PCAPNG, and parser APIs
+- **CI Auditing**: Replaced cargo-deny with RustSec cargo-audit for CI and
+  scheduled supply-chain checks (#464)
+- **OUI Database**: Monthly vendor database refresh (#439)
+- **Dependencies**: Routine dependency and GitHub Actions updates across the cycle
+  (Dependabot)
+
+### Contributors
+
+Special thanks to the contributors in this release:
+- [@0xghost42](https://github.com/0xghost42): the transport payload-length fix,
+  TLS cipher-suite corrections, SSH and DNS DPI fixes, the PKTAP PID ceiling fix,
+  and HTTP parser performance (#402, #404, #406, #415, #434, #479)
 
 ## [1.4.0] - 2026-06-16
 
@@ -585,7 +693,8 @@ Special thanks to the external contributors in this release:
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/domcyrus/rustnet/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/domcyrus/rustnet/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/domcyrus/rustnet/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/domcyrus/rustnet/compare/v1.1.0...v1.2.0
