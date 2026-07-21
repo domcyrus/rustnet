@@ -159,11 +159,12 @@ jobs:
           RELEASE_TAG="v${BASE_VERSION}"
           if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "✓ Found release tag: $RELEASE_TAG"
-            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$RELEASE_TAG" | tar -x -C build-ppa
+            SRC_REF="$RELEASE_TAG"
           else
             echo "⚠ Release tag $RELEASE_TAG not found, using HEAD"
-            git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" HEAD | tar -x -C build-ppa
+            SRC_REF="HEAD"
           fi
+          git archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$SRC_REF" | tar -x -C build-ppa
 
           # Vendor dependencies separately from orig tarball
           echo "Vendoring Rust dependencies..."
@@ -185,7 +186,12 @@ jobs:
           echo "Creating orig tarball..."
           cd ..
           ORIG_TARBALL="${PACKAGE_NAME}_${VERSION}.orig.tar.gz"
-          tar -czf "${ORIG_TARBALL}" "${PACKAGE_NAME}-${VERSION}"
+          # Repacking the extracted tree with `tar -czf` embeds a gzip
+          # timestamp, so each matrix job produced a byte-different tarball
+          # and Launchpad rejected every series after the first (one
+          # upstream version must have one identical orig tarball).
+          # `git archive` piped through `gzip -n` is deterministic.
+          git -C "$GITHUB_WORKSPACE" archive --format=tar --prefix="${PACKAGE_NAME}-${VERSION}/" "$SRC_REF" | gzip -n > "${ORIG_TARBALL}"
 
           # Add debian directory and vendor tarball
           cp -r "$GITHUB_WORKSPACE/debian" "${PACKAGE_NAME}-${VERSION}/"
