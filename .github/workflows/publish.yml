@@ -27,14 +27,23 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
-          # True if $crate@$VERSION is already on crates.io. `cargo search` does
-          # fuzzy matching and prints `name = "version"  # description`, so we
-          # anchor on the exact `name = "version"` prefix. A bare `grep VERSION`
-          # would false-match the version string appearing in a description, and
-          # `--limit 1` alone isn't guaranteed to be the exact crate.
+          # True if $crate@$VERSION is already on crates.io. Query the sparse
+          # index directly: it is the source of truth `cargo publish` checks
+          # against. `cargo search` proved unreliable here (its search index
+          # lags publishes and rate-limited responses read as "not found"),
+          # which broke the v1.5.0 release twice: the already-published check
+          # missed rustnet-core@0.4.0 and the redundant publish errored.
+          # A 404 (crate never published) correctly reads as "not published".
           is_published() {
-            cargo search "$1" --limit 20 \
-              | grep -qF "$1 = \"$2\""
+            local path
+            case "${#1}" in
+              1) path="1/$1" ;;
+              2) path="2/$1" ;;
+              3) path="3/${1:0:1}/$1" ;;
+              *) path="${1:0:2}/${1:2:2}/$1" ;;
+            esac
+            curl -fsSL --retry 5 "https://index.crates.io/$path" \
+              | grep -q "\"vers\":\"$2\""
           }
 
           # The workspace must be published in dependency order: rustnet-core
