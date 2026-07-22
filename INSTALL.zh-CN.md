@@ -546,7 +546,7 @@ cargo build --release --no-default-features
 
 ## 使用 Docker<a id="using-docker"></a>
 
-RustNet 可作为 Docker 容器从 GitHub Container Registry 获取：
+RustNet 可作为 Docker 容器从 GitHub Container Registry 获取。镜像默认以**非 root** 用户运行，二进制文件内置 `CAP_NET_RAW` file capability，因此基础数据包捕获无需额外参数。
 
 ```bash
 # 拉取最新镜像
@@ -555,19 +555,22 @@ docker pull ghcr.io/domcyrus/rustnet:latest
 # 或拉取特定版本
 docker pull ghcr.io/domcyrus/rustnet:0.7.0
 
-# 使用 eBPF 支持所需的 Linux capabilities 运行（latest）
-docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
+# 方案 A：基础监控（非 root，推荐）
+# 通过内置 CAP_NET_RAW file capability 捕获数据包。
+# 进程归属使用 /proc（禁用 eBPF），无需 --cap-add。
+docker run --rm -it --net=host ghcr.io/domcyrus/rustnet:latest
+
+# 方案 B：完整 eBPF 进程归属（以 root 运行并增加 capabilities）
+# eBPF 需要 CAP_BPF 和 CAP_PERFMON。仅使用 --cap-add 无法让非 root
+# 用户获得这些有效 capabilities，因此还需要以 root 运行。
+docker run --rm -it --user root \
+  --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
   ghcr.io/domcyrus/rustnet:latest
 
-# 使用特定版本运行
-docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
-  ghcr.io/domcyrus/rustnet:0.7.0
+# 使用指定接口（两种方案均可，在末尾添加 -i）
+docker run --rm -it --net=host ghcr.io/domcyrus/rustnet:latest -i eth0
 
-# 使用指定接口运行
-docker run --rm -it --cap-add=NET_RAW --cap-add=BPF --cap-add=PERFMON --net=host \
-  ghcr.io/domcyrus/rustnet:latest -i eth0
-
-# 替代方案：使用 privileged 模式（安全性较低但更简单）
+# 替代方案：privileged 模式（最简单，安全性最低）
 docker run --rm -it --privileged --net=host \
   ghcr.io/domcyrus/rustnet:latest
 
@@ -575,7 +578,7 @@ docker run --rm -it --privileged --net=host \
 docker run --rm ghcr.io/domcyrus/rustnet:latest --help
 ```
 
-**注意：** 容器需要 Linux capabilities（`NET_RAW`、`BPF` 和 `PERFMON`）或 privileged 模式才能进行带 eBPF 支持的数据包捕获。推荐使用主机网络（`--net=host`）以监控所有网络接口。
+**注意：** 基础捕获（方案 A）不需要特殊参数，镜像通过 `CAP_NET_RAW` file capability 以非 root 用户运行。基于 eBPF 的进程归属（方案 B）还需要 `CAP_BPF` 和 `CAP_PERFMON`；这些 capabilities 无法通过 file capabilities 授予非 root 用户，因此需要使用 `--user root` 和对应的 `--cap-add` 参数。无论使用哪种方案，rustnet 都会在启动后立即丢弃这些 capabilities 并启用沙箱。建议使用主机网络（`--net=host`）监控所有接口。
 
 ## 权限配置<a id="permissions-setup"></a>
 
