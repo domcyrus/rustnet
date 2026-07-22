@@ -15,7 +15,7 @@
 </p>
 
 <p align="center">
-  <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a>
+  <strong>English</strong> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.ja.md">日本語</a>
 </p>
 
 <p align="center">
@@ -309,6 +309,7 @@ See [USAGE.md](USAGE.md) for complete timeout details.
 - **[USAGE.md](USAGE.md)** - Complete usage guide including command-line options, filtering, sorting, and logging
 - **[SECURITY.md](SECURITY.md)** - Security features including Landlock sandboxing and privilege management
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture, platform implementations, and performance details
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution workflow, quality requirements, and project guidelines
 - **[PROFILING.md](PROFILING.md)** - Performance profiling guide with flamegraph setup and optimization tips
 - **[ROADMAP.md](ROADMAP.md)** - Planned features and future improvements
 - **[RELEASE.md](RELEASE.md)** - Release process for maintainers
