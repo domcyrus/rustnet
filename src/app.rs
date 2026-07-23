@@ -9,7 +9,7 @@ use crossbeam::channel::{self, Receiver, Sender};
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
 use serde_json::json;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -190,68 +190,46 @@ struct PcapngRecord {
     deadline: Instant,
 }
 
-/// Open or create a file for appending with restrictive permissions (0o600 on Unix).
+/// A JSONL writer opened before sandboxing and uid drop.
 ///
-/// Ensures log files containing connection metadata are not world-readable, and
-/// refuses to follow symlinks (`O_NOFOLLOW`) so a planted symlink can't redirect
-/// the privileged write elsewhere.
-///
-/// On failure this surfaces a single warning (rather than aborting the running
-/// monitor): the callers run in the per-event hot path, so silently dropping the
-/// error — as the previous `if let Ok(..)` did — would disable connection logging
-/// with no indication. We warn once to avoid per-event log spam.
-fn open_log_file(path: &str) -> std::io::Result<File> {
-    let result = {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
+/// Keeping the descriptor open is required for paths such as `/root`: after
+/// dropping to the invoking user or `nobody`, the process may no longer be able
+/// to traverse the parent directory even when the file itself was chowned.
+struct JsonLineWriter {
+    file: Mutex<File>,
+    path: String,
+    failure_reported: AtomicBool,
+}
 
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .mode(0o600)
-                .open(path)
-        }
-
-        #[cfg(not(unix))]
-        {
-            OpenOptions::new().create(true).append(true).open(path)
-        }
-    };
-
-    if let Err(ref e) = result {
-        static WARNED: AtomicBool = AtomicBool::new(false);
-        if !WARNED.swap(true, Ordering::Relaxed) {
-            // The log file is opened with O_NOFOLLOW, so a symlinked path is
-            // refused. Depending on privilege and `fs.protected_symlinks`, that
-            // surfaces as ELOOP (raw O_NOFOLLOW) or EACCES (kernel symlink
-            // protection denies first), so we mention symlinks for both rather
-            // than keying on a single errno.
-            #[cfg(unix)]
-            let symlink_hint = matches!(
-                e.raw_os_error(),
-                Some(code) if code == libc::ELOOP || code == libc::EACCES
-            );
-            #[cfg(not(unix))]
-            let symlink_hint = false;
-
-            if symlink_hint {
-                warn!(
-                    "Refusing to write log to '{}': {} (path may be a symlink; \
-                     symlinks are rejected via O_NOFOLLOW). Connection logging is disabled.",
-                    path, e
-                );
-            } else {
-                warn!(
-                    "Failed to open log file '{}': {}. Connection logging is disabled.",
-                    path, e
-                );
-            }
+impl JsonLineWriter {
+    fn new(file: File, path: String) -> Self {
+        Self {
+            file: Mutex::new(file),
+            path,
+            failure_reported: AtomicBool::new(false),
         }
     }
 
-    result
+    fn write(&self, value: &serde_json::Value) {
+        let result = serde_json::to_string(value)
+            .map_err(std::io::Error::other)
+            .and_then(|json| {
+                let mut file = self
+                    .file
+                    .lock()
+                    .map_err(|_| std::io::Error::other("JSONL writer lock poisoned"))?;
+                writeln!(file, "{json}")
+            });
+
+        if let Err(e) = result
+            && !self.failure_reported.swap(true, Ordering::Relaxed)
+        {
+            warn!(
+                "Failed to write JSONL output '{}': {}. Further write errors will be suppressed.",
+                self.path, e
+            );
+        }
+    }
 }
 
 fn system_time_to_timeval(timestamp: SystemTime) -> libc::timeval {
@@ -276,7 +254,7 @@ fn system_time_to_timeval(timestamp: SystemTime) -> libc::timeval {
 
 /// Helper function to log connection events as JSON
 fn log_connection_event(
-    json_log_path: &str,
+    writer: &JsonLineWriter,
     event_type: &str,
     conn: &Connection,
     duration_secs: Option<u64>,
@@ -414,18 +392,11 @@ fn log_connection_event(
         }
     }
 
-    // Write to file (restrictive permissions: 0o600 on Unix)
-    if let Ok(mut file) = open_log_file(json_log_path)
-        && let Ok(json_str) = serde_json::to_string(&event)
-    {
-        let _ = writeln!(file, "{}", json_str);
-    }
+    writer.write(&event);
 }
 
 /// Helper function to log connection info to PCAP sidecar file (JSONL format)
-fn log_pcap_connection(pcap_path: &str, conn: &Connection) {
-    let json_path = format!("{}.connections.jsonl", pcap_path);
-
+fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
     // Build base event without GeoIP fields
     let mut event = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
@@ -490,11 +461,7 @@ fn log_pcap_connection(pcap_path: &str, conn: &Connection) {
         }
     }
 
-    if let Ok(mut file) = open_log_file(&json_path)
-        && let Ok(json_str) = serde_json::to_string(&event)
-    {
-        let _ = writeln!(file, "{}", json_str);
-    }
+    writer.write(&event);
 }
 
 /// Application configuration
@@ -558,6 +525,8 @@ impl Default for Config {
 
 #[derive(Default)]
 pub struct AppOutputHandles {
+    pub json_log: Option<File>,
+    pub pcap_sidecar: Option<File>,
     pub pcapng_export: Option<File>,
 }
 
@@ -805,6 +774,12 @@ pub struct App {
     /// the sandbox is applied so they inherit it). Taken by `start_workers`.
     packet_rx: Option<Receiver<Vec<CapturedPacket>>>,
 
+    /// JSONL outputs opened before sandboxing and uid drop. Worker threads
+    /// share these handles so they never need to traverse the configured path
+    /// after privileges have been reduced.
+    json_log_file: Option<Arc<JsonLineWriter>>,
+    pcap_sidecar_file: Option<Arc<JsonLineWriter>>,
+
     /// Pre-created PCAPNG output file. Held until worker startup so the writer
     /// thread can use the exact file handle allowed by the sandbox.
     pcapng_export_file: Option<File>,
@@ -821,11 +796,6 @@ pub struct App {
 impl App {
     /// Create a new application instance
     pub fn new(config: Config) -> Result<Self> {
-        if config.pcapng_export_file.is_some() {
-            anyhow::bail!(
-                "PCAPNG export requires a pre-created output handle; use App::new_with_output_handles"
-            );
-        }
         Self::new_with_output_handles(config, AppOutputHandles::default())
     }
 
@@ -833,6 +803,35 @@ impl App {
         config: Config,
         mut output_handles: AppOutputHandles,
     ) -> Result<Self> {
+        if config.json_log_file.is_some() != output_handles.json_log.is_some() {
+            anyhow::bail!("JSON logging requires exactly one matching pre-opened output handle");
+        }
+        if config.pcap_export_file.is_some() != output_handles.pcap_sidecar.is_some() {
+            anyhow::bail!(
+                "PCAP export requires exactly one matching pre-opened sidecar output handle"
+            );
+        }
+        if config.pcapng_export_file.is_some() != output_handles.pcapng_export.is_some() {
+            anyhow::bail!("PCAPNG export requires exactly one matching pre-opened output handle");
+        }
+
+        let json_log_file = output_handles.json_log.take().map(|file| {
+            Arc::new(JsonLineWriter::new(
+                file,
+                config.json_log_file.clone().unwrap_or_default(),
+            ))
+        });
+        let pcap_sidecar_file = output_handles.pcap_sidecar.take().map(|file| {
+            Arc::new(JsonLineWriter::new(
+                file,
+                config
+                    .pcap_export_file
+                    .as_ref()
+                    .map(|path| format!("{path}.connections.jsonl"))
+                    .unwrap_or_default(),
+            ))
+        });
+
         // Load service definitions
         let service_lookup = ServiceLookup::from_embedded().unwrap_or_else(|e| {
             warn!("Failed to load embedded services: {}, using defaults", e);
@@ -933,6 +932,8 @@ impl App {
             dns_resolver,
             geoip_resolver,
             packet_rx: None,
+            json_log_file,
+            pcap_sidecar_file,
             pcapng_export_file: output_handles.pcapng_export.take(),
             #[cfg(any(
                 target_os = "linux",
@@ -1350,8 +1351,8 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let linktype_storage = Arc::clone(&self.linktype);
         let capture_failed = Arc::clone(&self.capture_failed);
-        let json_log_path = self.config.json_log_file.clone();
-        let pcap_export_path = self.config.pcap_export_file.clone();
+        let json_log_file = self.json_log_file.clone();
+        let pcap_sidecar_file = self.pcap_sidecar_file.clone();
         let dns_resolver = self.dns_resolver.clone();
         let oui_lookup = self.oui_lookup.clone();
         let parser_config = ParserConfig {
@@ -1447,8 +1448,8 @@ impl App {
                                     parsed,
                                     batch_time,
                                     &stats,
-                                    &json_log_path,
-                                    &pcap_export_path,
+                                    &json_log_file,
+                                    &pcap_sidecar_file,
                                     dns_resolver.as_deref(),
                                 );
                                 parsed_count += 1;
@@ -2418,8 +2419,8 @@ impl App {
     /// Start cleanup thread to remove old connections
     fn start_cleanup_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let should_stop = Arc::clone(&self.should_stop);
-        let json_log_path = self.config.json_log_file.clone();
-        let pcap_export_path = self.config.pcap_export_file.clone();
+        let json_log_file = self.json_log_file.clone();
+        let pcap_sidecar_file = self.pcap_sidecar_file.clone();
         let dns_resolver = self.dns_resolver.clone();
         let stats = Arc::clone(&self.stats);
 
@@ -2451,9 +2452,9 @@ impl App {
                         .ok();
 
                     // Log connection_closed event if JSON logging is enabled
-                    if let Some(log_path) = &json_log_path {
+                    if let Some(writer) = &json_log_file {
                         log_connection_event(
-                            log_path,
+                            writer,
                             "connection_closed",
                             conn,
                             duration_secs,
@@ -2462,8 +2463,8 @@ impl App {
                     }
 
                     // Log to PCAP sidecar file if PCAP export is enabled
-                    if let Some(pcap_path) = &pcap_export_path {
-                        log_pcap_connection(pcap_path, conn);
+                    if let Some(writer) = &pcap_sidecar_file {
+                        log_pcap_connection(writer, conn);
                     }
 
                     // Log cleanup reason for debugging
@@ -2906,14 +2907,14 @@ impl App {
 
         // Write remaining active connections to PCAP sidecar JSONL file
         // (connections that haven't been cleaned up yet)
-        if let Some(ref pcap_path) = self.config.pcap_export_file
+        if let Some(writer) = &self.pcap_sidecar_file
             && let Ok(connections) = self.connections_snapshot.read()
         {
             let count = connections.len();
             let with_pids = connections.iter().filter(|c| c.pid.is_some()).count();
 
             for conn in connections.iter() {
-                log_pcap_connection(pcap_path, conn);
+                log_pcap_connection(writer, conn);
             }
 
             info!(
@@ -2945,8 +2946,8 @@ fn update_connection(
     parsed: ParsedPacket,
     now: SystemTime,
     stats: &AppStats,
-    json_log_path: &Option<String>,
-    pcap_export_path: &Option<String>,
+    json_log_file: &Option<Arc<JsonLineWriter>>,
+    pcap_sidecar_file: &Option<Arc<JsonLineWriter>>,
     dns_resolver: Option<&DnsResolver>,
 ) -> IngestOutcome {
     let outcome = tracker.ingest_at(&parsed, now);
@@ -2991,17 +2992,17 @@ fn update_connection(
             .duration_since(conn.created_at)
             .map(|duration| duration.as_secs())
             .ok();
-        if let Some(log_path) = json_log_path {
+        if let Some(writer) = json_log_file {
             log_connection_event(
-                log_path,
+                writer,
                 "connection_closed",
                 conn,
                 duration_secs,
                 dns_resolver,
             );
         }
-        if let Some(pcap_path) = pcap_export_path {
-            log_pcap_connection(pcap_path, conn);
+        if let Some(writer) = pcap_sidecar_file {
+            log_pcap_connection(writer, conn);
         }
         debug!(
             "Archived prior connection generation before creating a new one: {}",
@@ -3015,10 +3016,10 @@ fn update_connection(
             .total_connections_created
             .fetch_add(1, Ordering::Relaxed);
         debug!("New connection detected: {}", outcome.key);
-        if let Some(log_path) = json_log_path
+        if let Some(writer) = json_log_file
             && let Some(conn) = tracker.connections().get(&outcome.key)
         {
-            log_connection_event(log_path, "new_connection", conn.value(), None, dns_resolver);
+            log_connection_event(writer, "new_connection", conn.value(), None, dns_resolver);
         }
     }
 
@@ -3265,6 +3266,32 @@ mod connection_lifecycle_tests {
         types::{ProtocolState, TcpState},
     };
     use std::net::SocketAddr;
+    use std::path::{Path, PathBuf};
+
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "rustnet-lifecycle-test-{}-{}",
+                std::process::id(),
+                tag
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn tcp_packet(flags: TcpFlags) -> ParsedPacket {
         ParsedPacket {
@@ -3296,6 +3323,18 @@ mod connection_lifecycle_tests {
             psh: false,
             urg: false,
         }
+    }
+
+    fn json_writer(path: &Path) -> Arc<JsonLineWriter> {
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        Arc::new(JsonLineWriter::new(
+            file,
+            path.to_string_lossy().into_owned(),
+        ))
     }
 
     #[test]
@@ -3335,6 +3374,63 @@ mod connection_lifecycle_tests {
 
         assert_eq!(stats.total_connections_created.load(Ordering::Relaxed), 2);
         assert_eq!(stats.total_connections_archived.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn retained_json_writers_record_connection_lifecycle() {
+        let dir = ScratchDir::new("writers");
+        let events_path = dir.path().join("events.jsonl");
+        let sidecar_path = dir.path().join("capture.pcap.connections.jsonl");
+        let events = Some(json_writer(&events_path));
+        let sidecar = Some(json_writer(&sidecar_path));
+        let tracker = ConnectionTracker::new();
+        let stats = AppStats::default();
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+
+        update_connection(
+            &tracker,
+            tcp_packet(flags(true, false)),
+            started,
+            &stats,
+            &events,
+            &sidecar,
+            None,
+        );
+        update_connection(
+            &tracker,
+            tcp_packet(flags(false, true)),
+            started + Duration::from_secs(1),
+            &stats,
+            &events,
+            &sidecar,
+            None,
+        );
+        update_connection(
+            &tracker,
+            tcp_packet(flags(true, false)),
+            started + Duration::from_secs(2),
+            &stats,
+            &events,
+            &sidecar,
+            None,
+        );
+
+        let event_lines = std::fs::read_to_string(events_path).unwrap();
+        assert_eq!(event_lines.lines().count(), 3);
+        assert_eq!(
+            event_lines.matches("\"event\":\"new_connection\"").count(),
+            2
+        );
+        assert_eq!(
+            event_lines
+                .matches("\"event\":\"connection_closed\"")
+                .count(),
+            1
+        );
+
+        let sidecar_lines = std::fs::read_to_string(sidecar_path).unwrap();
+        assert_eq!(sidecar_lines.lines().count(), 1);
+        assert!(sidecar_lines.contains("\"protocol\":\"TCP\""));
     }
 }
 
@@ -3420,93 +3516,6 @@ mod activity_reset_tests {
         assert_eq!(app.get_process_activity_snapshot().window_tx_bytes, 0);
         assert!(app.get_interface_traffic_windows().is_empty());
         assert!(app.interface_traffic_history.lock().unwrap().is_empty());
-    }
-}
-
-#[cfg(all(test, unix))]
-mod open_log_file_tests {
-    use super::open_log_file;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
-
-    /// Per-test scratch directory under the system temp dir, removed on drop.
-    /// Avoids a `tempfile` dependency; uniqueness comes from the pid + the
-    /// caller-supplied tag (test names are unique).
-    struct ScratchDir(PathBuf);
-
-    impl ScratchDir {
-        fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "rustnet-log-test-{}-{}",
-                std::process::id(),
-                tag
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            ScratchDir(dir)
-        }
-
-        fn path(&self, name: &str) -> PathBuf {
-            self.0.join(name)
-        }
-    }
-
-    impl Drop for ScratchDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
-    #[test]
-    fn creates_file_with_0600_permissions() {
-        let dir = ScratchDir::new("perms");
-        let path = dir.path("events.log");
-
-        let file = open_log_file(path.to_str().unwrap()).expect("fresh open should succeed");
-        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "new log file must be created mode 0o600");
-    }
-
-    #[test]
-    fn appends_rather_than_truncates() {
-        let dir = ScratchDir::new("append");
-        let path = dir.path("events.log");
-        let p = path.to_str().unwrap();
-
-        writeln!(open_log_file(p).unwrap(), "line1").unwrap();
-        writeln!(open_log_file(p).unwrap(), "line2").unwrap();
-
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("line1"), "first write must be preserved");
-        assert!(contents.contains("line2"), "second write must be appended");
-    }
-
-    #[test]
-    fn refuses_symlinked_path() {
-        let dir = ScratchDir::new("symlink");
-        let target = dir.path("real_target.log");
-        let link = dir.path("evil.log");
-        std::fs::write(&target, b"").unwrap();
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-
-        let err = open_log_file(link.to_str().unwrap())
-            .expect_err("O_NOFOLLOW must refuse a symlinked path");
-
-        // As the symlink's owner (the test process), `fs.protected_symlinks`
-        // does not intervene, so this is the raw O_NOFOLLOW rejection: ELOOP.
-        assert_eq!(
-            err.raw_os_error(),
-            Some(libc::ELOOP),
-            "expected ELOOP from O_NOFOLLOW, got: {err}"
-        );
-
-        // The privileged write must not have been redirected through the link.
-        let target_contents = std::fs::read_to_string(&target).unwrap();
-        assert!(
-            target_contents.is_empty(),
-            "symlink target must be untouched"
-        );
     }
 }
 
