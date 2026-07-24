@@ -137,10 +137,9 @@ fn main() -> Result<()> {
     // Resolve the identity to drop root to after privileged init (Linux,
     // macOS, and FreeBSD): the invoking sudo user, or nobody when started as
     // plain root.
-    // Resolved before the export files are pre-created so they can be chowned
-    // to the target user: they are created root-owned 0600 and are reopened by
-    // path at runtime (libpcap savefile, sidecar JSONL appends), which would
-    // fail after the drop if they stayed owned by root.
+    // Resolved before output files are opened so they can be chowned to the
+    // target user. Retained descriptors remain usable after the drop, and the
+    // resulting files have ownership consistent with the runtime identity.
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     let uid_drop_target = if matches.get_flag("no-uid-drop") {
         info!("Root uid drop disabled by --no-uid-drop");
@@ -149,12 +148,28 @@ fn main() -> Result<()> {
         network::platform::privdrop::resolve_drop_target()
     };
 
-    // Pre-create the PCAP export file and its sidecar JSONL (needed for Landlock
-    // permissions). This must be done BEFORE the sandbox is applied so the files
-    // exist when adding rules: Landlock requires an open FD to scope a rule to a
-    // file, so a not-yet-existing path falls back to granting write on the whole
-    // parent directory. Pre-creating keeps the write rule file-scoped. The PCAP
-    // writer later reopens the path with truncation, so a zero-byte file is fine.
+    let mut output_handles = app::AppOutputHandles::default();
+
+    // Open JSONL outputs before sandboxing and uid drop. The descriptors stay
+    // open for the whole run: ownership changes alone are not sufficient for a
+    // path under a directory such as /root, which the drop target cannot
+    // traverse when trying to reopen the file.
+    if let Some(ref json_log_path) = config.json_log_file {
+        let file = open_private_append_file(json_log_path).map_err(|e| {
+            anyhow::anyhow!("Failed to open JSON log file '{}': {}", json_log_path, e)
+        })?;
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+        chown_to_uid_drop_target(&file, uid_drop_target, "JSON log", json_log_path);
+        output_handles.json_log = Some(file);
+    }
+
+    // Pre-create the PCAP export file and retain its sidecar JSONL descriptor.
+    // This must be done BEFORE the sandbox is applied so the files exist when
+    // adding rules: Landlock requires an open FD to scope a rule to a file, so
+    // a not-yet-existing path falls back to granting write on the whole parent
+    // directory. Pre-creating keeps the write rule file-scoped. The PCAP writer
+    // later reopens the path with truncation while it still has startup
+    // privileges, so a zero-byte file is fine.
     //
     // Done before terminal setup: pre-creation can fail hard (see below), and we
     // want the error to print to a normal terminal rather than into the TUI
@@ -174,11 +189,14 @@ fn main() -> Result<()> {
             #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
             chown_to_uid_drop_target(&file, uid_drop_target, label, path);
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-            let _ = file;
+            let _ = &file;
+
+            if label == "sidecar JSONL" {
+                output_handles.pcap_sidecar = Some(file);
+            }
         }
     }
 
-    let mut output_handles = app::AppOutputHandles::default();
     if let Some(ref pcapng_path) = config.pcapng_export_file {
         let file = precreate_private_file(pcapng_path).map_err(|e| {
             anyhow::anyhow!("Failed to pre-create PCAPNG file '{}': {}", pcapng_path, e)
@@ -671,10 +689,11 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     Ok(())
 }
 
-/// Hand a pre-created export file over to the uid-drop target so it can still
-/// be reopened by path after root privileges are dropped. Best-effort: on
-/// failure the drop still happens and the affected export degrades with a
-/// runtime warning when the reopen fails.
+/// Hand an output file over to the uid-drop target.
+///
+/// Retained descriptors remain usable regardless of path traversal, but the
+/// resulting file should still belong to the runtime identity. Best-effort:
+/// failure does not prevent the privilege drop.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn chown_to_uid_drop_target(
     file: &fs::File,
@@ -709,6 +728,118 @@ fn precreate_private_file(path: &str) -> io::Result<fs::File> {
     #[cfg(not(unix))]
     {
         fs::File::create(path)
+    }
+}
+
+/// Open an append-only private output before privileges are reduced.
+///
+/// Unlike [`precreate_private_file`], this preserves existing contents because
+/// `--json-log` has append semantics.
+fn open_private_append_file(path: &str) -> io::Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(0o600)
+            .open(path)
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::OpenOptions::new().create(true).append(true).open(path)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod output_file_tests {
+    use super::open_private_append_file;
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    struct ScratchDir(PathBuf);
+
+    impl ScratchDir {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "rustnet-output-test-{}-{}",
+                std::process::id(),
+                tag
+            ));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            ScratchDir(dir)
+        }
+
+        fn path(&self, name: &str) -> PathBuf {
+            self.0.join(name)
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn creates_file_with_0600_permissions() {
+        let dir = ScratchDir::new("perms");
+        let path = dir.path("events.log");
+
+        let file =
+            open_private_append_file(path.to_str().unwrap()).expect("fresh open should succeed");
+        let mode = file.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "new output must be created mode 0o600");
+    }
+
+    #[test]
+    fn appends_rather_than_truncates() {
+        let dir = ScratchDir::new("append");
+        let path = dir.path("events.log");
+        let path = path.to_str().unwrap();
+
+        writeln!(open_private_append_file(path).unwrap(), "line1").unwrap();
+        writeln!(open_private_append_file(path).unwrap(), "line2").unwrap();
+
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "line1\nline2\n");
+    }
+
+    #[test]
+    fn retained_descriptor_survives_inaccessible_parent() {
+        let dir = ScratchDir::new("retained");
+        let path = dir.path("events.log");
+        let mut file = open_private_append_file(path.to_str().unwrap()).unwrap();
+
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o000)).unwrap();
+        writeln!(file, "still writable").unwrap();
+        file.sync_all().unwrap();
+        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "still writable\n");
+    }
+
+    #[test]
+    fn refuses_symlinked_path() {
+        let dir = ScratchDir::new("symlink");
+        let target = dir.path("real_target.log");
+        let link = dir.path("evil.log");
+        std::fs::write(&target, b"").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let err = open_private_append_file(link.to_str().unwrap())
+            .expect_err("O_NOFOLLOW must refuse a symlinked path");
+        assert_eq!(
+            err.raw_os_error(),
+            Some(libc::ELOOP),
+            "expected ELOOP from O_NOFOLLOW, got: {err}"
+        );
+        assert!(std::fs::read(&target).unwrap().is_empty());
     }
 }
 
