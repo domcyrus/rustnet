@@ -95,16 +95,17 @@ impl EbpfLoader {
                 loader,
                 fentry_error: Some(fentry_error),
             } => {
-                let fentry_error = error_chain_text(&fentry_error);
+                // The legacy backend attaches the same probe set and reports
+                // the same capabilities, so falling back to it is not a
+                // degradation of attribution — only of probe overhead. The
+                // active backend is already named by the detection method, so
+                // the fentry error belongs in the log, not in the TUI.
                 warn!(
                     "eBPF: fentry/fexit unavailable: {}; selected legacy kprobe backend with capabilities {:?}",
-                    fentry_error,
+                    error_chain_text(&fentry_error),
                     loader.capabilities()
                 );
-                Ok((
-                    Some(loader),
-                    DegradationReason::FentryUnavailable(fentry_error),
-                ))
+                Ok((Some(loader), DegradationReason::None))
             }
             BackendSelection::TargetBtfUnavailable(error) => {
                 warn!(
@@ -117,16 +118,16 @@ impl EbpfLoader {
                 fentry_error,
                 kprobe_error,
             } => {
-                let fentry = error_chain_text(&fentry_error);
-                let kprobe = error_chain_text(&kprobe_error);
                 warn!(
                     "eBPF: all kernel backends failed; fentry/fexit: {}; kprobe: {}; using procfs",
-                    fentry, kprobe
+                    error_chain_text(&fentry_error),
+                    error_chain_text(&kprobe_error)
                 );
-                Ok((
-                    None,
-                    DegradationReason::EbpfBackendsFailed { fentry, kprobe },
-                ))
+                // Both complete chains are in the log above. The reason shown
+                // in the TUI is classified from the legacy backend's failure —
+                // it is the last one attempted and the one whose EPERM/EACCES
+                // and missing-symbol cases have actionable fixes.
+                Ok((None, classify_libbpf_error(&kprobe_error)))
             }
         }
     }
@@ -318,7 +319,7 @@ impl KprobeLoader {
             .context("open kprobe skeleton")?;
         let skel = open_skel.load().context("load kprobe BPF object")?;
 
-        let mut links = Vec::with_capacity(9);
+        let mut links = Vec::with_capacity(6);
         let mut capabilities = AttributionCapabilities::empty();
 
         macro_rules! attach_required {
@@ -331,25 +332,12 @@ impl KprobeLoader {
             }};
         }
 
+        // tcp_connect is the common tail of both address families, so one
+        // probe covers IPv4, IPv6, and dual-stack connects.
         attach_required!(
-            skel.progs.trace_tcp_connect_entry,
+            skel.progs.trace_tcp_connect,
             "kprobe/tcp_connect",
-            AttributionCapabilities::empty()
-        );
-        attach_required!(
-            skel.progs.trace_tcp_connect_exit,
-            "kretprobe/tcp_connect",
-            AttributionCapabilities::TCP_V4_CONNECT
-        );
-        attach_required!(
-            skel.progs.trace_tcp_v6_connect_entry,
-            "kprobe/tcp_v6_connect",
-            AttributionCapabilities::empty()
-        );
-        attach_required!(
-            skel.progs.trace_tcp_v6_connect_exit,
-            "kretprobe/tcp_v6_connect",
-            AttributionCapabilities::TCP_V6_CONNECT
+            AttributionCapabilities::TCP_V4_CONNECT | AttributionCapabilities::TCP_V6_CONNECT
         );
         attach_required!(
             skel.progs.trace_udp_sendmsg,
@@ -577,6 +565,15 @@ fn error_chain_text(error: &anyhow::Error) -> String {
 fn check_capabilities_detailed() -> DegradationReason {
     use std::fs;
 
+    // Root holds every capability. Check that first so an unreadable or
+    // unparsable /proc/self/status (minimal container images, a namespace
+    // without /proc mounted) cannot downgrade a privileged run to procfs.
+    // SAFETY: geteuid never fails and touches no memory.
+    if unsafe { libc::geteuid() } == 0 {
+        debug!("eBPF: running as root, all capabilities available");
+        return DegradationReason::None;
+    }
+
     if let Ok(status) = fs::read_to_string("/proc/self/status")
         && let Some(cap_line) = status.lines().find(|line| line.starts_with("CapEff:"))
         && let Some(cap_hex) = cap_line.split_whitespace().nth(1)
@@ -667,7 +664,10 @@ impl PathAncestorExt for std::path::Path {
     }
 }
 
-#[cfg(test)]
+/// Map a libbpf failure onto the most actionable degradation reason.
+///
+/// The returned text is capped so the TUI's indented reason line stays within
+/// the two rows the Statistics pane budgets for it.
 fn classify_libbpf_error(err: &anyhow::Error) -> DegradationReason {
     let blob = error_chain_text(err).to_lowercase();
 
@@ -700,7 +700,6 @@ fn classify_libbpf_error(err: &anyhow::Error) -> DegradationReason {
     DegradationReason::EbpfLoadFailed(text)
 }
 
-#[cfg(test)]
 fn extract_kprobe_symbol(blob: &str) -> Option<String> {
     for prefix in ["attach kprobe ", "kprobe/", "kprobe '"] {
         if let Some(rest) = blob.split(prefix).nth(1) {

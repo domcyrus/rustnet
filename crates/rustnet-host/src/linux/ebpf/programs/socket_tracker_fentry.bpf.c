@@ -18,8 +18,12 @@ SEC("fexit/tcp_v6_connect")
 int BPF_PROG(trace_tcp_v6_connect, struct sock *sk, struct sockaddr *address,
              int address_length, int result)
 {
+    /*
+     * tcp_v6_connect hands an IPv4-mapped destination to tcp_v4_connect, so
+     * the recorded tuple has to follow the socket rather than the hook.
+     */
     if (result == 0)
-        track_tcp_v6(sk);
+        track_tcp_socket(sk);
     return 0;
 }
 

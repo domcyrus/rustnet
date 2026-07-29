@@ -106,12 +106,6 @@ pub enum DegradationReason {
     /// Generic eBPF load failure carrying the truncated libbpf error text
     #[cfg(target_os = "linux")]
     EbpfLoadFailed(String),
-    /// The preferred fentry backend failed, but legacy kprobes loaded.
-    #[cfg(target_os = "linux")]
-    FentryUnavailable(String),
-    /// Both kernel backends failed. Both complete errors are retained.
-    #[cfg(target_os = "linux")]
-    EbpfBackendsFailed { fentry: String, kprobe: String },
     /// Binary lives on a filesystem mounted with `nosuid`, which makes the
     /// kernel silently ignore file capabilities set via `setcap`. Common when
     /// the binary is under `/home`, `/tmp`, or a removable mount.
@@ -168,14 +162,6 @@ impl DegradationReason {
             #[cfg(target_os = "linux")]
             Self::EbpfLoadFailed(s) => Cow::Owned(format!("eBPF load failed: {s}")),
             #[cfg(target_os = "linux")]
-            Self::FentryUnavailable(s) => {
-                Cow::Owned(format!("fentry unavailable, using kprobes: {s}"))
-            }
-            #[cfg(target_os = "linux")]
-            Self::EbpfBackendsFailed { fentry, kprobe } => Cow::Owned(format!(
-                "all eBPF backends failed; fentry: {fentry}; kprobe: {kprobe}"
-            )),
-            #[cfg(target_os = "linux")]
             Self::BinaryOnNosuidMount => {
                 Cow::Borrowed("file caps ignored: binary on a nosuid mount")
             }
@@ -205,10 +191,7 @@ impl DegradationReason {
             | Self::KprobeAttachFailed(_)
             | Self::BtfUnavailable
             | Self::EbpfLoadFailed(_)
-            | Self::EbpfBackendsFailed { .. }
             | Self::BinaryOnNosuidMount => Some("eBPF"),
-            #[cfg(target_os = "linux")]
-            Self::FentryUnavailable(_) => Some("fentry"),
             #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
             Self::EbpfFeatureDisabled => Some("eBPF"),
             #[cfg(target_os = "macos")]

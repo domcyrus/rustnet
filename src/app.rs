@@ -1116,25 +1116,9 @@ impl App {
 
                     // Drop CAP_NET_RAW now that the socket is open (Linux only)
                     #[cfg(all(target_os = "linux", feature = "landlock"))]
-                    {
-                        if let Err(e) =
-                            crate::network::platform::sandbox::capabilities::drop_cap_net_raw()
-                        {
-                            warn!("Failed to drop CAP_NET_RAW in capture thread: {}", e);
-                        } else {
-                            debug!("Dropped CAP_NET_RAW in capture thread");
-                        }
-                        if let Err(e) =
-                            crate::network::platform::sandbox::capabilities::drop_ebpf_caps()
-                        {
-                            warn!(
-                                "Failed to drop eBPF capabilities in capture thread: {}",
-                                e
-                            );
-                        } else {
-                            debug!("Dropped eBPF capabilities in capture thread");
-                        }
-                    }
+                    crate::network::platform::sandbox::capabilities::drop_unused_thread_caps(
+                        "capture thread",
+                    );
 
                     // Check if PKTAP is active (linktype 149 or 258)
                     #[cfg(target_os = "macos")]
@@ -1375,20 +1359,12 @@ impl App {
             .spawn(move || {
                 info!("Packet processor {} started", id);
 
-                // Drop CAP_NET_RAW immediately as this thread doesn't need it (Linux only)
+                // This thread only parses captured bytes; it needs neither raw
+                // sockets nor bpf(2) (Linux only).
                 #[cfg(all(target_os = "linux", feature = "landlock"))]
-                {
-                    if let Err(e) =
-                        crate::network::platform::sandbox::capabilities::drop_cap_net_raw()
-                    {
-                        warn!(
-                            "Failed to drop CAP_NET_RAW in processor thread {}: {}",
-                            id, e
-                        );
-                    } else {
-                        debug!("Dropped CAP_NET_RAW in processor thread {}", id);
-                    }
-                }
+                crate::network::platform::sandbox::capabilities::drop_unused_thread_caps(&format!(
+                    "processor thread {id}"
+                ));
 
                 // Wait for linktype to be available
                 let mut parser = loop {
@@ -1769,23 +1745,15 @@ impl App {
         let process_lookup = create_process_lookup(use_pktap)?;
 
         // Linux capabilities are per-thread. This thread inherited the startup
-        // capabilities before loading eBPF, so drop its copies now that the
-        // programs, links, and map file descriptors are open.
+        // capabilities before loading eBPF, so drop the ones it will not use
+        // again. CAP_BPF and CAP_PERFMON deliberately stay: this thread keeps
+        // reading the eBPF socket map for the process lifetime, and with
+        // kernel.unprivileged_bpf_disabled set every bpf(2) call — map lookups
+        // included — is rejected without CAP_BPF.
         #[cfg(all(target_os = "linux", feature = "landlock"))]
-        {
-            if let Err(e) = crate::network::platform::sandbox::capabilities::drop_cap_net_raw() {
-                warn!(
-                    "Failed to drop CAP_NET_RAW in process enrichment thread: {}",
-                    e
-                );
-            }
-            if let Err(e) = crate::network::platform::sandbox::capabilities::drop_ebpf_caps() {
-                warn!(
-                    "Failed to drop eBPF capabilities in process enrichment thread: {}",
-                    e
-                );
-            }
-        }
+        crate::network::platform::sandbox::capabilities::drop_thread_cap_net_raw(
+            "process enrichment thread",
+        );
 
         // Kubernetes pod/container attribution. `auto` enables only when rustnet
         // is itself running inside a pod, so the resolver and the cross-namespace

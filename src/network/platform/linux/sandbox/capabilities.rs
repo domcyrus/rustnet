@@ -99,6 +99,33 @@ pub fn drop_ebpf_caps() -> Result<u32> {
     Ok(dropped)
 }
 
+/// Drop CAP_NET_RAW from a worker thread, logging the outcome.
+///
+/// Linux capabilities are per-thread, so threads spawned before the main
+/// thread applies the sandbox keep their own copies and have to drop what they
+/// do not use themselves. `thread` names the caller for the log line.
+pub fn drop_thread_cap_net_raw(thread: &str) {
+    match drop_cap_net_raw() {
+        Ok(_) => log::debug!("Dropped CAP_NET_RAW in {thread}"),
+        Err(e) => log::warn!("Failed to drop CAP_NET_RAW in {thread}: {e}"),
+    }
+}
+
+/// Drop CAP_NET_RAW, CAP_BPF and CAP_PERFMON from a worker thread that needs
+/// none of them.
+///
+/// Threads that keep calling `bpf(2)` must use [`drop_thread_cap_net_raw`]
+/// instead: with `kernel.unprivileged_bpf_disabled` set, the kernel requires
+/// CAP_BPF for *every* `bpf(2)` command, including map lookups on an
+/// already-open map file descriptor.
+pub fn drop_unused_thread_caps(thread: &str) {
+    drop_thread_cap_net_raw(thread);
+    match drop_ebpf_caps() {
+        Ok(_) => log::debug!("Dropped eBPF capabilities in {thread}"),
+        Err(e) => log::warn!("Failed to drop eBPF capabilities in {thread}: {e}"),
+    }
+}
+
 /// Clear all ambient capabilities
 ///
 /// Ambient capabilities survive `execve()` of non-privileged programs.

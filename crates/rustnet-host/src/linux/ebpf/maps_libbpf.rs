@@ -1,7 +1,7 @@
 //! eBPF map ABI and map interaction utilities.
 
 use super::ProcessInfo;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use libbpf_rs::MapCore;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -214,15 +214,24 @@ impl MapReader {
         let current_time_ns = monotonic_time_ns()?;
         let mut keys_to_delete = Vec::new();
 
+        // One unreadable entry must not abort the sweep: giving up here lets
+        // socket_map grow to MAX_ENTRIES, after which the BPF programs can no
+        // longer record new connections at all. Skip the entry instead.
         for key in map.keys() {
-            if let Some(value_bytes) = map
-                .lookup(&key, libbpf_rs::MapFlags::empty())
-                .context("lookup socket_map entry during cleanup")?
-            {
-                let info = ConnInfo::from_bytes(&value_bytes)?;
-                if current_time_ns.saturating_sub(info.timestamp) > stale_threshold_ns {
+            let value_bytes = match map.lookup(&key, libbpf_rs::MapFlags::empty()) {
+                Ok(Some(value_bytes)) => value_bytes,
+                Ok(None) => continue,
+                Err(error) => {
+                    log::debug!("skipping socket_map entry during cleanup: {error}");
+                    continue;
+                }
+            };
+            match ConnInfo::from_bytes(&value_bytes) {
+                Ok(info) if current_time_ns.saturating_sub(info.timestamp) > stale_threshold_ns => {
                     keys_to_delete.push(key);
                 }
+                Ok(_) => {}
+                Err(error) => log::debug!("skipping unreadable socket_map value: {error}"),
             }
         }
 
@@ -263,11 +272,6 @@ impl MapReader {
 }
 
 #[cfg(test)]
-const fn split_uid_gid(uid_gid: u64) -> (u32, u32) {
-    (uid_gid as u32, (uid_gid >> 32) as u32)
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -279,14 +283,10 @@ mod tests {
         assert_eq!(std::mem::align_of::<ConnInfo>(), 8);
     }
 
-    #[test]
-    fn uid_and_gid_use_the_documented_helper_halves() {
-        let uid = 0x1122_3344;
-        let gid = 0xaabb_ccdd;
-        let raw = (u64::from(gid) << 32) | u64::from(uid);
-
-        assert_eq!(split_uid_gid(raw), (uid, gid));
-    }
+    // The uid/gid halves of bpf_get_current_uid_gid are split on the BPF side
+    // in socket_tracker_helpers.h, so no Rust-side unit test can catch a swap
+    // there. `socket_attribution_matrix` in tracker_libbpf.rs is what actually
+    // compares the recorded identity against geteuid/getegid.
 
     #[test]
     fn conn_info_conversion_preserves_tgid_tid_uid_and_gid() {

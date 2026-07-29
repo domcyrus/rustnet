@@ -100,6 +100,21 @@ static __always_inline int track_tcp_v6(struct sock *sk)
     return store_connection(&key);
 }
 
+/*
+ * A dual-stack AF_INET6 socket connected to an IPv4 peer keeps sk_family ==
+ * AF_INET6 while the kernel records the peer as ::ffff:a.b.c.d and mirrors the
+ * plain IPv4 addresses into skc_rcv_saddr / skc_daddr. Only IPv4 packets appear
+ * on the wire, so userspace builds an AF_INET key; the tuple must be stored
+ * under that key rather than the mapped IPv6 one.
+ */
+static __always_inline bool tcp_socket_is_v4_mapped(struct sock *sk)
+{
+    struct in6_addr daddr = {};
+    BPF_CORE_READ_INTO(&daddr, sk, __sk_common.skc_v6_daddr);
+    return daddr.in6_u.u6_addr32[0] == 0 && daddr.in6_u.u6_addr32[1] == 0 &&
+           daddr.in6_u.u6_addr32[2] == bpf_htonl(0x0000ffff);
+}
+
 static __always_inline int track_tcp_socket(struct sock *sk)
 {
     if (!sk)
@@ -107,7 +122,7 @@ static __always_inline int track_tcp_socket(struct sock *sk)
 
     __u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
     if (family == AF_INET6)
-        return track_tcp_v6(sk);
+        return tcp_socket_is_v4_mapped(sk) ? track_tcp_v4(sk) : track_tcp_v6(sk);
     if (family == AF_INET)
         return track_tcp_v4(sk);
     return 0;

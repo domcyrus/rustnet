@@ -769,8 +769,10 @@ service, set `LimitMEMLOCK=infinity` if BPF loading reports a memlock failure.
 
 The TUI Statistics panel reports the selected backend. A missing optional ICMP
 hook produces partial ICMP coverage without disabling TCP and UDP attribution.
-If both BPF backends fail, the degradation message retains the errors from both
-attempts.
+Falling back from fentry/fexit to kprobes is not reported as a degradation —
+both backends provide the same attribution coverage, and the fentry error is
+written to the log. If both BPF backends fail, the panel shows the classified
+reason for the legacy backend's failure and the log retains both full errors.
 
 **Note:** eBPF is enabled by default on Linux builds and may have limitations with process name display. See [ARCHITECTURE.md](ARCHITECTURE.md) for details on eBPF implementation. To build without eBPF, use `cargo build --release --no-default-features`.
 
@@ -1051,9 +1053,10 @@ echo 'kernel.perf_event_paranoid = 2' | \
 
 The kernel is missing the symbol the eBPF probe wants to attach to. This is
 usually a kernel-config issue (e.g. CONFIG_IPV6 disabled, CONFIG_KPROBES
-off, or the symbol was inlined). RustNet currently attaches to
-`tcp_connect`, `inet_csk_accept`, `udp_sendmsg`, `tcp_v6_connect`,
-`udpv6_sendmsg`, `ping_v4_sendmsg`, and `ping_v6_sendmsg`.
+off, or the symbol was inlined). The legacy backend attaches to `tcp_connect`
+(the common tail of both IPv4 and IPv6 connects), `inet_csk_accept`,
+`udp_sendmsg`, `udpv6_sendmsg`, `ping_v4_sendmsg`, and `ping_v6_sendmsg`. The
+fentry/fexit backend additionally hooks `tcp_v6_connect`.
 
 ```bash
 # Check whether the failing symbol exists in the running kernel:

@@ -7,66 +7,20 @@
 #include "socket_tracker_helpers.h"
 
 /*
- * A return probe cannot read function arguments directly. Keep the socket
- * pointer per thread between connect entry and return so the final tuple can
- * be recorded after automatic binding and route selection.
+ * tcp_connect is the last step of every TCP connect: tcp_v4_connect and
+ * tcp_v6_connect both call it after binding the source port and selecting the
+ * route, so the socket already carries the final tuple at function entry and
+ * track_tcp_socket picks the key family from the socket itself. Probing this
+ * single entry point covers IPv4, IPv6, and dual-stack IPv4-mapped connects
+ * without a return probe — a kretprobe would be dropped once the kernel's
+ * maxactive limit is reached during a burst of concurrent connects, silently
+ * losing those connections.
  */
-struct
-{
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 4096);
-    __type(key, __u64);
-    __type(value, struct sock *);
-} pending_connect SEC(".maps");
-
-static __always_inline int remember_connect_socket(struct sock *sk)
-{
-    if (!sk)
-        return 0;
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    return bpf_map_update_elem(&pending_connect, &pid_tgid, &sk, BPF_ANY);
-}
-
-static __always_inline struct sock *take_connect_socket(void)
-{
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    struct sock **socket = bpf_map_lookup_elem(&pending_connect, &pid_tgid);
-    struct sock *sk = socket ? *socket : NULL;
-    bpf_map_delete_elem(&pending_connect, &pid_tgid);
-    return sk;
-}
-
 SEC("kprobe/tcp_connect")
-int trace_tcp_connect_entry(struct pt_regs *ctx)
+int trace_tcp_connect(struct pt_regs *ctx)
 {
     struct sock *sk = (struct sock *)PT_REGS_PARM1_CORE(ctx);
-    remember_connect_socket(sk);
-    return 0;
-}
-
-SEC("kretprobe/tcp_connect")
-int trace_tcp_connect_exit(struct pt_regs *ctx)
-{
-    struct sock *sk = take_connect_socket();
-    if (PT_REGS_RC_CORE(ctx) == 0)
-        track_tcp_socket(sk);
-    return 0;
-}
-
-SEC("kprobe/tcp_v6_connect")
-int trace_tcp_v6_connect_entry(struct pt_regs *ctx)
-{
-    struct sock *sk = (struct sock *)PT_REGS_PARM1_CORE(ctx);
-    remember_connect_socket(sk);
-    return 0;
-}
-
-SEC("kretprobe/tcp_v6_connect")
-int trace_tcp_v6_connect_exit(struct pt_regs *ctx)
-{
-    struct sock *sk = take_connect_socket();
-    if (PT_REGS_RC_CORE(ctx) == 0)
-        track_tcp_v6(sk);
+    track_tcp_socket(sk);
     return 0;
 }
 
