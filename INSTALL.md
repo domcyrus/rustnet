@@ -716,9 +716,15 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' ~/.cargo/bin/rustnet
 rustnet
 ```
 
-**For eBPF-enabled builds (enhanced Linux performance - enabled by default):**
+**For eBPF-enabled builds (enhanced Linux performance, enabled by default):**
 
-eBPF is enabled by default on Linux and provides lower-overhead process identification using kernel probes:
+eBPF is enabled by default on Linux. RustNet first attempts BPF trampoline
+programs using fentry/fexit, then falls back to legacy kprobes, and finally to
+procfs. Backend support is determined by actual program load and attachment
+results, not the reported kernel version. Both BPF backends use CO-RE socket
+field reads and require usable target BTF. When target BTF is unavailable,
+RustNet falls directly to procfs rather than using fixed kernel-structure
+offsets that could produce incorrect attribution.
 
 ```bash
 # Build in release mode (eBPF is enabled by default)
@@ -732,7 +738,7 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' ./target/release/rustnet
 sudo setcap 'cap_net_raw+eip' ./target/release/rustnet
 ./target/release/rustnet
 
-# Check TUI Statistics panel - should show "Process Detection: eBPF + procfs"
+# Check the TUI Statistics panel for the selected backend.
 ```
 
 **Capability requirements:**
@@ -749,11 +755,22 @@ Older kernels require broad `CAP_SYS_ADMIN` for eBPF operations. RustNet does
 not recommend or automatically grant it. Use `CAP_NET_RAW` only and let process
 attribution fall back to procfs unless you explicitly accept the extra risk.
 
+Kernels without memcg-based BPF memory accounting may also require a larger
+`RLIMIT_MEMLOCK`. libbpf raises it automatically when permitted. For a systemd
+service, set `LimitMEMLOCK=infinity` if BPF loading reports a memlock failure.
+
 **Note:** CAP_NET_ADMIN is NOT required. RustNet uses read-only packet capture without promiscuous mode.
 
-**Fallback behavior**: If eBPF cannot load (e.g., insufficient capabilities, incompatible kernel), the application automatically uses procfs-only mode. The TUI Statistics panel displays which detection method is active:
-- `Process Detection: eBPF + procfs` - eBPF successfully loaded
-- `Process Detection: procfs` - Using procfs fallback
+**Fallback behavior:** RustNet attempts the backends in this order:
+
+1. `eBPF fentry/fexit + procfs`
+2. `eBPF kprobe + procfs`
+3. `procfs`
+
+The TUI Statistics panel reports the selected backend. A missing optional ICMP
+hook produces partial ICMP coverage without disabling TCP and UDP attribution.
+If both BPF backends fail, the degradation message retains the errors from both
+attempts.
 
 **Note:** eBPF is enabled by default on Linux builds and may have limitations with process name display. See [ARCHITECTURE.md](ARCHITECTURE.md) for details on eBPF implementation. To build without eBPF, use `cargo build --release --no-default-features`.
 
@@ -992,17 +1009,28 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/local/bin/rustnet
 /usr/local/bin/rustnet
 ```
 
-**2. `BPF denied (check perf_event_paranoid / AppArmor / unprivileged_bpf_disabled)`**
+**2. `BPF denied` or all eBPF backends failed**
 
-Caps were granted, but the kernel returned `EPERM` or `EACCES`. Three layers
-can do that — check them in this order:
+Caps were granted, but the kernel returned `EPERM` or `EACCES`. Check these
+layers in order:
 
 ```bash
-# 2a. perf_event_paranoid (THE most common cause on Debian).
+# 2a. AppArmor or another LSM may confine rustnet.
+sudo aa-status | grep rustnet
+# If listed, allow capability bpf, capability perfmon, and the bpf() syscall.
+
+# 2b. unprivileged_bpf_disabled (Debian sets =2; file caps should bypass).
+sysctl kernel.unprivileged_bpf_disabled
+
+# Confirm caps actually became effective at exec:
+grep ^Cap /proc/$(pgrep -n rustnet)/status
+# CapEff must include CAP_BPF (bit 39) and CAP_PERFMON (bit 38).
+
+# 2c. perf_event_paranoid affects only the legacy kprobe fallback.
 #     Debian 13 ships with kernel.perf_event_paranoid=3, which blocks
-#     perf_event_open(2) — and therefore kprobe attach — for non-root
-#     users *even with CAP_PERFMON*. Upstream kernels only go up to 2,
-#     where CAP_PERFMON correctly bypasses the restriction.
+#     perf_event_open(2) for non-root users even with CAP_PERFMON.
+#     The preferred fentry/fexit backend uses BPF_LINK_CREATE and does not call
+#     perf_event_open(2), so a compatible fentry kernel needs no sysctl change.
 #
 #     Ubuntu uses a different patch (paranoid=4) that was updated in
 #     late 2025 to honor CAP_PERFMON, so on recent Ubuntu kernels
@@ -1017,18 +1045,6 @@ sudo sysctl kernel.perf_event_paranoid=2
 # Make it persist across reboot:
 echo 'kernel.perf_event_paranoid = 2' | \
   sudo tee /etc/sysctl.d/99-rustnet.conf
-
-# 2b. AppArmor confining rustnet (Debian/Ubuntu install AppArmor by default).
-sudo aa-status | grep rustnet
-# If listed, either disable the profile or add a rule allowing capability bpf,
-# capability perfmon, and the bpf() syscall for this binary.
-
-# 2c. unprivileged_bpf_disabled (Debian sets =2; file caps should bypass).
-sysctl kernel.unprivileged_bpf_disabled
-
-# Confirm caps actually became effective at exec:
-grep ^Cap /proc/$(pgrep -n rustnet)/status
-# CapEff must include CAP_BPF (bit 39) and CAP_PERFMON (bit 38).
 ```
 
 **3. `kprobe attach failed: <symbol>`**
@@ -1044,13 +1060,17 @@ off, or the symbol was inlined). RustNet currently attaches to
 sudo grep '<symbol_name>' /proc/kallsyms
 ```
 
-If the symbol is genuinely missing, eBPF process detection will not work
-on this kernel build; procfs fallback continues to function.
+Missing `ping_v4_sendmsg` or `ping_v6_sendmsg` disables only that optional ICMP
+capability. Missing TCP or UDP hooks prevents the legacy backend from providing
+complete core coverage. RustNet then uses procfs if the modern backend was also
+unavailable.
 
 **4. `kernel BTF unavailable`**
 
-CO-RE relocations require `/sys/kernel/btf/vmlinux`. On stripped-down
-kernels (some embedded / minimal cloud images) this file is absent.
+Both the fentry/fexit and legacy kprobe objects use CO-RE relocations and need
+usable target BTF. On stripped-down kernels (some embedded / minimal cloud
+images) `/sys/kernel/btf/vmlinux` and other discoverable vmlinux BTF sources may
+be absent. RustNet uses procfs in that case.
 
 ```bash
 ls /sys/kernel/btf/vmlinux

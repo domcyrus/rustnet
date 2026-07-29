@@ -41,12 +41,7 @@ fn compile_ebpf_programs() {
     use std::ffi::OsStr;
     use std::path::PathBuf;
 
-    let mut out = PathBuf::from(env::var("OUT_DIR").unwrap());
-    out.push("socket_tracker.skel.rs");
-
-    let src = "src/linux/ebpf/programs/socket_tracker.bpf.c";
-
-    println!("cargo:warning=Building eBPF program using libbpf-cargo");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     // Get target architecture for cross-compilation
     let arch = env::var("CARGO_CFG_TARGET_ARCH")
@@ -64,17 +59,24 @@ fn compile_ebpf_programs() {
     let vmlinux_include_path =
         get_vmlinux_header(vmlinux_arch).expect("Failed to locate bundled vmlinux.h");
 
-    SkeletonBuilder::new()
-        .source(src)
-        .clang_args([
-            OsStr::new("-I"),
-            vmlinux_include_path.as_os_str(),
-            OsStr::new(target_arch_define),
-        ])
-        .build_and_generate(&out)
-        .unwrap();
+    for backend in ["fentry", "kprobe"] {
+        let src = format!("src/linux/ebpf/programs/socket_tracker_{backend}.bpf.c");
+        let out = out_dir.join(format!("socket_tracker_{backend}.skel.rs"));
 
-    println!("cargo:rerun-if-changed={}", src);
+        println!("cargo:warning=Building eBPF {backend} backend using libbpf-cargo");
+
+        SkeletonBuilder::new()
+            .source(&src)
+            .clang_args([
+                OsStr::new("-I"),
+                vmlinux_include_path.as_os_str(),
+                OsStr::new(target_arch_define),
+            ])
+            .build_and_generate(&out)
+            .unwrap();
+
+        println!("cargo:rerun-if-changed={src}");
+    }
 }
 
 #[cfg(not(all(target_os = "linux", feature = "ebpf")))]

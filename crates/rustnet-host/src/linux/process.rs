@@ -1,6 +1,6 @@
 // network/platform/linux/process.rs - Linux procfs-based process lookup
 
-use crate::{ConnectionKey, ProcessLookup};
+use crate::{AttributionBackend, ConnectionKey, ProcessLookup};
 use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
@@ -276,5 +276,9 @@ impl ProcessLookup for LinuxProcessLookup {
 
     fn get_detection_method(&self) -> &str {
         "procfs"
+    }
+
+    fn get_attribution_backend(&self) -> AttributionBackend {
+        AttributionBackend::Procfs
     }
 }

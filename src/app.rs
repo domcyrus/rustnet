@@ -1124,6 +1124,16 @@ impl App {
                         } else {
                             debug!("Dropped CAP_NET_RAW in capture thread");
                         }
+                        if let Err(e) =
+                            crate::network::platform::sandbox::capabilities::drop_ebpf_caps()
+                        {
+                            warn!(
+                                "Failed to drop eBPF capabilities in capture thread: {}",
+                                e
+                            );
+                        } else {
+                            debug!("Dropped eBPF capabilities in capture thread");
+                        }
                     }
 
                     // Check if PKTAP is active (linktype 149 or 258)
@@ -1757,6 +1767,25 @@ impl App {
         let use_pktap = pktap_active.load(Ordering::Relaxed);
 
         let process_lookup = create_process_lookup(use_pktap)?;
+
+        // Linux capabilities are per-thread. This thread inherited the startup
+        // capabilities before loading eBPF, so drop its copies now that the
+        // programs, links, and map file descriptors are open.
+        #[cfg(all(target_os = "linux", feature = "landlock"))]
+        {
+            if let Err(e) = crate::network::platform::sandbox::capabilities::drop_cap_net_raw() {
+                warn!(
+                    "Failed to drop CAP_NET_RAW in process enrichment thread: {}",
+                    e
+                );
+            }
+            if let Err(e) = crate::network::platform::sandbox::capabilities::drop_ebpf_caps() {
+                warn!(
+                    "Failed to drop eBPF capabilities in process enrichment thread: {}",
+                    e
+                );
+            }
+        }
 
         // Kubernetes pod/container attribution. `auto` enables only when rustnet
         // is itself running inside a pod, so the resolver and the cross-namespace

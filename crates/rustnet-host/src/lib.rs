@@ -30,6 +30,46 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
+/// Active process-attribution backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AttributionBackend {
+    /// Linux BPF trampoline programs using fentry and fexit.
+    EbpfFentry,
+    /// Linux legacy kprobe and kretprobe programs.
+    EbpfKprobe,
+    /// Linux procfs socket-table scanning.
+    Procfs,
+    /// A platform-native backend outside the Linux eBPF stack.
+    #[default]
+    PlatformNative,
+}
+
+impl std::fmt::Display for AttributionBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            Self::EbpfFentry => "eBPF fentry/fexit",
+            Self::EbpfKprobe => "eBPF kprobe",
+            Self::Procfs => "procfs",
+            Self::PlatformNative => "platform native",
+        };
+        f.write_str(name)
+    }
+}
+
+bitflags::bitflags! {
+    /// Connection operations covered by the active Linux eBPF backend.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct AttributionCapabilities: u32 {
+        const TCP_V4_CONNECT = 1 << 0;
+        const TCP_V6_CONNECT = 1 << 1;
+        const TCP_ACCEPT     = 1 << 2;
+        const UDP_V4_SEND    = 1 << 3;
+        const UDP_V6_SEND    = 1 << 4;
+        const ICMP_V4_SEND   = 1 << 5;
+        const ICMP_V6_SEND   = 1 << 6;
+    }
+}
+
 /// Reasons why process detection may be degraded from optimal
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum DegradationReason {
@@ -66,6 +106,12 @@ pub enum DegradationReason {
     /// Generic eBPF load failure carrying the truncated libbpf error text
     #[cfg(target_os = "linux")]
     EbpfLoadFailed(String),
+    /// The preferred fentry backend failed, but legacy kprobes loaded.
+    #[cfg(target_os = "linux")]
+    FentryUnavailable(String),
+    /// Both kernel backends failed. Both complete errors are retained.
+    #[cfg(target_os = "linux")]
+    EbpfBackendsFailed { fentry: String, kprobe: String },
     /// Binary lives on a filesystem mounted with `nosuid`, which makes the
     /// kernel silently ignore file capabilities set via `setcap`. Common when
     /// the binary is under `/home`, `/tmp`, or a removable mount.
@@ -122,6 +168,14 @@ impl DegradationReason {
             #[cfg(target_os = "linux")]
             Self::EbpfLoadFailed(s) => Cow::Owned(format!("eBPF load failed: {s}")),
             #[cfg(target_os = "linux")]
+            Self::FentryUnavailable(s) => {
+                Cow::Owned(format!("fentry unavailable, using kprobes: {s}"))
+            }
+            #[cfg(target_os = "linux")]
+            Self::EbpfBackendsFailed { fentry, kprobe } => Cow::Owned(format!(
+                "all eBPF backends failed; fentry: {fentry}; kprobe: {kprobe}"
+            )),
+            #[cfg(target_os = "linux")]
             Self::BinaryOnNosuidMount => {
                 Cow::Borrowed("file caps ignored: binary on a nosuid mount")
             }
@@ -151,7 +205,10 @@ impl DegradationReason {
             | Self::KprobeAttachFailed(_)
             | Self::BtfUnavailable
             | Self::EbpfLoadFailed(_)
+            | Self::EbpfBackendsFailed { .. }
             | Self::BinaryOnNosuidMount => Some("eBPF"),
+            #[cfg(target_os = "linux")]
+            Self::FentryUnavailable(_) => Some("fentry"),
             #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
             Self::EbpfFeatureDisabled => Some("eBPF"),
             #[cfg(target_os = "macos")]
@@ -203,6 +260,18 @@ pub trait ProcessLookup: Send + Sync {
     /// Returns DegradationReason::None if using optimal detection method
     fn get_degradation_reason(&self) -> DegradationReason {
         DegradationReason::None // Default: no degradation
+    }
+
+    /// Return the active attribution backend.
+    fn get_attribution_backend(&self) -> AttributionBackend {
+        AttributionBackend::PlatformNative
+    }
+
+    /// Return the connection operations covered by the active eBPF backend.
+    ///
+    /// Non-eBPF backends return an empty set.
+    fn get_attribution_capabilities(&self) -> AttributionCapabilities {
+        AttributionCapabilities::empty()
     }
 
     /// Fallback lookup that relaxes the connection key to handle sockets stored with
