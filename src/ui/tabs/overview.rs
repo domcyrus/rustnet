@@ -1496,9 +1496,8 @@ mod tests {
 
     use super::{
         MINI_WAVE_INTENSITY, OverviewTab, SYSTEM_PANEL_WIDTH, connections_title,
-        detection_method_label,
-        handle_filter_mode_key, is_filter_backspace_char, mini_wave, mini_wave_ceiling,
-        mini_wave_window, smooth_mini_wave,
+        detection_method_label, handle_filter_mode_key, is_filter_backspace_char, mini_wave,
+        mini_wave_ceiling, mini_wave_window, smooth_mini_wave,
     };
     use crate::{
         app::{App, Config},
