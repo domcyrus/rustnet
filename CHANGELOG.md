@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **TCP Transport Health Counters**: `TCP Retransmits` in the Details pane stayed
+  at 0 for the life of a connection while `Fast Retransmits` climbed into the
+  dozens. Outbound sequence tracking desynchronized permanently the first time a
+  segment was missed, so no later retransmission was counted; it now tracks a
+  high-water mark that resyncs across gaps. Duplicate-ACK detection also counted
+  inbound data segments, which repeat the same ack number throughout any download
+  and inflated `Fast Retransmits` on healthy connections. `Duplicate ACKs` now
+  reports a lifetime total rather than the length of the run in progress, and
+  sequence comparisons use RFC 1982 serial arithmetic so they survive the 32-bit
+  wraparound (#501)
+
 ## [1.5.0] - 2026-07-21
 
 This release makes RustNet Kubernetes-aware: connections can be attributed to their

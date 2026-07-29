@@ -55,6 +55,13 @@ fn update_tcp_state(current_state: TcpState, flags: &TcpFlags, is_outgoing: bool
     }
 }
 
+/// RFC 1982 serial-number comparison: true when `a` precedes `b` in TCP
+/// sequence space. A plain `a < b` inverts once the 32-bit counter wraps,
+/// which long-lived or high-volume connections do reach.
+fn seq_lt(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) < 0
+}
+
 /// Analyze TCP segment and update analytics for retransmissions and packet quality
 /// Returns (new_retransmits, new_out_of_order, new_fast_retransmits)
 fn analyze_tcp_segment(
@@ -77,81 +84,79 @@ fn analyze_tcp_segment(
         // Outbound packet - check for retransmissions
         if payload_len > 0 {
             // Only consider packets with payload for retransmit detection
-            if analytics.last_seq_outbound != 0 {
-                // Check if this sequence number is less than expected (retransmission)
-                let expected_seq = analytics.last_seq_outbound;
+            let seq_end = seq.wrapping_add(payload_len);
 
-                if seq < expected_seq {
-                    // This is a retransmission
-                    analytics.retransmit_count += 1;
-                    new_retransmits += 1;
-                    debug!(
-                        "TCP retransmission detected: seq={}, expected={}",
-                        seq, expected_seq
-                    );
-                } else if seq > expected_seq {
-                    // Gap in sequence numbers - might be out of order or packet loss
-                    debug!(
-                        "TCP sequence gap detected: seq={}, expected={}",
-                        seq, expected_seq
-                    );
-                } else {
-                    // seq == expected_seq, normal in-order packet
-                    analytics.last_seq_outbound = seq.wrapping_add(payload_len);
-                }
-            } else {
+            if !analytics.seen_outbound {
                 // First packet with data
-                analytics.last_seq_outbound = seq.wrapping_add(payload_len);
+                analytics.seen_outbound = true;
+                analytics.highest_seq_outbound = seq_end;
+            } else if !seq_lt(analytics.highest_seq_outbound, seq_end) {
+                // Segment ends at or before the highest byte already sent, so
+                // it carries data the peer was sent before: a retransmission.
+                // Counted every time, as repeated resends of one segment are
+                // each a distinct retransmission.
+                analytics.retransmit_count += 1;
+                new_retransmits += 1;
+                debug!(
+                    "TCP retransmission detected: seq={}, len={}, highest={}",
+                    seq, payload_len, analytics.highest_seq_outbound
+                );
+            } else {
+                // Advances the stream. Covers both in-order segments and gaps
+                // left by dropped captures; either way the high-water mark
+                // resyncs so later retransmissions are still detected.
+                analytics.highest_seq_outbound = seq_end;
             }
         }
     } else {
         // Inbound packet - check for out-of-order and duplicate ACKs
         if payload_len > 0 {
-            if analytics.last_seq_inbound != 0 {
-                let expected_seq = analytics.last_seq_inbound;
+            let seq_end = seq.wrapping_add(payload_len);
 
-                if seq < expected_seq {
-                    // Out-of-order packet (arrived late)
-                    analytics.out_of_order_count += 1;
-                    new_out_of_order += 1;
-                    debug!(
-                        "TCP out-of-order packet: seq={}, expected={}",
-                        seq, expected_seq
-                    );
-                } else if seq > expected_seq {
-                    // Gap - possible packet loss
-                    analytics.last_seq_inbound = seq.wrapping_add(payload_len);
-                } else {
-                    // Normal in-order packet
-                    analytics.last_seq_inbound = seq.wrapping_add(payload_len);
-                }
-            } else {
+            if !analytics.seen_inbound {
                 // First inbound packet with data
-                analytics.last_seq_inbound = seq.wrapping_add(payload_len);
+                analytics.seen_inbound = true;
+                analytics.highest_seq_inbound = seq_end;
+            } else if !seq_lt(analytics.highest_seq_inbound, seq_end) {
+                // Re-covers data already received: arrived late or duplicated.
+                analytics.out_of_order_count += 1;
+                new_out_of_order += 1;
+                debug!(
+                    "TCP out-of-order packet: seq={}, len={}, highest={}",
+                    seq, payload_len, analytics.highest_seq_inbound
+                );
+            } else {
+                analytics.highest_seq_inbound = seq_end;
             }
         }
 
-        // Check for duplicate ACKs (fast retransmit indicator)
-        if has_ack_flag {
-            if analytics.last_ack_received != 0 {
-                if ack == analytics.last_ack_received {
-                    // Duplicate ACK
-                    analytics.duplicate_ack_count += 1;
-
-                    // RFC 2581: 3 duplicate ACKs trigger fast retransmit
-                    if analytics.duplicate_ack_count == 3 {
-                        analytics.fast_retransmit_count += 1;
-                        new_fast_retransmits += 1;
-                        debug!("TCP fast retransmit triggered (3 duplicate ACKs)");
-                    }
-                } else {
-                    // New ACK - reset duplicate counter
-                    analytics.last_ack_received = ack;
-                    analytics.duplicate_ack_count = 0;
-                }
-            } else {
+        // Check for duplicate ACKs (fast retransmit indicator).
+        //
+        // RFC 5681 §2 requires a duplicate ACK to carry no data — otherwise
+        // every inbound data segment of a download counts as one, since they
+        // all repeat the same ack number while we have nothing to send, and
+        // the fast-retransmit total balloons on healthy connections.
+        if has_ack_flag && payload_len == 0 {
+            if !analytics.seen_ack {
                 // First ACK seen
+                analytics.seen_ack = true;
                 analytics.last_ack_received = ack;
+            } else if ack == analytics.last_ack_received {
+                // Duplicate ACK
+                analytics.dup_ack_run += 1;
+                analytics.duplicate_ack_count += 1;
+
+                // RFC 5681: 3 duplicate ACKs trigger fast retransmit
+                if analytics.dup_ack_run == 3 {
+                    analytics.fast_retransmit_count += 1;
+                    new_fast_retransmits += 1;
+                    debug!("TCP fast retransmit triggered (3 duplicate ACKs)");
+                }
+            } else if seq_lt(analytics.last_ack_received, ack) {
+                // Only a forward-moving ACK ends the run. A reordered stale
+                // ACK must not clear it, or the run never reaches 3.
+                analytics.last_ack_received = ack;
+                analytics.dup_ack_run = 0;
             }
         }
     }
@@ -1111,5 +1116,99 @@ mod tests {
         };
         let new_state = update_tcp_state(TcpState::Established, &flags, true);
         assert_eq!(new_state, TcpState::Closed);
+    }
+
+    use crate::network::types::TcpAnalytics;
+
+    /// Send one outbound data segment. Window and ack are irrelevant here.
+    fn send(analytics: &mut TcpAnalytics, seq: u32, len: u32) {
+        analyze_tcp_segment(analytics, seq, 0, 65535, len, true, false);
+    }
+
+    /// Receive one inbound segment.
+    fn recv(analytics: &mut TcpAnalytics, seq: u32, ack: u32, len: u32) {
+        analyze_tcp_segment(analytics, seq, ack, 65535, len, false, true);
+    }
+
+    #[test]
+    fn detects_retransmit_after_a_sequence_gap() {
+        // Regression: a gap used to freeze the outbound tracker permanently,
+        // so every later retransmission went uncounted.
+        let mut a = TcpAnalytics::new();
+
+        // Starting at 0 also covers the old `!= 0` "initialised" sentinel,
+        // which silently dropped the first segment of such a stream.
+        send(&mut a, 0, 100); // in order, high-water = 100
+        assert!(a.seen_outbound);
+
+        send(&mut a, 5000, 100); // gap (capture drop) — must resync to 5100
+        assert_eq!(a.retransmit_count, 0, "a gap is not a retransmission");
+        assert_eq!(a.highest_seq_outbound, 5100, "tracker must resync on a gap");
+
+        send(&mut a, 5000, 100); // genuine resend of data already sent
+        assert_eq!(a.retransmit_count, 1);
+
+        send(&mut a, 5100, 100); // stream continues normally afterwards
+        assert_eq!(a.retransmit_count, 1);
+        assert_eq!(a.highest_seq_outbound, 5200);
+    }
+
+    #[test]
+    fn sequence_comparison_survives_wraparound() {
+        // Straddle the u32 boundary, where a raw `<` inverts.
+        let mut a = TcpAnalytics::new();
+
+        send(&mut a, u32::MAX - 50, 100); // wraps to 49
+        assert_eq!(a.highest_seq_outbound, 49);
+
+        send(&mut a, 49, 100); // advances past the wrap, not a retransmit
+        assert_eq!(a.retransmit_count, 0);
+
+        send(&mut a, u32::MAX - 50, 100); // pre-wrap data resent
+        assert_eq!(a.retransmit_count, 1);
+    }
+
+    #[test]
+    fn inbound_data_segments_are_not_duplicate_acks() {
+        // Regression: a download repeats the same ack number on every data
+        // segment while we have nothing to send. Those are not dup ACKs, and
+        // counting them inflated fast retransmits on healthy connections.
+        let mut a = TcpAnalytics::new();
+
+        let mut seq = 1000;
+        for _ in 0..20 {
+            recv(&mut a, seq, 500, 1400);
+            seq += 1400;
+        }
+
+        assert_eq!(a.duplicate_ack_count, 0);
+        assert_eq!(a.fast_retransmit_count, 0);
+        assert_eq!(a.out_of_order_count, 0);
+    }
+
+    #[test]
+    fn fast_retransmit_fires_once_per_dup_ack_run() {
+        let mut a = TcpAnalytics::new();
+
+        recv(&mut a, 0, 500, 0); // first ACK establishes the baseline
+        recv(&mut a, 0, 500, 0); // dup 1
+        recv(&mut a, 0, 500, 0); // dup 2
+        assert_eq!(a.fast_retransmit_count, 0);
+
+        recv(&mut a, 0, 500, 0); // dup 3 -> fast retransmit
+        assert_eq!(a.fast_retransmit_count, 1);
+
+        recv(&mut a, 0, 500, 0); // dup 4 must not re-trigger
+        assert_eq!(a.fast_retransmit_count, 1);
+        assert_eq!(a.duplicate_ack_count, 4, "cumulative, not the run length");
+
+        // A new ACK ends the run; the next run triggers again.
+        recv(&mut a, 0, 900, 0);
+        assert_eq!(a.dup_ack_run, 0);
+        for _ in 0..3 {
+            recv(&mut a, 0, 900, 0);
+        }
+        assert_eq!(a.fast_retransmit_count, 2);
+        assert_eq!(a.duplicate_ack_count, 7);
     }
 }
