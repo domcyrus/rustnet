@@ -2176,15 +2176,25 @@ impl Default for RateTracker {
 /// TCP analytics for tracking retransmissions and connection quality
 #[derive(Debug, Clone)]
 pub struct TcpAnalytics {
-    // Sequence number tracking
-    pub last_seq_outbound: u32,
-    pub last_seq_inbound: u32,
+    // Highest sequence number seen in each direction, i.e. the next byte the
+    // stream is expected to reach. Tracking the high-water mark rather than a
+    // strict "next expected seq" keeps detection alive across gaps: a segment
+    // missed by the capture advances the mark instead of desynchronising it.
+    pub highest_seq_outbound: u32,
+    pub highest_seq_inbound: u32,
+    // 0 is a legal sequence/ack number, so it cannot double as "not yet seen".
+    pub seen_outbound: bool,
+    pub seen_inbound: bool,
 
     // ACK tracking for duplicate detection
     pub last_ack_received: u32,
-    pub duplicate_ack_count: u32,
+    pub seen_ack: bool,
+    /// Length of the duplicate-ACK run currently in progress. Live state,
+    /// cleared by every ACK that advances; not a lifetime statistic.
+    pub dup_ack_run: u32,
 
     // Statistics counters
+    pub duplicate_ack_count: u64,
     pub retransmit_count: u64,
     pub out_of_order_count: u64,
     pub fast_retransmit_count: u64,
@@ -2196,9 +2206,13 @@ pub struct TcpAnalytics {
 impl TcpAnalytics {
     pub fn new() -> Self {
         Self {
-            last_seq_outbound: 0,
-            last_seq_inbound: 0,
+            highest_seq_outbound: 0,
+            highest_seq_inbound: 0,
+            seen_outbound: false,
+            seen_inbound: false,
             last_ack_received: 0,
+            seen_ack: false,
+            dup_ack_run: 0,
             duplicate_ack_count: 0,
             retransmit_count: 0,
             out_of_order_count: 0,
