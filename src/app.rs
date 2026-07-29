@@ -152,6 +152,40 @@ impl ProcessDetectionStatus {
     }
 }
 
+/// Current packet-capture health exposed to the UI.
+#[derive(Debug, Default)]
+enum CaptureStatus {
+    #[default]
+    Healthy,
+    Failed(String),
+}
+
+impl CaptureStatus {
+    fn has_failed(&self) -> bool {
+        matches!(self, Self::Failed(_))
+    }
+}
+
+/// Single-line description of a capture failure. Multi-line errors (the
+/// privilege hint is several lines) are collapsed so the status bar can render
+/// them; the recovery advice is appended by the UI, which knows how much of the
+/// line is left for it.
+fn capture_failure_message(context: &str, error: &impl std::fmt::Display) -> String {
+    let mut detail = error
+        .to_string()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if detail.is_empty() {
+        detail.push_str("unknown error");
+    }
+    // Leave an existing "..." alone: shortening it would change what was reported.
+    if !detail.ends_with(['.', '!', '?']) {
+        detail.push('.');
+    }
+    format!("{context}: {detail}")
+}
+
 // Connection-table limits (max connections, historic retention, QUIC mappings)
 // now live in `rustnet_core::network::tracker::TrackerConfig`, which the
 // `ConnectionTracker` enforces. The defaults match the previous constants.
@@ -725,8 +759,9 @@ pub struct App {
     /// Data link type for packet parsing (needed for PKTAP detection)
     linktype: Arc<RwLock<Option<i32>>>,
 
-    /// Set when capture setup fails before a linktype can be discovered.
-    capture_failed: Arc<AtomicBool>,
+    /// Packet-capture lifecycle state. Runtime failures are retained so the
+    /// TUI does not look healthy after its capture thread has exited.
+    capture_status: Arc<RwLock<CaptureStatus>>,
 
     /// Whether PKTAP is active (macOS only) - used to disable process enrichment
     pktap_active: Arc<AtomicBool>,
@@ -917,7 +952,7 @@ impl App {
             is_loading: Arc::new(AtomicBool::new(true)),
             current_interface: Arc::new(RwLock::new(None)),
             linktype: Arc::new(RwLock::new(None)),
-            capture_failed: Arc::new(AtomicBool::new(false)),
+            capture_status: Arc::new(RwLock::new(CaptureStatus::default())),
             pktap_active: Arc::new(AtomicBool::new(false)),
             process_detection_status: Arc::new(RwLock::new(ProcessDetectionStatus::with_method(
                 "initializing...",
@@ -1096,10 +1131,10 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let current_interface = Arc::clone(&self.current_interface);
         let linktype_storage = Arc::clone(&self.linktype);
-        let capture_failed = Arc::clone(&self.capture_failed);
+        let capture_status = Arc::clone(&self.capture_status);
         let _pktap_active = Arc::clone(&self.pktap_active);
         let pcap_export_file = self.config.pcap_export_file.clone();
-        capture_failed.store(false, Ordering::Relaxed);
+        *capture_status.write().unwrap() = CaptureStatus::Healthy;
 
         // Fires once the privileged part of capture setup is done (device
         // opened or open failed), so the main thread can drop privileges.
@@ -1188,6 +1223,15 @@ impl App {
                     let mut batch: Vec<CapturedPacket> = Vec::with_capacity(100);
                     let mut batch_deadline = Instant::now() + Duration::from_millis(100);
 
+                    // Every path that ends capture for a reason other than
+                    // shutdown has to record it, or the TUI keeps looking
+                    // healthy while the connection table silently freezes.
+                    let record_failure = |message: String| {
+                        if !should_stop.load(Ordering::Relaxed) {
+                            *capture_status.write().unwrap() = CaptureStatus::Failed(message);
+                        }
+                    };
+
                     loop {
                         if should_stop.load(Ordering::Relaxed) {
                             info!("Capture thread stopping");
@@ -1243,6 +1287,10 @@ impl App {
                                         }
                                         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
                                             warn!("Packet channel closed");
+                                            record_failure(capture_failure_message(
+                                                "Capture stopped",
+                                                &"the packet processing threads exited",
+                                            ));
                                             break;
                                         }
                                     }
@@ -1262,6 +1310,10 @@ impl App {
                                         }
                                         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
                                             warn!("Packet channel closed");
+                                            record_failure(capture_failure_message(
+                                                "Capture stopped",
+                                                &"the packet processing threads exited",
+                                            ));
                                             break;
                                         }
                                     }
@@ -1286,6 +1338,7 @@ impl App {
                             }
                             Err(e) => {
                                 error!("Capture error: {}", e);
+                                record_failure(capture_failure_message("Capture stopped", &e));
                                 break;
                             }
                         }
@@ -1306,7 +1359,9 @@ impl App {
                     );
                 }
                 Err(e) => {
-                    capture_failed.store(true, Ordering::Relaxed);
+                    *capture_status.write().unwrap() = CaptureStatus::Failed(
+                        capture_failure_message("Capture failed to start", &e),
+                    );
                     let _ = capture_ready_tx.send(());
                     let error_msg = format!("{}", e);
 
@@ -1344,7 +1399,7 @@ impl App {
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let linktype_storage = Arc::clone(&self.linktype);
-        let capture_failed = Arc::clone(&self.capture_failed);
+        let capture_status = Arc::clone(&self.capture_status);
         let json_log_file = self.json_log_file.clone();
         let pcap_sidecar_file = self.pcap_sidecar_file.clone();
         let dns_resolver = self.dns_resolver.clone();
@@ -1376,8 +1431,11 @@ impl App {
                         }
                         break parser;
                     }
-                    if capture_failed.load(Ordering::Relaxed) || should_stop.load(Ordering::Relaxed)
-                    {
+                    let capture_failed = capture_status
+                        .read()
+                        .map(|status| status.has_failed())
+                        .unwrap_or(true);
+                    if capture_failed || should_stop.load(Ordering::Relaxed) {
                         info!("pcap_rx_{} exiting before linktype was available", id);
                         return;
                     }
@@ -1523,7 +1581,7 @@ impl App {
         let (tx, rx) = channel::bounded::<PcapngRecord>(MAX_PCAPNG_QUEUE);
         let should_stop = Arc::clone(&self.should_stop);
         let linktype_storage = Arc::clone(&self.linktype);
-        let capture_failed = Arc::clone(&self.capture_failed);
+        let capture_status = Arc::clone(&self.capture_status);
         let current_interface = Arc::clone(&self.current_interface);
 
         thread::Builder::new()
@@ -1534,7 +1592,11 @@ impl App {
                     if let Some(linktype) = *linktype_storage.read().unwrap() {
                         break Some(linktype);
                     }
-                    if capture_failed.load(Ordering::Relaxed) {
+                    let capture_failed = capture_status
+                        .read()
+                        .map(|status| status.has_failed())
+                        .unwrap_or(true);
+                    if capture_failed {
                         warn!(
                             "PCAPNG export could not observe capture linktype because capture setup failed; writing empty fallback section"
                         );
@@ -2672,6 +2734,17 @@ impl App {
         self.current_interface.read().unwrap().clone()
     }
 
+    /// Get the persistent packet-capture failure shown by the TUI.
+    pub fn get_capture_error(&self) -> Option<String> {
+        self.capture_status
+            .read()
+            .ok()
+            .and_then(|status| match &*status {
+                CaptureStatus::Failed(message) => Some(message.clone()),
+                CaptureStatus::Healthy => None,
+            })
+    }
+
     /// Get the current process detection status (method and degradation info)
     pub fn get_process_detection_status(&self) -> ProcessDetectionStatus {
         self.process_detection_status
@@ -2777,6 +2850,15 @@ impl App {
     #[cfg(test)]
     pub(crate) fn set_current_interface_for_test(&self, iface: Option<String>) {
         *self.current_interface.write().unwrap() = iface;
+    }
+
+    /// Override packet-capture failure state. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_capture_error_for_test(&self, error: Option<&str>) {
+        *self.capture_status.write().unwrap() = match error {
+            Some(message) => CaptureStatus::Failed(message.to_string()),
+            None => CaptureStatus::Healthy,
+        };
     }
 
     /// Seed an interface's cumulative stats. Tests only.
@@ -3252,6 +3334,40 @@ impl Drop for App {
         self.stop();
         // Give threads time to stop gracefully
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod capture_failure_message_tests {
+    use super::capture_failure_message;
+
+    #[test]
+    fn collapses_multi_line_errors_and_terminates_the_sentence() {
+        let error = "Insufficient privileges\n  How to fix:\n  1. Run with sudo";
+        assert_eq!(
+            capture_failure_message("Capture failed to start", &error),
+            "Capture failed to start: Insufficient privileges How to fix: 1. Run with sudo."
+        );
+    }
+
+    #[test]
+    fn keeps_existing_terminal_punctuation() {
+        assert_eq!(
+            capture_failure_message("Capture stopped", &"Device busy, retrying..."),
+            "Capture stopped: Device busy, retrying..."
+        );
+        assert_eq!(
+            capture_failure_message("Capture stopped", &"Interface went down."),
+            "Capture stopped: Interface went down."
+        );
+    }
+
+    #[test]
+    fn reports_a_cause_even_when_the_error_renders_empty() {
+        assert_eq!(
+            capture_failure_message("Capture stopped", &"  \n "),
+            "Capture stopped: unknown error."
+        );
     }
 }
 

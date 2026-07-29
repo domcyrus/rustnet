@@ -227,7 +227,14 @@ pub fn draw(
     }
 
     use widgets::filter_input::FILTER_INPUT_HEIGHT;
+    use widgets::status_bar::status_bar_height;
     use widgets::tabs_bar::TABS_BAR_HEIGHT;
+
+    // A capture failure can need a second row, so the status bar is measured
+    // before the layout is split.
+    let capture_error = app.get_capture_error();
+    let status_height = status_bar_height(capture_error.as_deref(), f.area().width);
+
     let chunks = if ui_state.filter_mode || ui_state.has_active_filter() {
         Layout::default()
             .direction(Direction::Vertical)
@@ -235,7 +242,7 @@ pub fn draw(
                 Constraint::Length(TABS_BAR_HEIGHT),     // Tabs
                 Constraint::Min(0),                      // Content
                 Constraint::Length(FILTER_INPUT_HEIGHT), // Filter input area
-                Constraint::Length(1),                   // Status bar
+                Constraint::Length(status_height),       // Status bar
             ])
             .split(f.area())
     } else {
@@ -244,7 +251,7 @@ pub fn draw(
             .constraints([
                 Constraint::Length(TABS_BAR_HEIGHT), // Tabs
                 Constraint::Min(0),                  // Content
-                Constraint::Length(1),               // Status bar
+                Constraint::Length(status_height),   // Status bar
             ])
             .split(f.area())
     };
@@ -278,7 +285,13 @@ pub fn draw(
         draw_filter_input(f, ui_state, filter_area);
     }
 
-    draw_status_bar(f, ui_state, connections.len(), status_area);
+    draw_status_bar(
+        f,
+        ui_state,
+        connections.len(),
+        capture_error.as_deref(),
+        status_area,
+    );
 
     Ok(())
 }
@@ -694,7 +707,9 @@ mod snapshot_tests {
     #[test]
     fn status_bar_overview_default() {
         let ui_state = UIState::default();
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, 42, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -704,7 +719,9 @@ mod snapshot_tests {
             selected_tab: 1,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, 42, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -714,7 +731,9 @@ mod snapshot_tests {
             selected_tab: 2,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, 42, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -724,7 +743,7 @@ mod snapshot_tests {
             selected_tab: 4,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 0, f.area()));
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 0, None, f.area()));
         insta::assert_snapshot!(output);
     }
 
@@ -734,7 +753,7 @@ mod snapshot_tests {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 7, f.area()));
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 7, None, f.area()));
         insta::assert_snapshot!(output);
     }
 
@@ -744,7 +763,9 @@ mod snapshot_tests {
             quit_confirmation: true,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, 42, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -754,8 +775,53 @@ mod snapshot_tests {
             clear_confirmation: true,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, 42, None, f.area())
+        });
         insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_capture_error() {
+        let ui_state = UIState::default();
+        let output = render(120, 1, |f| {
+            draw_status_bar(
+                f,
+                &ui_state,
+                0,
+                Some("Capture stopped: The interface disappeared."),
+                f.area(),
+            )
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    /// A realistic libpcap error is longer than the status row, which does not
+    /// wrap: the cause is elided so the recovery hint stays on screen.
+    #[test]
+    fn status_bar_capture_error_keeps_hint_on_narrow_terminal() {
+        let ui_state = UIState::default();
+        let output = render(80, 1, |f| {
+            draw_status_bar(
+                f,
+                &ui_state,
+                0,
+                Some(
+                    "Capture failed to start: eth0: You don't have permission to capture on that device (socket: Operation not permitted).",
+                ),
+                f.area(),
+            )
+        });
+
+        assert!(
+            output.contains("Restart rustnet to resume. Press 'q' to quit."),
+            "recovery hint must survive truncation, got: {output}"
+        );
+        assert!(
+            output.contains("Capture failed to start:"),
+            "the cause must still be introduced, got: {output}"
+        );
+        assert!(output.contains('…'), "elision marker expected: {output}");
     }
 
     // --- Full-page renders backed by a seeded App ---
@@ -800,6 +866,65 @@ mod snapshot_tests {
         app.set_loading_for_test(false);
         app.set_current_interface_for_test(Some("eth0".to_string()));
         app
+    }
+
+    #[test]
+    fn full_page_shows_capture_error() {
+        let app = test_app();
+        app.set_capture_error_for_test(Some("Capture stopped: The interface disappeared."));
+        let ui_state = UIState {
+            show_system_panel: false,
+            ..Default::default()
+        };
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        let output = render(100, 16, |f| {
+            draw(f, &app, &ui_state, &[], None, &stats, &mut click_regions)
+                .expect("draw Overview with capture error");
+        });
+
+        assert!(
+            output
+                .contains("Capture stopped: The interface disappeared. Restart rustnet to resume. Press 'q' to quit."),
+            "capture failure should remain visible in the global status bar"
+        );
+    }
+
+    /// A real libpcap error does not fit one row; the status bar claims a
+    /// second one so both the cause and the recovery hint stay readable.
+    #[test]
+    fn full_page_capture_error_grows_the_status_bar_to_two_rows() {
+        let app = test_app();
+        app.set_capture_error_for_test(Some(
+            "Capture failed to start: eth0: You don't have permission to capture on that device (socket: Operation not permitted).",
+        ));
+        let ui_state = UIState {
+            show_system_panel: false,
+            ..Default::default()
+        };
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        let output = render(80, 16, |f| {
+            draw(f, &app, &ui_state, &[], None, &stats, &mut click_regions)
+                .expect("draw Overview with a long capture error");
+        });
+
+        let rows: Vec<&str> = output.lines().collect();
+        let hint_row = rows
+            .iter()
+            .rposition(|row| row.contains("Restart rustnet to resume. Press 'q' to quit."))
+            .expect("recovery hint must stay on screen");
+        assert_eq!(
+            hint_row,
+            rows.len() - 1,
+            "the hint belongs on the last row, got:\n{output}"
+        );
+        assert!(
+            rows[hint_row - 1].contains("Capture failed to start: eth0: You don't have permission"),
+            "the row above the hint should carry the cause, got:\n{output}"
+        );
     }
 
     /// Test-fixture spec for one connection. Folded into a struct so
