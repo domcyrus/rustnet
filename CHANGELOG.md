@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Capture Failure Reporting**: Capture startup and runtime failures are retained in
+  application state and shown as a persistent status-bar error with restart and quit
+  guidance, instead of the TUI running on silently after capture stopped. The status
+  bar grows a second row when the message and hint do not fit on one (#497)
+
+### Changed
+- **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF
+  trampoline programs (fentry/fexit) and falls back to legacy kprobes and then procfs,
+  choosing the backend from actual BTF, load, and attach results rather than the
+  reported kernel version. The preferred backend avoids `perf_event_open(2)`, so
+  Debian's `kernel.perf_event_paranoid=3` default no longer blocks eBPF attribution.
+  Both BPF backends use CO-RE socket reads and fall through to procfs when target BTF
+  is unavailable rather than risking misattribution with fixed offsets. The Statistics
+  panel reports the selected backend, a missing optional ICMP hook now degrades only
+  ICMP coverage instead of disabling TCP/UDP attribution, and BPF capabilities are
+  dropped on the capture workers after privileged initialization (#498)
+
 ### Fixed
 - **TCP Transport Health Counters**: `TCP Retransmits` in the Details pane stayed
   at 0 for the life of a connection while `Fast Retransmits` climbed into the
@@ -18,6 +36,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reports a lifetime total rather than the length of the run in progress, and
   sequence comparisons use RFC 1982 serial arithmetic so they survive the 32-bit
   wraparound (#501)
+- **JSON Outputs After Privilege Drop**: JSON event logs and PCAP sidecars are opened
+  before sandboxing and the UID drop and written through retained descriptors, so
+  logging no longer stops silently when the target path lives under a directory the
+  unprivileged user cannot traverse (for example `/root`). Unopenable outputs now fail
+  before terminal setup instead of failing quietly at runtime (#486)
+- **eBPF Attribution Correctness**: Fixed TCP accept attribution and UID/GID
+  extraction, stored dual-stack `AF_INET6` sockets with IPv4-mapped peers under the
+  `AF_INET` key that matches the wire packets, removed a per-thread handoff map that
+  leaked on missed kretprobes, and made socket-map cleanup skip unreadable entries
+  instead of aborting the sweep and letting the map fill (#498)
+
+### Documentation
+- **eBPF Install and Troubleshooting**: Documented the fentry/kprobe/procfs backend
+  order, BTF and `RLIMIT_MEMLOCK` requirements, and reworked the BPF-denied
+  troubleshooting steps now that `perf_event_paranoid` affects only the legacy
+  backend (#498)
+- **Localized Docs**: Added a Japanese README and synchronized the Simplified Chinese
+  README, install, and usage docs (#484)
 
 ## [1.5.0] - 2026-07-21
 
