@@ -153,14 +153,6 @@ jobs:
           - arch: x86_64
             runner: ubuntu-latest
             target: x86_64-unknown-linux-musl
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-musl
-            features: '--features default'
-          - arch: aarch64-android
-            runner: ubuntu-24.04-arm
-            target: aarch64-linux-android-musl # Note: it's not a real rust target but we rename the artifact
-            features: '--no-default-features'
           - arch: x86_64-android
             runner: ubuntu-latest
             target: x86_64-linux-android-musl
@@ -176,36 +168,22 @@ jobs:
     container:
       image: rust:alpine
     steps:
-      # x86_64: use standard checkout action
       - name: Checkout repository
-        if: matrix.arch == 'x86_64' || matrix.arch == 'x86_64-android' || matrix.arch == 'armv7-android' || matrix.arch == 'x86-android'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # aarch64: JS actions don't work in Alpine containers on ARM runners
-      - name: Checkout repository (ARM workaround)
-        if: contains(matrix.arch, 'aarch64')
-        run: |
-          apk add --no-cache git
-          git config --global --add safe.directory /__w/rustnet/rustnet
-          git clone --depth 1 https://github.com/${{ github.repository }}.git .
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            git fetch --depth 1 origin tag "${{ github.ref_name }}"
-            git checkout "${{ github.ref_name }}"
-          fi
 
       # x86_64: use composite action
       - name: Build static binary
         if: matrix.arch == 'x86_64'
         uses: ./.github/actions/build-static
 
-      # aarch64 & android: inline build (composite actions don't work with ARM workaround/zig wrapper easily here)
-      - name: Install dependencies (ARM & Android)
+      # android: inline build (composite actions don't work with the zig wrapper easily here)
+      - name: Install dependencies (Android)
         if: matrix.arch != 'x86_64'
         run: |
           apk add --no-cache \
             musl-dev libpcap-dev pkgconfig build-base perl \
             elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
-            clang llvm linux-headers curl github-cli
+            clang llvm linux-headers curl
           rustup component add rustfmt
 
       - name: Install cross-compiler and libpcap (armv7)
@@ -270,16 +248,6 @@ jobs:
           make -j$(nproc) && make install
           cd ..
 
-      - name: Build static binary (AArch64 / AArch64 Android)
-        if: matrix.arch == 'aarch64' || matrix.arch == 'aarch64-android'
-        env:
-          # -mno-outline-atomics: Prevent GCC from generating calls to __aarch64_ldadd4_sync etc.
-          # which aren't in Alpine's libatomic. Uses inline atomics instead.
-          CFLAGS: "-mno-outline-atomics"
-          CXXFLAGS: "-mno-outline-atomics"
-          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-        run: cargo build --release ${{ matrix.features }}
-
       - name: Build static binary (x86_64 Android)
         if: matrix.arch == 'x86_64-android'
         env:
@@ -306,7 +274,7 @@ jobs:
           PKG_CONFIG_ALLOW_CROSS: "1"
         run: cargo build --release --target i686-unknown-linux-musl ${{ matrix.features }}
 
-      - name: Verify static linking (ARM & Android)
+      - name: Verify static linking (Android)
         if: matrix.arch != 'x86_64'
         run: |
           BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
@@ -317,7 +285,6 @@ jobs:
       # For test builds: upload raw binary
       - name: Upload binary artifact
         if: ${{ !inputs.create-archives }}
-        continue-on-error: ${{ matrix.arch != 'x86_64' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rustnet-linux-static-${{ matrix.arch }}
@@ -342,9 +309,84 @@ jobs:
 
       - name: Upload release archive
         if: ${{ inputs.create-archives }}
-        # JS actions don't work in Alpine containers on ARM runners;
-        # release.yml has dedicated upload-arm-static/upload-android-static jobs as fallback
-        continue-on-error: ${{ contains(matrix.arch, 'aarch64') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: build-${{ matrix.target }}
+          path: rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  # aarch64 static builds run on a native ARM runner WITHOUT a job-level container:
+  # JS actions (checkout, upload-artifact) cannot run in an Alpine container on ARM
+  # runners. The musl build itself happens inside `docker run rust:alpine`, so the
+  # workspace and all actions stay on the host where they work.
+  build-static-arm:
+    permissions:
+      contents: read
+    name: build-linux-static-${{ matrix.arch }}
+    runs-on: ubuntu-24.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            target: aarch64-unknown-linux-musl
+            features: '--features default'
+          - arch: aarch64-android
+            target: aarch64-linux-android-musl # Note: it's not a real rust target but we rename the artifact
+            features: '--no-default-features'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build static binary
+        run: |
+          docker run --rm \
+            -v "$PWD:/build" -w /build \
+            -e CARGO_TERM_COLOR -e RUST_BACKTRACE \
+            -e CFLAGS="-mno-outline-atomics" \
+            -e CXXFLAGS="-mno-outline-atomics" \
+            -e RUSTFLAGS="-C strip=symbols -C link-arg=-l:libzstd.a" \
+            rust:alpine sh -euc '
+              apk add --no-cache \
+                musl-dev libpcap-dev pkgconfig build-base perl \
+                elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
+                clang llvm linux-headers
+              rustup component add rustfmt
+              cargo build --release ${{ matrix.features }}
+            '
+          sudo chown -R "$(id -u):$(id -g)" target
+
+      - name: Verify static linking
+        run: |
+          file target/release/rustnet
+          file target/release/rustnet | grep -q "static.* linked" || \
+            (echo "ERROR: Binary is not statically linked" && exit 1)
+
+      # For test builds: upload raw binary
+      - name: Upload binary artifact
+        if: ${{ !inputs.create-archives }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: rustnet-linux-static-${{ matrix.arch }}
+          path: target/release/rustnet
+          if-no-files-found: error
+
+      # For release builds: create archive
+      - name: Create release archive
+        if: ${{ inputs.create-archives }}
+        run: |
+          staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
+          mkdir -p "$staging/assets"
+
+          cp target/release/rustnet "$staging/"
+          cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
+          cp README.md "$staging/"
+          cp LICENSE "$staging/" 2>/dev/null || true
+
+          tar czf "$staging.tar.gz" "$staging"
+
+      - name: Upload release archive
+        if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-${{ matrix.target }}
