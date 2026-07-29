@@ -93,6 +93,7 @@ RustNet 追求小而快。并不是每个协议或功能都适合放在核心工
 - 保持 PR 聚焦——每个 PR 只做一件事
 - 及时响应 review 反馈
 - 在提交 PR 之前在本地验证。PR 模板中列出了需要执行的精确命令。
+- 在同一个 PR 中把用户可见的改动写入 `CHANGELOG.md` 的 `## [Unreleased]` 小节
 
 ## 重复 Pull Request<a id="duplicate-pull-requests"></a>
 
