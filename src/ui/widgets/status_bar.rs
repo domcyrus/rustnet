@@ -1,6 +1,7 @@
 //! Bottom status line: shows tab-specific keybinds by default, or
 //! transient confirmation prompts ("press q again to quit"),
-//! filtered-count messages, and clipboard feedback when relevant.
+//! filtered-count messages, clipboard feedback, and capture failures
+//! (which claim a second row when they do not fit on one).
 
 use ratatui::{Frame, layout::Rect, widgets::Paragraph};
 
@@ -32,6 +33,57 @@ fn default_status_line(ui_state: &UIState) -> &'static str {
     }
 }
 
+/// Actionable half of a capture-failure line.
+const CAPTURE_RECOVERY_HINT: &str = "Restart rustnet to resume. Press 'q' to quit.";
+
+fn capture_error_one_line(cause: &str) -> String {
+    format!(" {cause} {CAPTURE_RECOVERY_HINT} ")
+}
+
+/// Rows the status bar needs. Real libpcap errors are far longer than one
+/// terminal row and the bar does not wrap, so a failure that does not fit gets
+/// a second row instead of losing its recovery hint off the right edge.
+pub(in crate::ui) fn status_bar_height(capture_error: Option<&str>, width: u16) -> u16 {
+    match capture_error {
+        Some(cause) if capture_error_one_line(cause).chars().count() > width as usize => 2,
+        _ => 1,
+    }
+}
+
+fn elide(text: &str, width: usize) -> String {
+    if text.chars().count() <= width {
+        return text.to_string();
+    }
+    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
+}
+
+/// Lay a capture failure out over the rows `status_bar_height` reserved: cause
+/// first, recovery hint below it. When only one row is available the cause is
+/// elided instead of the hint, which is the half the user can act on.
+fn capture_error_text(cause: &str, width: u16, height: u16) -> String {
+    let single = capture_error_one_line(cause);
+    if single.chars().count() <= width as usize {
+        return single;
+    }
+    if height >= 2 {
+        return format!(
+            "{}\n{}",
+            elide(&format!(" {cause} "), width as usize),
+            elide(&format!(" {CAPTURE_RECOVERY_HINT} "), width as usize),
+        );
+    }
+
+    // " " + cause + "… " + hint + " "
+    let room = (width as usize).saturating_sub(CAPTURE_RECOVERY_HINT.chars().count() + 4);
+    if room < 16 {
+        // Too narrow for both; show as much of the cause as fits.
+        return single;
+    }
+    let cause: String = cause.chars().take(room).collect();
+    format!(" {}… {CAPTURE_RECOVERY_HINT} ", cause.trim_end())
+}
+
 pub(in crate::ui) fn draw_status_bar(
     f: &mut Frame,
     ui_state: &UIState,
@@ -52,7 +104,7 @@ pub(in crate::ui) fn draw_status_bar(
     } else if let Some(message) = clipboard_message {
         format!(" {message} ")
     } else if let Some(error) = capture_error {
-        format!(" {error} ")
+        capture_error_text(error, area.width, area.height)
     } else if ui_state.has_active_filter() {
         format!(
             " 'h' help | 1-5 jump | Tab/[/] cycle | Showing {} filtered connections (Esc to clear) ",

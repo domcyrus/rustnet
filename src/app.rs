@@ -153,11 +153,10 @@ impl ProcessDetectionStatus {
 }
 
 /// Current packet-capture health exposed to the UI.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 enum CaptureStatus {
     #[default]
-    Initializing,
-    Running,
+    Healthy,
     Failed(String),
 }
 
@@ -167,10 +166,24 @@ impl CaptureStatus {
     }
 }
 
+/// Single-line description of a capture failure. Multi-line errors (the
+/// privilege hint is several lines) are collapsed so the status bar can render
+/// them; the recovery advice is appended by the UI, which knows how much of the
+/// line is left for it.
 fn capture_failure_message(context: &str, error: &impl std::fmt::Display) -> String {
-    let detail = error.to_string().replace(['\r', '\n'], " ");
-    let detail = detail.trim().trim_end_matches('.');
-    format!("{context}: {detail}. Restart rustnet to resume. Press 'q' to quit.")
+    let mut detail = error
+        .to_string()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if detail.is_empty() {
+        detail.push_str("unknown error");
+    }
+    // Leave an existing "..." alone: shortening it would change what was reported.
+    if !detail.ends_with(['.', '!', '?']) {
+        detail.push('.');
+    }
+    format!("{context}: {detail}")
 }
 
 // Connection-table limits (max connections, historic retention, QUIC mappings)
@@ -1121,7 +1134,7 @@ impl App {
         let capture_status = Arc::clone(&self.capture_status);
         let _pktap_active = Arc::clone(&self.pktap_active);
         let pcap_export_file = self.config.pcap_export_file.clone();
-        *capture_status.write().unwrap() = CaptureStatus::Initializing;
+        *capture_status.write().unwrap() = CaptureStatus::Healthy;
 
         // Fires once the privileged part of capture setup is done (device
         // opened or open failed), so the main thread can drop privileges.
@@ -1135,7 +1148,6 @@ impl App {
                     // Store the actual interface name and linktype being used
                     *current_interface.write().unwrap() = Some(device_name.clone());
                     *linktype_storage.write().unwrap() = Some(linktype);
-                    *capture_status.write().unwrap() = CaptureStatus::Running;
 
                     // Drop CAP_NET_RAW now that the socket is open (Linux only)
                     #[cfg(all(target_os = "linux", feature = "landlock"))]
@@ -1217,6 +1229,15 @@ impl App {
                     let mut batch: Vec<CapturedPacket> = Vec::with_capacity(100);
                     let mut batch_deadline = Instant::now() + Duration::from_millis(100);
 
+                    // Every path that ends capture for a reason other than
+                    // shutdown has to record it, or the TUI keeps looking
+                    // healthy while the connection table silently freezes.
+                    let record_failure = |message: String| {
+                        if !should_stop.load(Ordering::Relaxed) {
+                            *capture_status.write().unwrap() = CaptureStatus::Failed(message);
+                        }
+                    };
+
                     loop {
                         if should_stop.load(Ordering::Relaxed) {
                             info!("Capture thread stopping");
@@ -1272,6 +1293,10 @@ impl App {
                                         }
                                         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
                                             warn!("Packet channel closed");
+                                            record_failure(capture_failure_message(
+                                                "Capture stopped",
+                                                &"the packet processing threads exited",
+                                            ));
                                             break;
                                         }
                                     }
@@ -1291,6 +1316,10 @@ impl App {
                                         }
                                         Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
                                             warn!("Packet channel closed");
+                                            record_failure(capture_failure_message(
+                                                "Capture stopped",
+                                                &"the packet processing threads exited",
+                                            ));
                                             break;
                                         }
                                     }
@@ -1315,9 +1344,7 @@ impl App {
                             }
                             Err(e) => {
                                 error!("Capture error: {}", e);
-                                *capture_status.write().unwrap() = CaptureStatus::Failed(
-                                    capture_failure_message("Capture stopped", &e),
-                                );
+                                record_failure(capture_failure_message("Capture stopped", &e));
                                 break;
                             }
                         }
@@ -2717,7 +2744,7 @@ impl App {
             .ok()
             .and_then(|status| match &*status {
                 CaptureStatus::Failed(message) => Some(message.clone()),
-                CaptureStatus::Initializing | CaptureStatus::Running => None,
+                CaptureStatus::Healthy => None,
             })
     }
 
@@ -2833,7 +2860,7 @@ impl App {
     pub(crate) fn set_capture_error_for_test(&self, error: Option<&str>) {
         *self.capture_status.write().unwrap() = match error {
             Some(message) => CaptureStatus::Failed(message.to_string()),
-            None => CaptureStatus::Running,
+            None => CaptureStatus::Healthy,
         };
     }
 
@@ -3310,6 +3337,40 @@ impl Drop for App {
         self.stop();
         // Give threads time to stop gracefully
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod capture_failure_message_tests {
+    use super::capture_failure_message;
+
+    #[test]
+    fn collapses_multi_line_errors_and_terminates_the_sentence() {
+        let error = "Insufficient privileges\n  How to fix:\n  1. Run with sudo";
+        assert_eq!(
+            capture_failure_message("Capture failed to start", &error),
+            "Capture failed to start: Insufficient privileges How to fix: 1. Run with sudo."
+        );
+    }
+
+    #[test]
+    fn keeps_existing_terminal_punctuation() {
+        assert_eq!(
+            capture_failure_message("Capture stopped", &"Device busy, retrying..."),
+            "Capture stopped: Device busy, retrying..."
+        );
+        assert_eq!(
+            capture_failure_message("Capture stopped", &"Interface went down."),
+            "Capture stopped: Interface went down."
+        );
+    }
+
+    #[test]
+    fn reports_a_cause_even_when_the_error_renders_empty() {
+        assert_eq!(
+            capture_failure_message("Capture stopped", &"  \n "),
+            "Capture stopped: unknown error."
+        );
     }
 }
 
