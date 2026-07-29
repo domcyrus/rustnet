@@ -40,6 +40,9 @@ them, but local verification catches issues faster. -->
 - [ ] No new dependencies, or rationale provided in the summary above
 - [ ] No `#[allow(clippy::...)]` suppressions, or rationale provided
   (see [CONTRIBUTING.md](https://github.com/domcyrus/rustnet/blob/main/CONTRIBUTING.md#code-quality-requirements))
+- [ ] User-visible changes are added to the `## [Unreleased]` section of
+  `CHANGELOG.md` in this PR, or this change is not user-visible
+  (see [CONTRIBUTING.md](https://github.com/domcyrus/rustnet/blob/main/CONTRIBUTING.md#pr-guidelines))
 
 ## AI-assisted contributions
 
