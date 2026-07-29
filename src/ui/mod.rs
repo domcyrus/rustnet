@@ -278,7 +278,14 @@ pub fn draw(
         draw_filter_input(f, ui_state, filter_area);
     }
 
-    draw_status_bar(f, ui_state, connections.len(), status_area);
+    let capture_error = app.get_capture_error();
+    draw_status_bar(
+        f,
+        ui_state,
+        connections.len(),
+        capture_error.as_deref(),
+        status_area,
+    );
 
     Ok(())
 }
@@ -694,7 +701,9 @@ mod snapshot_tests {
     #[test]
     fn status_bar_overview_default() {
         let ui_state = UIState::default();
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, 42, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -704,7 +713,9 @@ mod snapshot_tests {
             selected_tab: 1,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, 42, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -714,7 +725,9 @@ mod snapshot_tests {
             selected_tab: 2,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, 42, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -724,7 +737,7 @@ mod snapshot_tests {
             selected_tab: 4,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 0, f.area()));
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 0, None, f.area()));
         insta::assert_snapshot!(output);
     }
 
@@ -734,7 +747,7 @@ mod snapshot_tests {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 7, f.area()));
+        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 7, None, f.area()));
         insta::assert_snapshot!(output);
     }
 
@@ -744,7 +757,9 @@ mod snapshot_tests {
             quit_confirmation: true,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, 42, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -754,7 +769,26 @@ mod snapshot_tests {
             clear_confirmation: true,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 42, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, 42, None, f.area())
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_capture_error() {
+        let ui_state = UIState::default();
+        let output = render(120, 1, |f| {
+            draw_status_bar(
+                f,
+                &ui_state,
+                0,
+                Some(
+                    "Capture stopped: The interface disappeared. Restart rustnet to resume. Press 'q' to quit.",
+                ),
+                f.area(),
+            )
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -800,6 +834,31 @@ mod snapshot_tests {
         app.set_loading_for_test(false);
         app.set_current_interface_for_test(Some("eth0".to_string()));
         app
+    }
+
+    #[test]
+    fn full_page_shows_capture_error() {
+        let app = test_app();
+        app.set_capture_error_for_test(Some(
+            "Capture stopped: The interface disappeared. Restart rustnet to resume. Press 'q' to quit.",
+        ));
+        let ui_state = UIState {
+            show_system_panel: false,
+            ..Default::default()
+        };
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+
+        let output = render(100, 16, |f| {
+            draw(f, &app, &ui_state, &[], None, &stats, &mut click_regions)
+                .expect("draw Overview with capture error");
+        });
+
+        assert!(
+            output
+                .contains("Capture stopped: The interface disappeared. Restart rustnet to resume. Press 'q' to quit."),
+            "capture failure should remain visible in the global status bar"
+        );
     }
 
     /// Test-fixture spec for one connection. Folded into a struct so

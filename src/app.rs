@@ -152,6 +152,27 @@ impl ProcessDetectionStatus {
     }
 }
 
+/// Current packet-capture health exposed to the UI.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum CaptureStatus {
+    #[default]
+    Initializing,
+    Running,
+    Failed(String),
+}
+
+impl CaptureStatus {
+    fn has_failed(&self) -> bool {
+        matches!(self, Self::Failed(_))
+    }
+}
+
+fn capture_failure_message(context: &str, error: &impl std::fmt::Display) -> String {
+    let detail = error.to_string().replace(['\r', '\n'], " ");
+    let detail = detail.trim().trim_end_matches('.');
+    format!("{context}: {detail}. Restart rustnet to resume. Press 'q' to quit.")
+}
+
 // Connection-table limits (max connections, historic retention, QUIC mappings)
 // now live in `rustnet_core::network::tracker::TrackerConfig`, which the
 // `ConnectionTracker` enforces. The defaults match the previous constants.
@@ -725,8 +746,9 @@ pub struct App {
     /// Data link type for packet parsing (needed for PKTAP detection)
     linktype: Arc<RwLock<Option<i32>>>,
 
-    /// Set when capture setup fails before a linktype can be discovered.
-    capture_failed: Arc<AtomicBool>,
+    /// Packet-capture lifecycle state. Runtime failures are retained so the
+    /// TUI does not look healthy after its capture thread has exited.
+    capture_status: Arc<RwLock<CaptureStatus>>,
 
     /// Whether PKTAP is active (macOS only) - used to disable process enrichment
     pktap_active: Arc<AtomicBool>,
@@ -917,7 +939,7 @@ impl App {
             is_loading: Arc::new(AtomicBool::new(true)),
             current_interface: Arc::new(RwLock::new(None)),
             linktype: Arc::new(RwLock::new(None)),
-            capture_failed: Arc::new(AtomicBool::new(false)),
+            capture_status: Arc::new(RwLock::new(CaptureStatus::default())),
             pktap_active: Arc::new(AtomicBool::new(false)),
             process_detection_status: Arc::new(RwLock::new(ProcessDetectionStatus::with_method(
                 "initializing...",
@@ -1096,10 +1118,10 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let current_interface = Arc::clone(&self.current_interface);
         let linktype_storage = Arc::clone(&self.linktype);
-        let capture_failed = Arc::clone(&self.capture_failed);
+        let capture_status = Arc::clone(&self.capture_status);
         let _pktap_active = Arc::clone(&self.pktap_active);
         let pcap_export_file = self.config.pcap_export_file.clone();
-        capture_failed.store(false, Ordering::Relaxed);
+        *capture_status.write().unwrap() = CaptureStatus::Initializing;
 
         // Fires once the privileged part of capture setup is done (device
         // opened or open failed), so the main thread can drop privileges.
@@ -1113,6 +1135,7 @@ impl App {
                     // Store the actual interface name and linktype being used
                     *current_interface.write().unwrap() = Some(device_name.clone());
                     *linktype_storage.write().unwrap() = Some(linktype);
+                    *capture_status.write().unwrap() = CaptureStatus::Running;
 
                     // Drop CAP_NET_RAW now that the socket is open (Linux only)
                     #[cfg(all(target_os = "linux", feature = "landlock"))]
@@ -1292,6 +1315,9 @@ impl App {
                             }
                             Err(e) => {
                                 error!("Capture error: {}", e);
+                                *capture_status.write().unwrap() = CaptureStatus::Failed(
+                                    capture_failure_message("Capture stopped", &e),
+                                );
                                 break;
                             }
                         }
@@ -1312,7 +1338,9 @@ impl App {
                     );
                 }
                 Err(e) => {
-                    capture_failed.store(true, Ordering::Relaxed);
+                    *capture_status.write().unwrap() = CaptureStatus::Failed(
+                        capture_failure_message("Capture failed to start", &e),
+                    );
                     let _ = capture_ready_tx.send(());
                     let error_msg = format!("{}", e);
 
@@ -1350,7 +1378,7 @@ impl App {
         let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let linktype_storage = Arc::clone(&self.linktype);
-        let capture_failed = Arc::clone(&self.capture_failed);
+        let capture_status = Arc::clone(&self.capture_status);
         let json_log_file = self.json_log_file.clone();
         let pcap_sidecar_file = self.pcap_sidecar_file.clone();
         let dns_resolver = self.dns_resolver.clone();
@@ -1390,8 +1418,11 @@ impl App {
                         }
                         break parser;
                     }
-                    if capture_failed.load(Ordering::Relaxed) || should_stop.load(Ordering::Relaxed)
-                    {
+                    let capture_failed = capture_status
+                        .read()
+                        .map(|status| status.has_failed())
+                        .unwrap_or(true);
+                    if capture_failed || should_stop.load(Ordering::Relaxed) {
                         info!("pcap_rx_{} exiting before linktype was available", id);
                         return;
                     }
@@ -1537,7 +1568,7 @@ impl App {
         let (tx, rx) = channel::bounded::<PcapngRecord>(MAX_PCAPNG_QUEUE);
         let should_stop = Arc::clone(&self.should_stop);
         let linktype_storage = Arc::clone(&self.linktype);
-        let capture_failed = Arc::clone(&self.capture_failed);
+        let capture_status = Arc::clone(&self.capture_status);
         let current_interface = Arc::clone(&self.current_interface);
 
         thread::Builder::new()
@@ -1548,7 +1579,11 @@ impl App {
                     if let Some(linktype) = *linktype_storage.read().unwrap() {
                         break Some(linktype);
                     }
-                    if capture_failed.load(Ordering::Relaxed) {
+                    let capture_failed = capture_status
+                        .read()
+                        .map(|status| status.has_failed())
+                        .unwrap_or(true);
+                    if capture_failed {
                         warn!(
                             "PCAPNG export could not observe capture linktype because capture setup failed; writing empty fallback section"
                         );
@@ -2675,6 +2710,17 @@ impl App {
         self.current_interface.read().unwrap().clone()
     }
 
+    /// Get the persistent packet-capture failure shown by the TUI.
+    pub fn get_capture_error(&self) -> Option<String> {
+        self.capture_status
+            .read()
+            .ok()
+            .and_then(|status| match &*status {
+                CaptureStatus::Failed(message) => Some(message.clone()),
+                CaptureStatus::Initializing | CaptureStatus::Running => None,
+            })
+    }
+
     /// Get the current process detection status (method and degradation info)
     pub fn get_process_detection_status(&self) -> ProcessDetectionStatus {
         self.process_detection_status
@@ -2780,6 +2826,15 @@ impl App {
     #[cfg(test)]
     pub(crate) fn set_current_interface_for_test(&self, iface: Option<String>) {
         *self.current_interface.write().unwrap() = iface;
+    }
+
+    /// Override packet-capture failure state. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_capture_error_for_test(&self, error: Option<&str>) {
+        *self.capture_status.write().unwrap() = match error {
+            Some(message) => CaptureStatus::Failed(message.to_string()),
+            None => CaptureStatus::Running,
+        };
     }
 
     /// Seed an interface's cumulative stats. Tests only.

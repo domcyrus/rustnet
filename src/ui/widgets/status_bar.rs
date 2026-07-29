@@ -36,19 +36,23 @@ pub(in crate::ui) fn draw_status_bar(
     f: &mut Frame,
     ui_state: &UIState,
     connection_count: usize,
+    capture_error: Option<&str>,
     area: Rect,
 ) {
+    let clipboard_message = ui_state
+        .clipboard_message
+        .as_ref()
+        .filter(|(_, time)| time.elapsed().as_secs() < 3)
+        .map(|(message, _)| message);
+
     let status = if ui_state.quit_confirmation {
         " Press 'q' again to quit or any other key to cancel ".to_string()
     } else if ui_state.clear_confirmation {
         " Press 'x' again to clear all connections or any other key to cancel ".to_string()
-    } else if let Some((ref msg, ref time)) = ui_state.clipboard_message {
-        // Show clipboard message for 3 seconds
-        if time.elapsed().as_secs() < 3 {
-            format!(" {} ", msg)
-        } else {
-            default_status_line(ui_state).to_string()
-        }
+    } else if let Some(message) = clipboard_message {
+        format!(" {message} ")
+    } else if let Some(error) = capture_error {
+        format!(" {error} ")
     } else if ui_state.has_active_filter() {
         format!(
             " 'h' help | 1-5 jump | Tab/[/] cycle | Showing {} filtered connections (Esc to clear) ",
@@ -60,17 +64,10 @@ pub(in crate::ui) fn draw_status_bar(
 
     let style = if ui_state.quit_confirmation || ui_state.clear_confirmation {
         theme::status_bar_confirm()
-    } else if ui_state.clipboard_message.is_some()
-        && ui_state
-            .clipboard_message
-            .as_ref()
-            .unwrap()
-            .1
-            .elapsed()
-            .as_secs()
-            < 3
-    {
+    } else if clipboard_message.is_some() {
         theme::status_bar_success()
+    } else if capture_error.is_some() {
+        theme::status_bar_error()
     } else {
         theme::status_bar_default()
     };

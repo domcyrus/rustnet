@@ -341,6 +341,14 @@ pub fn status_bar_success() -> Style {
         .fg(ok())
         .add_modifier(Modifier::BOLD | Modifier::REVERSED)
 }
+pub fn status_bar_error() -> Style {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED);
+    }
+    Style::default()
+        .fg(err())
+        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+}
 pub fn status_bar_default() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) || !is_classic() {
         return Style::default().add_modifier(Modifier::REVERSED);
