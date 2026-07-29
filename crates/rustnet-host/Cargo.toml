@@ -25,6 +25,7 @@ ebpf = ["dep:libbpf-rs", "dep:libbpf-cargo"]
 rustnet-core.workspace = true
 anyhow.workspace = true
 log.workspace = true
+bitflags = "2"
 # Used by the Linux eBPF loader (geteuid etc.), macOS lsof path, and FreeBSD.
 libc = "0.2"
 

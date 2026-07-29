@@ -13,7 +13,9 @@ pub use tracker_libbpf::LibbpfSocketTracker as EbpfSocketTracker;
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
     pub pid: u32,
+    pub tid: u32,
     pub uid: u32,
+    pub gid: u32,
     pub comm: String,
     pub timestamp: u64,
 }

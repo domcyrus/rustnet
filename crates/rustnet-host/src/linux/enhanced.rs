@@ -1,6 +1,8 @@
 //! Enhanced Linux process lookup combining eBPF and procfs approaches
 
-use crate::{ConnectionKey, DegradationReason, ProcessLookup};
+use crate::{
+    AttributionBackend, AttributionCapabilities, ConnectionKey, DegradationReason, ProcessLookup,
+};
 
 use super::process::LinuxProcessLookup;
 use anyhow::Result;
@@ -205,9 +207,8 @@ mod ebpf_enhanced {
             ) {
                 Some(process_info) => {
                     // Try to resolve the correct main process name using the PID.
-                    // eBPF captures thread names (e.g., "Socket Thread"), but we want
-                    // the main process name (e.g., "firefox"). The procfs cache maps
-                    // PIDs to main process names from /proc/<pid>/comm.
+                    // eBPF captures the group leader's short comm. The procfs cache
+                    // can provide a current main-process name from /proc/<pid>/comm.
                     // For short-lived processes (like curl), the PID won't be in the
                     // cache (process already exited), so we fall back to the eBPF name.
                     let resolved_name = self
@@ -216,13 +217,15 @@ mod ebpf_enhanced {
                         .unwrap_or_else(|| process_info.comm.clone());
 
                     debug!(
-                        "eBPF lookup successful for {}:{} -> {}:{} - PID: {}, UID: {}, eBPF comm: {}, Resolved: {}, Age: {}ns",
+                        "eBPF lookup successful for {}:{} -> {}:{} - TGID: {}, TID: {}, UID: {}, GID: {}, eBPF comm: {}, Resolved: {}, observed: {}ns",
                         conn.local_addr.ip(),
                         conn.local_addr.port(),
                         conn.remote_addr.ip(),
                         conn.remote_addr.port(),
                         process_info.pid,
+                        process_info.tid,
                         process_info.uid,
+                        process_info.gid,
                         process_info.comm,
                         resolved_name,
                         process_info.timestamp
@@ -405,15 +408,33 @@ mod ebpf_enhanced {
         }
 
         fn get_detection_method(&self) -> &str {
-            if self.is_ebpf_available() {
-                "eBPF + procfs"
-            } else {
-                "procfs"
+            match self.get_attribution_backend() {
+                AttributionBackend::EbpfFentry => "eBPF fentry/fexit + procfs",
+                AttributionBackend::EbpfKprobe => "eBPF kprobe + procfs",
+                _ => "procfs",
             }
         }
 
         fn get_degradation_reason(&self) -> DegradationReason {
             self.degradation_reason.clone()
+        }
+
+        fn get_attribution_backend(&self) -> AttributionBackend {
+            self.ebpf_tracker
+                .read()
+                .expect("ebpf_tracker lock poisoned")
+                .as_ref()
+                .map(|tracker| tracker.backend())
+                .unwrap_or(AttributionBackend::Procfs)
+        }
+
+        fn get_attribution_capabilities(&self) -> AttributionCapabilities {
+            self.ebpf_tracker
+                .read()
+                .expect("ebpf_tracker lock poisoned")
+                .as_ref()
+                .map(|tracker| tracker.capabilities())
+                .unwrap_or_default()
         }
     }
 
@@ -649,6 +670,10 @@ mod procfs_only {
         fn get_degradation_reason(&self) -> DegradationReason {
             // eBPF feature is disabled at compile time
             DegradationReason::EbpfFeatureDisabled
+        }
+
+        fn get_attribution_backend(&self) -> AttributionBackend {
+            AttributionBackend::Procfs
         }
     }
 

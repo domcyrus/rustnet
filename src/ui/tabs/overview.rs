@@ -355,10 +355,17 @@ const SYSTEM_PANEL_WIDTH: u16 = 34;
 /// on — the connection table needs the room more.
 const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
 
+/// The sidebar has `SYSTEM_PANEL_WIDTH` minus the rule and padding to play
+/// with, so labels here are kept short enough that `Detection: <label>` stays
+/// on one line. The backends report stable machine identifiers (which the JSON
+/// export keeps verbatim); only the display form is abbreviated.
 fn detection_method_label(method: &str) -> &str {
     match method {
         "windows-etw+iphlpapi" => "ETW + IP Helper",
         "windows-iphlpapi" => "IP Helper",
+        // "fentry" alone names the trampoline backend; the paired fexit
+        // program is implied and costs 6 columns we do not have.
+        "eBPF fentry/fexit + procfs" => "eBPF fentry + procfs",
         _ => method,
     }
 }
@@ -1488,7 +1495,8 @@ mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::{
-        MINI_WAVE_INTENSITY, OverviewTab, connections_title, detection_method_label,
+        MINI_WAVE_INTENSITY, OverviewTab, SYSTEM_PANEL_WIDTH, connections_title,
+        detection_method_label,
         handle_filter_mode_key, is_filter_backspace_char, mini_wave, mini_wave_ceiling,
         mini_wave_window, smooth_mini_wave,
     };
@@ -1528,6 +1536,30 @@ mod tests {
         );
         assert_eq!(detection_method_label("windows-iphlpapi"), "IP Helper");
         assert_eq!(detection_method_label("procfs"), "procfs");
+    }
+
+    #[test]
+    fn detection_labels_fit_the_system_panel_on_one_line() {
+        // Left rule (1) + horizontal padding (2) is what the panel spends on
+        // chrome; the rest is text.
+        let text_width = usize::from(SYSTEM_PANEL_WIDTH) - 3;
+
+        for method in [
+            "eBPF fentry/fexit + procfs",
+            "eBPF kprobe + procfs",
+            "procfs",
+            "windows-etw+iphlpapi",
+            "windows-iphlpapi",
+            "pktap",
+            "lsof",
+        ] {
+            let rendered = format!("Detection: {}", detection_method_label(method));
+            assert!(
+                rendered.chars().count() <= text_width,
+                "`{rendered}` is {} columns, panel fits {text_width}",
+                rendered.chars().count()
+            );
+        }
     }
 
     #[test]
