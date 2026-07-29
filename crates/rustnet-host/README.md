@@ -23,14 +23,42 @@ if let Some((pid, name)) = lookup.get_process_for_connection(&conn) {
 }
 ```
 
+Callers that want more than a pid and a name ask for a `ProcessAttribution`
+instead:
+
+```rust
+if let Some(attribution) = lookup.get_process_attribution(&conn) {
+    println!(
+        "{} ({}) uid={:?} exe={:?} via {} ({} match)",
+        attribution.name,
+        attribution.tgid,
+        attribution.uid,
+        attribution.executable,
+        attribution.backend,
+        attribution.quality,
+    );
+}
+```
+
+`MatchQuality` records how the connection was matched, so a relaxed
+wildcard/listener guess is never mistaken for a proven 4-tuple hit; use
+`quality.is_exact()` to tell them apart. On Linux the eBPF backends also fill in
+the thread id, effective UID/GID, and an observation timestamp taken from a
+**monotonic** clock (`bpf_ktime_get_ns`), which is not wall-clock time. The
+executable path is resolved once from `/proc/<tgid>/exe`; an unreadable link
+yields `executable: None` and never fails the attribution.
+
+Platforms that have not been ported get a compatibility bridge over
+`get_process_for_connection()` reporting `MatchQuality::Unspecified`, so every
+existing caller and platform keeps working unchanged.
+
 When a platform can't use its optimal method, `ProcessLookup::get_degradation_reason`
 reports why (e.g. missing `CAP_BPF`, no root for PKTAP) via `DegradationReason`,
 which front-ends can surface to the user.
 
 Linux callers can inspect `ProcessLookup::get_attribution_backend()` and
 `ProcessLookup::get_attribution_capabilities()` to distinguish fentry/fexit,
-legacy kprobes, procfs, and partial protocol coverage. Existing
-`get_process_for_connection()` callers remain unchanged.
+legacy kprobes, procfs, and partial protocol coverage.
 
 Both Linux BPF objects use CO-RE for safe socket field access and therefore
 require usable target BTF. A compatible target-BTF kernel tries fentry/fexit
@@ -41,7 +69,9 @@ directly to procfs rather than relying on fixed structure offsets.
 
 The ignored root test covers outbound TCP, accepted TCP, connected UDP, and
 unconnected UDP for IPv4 and IPv6. It also verifies TGID/TID, UID/GID, `comm`,
-and monotonic timestamps.
+monotonic timestamps, match quality, `/proc/<tgid>/exe` resolution, and that a
+socket opened by a worker thread is attributed to that thread rather than to the
+group leader.
 
 ```bash
 sudo -E cargo test -p rustnet-host --features ebpf -- \

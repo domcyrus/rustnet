@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   application state and shown as a persistent status-bar error with restart and quit
   guidance, instead of the TUI running on silently after capture stopped. The status
   bar grows a second row when the message and hint do not fit on one (#497)
+- **Rich Process Attribution**: `ProcessLookup::get_process_attribution()` returns a
+  `ProcessAttribution` carrying TGID, thread ID, effective UID/GID, executable path,
+  the producing backend, and a monotonic observation timestamp instead of only
+  `(pid, name)`. The new `MatchQuality` records how a connection was matched, so a
+  relaxed wildcard or listener guess is no longer indistinguishable from a proven
+  4-tuple hit. On Linux the eBPF backends carry the kernel-recorded identity through
+  unchanged and resolve `/proc/<tgid>/exe` in user space; the enhanced cache stores
+  the full result, so metadata and match quality survive the first lookup. Platforms
+  that only implement the legacy tuple API are bridged automatically, so
+  `get_process_for_connection()` keeps working everywhere (#505)
 
 ### Changed
 - **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF
