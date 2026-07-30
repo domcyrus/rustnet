@@ -99,6 +99,7 @@ The experimental eBPF support provides efficient process identification but has 
   - CDP/LLDP (network device discovery protocols)
   - LACP (Link Aggregation Control Protocol)
   - More accurate SNI detection for QUIC/HTTPS
+- [x] **Per-connection RTT**: Continuous smoothed round-trip estimate for every TCP connection (handshake RTT for QUIC), shown as a sortable table column, in the Details pane, and in exports
 - [x] **Connection Lifecycle Management**: Smart protocol-aware timeouts with visual staleness indicators (yellow at 75%, red at 90%)
 - [x] **Process Identification**: Associate network connections with running processes (with experimental eBPF support on Linux)
 - [x] **Service Name Resolution**: Identify well-known services using port numbers
@@ -122,7 +123,7 @@ The experimental eBPF support provides efficient process identification but has 
 ### Sorting & Display
 
 - [x] **Sorting**: Comprehensive table sorting with:
-  - Sort by all columns: Protocol, Local/Remote Address, State, Service, Application, Bandwidth (Down/Up), Process
+  - Sort by all columns: Protocol, Local/Remote Address, State, Service, Application, RTT, Bandwidth (Down/Up), Process
   - Intuitive left-to-right column cycling with `s` key
   - Direction toggle with `S` (Shift+s) for ascending/descending
   - Visual indicators: cyan/underlined active column, arrows showing direction

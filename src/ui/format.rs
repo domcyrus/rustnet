@@ -41,6 +41,20 @@ pub(super) fn format_rate_compact(bytes_per_second: f64) -> String {
     }
 }
 
+/// Format a round-trip time for the fixed-width RTT column: one decimal
+/// below 10ms ("3.4ms"), whole milliseconds up to a second ("234ms"),
+/// seconds above that ("1.2s"). Always fits 7 cells.
+pub(super) fn format_rtt_compact(rtt: std::time::Duration) -> String {
+    let ms = rtt.as_secs_f64() * 1000.0;
+    if ms < 10.0 {
+        format!("{:.1}ms", ms)
+    } else if ms < 1000.0 {
+        format!("{:.0}ms", ms)
+    } else {
+        format!("{:.1}s", ms / 1000.0)
+    }
+}
+
 /// Format bytes to human readable form
 pub(super) fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;

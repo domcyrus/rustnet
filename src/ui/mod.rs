@@ -342,7 +342,8 @@ mod tests {
         assert_eq!(LocalAddress.next(false), Service); // Skips Location
         assert_eq!(Service.next(false), Application);
         assert_eq!(Application.next(false), State);
-        assert_eq!(State.next(false), BandwidthTotal);
+        assert_eq!(State.next(false), Rtt);
+        assert_eq!(Rtt.next(false), BandwidthTotal);
         assert_eq!(BandwidthTotal.next(false), CreatedAt); // Cycles back
     }
 
@@ -362,8 +363,9 @@ mod tests {
     fn test_sort_column_default_directions() {
         use SortColumn::*;
 
-        // Bandwidth should default to descending (false)
+        // Bandwidth and RTT should default to descending (false)
         assert!(!BandwidthTotal.default_direction());
+        assert!(!Rtt.default_direction());
 
         // Everything else should default to ascending (true)
         assert!(Process.default_direction());
@@ -405,8 +407,11 @@ mod tests {
         assert_eq!(ui_state.sort_column, SortColumn::Application);
         assert!(ui_state.sort_ascending);
 
-        // Cycle to State, then BandwidthTotal - should reset to descending
+        // Cycle to State, then Rtt, then BandwidthTotal
         ui_state.cycle_sort_column(); // State
+        ui_state.cycle_sort_column(); // Rtt
+        assert_eq!(ui_state.sort_column, SortColumn::Rtt);
+        assert!(!ui_state.sort_ascending); // RTT defaults to descending (slowest first)
         ui_state.cycle_sort_column(); // BandwidthTotal
         assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
         assert!(!ui_state.sort_ascending); // Bandwidth defaults to descending
@@ -442,6 +447,7 @@ mod tests {
         assert_eq!(Application.display_name(), "Application");
         assert_eq!(Service.display_name(), "Service");
         assert_eq!(State.display_name(), "State");
+        assert_eq!(Rtt.display_name(), "RTT");
     }
 
     #[test]
@@ -453,8 +459,9 @@ mod tests {
         assert!(ui_state.sort_ascending);
 
         // Cycle through columns to reach BandwidthTotal
-        // CreatedAt -> Process -> RemoteAddress -> LocalAddress -> Service -> Application -> State -> BandwidthTotal
-        for _ in 0..7 {
+        // CreatedAt -> Process -> RemoteAddress -> LocalAddress -> Service ->
+        // Application -> State -> Rtt -> BandwidthTotal
+        for _ in 0..8 {
             ui_state.cycle_sort_column();
         }
 
@@ -1035,6 +1042,12 @@ mod snapshot_tests {
         connections[1].current_outgoing_rate_bps = 84_000.0;
         connections[2].current_incoming_rate_bps = 420_000.0;
         connections[2].current_outgoing_rate_bps = 1_800_000.0;
+        // RTT column coverage: a measured live RTT, a handshake-only RTT,
+        // and connections with nothing measured (placeholder).
+        if let Some(analytics) = connections[0].tcp_analytics.as_mut() {
+            analytics.smoothed_rtt = Some(Duration::from_micros(23_400));
+        }
+        connections[2].initial_rtt = Some(Duration::from_millis(184));
         connections
     }
 

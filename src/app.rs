@@ -352,6 +352,12 @@ fn log_connection_event(
         event["attribution_match"] = json!(quality.as_token());
     }
 
+    // Round-trip estimate: smoothed data RTT, or the handshake RTT before
+    // any data samples exist. One decimal of milliseconds.
+    if let Some(rtt) = conn.current_rtt() {
+        event["rtt_ms"] = json!((rtt.as_secs_f64() * 10_000.0).round() / 10.0);
+    }
+
     // Add Kubernetes attribution if the process is part of a pod
     #[cfg(feature = "kubernetes")]
     if let Some(k8s) = &conn.k8s_info {
@@ -489,6 +495,12 @@ fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
     }
     if let Some(quality) = conn.attribution_quality {
         event["attribution_match"] = json!(quality.as_token());
+    }
+
+    // Round-trip estimate: smoothed data RTT, or the handshake RTT before
+    // any data samples exist. One decimal of milliseconds.
+    if let Some(rtt) = conn.current_rtt() {
+        event["rtt_ms"] = json!((rtt.as_secs_f64() * 10_000.0).round() / 10.0);
     }
 
     // Add Kubernetes attribution if the process is part of a pod

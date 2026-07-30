@@ -148,6 +148,7 @@ pub enum SortColumn {
     Application,
     Service,
     State,
+    Rtt, // Smoothed data RTT, falling back to the handshake RTT
 }
 
 impl SortColumn {
@@ -170,10 +171,11 @@ impl SortColumn {
                     Self::Service
                 }
             }
-            Self::Location => Self::Service,     // Column 5: Service
-            Self::Service => Self::Application,  // Column 6: App (proto·application)
-            Self::Application => Self::State,    // Column 7: State
-            Self::State => Self::BandwidthTotal, // Column 8: ↓Rx/Tx↑ (combined total)
+            Self::Location => Self::Service,    // Column 5: Service
+            Self::Service => Self::Application, // Column 6: App (proto·application)
+            Self::Application => Self::State,   // Column 7: State
+            Self::State => Self::Rtt,           // Column 8: RTT
+            Self::Rtt => Self::BandwidthTotal,  // Column 9: ↓Rx/Tx↑ (combined total)
             Self::BandwidthTotal => Self::CreatedAt, // Back to default
         }
     }
@@ -183,6 +185,8 @@ impl SortColumn {
         match self {
             // Descending by default - show biggest/most active first
             Self::BandwidthTotal => false,
+            // Slowest connections first - latency problems surface on top
+            Self::Rtt => false,
 
             // Ascending by default - alphabetical or chronological
             Self::Process => true,
@@ -208,6 +212,7 @@ impl SortColumn {
             Self::Application => "Application",
             Self::Service => "Service",
             Self::State => "State",
+            Self::Rtt => "RTT",
         }
     }
 }

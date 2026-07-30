@@ -41,7 +41,9 @@
 //! single tracker can be wrapped in an [`std::sync::Arc`] and shared across a
 //! capture thread, a cleanup thread, and a reader thread.
 
-use crate::network::merge::{create_connection_from_packet, merge_packet_into_connection};
+use crate::network::merge::{
+    TcpMergeEvents, create_connection_from_packet, merge_packet_into_connection,
+};
 use crate::network::parser::ParsedPacket;
 use crate::network::types::{
     ApplicationProtocol, Connection, ConnectionKey, Protocol, QuicPacketType, RttTracker,
@@ -329,7 +331,7 @@ impl ConnectionTracker {
         }
 
         let mut created = false;
-        let mut deltas = (0u64, 0u64, 0u64);
+        let mut deltas = TcpMergeEvents::default();
         self.connections
             .entry(key)
             .and_modify(|conn| {
@@ -352,15 +354,24 @@ impl ConnectionTracker {
             self.active_count.fetch_add(1, Ordering::Relaxed);
         }
 
+        // Feed completed data round trips into the aggregate view, so the
+        // average RTT reflects established connections rather than only the
+        // handshakes of freshly opened ones.
+        if let Some(rtt) = deltas.rtt_sample
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            tracker.record_data_rtt(rtt);
+        }
+
         IngestOutcome {
             key,
             created,
             dropped: false,
             ignored_late: false,
             archived: None,
-            retransmits: deltas.0,
-            out_of_order: deltas.1,
-            fast_retransmits: deltas.2,
+            retransmits: deltas.retransmits,
+            out_of_order: deltas.out_of_order,
+            fast_retransmits: deltas.fast_retransmits,
             measured_rtt,
         }
     }

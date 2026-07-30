@@ -26,8 +26,9 @@ use ratatui::widgets::{Cell, Row};
 use crate::network::dns::DnsResolver;
 use crate::network::types::{Connection, Protocol};
 use crate::ui::{
-    NONE_PLACEHOLDER, SortColumn, UIState, dpi_color, format::format_rate_compact, state_color,
-    theme,
+    NONE_PLACEHOLDER, SortColumn, UIState, dpi_color,
+    format::{format_rate_compact, format_rtt_compact},
+    state_color, theme,
 };
 
 // --- Column floors (cells). Flexible columns grow beyond their floor
@@ -40,6 +41,7 @@ const SERVICE_WIDTH: u16 = 10; // most IANA service names ("netbios-ns") fit
 const APP_WIDTH_FULL: u16 = 24;
 const APP_WIDTH_COMPACT: u16 = 14;
 const STATE_WIDTH: u16 = 12; // longest TCP state: "ESTABLISHED" (11)
+const RTT_WIDTH: u16 = 7; // "234ms", "1.2s"; header "RTT ↓" when sorted
 const BANDWIDTH_WIDTH: u16 = 11;
 /// Floor for the Remote column; bare "ip:port" for IPv4 fits in 21.
 const REMOTE_MIN_WIDTH: u16 = 21;
@@ -59,6 +61,8 @@ pub(in crate::ui) enum ColumnId {
     /// (full), "TCP·HTTPS" (compact), or bare "TCP" when DPI has nothing.
     Application,
     State,
+    /// Smoothed data RTT, falling back to the handshake RTT.
+    Rtt,
     Bandwidth,
 }
 
@@ -81,6 +85,7 @@ impl Column {
             ColumnId::Service => Some(SortColumn::Service),
             ColumnId::Application => Some(SortColumn::Application),
             ColumnId::State => Some(SortColumn::State),
+            ColumnId::Rtt => Some(SortColumn::Rtt),
             ColumnId::Bandwidth => Some(SortColumn::BandwidthTotal),
         };
         Self { id, width, sort }
@@ -99,7 +104,7 @@ fn table_chrome(column_count: usize) -> u16 {
 /// never affects the layout, so columns stay put while scrolling.
 ///
 /// Too narrow: whole columns are hidden in a fixed degradation order
-/// (Location → Service → Local → Application shrinks to compact →
+/// (Location → Service → Local → RTT → Application shrinks to compact →
 /// State) rather than truncating cells. The floor is Process · Remote ·
 /// App · Bandwidth; below that ratatui clips columns from the right.
 ///
@@ -121,6 +126,7 @@ pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) ->
         Column::new(ColumnId::Service, SERVICE_WIDTH),
         Column::new(ColumnId::Application, APP_WIDTH_FULL),
         Column::new(ColumnId::State, STATE_WIDTH),
+        Column::new(ColumnId::Rtt, RTT_WIDTH),
         Column::new(ColumnId::Bandwidth, BANDWIDTH_WIDTH),
     ]);
 
@@ -129,7 +135,12 @@ pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) ->
     };
     let fits = |cols: &[Column]| used(cols) <= available_width;
 
-    for id in [ColumnId::Location, ColumnId::Service, ColumnId::Local] {
+    for id in [
+        ColumnId::Location,
+        ColumnId::Service,
+        ColumnId::Local,
+        ColumnId::Rtt,
+    ] {
         if !fits(&columns) {
             columns.retain(|c| c.id != id);
         }
@@ -283,6 +294,7 @@ fn header_label(id: ColumnId, ui_state: &UIState) -> &'static str {
         }
         ColumnId::Application => "App",
         ColumnId::State => "State",
+        ColumnId::Rtt => "RTT",
         ColumnId::Bandwidth => "", // built as spans in build_header
     }
 }
@@ -327,6 +339,10 @@ pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UIState) ->
         } else {
             label.to_string()
         };
+        // RTT cells are right-aligned numbers; align the header with them.
+        if col.id == ColumnId::Rtt {
+            return Cell::from(Line::styled(text, style).right_aligned());
+        }
         Cell::from(text).style(style)
     });
 
@@ -426,6 +442,7 @@ pub(in crate::ui) fn connection_row<'a>(
                     Cell::from(state).style(style_if_colored(state_color(conn)))
                 }
             }
+            ColumnId::Rtt => rtt_cell(conn, color_cells),
             ColumnId::Bandwidth => {
                 if conn.is_historic {
                     Cell::from(Line::from("n/a").right_aligned())
@@ -476,6 +493,38 @@ fn application_cell<'a>(conn: &Connection, width: u16, color_cells: bool) -> Cel
     } else {
         Cell::from(format!("{proto}·{app}"))
     }
+}
+
+/// RTT cell: smoothed data RTT (handshake RTT until samples exist),
+/// right-aligned, colored by the same thresholds as the Details card
+/// (green < 50ms, yellow < 150ms, red above). UDP flows other than QUIC
+/// have nothing measurable and show the placeholder.
+fn rtt_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
+    let Some(rtt) = conn.current_rtt() else {
+        let line = Line::from(NONE_PLACEHOLDER).right_aligned();
+        let style = if color_cells {
+            theme::fg(theme::muted())
+        } else {
+            Style::default()
+        };
+        return Cell::from(line).style(style);
+    };
+
+    let ms = rtt.as_secs_f64() * 1000.0;
+    let text = format_rtt_compact(rtt);
+    let line = if color_cells {
+        let color = if ms < 50.0 {
+            theme::ok()
+        } else if ms < 150.0 {
+            theme::warn()
+        } else {
+            theme::err()
+        };
+        Line::from(Span::styled(text, theme::fg(color)))
+    } else {
+        Line::from(text)
+    };
+    Cell::from(line.right_aligned())
 }
 
 /// Bandwidth cell: "{rx}/{tx}" right-aligned, rx/tx halves colored when
@@ -539,8 +588,8 @@ mod tests {
     }
 
     // Width math for the full set with Location at floor widths:
-    // 22+21+18+4+10+24+12+11 = 122 content + chrome(8 cols) = 9 -> 131.
-    const FULL_WIDTH: u16 = 131;
+    // 22+21+18+4+10+24+12+7+11 = 129 content + chrome(9 cols) = 10 -> 139.
+    const FULL_WIDTH: u16 = 139;
 
     #[test]
     fn select_columns_shows_everything_when_wide() {
@@ -555,6 +604,7 @@ mod tests {
                 ColumnId::Service,
                 ColumnId::Application,
                 ColumnId::State,
+                ColumnId::Rtt,
                 ColumnId::Bandwidth,
             ]
         );
@@ -568,17 +618,23 @@ mod tests {
         assert!(!ids(&cols).contains(&ColumnId::Location));
         assert!(ids(&cols).contains(&ColumnId::Service));
 
-        // 22+21+18+10+24+12+11 = 118 + chrome(7) = 126 -> below that Service goes.
-        let cols = select_columns(125, true);
+        // 22+21+18+10+24+12+7+11 = 125 + chrome(8) = 134 -> below that Service goes.
+        let cols = select_columns(133, true);
         assert!(!ids(&cols).contains(&ColumnId::Service));
         assert!(ids(&cols).contains(&ColumnId::Local));
 
-        // 22+21+18+24+12+11 = 108 + chrome(6) = 115 -> below that Local goes.
-        let cols = select_columns(115, true);
+        // 22+21+18+24+12+7+11 = 115 + chrome(7) = 123 -> below that Local goes.
+        let cols = select_columns(123, true);
         assert!(ids(&cols).contains(&ColumnId::Local));
         assert_eq!(width_of(&cols, ColumnId::Application), APP_WIDTH_FULL);
-        let cols = select_columns(114, true);
+        let cols = select_columns(122, true);
         assert!(!ids(&cols).contains(&ColumnId::Local));
+
+        // 22+21+24+12+7+11 = 97 + chrome(6) = 104 -> below that RTT goes.
+        let cols = select_columns(104, true);
+        assert!(ids(&cols).contains(&ColumnId::Rtt));
+        let cols = select_columns(103, true);
+        assert!(!ids(&cols).contains(&ColumnId::Rtt));
 
         // 22+21+24+12+11 = 90 + chrome(5) = 96 -> below that App compacts.
         let cols = select_columns(95, true);
@@ -619,6 +675,7 @@ mod tests {
         assert_eq!(width_of(&cols, ColumnId::Local), LOCAL_MIN_WIDTH + 10);
         // Fixed columns never grow.
         assert_eq!(width_of(&cols, ColumnId::State), STATE_WIDTH);
+        assert_eq!(width_of(&cols, ColumnId::Rtt), RTT_WIDTH);
         assert_eq!(width_of(&cols, ColumnId::Bandwidth), BANDWIDTH_WIDTH);
         // The grid spans the full width exactly, so the Bandwidth
         // column sits flush against the right edge.

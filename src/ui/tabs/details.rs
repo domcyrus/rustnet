@@ -66,10 +66,11 @@ const DETAILS_MAX_CONTENT_WIDTH: u16 = 140;
 const APPLICATION_CARD_ROWS: usize = 11;
 
 /// Rows reserved for the Transport Health card, including its blank separator
-/// and heading. TCP fills all of them with counters; the shorter QUIC and
-/// generic-transport variants pad to the same height so switching between
-/// connections of different protocols doesn't resize the dashboard.
-const TRANSPORT_CARD_ROWS: usize = 8;
+/// and heading. TCP fills all of them with the RTT rows and counters; the
+/// shorter QUIC and generic-transport variants pad to the same height so
+/// switching between connections of different protocols doesn't resize the
+/// dashboard.
+const TRANSPORT_CARD_ROWS: usize = 9;
 
 /// Details tab. Pulls DNS resolver per-render from the app — no
 /// per-tab state today.
@@ -1856,6 +1857,34 @@ pub(in crate::ui) fn draw_connection_details(
         );
     } else if conn.protocol == Protocol::Tcp {
         let counters = conn.tcp_analytics.as_ref();
+        // Live RTT: EWMA over data-segment round trips, updated for the whole
+        // life of the connection (unlike the one-shot handshake RTT above).
+        if let Some(rtt) = counters.and_then(|a| a.smoothed_rtt) {
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            let rtt_color = if rtt_ms < 50.0 {
+                theme::ok()
+            } else if rtt_ms < 150.0 {
+                theme::warn()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Live RTT",
+                format!("{:.1}ms", rtt_ms),
+                label_style,
+                theme::fg(rtt_color),
+            );
+        } else {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Live RTT",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
         for (label, value) in [
             ("TCP Retransmits", counters.map(|a| a.retransmit_count)),
             (
