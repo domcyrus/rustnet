@@ -54,8 +54,10 @@ impl ProcessLookup for PktapProcessLookup {
             MatchQuality::ExactTuple,
         )
         .with_executable(process::resolve_executable(pid));
-        if let Some((uid, gid)) = process::resolve_credentials(pid) {
-            attribution = attribution.with_credentials(uid, gid);
+        if let Some(details) = process::resolve_process_details(pid) {
+            attribution = attribution
+                .with_parent_pid(details.ppid)
+                .with_credentials(details.uid, details.gid);
         }
         Some(attribution)
     }
@@ -113,6 +115,10 @@ mod tests {
         assert_eq!(attribution.backend, AttributionBackend::Pktap);
         assert_eq!(attribution.quality, MatchQuality::ExactTuple);
         assert_eq!(attribution.executable, std::env::current_exe().ok());
+        assert_eq!(
+            attribution.ppid,
+            Some(u32::try_from(unsafe { libc::getppid() }).unwrap())
+        );
         // SAFETY: these libc calls only read the credentials of this process.
         let expected_credentials = unsafe { (libc::geteuid(), libc::getegid()) };
         assert_eq!(

@@ -13,36 +13,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guidance, instead of the TUI running on silently after capture stopped. The status
   bar grows a second row when the message and hint do not fit on one (#497)
 - **Rich Process Attribution**: `ProcessLookup::get_process_attribution()` returns a
-  `ProcessAttribution` carrying TGID, thread ID, effective UID/GID, executable path,
-  the producing backend, and a monotonic observation timestamp instead of only
-  `(pid, name)`. The new `MatchQuality` records how a connection was matched, so a
-  relaxed wildcard or listener guess is no longer indistinguishable from a proven
+  `ProcessAttribution` carrying TGID, PPID, thread ID, effective UID/GID, executable
+  path, the producing backend, and a monotonic observation timestamp instead of
+  only `(pid, name)`. The new `MatchQuality` records how a connection was matched,
+  so a relaxed wildcard or listener guess is no longer indistinguishable from a proven
   4-tuple hit. On Linux the eBPF backends carry the kernel-recorded identity through
   unchanged and resolve `/proc/<tgid>/exe` in user space; the enhanced cache stores
   the full result, so metadata and match quality survive the first lookup. Platforms
   that only implement the legacy tuple API are bridged automatically, so
   `get_process_for_connection()` keeps working everywhere (#505)
-- **Executable, User, and Match Quality in the UI and Exports**: Connections now
-  carry the owning process's executable path, effective UID/GID, and how confidently
-  the attribution matched. A new Attribution card in the Details pane shows them, and
+- **Process Identity, User, and Match Quality in the UI and Exports**: Connections now
+  carry the owning process's PPID, executable path, effective UID/GID, and how
+  confidently the attribution matched. The Attribution card in the Details pane
+  repeats PID, shows PPID, and resolves user/group names with numeric fallbacks. It
   appears only when a backend actually resolved something, so platforms that cannot
   supply a field show nothing rather than a permanent placeholder. A relaxed
   wildcard or listener match renders in the warning color instead of passing for a
-  proven one. The JSONL sidecar gains `process_executable`, `process_uid`,
-  `process_gid`, and `attribution_match`; PCAPNG packet comments gain `uid=` and
-  `attr=` but deliberately omit the executable path, which would repeat in every
-  packet block. Executable paths are interned behind an `Arc`, so bulk connection
-  snapshots stay allocation-free. Long paths shorten from the middle at render time
+  proven one. The JSONL sidecar gains `process_ppid`, `process_executable`,
+  `process_uid`, `process_gid`, and `attribution_match`; PCAPNG packet comments gain
+  `ppid=`, `uid=`, and `attr=` but deliberately omit the executable path, which would
+  repeat in every packet block. Executable paths are interned behind an `Arc`, so
+  bulk connection snapshots stay allocation-free. Long paths shorten from the middle at render time
   (`/nix/store/…/bin/hello`), keeping the location prefix and the basename visible,
   and a leading `$HOME` renders as `~`; click-to-copy still yields the full
   path (#506, #511, #512)
 - **Rich macOS Process Attribution**: PKTAP keeps its kernel-provided per-packet PID
   and process name, marks the result as an exact PKTAP attribution, and uses libproc
-  to add the executable path and effective UID/GID. The lsof fallback requests and
-  parses numeric UIDs, resolves executable paths through libproc, and reports exact,
-  wildcard-address, or listener match quality. Packet-seeded PKTAP connections now
+  to add the PPID, executable path, and effective UID/GID. The lsof fallback
+  requests and parses numeric UIDs, resolves executable paths through libproc, and
+  reports exact, wildcard-address, or listener match quality. Packet-seeded PKTAP connections now
   receive one rich-enrichment pass without making permanently unavailable optional
   fields hot-loop retries (#510)
+- **Rich FreeBSD Process Attribution**: `sockstat` ownership is enriched through
+  native `KERN_PROC_PID` and `KERN_PROC_PATHNAME` sysctl queries with PPID,
+  effective UID/GID, and executable path. Process details are cached by PID for
+  each socket-table refresh.
 
 ### Changed
 - **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF

@@ -213,6 +213,7 @@ RustNet uses platform-specific APIs to associate network connections with proces
 - Parses `/proc/net/tcp` and `/proc/net/udp` to get socket inodes
 - Iterates through `/proc/<pid>/fd/` to find socket file descriptors
 - Maps inodes to process IDs and resolves process names from `/proc/<pid>/cmdline`
+- Resolves the PPID from `/proc/<pid>/status`
 
 **eBPF Mode (Default on Linux):**
 - Uses kernel eBPF programs attached to socket syscalls
@@ -236,20 +237,27 @@ RustNet uses platform-specific APIs to associate network connections with proces
 **PKTAP Mode (with sudo):**
 - Uses PKTAP (Packet Tap) kernel interface
 - Extracts PID and process name directly from packet metadata
-- Uses libproc to add the executable path and effective UID/GID
+- Uses libproc to add the PPID, executable path, and effective UID/GID
 - Requires root privileges (privileged kernel interface)
 - Faster and more accurate than lsof
 
 **lsof Mode (without sudo or fallback):**
 - Uses `lsof -i -n -P -l` to list network connections with numeric UIDs
 - Parses output to associate sockets with processes, then uses libproc for the
-  executable path
+  PPID and executable path
 - Higher CPU overhead but works without root
 - Used automatically when PKTAP is unavailable
 
 **Detection:**
 - TUI Statistics panel shows "pktap" or "lsof" based on active method
 - Automatically selects best available method
+
+#### FreeBSD
+
+- Uses `sockstat` to associate TCP and UDP sockets with processes
+- Uses native `KERN_PROC_PID` and `KERN_PROC_PATHNAME` sysctl queries to add
+  PPID, effective UID/GID, and executable path
+- Caches process details by PID for each socket-table refresh
 
 #### Windows
 

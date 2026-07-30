@@ -331,6 +331,9 @@ fn log_connection_event(
     if let Some(pid) = conn.pid {
         event["pid"] = json!(pid);
     }
+    if let Some(ppid) = conn.process_ppid {
+        event["process_ppid"] = json!(ppid);
+    }
     if let Some(process_name) = &conn.process_name {
         event["process_name"] = json!(process_name);
     }
@@ -472,6 +475,9 @@ fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
     });
 
     // Per-connection record, so the full executable path is affordable here.
+    if let Some(ppid) = conn.process_ppid {
+        event["process_ppid"] = json!(ppid);
+    }
     if let Some(executable) = &conn.executable {
         event["process_executable"] = json!(executable.display().to_string());
     }
@@ -2006,6 +2012,12 @@ impl App {
                         did_enrich = true;
                         debug!("✓ Set PID for connection {}: {}", entry.key(), pid);
                     }
+                    if entry.process_ppid.is_none()
+                        && let Some(ppid) = attribution.ppid
+                    {
+                        entry.process_ppid = Some(ppid);
+                        did_enrich = true;
+                    }
 
                     // The richer fields follow the same write-once rule as the
                     // name and PID above: the first backend to answer owns the
@@ -3333,12 +3345,16 @@ fn build_pcapng_comment(conn: &Connection) -> Option<String> {
     if let Some(pid) = conn.pid {
         fields.push(format!("pid={pid}"));
     }
+    if let Some(ppid) = conn.process_ppid {
+        fields.push(format!("ppid={ppid}"));
+    }
     // Deliberately no `exe=` here. This comment is written into every Enhanced
     // Packet Block, so a 40-character path would be repeated once per packet
     // and bloat the capture by tens of megabytes over a long run. The full path
-    // lives in the per-connection JSONL sidecar instead. `uid` and the match
-    // quality are a handful of bytes and earn their place: uid=0 and a relaxed
-    // match are both things an analyst wants to see without leaving Wireshark.
+    // lives in the per-connection JSONL sidecar instead. `ppid`, `uid`, and the
+    // match quality are a handful of bytes and earn their place: uid=0 and a
+    // relaxed match are both things an analyst wants to see without leaving
+    // Wireshark.
     if let Some(uid) = conn.process_uid {
         fields.push(format!("uid={uid}"));
     }
@@ -3895,7 +3911,7 @@ mod pcapng_export_tests {
     /// The packet comment is written once per Enhanced Packet Block, so the
     /// cheap attribution fields belong there and the executable path does not.
     #[test]
-    fn comment_carries_uid_and_match_quality_but_not_the_executable_path() {
+    fn comment_carries_ppid_uid_and_match_quality_but_not_the_executable_path() {
         use crate::network::types::{MatchQuality, ProtocolState, TcpState};
         use std::path::Path;
 
@@ -3907,6 +3923,7 @@ mod pcapng_export_tests {
         );
         conn.process_name = Some("curl".to_string());
         conn.pid = Some(4242);
+        conn.process_ppid = Some(4000);
         conn.executable = Some(Arc::from(Path::new("/usr/bin/curl")));
         conn.process_uid = Some(0);
         conn.process_gid = Some(0);
@@ -3915,6 +3932,7 @@ mod pcapng_export_tests {
         let comment = build_pcapng_comment(&conn).expect("attributed connection must comment");
         assert!(comment.contains("process=curl"));
         assert!(comment.contains("pid=4242"));
+        assert!(comment.contains("ppid=4000"));
         assert!(comment.contains("uid=0"));
         assert!(comment.contains("attr=procfs-relaxed"));
         assert!(

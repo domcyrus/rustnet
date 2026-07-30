@@ -12,13 +12,13 @@
 //!   otherwise `lsof` plus libproc.
 //! - **Windows** — kernel ETW events with an IP Helper API
 //!   (`GetExtendedTcpTable`/`...UdpTable`) fallback.
-//! - **FreeBSD** — `sockstat`.
+//! - **FreeBSD**: `sockstat` enriched with native `sysctl` process metadata.
 //!
 //! [`ProcessLookup::get_process_attribution`] returns the richer
-//! [`ProcessAttribution`]: thread id, effective UID/GID, executable path, the
-//! producing [`AttributionBackend`], a [`MatchQuality`] saying how the
-//! connection was matched, and a monotonic observation time. Platforms that
-//! only implement the tuple API are bridged automatically, so
+//! [`ProcessAttribution`]: parent and thread ids, effective UID/GID, executable
+//! path, the producing [`AttributionBackend`], a [`MatchQuality`] saying how
+//! the connection was matched, and a monotonic observation time. Platforms
+//! that only implement the tuple API are bridged automatically, so
 //! `get_process_for_connection` keeps working everywhere.
 //!
 //! When a platform can't use its optimal method, [`ProcessLookup::get_degradation_reason`]
@@ -101,7 +101,8 @@ pub use rustnet_core::network::types::MatchQuality;
 /// Everything past `tgid`/`name` is best effort: a backend fills in what it
 /// actually observed and leaves the rest `None` rather than guessing. Only the
 /// Linux eBPF backends currently report thread ids and an observation
-/// timestamp. Linux and macOS can report credentials and executable paths.
+/// timestamp. Linux, macOS, and FreeBSD can report parent process ids.
+/// Linux, macOS, and FreeBSD can report credentials and executable paths.
 ///
 /// Marked `#[non_exhaustive]` because cgroup and container fields are expected
 /// to land here later. Build values with [`ProcessAttribution::new`] plus the
@@ -111,6 +112,8 @@ pub use rustnet_core::network::types::MatchQuality;
 pub struct ProcessAttribution {
     /// Thread group id, i.e. the PID as user space understands it.
     pub tgid: u32,
+    /// Parent process id, resolved from the live process when available.
+    pub ppid: Option<u32>,
     /// Kernel thread id that performed the operation, when the backend sees
     /// per-thread identity. `None` for socket-table backends, and equal to
     /// `tgid` when the main thread did the work.
@@ -145,6 +148,7 @@ impl ProcessAttribution {
     ) -> Self {
         Self {
             tgid,
+            ppid: None,
             tid: None,
             name: name.into(),
             uid: None,
@@ -154,6 +158,12 @@ impl ProcessAttribution {
             quality,
             observed_at_ns: None,
         }
+    }
+
+    /// Attach the parent process id.
+    pub fn with_parent_pid(mut self, ppid: u32) -> Self {
+        self.ppid = Some(ppid);
+        self
     }
 
     /// Attach the kernel thread id that performed the operation.
@@ -554,11 +564,13 @@ mod tests {
             AttributionBackend::EbpfFentry,
             MatchQuality::ExactTuple,
         )
+        .with_parent_pid(1)
         .with_tid(43)
         .with_credentials(1000, 100)
         .with_executable(Some(PathBuf::from("/usr/bin/curl")))
         .with_observed_at_ns(9_000);
 
+        assert_eq!(attribution.ppid, Some(1));
         assert_eq!(attribution.tid, Some(43));
         assert_eq!(attribution.uid, Some(1000));
         assert_eq!(attribution.gid, Some(100));
@@ -583,6 +595,7 @@ mod tests {
         )
         .with_executable(None);
 
+        assert_eq!(attribution.ppid, None);
         assert_eq!(attribution.tid, None);
         assert_eq!(attribution.uid, None);
         assert_eq!(attribution.gid, None);

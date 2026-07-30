@@ -15,6 +15,15 @@ use ratatui::{
 
 use crossterm::event::{KeyEvent, MouseEvent};
 
+#[cfg(unix)]
+use std::{
+    collections::HashMap,
+    ffi::CStr,
+    mem::MaybeUninit,
+    ptr,
+    sync::{Mutex, OnceLock},
+};
+
 use crate::network::dns::DnsResolver;
 use crate::network::types::{Connection, MatchQuality, Protocol, ProtocolState};
 use crate::ui::{
@@ -175,6 +184,135 @@ fn push_detail_field_with_copy<'a>(
         Span::styled(display, value_style),
     ]));
     fields.push(Some((label.to_string(), copy)));
+}
+
+#[cfg(unix)]
+static USER_NAMES: OnceLock<Mutex<HashMap<u32, Option<String>>>> = OnceLock::new();
+#[cfg(unix)]
+static GROUP_NAMES: OnceLock<Mutex<HashMap<u32, Option<String>>>> = OnceLock::new();
+
+#[cfg(unix)]
+fn resolve_user_name(uid: u32) -> Option<String> {
+    let mut buffer: Vec<libc::c_char> = vec![0; 1024];
+    loop {
+        let mut entry = MaybeUninit::<libc::passwd>::uninit();
+        let mut result = ptr::null_mut();
+        // SAFETY: `entry` and `buffer` are writable for the sizes supplied,
+        // and `result` is an out-pointer inspected only after a successful call.
+        let status = unsafe {
+            libc::getpwuid_r(
+                uid,
+                entry.as_mut_ptr(),
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if status == 0 {
+            if result.is_null() {
+                return None;
+            }
+            // SAFETY: a non-null result from successful `getpwuid_r` points to
+            // the initialized entry, whose name is NUL-terminated in `buffer`.
+            let name = unsafe { CStr::from_ptr((*result).pw_name) };
+            return Some(name.to_string_lossy().into_owned());
+        }
+        if status != libc::ERANGE || buffer.len() >= 1024 * 1024 {
+            return None;
+        }
+        buffer.resize(buffer.len() * 2, 0);
+    }
+}
+
+#[cfg(unix)]
+fn resolve_group_name(gid: u32) -> Option<String> {
+    let mut buffer: Vec<libc::c_char> = vec![0; 1024];
+    loop {
+        let mut entry = MaybeUninit::<libc::group>::uninit();
+        let mut result = ptr::null_mut();
+        // SAFETY: `entry` and `buffer` are writable for the sizes supplied,
+        // and `result` is an out-pointer inspected only after a successful call.
+        let status = unsafe {
+            libc::getgrgid_r(
+                gid,
+                entry.as_mut_ptr(),
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if status == 0 {
+            if result.is_null() {
+                return None;
+            }
+            // SAFETY: a non-null result from successful `getgrgid_r` points to
+            // the initialized entry, whose name is NUL-terminated in `buffer`.
+            let name = unsafe { CStr::from_ptr((*result).gr_name) };
+            return Some(name.to_string_lossy().into_owned());
+        }
+        if status != libc::ERANGE || buffer.len() >= 1024 * 1024 {
+            return None;
+        }
+        buffer.resize(buffer.len() * 2, 0);
+    }
+}
+
+#[cfg(unix)]
+fn cached_user_name(uid: u32) -> Option<String> {
+    let cache = USER_NAMES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(name) = cache.lock().expect("user name cache poisoned").get(&uid) {
+        return name.clone();
+    }
+
+    let name = resolve_user_name(uid);
+    cache
+        .lock()
+        .expect("user name cache poisoned")
+        .insert(uid, name.clone());
+    name
+}
+
+#[cfg(unix)]
+fn cached_group_name(gid: u32) -> Option<String> {
+    let cache = GROUP_NAMES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(name) = cache.lock().expect("group name cache poisoned").get(&gid) {
+        return name.clone();
+    }
+
+    let name = resolve_group_name(gid);
+    cache
+        .lock()
+        .expect("group name cache poisoned")
+        .insert(gid, name.clone());
+    name
+}
+
+fn user_group_label(
+    uid: u32,
+    gid: Option<u32>,
+    user_name: Option<String>,
+    group_name: Option<String>,
+) -> String {
+    let user = user_name.unwrap_or_else(|| uid.to_string());
+    let Some(gid) = gid else {
+        return user;
+    };
+    let group = group_name.unwrap_or_else(|| gid.to_string());
+    format!("{user}:{group}")
+}
+
+pub(in crate::ui) fn format_user_group(uid: u32, gid: Option<u32>) -> String {
+    #[cfg(unix)]
+    let user_name = cached_user_name(uid);
+    #[cfg(not(unix))]
+    let user_name = None;
+
+    #[cfg(unix)]
+    let group_name = gid.and_then(cached_group_name);
+    #[cfg(not(unix))]
+    let group_name = None;
+
+    user_group_label(uid, gid, user_name, group_name)
 }
 
 /// Shorten an executable path for a one-row display slot.
@@ -814,13 +952,35 @@ pub(in crate::ui) fn draw_connection_details(
     // supply a field (no executable path, no uid) from showing a permanent
     // placeholder, and keeps this section out of the fixed-height card
     // geometry that `APPLICATION_CARD_ROWS` anchors.
-    let has_attribution = conn.executable.is_some()
+    let has_attribution = conn.pid.is_some()
+        || conn.process_ppid.is_some()
+        || conn.executable.is_some()
         || conn.process_uid.is_some()
         || conn.attribution_quality.is_some();
     if has_attribution {
         let process_value_style = theme::fg(theme::field_process());
         push_detail_section(&mut details_text, &mut detail_fields, "Attribution");
 
+        if let Some(pid) = conn.pid {
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "PID",
+                pid.to_string(),
+                label_style,
+                process_value_style,
+            );
+        }
+        if let Some(ppid) = conn.process_ppid {
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "PPID",
+                ppid.to_string(),
+                label_style,
+                process_value_style,
+            );
+        }
         if let Some(ref executable) = conn.executable {
             let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
             push_detail_field_with_copy(
@@ -834,18 +994,11 @@ pub(in crate::ui) fn draw_connection_details(
             );
         }
         if let Some(uid) = conn.process_uid {
-            // Numeric rather than resolved: a name lookup would mean parsing
-            // the passwd database on every render, and uid 0 is the case that
-            // actually matters at a glance.
-            let user = match conn.process_gid {
-                Some(gid) => format!("{uid}:{gid}"),
-                None => uid.to_string(),
-            };
             push_detail_field(
                 &mut details_text,
                 &mut detail_fields,
                 "User",
-                user,
+                format_user_group(uid, conn.process_gid),
                 label_style,
             );
         }
@@ -2092,7 +2245,7 @@ pub(in crate::ui) fn draw_connection_details(
 
 #[cfg(test)]
 mod path_shortening_tests {
-    use super::{fit_path_middle, shorten_executable_path};
+    use super::{fit_path_middle, format_user_group, shorten_executable_path, user_group_label};
     use std::path::Path;
 
     #[test]
@@ -2165,5 +2318,24 @@ mod path_shortening_tests {
         let shortened = fit_path_middle("/usr/libexec/ApplicationFirmwareUpdater", 10);
         assert_eq!(shortened, "…reUpdater");
         assert_eq!(shortened.chars().count(), 10);
+    }
+
+    #[test]
+    fn unknown_account_ids_fall_back_to_numbers() {
+        assert_eq!(
+            user_group_label(u32::MAX, Some(u32::MAX), None, None),
+            "4294967295:4294967295"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn current_account_ids_resolve_to_names() {
+        // SAFETY: these calls only read this process's effective credentials.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        let user = super::resolve_user_name(uid).expect("current user must resolve");
+        let group = super::resolve_group_name(gid).expect("current group must resolve");
+
+        assert_eq!(format_user_group(uid, Some(gid)), format!("{user}:{group}"));
     }
 }

@@ -29,6 +29,12 @@ pub struct MacOSProcessLookup {
     cache: RwLock<HashMap<ConnectionKey, MacOSProcessInfo>>,
 }
 
+pub(super) struct ProcessDetails {
+    pub ppid: u32,
+    pub uid: u32,
+    pub gid: u32,
+}
+
 pub(super) fn resolve_executable(pid: u32) -> Option<PathBuf> {
     let pid = libc::c_int::try_from(pid).ok()?;
     let mut buffer = [0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
@@ -57,7 +63,7 @@ pub(super) fn resolve_executable(pid: u32) -> Option<PathBuf> {
     Some(PathBuf::from(OsStr::from_bytes(&buffer[..path_length])))
 }
 
-pub(super) fn resolve_credentials(pid: u32) -> Option<(u32, u32)> {
+pub(super) fn resolve_process_details(pid: u32) -> Option<ProcessDetails> {
     let pid = libc::c_int::try_from(pid).ok()?;
     let expected_size = size_of::<libc::proc_bsdshortinfo>();
     let mut info = MaybeUninit::<libc::proc_bsdshortinfo>::zeroed();
@@ -79,7 +85,11 @@ pub(super) fn resolve_credentials(pid: u32) -> Option<(u32, u32)> {
 
     // SAFETY: a full `proc_bsdshortinfo` was initialized by the successful call.
     let info = unsafe { info.assume_init() };
-    Some((info.pbsi_uid, info.pbsi_gid))
+    Some(ProcessDetails {
+        ppid: info.pbsi_ppid,
+        uid: info.pbsi_uid,
+        gid: info.pbsi_gid,
+    })
 }
 
 impl MacOSProcessLookup {
@@ -276,8 +286,10 @@ impl ProcessLookup for MacOSProcessLookup {
             ProcessAttribution::new(process.pid, process.name, AttributionBackend::Lsof, quality)
                 .with_executable(resolve_executable(process.pid));
         attribution.uid = Some(process.uid);
-        if let Some((_uid, gid)) = resolve_credentials(process.pid) {
-            attribution.gid = Some(gid);
+        if let Some(details) = resolve_process_details(process.pid) {
+            attribution = attribution
+                .with_parent_pid(details.ppid)
+                .with_credentials(process.uid, details.gid);
         }
         Some(attribution)
     }
@@ -524,16 +536,20 @@ server 42 root 3u IPv4 0x1 0t0 TCP 127.0.0.1:8080 (LISTEN)
         assert!(executable.is_absolute());
         assert_eq!(executable, std::env::current_exe().unwrap());
 
-        let credentials = resolve_credentials(pid).expect("current credentials should resolve");
+        let details = resolve_process_details(pid).expect("current process details should resolve");
         // SAFETY: these libc calls only read the credentials of this process.
         let expected = unsafe { (libc::geteuid(), libc::getegid()) };
-        assert_eq!(credentials, expected);
+        assert_eq!((details.uid, details.gid), expected);
+        assert_eq!(
+            details.ppid,
+            u32::try_from(unsafe { libc::getppid() }).unwrap()
+        );
     }
 
     #[test]
     fn libproc_failure_keeps_optional_fields_empty() {
         assert_eq!(resolve_executable(u32::MAX), None);
-        assert_eq!(resolve_credentials(u32::MAX), None);
+        assert!(resolve_process_details(u32::MAX).is_none());
     }
 
     #[test]
@@ -553,6 +569,10 @@ server 42 root 3u IPv4 0x1 0t0 TCP 127.0.0.1:8080 (LISTEN)
         let expected_uid = unsafe { libc::geteuid() };
 
         assert_eq!(attribution.tgid, std::process::id());
+        assert_eq!(
+            attribution.ppid,
+            Some(u32::try_from(unsafe { libc::getppid() }).unwrap())
+        );
         assert_eq!(attribution.uid, Some(expected_uid));
         assert_eq!(attribution.executable, std::env::current_exe().ok());
         assert_eq!(attribution.backend, AttributionBackend::Lsof);

@@ -1,10 +1,18 @@
 // network/platform/freebsd/process.rs - FreeBSD sockstat-based process lookup
 
-use crate::{ConnectionKey, ProcessLookup};
+use crate::{
+    AttributionBackend, ConnectionKey, MatchQuality, ProcessAttribution, ProcessLookup,
+    relaxed_lookup,
+};
 use anyhow::{Context, Result};
 use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::mem::{MaybeUninit, size_of};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
+use std::ptr;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
@@ -13,11 +21,22 @@ const SOCKSTAT_PATH: &str = "/usr/bin/sockstat";
 pub struct FreeBSDProcessLookup {
     // Cache: ConnectionKey -> (pid, process_name)
     cache: RwLock<ProcessCache>,
+    // A process may own many sockets. Resolve its metadata through sysctl once
+    // per refresh generation rather than once per connection.
+    process_details: RwLock<HashMap<u32, Option<FreeBsdProcessDetails>>>,
 }
 
 struct ProcessCache {
     lookup: HashMap<ConnectionKey, (u32, String)>,
     last_refresh: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FreeBsdProcessDetails {
+    ppid: u32,
+    uid: u32,
+    gid: u32,
+    executable: Option<PathBuf>,
 }
 
 impl FreeBSDProcessLookup {
@@ -27,7 +46,122 @@ impl FreeBSDProcessLookup {
                 lookup: HashMap::new(),
                 last_refresh: Instant::now() - Duration::from_secs(3600),
             }),
+            process_details: RwLock::new(HashMap::new()),
         })
+    }
+
+    fn lookup_match(&self, conn: &Connection) -> Option<(u32, String, MatchQuality)> {
+        let key = ConnectionKey::from_connection(conn);
+        let cache = self.cache.read().expect("process cache lock poisoned");
+
+        if let Some((pid, name)) = cache.lookup.get(&key) {
+            return Some((*pid, name.clone(), MatchQuality::ExactTuple));
+        }
+
+        relaxed_lookup(&cache.lookup, &key)
+            .map(|((pid, name), quality)| (*pid, name.clone(), quality))
+    }
+
+    fn resolve_executable(pid: libc::pid_t) -> Option<PathBuf> {
+        let mib = [
+            libc::CTL_KERN,
+            libc::KERN_PROC,
+            libc::KERN_PROC_PATHNAME,
+            pid,
+        ];
+        let mut buffer = vec![0_u8; usize::try_from(libc::PATH_MAX).ok()?];
+        let mut buffer_len = buffer.len();
+
+        // SAFETY: `mib` and `buffer` are valid for their supplied lengths,
+        // `sysctl` only writes to `buffer`, and all other pointers are null.
+        let result = unsafe {
+            libc::sysctl(
+                mib.as_ptr(),
+                u32::try_from(mib.len()).expect("FreeBSD sysctl MIB length fits in u32"),
+                buffer.as_mut_ptr().cast(),
+                &mut buffer_len,
+                ptr::null(),
+                0,
+            )
+        };
+        if result != 0 {
+            return None;
+        }
+
+        let returned = buffer_len.min(buffer.len());
+        let path_len = buffer[..returned]
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(returned);
+        if path_len == 0 {
+            return None;
+        }
+        Some(PathBuf::from(OsStr::from_bytes(&buffer[..path_len])))
+    }
+
+    fn read_process_details(pid: u32) -> Option<FreeBsdProcessDetails> {
+        let pid = libc::pid_t::try_from(pid).ok()?;
+        let mib = [libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PID, pid];
+        let mut info = MaybeUninit::<libc::kinfo_proc>::zeroed();
+        let expected_len = size_of::<libc::kinfo_proc>();
+        let mut info_len = expected_len;
+
+        // SAFETY: `info` is an aligned, writable `kinfo_proc` buffer.
+        // It is initialized only when `sysctl` succeeds with the exact
+        // structure length and the kernel confirms the embedded layout size.
+        let result = unsafe {
+            libc::sysctl(
+                mib.as_ptr(),
+                u32::try_from(mib.len()).expect("FreeBSD sysctl MIB length fits in u32"),
+                info.as_mut_ptr().cast(),
+                &mut info_len,
+                ptr::null(),
+                0,
+            )
+        };
+        if result != 0 || info_len != expected_len {
+            return None;
+        }
+
+        // SAFETY: the successful exact-size sysctl call initialized `info`.
+        let info = unsafe { info.assume_init() };
+        if info.ki_structsize != libc::c_int::try_from(expected_len).ok()? || info.ki_pid != pid {
+            return None;
+        }
+
+        // FreeBSD stores the effective GID as the first supplementary-group
+        // entry. Fall back to the real GID only for the structurally unusual
+        // case where the kernel reports no groups.
+        let gid = if info.ki_ngroups > 0 {
+            info.ki_groups[0]
+        } else {
+            info.ki_rgid
+        };
+
+        Some(FreeBsdProcessDetails {
+            ppid: u32::try_from(info.ki_ppid).ok()?,
+            uid: info.ki_uid,
+            gid,
+            executable: Self::resolve_executable(pid),
+        })
+    }
+
+    fn process_details(&self, pid: u32) -> Option<FreeBsdProcessDetails> {
+        if let Some(details) = self
+            .process_details
+            .read()
+            .expect("process details cache lock poisoned")
+            .get(&pid)
+        {
+            return details.clone();
+        }
+
+        let details = Self::read_process_details(pid);
+        self.process_details
+            .write()
+            .expect("process details cache lock poisoned")
+            .insert(pid, details.clone());
+        details
     }
 
     /// Build connection -> process mapping using sysctl
@@ -177,19 +311,21 @@ impl FreeBSDProcessLookup {
 
 impl ProcessLookup for FreeBSDProcessLookup {
     fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
-        let key = ConnectionKey::from_connection(conn);
+        self.lookup_match(conn)
+            .map(|(pid, name, _quality)| (pid, name))
+    }
 
-        // Simple cache lookup with no refresh on cache miss.
-        // The enrichment thread handles periodic refresh.
-        let cache = self.cache.read().expect("cache lock poisoned");
-
-        // Fast path: exact 4-tuple match.
-        if let Some(entry) = cache.lookup.get(&key) {
-            Some(entry.clone())
-        } else {
-            // Fallback: sockstat may store sockets with wildcard addresses.
-            Self::fallback_lookup(&cache.lookup, &key)
+    fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
+        let (pid, name, quality) = self.lookup_match(conn)?;
+        let mut attribution =
+            ProcessAttribution::new(pid, name, AttributionBackend::PlatformNative, quality);
+        if let Some(details) = self.process_details(pid) {
+            attribution = attribution
+                .with_parent_pid(details.ppid)
+                .with_credentials(details.uid, details.gid)
+                .with_executable(details.executable);
         }
+        Some(attribution)
     }
 
     fn refresh(&self) -> Result<()> {
@@ -198,6 +334,10 @@ impl ProcessLookup for FreeBSDProcessLookup {
         let mut cache = self.cache.write().expect("cache lock poisoned");
         cache.lookup = process_map;
         cache.last_refresh = Instant::now();
+        self.process_details
+            .write()
+            .expect("process details cache lock poisoned")
+            .clear();
 
         Ok(())
     }
@@ -317,6 +457,25 @@ mod tests {
     #[test]
     fn test_parse_empty_string() {
         assert_eq!(FreeBSDProcessLookup::parse_address(""), None);
+    }
+
+    #[test]
+    fn test_current_process_details() {
+        let details = FreeBSDProcessLookup::read_process_details(std::process::id())
+            .expect("current process details must resolve");
+
+        assert_eq!(
+            details.ppid,
+            u32::try_from(unsafe { libc::getppid() }).unwrap()
+        );
+        assert_eq!(details.uid, unsafe { libc::geteuid() });
+        assert_eq!(details.gid, unsafe { libc::getegid() });
+        assert_eq!(details.executable, std::env::current_exe().ok());
+    }
+
+    #[test]
+    fn test_missing_process_has_no_details() {
+        assert!(FreeBSDProcessLookup::read_process_details(u32::MAX).is_none());
     }
 
     #[test]
