@@ -64,6 +64,15 @@ pub fn sort_connections(connections: &mut [Connection], sort_column: SortColumn,
 
             SortColumn::State => Ord::cmp(&a.state(), &b.state()),
 
+            SortColumn::Rtt => {
+                // Connections without a measurement compare as zero, so the
+                // default descending order puts them last, after the slowest
+                // measured connection.
+                let a_rtt = a.current_rtt().unwrap_or_default();
+                let b_rtt = b.current_rtt().unwrap_or_default();
+                a_rtt.cmp(&b_rtt)
+            }
+
             SortColumn::Location => {
                 let a_loc = a
                     .geoip_info

@@ -512,6 +512,7 @@ Press `s` to cycle through columns in left-to-right order:
 | **Service** | ↑ Ascending | Sort by service name or port number |
 | **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.), with TCP/UDP as tie-break |
 | **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
+| **RTT** | ↓ Descending | Sort by round-trip time (slowest connections first by default) |
 | **Bandwidth (Rx/Tx)** | ↓ Descending | Sort by **combined up+down** bandwidth (highest first by default) |
 
 Columns hidden at narrow terminal widths stay in the cycle — the active sort is always named in the table's section title.

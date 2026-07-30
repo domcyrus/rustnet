@@ -1914,6 +1914,13 @@ impl RttTracker {
         Some(rtt)
     }
 
+    /// Record a completed data round trip (segment to covering ACK) measured
+    /// by the per-connection estimator, so the aggregate RTT view reflects
+    /// established connections rather than only fresh handshakes.
+    pub fn record_data_rtt(&mut self, rtt: Duration) {
+        self.add_rtt_sample(rtt);
+    }
+
     /// Add an RTT sample
     fn add_rtt_sample(&mut self, rtt: Duration) {
         let now = Instant::now();
@@ -2328,6 +2335,17 @@ pub struct TcpAnalytics {
 
     // Window tracking
     pub last_window_size: u16,
+
+    // Continuous RTT estimation. One outbound segment is timed at a time:
+    // (sequence end of the timed bytes, capture time it left this host).
+    // Karn's algorithm: a retransmission invalidates the pending probe, so
+    // an ACK for a resent segment never produces an ambiguous sample.
+    pub rtt_probe: Option<(u32, SystemTime)>,
+    /// EWMA of data round trips (RFC 6298 style: 7/8 old + 1/8 sample).
+    pub smoothed_rtt: Option<Duration>,
+    /// Most recent raw sample, before smoothing.
+    pub last_rtt: Option<Duration>,
+    pub rtt_samples: u64,
 }
 
 impl TcpAnalytics {
@@ -2345,6 +2363,10 @@ impl TcpAnalytics {
             out_of_order_count: 0,
             fast_retransmit_count: 0,
             last_window_size: 0,
+            rtt_probe: None,
+            smoothed_rtt: None,
+            last_rtt: None,
+            rtt_samples: 0,
         }
     }
 }
@@ -2937,6 +2959,17 @@ impl Connection {
         let idle = self.cleanup_reference_time().elapsed().unwrap_or_default();
 
         idle.as_secs_f32() / timeout.as_secs_f32()
+    }
+
+    /// Live round-trip estimate for display: the smoothed data RTT once the
+    /// continuous estimator has samples, otherwise the handshake RTT. QUIC
+    /// connections only ever have the handshake value, since their ACKs are
+    /// encrypted on the wire.
+    pub fn current_rtt(&self) -> Option<Duration> {
+        self.tcp_analytics
+            .as_ref()
+            .and_then(|a| a.smoothed_rtt)
+            .or(self.initial_rtt)
     }
 }
 

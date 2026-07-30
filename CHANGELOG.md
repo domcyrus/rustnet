@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Per-Connection RTT**: Every TCP connection now carries a live round-trip
+  estimate for its whole lifetime, not just a one-shot handshake RTT. An
+  outbound data segment is timed until the ACK that covers it, with Karn's
+  algorithm discarding samples around retransmissions, and the samples feed an
+  RFC 6298 style smoothed value. The Overview table gains a sortable RTT
+  column (descending by default, so the slowest connections surface first),
+  the Details Transport Health card shows `Live RTT` next to `Initial RTT`,
+  and JSON event logs plus the PCAP sidecar gain `rtt_ms`. QUIC connections
+  keep their handshake RTT, since QUIC ACKs are encrypted on the wire. Data
+  round trips also feed the Graph tab's aggregate RTT, which previously only
+  saw new-connection handshakes (#515)
 - **Capture Failure Reporting**: Capture startup and runtime failures are retained in
   application state and shown as a persistent status-bar error with restart and quit
   guidance, instead of the TUI running on silently after capture stopped. The status

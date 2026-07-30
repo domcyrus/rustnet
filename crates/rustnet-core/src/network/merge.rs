@@ -1,7 +1,7 @@
 // src/network/merge.rs - Connection merging and update utilities
 
 use log::{debug, info, warn};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reassembler};
 use crate::network::parser::{ParsedPacket, TcpFlags};
@@ -62,20 +62,50 @@ fn seq_lt(a: u32, b: u32) -> bool {
     (a.wrapping_sub(b) as i32) < 0
 }
 
-/// Analyze TCP segment and update analytics for retransmissions and packet quality
-/// Returns (new_retransmits, new_out_of_order, new_fast_retransmits)
-fn analyze_tcp_segment(
-    analytics: &mut crate::network::types::TcpAnalytics,
+/// Per-packet TCP events produced while merging a packet into a connection.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TcpMergeEvents {
+    pub retransmits: u64,
+    pub out_of_order: u64,
+    pub fast_retransmits: u64,
+    /// Completed data round trip when this packet's ACK closed the pending
+    /// probe. Karn-filtered: never produced by a retransmitted segment.
+    pub rtt_sample: Option<Duration>,
+}
+
+/// A pending RTT probe whose ACK never arrived within this window is
+/// abandoned and replaced by the next outbound segment, so the estimator
+/// recovers after captures miss the covering ACK.
+const RTT_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The fields of one TCP segment that the analytics care about.
+struct TcpSegment {
     seq: u32,
     ack: u32,
     window: u16,
+    /// Sequence space the segment consumes: payload bytes plus one each
+    /// for SYN and FIN.
     payload_len: u32,
     is_outgoing: bool,
     has_ack_flag: bool,
-) -> (u64, u64, u64) {
-    let mut new_retransmits = 0;
-    let mut new_out_of_order = 0;
-    let mut new_fast_retransmits = 0;
+}
+
+/// Analyze TCP segment and update analytics for retransmissions, packet
+/// quality, and round-trip timing. `at` is the packet's capture timestamp.
+fn analyze_tcp_segment(
+    analytics: &mut crate::network::types::TcpAnalytics,
+    segment: TcpSegment,
+    at: SystemTime,
+) -> TcpMergeEvents {
+    let TcpSegment {
+        seq,
+        ack,
+        window,
+        payload_len,
+        is_outgoing,
+        has_ack_flag,
+    } = segment;
+    let mut events = TcpMergeEvents::default();
 
     // Track window size
     analytics.last_window_size = window;
@@ -90,13 +120,18 @@ fn analyze_tcp_segment(
                 // First packet with data
                 analytics.seen_outbound = true;
                 analytics.highest_seq_outbound = seq_end;
+                arm_rtt_probe(analytics, seq_end, at);
             } else if !seq_lt(analytics.highest_seq_outbound, seq_end) {
                 // Segment ends at or before the highest byte already sent, so
                 // it carries data the peer was sent before: a retransmission.
                 // Counted every time, as repeated resends of one segment are
                 // each a distinct retransmission.
                 analytics.retransmit_count += 1;
-                new_retransmits += 1;
+                events.retransmits += 1;
+                // Karn's algorithm: after a retransmission the covering ACK
+                // is ambiguous (original or resend?), so the pending probe
+                // must not produce a sample.
+                analytics.rtt_probe = None;
                 debug!(
                     "TCP retransmission detected: seq={}, len={}, highest={}",
                     seq, payload_len, analytics.highest_seq_outbound
@@ -106,6 +141,7 @@ fn analyze_tcp_segment(
                 // left by dropped captures; either way the high-water mark
                 // resyncs so later retransmissions are still detected.
                 analytics.highest_seq_outbound = seq_end;
+                arm_rtt_probe(analytics, seq_end, at);
             }
         }
     } else {
@@ -120,7 +156,7 @@ fn analyze_tcp_segment(
             } else if !seq_lt(analytics.highest_seq_inbound, seq_end) {
                 // Re-covers data already received: arrived late or duplicated.
                 analytics.out_of_order_count += 1;
-                new_out_of_order += 1;
+                events.out_of_order += 1;
                 debug!(
                     "TCP out-of-order packet: seq={}, len={}, highest={}",
                     seq, payload_len, analytics.highest_seq_inbound
@@ -128,6 +164,28 @@ fn analyze_tcp_segment(
             } else {
                 analytics.highest_seq_inbound = seq_end;
             }
+        }
+
+        // Complete the pending RTT probe: an inbound segment acknowledging
+        // every timed byte closes it. Data segments carry ACKs too, so this
+        // is deliberately not limited to pure ACKs.
+        if has_ack_flag
+            && let Some((probe_seq, sent_at)) = analytics.rtt_probe
+            && !seq_lt(ack, probe_seq)
+        {
+            // Err means the ACK's capture time precedes the send: clocks or
+            // packet order went backwards, so no sample either way.
+            if let Ok(rtt) = at.duration_since(sent_at) {
+                analytics.last_rtt = Some(rtt);
+                analytics.smoothed_rtt = Some(match analytics.smoothed_rtt {
+                    // RFC 6298 smoothing: 7/8 previous + 1/8 new sample.
+                    Some(srtt) => (srtt * 7 + rtt) / 8,
+                    None => rtt,
+                });
+                analytics.rtt_samples += 1;
+                events.rtt_sample = Some(rtt);
+            }
+            analytics.rtt_probe = None;
         }
 
         // Check for duplicate ACKs (fast retransmit indicator).
@@ -149,7 +207,7 @@ fn analyze_tcp_segment(
                 // RFC 5681: 3 duplicate ACKs trigger fast retransmit
                 if analytics.dup_ack_run == 3 {
                     analytics.fast_retransmit_count += 1;
-                    new_fast_retransmits += 1;
+                    events.fast_retransmits += 1;
                     debug!("TCP fast retransmit triggered (3 duplicate ACKs)");
                 }
             } else if seq_lt(analytics.last_ack_received, ack) {
@@ -161,17 +219,35 @@ fn analyze_tcp_segment(
         }
     }
 
-    (new_retransmits, new_out_of_order, new_fast_retransmits)
+    events
+}
+
+/// Start timing an outbound segment unless a fresh probe is already in
+/// flight. Timing the oldest outstanding segment measures the true round
+/// trip; a probe past `RTT_PROBE_TIMEOUT` (its ACK was never captured) is
+/// replaced so the estimator recovers.
+fn arm_rtt_probe(
+    analytics: &mut crate::network::types::TcpAnalytics,
+    seq_end: u32,
+    at: SystemTime,
+) {
+    let stale = analytics.rtt_probe.is_none_or(|(_, sent_at)| {
+        at.duration_since(sent_at)
+            .map_or(true, |age| age > RTT_PROBE_TIMEOUT)
+    });
+    if stale {
+        analytics.rtt_probe = Some((seq_end, at));
+    }
 }
 
 /// Merge a parsed packet into an existing connection, mutating it in place.
-/// Returns (new_retransmits, new_out_of_order, new_fast_retransmits).
+/// Returns the TCP events this packet produced (loss counters, RTT sample).
 pub fn merge_packet_into_connection(
     conn: &mut Connection,
     parsed: &ParsedPacket,
     now: SystemTime,
-) -> (u64, u64, u64) {
-    let mut tcp_events = (0, 0, 0); // (retransmits, out_of_order, fast_retransmits)
+) -> TcpMergeEvents {
+    let mut tcp_events = TcpMergeEvents::default();
     let was_terminal = conn.is_terminal();
 
     // Record every observed packet. Terminal cleanup uses terminal_since, so
@@ -222,12 +298,15 @@ pub fn merge_packet_into_connection(
 
             tcp_events = analyze_tcp_segment(
                 analytics,
-                tcp_header.seq,
-                tcp_header.ack,
-                tcp_header.window,
-                seq_consumed,
-                parsed.is_outgoing,
-                tcp_header.flags.ack,
+                TcpSegment {
+                    seq: tcp_header.seq,
+                    ack: tcp_header.ack,
+                    window: tcp_header.window,
+                    payload_len: seq_consumed,
+                    is_outgoing: parsed.is_outgoing,
+                    has_ack_flag: tcp_header.flags.ack,
+                },
+                now,
             );
         }
     } else {
@@ -1120,14 +1199,55 @@ mod tests {
 
     use crate::network::types::TcpAnalytics;
 
+    /// Fixed capture-time base for segment tests that don't care about time.
+    fn t0() -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_000)
+    }
+
     /// Send one outbound data segment. Window and ack are irrelevant here.
     fn send(analytics: &mut TcpAnalytics, seq: u32, len: u32) {
-        analyze_tcp_segment(analytics, seq, 0, 65535, len, true, false);
+        send_at(analytics, seq, len, t0());
+    }
+
+    fn send_at(analytics: &mut TcpAnalytics, seq: u32, len: u32, at: SystemTime) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq,
+                ack: 0,
+                window: 65535,
+                payload_len: len,
+                is_outgoing: true,
+                has_ack_flag: false,
+            },
+            at,
+        );
     }
 
     /// Receive one inbound segment.
-    fn recv(analytics: &mut TcpAnalytics, seq: u32, ack: u32, len: u32) {
-        analyze_tcp_segment(analytics, seq, ack, 65535, len, false, true);
+    fn recv(analytics: &mut TcpAnalytics, seq: u32, ack: u32, len: u32) -> TcpMergeEvents {
+        recv_at(analytics, seq, ack, len, t0())
+    }
+
+    fn recv_at(
+        analytics: &mut TcpAnalytics,
+        seq: u32,
+        ack: u32,
+        len: u32,
+        at: SystemTime,
+    ) -> TcpMergeEvents {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq,
+                ack,
+                window: 65535,
+                payload_len: len,
+                is_outgoing: false,
+                has_ack_flag: true,
+            },
+            at,
+        )
     }
 
     #[test]
@@ -1210,5 +1330,104 @@ mod tests {
         }
         assert_eq!(a.fast_retransmit_count, 2);
         assert_eq!(a.duplicate_ack_count, 7);
+    }
+
+    #[test]
+    fn covering_ack_completes_an_rtt_probe() {
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0()); // times bytes up to 100
+        let events = recv_at(&mut a, 0, 100, 0, t0() + Duration::from_millis(40));
+
+        assert_eq!(events.rtt_sample, Some(Duration::from_millis(40)));
+        assert_eq!(a.smoothed_rtt, Some(Duration::from_millis(40)));
+        assert_eq!(a.last_rtt, Some(Duration::from_millis(40)));
+        assert_eq!(a.rtt_samples, 1);
+        assert_eq!(a.rtt_probe, None, "a completed probe must not re-fire");
+    }
+
+    #[test]
+    fn partial_ack_does_not_complete_the_probe() {
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0());
+        let events = recv_at(&mut a, 0, 50, 0, t0() + Duration::from_millis(40));
+
+        assert_eq!(events.rtt_sample, None, "50 acks only half the timed bytes");
+        assert!(a.rtt_probe.is_some(), "the probe stays armed");
+
+        let events = recv_at(&mut a, 0, 100, 0, t0() + Duration::from_millis(80));
+        assert_eq!(events.rtt_sample, Some(Duration::from_millis(80)));
+    }
+
+    #[test]
+    fn retransmission_invalidates_the_probe() {
+        // Karn's algorithm: after a resend, the covering ACK is ambiguous
+        // (original or retransmission?) and must not produce a sample.
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0());
+        send_at(&mut a, 0, 100, t0() + Duration::from_millis(10)); // resend
+        assert_eq!(a.retransmit_count, 1);
+
+        let events = recv_at(&mut a, 0, 100, 0, t0() + Duration::from_millis(50));
+        assert_eq!(events.rtt_sample, None);
+        assert_eq!(a.rtt_samples, 0);
+    }
+
+    #[test]
+    fn smoothed_rtt_is_an_ewma_of_samples() {
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0());
+        recv_at(&mut a, 0, 100, 0, t0() + Duration::from_millis(80));
+        assert_eq!(a.smoothed_rtt, Some(Duration::from_millis(80)));
+
+        // Second sample of 16ms: 7/8 * 80 + 1/8 * 16 = 72ms.
+        let sent = t0() + Duration::from_millis(100);
+        send_at(&mut a, 100, 100, sent);
+        recv_at(&mut a, 0, 200, 0, sent + Duration::from_millis(16));
+        assert_eq!(a.smoothed_rtt, Some(Duration::from_millis(72)));
+        assert_eq!(a.last_rtt, Some(Duration::from_millis(16)));
+        assert_eq!(a.rtt_samples, 2);
+    }
+
+    #[test]
+    fn a_young_probe_is_not_replaced_but_a_stale_one_is() {
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0());
+        send_at(&mut a, 100, 100, t0() + Duration::from_millis(5));
+        assert_eq!(
+            a.rtt_probe.map(|(seq, _)| seq),
+            Some(100),
+            "the oldest outstanding segment stays the timed one"
+        );
+
+        // Its ACK never arrives; past the timeout the next send re-arms.
+        let late = t0() + RTT_PROBE_TIMEOUT + Duration::from_secs(1);
+        send_at(&mut a, 200, 100, late);
+        assert_eq!(a.rtt_probe, Some((300, late)));
+    }
+
+    #[test]
+    fn probe_completion_survives_sequence_wraparound() {
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, u32::MAX - 50, 100, t0()); // timed bytes end at 49
+        let events = recv_at(&mut a, 0, 49, 0, t0() + Duration::from_millis(30));
+        assert_eq!(events.rtt_sample, Some(Duration::from_millis(30)));
+    }
+
+    #[test]
+    fn inbound_data_segments_can_complete_the_probe() {
+        // Request/response traffic: the response carries both the payload and
+        // the ACK of the request. Requiring a pure ACK would starve the
+        // estimator on exactly the flows users care about.
+        let mut a = TcpAnalytics::new();
+
+        send_at(&mut a, 0, 100, t0());
+        let events = recv_at(&mut a, 0, 100, 1400, t0() + Duration::from_millis(25));
+        assert_eq!(events.rtt_sample, Some(Duration::from_millis(25)));
     }
 }
