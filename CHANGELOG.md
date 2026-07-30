@@ -32,7 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `process_gid`, and `attribution_match`; PCAPNG packet comments gain `uid=` and
   `attr=` but deliberately omit the executable path, which would repeat in every
   packet block. Executable paths are interned behind an `Arc`, so bulk connection
-  snapshots stay allocation-free (#506, #511)
+  snapshots stay allocation-free. Long paths shorten from the middle at render time
+  (`/nix/store/…/bin/hello`), keeping the location prefix and the basename visible,
+  and a leading `$HOME` renders as `~`; click-to-copy still yields the full
+  path (#506, #511, #512)
 - **Rich macOS Process Attribution**: PKTAP keeps its kernel-provided per-packet PID
   and process name, marks the result as an exact PKTAP attribution, and uses libproc
   to add the executable path and effective UID/GID. The lsof fallback requests and

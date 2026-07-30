@@ -156,6 +156,102 @@ fn push_detail_field_styled<'a>(
     fields.push(Some((label.to_string(), value)));
 }
 
+/// Push a label-value line whose rendered value differs from what
+/// click-to-copy yields (a shortened path, say).
+fn push_detail_field_with_copy<'a>(
+    lines: &mut Vec<Line<'a>>,
+    fields: &mut Vec<Option<(String, String)>>,
+    label: &str,
+    display: String,
+    copy: String,
+    label_style: Style,
+    value_style: Style,
+) {
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("{:<width$}", label, width = DETAIL_LABEL_WIDTH),
+            label_style,
+        ),
+        Span::styled(display, value_style),
+    ]));
+    fields.push(Some((label.to_string(), copy)));
+}
+
+/// Shorten an executable path for a one-row display slot.
+///
+/// Detail rows are clipped at the pane edge, which for a long path cuts off
+/// the basename, its most informative part. Instead drop components from the
+/// middle: the leading components say where the binary lives (`/tmp`,
+/// `~/Downloads`, `/usr/bin`), the basename says what it is, and both
+/// survive. A leading `$HOME` renders as `~`. Display-only; the caller keeps
+/// the full path in the click-to-copy field.
+fn shorten_executable_path(
+    path: &std::path::Path,
+    home: Option<&std::path::Path>,
+    max_width: usize,
+) -> String {
+    let display = match home {
+        // A root or empty home would swallow every absolute path; both are
+        // exactly the homes without a parent.
+        Some(home) if home.parent().is_some() => match path.strip_prefix(home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+            Ok(rest) => format!("~/{}", rest.display()),
+            Err(_) => path.display().to_string(),
+        },
+        _ => path.display().to_string(),
+    };
+    fit_path_middle(&display, max_width)
+}
+
+/// Component-aware middle ellipsis: `/nix/store/…/bin/hello`.
+fn fit_path_middle(display: &str, max_width: usize) -> String {
+    let width = |s: &str| s.chars().count();
+    if width(display) <= max_width {
+        return display.to_string();
+    }
+
+    let root = if display.starts_with('/') { "/" } else { "" };
+    let components: Vec<&str> = display.split('/').filter(|c| !c.is_empty()).collect();
+
+    let candidate = |head: usize, tail: usize| -> String {
+        let mut out = String::from(root);
+        for component in &components[..head] {
+            out.push_str(component);
+            out.push('/');
+        }
+        out.push('…');
+        for component in &components[components.len() - tail..] {
+            out.push('/');
+            out.push_str(component);
+        }
+        out
+    };
+
+    if components.is_empty() || width(&candidate(0, 1)) > max_width {
+        // Not even `…/basename` fits; keep the end of the string, which at
+        // least ends in the basename.
+        let keep = max_width.saturating_sub(1);
+        let skip = width(display).saturating_sub(keep);
+        let tail: String = display.chars().skip(skip).collect();
+        return format!("…{tail}");
+    }
+
+    // Grow greedily from both ends, leading components first: where the
+    // binary lives outranks which intermediate directories it sits under.
+    // At least one component must stay elided, or the ellipsis would lie.
+    let (mut head, mut tail) = (0, 1);
+    while head + tail + 1 < components.len() {
+        if width(&candidate(head + 1, tail)) <= max_width {
+            head += 1;
+        } else if width(&candidate(head, tail + 1)) <= max_width {
+            tail += 1;
+        } else {
+            break;
+        }
+    }
+    candidate(head, tail)
+}
+
 /// Format a QUIC idle timeout, as advertised in the peer's transport
 /// parameters. Values are whole seconds in practice (30s, 120s), so only sub-
 /// second timeouts fall back to milliseconds.
@@ -472,6 +568,18 @@ pub(in crate::ui) fn draw_connection_details(
     );
     let body = chunks[1];
 
+    // The Executable row shortens its path to the value column, so the pane
+    // width must be known while the lines are built. Mirrors the layout
+    // derivation further down: content-width cap, scrollbar gutter, and the
+    // two-column split with its spacing.
+    let info_width = body.width.min(DETAILS_MAX_CONTENT_WIDTH);
+    let pane_width = if info_width >= DETAILS_SPLIT_MIN_WIDTH {
+        info_width.saturating_sub(4) / 2
+    } else {
+        info_width.saturating_sub(2)
+    };
+    let value_width = (pane_width as usize).saturating_sub(DETAIL_LABEL_WIDTH);
+
     // Connection details - build lines and field entries in parallel for click-to-copy.
     // All sections share a single label_style (muted gray); visual grouping comes
     // from the bold section headings inserted by push_detail_section.
@@ -714,10 +822,12 @@ pub(in crate::ui) fn draw_connection_details(
         push_detail_section(&mut details_text, &mut detail_fields, "Attribution");
 
         if let Some(ref executable) = conn.executable {
-            push_detail_field_styled(
+            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            push_detail_field_with_copy(
                 &mut details_text,
                 &mut detail_fields,
                 "Executable",
+                shorten_executable_path(executable, home.as_deref(), value_width),
                 executable.display().to_string(),
                 label_style,
                 process_value_style,
@@ -1978,4 +2088,82 @@ pub(in crate::ui) fn draw_connection_details(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod path_shortening_tests {
+    use super::{fit_path_middle, shorten_executable_path};
+    use std::path::Path;
+
+    #[test]
+    fn short_paths_render_unchanged() {
+        assert_eq!(
+            shorten_executable_path(Path::new("/usr/bin/curl"), None, 46),
+            "/usr/bin/curl"
+        );
+    }
+
+    #[test]
+    fn home_prefix_renders_as_tilde() {
+        assert_eq!(
+            shorten_executable_path(
+                Path::new("/Users/marco/bin/tool"),
+                Some(Path::new("/Users/marco")),
+                46
+            ),
+            "~/bin/tool"
+        );
+    }
+
+    #[test]
+    fn root_home_never_becomes_a_tilde() {
+        assert_eq!(
+            shorten_executable_path(Path::new("/usr/bin/curl"), Some(Path::new("/")), 46),
+            "/usr/bin/curl"
+        );
+    }
+
+    #[test]
+    fn tilde_shortening_composes_with_the_middle_ellipsis() {
+        let path = Path::new("/home/user/.local/share/Steam/steamapps/common/Game/game-bin");
+        assert_eq!(
+            shorten_executable_path(path, Some(Path::new("/home/user")), 30),
+            "~/.local/share/…/Game/game-bin"
+        );
+    }
+
+    #[test]
+    fn location_prefix_and_basename_survive_shortening() {
+        assert_eq!(
+            fit_path_middle("/Applications/Firefox.app/Contents/MacOS/firefox", 30),
+            "/Applications/…/MacOS/firefox"
+        );
+    }
+
+    #[test]
+    fn store_hashes_are_the_first_components_to_go() {
+        assert_eq!(
+            fit_path_middle(
+                "/nix/store/8xkzp1qdcnhmzy4v7c9r2c8dyl4qv8bq-hello-2.12/bin/hello",
+                25
+            ),
+            "/nix/store/…/bin/hello"
+        );
+    }
+
+    #[test]
+    fn the_ellipsis_never_lies_about_a_fitting_path() {
+        // Every component fits only without the ellipsis; eliding zero
+        // components while showing one would misreport the path.
+        let path = "/a/bb/ccc/dddd";
+        assert_eq!(fit_path_middle(path, path.len()), path);
+        assert_eq!(fit_path_middle(path, path.len() - 1), "/a/bb/…/dddd");
+    }
+
+    #[test]
+    fn hopeless_widths_keep_the_end_of_the_path() {
+        let shortened = fit_path_middle("/usr/libexec/ApplicationFirmwareUpdater", 10);
+        assert_eq!(shortened, "…reUpdater");
+        assert_eq!(shortened.chars().count(), 10);
+    }
 }

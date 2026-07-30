@@ -1371,6 +1371,66 @@ mod snapshot_tests {
         assert!(!output.contains("User "));
     }
 
+    /// Long executable paths shorten from the middle so the location prefix
+    /// and the basename stay visible instead of clipping at the pane edge;
+    /// click-to-copy must still yield the full path.
+    #[test]
+    fn details_tab_shortens_long_executable_paths() {
+        use crate::network::types::MatchQuality;
+        use std::path::Path;
+        use std::sync::Arc;
+
+        let app = test_app();
+        let mut connections = sample_connections();
+        let full =
+            "/nix/store/8xkzp1qdcnhmzy4v7c9r2c8dyl4qv8bq-firefox-141.0/lib/firefox/firefox-bin";
+        connections[0].executable = Some(Arc::from(Path::new(full)));
+        connections[0].attribution_quality = Some(MatchQuality::ExactTuple);
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw details");
+        });
+
+        assert!(
+            output.contains("/nix/store/"),
+            "the location prefix must survive"
+        );
+        assert!(output.contains("firefox-bin"), "the basename must survive");
+        assert!(
+            !output.contains("8xkzp1qdcnhmzy4v7c9r2c8dyl4qv8bq"),
+            "middle components must be elided, not clipped at the pane edge"
+        );
+        assert!(output.contains("…"), "the elision must be visible");
+
+        // The shortening is display-only: hit-test every cell and confirm the
+        // Executable copy region still carries the unshortened path.
+        let copied = (0..40u16)
+            .flat_map(|row| (0..140u16).map(move |col| (col, row)))
+            .filter_map(|(col, row)| click_regions.hit_test(col, row).cloned())
+            .find_map(|action| match action {
+                ClickAction::CopyField { label, value } if label == "Executable" => Some(value),
+                _ => None,
+            });
+        assert_eq!(copied.as_deref(), Some(full));
+    }
+
     #[test]
     fn details_tab_keeps_section_anchors_across_metadata_shapes() {
         let app = test_app();
