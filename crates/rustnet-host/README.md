@@ -9,7 +9,8 @@ Today this is **per-connection process attribution**: given a
 best strategy each platform offers, with graceful fallbacks:
 
 - **Linux**: fentry/fexit eBPF, legacy kprobes, then procfs.
-- **macOS**: PKTAP packet metadata when available (no lookup needed), else `lsof`.
+- **macOS**: PKTAP packet metadata plus libproc when available, else `lsof`
+  plus libproc.
 - **Windows**: kernel ETW events with an IP Helper API
   (`GetExtendedTcpTable` / `...UdpTable`) fallback.
 - **FreeBSD**: `sockstat`.
@@ -47,6 +48,12 @@ the thread id, effective UID/GID, and an observation timestamp taken from a
 **monotonic** clock (`bpf_ktime_get_ns`), which is not wall-clock time. The
 executable path is resolved once from `/proc/<tgid>/exe`; an unreadable link
 yields `executable: None` and never fails the attribution.
+
+On macOS, PKTAP supplies an exact PID and process name with each packet. Libproc
+adds the executable path and effective UID/GID. The fallback parses numeric UIDs
+from `lsof -l` and uses libproc for the executable path. PKTAP reports
+`AttributionBackend::Pktap` with `MatchQuality::ExactTuple`; lsof reports whether
+its socket-table match was exact, wildcard-bound, or a listener.
 
 Platforms that have not been ported get a compatibility bridge over
 `get_process_for_connection()` reporting `MatchQuality::Unspecified`, so every

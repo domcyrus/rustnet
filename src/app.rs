@@ -51,6 +51,16 @@ use crate::network::platform::WindowsStatsProvider as PlatformStatsProvider;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+#[inline]
+fn process_enrichment_complete(conn: &Connection, unknown_process_name: &str) -> bool {
+    conn.pid.is_some()
+        && conn
+            .process_name
+            .as_deref()
+            .is_some_and(|name| name != unknown_process_name)
+        && conn.attribution_quality.is_some()
+}
+
 /// Sandbox status information for UI display
 #[cfg(any(
     target_os = "linux",
@@ -1768,31 +1778,19 @@ impl App {
                 let wait_start = Instant::now();
                 while wait_start.elapsed() < Duration::from_secs(5)
                     && !should_stop.load(Ordering::Relaxed)
+                    && !pktap_active.load(Ordering::Relaxed)
                 {
-                    if pktap_active.load(Ordering::Relaxed) {
-                        info!(
-                            "🚫 Skipping process enrichment thread - PKTAP is active and provides process metadata"
-                        );
-                        if let Ok(mut status) = process_detection_status.write() {
-                            *status = ProcessDetectionStatus::with_method("pktap");
-                        }
-                        let _ = process_ready_tx.send(());
-                        return;
-                    }
                     // Check more frequently for faster detection
                     thread::sleep(Duration::from_millis(50));
                 }
 
-                // Final check after timeout
                 if pktap_active.load(Ordering::Relaxed) {
                     info!(
-                        "🚫 Skipping process enrichment thread - PKTAP became active during startup"
+                        "PKTAP is active, starting libproc enrichment for packet process metadata"
                     );
                     if let Ok(mut status) = process_detection_status.write() {
                         *status = ProcessDetectionStatus::with_method("pktap");
                     }
-                    let _ = process_ready_tx.send(());
-                    return;
                 } else {
                     info!(
                         "⚠️  PKTAP not detected after 5 seconds, starting process enrichment thread with lsof"
@@ -1836,6 +1834,10 @@ impl App {
         let use_pktap = pktap_active.load(Ordering::Relaxed);
 
         let process_lookup = create_process_lookup(use_pktap)?;
+        #[cfg(target_os = "macos")]
+        let mut process_lookup = process_lookup;
+        #[cfg(target_os = "macos")]
+        let mut using_pktap = use_pktap;
 
         // Linux capabilities are per-thread. This thread inherited the startup
         // capabilities before loading eBPF, so drop the ones it will not use
@@ -1924,13 +1926,16 @@ impl App {
                 break;
             }
 
-            // Check if PKTAP became active (abort immediately to prevent conflicts)
+            // If PKTAP activates after the startup grace period, stop polling
+            // lsof and enrich the packet-provided identity through libproc.
             #[cfg(target_os = "macos")]
-            if pktap_active.load(Ordering::Relaxed) {
-                info!(
-                    "🚫 PKTAP became active, stopping process enrichment thread to prevent conflicts"
-                );
-                break;
+            if !using_pktap && pktap_active.load(Ordering::Relaxed) {
+                process_lookup = create_process_lookup(true)?;
+                using_pktap = true;
+                if let Ok(mut status) = process_detection_status.write() {
+                    *status = ProcessDetectionStatus::with_method("pktap");
+                }
+                info!("PKTAP became active, switched process enrichment from lsof to libproc");
             }
 
             // Refresh process lookup periodically
@@ -1957,14 +1962,13 @@ impl App {
             // Enrich connections without process info
             let mut enriched = 0;
             for mut entry in tracker.connections().iter_mut() {
-                // Fully attributed — nothing to do (real names are permanent,
-                // placeholders stay eligible for an upgrade).
-                if entry.pid.is_some()
-                    && entry
-                        .process_name
-                        .as_deref()
-                        .is_some_and(|name| name != UNKNOWN_PROCESS_NAME)
-                {
+                // Match quality is also the completion marker for rich
+                // enrichment. PKTAP seeds PID and name in the capture path, so
+                // those connections remain eligible for exactly one libproc
+                // attempt. Optional fields are best effort; requiring every
+                // one would retry permanent permission or process-exit failures
+                // on every fast tick.
+                if process_enrichment_complete(&entry, UNKNOWN_PROCESS_NAME) {
                     continue;
                 }
                 // Fast ticks only retry young connections; older ones wait
@@ -2017,14 +2021,21 @@ impl App {
                         entry.executable = Some(interned);
                         did_enrich = true;
                     }
-                    if entry.process_uid.is_none() {
-                        entry.process_uid = attribution.uid;
+                    if entry.process_uid.is_none()
+                        && let Some(uid) = attribution.uid
+                    {
+                        entry.process_uid = Some(uid);
+                        did_enrich = true;
                     }
-                    if entry.process_gid.is_none() {
-                        entry.process_gid = attribution.gid;
+                    if entry.process_gid.is_none()
+                        && let Some(gid) = attribution.gid
+                    {
+                        entry.process_gid = Some(gid);
+                        did_enrich = true;
                     }
                     if entry.attribution_quality.is_none() {
                         entry.attribution_quality = Some(attribution.quality);
+                        did_enrich = true;
                     }
 
                     if did_enrich {
@@ -2054,6 +2065,10 @@ impl App {
                         entry.pid = Some(pid);
                         if entry.process_name.is_none() {
                             entry.process_name = crate::network::kubernetes::read_process_name(pid);
+                        }
+                        if entry.attribution_quality.is_none() {
+                            entry.attribution_quality =
+                                Some(crate::network::types::MatchQuality::ProcfsExact);
                         }
                         if entry.k8s_info.is_none() {
                             entry.k8s_info = Some(k8s);
@@ -3408,6 +3423,55 @@ impl Drop for App {
         self.stop();
         // Give threads time to stop gracefully
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod process_enrichment_tests {
+    use super::process_enrichment_complete;
+    use crate::network::types::{Connection, MatchQuality, Protocol, ProtocolState, TcpState};
+
+    fn connection() -> Connection {
+        Connection::new(
+            Protocol::Tcp,
+            "127.0.0.1:5000".parse().unwrap(),
+            "1.1.1.1:443".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        )
+    }
+
+    #[test]
+    fn packet_seeded_identity_still_gets_one_rich_enrichment_attempt() {
+        let mut conn = connection();
+        conn.pid = Some(42);
+        conn.process_name = Some("curl".to_string());
+
+        assert!(!process_enrichment_complete(&conn, "Unknown"));
+
+        conn.attribution_quality = Some(MatchQuality::ExactTuple);
+        assert!(process_enrichment_complete(&conn, "Unknown"));
+    }
+
+    #[test]
+    fn missing_optional_libproc_fields_do_not_cause_permanent_retries() {
+        let mut conn = connection();
+        conn.pid = Some(42);
+        conn.process_name = Some("curl".to_string());
+        conn.attribution_quality = Some(MatchQuality::ExactTuple);
+
+        assert!(conn.executable.is_none());
+        assert!(conn.process_uid.is_none());
+        assert!(process_enrichment_complete(&conn, "Unknown"));
+    }
+
+    #[test]
+    fn placeholder_identity_remains_eligible_for_an_upgrade() {
+        let mut conn = connection();
+        conn.pid = Some(42);
+        conn.process_name = Some("Unknown".to_string());
+        conn.attribution_quality = Some(MatchQuality::Unspecified);
+
+        assert!(!process_enrichment_complete(&conn, "Unknown"));
     }
 }
 

@@ -1,18 +1,85 @@
 // network/platform/macos/process.rs - macOS lsof-based process lookup
 
-use crate::{ConnectionKey, DegradationReason, ProcessLookup};
+use crate::{
+    AttributionBackend, ConnectionKey, DegradationReason, MatchQuality, ProcessAttribution,
+    ProcessLookup, relaxed_lookup,
+};
 use anyhow::Result;
 use log::{debug, error, info, warn};
 use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::mem::{MaybeUninit, size_of};
 use std::net::SocketAddr;
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::RwLock;
 
 const LSOF_PATH: &str = "/usr/sbin/lsof";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MacOSProcessInfo {
+    pid: u32,
+    name: String,
+    uid: u32,
+}
+
 pub struct MacOSProcessLookup {
-    cache: RwLock<HashMap<ConnectionKey, (u32, String)>>,
+    cache: RwLock<HashMap<ConnectionKey, MacOSProcessInfo>>,
+}
+
+pub(super) fn resolve_executable(pid: u32) -> Option<PathBuf> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let mut buffer = [0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+
+    // SAFETY: libproc receives a valid writable buffer and its exact size.
+    let length = unsafe {
+        libc::proc_pidpath(
+            pid,
+            buffer.as_mut_ptr().cast(),
+            u32::try_from(buffer.len()).expect("path buffer fits in u32"),
+        )
+    };
+    if length <= 0 {
+        return None;
+    }
+
+    let returned = usize::try_from(length).ok()?.min(buffer.len());
+    let path_length = buffer[..returned]
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(returned);
+    if path_length == 0 {
+        return None;
+    }
+
+    Some(PathBuf::from(OsStr::from_bytes(&buffer[..path_length])))
+}
+
+pub(super) fn resolve_credentials(pid: u32) -> Option<(u32, u32)> {
+    let pid = libc::c_int::try_from(pid).ok()?;
+    let expected_size = size_of::<libc::proc_bsdshortinfo>();
+    let mut info = MaybeUninit::<libc::proc_bsdshortinfo>::zeroed();
+
+    // SAFETY: libproc writes at most `expected_size` bytes into an aligned
+    // buffer with the C layout of `proc_bsdshortinfo`.
+    let returned_size = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            libc::PROC_PIDT_SHORTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            libc::c_int::try_from(expected_size).expect("proc info size fits in c_int"),
+        )
+    };
+    if returned_size != libc::c_int::try_from(expected_size).ok()? {
+        return None;
+    }
+
+    // SAFETY: a full `proc_bsdshortinfo` was initialized by the successful call.
+    let info = unsafe { info.assume_init() };
+    Some((info.pbsi_uid, info.pbsi_gid))
 }
 
 impl MacOSProcessLookup {
@@ -22,14 +89,14 @@ impl MacOSProcessLookup {
         })
     }
 
-    fn parse_lsof() -> Result<HashMap<ConnectionKey, (u32, String)>> {
-        let mut lookup = HashMap::new();
+    fn parse_lsof() -> Result<HashMap<ConnectionKey, MacOSProcessInfo>> {
+        let lookup = HashMap::new();
 
         info!("Running lsof to get network connections");
 
         // Run lsof to get network connections
         let output = Command::new(LSOF_PATH)
-            .args(["-i", "-n", "-P", "+c", "0"])
+            .args(["-i", "-n", "-P", "-l", "+c", "0"])
             .output()?;
 
         if !output.status.success() {
@@ -39,12 +106,17 @@ impl MacOSProcessLookup {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(Self::parse_lsof_output(&stdout))
+    }
+
+    fn parse_lsof_output(stdout: &str) -> HashMap<ConnectionKey, MacOSProcessInfo> {
+        let mut lookup = HashMap::new();
         let lines: Vec<&str> = stdout.lines().collect();
         info!("lsof returned {} lines", lines.len());
 
         if lines.is_empty() {
             warn!("lsof returned no output");
-            return Ok(lookup);
+            return lookup;
         }
 
         debug!("lsof header: {}", lines.first().unwrap_or(&""));
@@ -73,6 +145,13 @@ impl MacOSProcessLookup {
                 Ok(p) => p,
                 Err(e) => {
                     debug!("  Failed to parse PID '{}': {}", parts[1], e);
+                    continue;
+                }
+            };
+            let uid = match parts[2].parse::<u32>() {
+                Ok(uid) => uid,
+                Err(e) => {
+                    debug!("  Failed to parse numeric UID '{}': {}", parts[2], e);
                     continue;
                 }
             };
@@ -141,7 +220,14 @@ impl MacOSProcessLookup {
                     "  Successfully parsed connection: {:?} -> {} ({})",
                     key, process_name, pid
                 );
-                lookup.insert(key, (pid, process_name));
+                lookup.insert(
+                    key,
+                    MacOSProcessInfo {
+                        pid,
+                        name: process_name,
+                        uid,
+                    },
+                );
                 successful_parsers += 1;
             } else {
                 debug!("  Failed to parse connection from NAME field");
@@ -154,29 +240,46 @@ impl MacOSProcessLookup {
         );
         info!("Total connections in lookup table: {}", lookup.len());
 
-        Ok(lookup)
+        lookup
     }
-}
 
-impl ProcessLookup for MacOSProcessLookup {
-    fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
+    fn lookup_match(&self, conn: &Connection) -> Option<(MacOSProcessInfo, MatchQuality)> {
         let key = ConnectionKey::from_connection(conn);
         let cache = self.cache.read().expect("cache lock poisoned");
 
         if let Some(result) = cache.get(&key).cloned() {
             debug!("Found process info for connection {:?}: {:?}", key, result);
-            Some(result)
+            Some((result, MatchQuality::ExactTuple))
         } else {
             debug!("No process info found for connection {:?}", key);
             debug!("Available keys in cache:");
-            for (cached_key, (pid, name)) in cache.iter().take(10) {
-                debug!("  {:?} -> {} ({})", cached_key, name, pid);
+            for (cached_key, process) in cache.iter().take(10) {
+                debug!("  {:?} -> {} ({})", cached_key, process.name, process.pid);
             }
             if cache.len() > 10 {
                 debug!("  ... and {} more entries", cache.len() - 10);
             }
-            Self::fallback_lookup(&cache, &key)
+            relaxed_lookup(&cache, &key).map(|(process, quality)| (process.clone(), quality))
         }
+    }
+}
+
+impl ProcessLookup for MacOSProcessLookup {
+    fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
+        self.lookup_match(conn)
+            .map(|(process, _quality)| (process.pid, process.name))
+    }
+
+    fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
+        let (process, quality) = self.lookup_match(conn)?;
+        let mut attribution =
+            ProcessAttribution::new(process.pid, process.name, AttributionBackend::Lsof, quality)
+                .with_executable(resolve_executable(process.pid));
+        attribution.uid = Some(process.uid);
+        if let Some((_uid, gid)) = resolve_credentials(process.pid) {
+            attribution.gid = Some(gid);
+        }
+        Some(attribution)
     }
 
     fn refresh(&self) -> Result<()> {
@@ -196,6 +299,10 @@ impl ProcessLookup for MacOSProcessLookup {
         // The reason PKTAP wasn't used is injected by the application (which
         // learns it from the capture layer); see `super::report_pktap_degradation`.
         super::pktap_degradation()
+    }
+
+    fn get_attribution_backend(&self) -> AttributionBackend {
+        AttributionBackend::Lsof
     }
 }
 
@@ -346,6 +453,111 @@ fn decode_lsof_string(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustnet_core::network::types::{ProtocolState, TcpState};
+
+    fn tcp_connection(local: &str, remote: &str) -> Connection {
+        Connection::new(
+            Protocol::Tcp,
+            local.parse().unwrap(),
+            remote.parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        )
+    }
+
+    #[test]
+    fn lsof_numeric_uid_and_exact_match_reach_rich_attribution() {
+        let output = "\
+COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+curl\\x20helper 4294967295 501 9u IPv4 0x1 0t0 TCP 127.0.0.1:5000->1.1.1.1:443 (ESTABLISHED)
+";
+        let lookup = MacOSProcessLookup {
+            cache: RwLock::new(MacOSProcessLookup::parse_lsof_output(output)),
+        };
+        let conn = tcp_connection("127.0.0.1:5000", "1.1.1.1:443");
+
+        let attribution = lookup.get_process_attribution(&conn).unwrap();
+
+        assert_eq!(attribution.tgid, u32::MAX);
+        assert_eq!(attribution.name, "curl helper");
+        assert_eq!(attribution.uid, Some(501));
+        assert_eq!(attribution.gid, None);
+        assert_eq!(attribution.executable, None);
+        assert_eq!(attribution.backend, AttributionBackend::Lsof);
+        assert_eq!(attribution.quality, MatchQuality::ExactTuple);
+        assert_eq!(
+            lookup.get_process_for_connection(&conn),
+            Some((u32::MAX, "curl helper".to_string()))
+        );
+    }
+
+    #[test]
+    fn lsof_relaxed_lookup_preserves_match_quality() {
+        let output = "\
+COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+server 4294967295 0 3u IPv4 0x1 0t0 TCP *:8080 (LISTEN)
+";
+        let lookup = MacOSProcessLookup {
+            cache: RwLock::new(MacOSProcessLookup::parse_lsof_output(output)),
+        };
+        let conn = tcp_connection("127.0.0.1:8080", "203.0.113.7:45000");
+
+        let attribution = lookup.get_process_attribution(&conn).unwrap();
+
+        assert_eq!(attribution.uid, Some(0));
+        assert_eq!(attribution.quality, MatchQuality::ListenerSocket);
+    }
+
+    #[test]
+    fn lsof_parser_requires_the_numeric_uid_enabled_by_dash_l() {
+        let output = "\
+COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+server 42 root 3u IPv4 0x1 0t0 TCP 127.0.0.1:8080 (LISTEN)
+";
+
+        assert!(MacOSProcessLookup::parse_lsof_output(output).is_empty());
+    }
+
+    #[test]
+    fn libproc_resolves_the_current_process() {
+        let pid = std::process::id();
+        let executable = resolve_executable(pid).expect("current executable should resolve");
+        assert!(executable.is_absolute());
+        assert_eq!(executable, std::env::current_exe().unwrap());
+
+        let credentials = resolve_credentials(pid).expect("current credentials should resolve");
+        // SAFETY: these libc calls only read the credentials of this process.
+        let expected = unsafe { (libc::geteuid(), libc::getegid()) };
+        assert_eq!(credentials, expected);
+    }
+
+    #[test]
+    fn libproc_failure_keeps_optional_fields_empty() {
+        assert_eq!(resolve_executable(u32::MAX), None);
+        assert_eq!(resolve_credentials(u32::MAX), None);
+    }
+
+    #[test]
+    fn real_lsof_scan_attributes_an_unprivileged_listener() {
+        use std::net::{Ipv4Addr, TcpListener};
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let local = listener.local_addr().unwrap();
+        let lookup = MacOSProcessLookup::new().unwrap();
+        lookup.refresh().expect("lsof scan should succeed");
+        let conn = tcp_connection(&local.to_string(), "0.0.0.0:0");
+
+        let attribution = lookup
+            .get_process_attribution(&conn)
+            .expect("the current process listener should be attributable");
+        // SAFETY: this libc call only reads the effective UID of this process.
+        let expected_uid = unsafe { libc::geteuid() };
+
+        assert_eq!(attribution.tgid, std::process::id());
+        assert_eq!(attribution.uid, Some(expected_uid));
+        assert_eq!(attribution.executable, std::env::current_exe().ok());
+        assert_eq!(attribution.backend, AttributionBackend::Lsof);
+        assert_eq!(attribution.quality, MatchQuality::ExactTuple);
+    }
 
     #[test]
     fn test_decode_lsof_string() {

@@ -8,8 +8,8 @@
 //!
 //! - **Linux** — eBPF socket tracking (with the `ebpf` feature) and a procfs
 //!   fallback.
-//! - **macOS** — PKTAP packet metadata when available (capture provides it
-//!   directly, so lookup is a no-op), otherwise `lsof`.
+//! - **macOS**: PKTAP packet metadata when available, enriched through libproc,
+//!   otherwise `lsof` plus libproc.
 //! - **Windows** — kernel ETW events with an IP Helper API
 //!   (`GetExtendedTcpTable`/`...UdpTable`) fallback.
 //! - **FreeBSD** — `sockstat`.
@@ -47,6 +47,10 @@ pub enum AttributionBackend {
     EbpfKprobe,
     /// Linux procfs socket-table scanning.
     Procfs,
+    /// macOS PKTAP packet metadata.
+    Pktap,
+    /// macOS `lsof` socket-table scanning.
+    Lsof,
     /// A platform-native backend outside the Linux eBPF stack.
     #[default]
     PlatformNative,
@@ -58,6 +62,8 @@ impl std::fmt::Display for AttributionBackend {
             Self::EbpfFentry => "eBPF fentry/fexit",
             Self::EbpfKprobe => "eBPF kprobe",
             Self::Procfs => "procfs",
+            Self::Pktap => "PKTAP",
+            Self::Lsof => "lsof",
             Self::PlatformNative => "platform native",
         };
         f.write_str(name)
@@ -94,8 +100,8 @@ pub use rustnet_core::network::types::MatchQuality;
 ///
 /// Everything past `tgid`/`name` is best effort: a backend fills in what it
 /// actually observed and leaves the rest `None` rather than guessing. Only the
-/// Linux eBPF backends currently report thread ids, credentials, and an
-/// observation timestamp.
+/// Linux eBPF backends currently report thread ids and an observation
+/// timestamp. Linux and macOS can report credentials and executable paths.
 ///
 /// Marked `#[non_exhaustive]` because cgroup and container fields are expected
 /// to land here later. Build values with [`ProcessAttribution::new`] plus the
