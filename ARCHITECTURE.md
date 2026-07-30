@@ -235,13 +235,15 @@ RustNet uses platform-specific APIs to associate network connections with proces
 
 **PKTAP Mode (with sudo):**
 - Uses PKTAP (Packet Tap) kernel interface
-- Extracts process information directly from packet metadata
+- Extracts PID and process name directly from packet metadata
+- Uses libproc to add the executable path and effective UID/GID
 - Requires root privileges (privileged kernel interface)
 - Faster and more accurate than lsof
 
 **lsof Mode (without sudo or fallback):**
-- Uses `lsof -i -n -P` to list network connections
-- Parses output to associate sockets with processes
+- Uses `lsof -i -n -P -l` to list network connections with numeric UIDs
+- Parses output to associate sockets with processes, then uses libproc for the
+  executable path
 - Higher CPU overhead but works without root
 - Used automatically when PKTAP is unavailable
 

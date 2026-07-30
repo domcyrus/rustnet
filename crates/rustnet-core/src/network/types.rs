@@ -22,7 +22,8 @@ use std::time::{Duration, Instant, SystemTime};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum MatchQuality {
-    /// The full 4-tuple matched a recorded socket.
+    /// Attribution is tied to the observed flow without relaxation, either by
+    /// an exact 4-tuple match or by per-packet process metadata.
     ExactTuple,
     /// Matched only after zeroing the local address, i.e. the socket was
     /// recorded while bound to a wildcard address.

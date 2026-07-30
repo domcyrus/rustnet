@@ -1169,7 +1169,7 @@ mod snapshot_tests {
     }
 
     /// QUIC rides on UDP, so the Details tab used to label its Transport
-    /// Health card with TCP loss counters that can never be filled in — packet
+    /// Health card with TCP loss counters that can never be filled in, because packet
     /// numbers and ACK frames sit behind QUIC's header protection. The card
     /// must show what is actually observable instead, without changing height.
     #[test]
