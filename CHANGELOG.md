@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   snapshots stay allocation-free. Long paths shorten from the middle at render time
   (`/nix/store/…/bin/hello`), keeping the location prefix and the basename visible,
   and a leading `$HOME` renders as `~`; click-to-copy still yields the full
-  path (#506, #511)
+  path (#506, #511, #512)
 
 ### Changed
 - **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF
