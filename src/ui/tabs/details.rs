@@ -18,7 +18,6 @@ use crossterm::event::{KeyEvent, MouseEvent};
 #[cfg(unix)]
 use std::{
     collections::HashMap,
-    ffi::CStr,
     mem::MaybeUninit,
     ptr,
     sync::{Mutex, OnceLock},
@@ -192,30 +191,53 @@ static USER_NAMES: OnceLock<Mutex<HashMap<u32, Option<String>>>> = OnceLock::new
 static GROUP_NAMES: OnceLock<Mutex<HashMap<u32, Option<String>>>> = OnceLock::new();
 
 #[cfg(unix)]
+fn account_name_from_buffer(name: *const libc::c_char, buffer: &[libc::c_char]) -> Option<String> {
+    if name.is_null() {
+        return None;
+    }
+
+    let buffer_start = buffer.as_ptr() as usize;
+    let buffer_end = buffer_start.checked_add(buffer.len())?;
+    let name_address = name as usize;
+    if !(buffer_start..buffer_end).contains(&name_address) {
+        return None;
+    }
+
+    let name_start = name_address - buffer_start;
+    let name_len = buffer[name_start..].iter().position(|byte| *byte == 0)?;
+    let name_bytes: Vec<u8> = buffer[name_start..name_start + name_len]
+        .iter()
+        .map(|byte| byte.to_ne_bytes()[0])
+        .collect();
+    Some(String::from_utf8_lossy(&name_bytes).into_owned())
+}
+
+#[cfg(unix)]
 fn resolve_user_name(uid: u32) -> Option<String> {
     let mut buffer: Vec<libc::c_char> = vec![0; 1024];
     loop {
         let mut entry = MaybeUninit::<libc::passwd>::uninit();
+        let entry_ptr = entry.as_mut_ptr();
         let mut result = ptr::null_mut();
         // SAFETY: `entry` and `buffer` are writable for the sizes supplied,
         // and `result` is an out-pointer inspected only after a successful call.
         let status = unsafe {
             libc::getpwuid_r(
                 uid,
-                entry.as_mut_ptr(),
+                entry_ptr,
                 buffer.as_mut_ptr(),
                 buffer.len(),
                 &mut result,
             )
         };
         if status == 0 {
-            if result.is_null() {
+            if result != entry_ptr {
                 return None;
             }
-            // SAFETY: a non-null result from successful `getpwuid_r` points to
-            // the initialized entry, whose name is NUL-terminated in `buffer`.
-            let name = unsafe { CStr::from_ptr((*result).pw_name) };
-            return Some(name.to_string_lossy().into_owned());
+            // SAFETY: a successful `getpwuid_r` that returns `entry_ptr`
+            // initialized the caller-owned entry.
+            let entry = unsafe { entry.assume_init() };
+            return account_name_from_buffer(entry.pw_name, &buffer);
         }
         if status != libc::ERANGE || buffer.len() >= 1024 * 1024 {
             return None;
@@ -229,26 +251,27 @@ fn resolve_group_name(gid: u32) -> Option<String> {
     let mut buffer: Vec<libc::c_char> = vec![0; 1024];
     loop {
         let mut entry = MaybeUninit::<libc::group>::uninit();
+        let entry_ptr = entry.as_mut_ptr();
         let mut result = ptr::null_mut();
         // SAFETY: `entry` and `buffer` are writable for the sizes supplied,
         // and `result` is an out-pointer inspected only after a successful call.
         let status = unsafe {
             libc::getgrgid_r(
                 gid,
-                entry.as_mut_ptr(),
+                entry_ptr,
                 buffer.as_mut_ptr(),
                 buffer.len(),
                 &mut result,
             )
         };
         if status == 0 {
-            if result.is_null() {
+            if result != entry_ptr {
                 return None;
             }
-            // SAFETY: a non-null result from successful `getgrgid_r` points to
-            // the initialized entry, whose name is NUL-terminated in `buffer`.
-            let name = unsafe { CStr::from_ptr((*result).gr_name) };
-            return Some(name.to_string_lossy().into_owned());
+            // SAFETY: a successful `getgrgid_r` that returns `entry_ptr`
+            // initialized the caller-owned entry.
+            let entry = unsafe { entry.assume_init() };
+            return account_name_from_buffer(entry.gr_name, &buffer);
         }
         if status != libc::ERANGE || buffer.len() >= 1024 * 1024 {
             return None;
@@ -2337,5 +2360,39 @@ mod path_shortening_tests {
         let group = super::resolve_group_name(gid).expect("current group must resolve");
 
         assert_eq!(format_user_group(uid, Some(gid)), format!("{user}:{group}"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn account_name_must_be_terminated_inside_the_supplied_buffer() {
+        let buffer = [
+            b'x' as libc::c_char,
+            b'm' as libc::c_char,
+            b'a' as libc::c_char,
+            b'r' as libc::c_char,
+            b'c' as libc::c_char,
+            b'o' as libc::c_char,
+            0,
+        ];
+        assert_eq!(
+            super::account_name_from_buffer(buffer[1..].as_ptr(), &buffer).as_deref(),
+            Some("marco")
+        );
+
+        let external = [b'x' as libc::c_char, 0];
+        assert_eq!(
+            super::account_name_from_buffer(external.as_ptr(), &buffer),
+            None
+        );
+        assert_eq!(
+            super::account_name_from_buffer(std::ptr::null(), &buffer),
+            None
+        );
+
+        let unterminated = [b'n' as libc::c_char, b'o' as libc::c_char];
+        assert_eq!(
+            super::account_name_from_buffer(unterminated.as_ptr(), &unterminated),
+            None
+        );
     }
 }
