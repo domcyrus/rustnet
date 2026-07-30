@@ -36,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`/nix/store/…/bin/hello`), keeping the location prefix and the basename visible,
   and a leading `$HOME` renders as `~`; click-to-copy still yields the full
   path (#506, #511, #512)
+- **Rich macOS Process Attribution**: PKTAP keeps its kernel-provided per-packet PID
+  and process name, marks the result as an exact PKTAP attribution, and uses libproc
+  to add the executable path and effective UID/GID. The lsof fallback requests and
+  parses numeric UIDs, resolves executable paths through libproc, and reports exact,
+  wildcard-address, or listener match quality. Packet-seeded PKTAP connections now
+  receive one rich-enrichment pass without making permanently unavailable optional
+  fields hot-loop retries (#510)
 
 ### Changed
 - **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF
