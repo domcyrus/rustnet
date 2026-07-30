@@ -129,9 +129,11 @@ impl FreeBSDProcessLookup {
             return None;
         }
 
-        // FreeBSD stores the effective GID as the first supplementary-group
-        // entry. Fall back to the real GID only for the structurally unusual
-        // case where the kernel reports no groups.
+        // The kernel exports the effective GID as `ki_groups[0]`
+        // (`fill_kinfo_proc` copies `cr_gid` there first), a convention kept
+        // even after the FreeBSD 15 ucred rework moved the effective GID out
+        // of `cr_groups`. Fall back to the real GID only for the structurally
+        // unusual case where the kernel reports no groups.
         let gid = if info.ki_ngroups > 0 {
             info.ki_groups[0]
         } else {

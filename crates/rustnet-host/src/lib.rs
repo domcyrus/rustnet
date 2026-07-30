@@ -6,11 +6,11 @@
 //! strategy behind one [`ProcessLookup`] trait, selected by
 //! [`create_process_lookup`]:
 //!
-//! - **Linux** — eBPF socket tracking (with the `ebpf` feature) and a procfs
+//! - **Linux**: eBPF socket tracking (with the `ebpf` feature) and a procfs
 //!   fallback.
 //! - **macOS**: PKTAP packet metadata when available, enriched through libproc,
 //!   otherwise `lsof` plus libproc.
-//! - **Windows** — kernel ETW events with an IP Helper API
+//! - **Windows**: kernel ETW events with an IP Helper API
 //!   (`GetExtendedTcpTable`/`...UdpTable`) fallback.
 //! - **FreeBSD**: `sockstat` enriched with native `sysctl` process metadata.
 //!

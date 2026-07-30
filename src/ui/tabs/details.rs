@@ -212,18 +212,32 @@ fn account_name_from_buffer(name: *const libc::c_char, buffer: &[libc::c_char]) 
     Some(String::from_utf8_lossy(&name_bytes).into_owned())
 }
 
+/// Resolve an account id to its name through a `getpwuid_r`-shaped libc call.
+///
+/// `name_of` projects the name pointer out of a resolved entry; the name
+/// itself is read from `buffer` only after bounds validation.
 #[cfg(unix)]
-fn resolve_user_name(uid: u32) -> Option<String> {
+fn resolve_account_name<T>(
+    id: u32,
+    getter: unsafe extern "C" fn(
+        u32,
+        *mut T,
+        *mut libc::c_char,
+        libc::size_t,
+        *mut *mut T,
+    ) -> libc::c_int,
+    name_of: fn(&T) -> *const libc::c_char,
+) -> Option<String> {
     let mut buffer: Vec<libc::c_char> = vec![0; 1024];
     loop {
-        let mut entry = MaybeUninit::<libc::passwd>::uninit();
+        let mut entry = MaybeUninit::<T>::uninit();
         let entry_ptr = entry.as_mut_ptr();
         let mut result = ptr::null_mut();
         // SAFETY: `entry` and `buffer` are writable for the sizes supplied,
         // and `result` is an out-pointer inspected only after a successful call.
         let status = unsafe {
-            libc::getpwuid_r(
-                uid,
+            getter(
+                id,
                 entry_ptr,
                 buffer.as_mut_ptr(),
                 buffer.len(),
@@ -234,79 +248,52 @@ fn resolve_user_name(uid: u32) -> Option<String> {
             if result != entry_ptr {
                 return None;
             }
-            // SAFETY: a successful `getpwuid_r` that returns `entry_ptr`
-            // initialized the caller-owned entry.
+            // SAFETY: a successful lookup that returns `entry_ptr` initialized
+            // the caller-owned entry.
             let entry = unsafe { entry.assume_init() };
-            return account_name_from_buffer(entry.pw_name, &buffer);
+            return account_name_from_buffer(name_of(&entry), &buffer);
         }
         if status != libc::ERANGE || buffer.len() >= 1024 * 1024 {
             return None;
         }
         buffer.resize(buffer.len() * 2, 0);
     }
+}
+
+#[cfg(unix)]
+fn resolve_user_name(uid: u32) -> Option<String> {
+    resolve_account_name(uid, libc::getpwuid_r, |entry: &libc::passwd| {
+        entry.pw_name.cast_const()
+    })
 }
 
 #[cfg(unix)]
 fn resolve_group_name(gid: u32) -> Option<String> {
-    let mut buffer: Vec<libc::c_char> = vec![0; 1024];
-    loop {
-        let mut entry = MaybeUninit::<libc::group>::uninit();
-        let entry_ptr = entry.as_mut_ptr();
-        let mut result = ptr::null_mut();
-        // SAFETY: `entry` and `buffer` are writable for the sizes supplied,
-        // and `result` is an out-pointer inspected only after a successful call.
-        let status = unsafe {
-            libc::getgrgid_r(
-                gid,
-                entry_ptr,
-                buffer.as_mut_ptr(),
-                buffer.len(),
-                &mut result,
-            )
-        };
-        if status == 0 {
-            if result != entry_ptr {
-                return None;
-            }
-            // SAFETY: a successful `getgrgid_r` that returns `entry_ptr`
-            // initialized the caller-owned entry.
-            let entry = unsafe { entry.assume_init() };
-            return account_name_from_buffer(entry.gr_name, &buffer);
-        }
-        if status != libc::ERANGE || buffer.len() >= 1024 * 1024 {
-            return None;
-        }
-        buffer.resize(buffer.len() * 2, 0);
-    }
+    resolve_account_name(gid, libc::getgrgid_r, |entry: &libc::group| {
+        entry.gr_name.cast_const()
+    })
 }
 
+/// Names are resolved once per id and cached for the process lifetime,
+/// including failures. The first lookup can stall a frame on hosts backed by
+/// directory services, and a later account rename stays stale; both are
+/// acceptable for a TUI session.
 #[cfg(unix)]
-fn cached_user_name(uid: u32) -> Option<String> {
-    let cache = USER_NAMES.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(name) = cache.lock().expect("user name cache poisoned").get(&uid) {
+fn cached_account_name(
+    cache: &'static OnceLock<Mutex<HashMap<u32, Option<String>>>>,
+    id: u32,
+    resolve: fn(u32) -> Option<String>,
+) -> Option<String> {
+    let cache = cache.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(name) = cache.lock().expect("account name cache poisoned").get(&id) {
         return name.clone();
     }
 
-    let name = resolve_user_name(uid);
+    let name = resolve(id);
     cache
         .lock()
-        .expect("user name cache poisoned")
-        .insert(uid, name.clone());
-    name
-}
-
-#[cfg(unix)]
-fn cached_group_name(gid: u32) -> Option<String> {
-    let cache = GROUP_NAMES.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(name) = cache.lock().expect("group name cache poisoned").get(&gid) {
-        return name.clone();
-    }
-
-    let name = resolve_group_name(gid);
-    cache
-        .lock()
-        .expect("group name cache poisoned")
-        .insert(gid, name.clone());
+        .expect("account name cache poisoned")
+        .insert(id, name.clone());
     name
 }
 
@@ -326,12 +313,12 @@ fn user_group_label(
 
 pub(in crate::ui) fn format_user_group(uid: u32, gid: Option<u32>) -> String {
     #[cfg(unix)]
-    let user_name = cached_user_name(uid);
+    let user_name = cached_account_name(&USER_NAMES, uid, resolve_user_name);
     #[cfg(not(unix))]
     let user_name = None;
 
     #[cfg(unix)]
-    let group_name = gid.and_then(cached_group_name);
+    let group_name = gid.and_then(|gid| cached_account_name(&GROUP_NAMES, gid, resolve_group_name));
     #[cfg(not(unix))]
     let group_name = None;
 

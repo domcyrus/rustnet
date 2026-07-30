@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and resolve `/proc/<tgid>/exe` in user space; the enhanced cache stores
   the full result, so metadata and match quality survive the first lookup. Platforms
   that only implement the legacy tuple API are bridged automatically, so
-  `get_process_for_connection()` keeps working everywhere (#505)
+  `get_process_for_connection()` keeps working everywhere (#505, #513)
 - **Process Identity, User, and Match Quality in the UI and Exports**: Connections now
   carry the owning process's PPID, executable path, effective UID/GID, and how
   confidently the attribution matched. The Attribution card in the Details pane
@@ -36,18 +36,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bulk connection snapshots stay allocation-free. Long paths shorten from the middle at render time
   (`/nix/store/…/bin/hello`), keeping the location prefix and the basename visible,
   and a leading `$HOME` renders as `~`; click-to-copy still yields the full
-  path (#506, #511, #512)
+  path (#506, #511, #512, #513)
 - **Rich macOS Process Attribution**: PKTAP keeps its kernel-provided per-packet PID
   and process name, marks the result as an exact PKTAP attribution, and uses libproc
   to add the PPID, executable path, and effective UID/GID. The lsof fallback
   requests and parses numeric UIDs, resolves executable paths through libproc, and
   reports exact, wildcard-address, or listener match quality. Packet-seeded PKTAP connections now
   receive one rich-enrichment pass without making permanently unavailable optional
-  fields hot-loop retries (#510)
+  fields hot-loop retries (#510, #513)
 - **Rich FreeBSD Process Attribution**: `sockstat` ownership is enriched through
   native `KERN_PROC_PID` and `KERN_PROC_PATHNAME` sysctl queries with PPID,
   effective UID/GID, and executable path. Process details are cached by PID for
-  each socket-table refresh.
+  each socket-table refresh (#513)
 
 ### Changed
 - **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF
