@@ -4,7 +4,8 @@
 //! managed table of [`Connection`]s. It owns everything needed to turn a stream
 //! of [`ParsedPacket`]s into the same connection view the `rustnet` TUI shows —
 //! the active table, an archive of recently-closed ("historic") connections,
-//! RTT estimation from TCP SYN/SYN-ACK timing, QUIC connection-ID coalescing,
+//! RTT estimation from TCP SYN/SYN-ACK and QUIC handshake timing, QUIC
+//! connection-ID coalescing,
 //! and timeout-based cleanup — **without** any UI, capture, or process-lookup
 //! dependency.
 //!
@@ -42,7 +43,9 @@
 
 use crate::network::merge::{create_connection_from_packet, merge_packet_into_connection};
 use crate::network::parser::ParsedPacket;
-use crate::network::types::{ApplicationProtocol, Connection, ConnectionKey, Protocol, RttTracker};
+use crate::network::types::{
+    ApplicationProtocol, Connection, ConnectionKey, Protocol, QuicPacketType, RttTracker,
+};
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
 use std::collections::HashMap;
@@ -59,6 +62,23 @@ const RECENTLY_CLOSED_TTL: Duration = Duration::from_secs(30);
 /// not strip them and reopen the phantom-connection window. Entries are a
 /// key and a timestamp; the TTL above bounds how long any of them live.
 const RECENTLY_CLOSED_MIN_ENTRIES: usize = 1024;
+
+/// Whether a QUIC packet belongs to the handshake exchange that RTT timing
+/// pairs up.
+///
+/// 0-RTT is deliberately excluded: it is client-only application data sent
+/// alongside the Initial, so treating it as a fresh send would restart the
+/// timer and report a fraction of the real round trip. 1-RTT packets carry a
+/// short header and reveal nothing to time against.
+fn is_quic_handshake_packet(packet_type: QuicPacketType) -> bool {
+    matches!(
+        packet_type,
+        QuicPacketType::Initial
+            | QuicPacketType::Handshake
+            | QuicPacketType::Retry
+            | QuicPacketType::VersionNegotiation
+    )
+}
 
 /// The active connection table: flow key -> connection.
 ///
@@ -146,7 +166,9 @@ pub struct IngestOutcome {
     pub out_of_order: u64,
     /// New TCP fast-retransmits detected by this packet.
     pub fast_retransmits: u64,
-    /// An RTT sample, if this packet was a TCP SYN-ACK that matched a prior SYN.
+    /// An RTT sample, if this packet completed a handshake round trip: a TCP
+    /// SYN-ACK matching a prior SYN, or a QUIC handshake packet answering one
+    /// sent the other way.
     pub measured_rtt: Option<Duration>,
 }
 
@@ -208,8 +230,16 @@ impl ConnectionTracker {
     /// Use this for deterministic offline processing (pcap replay, tests): pass
     /// the packet's capture timestamp so `created_at`/`last_activity` and the
     /// `cleanup` timeout sweep operate on trace time, not real time.
+    ///
+    /// Live callers should pass each packet's own capture timestamp too, not one
+    /// clock read shared across a batch of packets. Handshake RTT is the
+    /// difference between two packets' `now` values, so a shared timestamp
+    /// collapses every round trip that completes within one batch to zero.
     pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
-        // Track RTT for TCP connections using SYN/SYN-ACK timing.
+        // Track RTT for TCP connections using SYN/SYN-ACK timing, and for QUIC
+        // using the long-header handshake exchange. Everything QUIC sends after
+        // the handshake is behind header protection, so this initial flight is
+        // the only round trip an on-path observer can time.
         let mut measured_rtt: Option<Duration> = None;
         let base_key = parsed.connection_key();
         if parsed.protocol == Protocol::Tcp
@@ -217,14 +247,21 @@ impl ConnectionTracker {
         {
             if tcp_header.flags.syn && !tcp_header.flags.ack {
                 if let Ok(mut tracker) = self.rtt.lock() {
-                    tracker.record_syn(base_key);
+                    tracker.record_syn(base_key, now);
                 }
             } else if tcp_header.flags.syn
                 && tcp_header.flags.ack
                 && let Ok(mut tracker) = self.rtt.lock()
             {
-                measured_rtt = tracker.record_syn_ack(&base_key);
+                measured_rtt = tracker.record_syn_ack(&base_key, now);
             }
+        } else if parsed.protocol == Protocol::Udp
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::Quic(quic) = &dpi.application
+            && is_quic_handshake_packet(quic.packet_type)
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            measured_rtt = tracker.record_quic_handshake(base_key, parsed.is_outgoing, now);
         }
 
         // A read guard makes ordinary packet updates atomic with cleanup. The
@@ -807,6 +844,188 @@ mod tests {
             process_name: None,
             process_id: None,
         }
+    }
+
+    fn quic_packet(packet_type: QuicPacketType, is_outgoing: bool) -> ParsedPacket {
+        use crate::network::dpi::DpiResult;
+        use crate::network::types::{ProtocolState, QuicInfo};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let mut quic = QuicInfo::new(1);
+        quic.packet_type = packet_type;
+
+        ParsedPacket {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
+            protocol_state: ProtocolState::Udp,
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 1_200,
+            dpi_result: Some(DpiResult {
+                application: ApplicationProtocol::Quic(Box::new(quic)),
+            }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// Capture time for a packet `millis` into a synthetic trace. Tests drive
+    /// `ingest_at` with these rather than the wall clock so an RTT assertion
+    /// pins a real duration instead of however long the test loop took.
+    fn capture_time(millis: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000) + Duration::from_millis(millis)
+    }
+
+    /// QUIC's handshake is the only round trip an on-path observer can time,
+    /// so the client Initial and the server's reply must pair up into the
+    /// connection's initial RTT the way SYN/SYN-ACK does for TCP.
+    ///
+    /// The RTT must come from the packets' capture timestamps. Capture hands
+    /// packets to processing in batches spanning up to 100 packets or 100ms, so
+    /// a handshake this quick is processed as one microseconds-wide burst; a
+    /// tracker that read its own clock would report 0.0ms here.
+    #[test]
+    fn quic_handshake_exchange_measures_initial_rtt() {
+        let tracker = ConnectionTracker::new();
+
+        let client_initial =
+            tracker.ingest_at(&quic_packet(QuicPacketType::Initial, true), capture_time(0));
+        assert!(
+            client_initial.measured_rtt.is_none(),
+            "the opening Initial has nothing to pair with yet"
+        );
+
+        let server_initial = tracker.ingest_at(
+            &quic_packet(QuicPacketType::Initial, false),
+            capture_time(18),
+        );
+        assert_eq!(
+            server_initial.measured_rtt,
+            Some(Duration::from_millis(18)),
+            "the RTT is the gap between the two capture timestamps"
+        );
+        assert_eq!(
+            tracker
+                .connections()
+                .get(&server_initial.key)
+                .and_then(|conn| conn.initial_rtt),
+            Some(Duration::from_millis(18)),
+            "the measured RTT should land on the connection"
+        );
+    }
+
+    /// A repeated client Initial is a retransmission, not a reply, so it must
+    /// not be read as a completed round trip.
+    #[test]
+    fn repeated_quic_initial_in_one_direction_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&quic_packet(QuicPacketType::Initial, true), capture_time(0));
+        let retransmit = tracker.ingest_at(
+            &quic_packet(QuicPacketType::Initial, true),
+            capture_time(250),
+        );
+        assert!(retransmit.measured_rtt.is_none());
+        assert!(
+            tracker
+                .connections()
+                .get(&retransmit.key)
+                .and_then(|conn| conn.initial_rtt)
+                .is_none()
+        );
+    }
+
+    /// rustnet watches from an endpoint, so an arriving packet followed by this
+    /// host's own answer spans no network at all — it times the local stack's
+    /// turnaround. Only an outbound packet may start the clock.
+    ///
+    /// A server's first flight is several datagrams, so this ordering shows up
+    /// on ordinary connections once the first datagram has been paired off.
+    #[test]
+    fn inbound_quic_handshake_packet_does_not_start_the_clock() {
+        let tracker = ConnectionTracker::new();
+
+        tracker.ingest_at(
+            &quic_packet(QuicPacketType::Handshake, false),
+            capture_time(0),
+        );
+        let local_reply = tracker.ingest_at(
+            &quic_packet(QuicPacketType::Handshake, true),
+            capture_time(1),
+        );
+        assert!(
+            local_reply.measured_rtt.is_none(),
+            "this host's own turnaround is not a round trip"
+        );
+        assert!(
+            tracker
+                .connections()
+                .get(&local_reply.key)
+                .and_then(|conn| conn.initial_rtt)
+                .is_none()
+        );
+    }
+
+    /// Once the client Initial has been paired with the server's first
+    /// datagram, the rest of the server's flight must not overwrite the real
+    /// measurement with a local-turnaround one.
+    #[test]
+    fn later_server_flight_does_not_replace_the_handshake_rtt() {
+        let tracker = ConnectionTracker::new();
+
+        tracker.ingest_at(&quic_packet(QuicPacketType::Initial, true), capture_time(0));
+        tracker.ingest_at(
+            &quic_packet(QuicPacketType::Initial, false),
+            capture_time(18),
+        );
+
+        // Remainder of the server's first flight, then this host's ACK.
+        tracker.ingest_at(
+            &quic_packet(QuicPacketType::Handshake, false),
+            capture_time(19),
+        );
+        let ack = tracker.ingest_at(
+            &quic_packet(QuicPacketType::Handshake, true),
+            capture_time(19),
+        );
+        assert!(ack.measured_rtt.is_none());
+
+        assert_eq!(
+            tracker
+                .connections()
+                .get(&ack.key)
+                .and_then(|conn| conn.initial_rtt),
+            Some(Duration::from_millis(18))
+        );
+    }
+
+    /// 1-RTT packets carry a short header with nothing timeable in the clear.
+    #[test]
+    fn quic_one_rtt_packets_do_not_measure_rtt() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&quic_packet(QuicPacketType::OneRtt, true), capture_time(0));
+        let inbound = tracker.ingest_at(
+            &quic_packet(QuicPacketType::OneRtt, false),
+            capture_time(18),
+        );
+        assert!(inbound.measured_rtt.is_none());
+    }
+
+    /// The TCP handshake is timed from capture timestamps for the same reason
+    /// the QUIC one is: SYN and SYN-ACK routinely land in a single batch.
+    #[test]
+    fn tcp_handshake_rtt_comes_from_capture_timestamps() {
+        let tracker = ConnectionTracker::new();
+
+        tracker.ingest_at(
+            &tcp_packet(true, false, false, false, true),
+            capture_time(0),
+        );
+        let syn_ack = tracker.ingest_at(
+            &tcp_packet(true, true, false, false, false),
+            capture_time(12),
+        );
+        assert_eq!(syn_ack.measured_rtt, Some(Duration::from_millis(12)));
     }
 
     #[test]

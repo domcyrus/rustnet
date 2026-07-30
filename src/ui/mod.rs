@@ -1168,6 +1168,115 @@ mod snapshot_tests {
         });
     }
 
+    /// QUIC rides on UDP, so the Details tab used to label its Transport
+    /// Health card with TCP loss counters that can never be filled in — packet
+    /// numbers and ACK frames sit behind QUIC's header protection. The card
+    /// must show what is actually observable instead, without changing height.
+    #[test]
+    fn details_tab_quic_shows_transport_health_without_tcp_counters() {
+        use crate::network::types::{
+            ApplicationProtocol, DpiInfo, QuicCloseInfo, QuicConnectionState, QuicInfo,
+            QuicPacketType,
+        };
+
+        let app = test_app();
+        let mut connections = sample_connections();
+        let mut quic = QuicInfo::new(1);
+        quic.packet_type = QuicPacketType::OneRtt;
+        quic.connection_state = QuicConnectionState::Connected;
+        quic.idle_timeout = Some(Duration::from_secs(30));
+        quic.connection_close = Some(QuicCloseInfo {
+            frame_type: 0x1d,
+            error_code: 0x100,
+        });
+
+        let quic_conn = &mut connections[1];
+        quic_conn.remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(142, 250, 74, 138)), 443);
+        quic_conn.service_name = Some("https".to_string());
+        quic_conn.process_name = Some("firefox".to_string());
+        quic_conn.initial_rtt = Some(Duration::from_micros(23_400));
+        quic_conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Quic(Box::new(quic)),
+            last_update_time: std::time::Instant::now(),
+        });
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1, // Details
+            selected_connection_key: Some(connections[1].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw details");
+        });
+
+        for tcp_only in [
+            "TCP Retransmits",
+            "Out-of-Order Packets",
+            "Duplicate ACKs",
+            "Fast Retransmits",
+            "Window Size",
+        ] {
+            assert!(
+                !output.contains(tcp_only),
+                "{tcp_only} is a TCP counter and cannot be measured on a QUIC flow"
+            );
+        }
+        assert!(
+            output.contains("23.4ms"),
+            "QUIC handshake RTT should fill the Initial RTT row"
+        );
+        assert!(output.contains("Idle Timeout") && output.contains("30s"));
+        assert!(output.contains("Connection Close") && output.contains("application 0x100"));
+        assert!(
+            output.contains("Loss counters are encrypted in QUIC"),
+            "the card should say why the loss counters are absent"
+        );
+
+        // The card must not resize between protocols: Traffic Statistics is
+        // anchored below Transport Health, so a shorter QUIC card would pull
+        // the whole lower half of the dashboard upward.
+        let tcp_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let tcp_output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &tcp_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw details");
+        });
+        let heading_row = |render: &str, heading: &str| {
+            render
+                .lines()
+                .position(|line| line.contains(heading))
+                .unwrap_or_else(|| panic!("missing {heading}"))
+        };
+        assert_eq!(
+            heading_row(&output, "Traffic Statistics"),
+            heading_row(&tcp_output, "Traffic Statistics"),
+            "Traffic Statistics moved between the QUIC and TCP records"
+        );
+    }
+
     #[test]
     fn details_tab_keeps_section_anchors_across_metadata_shapes() {
         let app = test_app();
