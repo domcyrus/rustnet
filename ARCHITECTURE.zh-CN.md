@@ -207,17 +207,16 @@ RustNet 使用平台特定的 API 将网络连接与进程关联：
 **标准模式（procfs）：**
 - 解析 `/proc/net/tcp` 和 `/proc/net/udp` 获取 socket inode
 - 遍历 `/proc/<pid>/fd/` 查找 socket 文件描述符
-- 将 inode 映射到进程 ID，并从 `/proc/<pid>/cmdline` 解析进程名
-- 从 `/proc/<pid>/status` 解析 PPID
+- 将 inode 映射到进程 ID，并从 `/proc/<pid>/comm` 解析进程名，同时借助可执行文件名恢复被 `comm` 截断的名称
+- 从 `/proc/<pid>/` 解析可执行路径、PPID 以及 UID/GID
 
 **eBPF 模式（Linux 默认）：**
 - 使用附加到 socket 系统调用的内核 eBPF 程序
 - 捕获带进程上下文的 socket 创建事件
 - 比 procfs 扫描开销更低
+- 记录进程组组长的 TGID、当前线程的 TID 以及凭据；进程名、可执行路径和 PPID 在用户态通过 procfs 富化
 - **局限性：**
-  - 进程名限制为 16 个字符（内核 `comm` 字段）
-  - 可能显示线程名而非完整可执行文件名
-  - 多线程应用显示内部线程名
+  - 进程名来源于内核 16 字符的 `comm` 字段；RustNet 会通过 `/proc/<tgid>/comm` 重新解析，并借助可执行文件名恢复被截断的名称，但在富化前就已退出的进程仍保留 eBPF 记录的短名称
 - **Linux capabilities 需求：**
   - 现代 Linux（5.8+）：`CAP_NET_RAW`（包捕获）、`CAP_BPF`、`CAP_PERFMON`（eBPF）
 	  - 旧版 Linux（pre-5.8）：eBPF 需要宽泛的 `CAP_SYS_ADMIN`；RustNet 安装包不会自动授予它，并会回退到 procfs

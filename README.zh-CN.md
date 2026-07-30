@@ -54,22 +54,16 @@ RustNet 与抓包工具是互补关系。用 RustNet 看清*谁在发起连接*�
 <details>
 <summary><b>基于 eBPF 的增强型进程识别(Linux 默认)</b></summary>
 
-RustNet 在 Linux 上默认使用内核 eBPF 程序进行进程识别，从而获得更高的性能与更低的开销。但这种方式也有一些重要的限制需要了解：
+RustNet 在 Linux 上默认使用内核 eBPF 程序进行进程识别，从而获得更高的性能与更低的开销。
 
-**进程名长度限制：**
-- eBPF 使用内核的 `comm` 字段，该字段最多只有 16 个字符
-- 显示的是任务 / 线程的命令名，而非完整的可执行路径
-- 多线程应用往往展示线程名而非主进程名
-
-**真实场景示例：**
-- **Firefox**：可能显示为 "Socket Thread"、"Web Content"、"Isolated Web Co" 或 "MainThread"
-- **Chrome**：可能显示为 "ThreadPoolForeg"、"Chrome_IOThread"、"BrokerProcess" 或 "SandboxHelper"
-- **Electron 应用**：经常显示为 "electron"、"node" 或内部线程名
-- **系统进程**：展示截断后的名字，如 "systemd-resolve" → "systemd-resolve"
+**进程名：**
+- eBPF 记录的是进程组组长的 TGID 和 `comm` 名称（内核字段，最多 16 个字符），而非当前线程的名称，因此多线程应用显示的是主进程名，而不是 "Socket Thread" 之类的线程名
+- RustNet 随后会通过 `/proc/<tgid>/comm` 重新解析当前名称，并借助可执行文件名恢复被 `comm` 截断的名称（例如 "chromium-browse" 会恢复为 "chromium-browser"），同时解析完整可执行路径并显示在详情视图中
+- 在该富化流程运行前就已退出的短命进程，仍保留 eBPF 记录的 16 字符名称
 
 **回退行为：**
 - 当 eBPF 加载失败或权限不足时，RustNet 会自动回退到基于 procfs 的标准进程识别方式
-- 标准模式可以拿到完整进程名，但 CPU 开销更高
+- 标准模式通过 procfs 扫描以同样的方式解析进程名，但 CPU 开销更高
 - eBPF 默认启用，无需任何特殊编译参数
 
 如需关闭 eBPF、仅使用 procfs 模式，请这样构建：

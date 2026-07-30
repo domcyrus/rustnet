@@ -212,17 +212,16 @@ RustNet uses platform-specific APIs to associate network connections with proces
 **Standard Mode (procfs):**
 - Parses `/proc/net/tcp` and `/proc/net/udp` to get socket inodes
 - Iterates through `/proc/<pid>/fd/` to find socket file descriptors
-- Maps inodes to process IDs and resolves process names from `/proc/<pid>/cmdline`
-- Resolves the PPID from `/proc/<pid>/status`
+- Maps inodes to process IDs and resolves process names from `/proc/<pid>/comm`, recovering comm-truncated names from the executable's file name
+- Resolves the executable path, PPID, and UID/GID from `/proc/<pid>/`
 
 **eBPF Mode (Default on Linux):**
 - Uses kernel eBPF programs attached to socket syscalls
 - Captures socket creation events with process context
 - Provides lower overhead than procfs scanning
+- Records the group leader's TGID, the acting TID, and credentials; the name, executable path, and PPID are enriched in user space via procfs
 - **Limitations:**
-  - Process names limited to 16 characters (kernel `comm` field)
-  - May show thread names instead of full executable names
-  - Multi-threaded applications show internal thread names
+  - Names originate from the 16-character kernel `comm` field; RustNet re-resolves them via `/proc/<tgid>/comm` and recovers truncated names from the executable's file name, but processes that exit before enrichment keep the short eBPF-recorded name
 - **Capability requirements:**
   - Modern Linux (5.8+): `CAP_NET_RAW` (packet capture), `CAP_BPF`, `CAP_PERFMON` (eBPF)
   - Legacy Linux (pre-5.8): eBPF requires broad `CAP_SYS_ADMIN`; RustNet packages do not grant it automatically and fall back to procfs instead

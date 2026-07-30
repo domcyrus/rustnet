@@ -22,7 +22,7 @@ use super::ebpf::EbpfSocketTracker;
 mod ebpf_enhanced {
     use super::*;
     use crate::linux::ebpf::SocketMatch;
-    use crate::linux::process::{resolve_executable, resolve_parent_pid};
+    use crate::linux::process::{refine_truncated_name, resolve_executable, resolve_parent_pid};
     use rustnet_core::network::types::ProtocolState;
 
     /// Enhanced process lookup that combines eBPF (fast path) with procfs (fallback)
@@ -210,8 +210,10 @@ mod ebpf_enhanced {
                 .unwrap_or_else(|| info.comm.clone());
 
             // Resolve the executable now, while the process is most likely
-            // still around. Failure is not an attribution failure.
+            // still around. Failure is not an attribution failure. A
+            // comm-truncated name is recovered from the executable's file name.
             let executable = resolve_executable(info.pid);
+            let name = refine_truncated_name(name, executable.as_deref());
             let ppid = resolve_parent_pid(info.pid);
 
             debug!(
