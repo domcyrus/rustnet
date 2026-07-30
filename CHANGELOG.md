@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the full result, so metadata and match quality survive the first lookup. Platforms
   that only implement the legacy tuple API are bridged automatically, so
   `get_process_for_connection()` keeps working everywhere (#505)
+- **Executable, User, and Match Quality in the UI and Exports**: Connections now
+  carry the owning process's executable path, effective UID/GID, and how confidently
+  the attribution matched. A new Attribution card in the Details pane shows them, and
+  appears only when a backend actually resolved something, so platforms that cannot
+  supply a field show nothing rather than a permanent placeholder. A relaxed
+  wildcard or listener match renders in the warning color instead of passing for a
+  proven one. The JSONL sidecar gains `process_executable`, `process_uid`,
+  `process_gid`, and `attribution_match`; PCAPNG packet comments gain `uid=` and
+  `attr=` but deliberately omit the executable path, which would repeat in every
+  packet block. Executable paths are interned behind an `Arc`, so bulk connection
+  snapshots stay allocation-free
 
 ### Changed
 - **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF

@@ -85,48 +85,10 @@ bitflags::bitflags! {
 /// therefore have to relax the key, and the caller deserves to know that it
 /// did: a relaxed hit is a plausible owner, not a proven one.
 ///
-/// Marked `#[non_exhaustive]` so new relaxation shapes can be added without
-/// breaking downstream `match` arms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum MatchQuality {
-    /// The full 4-tuple matched a recorded socket.
-    ExactTuple,
-    /// Matched only after zeroing the local address, i.e. the socket was
-    /// recorded while bound to a wildcard address.
-    WildcardLocalAddress,
-    /// Matched a listening socket (the recorded entry has no remote peer).
-    ListenerSocket,
-    /// Exact 4-tuple match in the procfs socket table.
-    ProcfsExact,
-    /// procfs match that needed a relaxed key.
-    ProcfsRelaxed,
-    /// The backend reported an owner but not how it matched. Produced by the
-    /// compatibility bridge in [`ProcessLookup::get_process_attribution`] for
-    /// platforms that still only implement the tuple API.
-    Unspecified,
-}
-
-impl MatchQuality {
-    /// Whether the connection's exact 4-tuple was found, with no relaxation.
-    pub fn is_exact(self) -> bool {
-        matches!(self, Self::ExactTuple | Self::ProcfsExact)
-    }
-}
-
-impl std::fmt::Display for MatchQuality {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let name = match self {
-            Self::ExactTuple => "exact tuple",
-            Self::WildcardLocalAddress => "wildcard local address",
-            Self::ListenerSocket => "listener socket",
-            Self::ProcfsExact => "procfs exact",
-            Self::ProcfsRelaxed => "procfs relaxed",
-            Self::Unspecified => "unspecified",
-        };
-        f.write_str(name)
-    }
-}
+/// Defined in `rustnet-core` because [`Connection`] carries it and this crate
+/// depends on core, not the other way round. Re-exported here so attribution
+/// callers only need one import.
+pub use rustnet_core::network::types::MatchQuality;
 
 /// A rich process-attribution result.
 ///

@@ -16,7 +16,7 @@ use ratatui::{
 use crossterm::event::{KeyEvent, MouseEvent};
 
 use crate::network::dns::DnsResolver;
-use crate::network::types::{Connection, Protocol, ProtocolState};
+use crate::network::types::{Connection, MatchQuality, Protocol, ProtocolState};
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER,
@@ -657,6 +657,67 @@ pub(in crate::ui) fn draw_connection_details(
         label_style,
         location_value_style,
     );
+
+    // Richer process attribution, when the platform's lookup could resolve it.
+    // Rendered like the Kubernetes block below: each row appears only when the
+    // backend actually observed that field, and the whole section disappears
+    // when none of them did. That keeps platforms which structurally cannot
+    // supply a field (no executable path, no uid) from showing a permanent
+    // placeholder, and keeps this section out of the fixed-height card
+    // geometry that `APPLICATION_CARD_ROWS` anchors.
+    let has_attribution = conn.executable.is_some()
+        || conn.process_uid.is_some()
+        || conn.attribution_quality.is_some();
+    if has_attribution {
+        let process_value_style = theme::fg(theme::field_process());
+        push_detail_section(&mut details_text, &mut detail_fields, "Attribution");
+
+        if let Some(ref executable) = conn.executable {
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Executable",
+                executable.display().to_string(),
+                label_style,
+                process_value_style,
+            );
+        }
+        if let Some(uid) = conn.process_uid {
+            // Numeric rather than resolved: a name lookup would mean parsing
+            // the passwd database on every render, and uid 0 is the case that
+            // actually matters at a glance.
+            let user = match conn.process_gid {
+                Some(gid) => format!("{uid}:{gid}"),
+                None => uid.to_string(),
+            };
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "User",
+                user,
+                label_style,
+            );
+        }
+        if let Some(quality) = conn.attribution_quality {
+            // A relaxed match is a plausible owner, not a proven one, so it
+            // reads as a warning rather than as confirmed fact.
+            let quality_color = if quality.is_exact() {
+                theme::ok()
+            } else if quality == MatchQuality::Unspecified {
+                theme::muted()
+            } else {
+                theme::warn()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Match",
+                quality.to_string(),
+                label_style,
+                theme::fg(quality_color),
+            );
+        }
+    }
 
     // Kubernetes attribution (pod / container) when the owning process is in
     // a kubepods cgroup. Only rendered when the resolver populated `k8s_info`.

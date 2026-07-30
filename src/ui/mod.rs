@@ -1168,6 +1168,100 @@ mod snapshot_tests {
         });
     }
 
+    /// The Attribution section follows the Kubernetes pattern: it appears only
+    /// when a backend actually resolved something, so platforms that cannot
+    /// supply a field never show a permanent placeholder.
+    #[test]
+    fn details_tab_shows_attribution_only_when_resolved() {
+        use crate::network::types::MatchQuality;
+        use std::path::Path;
+        use std::sync::Arc;
+
+        let app = test_app();
+        let mut connections = sample_connections();
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+
+        let render_connections = |connections: &[Connection]| {
+            let ui_state = UIState {
+                selected_tab: 1,
+                selected_connection_key: Some(connections[0].key()),
+                ..Default::default()
+            };
+            let mut click_regions = ClickableRegions::default();
+            render(140, 40, |f| {
+                draw(
+                    f,
+                    &app,
+                    &ui_state,
+                    connections,
+                    None,
+                    &stats,
+                    &mut click_regions,
+                )
+                .expect("draw details");
+            })
+        };
+
+        let unattributed = render_connections(&connections);
+        assert!(
+            !unattributed.contains("Attribution"),
+            "an unattributed connection must not render an empty Attribution card"
+        );
+
+        connections[0].executable = Some(Arc::from(Path::new("/usr/lib/firefox/firefox")));
+        connections[0].process_uid = Some(1000);
+        connections[0].process_gid = Some(1000);
+        connections[0].attribution_quality = Some(MatchQuality::ExactTuple);
+        app.set_connections_snapshot_for_test(connections.clone());
+
+        let attributed = render_connections(&connections);
+        assert!(attributed.contains("Attribution"));
+        assert!(attributed.contains("/usr/lib/firefox/firefox"));
+        assert!(attributed.contains("1000:1000"));
+        assert!(attributed.contains("exact tuple"));
+    }
+
+    /// Partial attribution is the common case off Linux: render the fields that
+    /// resolved and leave the rest out entirely.
+    #[test]
+    fn details_tab_renders_partial_attribution() {
+        use crate::network::types::MatchQuality;
+
+        let app = test_app();
+        let mut connections = sample_connections();
+        connections[0].attribution_quality = Some(MatchQuality::ListenerSocket);
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw details");
+        });
+
+        assert!(output.contains("Attribution"));
+        assert!(output.contains("listener socket"));
+        assert!(
+            !output.contains("Executable"),
+            "an unresolved executable must not leave a labelled blank row"
+        );
+        assert!(!output.contains("User "));
+    }
+
     #[test]
     fn details_tab_keeps_section_anchors_across_metadata_shapes() {
         let app = test_app();
