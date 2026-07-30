@@ -34,6 +34,19 @@ pub(crate) fn resolve_credentials(tgid: u32) -> Option<(u32, u32)> {
     Some((metadata.uid(), metadata.gid()))
 }
 
+/// Read the parent process id from `/proc/<tgid>/status`.
+///
+/// This is resolved in user space for both procfs and eBPF socket matches. It
+/// remains best effort because a short-lived process may exit before
+/// enrichment runs.
+pub(crate) fn resolve_parent_pid(tgid: u32) -> Option<u32> {
+    let status = fs::read_to_string(format!("/proc/{tgid}/status")).ok()?;
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:"))
+        .and_then(|value| value.trim().parse().ok())
+}
+
 /// Map of socket inode to (PID, process name)
 type InodeProcessMap = HashMap<u64, (u32, String)>;
 /// Map of PID to process name
@@ -147,8 +160,12 @@ impl LinuxProcessLookup {
     /// from `/proc/<tgid>/comm` during the scan, so the tuple and rich APIs
     /// report the same name for the same match.
     fn build_attribution(tgid: u32, name: String, quality: MatchQuality) -> ProcessAttribution {
-        let attribution = ProcessAttribution::new(tgid, name, AttributionBackend::Procfs, quality)
-            .with_executable(resolve_executable(tgid));
+        let mut attribution =
+            ProcessAttribution::new(tgid, name, AttributionBackend::Procfs, quality)
+                .with_executable(resolve_executable(tgid));
+        if let Some(ppid) = resolve_parent_pid(tgid) {
+            attribution = attribution.with_parent_pid(ppid);
+        }
 
         match resolve_credentials(tgid) {
             Some((uid, gid)) => attribution.with_credentials(uid, gid),
@@ -415,6 +432,17 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_parent_of_a_live_process() {
+        let expected = u32::try_from(unsafe { libc::getppid() }).unwrap();
+        assert_eq!(resolve_parent_pid(own_pid()), Some(expected));
+    }
+
+    #[test]
+    fn missing_process_has_no_parent() {
+        assert_eq!(resolve_parent_pid(u32::MAX), None);
+    }
+
+    #[test]
     fn exact_socket_table_hit_is_reported_as_an_exact_procfs_match() {
         let mut table = HashMap::new();
         table.insert(
@@ -432,6 +460,10 @@ mod tests {
         assert_eq!(attribution.quality, MatchQuality::ProcfsExact);
         assert_eq!(attribution.backend, AttributionBackend::Procfs);
         assert_eq!(attribution.executable, std::env::current_exe().ok());
+        assert_eq!(
+            attribution.ppid,
+            Some(u32::try_from(unsafe { libc::getppid() }).unwrap())
+        );
         assert_eq!(attribution.uid, Some(unsafe { libc::geteuid() }));
         assert_eq!(attribution.gid, Some(unsafe { libc::getegid() }));
         // procfs is a socket-table snapshot: no thread id, no observation time.
@@ -506,6 +538,10 @@ mod tests {
         assert_eq!(attribution.quality, MatchQuality::ProcfsExact);
         assert_eq!(attribution.backend, AttributionBackend::Procfs);
         assert_eq!(attribution.executable, std::env::current_exe().ok());
+        assert_eq!(
+            attribution.ppid,
+            Some(u32::try_from(unsafe { libc::getppid() }).unwrap())
+        );
         assert_eq!(attribution.uid, Some(unsafe { libc::geteuid() }));
         assert_eq!(attribution.gid, Some(unsafe { libc::getegid() }));
         assert!(!attribution.name.is_empty());

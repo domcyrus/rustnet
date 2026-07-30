@@ -2422,6 +2422,9 @@ pub struct Connection {
 
     // Process information
     pub pid: Option<u32>,
+    /// Parent process id of the owning process, when it was still available
+    /// during attribution.
+    pub process_ppid: Option<u32>,
     pub process_name: Option<String>,
     /// Absolute path of the owning process's executable, when the platform can
     /// resolve it.
@@ -2516,6 +2519,7 @@ impl Connection {
             remote_addr,
             protocol_state: state,
             pid: None,
+            process_ppid: None,
             process_name: None,
             executable: None,
             process_uid: None,
@@ -3352,6 +3356,7 @@ mod tests {
         );
         let executable: Arc<Path> = Arc::from(Path::new("/usr/bin/curl"));
         conn.executable = Some(Arc::clone(&executable));
+        conn.process_ppid = Some(999);
         conn.process_uid = Some(1000);
         conn.process_gid = Some(100);
         conn.attribution_quality = Some(MatchQuality::ExactTuple);
@@ -3359,6 +3364,7 @@ mod tests {
         let snap = conn.snapshot_clone();
 
         assert_eq!(snap.executable.as_deref(), Some(Path::new("/usr/bin/curl")));
+        assert_eq!(snap.process_ppid, Some(999));
         assert_eq!(snap.process_uid, Some(1000));
         assert_eq!(snap.process_gid, Some(100));
         assert_eq!(snap.attribution_quality, Some(MatchQuality::ExactTuple));
@@ -3381,6 +3387,7 @@ mod tests {
         );
 
         assert!(conn.executable.is_none());
+        assert!(conn.process_ppid.is_none());
         assert!(conn.process_uid.is_none());
         assert!(conn.process_gid.is_none());
         assert!(conn.attribution_quality.is_none());

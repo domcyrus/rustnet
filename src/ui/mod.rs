@@ -1277,11 +1277,10 @@ mod snapshot_tests {
         );
     }
 
-    /// The Attribution section follows the Kubernetes pattern: it appears only
-    /// when a backend actually resolved something, so platforms that cannot
-    /// supply a field never show a permanent placeholder.
+    /// The Attribution section repeats PID beside the richer process fields so
+    /// the identity remains visible as one self-contained block.
     #[test]
-    fn details_tab_shows_attribution_only_when_resolved() {
+    fn details_tab_shows_complete_process_attribution() {
         use crate::network::types::MatchQuality;
         use std::path::Path;
         use std::sync::Arc;
@@ -1298,7 +1297,7 @@ mod snapshot_tests {
                 ..Default::default()
             };
             let mut click_regions = ClickableRegions::default();
-            render(140, 40, |f| {
+            render(140, 52, |f| {
                 draw(
                     f,
                     &app,
@@ -1312,12 +1311,15 @@ mod snapshot_tests {
             })
         };
 
+        connections[0].pid = None;
         let unattributed = render_connections(&connections);
         assert!(
             !unattributed.contains("Attribution"),
             "an unattributed connection must not render an empty Attribution card"
         );
 
+        connections[0].pid = Some(2001);
+        connections[0].process_ppid = Some(1900);
         connections[0].executable = Some(Arc::from(Path::new("/usr/lib/firefox/firefox")));
         connections[0].process_uid = Some(1000);
         connections[0].process_gid = Some(1000);
@@ -1326,8 +1328,9 @@ mod snapshot_tests {
 
         let attributed = render_connections(&connections);
         assert!(attributed.contains("Attribution"));
+        assert!(attributed.contains("1900"));
         assert!(attributed.contains("/usr/lib/firefox/firefox"));
-        assert!(attributed.contains("1000:1000"));
+        assert!(attributed.contains(&tabs::details::format_user_group(1000, Some(1000))));
         assert!(attributed.contains("exact tuple"));
     }
 

@@ -208,6 +208,7 @@ RustNet 使用平台特定的 API 将网络连接与进程关联：
 - 解析 `/proc/net/tcp` 和 `/proc/net/udp` 获取 socket inode
 - 遍历 `/proc/<pid>/fd/` 查找 socket 文件描述符
 - 将 inode 映射到进程 ID，并从 `/proc/<pid>/cmdline` 解析进程名
+- 从 `/proc/<pid>/status` 解析 PPID
 
 **eBPF 模式（Linux 默认）：**
 - 使用附加到 socket 系统调用的内核 eBPF 程序
@@ -231,19 +232,26 @@ RustNet 使用平台特定的 API 将网络连接与进程关联：
 **PKTAP 模式（使用 sudo 时）：**
 - 使用 PKTAP（Packet Tap）内核接口
 - 直接从包元数据提取 PID 和进程名称
-- 使用 libproc 补充可执行文件路径和有效 UID/GID
+- 使用 libproc 补充 PPID、可执行文件路径和有效 UID/GID
 - 需要 root 特权（特权内核接口）
 - 比 lsof 更快更准确
 
 **lsof 模式（无 sudo 或回退时）：**
 - 使用 `lsof -i -n -P -l` 列出网络连接及数字 UID
-- 解析输出以将 socket 与进程关联，然后使用 libproc 获取可执行文件路径
+- 解析输出以将 socket 与进程关联，然后使用 libproc 获取 PPID 和可执行文件路径
 - CPU 开销更高，但无需 root
 - 当 PKTAP 不可用时自动使用
 
 **检测：**
 - TUI 统计面板根据当前方法显示 "pktap" 或 "lsof"
 - 自动选择最佳可用方法
+
+#### FreeBSD
+
+- 使用 `sockstat` 将 TCP 和 UDP socket 关联到进程
+- 使用原生 `KERN_PROC_PID` 和 `KERN_PROC_PATHNAME` sysctl 查询补充
+  PPID、有效 UID/GID 和可执行文件路径
+- 在每次 socket 表刷新周期内按 PID 缓存进程详情
 
 #### Windows
 

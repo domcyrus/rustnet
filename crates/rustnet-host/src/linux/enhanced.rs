@@ -22,7 +22,7 @@ use super::ebpf::EbpfSocketTracker;
 mod ebpf_enhanced {
     use super::*;
     use crate::linux::ebpf::SocketMatch;
-    use crate::linux::process::resolve_executable;
+    use crate::linux::process::{resolve_executable, resolve_parent_pid};
     use rustnet_core::network::types::ProtocolState;
 
     /// Enhanced process lookup that combines eBPF (fast path) with procfs (fallback)
@@ -189,8 +189,9 @@ mod ebpf_enhanced {
         /// Turn a socket-map hit into a rich attribution.
         ///
         /// Everything the kernel recorded is carried through unchanged: TGID,
-        /// TID, credentials, and the monotonic observation timestamp. Only the
-        /// process name and executable path are resolved in user space.
+        /// TID, credentials, and the monotonic observation timestamp. The
+        /// process name, parent PID, and executable path are resolved in user
+        /// space.
         fn attribution_from_ebpf(
             &self,
             matched: SocketMatch,
@@ -211,10 +212,12 @@ mod ebpf_enhanced {
             // Resolve the executable now, while the process is most likely
             // still around. Failure is not an attribution failure.
             let executable = resolve_executable(info.pid);
+            let ppid = resolve_parent_pid(info.pid);
 
             debug!(
-                "eBPF attribution: TGID {}, TID {}, UID {}, GID {}, eBPF comm {}, resolved {}, exe {:?}, {} match, observed {}ns (monotonic)",
+                "eBPF attribution: TGID {}, PPID {:?}, TID {}, UID {}, GID {}, eBPF comm {}, resolved {}, exe {:?}, {} match, observed {}ns (monotonic)",
                 info.pid,
+                ppid,
                 info.tid,
                 info.uid,
                 info.gid,
@@ -225,11 +228,15 @@ mod ebpf_enhanced {
                 info.timestamp
             );
 
-            ProcessAttribution::new(info.pid, name, backend, quality)
+            let mut attribution = ProcessAttribution::new(info.pid, name, backend, quality)
                 .with_tid(info.tid)
                 .with_credentials(info.uid, info.gid)
                 .with_executable(executable)
-                .with_observed_at_ns(info.timestamp)
+                .with_observed_at_ns(info.timestamp);
+            if let Some(ppid) = ppid {
+                attribution = attribution.with_parent_pid(ppid);
+            }
+            attribution
         }
 
         fn try_ebpf_lookup(&self, conn: &Connection) -> Option<ProcessAttribution> {
@@ -578,6 +585,7 @@ mod ebpf_enhanced {
                 AttributionBackend::EbpfFentry,
                 MatchQuality::WildcardLocalAddress,
             )
+            .with_parent_pid(4000)
             .with_tid(4299)
             .with_credentials(1000, 100)
             .with_executable(Some(PathBuf::from("/usr/bin/curl")))

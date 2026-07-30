@@ -13,7 +13,7 @@ best strategy each platform offers, with graceful fallbacks:
   plus libproc.
 - **Windows**: kernel ETW events with an IP Helper API
   (`GetExtendedTcpTable` / `...UdpTable`) fallback.
-- **FreeBSD**: `sockstat`.
+- **FreeBSD**: `sockstat`, enriched through native `sysctl` process metadata.
 
 ```rust
 use rustnet_host::create_process_lookup;
@@ -30,9 +30,10 @@ instead:
 ```rust
 if let Some(attribution) = lookup.get_process_attribution(&conn) {
     println!(
-        "{} ({}) uid={:?} exe={:?} via {} ({} match)",
+        "{} ({}) ppid={:?} uid={:?} exe={:?} via {} ({} match)",
         attribution.name,
         attribution.tgid,
+        attribution.ppid,
         attribution.uid,
         attribution.executable,
         attribution.backend,
@@ -43,21 +44,27 @@ if let Some(attribution) = lookup.get_process_attribution(&conn) {
 
 `MatchQuality` records how the connection was matched, so a relaxed
 wildcard/listener guess is never mistaken for a proven 4-tuple hit; use
-`quality.is_exact()` to tell them apart. On Linux the eBPF backends also fill in
-the thread id, effective UID/GID, and an observation timestamp taken from a
-**monotonic** clock (`bpf_ktime_get_ns`), which is not wall-clock time. The
-executable path is resolved once from `/proc/<tgid>/exe`; an unreadable link
-yields `executable: None` and never fails the attribution.
+`quality.is_exact()` to tell them apart. Linux resolves PPID from procfs for
+both socket-table and eBPF matches. The eBPF backends also fill in the thread
+id, effective UID/GID, and an observation timestamp taken from a **monotonic**
+clock (`bpf_ktime_get_ns`), which is not wall-clock time. The executable path is
+resolved once from `/proc/<tgid>/exe`; an unreadable link yields
+`executable: None` and never fails the attribution.
 
 On macOS, PKTAP supplies an exact PID and process name with each packet. Libproc
-adds the executable path and effective UID/GID. The fallback parses numeric UIDs
-from `lsof -l` and uses libproc for the executable path. PKTAP reports
+adds the PPID, executable path, and effective UID/GID. The fallback parses
+numeric UIDs from `lsof -l` and uses libproc for the other process details.
+PKTAP reports
 `AttributionBackend::Pktap` with `MatchQuality::ExactTuple`; lsof reports whether
 its socket-table match was exact, wildcard-bound, or a listener.
 
-Platforms that have not been ported get a compatibility bridge over
+On FreeBSD, `sockstat` supplies the socket owner and native `sysctl` queries add
+the PPID, effective UID/GID, and executable path. Process details are cached by
+PID for each socket-table refresh.
+
+Windows gets a compatibility bridge over
 `get_process_for_connection()` reporting `MatchQuality::Unspecified`, so every
-existing caller and platform keeps working unchanged.
+existing caller keeps working unchanged.
 
 When a platform can't use its optimal method, `ProcessLookup::get_degradation_reason`
 reports why (e.g. missing `CAP_BPF`, no root for PKTAP) via `DegradationReason`,
