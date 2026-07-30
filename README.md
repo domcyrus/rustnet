@@ -54,22 +54,16 @@ Built on ratatui, libpcap, eBPF (libbpf-rs), DashMap, crossbeam, ring, MaxMind G
 <details>
 <summary><b>eBPF Enhanced Process Identification (Linux Default)</b></summary>
 
-RustNet uses kernel eBPF programs by default on Linux for enhanced performance and lower overhead process identification. However, this comes with important limitations:
+RustNet uses kernel eBPF programs by default on Linux for enhanced performance and lower overhead process identification.
 
-**Process Name Limitations:**
-- eBPF uses the kernel's `comm` field, which is limited to 16 characters
-- Shows the task/thread command name, not the full executable path
-- Multi-threaded applications often show thread names instead of the main process name
-
-**Real-world Examples:**
-- **Firefox**: May appear as "Socket Thread", "Web Content", "Isolated Web Co", or "MainThread"
-- **Chrome**: May appear as "ThreadPoolForeg", "Chrome_IOThread", "BrokerProcess", or "SandboxHelper"
-- **Electron apps**: Often show as "electron", "node", or internal thread names
-- **System processes**: Show truncated names like "systemd-resolve" → "systemd-resolve"
+**Process Names:**
+- eBPF records the process group leader's TGID and `comm` name (a kernel field limited to 16 characters) rather than the acting thread's name, so multi-threaded applications show the main process name instead of thread names like "Socket Thread"
+- RustNet then re-resolves the current name via `/proc/<tgid>/comm`, recovers comm-truncated names from the executable's file name (e.g. "chromium-browse" becomes "chromium-browser"), and resolves the full executable path shown in the Details view
+- Short-lived processes that exit before this enrichment runs keep the eBPF-recorded 16-character name
 
 **Fallback Behavior:**
 - When eBPF fails to load or lacks sufficient permissions, RustNet automatically falls back to standard procfs-based process identification
-- Standard mode provides full process names but with higher CPU overhead
+- Standard mode resolves names the same way via procfs scanning, but with higher CPU overhead
 - eBPF is enabled by default; no special build flags needed
 
 To disable eBPF and use procfs-only mode, build with:

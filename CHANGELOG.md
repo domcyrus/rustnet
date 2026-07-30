@@ -62,6 +62,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped on the capture workers after privileged initialization (#498)
 
 ### Fixed
+- **Comm-Truncated Linux Process Names**: The kernel `comm` field holds at most
+  15 bytes, so both the eBPF and procfs backends showed names like
+  "chromium-browse". When a name sits at that limit and the resolved
+  executable's file name strictly extends it, the executable name now wins
+  ("chromium-browse" becomes "chromium-browser"). Shorter names and interpreter
+  cases (comm "myscript", exe "python3") are left untouched, so deliberately
+  renamed comms keep working (#514)
 - **Initial RTT Measured Against The Wrong Clock**: `Initial RTT` in the Details
   pane reported round trips as `0.0ms`. RTT was timed with a clock read taken while
   processing a packet rather than from the packet's capture timestamp, and capture

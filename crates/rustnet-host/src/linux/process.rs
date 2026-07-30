@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::MetadataExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Instant;
 
@@ -32,6 +32,30 @@ pub(crate) fn resolve_executable(tgid: u32) -> Option<PathBuf> {
 pub(crate) fn resolve_credentials(tgid: u32) -> Option<(u32, u32)> {
     let metadata = fs::metadata(format!("/proc/{tgid}")).ok()?;
     Some((metadata.uid(), metadata.gid()))
+}
+
+/// Recover a comm-truncated process name from the executable's file name.
+///
+/// The kernel `comm` field holds at most 15 bytes, so both eBPF and the procfs
+/// scan see "chromium-browse" for chromium-browser. When a name sits exactly at
+/// that limit and the resolved executable's file name strictly extends it, the
+/// executable name is the untruncated original. Shorter names and interpreter
+/// cases (comm "myscript", exe "python3") never match and pass through
+/// unchanged.
+pub(crate) fn refine_truncated_name(name: String, executable: Option<&Path>) -> String {
+    const COMM_MAX: usize = 15;
+    if name.len() != COMM_MAX {
+        return name;
+    }
+    match executable
+        .and_then(|path| path.file_name())
+        .and_then(|file_name| file_name.to_str())
+    {
+        Some(basename) if basename.len() > COMM_MAX && basename.starts_with(name.as_str()) => {
+            basename.to_string()
+        }
+        _ => name,
+    }
 }
 
 /// Read the parent process id from `/proc/<tgid>/status`.
@@ -156,13 +180,14 @@ impl LinuxProcessLookup {
     /// Turn a procfs socket-table match into a rich attribution by reading the
     /// live `/proc/<tgid>` entries for the owner.
     ///
-    /// The name needs no extra work here: the socket table already sources it
-    /// from `/proc/<tgid>/comm` during the scan, so the tuple and rich APIs
-    /// report the same name for the same match.
+    /// The socket table sources the name from `/proc/<tgid>/comm` during the
+    /// scan, so a comm-truncated name is recovered from the executable here.
     fn build_attribution(tgid: u32, name: String, quality: MatchQuality) -> ProcessAttribution {
+        let executable = resolve_executable(tgid);
+        let name = refine_truncated_name(name, executable.as_deref());
         let mut attribution =
             ProcessAttribution::new(tgid, name, AttributionBackend::Procfs, quality)
-                .with_executable(resolve_executable(tgid));
+                .with_executable(executable);
         if let Some(ppid) = resolve_parent_pid(tgid) {
             attribution = attribution.with_parent_pid(ppid);
         }
@@ -401,6 +426,62 @@ mod tests {
     /// target with known credentials and a known executable.
     fn own_pid() -> u32 {
         std::process::id()
+    }
+
+    #[test]
+    fn truncated_comm_is_recovered_from_the_executable_name() {
+        assert_eq!(
+            refine_truncated_name(
+                "chromium-browse".to_string(),
+                Some(Path::new("/usr/lib/chromium/chromium-browser")),
+            ),
+            "chromium-browser"
+        );
+    }
+
+    #[test]
+    fn short_names_are_never_touched() {
+        // Below the 15-byte comm limit nothing was truncated, even when the
+        // executable name would extend it (a comm may be legitimately renamed).
+        assert_eq!(
+            refine_truncated_name(
+                "firefox".to_string(),
+                Some(Path::new("/usr/lib/firefox/firefox-esr")),
+            ),
+            "firefox"
+        );
+    }
+
+    #[test]
+    fn interpreter_executables_do_not_replace_the_comm() {
+        // comm at the limit but the executable is the interpreter, not an
+        // extension of the name: keep the comm.
+        assert_eq!(
+            refine_truncated_name(
+                "very-long-scrip".to_string(),
+                Some(Path::new("/usr/bin/python3")),
+            ),
+            "very-long-scrip"
+        );
+    }
+
+    #[test]
+    fn missing_executable_keeps_the_truncated_comm() {
+        assert_eq!(
+            refine_truncated_name("chromium-browse".to_string(), None),
+            "chromium-browse"
+        );
+    }
+
+    #[test]
+    fn executable_name_at_the_limit_is_not_an_extension() {
+        assert_eq!(
+            refine_truncated_name(
+                "chromium-browse".to_string(),
+                Some(Path::new("/opt/chromium-browse")),
+            ),
+            "chromium-browse"
+        );
     }
 
     #[test]

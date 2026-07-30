@@ -41,15 +41,26 @@ This document outlines the planned features and improvements for RustNet.
 The experimental eBPF support provides efficient process identification but has several areas for improvement:
 
 ### Current Limitations
-- **Process Names Limited to 16 Characters**: Uses kernel `comm` field, causing truncation (e.g., "Firefox" → "Socket Thread")
-- **Thread Names vs Process Names**: Shows thread command names instead of full executable names
+- **Name recovery is best effort**: Names originate from the kernel `comm`
+  field (15 bytes). RustNet re-resolves the group leader's current name via
+  `/proc/<tgid>/comm` and recovers comm-truncated names from the executable's
+  file name, but a process that exits before enrichment runs keeps the short
+  eBPF-recorded name.
 
 ### Planned Improvements
-- **Hybrid eBPF + Procfs Approach**: Use eBPF for connection tracking, selectively lookup full process names via procfs for better accuracy
-- **Full Executable Path Resolution**: Investigate accessing full process executable path from eBPF programs
-- **Better Process-Thread Mapping**: Improve mapping from thread IDs to parent process information
-- **Enhanced BTF Support**: Better compatibility across different kernel versions and distributions
-- **Performance Optimizations**: Reduce eBPF map lookups and improve connection-to-process matching efficiency
+- [x] **Hybrid eBPF + Procfs Approach**: eBPF handles connection tracking; the
+  process name, executable path, parent PID, and credentials are resolved in
+  user space via procfs right after a successful attribution.
+- [x] **Full Executable Path Resolution**: `/proc/<tgid>/exe` is resolved in
+  user space immediately after attribution; kernel-side resolution turned out
+  to be unnecessary.
+- [x] **Better Process-Thread Mapping**: eBPF records the group leader's TGID,
+  the acting TID, and the leader's comm separately; the display name is
+  re-resolved from `/proc/<tgid>/comm`, and comm truncation is recovered from
+  the executable's file name.
+- [x] **Enhanced BTF Support**: Covered by the fentry/fexit backend selection
+  below, which uses actual BTF, load, and attach results per kernel.
+- [ ] **Performance Optimizations**: Reduce eBPF map lookups and improve connection-to-process matching efficiency
 - [x] **Prefer fentry/fexit with legacy kprobe fallback**: RustNet now tries a
   BPF trampoline backend first, then legacy kprobes, then procfs. Selection uses
   actual BTF, load, and attach results. The modern backend avoids
@@ -94,9 +105,9 @@ The experimental eBPF support provides efficient process identification but has 
 - [x] **Cross-platform Support**: Works on Linux, macOS, Windows, and FreeBSD
 - [x] **DNS Reverse Lookup**: Add optional hostname resolution (toggle between IP and hostname display) - `--resolve-dns` flag with `d` key toggle
 - [ ] **IPv6 Support**: Full IPv6 connection tracking and display, including DNS resolution (needs testing)
-- [ ] **VLAN Tag Detection**: Parse 802.1Q VLAN tags from packet headers to identify VLAN configurations
+- [ ] **VLAN Tag Detection**: Surface 802.1Q VLAN IDs per connection. The Ethernet link-layer parser already parses VLAN tags to reach the inner packet (the VID is extracted and trace-logged); what remains is carrying the VID onto connections and showing it in the TUI
 - [ ] **Passive Host Discovery**: Infer local network hosts from observed ARP requests/replies and other broadcast traffic without active scanning
-- [ ] **MAC Vendor Lookup (OUI)**: Resolve MAC addresses to hardware vendor names using a local OUI database (e.g. "Apple", "Intel", "Ubiquiti")
+- [x] **MAC Vendor Lookup (OUI)**: Resolve MAC addresses to hardware vendor names using a local OUI database (e.g. "Apple", "Intel", "Ubiquiti") - shown in the Details view, database bundled in `rustnet-core`
 
 ### Filtering & Search
 
@@ -147,11 +158,11 @@ The experimental eBPF support provides efficient process identification but has 
   - Per-packet comments include process/PID, direction, DPI/SNI, and GeoIP/ASN when available
   - Uses true capture timestamps and bounded attribution retry
 - [ ] **Enhanced PCAP Metadata**: Richer process information in sidecar file
-  - Process executable full path (not just name)
-  - Command line arguments
-  - Working directory
-  - User/UID information
-  - Parent process information
+  - [x] Process executable full path (not just name)
+  - [ ] Command line arguments
+  - [ ] Working directory
+  - [x] User/UID information (UID and GID)
+  - [x] Parent process information (PPID)
 - [ ] **Configuration File**: Support for persistent configuration:
   - Custom color themes and UI styling
   - Default filters and sort preferences
@@ -162,7 +173,7 @@ The experimental eBPF support provides efficient process identification but has 
 - [ ] **Connection Alerts**: Notifications for new connections or suspicious activity
 - [x] **GeoIP Integration**: Geographical location of remote IPs
 - [x] **GeoIP City-Level Resolution**: Extend GeoIP to include city-level location data using GeoLite2-City database
-- [ ] **Protocol Statistics**: Summary view of protocol distribution
+- [x] **Protocol Statistics**: Summary view of protocol distribution (Graph tab shows application protocol distribution and TCP state distribution)
 - [ ] **Rate Limiting Detection**: Identify connections with unusual traffic patterns
 - [ ] **Bufferbloat Detection**: Measure latency under load to identify bufferbloat issues on the network
 - [ ] **PCAP Import/Replay**: Load a PCAP file (with optional JSON process attribution sidecar) and replay it in the TUI for offline analysis. Enables remote monitoring workflows: capture on a remote host with `--pcap-export`, transfer files, and replay locally with full process-attributed view
@@ -182,8 +193,8 @@ The experimental eBPF support provides efficient process identification but has 
 - [x] **Connection Grouping**: Group connections by process with expandable tree view (press `a` to toggle, aggregated stats, Space/arrows to expand/collapse)
 - [x] **Reset View**: Reset all view settings (grouping, sort, filter) with `r` key
 - [ ] **Resizable Columns**: Dynamic column width adjustment
-- [ ] **ASCII Graphs**: Terminal-based graphs for bandwidth/packet visualization
-- [ ] **Mouse Support**: Click to select connections
+- [x] **ASCII Graphs**: Terminal-based graphs for bandwidth/packet visualization (Graph tab with braille traffic chart and connections sparkline)
+- [x] **Mouse Support**: Click to select connections, double-click to open Details, clickable tab bar
 - [ ] **Split Pane View**: Show multiple views simultaneously
 
 ## Architecture
