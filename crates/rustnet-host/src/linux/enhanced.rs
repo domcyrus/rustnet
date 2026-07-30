@@ -1,7 +1,8 @@
 //! Enhanced Linux process lookup combining eBPF and procfs approaches
 
 use crate::{
-    AttributionBackend, AttributionCapabilities, ConnectionKey, DegradationReason, ProcessLookup,
+    AttributionBackend, AttributionCapabilities, ConnectionKey, DegradationReason,
+    ProcessAttribution, ProcessLookup,
 };
 
 use super::process::LinuxProcessLookup;
@@ -20,6 +21,8 @@ use super::ebpf::EbpfSocketTracker;
 #[cfg(feature = "ebpf")]
 mod ebpf_enhanced {
     use super::*;
+    use crate::linux::ebpf::SocketMatch;
+    use crate::linux::process::resolve_executable;
     use rustnet_core::network::types::ProtocolState;
 
     /// Enhanced process lookup that combines eBPF (fast path) with procfs (fallback)
@@ -34,7 +37,10 @@ mod ebpf_enhanced {
     }
 
     pub struct ProcessCache {
-        lookup: HashMap<ConnectionKey, (u32, String)>,
+        // Full attributions, not just (pid, name): caching the tuple would drop
+        // the credentials, thread id, executable path, and match quality on the
+        // first hit and silently downgrade every subsequent lookup.
+        lookup: HashMap<ConnectionKey, ProcessAttribution>,
         last_refresh: Instant,
     }
 
@@ -112,7 +118,7 @@ mod ebpf_enhanced {
         }
 
         /// Try eBPF lookup first, fall back to procfs
-        fn lookup_process_enhanced(&self, conn: &Connection) -> Option<(u32, String)> {
+        fn lookup_process_enhanced(&self, conn: &Connection) -> Option<ProcessAttribution> {
             // Try eBPF first for TCP/UDP/ICMP connections
             match conn.protocol {
                 Protocol::Tcp | Protocol::Udp => {
@@ -133,8 +139,8 @@ mod ebpf_enhanced {
                         let mut stats = self.stats.write().expect("stats lock poisoned");
                         stats.ebpf_hits += 1;
                         debug!(
-                            "Enhanced lookup: eBPF hit for PID {} ({})",
-                            result.0, result.1
+                            "Enhanced lookup: eBPF hit for PID {} ({}, {} match)",
+                            result.tgid, result.name, result.quality
                         );
                         return Some(result);
                     } else {
@@ -158,8 +164,8 @@ mod ebpf_enhanced {
                             let mut stats = self.stats.write().expect("stats lock poisoned");
                             stats.ebpf_hits += 1;
                             debug!(
-                                "Enhanced lookup: eBPF ICMP hit for PID {} ({})",
-                                result.0, result.1
+                                "Enhanced lookup: eBPF ICMP hit for PID {} ({}, {} match)",
+                                result.tgid, result.name, result.quality
                             );
                             return Some(result);
                         } else {
@@ -171,7 +177,7 @@ mod ebpf_enhanced {
             }
 
             // Fall back to procfs approach
-            if let Some(result) = self.procfs_lookup.get_process_for_connection(conn) {
+            if let Some(result) = self.procfs_lookup.get_process_attribution(conn) {
                 let mut stats = self.stats.write().expect("stats lock poisoned");
                 stats.procfs_hits += 1;
                 return Some(result);
@@ -180,105 +186,141 @@ mod ebpf_enhanced {
             None
         }
 
-        fn try_ebpf_lookup(&self, conn: &Connection) -> Option<(u32, String)> {
-            let mut tracker_guard = self
-                .ebpf_tracker
-                .write()
-                .expect("ebpf_tracker lock poisoned");
-            let tracker = match tracker_guard.as_mut() {
-                Some(t) => {
-                    debug!("eBPF lookup: Tracker available, performing lookup");
-                    t
-                }
-                None => {
-                    debug!("eBPF lookup: No tracker available");
-                    return None;
+        /// Turn a socket-map hit into a rich attribution.
+        ///
+        /// Everything the kernel recorded is carried through unchanged: TGID,
+        /// TID, credentials, and the monotonic observation timestamp. Only the
+        /// process name and executable path are resolved in user space.
+        fn attribution_from_ebpf(
+            &self,
+            matched: SocketMatch,
+            backend: AttributionBackend,
+        ) -> ProcessAttribution {
+            let SocketMatch { info, quality } = matched;
+
+            // eBPF captures the group leader's short comm at socket creation.
+            // /proc/<tgid>/comm is the current main-process name and wins when
+            // the process is still alive. Short-lived tools (curl, dig) have
+            // already exited by the time we look, so the eBPF comm is the
+            // fallback rather than the other way round.
+            let name = self
+                .procfs_lookup
+                .get_process_name_by_pid(info.pid)
+                .unwrap_or_else(|| info.comm.clone());
+
+            // Resolve the executable now, while the process is most likely
+            // still around. Failure is not an attribution failure.
+            let executable = resolve_executable(info.pid);
+
+            debug!(
+                "eBPF attribution: TGID {}, TID {}, UID {}, GID {}, eBPF comm {}, resolved {}, exe {:?}, {} match, observed {}ns (monotonic)",
+                info.pid,
+                info.tid,
+                info.uid,
+                info.gid,
+                info.comm,
+                name,
+                executable,
+                quality,
+                info.timestamp
+            );
+
+            ProcessAttribution::new(info.pid, name, backend, quality)
+                .with_tid(info.tid)
+                .with_credentials(info.uid, info.gid)
+                .with_executable(executable)
+                .with_observed_at_ns(info.timestamp)
+        }
+
+        fn try_ebpf_lookup(&self, conn: &Connection) -> Option<ProcessAttribution> {
+            // Scoped so the tracker write lock is released before
+            // attribution_from_ebpf touches /proc. Note `backend()` is read
+            // here rather than via get_attribution_backend(), which would take
+            // the same non-reentrant lock again.
+            let (matched, backend) = {
+                let mut tracker_guard = self
+                    .ebpf_tracker
+                    .write()
+                    .expect("ebpf_tracker lock poisoned");
+                let tracker = match tracker_guard.as_mut() {
+                    Some(t) => {
+                        debug!("eBPF lookup: Tracker available, performing lookup");
+                        t
+                    }
+                    None => {
+                        debug!("eBPF lookup: No tracker available");
+                        return None;
+                    }
+                };
+
+                let is_tcp = matches!(conn.protocol, Protocol::Tcp);
+                let backend = tracker.backend();
+
+                match tracker.lookup(
+                    conn.local_addr.ip(),
+                    conn.remote_addr.ip(),
+                    conn.local_addr.port(),
+                    conn.remote_addr.port(),
+                    is_tcp,
+                ) {
+                    Some(matched) => (matched, backend),
+                    None => {
+                        debug!(
+                            "eBPF lookup missed for {}:{} -> {}:{}",
+                            conn.local_addr.ip(),
+                            conn.local_addr.port(),
+                            conn.remote_addr.ip(),
+                            conn.remote_addr.port()
+                        );
+                        return None;
+                    }
                 }
             };
 
-            let is_tcp = matches!(conn.protocol, Protocol::Tcp);
-
-            match tracker.lookup(
-                conn.local_addr.ip(),
-                conn.remote_addr.ip(),
-                conn.local_addr.port(),
-                conn.remote_addr.port(),
-                is_tcp,
-            ) {
-                Some(process_info) => {
-                    // Try to resolve the correct main process name using the PID.
-                    // eBPF captures the group leader's short comm. The procfs cache
-                    // can provide a current main-process name from /proc/<pid>/comm.
-                    // For short-lived processes (like curl), the PID won't be in the
-                    // cache (process already exited), so we fall back to the eBPF name.
-                    let resolved_name = self
-                        .procfs_lookup
-                        .get_process_name_by_pid(process_info.pid)
-                        .unwrap_or_else(|| process_info.comm.clone());
-
-                    debug!(
-                        "eBPF lookup successful for {}:{} -> {}:{} - TGID: {}, TID: {}, UID: {}, GID: {}, eBPF comm: {}, Resolved: {}, observed: {}ns",
-                        conn.local_addr.ip(),
-                        conn.local_addr.port(),
-                        conn.remote_addr.ip(),
-                        conn.remote_addr.port(),
-                        process_info.pid,
-                        process_info.tid,
-                        process_info.uid,
-                        process_info.gid,
-                        process_info.comm,
-                        resolved_name,
-                        process_info.timestamp
-                    );
-                    Some((process_info.pid, resolved_name))
-                }
-                None => {
-                    debug!(
-                        "eBPF lookup missed for {}:{} -> {}:{}",
-                        conn.local_addr.ip(),
-                        conn.local_addr.port(),
-                        conn.remote_addr.ip(),
-                        conn.remote_addr.port()
-                    );
-                    None
-                }
-            }
+            Some(self.attribution_from_ebpf(matched, backend))
         }
 
-        fn try_ebpf_icmp_lookup(&self, conn: &Connection, icmp_id: u16) -> Option<(u32, String)> {
-            let mut tracker_guard = self
-                .ebpf_tracker
+        fn try_ebpf_icmp_lookup(
+            &self,
+            conn: &Connection,
+            icmp_id: u16,
+        ) -> Option<ProcessAttribution> {
+            let (matched, backend) = {
+                let mut tracker_guard = self
+                    .ebpf_tracker
+                    .write()
+                    .expect("ebpf_tracker lock poisoned");
+                let tracker = tracker_guard.as_mut()?;
+                let backend = tracker.backend();
+
+                match tracker.lookup_icmp(conn.local_addr.ip(), conn.remote_addr.ip(), icmp_id) {
+                    Some(matched) => (matched, backend),
+                    None => {
+                        debug!(
+                            "eBPF ICMP lookup missed for {} -> {} (ID: {})",
+                            conn.local_addr.ip(),
+                            conn.remote_addr.ip(),
+                            icmp_id
+                        );
+                        return None;
+                    }
+                }
+            };
+
+            Some(self.attribution_from_ebpf(matched, backend))
+        }
+
+        /// Seed the unified cache with a ready-made attribution and mark it
+        /// fresh, so cache-preservation behaviour can be tested without a
+        /// loaded eBPF backend.
+        #[cfg(test)]
+        fn seed_cache(&self, key: ConnectionKey, attribution: ProcessAttribution) {
+            let mut cache = self
+                .unified_cache
                 .write()
-                .expect("ebpf_tracker lock poisoned");
-            let tracker = tracker_guard.as_mut()?;
-
-            match tracker.lookup_icmp(conn.local_addr.ip(), conn.remote_addr.ip(), icmp_id) {
-                Some(process_info) => {
-                    let resolved_name = self
-                        .procfs_lookup
-                        .get_process_name_by_pid(process_info.pid)
-                        .unwrap_or_else(|| process_info.comm.clone());
-
-                    debug!(
-                        "eBPF ICMP lookup successful for {} -> {} (ID: {}) - PID: {}, Resolved: {}",
-                        conn.local_addr.ip(),
-                        conn.remote_addr.ip(),
-                        icmp_id,
-                        process_info.pid,
-                        resolved_name
-                    );
-                    Some((process_info.pid, resolved_name))
-                }
-                None => {
-                    debug!(
-                        "eBPF ICMP lookup missed for {} -> {} (ID: {})",
-                        conn.local_addr.ip(),
-                        conn.remote_addr.ip(),
-                        icmp_id
-                    );
-                    None
-                }
-            }
+                .expect("unified_cache lock poisoned");
+            cache.last_refresh = Instant::now();
+            cache.lookup.insert(key, attribution);
         }
 
         /// Check if eBPF is available and functioning
@@ -324,6 +366,12 @@ mod ebpf_enhanced {
 
     impl ProcessLookup for EnhancedLinuxProcessLookup {
         fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
+            // Safe because get_process_attribution is overridden below: this
+            // does not fall through to the trait's default bridge.
+            self.get_process_attribution(conn).map(Into::into)
+        }
+
+        fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
             // Perform periodic cleanup of stale eBPF entries
             self.maybe_cleanup_ebpf_map();
 
@@ -358,11 +406,13 @@ mod ebpf_enhanced {
                     .read()
                     .expect("unified_cache lock poisoned");
                 if cache.last_refresh.elapsed() < Duration::from_secs(2)
-                    && let Some(process_info) = cache.lookup.get(&key)
+                    && let Some(attribution) = cache.lookup.get(&key)
                 {
                     let mut stats = self.stats.write().expect("stats lock poisoned");
                     stats.cache_hits += 1;
-                    return Some(process_info.clone());
+                    // Returned verbatim, match quality included: a cached
+                    // relaxed match stays a relaxed match.
+                    return Some(attribution.clone());
                 }
             }
 
@@ -500,6 +550,90 @@ mod ebpf_enhanced {
                     self.tcp_lookups, self.udp_lookups, self.cache_entries
                 )
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::MatchQuality;
+        use rustnet_core::network::types::{ProtocolState, TcpState};
+        use std::path::PathBuf;
+
+        fn connection(local: &str, remote: &str) -> Connection {
+            Connection::new(
+                Protocol::Tcp,
+                local.parse().unwrap(),
+                remote.parse().unwrap(),
+                ProtocolState::Tcp(TcpState::Established),
+            )
+        }
+
+        /// A result carrying everything only eBPF can observe, so a cache round
+        /// trip that drops any of it is visible.
+        fn ebpf_attribution() -> ProcessAttribution {
+            ProcessAttribution::new(
+                4242,
+                "curl",
+                AttributionBackend::EbpfFentry,
+                MatchQuality::WildcardLocalAddress,
+            )
+            .with_tid(4299)
+            .with_credentials(1000, 100)
+            .with_executable(Some(PathBuf::from("/usr/bin/curl")))
+            .with_observed_at_ns(123_456_789)
+        }
+
+        #[test]
+        fn cached_results_keep_every_field_the_backend_reported() {
+            let lookup = EnhancedLinuxProcessLookup::new().expect("procfs lookup must initialize");
+            let conn = connection("192.168.1.10:5000", "1.1.1.1:443");
+            let expected = ebpf_attribution();
+            lookup.seed_cache(ConnectionKey::from_connection(&conn), expected.clone());
+
+            let cached = lookup
+                .get_process_attribution(&conn)
+                .expect("seeded entry must be served from the cache");
+
+            // The whole struct, not just (pid, name): storing the tuple would
+            // silently drop the TID, credentials, executable, and timestamp.
+            assert_eq!(cached, expected);
+        }
+
+        #[test]
+        fn a_cached_relaxed_match_is_not_upgraded_to_exact() {
+            let lookup = EnhancedLinuxProcessLookup::new().expect("procfs lookup must initialize");
+            let conn = connection("192.168.1.10:5001", "1.1.1.1:443");
+            lookup.seed_cache(ConnectionKey::from_connection(&conn), ebpf_attribution());
+
+            for _ in 0..3 {
+                let cached = lookup.get_process_attribution(&conn).unwrap();
+                assert_eq!(cached.quality, MatchQuality::WildcardLocalAddress);
+                assert!(!cached.quality.is_exact());
+            }
+        }
+
+        #[test]
+        fn the_tuple_api_serves_the_cached_attribution() {
+            let lookup = EnhancedLinuxProcessLookup::new().expect("procfs lookup must initialize");
+            let conn = connection("192.168.1.10:5002", "1.1.1.1:443");
+            lookup.seed_cache(ConnectionKey::from_connection(&conn), ebpf_attribution());
+
+            assert_eq!(
+                lookup.get_process_for_connection(&conn),
+                Some((4242, "curl".to_string()))
+            );
+        }
+
+        #[test]
+        fn refresh_clears_the_cache() {
+            let lookup = EnhancedLinuxProcessLookup::new().expect("procfs lookup must initialize");
+            let conn = connection("192.168.1.10:5003", "1.1.1.1:443");
+            lookup.seed_cache(ConnectionKey::from_connection(&conn), ebpf_attribution());
+            lookup.refresh().expect("refresh must succeed");
+
+            // The synthetic entry is gone; a real /proc scan cannot produce it.
+            assert!(lookup.get_process_attribution(&conn).is_none());
         }
     }
 }

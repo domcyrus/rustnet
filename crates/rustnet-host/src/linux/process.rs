@@ -1,13 +1,38 @@
 // network/platform/linux/process.rs - Linux procfs-based process lookup
 
-use crate::{AttributionBackend, ConnectionKey, ProcessLookup};
+use crate::{
+    AttributionBackend, ConnectionKey, MatchQuality, ProcessAttribution, ProcessLookup,
+    relaxed_lookup,
+};
 use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::os::unix::fs::MetadataExt;
+use std::path::PathBuf;
 use std::sync::RwLock;
 use std::time::Instant;
+
+/// Resolve the executable path of a TGID from `/proc/<tgid>/exe`.
+///
+/// Resolved in user space immediately after a successful attribution, while the
+/// process is most likely still alive. `None` is a normal outcome and never
+/// fails the attribution: the process may have exited already, be a kernel
+/// thread (no `exe` link), or belong to another user, whose `exe` link needs
+/// `CAP_SYS_PTRACE` to read.
+pub(crate) fn resolve_executable(tgid: u32) -> Option<PathBuf> {
+    fs::read_link(format!("/proc/{tgid}/exe")).ok()
+}
+
+/// Read the effective UID/GID of a TGID from the ownership of `/proc/<tgid>`,
+/// which the kernel stamps with the task's effective credentials.
+///
+/// `None` when the process is gone or hidden (`hidepid`).
+pub(crate) fn resolve_credentials(tgid: u32) -> Option<(u32, u32)> {
+    let metadata = fs::metadata(format!("/proc/{tgid}")).ok()?;
+    Some((metadata.uid(), metadata.gid()))
+}
 
 /// Map of socket inode to (PID, process name)
 type InodeProcessMap = HashMap<u64, (u32, String)>;
@@ -43,6 +68,19 @@ impl LinuxProcessLookup {
         })
     }
 
+    /// Build a lookup over a caller-supplied socket table instead of scanning
+    /// `/proc/net/*`, so match-quality behaviour can be tested deterministically.
+    #[cfg(test)]
+    fn with_socket_table(lookup: ConnectionProcessMap) -> Self {
+        Self {
+            cache: RwLock::new(ProcessCache {
+                lookup,
+                last_refresh: Instant::now(),
+            }),
+            pid_names: RwLock::new(HashMap::new()),
+        }
+    }
+
     /// Get process name by PID. Tries the cached procfs scan first, then
     /// falls back to reading `/proc/<pid>/comm` directly: the cache only
     /// refreshes every few seconds, so a freshly started process — exactly
@@ -72,6 +110,50 @@ impl LinuxProcessLookup {
             .expect("pid_names lock poisoned")
             .insert(pid, name.clone());
         Some(name)
+    }
+
+    /// Match a connection against the cached procfs socket table.
+    ///
+    /// Returns the owner together with how it was matched, so callers can tell
+    /// a proven 4-tuple hit from a relaxed guess. Ambiguous relaxed matches
+    /// (two candidates, two different owners) yield `None`.
+    ///
+    /// Simple cache lookup with no refresh on cache miss. The enrichment thread
+    /// handles periodic refresh every 5 seconds.
+    /// IMPORTANT: Do NOT refresh here as it caused high CPU usage when called for every
+    /// connection without process info (flamegraph showed this was the main bottleneck).
+    fn lookup_match(&self, conn: &Connection) -> Option<(u32, String, MatchQuality)> {
+        let key = ConnectionKey::from_connection(conn);
+        let cache = self.cache.read().expect("process cache lock poisoned");
+
+        // Fast path: exact 4-tuple match (always works for TCP).
+        if let Some((pid, name)) = cache.lookup.get(&key) {
+            return Some((*pid, name.clone(), MatchQuality::ProcfsExact));
+        }
+
+        // Fallback: /proc/net may store sockets with wildcard addresses.
+        // Progressively relax the key until we find a match. The relaxation
+        // shape is deliberately collapsed into a single `ProcfsRelaxed`: what
+        // matters downstream is that procfs needed to guess, not which of the
+        // three wildcard shapes it guessed with.
+        let ((pid, name), _shape) = relaxed_lookup(&cache.lookup, &key)?;
+        Some((*pid, name.clone(), MatchQuality::ProcfsRelaxed))
+    }
+
+    /// Turn a procfs socket-table match into a rich attribution by reading the
+    /// live `/proc/<tgid>` entries for the owner.
+    ///
+    /// The name needs no extra work here: the socket table already sources it
+    /// from `/proc/<tgid>/comm` during the scan, so the tuple and rich APIs
+    /// report the same name for the same match.
+    fn build_attribution(tgid: u32, name: String, quality: MatchQuality) -> ProcessAttribution {
+        let attribution = ProcessAttribution::new(tgid, name, AttributionBackend::Procfs, quality)
+            .with_executable(resolve_executable(tgid));
+
+        match resolve_credentials(tgid) {
+            Some((uid, gid)) => attribution.with_credentials(uid, gid),
+            None => attribution,
+        }
     }
 
     /// Build connection -> process mapping and PID -> name mapping
@@ -244,22 +326,15 @@ impl LinuxProcessLookup {
 
 impl ProcessLookup for LinuxProcessLookup {
     fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
-        let key = ConnectionKey::from_connection(conn);
+        // Deliberately not routed through `get_process_attribution`: the tuple
+        // API has no use for the executable path or credentials, and resolving
+        // them costs two syscalls per hit.
+        self.lookup_match(conn).map(|(pid, name, _)| (pid, name))
+    }
 
-        // Simple cache lookup with no refresh on cache miss.
-        // The enrichment thread (app.rs:495-500) handles periodic refresh every 5 seconds.
-        // IMPORTANT: Do NOT refresh here as it caused high CPU usage when called for every
-        // connection without process info (flamegraph showed this was the main bottleneck).
-        let cache = self.cache.read().expect("process cache lock poisoned");
-
-        // Fast path: exact 4-tuple match (always works for TCP).
-        if let Some(entry) = cache.lookup.get(&key) {
-            Some(entry.clone())
-        } else {
-            // Fallback: /proc/net may store sockets with wildcard addresses.
-            // Progressively relax the key until we find a match.
-            Self::fallback_lookup(&cache.lookup, &key)
-        }
+    fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
+        let (tgid, name, quality) = self.lookup_match(conn)?;
+        Some(Self::build_attribution(tgid, name, quality))
     }
 
     fn refresh(&self) -> Result<()> {
@@ -280,5 +355,150 @@ impl ProcessLookup for LinuxProcessLookup {
 
     fn get_attribution_backend(&self) -> AttributionBackend {
         AttributionBackend::Procfs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustnet_core::network::types::{ProtocolState, TcpState};
+
+    fn connection(local: &str, remote: &str) -> Connection {
+        Connection::new(
+            Protocol::Tcp,
+            local.parse().unwrap(),
+            remote.parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        )
+    }
+
+    fn key(local: &str, remote: &str) -> ConnectionKey {
+        ConnectionKey {
+            protocol: Protocol::Tcp,
+            local_addr: local.parse().unwrap(),
+            remote_addr: remote.parse().unwrap(),
+        }
+    }
+
+    /// Attribute to this very test process so the /proc reads have a live
+    /// target with known credentials and a known executable.
+    fn own_pid() -> u32 {
+        std::process::id()
+    }
+
+    #[test]
+    fn resolves_the_executable_of_a_live_process() {
+        assert_eq!(
+            resolve_executable(own_pid()),
+            std::env::current_exe().ok(),
+            "/proc/<tgid>/exe must resolve to the test binary"
+        );
+    }
+
+    #[test]
+    fn unreadable_executable_is_reported_as_none_rather_than_an_error() {
+        // u32::MAX is above every reachable pid_max, so /proc/<tgid>/exe cannot
+        // exist. Attribution must survive this, with executable = None.
+        assert_eq!(resolve_executable(u32::MAX), None);
+    }
+
+    #[test]
+    fn reads_the_credentials_of_a_live_process() {
+        let (uid, gid) = resolve_credentials(own_pid()).expect("own /proc entry must be readable");
+        assert_eq!(uid, unsafe { libc::geteuid() });
+        assert_eq!(gid, unsafe { libc::getegid() });
+    }
+
+    #[test]
+    fn missing_process_has_no_credentials() {
+        assert_eq!(resolve_credentials(u32::MAX), None);
+    }
+
+    #[test]
+    fn exact_socket_table_hit_is_reported_as_an_exact_procfs_match() {
+        let mut table = HashMap::new();
+        table.insert(
+            key("192.168.1.10:5000", "1.1.1.1:443"),
+            (own_pid(), "scanned-name".to_string()),
+        );
+        let lookup = LinuxProcessLookup::with_socket_table(table);
+
+        let attribution = lookup
+            .get_process_attribution(&connection("192.168.1.10:5000", "1.1.1.1:443"))
+            .expect("exact tuple must match");
+
+        assert_eq!(attribution.tgid, own_pid());
+        assert_eq!(attribution.name, "scanned-name");
+        assert_eq!(attribution.quality, MatchQuality::ProcfsExact);
+        assert_eq!(attribution.backend, AttributionBackend::Procfs);
+        assert_eq!(attribution.executable, std::env::current_exe().ok());
+        assert_eq!(attribution.uid, Some(unsafe { libc::geteuid() }));
+        assert_eq!(attribution.gid, Some(unsafe { libc::getegid() }));
+        // procfs is a socket-table snapshot: no thread id, no observation time.
+        assert_eq!(attribution.tid, None);
+        assert_eq!(attribution.observed_at_ns, None);
+    }
+
+    #[test]
+    fn wildcard_listener_hit_is_never_reported_as_exact() {
+        let mut table = HashMap::new();
+        table.insert(
+            key("0.0.0.0:8080", "0.0.0.0:0"),
+            (own_pid(), "listener".to_string()),
+        );
+        let lookup = LinuxProcessLookup::with_socket_table(table);
+
+        let attribution = lookup
+            .get_process_attribution(&connection("192.168.1.10:8080", "203.0.113.5:44321"))
+            .expect("wildcard listener must match");
+
+        assert_eq!(attribution.tgid, own_pid());
+        assert_eq!(attribution.quality, MatchQuality::ProcfsRelaxed);
+        assert!(!attribution.quality.is_exact());
+    }
+
+    #[test]
+    fn conflicting_relaxed_candidates_produce_no_attribution() {
+        let mut table = HashMap::new();
+        table.insert(
+            key("0.0.0.0:8080", "203.0.113.5:44321"),
+            (own_pid(), "envoy".to_string()),
+        );
+        table.insert(
+            key("0.0.0.0:8080", "0.0.0.0:0"),
+            (own_pid() + 1, "nginx".to_string()),
+        );
+        let lookup = LinuxProcessLookup::with_socket_table(table);
+
+        let conn = connection("192.168.1.10:8080", "203.0.113.5:44321");
+        assert!(lookup.get_process_attribution(&conn).is_none());
+        assert!(lookup.get_process_for_connection(&conn).is_none());
+    }
+
+    #[test]
+    fn the_tuple_api_agrees_with_the_rich_api() {
+        let mut table = HashMap::new();
+        table.insert(
+            key("192.168.1.10:5000", "1.1.1.1:443"),
+            (own_pid(), "scanned-name".to_string()),
+        );
+        table.insert(
+            key("0.0.0.0:8080", "0.0.0.0:0"),
+            (own_pid(), "listener".to_string()),
+        );
+        let lookup = LinuxProcessLookup::with_socket_table(table);
+
+        for (local, remote) in [
+            ("192.168.1.10:5000", "1.1.1.1:443"),
+            ("192.168.1.10:8080", "203.0.113.5:44321"),
+        ] {
+            let conn = connection(local, remote);
+            let tuple = lookup
+                .get_process_for_connection(&conn)
+                .expect("tuple API must keep working");
+            let attribution = lookup.get_process_attribution(&conn).unwrap();
+
+            assert_eq!(tuple, (attribution.tgid, attribution.name));
+        }
     }
 }
