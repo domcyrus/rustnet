@@ -1750,11 +1750,22 @@ impl std::fmt::Display for ConnectionKey {
 // RTT Tracking Types (for latency measurement)
 // ============================================================================
 
-/// Tracks pending SYN packets and recent RTT measurements
+/// Tracks pending handshake packets and recent RTT measurements.
+///
+/// Every pending timestamp here is the packet's **capture** time, supplied by
+/// the caller, never a clock read taken while processing. Capture threads hand
+/// packets to processing in batches of up to 100 (or every 100ms), so a
+/// handshake that completes inside one batch window — which is most of them —
+/// is processed as a burst microseconds wide. Timing that burst measures the
+/// batch loop, not the network, and reports round trips as 0.0ms. Using capture
+/// time also makes RTTs correct when a saved pcap is replayed.
 #[derive(Debug)]
 pub struct RttTracker {
-    /// Pending SYN packets awaiting SYN-ACK: (connection_key -> timestamp)
-    pending_syns: HashMap<ConnectionKey, Instant>,
+    /// Pending SYN packets awaiting SYN-ACK: (connection_key -> capture time)
+    pending_syns: HashMap<ConnectionKey, SystemTime>,
+    /// Outbound QUIC handshake packets awaiting a reply from the peer:
+    /// (connection_key -> capture time)
+    pending_quic_handshakes: HashMap<ConnectionKey, SystemTime>,
     /// Recent RTT measurements for aggregation: (timestamp, rtt_duration)
     recent_rtts: VecDeque<(Instant, Duration)>,
     /// Maximum age for pending SYNs (cleanup stale entries)
@@ -1767,29 +1778,63 @@ impl RttTracker {
     pub fn new() -> Self {
         Self {
             pending_syns: HashMap::new(),
+            pending_quic_handshakes: HashMap::new(),
             recent_rtts: VecDeque::new(),
             max_pending_age: Duration::from_secs(30),
             max_recent_rtts: 100,
         }
     }
 
-    /// Record a SYN packet being sent/received
-    pub fn record_syn(&mut self, key: ConnectionKey) {
-        self.pending_syns.insert(key, Instant::now());
-        self.cleanup_stale();
+    /// Record a SYN packet being sent/received, stamped with its capture time.
+    pub fn record_syn(&mut self, key: ConnectionKey, at: SystemTime) {
+        self.pending_syns.insert(key, at);
+        self.cleanup_stale(at);
     }
 
     /// Try to match a SYN-ACK to a pending SYN and calculate RTT
     /// Returns the RTT if a match was found
-    pub fn record_syn_ack(&mut self, key: &ConnectionKey) -> Option<Duration> {
+    pub fn record_syn_ack(&mut self, key: &ConnectionKey, at: SystemTime) -> Option<Duration> {
         // SYN and SYN-ACK have the same (local_addr, remote_addr) from parser's perspective
         if let Some(syn_time) = self.pending_syns.remove(key) {
-            let rtt = syn_time.elapsed();
+            let rtt = at.duration_since(syn_time).unwrap_or_default();
             self.add_rtt_sample(rtt);
             Some(rtt)
         } else {
             None
         }
+    }
+
+    /// Record a QUIC long-header handshake packet, returning the RTT when it
+    /// completes a round trip with the peer.
+    ///
+    /// QUIC has no SYN/SYN-ACK flag to key on, so direction stands in for it —
+    /// but only in one order. rustnet observes from an endpoint, not from a
+    /// midpoint, so the timer must start on a packet leaving this host and stop
+    /// on the peer's answer coming back: that spans the network twice. Timing
+    /// the opposite order would measure how fast the local stack turned an
+    /// arriving packet around, which is tens of microseconds and reads as a
+    /// 0.0ms RTT. An inbound packet with nothing pending therefore starts
+    /// nothing, and a second outbound packet is a retransmission or a follow-up
+    /// flight, so it restarts the timer from the most recent send.
+    ///
+    /// This still measures connections where the local host is the QUIC server:
+    /// the client's Initial arrives and is ignored, our reply starts the timer,
+    /// and the client's next flight stops it.
+    pub fn record_quic_handshake(
+        &mut self,
+        key: ConnectionKey,
+        is_outgoing: bool,
+        at: SystemTime,
+    ) -> Option<Duration> {
+        self.cleanup_stale(at);
+        if is_outgoing {
+            self.pending_quic_handshakes.insert(key, at);
+            return None;
+        }
+        let sent_at = self.pending_quic_handshakes.remove(&key)?;
+        let rtt = at.duration_since(sent_at).unwrap_or_default();
+        self.add_rtt_sample(rtt);
+        Some(rtt)
     }
 
     /// Add an RTT sample
@@ -1819,15 +1864,20 @@ impl RttTracker {
         }
     }
 
-    /// Clean up stale pending SYNs
-    fn cleanup_stale(&mut self) {
-        let cutoff = Instant::now() - self.max_pending_age;
+    /// Clean up pending handshakes older than `max_pending_age` relative to the
+    /// capture time of the packet being processed.
+    fn cleanup_stale(&mut self, now: SystemTime) {
+        let Some(cutoff) = now.checked_sub(self.max_pending_age) else {
+            return;
+        };
         self.pending_syns.retain(|_, ts| *ts > cutoff);
+        self.pending_quic_handshakes.retain(|_, ts| *ts > cutoff);
     }
 
     /// Clear all RTT tracking data
     pub fn clear(&mut self) {
         self.pending_syns.clear();
+        self.pending_quic_handshakes.clear();
         self.recent_rtts.clear();
     }
 }
@@ -2335,7 +2385,8 @@ pub struct Connection {
     // TCP analytics (only for TCP connections)
     pub tcp_analytics: Option<TcpAnalytics>,
 
-    // Initial RTT measurement (from SYN-ACK timing)
+    // Initial RTT measurement: TCP SYN/SYN-ACK timing, or the QUIC long-header
+    // handshake exchange. Set once, from the first round trip observed.
     pub initial_rtt: Option<std::time::Duration>,
 
     // GeoIP information for remote address
@@ -3970,6 +4021,13 @@ mod tests {
     // RTT Tracker Tests
     // ========================================================================
 
+    /// Capture time `millis` into a synthetic trace. RTT is the difference
+    /// between two packets' capture timestamps, so tests supply them directly
+    /// rather than sleeping and reading a clock.
+    fn rtt_capture_time(millis: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000) + Duration::from_millis(millis)
+    }
+
     #[test]
     fn test_rtt_tracker_new() {
         let tracker = RttTracker::new();
@@ -3986,7 +4044,7 @@ mod tests {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
         );
 
-        tracker.record_syn(key);
+        tracker.record_syn(key, rtt_capture_time(0));
         assert_eq!(tracker.pending_syns.len(), 1);
         assert!(tracker.pending_syns.contains_key(&key));
     }
@@ -4001,7 +4059,7 @@ mod tests {
         );
 
         // Try to record SYN-ACK without prior SYN
-        let rtt = tracker.record_syn_ack(&key);
+        let rtt = tracker.record_syn_ack(&key, rtt_capture_time(0));
         assert!(rtt.is_none());
     }
 
@@ -4013,18 +4071,14 @@ mod tests {
 
         // Record SYN (outgoing: local -> remote)
         let syn_key = ConnectionKey::new(Protocol::Tcp, local, remote);
-        tracker.record_syn(syn_key);
+        tracker.record_syn(syn_key, rtt_capture_time(0));
 
-        // Simulate some delay
-        std::thread::sleep(Duration::from_millis(10));
-
-        // Record SYN-ACK (same key - parser normalizes to local,remote)
+        // Record SYN-ACK (same key - parser normalizes to local,remote) one
+        // network round trip later, per the packets' capture timestamps.
         let syn_ack_key = ConnectionKey::new(Protocol::Tcp, local, remote);
-        let rtt = tracker.record_syn_ack(&syn_ack_key);
+        let rtt = tracker.record_syn_ack(&syn_ack_key, rtt_capture_time(10));
 
-        assert!(rtt.is_some());
-        let rtt = rtt.unwrap();
-        assert!(rtt >= Duration::from_millis(10));
+        assert_eq!(rtt, Some(Duration::from_millis(10)));
         assert!(tracker.pending_syns.is_empty());
         assert_eq!(tracker.recent_rtts.len(), 1);
     }
@@ -4039,9 +4093,8 @@ mod tests {
         for port in 12345..12348 {
             let local_with_port = SocketAddr::new(local.ip(), port);
             let key = ConnectionKey::new(Protocol::Tcp, local_with_port, remote);
-            tracker.record_syn(key);
-            std::thread::sleep(Duration::from_millis(5));
-            tracker.record_syn_ack(&key);
+            tracker.record_syn(key, rtt_capture_time(0));
+            tracker.record_syn_ack(&key, rtt_capture_time(5));
         }
 
         // Get average RTT

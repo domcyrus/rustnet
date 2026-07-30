@@ -26,6 +26,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped on the capture workers after privileged initialization (#498)
 
 ### Fixed
+- **Initial RTT Measured Against The Wrong Clock**: `Initial RTT` in the Details
+  pane reported round trips as `0.0ms`. RTT was timed with a clock read taken while
+  processing a packet rather than from the packet's capture timestamp, and capture
+  hands packets to processing in batches spanning up to 100 packets or 100ms — wide
+  enough that a whole handshake usually lands in one batch and gets timed as the
+  batch loop's own microseconds. Connections are now stamped with each packet's
+  libpcap timestamp, which costs no extra clock reads and also makes RTTs correct
+  when a saved pcap is replayed. Separately, RTT could be measured from an inbound
+  packet to this host's own reply, which spans no network at all; the clock now
+  starts only on a packet leaving this host. This affected TCP as well — any
+  connection to a local listener reported a handshake RTT of roughly 60µs
+- **Transport Health On QUIC Connections**: The Details pane labelled every
+  connection's Transport Health card with TCP loss counters, so a QUIC flow showed
+  `TCP Retransmits`, `Duplicate ACKs`, and `Window Size` sitting empty as if the
+  measurement had failed. QUIC encrypts its ACK frames and protects its packet
+  numbers, so those counters are unobservable on the wire rather than merely
+  unmeasured. QUIC connections now get their own rows — `Idle Timeout` and
+  `Connection Close` from the transport parameters and CONNECTION\_CLOSE frame,
+  plus a note about the encrypted counters — and `Initial RTT` is filled in from
+  the long-header handshake exchange, the QUIC analogue of SYN/SYN-ACK timing.
+  Other UDP flows say so instead of showing six blank TCP fields. All variants keep
+  the card's height so the dashboard doesn't resize between connections
 - **TCP Transport Health Counters**: `TCP Retransmits` in the Details pane stayed
   at 0 for the life of a connection while `Fast Retransmits` climbed into the
   dozens. Outbound sequence tracking desynchronized permanently the first time a

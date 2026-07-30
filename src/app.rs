@@ -1469,11 +1469,13 @@ impl App {
                     // packet that panics a DPI parser cannot take down the
                     // whole pcap_rx thread and leave the monitor running
                     // blind.
-                    // One wall-clock read per batch instead of per packet.
-                    // Batches hold ≤100 packets and flush at least every
-                    // 100ms, so the timestamp skew is far below any
-                    // connection timeout or rate window.
-                    let batch_time = SystemTime::now();
+                    // Connections are stamped with each packet's own capture
+                    // time, not one clock read shared by the batch. Handshake
+                    // RTT is the gap between two packets' timestamps, and a
+                    // batch spans up to 100 packets or 100ms — wide enough to
+                    // swallow a whole handshake and report its round trip as
+                    // zero. libpcap already hands us the kernel's timestamp, so
+                    // this costs no extra clock reads.
                     parser.refresh_local_ips_if_due(LOCAL_ADDRESS_REFRESH_INTERVAL);
                     let mut parsed_count = 0;
                     let batch_len = batch.len();
@@ -1490,7 +1492,7 @@ impl App {
                                 let outcome = update_connection(
                                     &tracker,
                                     parsed,
-                                    batch_time,
+                                    packet_timestamp,
                                     &stats,
                                     &json_log_file,
                                     &pcap_sidecar_file,

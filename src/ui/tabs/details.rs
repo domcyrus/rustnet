@@ -57,6 +57,12 @@ const DETAILS_MAX_CONTENT_WIDTH: u16 = 140;
 /// visible rows and align Transport Health with Network Context on the left.
 const APPLICATION_CARD_ROWS: usize = 11;
 
+/// Rows reserved for the Transport Health card, including its blank separator
+/// and heading. TCP fills all of them with counters; the shorter QUIC and
+/// generic-transport variants pad to the same height so switching between
+/// connections of different protocols doesn't resize the dashboard.
+const TRANSPORT_CARD_ROWS: usize = 8;
+
 /// Details tab. Pulls DNS resolver per-render from the app — no
 /// per-tab state today.
 pub(in crate::ui) struct DetailsTab;
@@ -148,6 +154,41 @@ fn push_detail_field_styled<'a>(
         Span::styled(value.clone(), value_style),
     ]));
     fields.push(Some((label.to_string(), value)));
+}
+
+/// Format a QUIC idle timeout, as advertised in the peer's transport
+/// parameters. Values are whole seconds in practice (30s, 120s), so only sub-
+/// second timeouts fall back to milliseconds.
+fn format_idle_timeout(timeout: std::time::Duration) -> String {
+    if timeout.as_secs() > 0 {
+        format!("{}s", timeout.as_secs())
+    } else {
+        format!("{}ms", timeout.as_millis())
+    }
+}
+
+/// Format a QUIC CONNECTION_CLOSE frame. Frame type 0x1d carries an
+/// application-level error code (an HTTP/3 code, say), anything else is a
+/// transport-level one, and the two number spaces are unrelated — so the
+/// origin has to be shown alongside the code (RFC 9000 §19.19).
+fn format_quic_close(close: &crate::network::types::QuicCloseInfo) -> String {
+    let origin = if close.frame_type == 0x1d {
+        "application"
+    } else {
+        "transport"
+    };
+    format!("{} 0x{:x}", origin, close.error_code)
+}
+
+/// Push a muted explanatory line into a card. Unlike a field row this carries
+/// no label/value pair, so it registers no click-to-copy target.
+fn push_detail_note<'a>(
+    lines: &mut Vec<Line<'a>>,
+    fields: &mut Vec<Option<(String, String)>>,
+    note: &'a str,
+) {
+    lines.push(Line::from(Span::styled(note, theme::fg(theme::muted()))));
+    fields.push(None);
 }
 
 /// Pad a detail section to a stable height. Padding rows deliberately have no
@@ -1399,12 +1440,32 @@ pub(in crate::ui) fn draw_connection_details(
     );
     right_ranges.push(application_start..details_text.len());
 
-    // Transport Health is also a fixed card. Non-TCP connections retain the
-    // same field positions with muted placeholders, so switching protocols no
-    // longer changes the dashboard geometry.
+    // Transport Health is also a fixed card, but its rows are protocol
+    // specific. QUIC has no equivalent of the TCP loss counters: packet numbers
+    // are header-protected and ACK frames are encrypted (RFC 9001 §5.4), so
+    // they aren't merely unmeasured, they're unobservable from the wire.
+    // Rendering them as empty TCP labels read as "rustnet failed to measure
+    // this". Each branch pads to TRANSPORT_CARD_ROWS so the geometry still
+    // holds still when flipping between connections.
+    let quic_info = conn
+        .dpi_info
+        .as_ref()
+        .and_then(|dpi| match &dpi.application {
+            crate::network::types::ApplicationProtocol::Quic(info) => Some(info.as_ref()),
+            _ => None,
+        });
     let metrics_start = details_text.len();
     push_detail_section(&mut details_text, &mut detail_fields, "Transport Health");
-    if let Some(rtt) = conn.initial_rtt {
+    let show_rtt = conn.protocol == Protocol::Tcp || quic_info.is_some();
+    if !show_rtt {
+        // Nothing on a bare UDP/ICMP flow is timeable or countable: no
+        // handshake to pair up, no sequence numbers to track.
+        push_detail_note(
+            &mut details_text,
+            &mut detail_fields,
+            "No transport metrics for this protocol",
+        );
+    } else if let Some(rtt) = conn.initial_rtt {
         let rtt_ms = rtt.as_secs_f64() * 1000.0;
         let rtt_color = if rtt_ms < 50.0 {
             theme::ok()
@@ -1430,59 +1491,67 @@ pub(in crate::ui) fn draw_connection_details(
             label_style,
         );
     }
-    if let Some(analytics) = &conn.tcp_analytics {
+    if let Some(quic) = quic_info {
         push_detail_field(
             &mut details_text,
             &mut detail_fields,
-            "TCP Retransmits",
-            analytics.retransmit_count.to_string(),
+            "Idle Timeout",
+            quic.idle_timeout
+                .map(format_idle_timeout)
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
             label_style,
         );
         push_detail_field(
             &mut details_text,
             &mut detail_fields,
-            "Out-of-Order Packets",
-            analytics.out_of_order_count.to_string(),
+            "Connection Close",
+            quic.connection_close
+                .as_ref()
+                .map(format_quic_close)
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
             label_style,
         );
-        push_detail_field(
+        // Separated from the fields above so it reads as a footnote on the
+        // card rather than another value that failed to resolve.
+        details_text.push(Line::from(""));
+        detail_fields.push(None);
+        push_detail_note(
             &mut details_text,
             &mut detail_fields,
-            "Duplicate ACKs",
-            analytics.duplicate_ack_count.to_string(),
-            label_style,
+            "Loss counters are encrypted in QUIC",
         );
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Fast Retransmits",
-            analytics.fast_retransmit_count.to_string(),
-            label_style,
-        );
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Window Size",
-            analytics.last_window_size.to_string(),
-            label_style,
-        );
-    } else {
-        for label in [
-            "TCP Retransmits",
-            "Out-of-Order Packets",
-            "Duplicate ACKs",
-            "Fast Retransmits",
-            "Window Size",
+    } else if conn.protocol == Protocol::Tcp {
+        let counters = conn.tcp_analytics.as_ref();
+        for (label, value) in [
+            ("TCP Retransmits", counters.map(|a| a.retransmit_count)),
+            (
+                "Out-of-Order Packets",
+                counters.map(|a| a.out_of_order_count),
+            ),
+            ("Duplicate ACKs", counters.map(|a| a.duplicate_ack_count)),
+            (
+                "Fast Retransmits",
+                counters.map(|a| a.fast_retransmit_count),
+            ),
+            ("Window Size", counters.map(|a| a.last_window_size as u64)),
         ] {
             push_detail_field(
                 &mut details_text,
                 &mut detail_fields,
                 label,
-                NONE_PLACEHOLDER.to_string(),
+                value
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
                 label_style,
             );
         }
     }
+    pad_detail_section(
+        &mut details_text,
+        &mut detail_fields,
+        metrics_start,
+        TRANSPORT_CARD_ROWS,
+    );
     right_ranges.push(metrics_start..details_text.len());
 
     // Continuity: the header band echoes the selected row so users feel
