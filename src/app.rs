@@ -11,6 +11,7 @@ use log::{debug, error, info, warn};
 use serde_json::json;
 use std::fs::File;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -323,6 +324,20 @@ fn log_connection_event(
     if let Some(process_name) = &conn.process_name {
         event["process_name"] = json!(process_name);
     }
+    // The sidecar is per connection, not per packet, so the verbose executable
+    // path costs nothing here (unlike a PCAPNG packet comment).
+    if let Some(executable) = &conn.executable {
+        event["process_executable"] = json!(executable.display().to_string());
+    }
+    if let Some(uid) = conn.process_uid {
+        event["process_uid"] = json!(uid);
+    }
+    if let Some(gid) = conn.process_gid {
+        event["process_gid"] = json!(gid);
+    }
+    if let Some(quality) = conn.attribution_quality {
+        event["attribution_match"] = json!(quality.as_token());
+    }
 
     // Add Kubernetes attribution if the process is part of a pod
     #[cfg(feature = "kubernetes")]
@@ -445,6 +460,20 @@ fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
         "bytes_received": conn.bytes_received,
         "state": conn.state(),
     });
+
+    // Per-connection record, so the full executable path is affordable here.
+    if let Some(executable) = &conn.executable {
+        event["process_executable"] = json!(executable.display().to_string());
+    }
+    if let Some(uid) = conn.process_uid {
+        event["process_uid"] = json!(uid);
+    }
+    if let Some(gid) = conn.process_gid {
+        event["process_gid"] = json!(gid);
+    }
+    if let Some(quality) = conn.attribution_quality {
+        event["attribution_match"] = json!(quality.as_token());
+    }
 
     // Add Kubernetes attribution if the process is part of a pod
     #[cfg(feature = "kubernetes")]
@@ -1859,6 +1888,10 @@ impl App {
         // resolver can upgrade it once the real name is known.
         const UNKNOWN_PROCESS_NAME: &str = "Unknown";
         let mut last_full_pass = Instant::now() - full_pass_interval;
+        // Executable paths are shared by every connection of a process, and
+        // `Connection` is cloned in bulk on every snapshot tick. Interning here
+        // means the clone copies an Arc pointer instead of a fresh PathBuf.
+        let mut executables: HashMap<PathBuf, Arc<Path>> = HashMap::new();
 
         // Build and set the detection status from the process lookup implementation
         // Only set if not already detected as pktap (to handle race conditions)
@@ -1948,7 +1981,9 @@ impl App {
                 }
 
                 // Allow partial enrichment - fill in missing pieces without overwriting existing data
-                if let Some((pid, name)) = process_lookup.get_process_for_connection(&entry) {
+                if let Some(attribution) = process_lookup.get_process_attribution(&entry) {
+                    let pid = attribution.tgid;
+                    let name = attribution.name;
                     let mut did_enrich = false;
 
                     let upgrades_placeholder = name != UNKNOWN_PROCESS_NAME
@@ -1966,6 +2001,30 @@ impl App {
                         entry.pid = Some(pid);
                         did_enrich = true;
                         debug!("✓ Set PID for connection {}: {}", entry.key(), pid);
+                    }
+
+                    // The richer fields follow the same write-once rule as the
+                    // name and PID above: the first backend to answer owns the
+                    // connection, so a later relaxed guess cannot overwrite an
+                    // earlier exact one.
+                    if entry.executable.is_none()
+                        && let Some(path) = attribution.executable
+                    {
+                        let interned = executables
+                            .entry(path)
+                            .or_insert_with_key(|path| Arc::from(path.as_path()))
+                            .clone();
+                        entry.executable = Some(interned);
+                        did_enrich = true;
+                    }
+                    if entry.process_uid.is_none() {
+                        entry.process_uid = attribution.uid;
+                    }
+                    if entry.process_gid.is_none() {
+                        entry.process_gid = attribution.gid;
+                    }
+                    if entry.attribution_quality.is_none() {
+                        entry.attribution_quality = Some(attribution.quality);
                     }
 
                     if did_enrich {
@@ -3259,6 +3318,19 @@ fn build_pcapng_comment(conn: &Connection) -> Option<String> {
     if let Some(pid) = conn.pid {
         fields.push(format!("pid={pid}"));
     }
+    // Deliberately no `exe=` here. This comment is written into every Enhanced
+    // Packet Block, so a 40-character path would be repeated once per packet
+    // and bloat the capture by tens of megabytes over a long run. The full path
+    // lives in the per-connection JSONL sidecar instead. `uid` and the match
+    // quality are a handful of bytes and earn their place: uid=0 and a relaxed
+    // match are both things an analyst wants to see without leaving Wireshark.
+    if let Some(uid) = conn.process_uid {
+        fields.push(format!("uid={uid}"));
+    }
+    if let Some(quality) = conn.attribution_quality {
+        // Already whitespace-free, so no sanitization needed.
+        fields.push(format!("attr={}", quality.as_token()));
+    }
     #[cfg(feature = "kubernetes")]
     if let Some(k8s) = &conn.k8s_info {
         if let Some(name) = &k8s.pod_name {
@@ -3754,6 +3826,53 @@ mod pcapng_export_tests {
         assert!(comment.contains(
             "container_id=c16c7605305c854d8582a1db3d5bb3c4b6c89a08e914223e9d500682b3fb0b1b"
         ));
+    }
+
+    /// The packet comment is written once per Enhanced Packet Block, so the
+    /// cheap attribution fields belong there and the executable path does not.
+    #[test]
+    fn comment_carries_uid_and_match_quality_but_not_the_executable_path() {
+        use crate::network::types::{MatchQuality, ProtocolState, TcpState};
+        use std::path::Path;
+
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::from(([10, 0, 0, 1], 4000)),
+            SocketAddr::from(([10, 0, 0, 2], 443)),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        conn.process_name = Some("curl".to_string());
+        conn.pid = Some(4242);
+        conn.executable = Some(Arc::from(Path::new("/usr/bin/curl")));
+        conn.process_uid = Some(0);
+        conn.process_gid = Some(0);
+        conn.attribution_quality = Some(MatchQuality::ProcfsRelaxed);
+
+        let comment = build_pcapng_comment(&conn).expect("attributed connection must comment");
+        assert!(comment.contains("process=curl"));
+        assert!(comment.contains("pid=4242"));
+        assert!(comment.contains("uid=0"));
+        assert!(comment.contains("attr=procfs-relaxed"));
+        assert!(
+            !comment.contains("/usr/bin/curl"),
+            "the executable path would repeat per packet; it belongs in the JSONL sidecar: {comment}"
+        );
+    }
+
+    /// Attribution fields alone are enough metadata to justify a comment, and
+    /// an unattributed connection still produces none.
+    #[test]
+    fn comment_is_absent_without_any_metadata() {
+        use crate::network::types::{ProtocolState, TcpState};
+
+        let conn = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::from(([10, 0, 0, 1], 4000)),
+            SocketAddr::from(([10, 0, 0, 2], 443)),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+
+        assert_eq!(build_pcapng_comment(&conn), None);
     }
 
     /// Records must leave the pending queue in arrival order: a keyless

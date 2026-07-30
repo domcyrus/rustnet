@@ -475,6 +475,42 @@ mod tests {
         assert!(lookup.get_process_for_connection(&conn).is_none());
     }
 
+    /// End-to-end against the real `/proc/net/tcp` table rather than an
+    /// injected one: open a listener, rescan, and confirm the attribution that
+    /// comes back is fully populated. Needs no privileges, because the socket
+    /// belongs to this process.
+    #[test]
+    fn attributes_a_real_listening_socket_from_procfs() {
+        use std::net::{Ipv4Addr, TcpListener};
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let local = listener.local_addr().unwrap();
+
+        let lookup = LinuxProcessLookup::new().expect("procfs scan must succeed");
+        // The listener was opened after the constructor's scan.
+        lookup.refresh().expect("refresh must succeed");
+
+        // /proc/net/tcp records a listener with a zeroed peer.
+        let conn = Connection::new(
+            Protocol::Tcp,
+            local,
+            "0.0.0.0:0".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Unknown),
+        );
+
+        let attribution = lookup
+            .get_process_attribution(&conn)
+            .expect("our own listening socket must be attributable");
+
+        assert_eq!(attribution.tgid, own_pid());
+        assert_eq!(attribution.quality, MatchQuality::ProcfsExact);
+        assert_eq!(attribution.backend, AttributionBackend::Procfs);
+        assert_eq!(attribution.executable, std::env::current_exe().ok());
+        assert_eq!(attribution.uid, Some(unsafe { libc::geteuid() }));
+        assert_eq!(attribution.gid, Some(unsafe { libc::getegid() }));
+        assert!(!attribution.name.is_empty());
+    }
+
     #[test]
     fn the_tuple_api_agrees_with_the_rich_api() {
         let mut table = HashMap::new();

@@ -2,8 +2,84 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+
+/// How closely a process attribution matched the connection it was asked about.
+///
+/// Attribution backends record sockets under the tuple they saw at creation
+/// time, which is not always the tuple the capture side observes on the wire. A
+/// lookup may therefore have to relax the key, and the caller deserves to know
+/// that it did: a relaxed hit is a plausible owner, not a proven one.
+///
+/// Defined here rather than in `rustnet-host` because [`Connection`] carries it
+/// and `rustnet-host` depends on this crate, not the other way round.
+/// `rustnet-host` re-exports it.
+///
+/// Marked `#[non_exhaustive]` so new relaxation shapes can be added without
+/// breaking downstream `match` arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum MatchQuality {
+    /// The full 4-tuple matched a recorded socket.
+    ExactTuple,
+    /// Matched only after zeroing the local address, i.e. the socket was
+    /// recorded while bound to a wildcard address.
+    WildcardLocalAddress,
+    /// Matched a listening socket (the recorded entry has no remote peer).
+    ListenerSocket,
+    /// Exact 4-tuple match in the procfs socket table.
+    ProcfsExact,
+    /// procfs match that needed a relaxed key.
+    ProcfsRelaxed,
+    /// The backend reported an owner but not how it matched. Produced by the
+    /// compatibility bridge for platforms that still only implement the
+    /// `(pid, name)` tuple API.
+    Unspecified,
+}
+
+impl MatchQuality {
+    /// Whether the connection's exact 4-tuple was found, with no relaxation.
+    pub fn is_exact(self) -> bool {
+        matches!(self, Self::ExactTuple | Self::ProcfsExact)
+    }
+
+    /// Human-readable label, for display to a person.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactTuple => "exact tuple",
+            Self::WildcardLocalAddress => "wildcard local address",
+            Self::ListenerSocket => "listener socket",
+            Self::ProcfsExact => "procfs exact",
+            Self::ProcfsRelaxed => "procfs relaxed",
+            Self::Unspecified => "unspecified",
+        }
+    }
+
+    /// Stable machine-readable token for exports.
+    ///
+    /// Separate from [`MatchQuality::as_str`] on purpose: the prose there is
+    /// free to be reworded for readability, while anything a user greps or
+    /// filters on must not change under them. It also contains no whitespace,
+    /// which matters for the space-delimited PCAPNG packet comment.
+    pub fn as_token(self) -> &'static str {
+        match self {
+            Self::ExactTuple => "exact-tuple",
+            Self::WildcardLocalAddress => "wildcard-local-address",
+            Self::ListenerSocket => "listener-socket",
+            Self::ProcfsExact => "procfs-exact",
+            Self::ProcfsRelaxed => "procfs-relaxed",
+            Self::Unspecified => "unspecified",
+        }
+    }
+}
+
+impl fmt::Display for MatchQuality {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Protocol {
@@ -2346,6 +2422,21 @@ pub struct Connection {
     // Process information
     pub pid: Option<u32>,
     pub process_name: Option<String>,
+    /// Absolute path of the owning process's executable, when the platform can
+    /// resolve it.
+    ///
+    /// `Arc<Path>` rather than `PathBuf`: every connection of a process shares
+    /// one executable path, and `Connection` is cloned in bulk on every
+    /// snapshot tick (see `snapshot_clone`). Interning keeps that clone from
+    /// allocating per connection.
+    pub executable: Option<Arc<Path>>,
+    /// Effective user id of the owning process, when the platform reports it.
+    pub process_uid: Option<u32>,
+    /// Effective group id of the owning process, when the platform reports it.
+    pub process_gid: Option<u32>,
+    /// How confidently the attribution was matched to this connection. `None`
+    /// until the connection is attributed.
+    pub attribution_quality: Option<MatchQuality>,
 
     // Kubernetes attribution (pod/container), populated on K8s nodes
     #[cfg(feature = "kubernetes")]
@@ -2425,6 +2516,10 @@ impl Connection {
             protocol_state: state,
             pid: None,
             process_name: None,
+            executable: None,
+            process_uid: None,
+            process_gid: None,
+            attribution_quality: None,
             #[cfg(feature = "kubernetes")]
             k8s_info: None,
             connection_direction: None,
@@ -3240,6 +3335,79 @@ mod tests {
         // The snapshot must not share the sample buffer with the original.
         assert_eq!(Arc::strong_count(&conn.rate_tracker.samples), 1);
         assert!(snap.rate_tracker.samples.is_empty());
+    }
+
+    /// The snapshot provider clones every connection on every tick, so the
+    /// executable path must be shared rather than reallocated per clone.
+    #[test]
+    fn snapshot_clone_shares_the_interned_executable_path() {
+        use std::path::Path;
+
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        let executable: Arc<Path> = Arc::from(Path::new("/usr/bin/curl"));
+        conn.executable = Some(Arc::clone(&executable));
+        conn.process_uid = Some(1000);
+        conn.process_gid = Some(100);
+        conn.attribution_quality = Some(MatchQuality::ExactTuple);
+
+        let snap = conn.snapshot_clone();
+
+        assert_eq!(snap.executable.as_deref(), Some(Path::new("/usr/bin/curl")));
+        assert_eq!(snap.process_uid, Some(1000));
+        assert_eq!(snap.process_gid, Some(100));
+        assert_eq!(snap.attribution_quality, Some(MatchQuality::ExactTuple));
+        assert!(
+            Arc::ptr_eq(
+                conn.executable.as_ref().unwrap(),
+                snap.executable.as_ref().unwrap()
+            ),
+            "the clone must share the path allocation, not copy it"
+        );
+    }
+
+    #[test]
+    fn new_connections_carry_no_attribution() {
+        let conn = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 1),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 2),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+
+        assert!(conn.executable.is_none());
+        assert!(conn.process_uid.is_none());
+        assert!(conn.process_gid.is_none());
+        assert!(conn.attribution_quality.is_none());
+    }
+
+    /// Export tokens are what users grep and filter on, so they are pinned
+    /// here: the prose in `as_str` may be reworded, these may not.
+    #[test]
+    fn match_quality_export_tokens_are_stable_and_whitespace_free() {
+        let all = [
+            (MatchQuality::ExactTuple, "exact-tuple"),
+            (MatchQuality::WildcardLocalAddress, "wildcard-local-address"),
+            (MatchQuality::ListenerSocket, "listener-socket"),
+            (MatchQuality::ProcfsExact, "procfs-exact"),
+            (MatchQuality::ProcfsRelaxed, "procfs-relaxed"),
+            (MatchQuality::Unspecified, "unspecified"),
+        ];
+
+        for (quality, token) in all {
+            assert_eq!(quality.as_token(), token);
+            // The PCAPNG packet comment is space-delimited `key=value`.
+            assert!(!token.contains(char::is_whitespace));
+        }
+
+        assert!(MatchQuality::ExactTuple.is_exact());
+        assert!(MatchQuality::ProcfsExact.is_exact());
+        assert!(!MatchQuality::ProcfsRelaxed.is_exact());
+        assert!(!MatchQuality::Unspecified.is_exact());
     }
 
     #[test]
