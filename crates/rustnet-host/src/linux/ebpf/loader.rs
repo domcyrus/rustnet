@@ -1,6 +1,6 @@
 //! Linux eBPF backend negotiation and program loading.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use libbpf_rs::btf::{
     Btf, BtfKind, BtfType, HasSize, ReferencesType,
     types::{Func, FuncProto, Int, IntEncoding},
@@ -8,6 +8,7 @@ use libbpf_rs::btf::{
 use libbpf_rs::skel::{OpenSkel, SkelBuilder};
 use log::{debug, info, warn};
 
+use super::maps_libbpf::{CONN_INFO_SIZE, CONN_KEY_SIZE};
 use crate::{AttributionBackend, AttributionCapabilities, DegradationReason};
 
 mod socket_tracker_fentry {
@@ -198,6 +199,7 @@ impl FentryLoader {
         let mut open_skel = skel_builder
             .open(&mut open_object)
             .context("open fentry skeleton")?;
+        validate_socket_map(&open_skel.maps.socket_map)?;
 
         match accept_signature {
             AcceptSignature::LegacyFourArguments => open_skel
@@ -317,6 +319,7 @@ impl KprobeLoader {
         let open_skel = skel_builder
             .open(&mut open_object)
             .context("open kprobe skeleton")?;
+        validate_socket_map(&open_skel.maps.socket_map)?;
         let skel = open_skel.load().context("load kprobe BPF object")?;
 
         let mut links = Vec::with_capacity(6);
@@ -386,6 +389,22 @@ impl KprobeLoader {
     fn socket_map(&self) -> &libbpf_rs::Map<'_> {
         &self.skel.maps.socket_map
     }
+}
+
+fn validate_socket_map(map: &libbpf_rs::OpenMap<'_>) -> Result<()> {
+    validate_socket_map_layout(map.key_size(), map.value_size())
+}
+
+fn validate_socket_map_layout(key_size: u32, value_size: u32) -> Result<()> {
+    ensure!(
+        key_size as usize == CONN_KEY_SIZE,
+        "socket_map key size mismatch: BPF object uses {key_size} bytes, Rust expects {CONN_KEY_SIZE}"
+    );
+    ensure!(
+        value_size as usize == CONN_INFO_SIZE,
+        "socket_map value size mismatch: BPF object uses {value_size} bytes, Rust expects {CONN_INFO_SIZE}"
+    );
+    Ok(())
 }
 
 fn attach_optional(
@@ -720,6 +739,31 @@ mod tests {
     use super::*;
     use anyhow::anyhow;
     use std::cell::Cell;
+
+    #[test]
+    fn socket_map_layout_matches_rust_types() {
+        assert!(validate_socket_map_layout(CONN_KEY_SIZE as u32, CONN_INFO_SIZE as u32).is_ok());
+    }
+
+    #[test]
+    fn socket_map_layout_rejects_key_size_mismatch() {
+        let error = validate_socket_map_layout(CONN_KEY_SIZE as u32 + 1, CONN_INFO_SIZE as u32)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "socket_map key size mismatch: BPF object uses 41 bytes, Rust expects 40"
+        );
+    }
+
+    #[test]
+    fn socket_map_layout_rejects_value_size_mismatch() {
+        let error = validate_socket_map_layout(CONN_KEY_SIZE as u32, CONN_INFO_SIZE as u32 + 1)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "socket_map value size mismatch: BPF object uses 41 bytes, Rust expects 40"
+        );
+    }
 
     #[test]
     fn backend_selection_prefers_fentry_without_trying_kprobe() {
