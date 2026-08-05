@@ -31,7 +31,7 @@ libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18"
-libbpf-rs = { version = "0.26", optional = true }
+libbpf-rs = { version = "0.27", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 ferrisetw = "1.2"
@@ -46,4 +46,4 @@ windows = { version = "0.62", features = [
 anyhow.workspace = true
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
-libbpf-cargo = { version = "0.26", optional = true }
+libbpf-cargo = { version = "0.27", optional = true }
