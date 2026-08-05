@@ -195,8 +195,25 @@ impl WindowsProcessLookup {
     }
 
     fn process_lineage(&self, pid: u32, ppid: u32) -> Option<ProcessLineage> {
+        // Windows never rewrites a child's parent PID when the parent exits,
+        // and dead PIDs are recycled. A real ancestor always started no later
+        // than its descendant, so a "parent" younger than the youngest child
+        // seen so far is a recycled PID and ends the walk. The bound carries
+        // across entries with unknown start times.
+        let mut newest_descendant_start = self
+            .process_details(pid)
+            .and_then(|details| details.started_at_unix_ms);
         collect_process_lineage(pid, ppid, |ancestor_pid| {
             let details = self.process_details(ancestor_pid)?;
+            if let (Some(descendant_start), Some(ancestor_start)) =
+                (newest_descendant_start, details.started_at_unix_ms)
+                && ancestor_start > descendant_start
+            {
+                return None;
+            }
+            if details.started_at_unix_ms.is_some() {
+                newest_descendant_start = details.started_at_unix_ms;
+            }
             Some((
                 ProcessAncestor {
                     pid: ancestor_pid,

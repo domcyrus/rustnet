@@ -22,9 +22,7 @@ use super::ebpf::EbpfSocketTracker;
 mod ebpf_enhanced {
     use super::*;
     use crate::linux::ebpf::SocketMatch;
-    use crate::linux::process::{
-        refine_truncated_name, resolve_executable, resolve_parent_pid, resolve_process_lineage,
-    };
+    use crate::linux::process::{refine_truncated_name, resolve_executable, resolve_parent_pid};
     use rustnet_core::network::types::ProtocolState;
 
     /// Enhanced process lookup that combines eBPF (fast path) with procfs (fallback)
@@ -240,7 +238,7 @@ mod ebpf_enhanced {
             if let Some(ppid) = ppid {
                 attribution = attribution
                     .with_parent_pid(ppid)
-                    .with_lineage(resolve_process_lineage(info.pid, ppid));
+                    .with_lineage(self.procfs_lookup.lineage_for(info.pid, ppid));
             }
             attribution
         }

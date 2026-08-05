@@ -1944,6 +1944,10 @@ impl App {
         // `Connection` is cloned in bulk on every snapshot tick. Interning here
         // means the clone copies an Arc pointer instead of a fresh PathBuf.
         let mut executables: HashMap<PathBuf, Arc<Path>> = HashMap::new();
+        // Lineage follows the same sharing rule, keyed by owner PID. Unlike the
+        // content-keyed executable map, a PID key can go stale on PID reuse, so
+        // the map is cleared on every full pass.
+        let mut lineages: HashMap<u32, Arc<ProcessLineage>> = HashMap::new();
 
         // Build and set the detection status from the process lookup implementation
         // Only set if not already detected as pktap (to handle race conditions)
@@ -2007,6 +2011,7 @@ impl App {
             let full_pass = last_full_pass.elapsed() >= full_pass_interval;
             if full_pass {
                 last_full_pass = Instant::now();
+                lineages.clear();
             }
 
             // Enrich connections without process info
@@ -2092,7 +2097,11 @@ impl App {
                     if entry.process_lineage.is_none()
                         && let Some(lineage) = attribution.lineage
                     {
-                        entry.process_lineage = Some(Arc::new(lineage));
+                        let interned = lineages
+                            .entry(pid)
+                            .or_insert_with(|| Arc::new(lineage))
+                            .clone();
+                        entry.process_lineage = Some(interned);
                         did_enrich = true;
                     }
                     if entry.attribution_quality.is_none() {

@@ -141,7 +141,7 @@ fn resolve_process_ancestor(pid: u32) -> Option<(ProcessAncestor, u32)> {
     ))
 }
 
-pub(crate) fn resolve_process_lineage(tgid: u32, ppid: u32) -> Option<ProcessLineage> {
+fn resolve_process_lineage(tgid: u32, ppid: u32) -> Option<ProcessLineage> {
     collect_process_lineage(tgid, ppid, resolve_process_ancestor)
 }
 
@@ -157,6 +157,9 @@ pub struct LinuxProcessLookup {
     cache: RwLock<ProcessCache>,
     // Cache: PID -> process_name (for resolving eBPF thread names to main process names)
     pid_names: RwLock<HashMap<u32, String>>,
+    // Memo: TGID -> lineage, so many connections of one process walk /proc
+    // once per refresh instead of once each. Failures are memoized too.
+    lineages: RwLock<HashMap<u32, Option<ProcessLineage>>>,
 }
 
 struct ProcessCache {
@@ -176,6 +179,7 @@ impl LinuxProcessLookup {
                 last_refresh: Instant::now(),
             }),
             pid_names: RwLock::new(pid_names),
+            lineages: RwLock::new(HashMap::new()),
         })
     }
 
@@ -189,6 +193,7 @@ impl LinuxProcessLookup {
                 last_refresh: Instant::now(),
             }),
             pid_names: RwLock::new(HashMap::new()),
+            lineages: RwLock::new(HashMap::new()),
         }
     }
 
@@ -251,12 +256,37 @@ impl LinuxProcessLookup {
         Some((*pid, name.clone(), MatchQuality::ProcfsRelaxed))
     }
 
+    /// Resolve a process's parent chain, memoized per TGID until the next
+    /// socket-table refresh bounds PID-reuse staleness.
+    pub(crate) fn lineage_for(&self, tgid: u32, ppid: u32) -> Option<ProcessLineage> {
+        if let Some(lineage) = self
+            .lineages
+            .read()
+            .expect("lineages lock poisoned")
+            .get(&tgid)
+        {
+            return lineage.clone();
+        }
+
+        let lineage = resolve_process_lineage(tgid, ppid);
+        self.lineages
+            .write()
+            .expect("lineages lock poisoned")
+            .insert(tgid, lineage.clone());
+        lineage
+    }
+
     /// Turn a procfs socket-table match into a rich attribution by reading the
     /// live `/proc/<tgid>` entries for the owner.
     ///
     /// The socket table sources the name from `/proc/<tgid>/comm` during the
     /// scan, so a comm-truncated name is recovered from the executable here.
-    fn build_attribution(tgid: u32, name: String, quality: MatchQuality) -> ProcessAttribution {
+    fn build_attribution(
+        &self,
+        tgid: u32,
+        name: String,
+        quality: MatchQuality,
+    ) -> ProcessAttribution {
         let executable = resolve_executable(tgid);
         let name = refine_truncated_name(name, executable.as_deref());
         let mut attribution =
@@ -265,7 +295,7 @@ impl LinuxProcessLookup {
         if let Some(ppid) = resolve_parent_pid(tgid) {
             attribution = attribution
                 .with_parent_pid(ppid)
-                .with_lineage(resolve_process_lineage(tgid, ppid));
+                .with_lineage(self.lineage_for(tgid, ppid));
         }
 
         match resolve_credentials(tgid) {
@@ -452,7 +482,7 @@ impl ProcessLookup for LinuxProcessLookup {
 
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let (tgid, name, quality) = self.lookup_match(conn)?;
-        Some(Self::build_attribution(tgid, name, quality))
+        Some(self.build_attribution(tgid, name, quality))
     }
 
     fn refresh(&self) -> Result<()> {
@@ -463,6 +493,10 @@ impl ProcessLookup for LinuxProcessLookup {
         cache.last_refresh = Instant::now();
 
         *self.pid_names.write().expect("pid_names lock poisoned") = pid_names;
+        self.lineages
+            .write()
+            .expect("lineages lock poisoned")
+            .clear();
 
         Ok(())
     }
@@ -614,6 +648,36 @@ mod tests {
                 start_ticks: 12345,
             })
         );
+    }
+
+    /// Many connections share one owner, so the lineage memo must answer
+    /// repeat lookups (including failed walks) without re-walking `/proc`.
+    #[test]
+    fn lineage_memo_serves_repeat_lookups_without_rewalking() {
+        let lookup = LinuxProcessLookup::with_socket_table(HashMap::new());
+        let sentinel = ProcessLineage {
+            ancestors: vec![ProcessAncestor {
+                pid: 7,
+                name: "sentinel".to_string(),
+                executable: None,
+                started_at_unix_ms: None,
+            }],
+            truncated: false,
+        };
+        lookup
+            .lineages
+            .write()
+            .unwrap()
+            .insert(own_pid(), Some(sentinel.clone()));
+
+        // A live walk would resolve the real parent chain; getting the
+        // sentinel back proves the memo was consulted instead.
+        let parent_pid = u32::try_from(unsafe { libc::getppid() }).unwrap();
+        assert_eq!(lookup.lineage_for(own_pid(), parent_pid), Some(sentinel));
+
+        // Failed walks are memoized too, so a gone process is walked once.
+        assert_eq!(lookup.lineage_for(u32::MAX, u32::MAX - 1), None);
+        assert_eq!(lookup.lineages.read().unwrap().get(&u32::MAX), Some(&None));
     }
 
     #[test]
