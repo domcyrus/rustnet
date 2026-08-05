@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 const SOCKSTAT_PATH: &str = "/usr/bin/sockstat";
 
 pub struct FreeBSDProcessLookup {
-    // Cache: ConnectionKey -> (pid, process_name)
+    // Cache: ConnectionKey -> socket owner
     cache: RwLock<ProcessCache>,
     // A process may own many sockets. Resolve its metadata through sysctl once
     // per refresh generation rather than once per connection.
@@ -27,8 +27,15 @@ pub struct FreeBSDProcessLookup {
 }
 
 struct ProcessCache {
-    lookup: HashMap<ConnectionKey, (u32, String)>,
+    lookup: HashMap<ConnectionKey, FreeBsdProcessInfo>,
     last_refresh: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FreeBsdProcessInfo {
+    pid: u32,
+    name: String,
+    uid: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,16 +57,15 @@ impl FreeBSDProcessLookup {
         })
     }
 
-    fn lookup_match(&self, conn: &Connection) -> Option<(u32, String, MatchQuality)> {
+    fn lookup_match(&self, conn: &Connection) -> Option<(FreeBsdProcessInfo, MatchQuality)> {
         let key = ConnectionKey::from_connection(conn);
         let cache = self.cache.read().expect("process cache lock poisoned");
 
-        if let Some((pid, name)) = cache.lookup.get(&key) {
-            return Some((*pid, name.clone(), MatchQuality::ExactTuple));
+        if let Some(process) = cache.lookup.get(&key) {
+            return Some((process.clone(), MatchQuality::ExactTuple));
         }
 
-        relaxed_lookup(&cache.lookup, &key)
-            .map(|((pid, name), quality)| (*pid, name.clone(), quality))
+        relaxed_lookup(&cache.lookup, &key).map(|(process, quality)| (process.clone(), quality))
     }
 
     fn resolve_executable(pid: libc::pid_t) -> Option<PathBuf> {
@@ -167,7 +173,7 @@ impl FreeBSDProcessLookup {
     }
 
     /// Build connection -> process mapping using sysctl
-    fn build_process_map() -> Result<HashMap<ConnectionKey, (u32, String)>> {
+    fn build_process_map() -> Result<HashMap<ConnectionKey, FreeBsdProcessInfo>> {
         let mut process_map = HashMap::new();
 
         // Parse TCP connections
@@ -195,10 +201,8 @@ impl FreeBSDProcessLookup {
 
     /// Parse sockstat output for a given protocol
     /// Format: user command pid fd proto local_addr foreign_addr
-    fn parse_sockstat_output(proto: &str) -> Result<HashMap<ConnectionKey, (u32, String)>> {
+    fn parse_sockstat_output(proto: &str) -> Result<HashMap<ConnectionKey, FreeBsdProcessInfo>> {
         use std::process::Command;
-
-        let mut result = HashMap::new();
 
         // Determine protocol type
         let protocol = if proto.starts_with("tcp") {
@@ -213,7 +217,7 @@ impl FreeBSDProcessLookup {
 
         let output = Command::new(SOCKSTAT_PATH)
             .arg(if ipv6_flag { "-6" } else { "-4" })
-            .arg("-n") // numeric output
+            .arg("-n") // numeric UIDs
             .arg("-P")
             .arg(if proto.starts_with("tcp") {
                 "tcp"
@@ -224,10 +228,18 @@ impl FreeBSDProcessLookup {
             .context("Failed to execute sockstat")?;
 
         if !output.status.success() {
-            return Ok(result);
+            return Ok(HashMap::new());
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
+        Ok(Self::parse_sockstat_rows(&stdout, protocol))
+    }
+
+    fn parse_sockstat_rows(
+        stdout: &str,
+        protocol: Protocol,
+    ) -> HashMap<ConnectionKey, FreeBsdProcessInfo> {
+        let mut result = HashMap::new();
 
         for line in stdout.lines().skip(1) {
             // Skip header
@@ -235,13 +247,17 @@ impl FreeBSDProcessLookup {
 
             // Expected format:
             // USER     COMMAND    PID   FD PROTO  LOCAL ADDRESS         FOREIGN ADDRESS
-            // root     sshd       1234  3  tcp4   192.168.1.1:22        192.168.1.2:54321
+            // 1001     sshd       1234  3  tcp4   192.168.1.1:22        192.168.1.2:54321
 
             if parts.len() < 7 {
                 continue;
             }
 
             // Extract fields
+            let uid = match parts[0].parse::<u32>() {
+                Ok(uid) => uid,
+                Err(_) => continue,
+            };
             let process_name = parts[1].to_string();
             let pid = match parts[2].parse::<u32>() {
                 Ok(p) => p,
@@ -266,10 +282,17 @@ impl FreeBSDProcessLookup {
                 remote_addr: foreign_addr,
             };
 
-            result.insert(key, (pid, process_name));
+            result.insert(
+                key,
+                FreeBsdProcessInfo {
+                    pid,
+                    name: process_name,
+                    uid,
+                },
+            );
         }
 
-        Ok(result)
+        result
     }
 
     /// Parse address in format "ip:port", "*:port", or "[ipv6]:port"
@@ -314,14 +337,19 @@ impl FreeBSDProcessLookup {
 impl ProcessLookup for FreeBSDProcessLookup {
     fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
         self.lookup_match(conn)
-            .map(|(pid, name, _quality)| (pid, name))
+            .map(|(process, _quality)| (process.pid, process.name))
     }
 
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
-        let (pid, name, quality) = self.lookup_match(conn)?;
-        let mut attribution =
-            ProcessAttribution::new(pid, name, AttributionBackend::PlatformNative, quality);
-        if let Some(details) = self.process_details(pid) {
+        let (process, quality) = self.lookup_match(conn)?;
+        let mut attribution = ProcessAttribution::new(
+            process.pid,
+            process.name,
+            AttributionBackend::PlatformNative,
+            quality,
+        );
+        attribution.uid = Some(process.uid);
+        if let Some(details) = self.process_details(process.pid) {
             attribution = attribution
                 .with_parent_pid(details.ppid)
                 .with_credentials(details.uid, details.gid)
@@ -352,7 +380,55 @@ impl ProcessLookup for FreeBSDProcessLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustnet_core::network::types::{ProtocolState, TcpState};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    fn tcp_connection(local: &str, remote: &str) -> Connection {
+        Connection::new(
+            Protocol::Tcp,
+            local.parse().unwrap(),
+            remote.parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        )
+    }
+
+    #[test]
+    fn sockstat_numeric_uid_reaches_attribution_without_process_details() {
+        let output = "\
+USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS
+1001 curl 4294967295 3 tcp4 127.0.0.1:5000 1.1.1.1:443
+";
+        let lookup = FreeBSDProcessLookup {
+            cache: RwLock::new(ProcessCache {
+                lookup: FreeBSDProcessLookup::parse_sockstat_rows(output, Protocol::Tcp),
+                last_refresh: Instant::now(),
+            }),
+            process_details: RwLock::new(HashMap::new()),
+        };
+        let conn = tcp_connection("127.0.0.1:5000", "1.1.1.1:443");
+
+        let attribution = lookup.get_process_attribution(&conn).unwrap();
+
+        assert_eq!(attribution.tgid, u32::MAX);
+        assert_eq!(attribution.name, "curl");
+        assert_eq!(attribution.uid, Some(1001));
+        assert_eq!(attribution.gid, None);
+        assert_eq!(attribution.quality, MatchQuality::ExactTuple);
+        assert_eq!(
+            lookup.get_process_for_connection(&conn),
+            Some((u32::MAX, "curl".to_string()))
+        );
+    }
+
+    #[test]
+    fn sockstat_parser_requires_numeric_uid_enabled_by_dash_n() {
+        let output = "\
+USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS
+root server 42 3 tcp4 127.0.0.1:8080 0.0.0.0:0
+";
+
+        assert!(FreeBSDProcessLookup::parse_sockstat_rows(output, Protocol::Tcp).is_empty());
+    }
 
     #[test]
     fn test_parse_ipv4_address() {

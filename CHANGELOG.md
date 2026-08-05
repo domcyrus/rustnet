@@ -73,6 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped on the capture workers after privileged initialization (#498)
 
 ### Fixed
+- **FreeBSD User Names in Connection Details**: Numeric socket-owner UIDs from
+  `sockstat` now survive process attribution, so Details can resolve user names
+  even when live process metadata is unavailable (#522)
 - **Linux User Names in Connection Details**: The Landlock profile now permits
   read-only access to the public NSS account files, so the Details tab resolves
   process UID/GID values to user/group names instead of showing numeric values
