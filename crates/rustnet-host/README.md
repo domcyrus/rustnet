@@ -30,12 +30,13 @@ instead:
 ```rust
 if let Some(attribution) = lookup.get_process_attribution(&conn) {
     println!(
-        "{} ({}) ppid={:?} uid={:?} exe={:?} via {} ({} match)",
+        "{} ({}) ppid={:?} uid={:?} exe={:?} lineage={:?} via {} ({} match)",
         attribution.name,
         attribution.tgid,
         attribution.ppid,
         attribution.uid,
         attribution.executable,
+        attribution.lineage,
         attribution.backend,
         attribution.quality,
     );
@@ -51,6 +52,11 @@ clock (`bpf_ktime_get_ns`), which is not wall-clock time. The executable path is
 resolved once from `/proc/<tgid>/exe`; an unreadable link yields
 `executable: None` and never fails the attribution.
 
+Every platform also resolves up to four parent processes, ordered from the
+oldest retained ancestor to the direct parent. Each entry includes its PID,
+name, executable path, and Unix start time when the OS exposes them. A
+truncation flag marks chains capped before another known parent.
+
 On macOS, PKTAP supplies an exact PID and process name with each packet. Libproc
 adds the PPID, executable path, and effective UID/GID. The fallback parses
 numeric UIDs from `lsof -l` and uses libproc for the other process details.
@@ -62,9 +68,9 @@ On FreeBSD, `sockstat` supplies the socket owner and native `sysctl` queries add
 the PPID, effective UID/GID, and executable path. Process details are cached by
 PID for each socket-table refresh.
 
-Windows gets a compatibility bridge over
-`get_process_for_connection()` reporting `MatchQuality::Unspecified`, so every
-existing caller keeps working unchanged.
+On Windows, Tool Help supplies parent relationships and process names, while
+`QueryFullProcessImageNameW` and `GetProcessTimes` add executable paths and
+creation times. Connection match quality remains `MatchQuality::Unspecified`.
 
 When a platform can't use its optimal method, `ProcessLookup::get_degradation_reason`
 reports why (e.g. missing `CAP_BPF`, no root for PKTAP) via `DegradationReason`,

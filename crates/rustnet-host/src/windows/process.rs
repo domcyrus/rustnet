@@ -1,17 +1,21 @@
 // Windows ETW process attribution with an IP Helper API fallback.
 
 use super::etw::{EtwAttribution, EtwProcessCache};
-use crate::{ConnectionKey, DegradationReason, ProcessLookup};
-use anyhow::Result;
+use crate::{
+    AttributionBackend, ConnectionKey, DegradationReason, MatchQuality, ProcessAncestor,
+    ProcessAttribution, ProcessLineage, ProcessLookup, collect_process_lineage,
+};
+use anyhow::{Context, Result};
 use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::windows::ffi::OsStringExt;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, WIN32_ERROR,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, FILETIME, WIN32_ERROR,
 };
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
@@ -19,8 +23,12 @@ use windows::Win32::NetworkManagement::IpHelper::{
     MIB_UDPROW_OWNER_PID, MIB_UDPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_ALL, UDP_TABLE_OWNER_PID,
 };
 use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
 use windows::Win32::System::Threading::{
-    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    GetProcessTimes, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW,
 };
 
 const UNKNOWN_PROCESS_NAME: &str = "Unknown";
@@ -53,6 +61,7 @@ fn table_buffer_len(table: &[u32]) -> usize {
 
 pub struct WindowsProcessLookup {
     cache: RwLock<ProcessCache>,
+    process_details: RwLock<HashMap<u32, WindowsProcessDetails>>,
     etw_cache: Arc<EtwProcessCache>,
     _etw: Option<EtwAttribution>,
 }
@@ -60,6 +69,21 @@ pub struct WindowsProcessLookup {
 struct ProcessCache {
     lookup: HashMap<ConnectionKey, (u32, String)>,
     last_refresh: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct WindowsProcessDetails {
+    ppid: u32,
+    name: String,
+    executable: Option<PathBuf>,
+    started_at_unix_ms: Option<u64>,
+    runtime_resolved: bool,
+}
+
+#[derive(Debug)]
+struct WindowsRuntimeDetails {
+    executable: Option<PathBuf>,
+    started_at_unix_ms: Option<u64>,
 }
 
 impl WindowsProcessLookup {
@@ -91,8 +115,97 @@ impl WindowsProcessLookup {
                 lookup: HashMap::new(),
                 last_refresh: initial_refresh,
             }),
+            process_details: RwLock::new(HashMap::new()),
             etw_cache,
             _etw: etw,
+        })
+    }
+
+    fn snapshot_processes() -> Result<HashMap<u32, WindowsProcessDetails>> {
+        // SAFETY: the Tool Help APIs receive an initialized structure with the
+        // documented size. The snapshot handle is closed on every path.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+                .context("failed to snapshot Windows processes")?;
+            let result = (|| {
+                let mut processes = HashMap::new();
+                let mut entry = PROCESSENTRY32W {
+                    dwSize: u32::try_from(std::mem::size_of::<PROCESSENTRY32W>())
+                        .expect("PROCESSENTRY32W size fits in u32"),
+                    ..Default::default()
+                };
+
+                Process32FirstW(snapshot, &mut entry)
+                    .context("failed to enumerate Windows processes")?;
+                loop {
+                    let name = decode_wide_string(&entry.szExeFile);
+                    processes.insert(
+                        entry.th32ProcessID,
+                        WindowsProcessDetails {
+                            ppid: entry.th32ParentProcessID,
+                            name,
+                            executable: None,
+                            started_at_unix_ms: None,
+                            runtime_resolved: false,
+                        },
+                    );
+                    if Process32NextW(snapshot, &mut entry).is_err() {
+                        break;
+                    }
+                }
+                Ok(processes)
+            })();
+            let _ = CloseHandle(snapshot);
+            result
+        }
+    }
+
+    fn process_details(&self, pid: u32) -> Option<WindowsProcessDetails> {
+        let mut details = self
+            .process_details
+            .read()
+            .expect("process details lock poisoned")
+            .get(&pid)
+            .cloned();
+
+        if details.is_none() {
+            let snapshot = Self::snapshot_processes().ok()?;
+            details = snapshot.get(&pid).cloned();
+            *self
+                .process_details
+                .write()
+                .expect("process details lock poisoned") = snapshot;
+        }
+
+        let mut details = details?;
+        if details.runtime_resolved {
+            return Some(details);
+        }
+
+        if let Some(runtime) = query_process_runtime(pid) {
+            details.executable = runtime.executable;
+            details.started_at_unix_ms = runtime.started_at_unix_ms;
+        }
+        details.runtime_resolved = true;
+        self.process_details
+            .write()
+            .expect("process details lock poisoned")
+            .insert(pid, details.clone());
+        Some(details)
+    }
+
+    fn process_lineage(&self, pid: u32, ppid: u32) -> Option<ProcessLineage> {
+        collect_process_lineage(pid, ppid, |ancestor_pid| {
+            let details = self.process_details(ancestor_pid)?;
+            Some((
+                ProcessAncestor {
+                    pid: ancestor_pid,
+                    name: details.name,
+                    executable: details.executable,
+                    started_at_unix_ms: details.started_at_unix_ms,
+                },
+                details.ppid,
+            ))
         })
     }
 
@@ -607,12 +720,40 @@ impl ProcessLookup for WindowsProcessLookup {
         }
     }
 
+    fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
+        let (pid, name) = self.get_process_for_connection(conn)?;
+        let mut attribution = ProcessAttribution::new(
+            pid,
+            name,
+            AttributionBackend::PlatformNative,
+            MatchQuality::Unspecified,
+        );
+        if let Some(details) = self.process_details(pid) {
+            let lineage = self.process_lineage(pid, details.ppid);
+            attribution = attribution
+                .with_parent_pid(details.ppid)
+                .with_executable(details.executable)
+                .with_lineage(lineage);
+        }
+        Some(attribution)
+    }
+
     fn refresh(&self) -> Result<()> {
         let mut new_cache = HashMap::new();
         let mut process_names = HashMap::new();
 
         self.refresh_tcp_processes(&mut new_cache, &mut process_names)?;
         self.refresh_udp_processes(&mut new_cache, &mut process_names)?;
+
+        match Self::snapshot_processes() {
+            Ok(processes) => {
+                *self
+                    .process_details
+                    .write()
+                    .expect("process details lock poisoned") = processes;
+            }
+            Err(error) => log::debug!("Windows process snapshot failed: {}", error),
+        }
 
         let mut cache = match self.cache.write() {
             Ok(cache) => cache,
@@ -648,6 +789,58 @@ impl ProcessLookup for WindowsProcessLookup {
         } else {
             DegradationReason::EtwUnavailable
         }
+    }
+}
+
+fn decode_wide_string(buffer: &[u16]) -> String {
+    let length = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
+    OsString::from_wide(&buffer[..length])
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn filetime_to_unix_ms(time: FILETIME) -> Option<u64> {
+    const WINDOWS_TO_UNIX_EPOCH_100NS: u64 = 116_444_736_000_000_000;
+    let ticks = (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+    ticks
+        .checked_sub(WINDOWS_TO_UNIX_EPOCH_100NS)
+        .map(|unix_ticks| unix_ticks / 10_000)
+}
+
+fn query_process_runtime(pid: u32) -> Option<WindowsRuntimeDetails> {
+    // SAFETY: the process handle is valid after `OpenProcess`, all buffers
+    // have their exact lengths, and the handle is closed before returning.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut size = 32_768_u32;
+        let mut buffer = vec![0_u16; size as usize];
+        let executable = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buffer.as_mut_ptr()),
+            &mut size,
+        )
+        .is_ok()
+        .then(|| PathBuf::from(OsString::from_wide(&buffer[..size as usize])));
+
+        let mut creation = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let started_at_unix_ms =
+            GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user)
+                .is_ok()
+                .then(|| filetime_to_unix_ms(creation))
+                .flatten();
+
+        let _ = CloseHandle(handle);
+        Some(WindowsRuntimeDetails {
+            executable,
+            started_at_unix_ms,
+        })
     }
 }
 
@@ -791,11 +984,32 @@ mod tests {
         let conn = Connection::new(Protocol::Udp, local_addr, remote_addr, ProtocolState::Udp);
         let lookup = WindowsProcessLookup::new().unwrap();
 
-        let process = lookup
-            .get_process_for_connection(&conn)
+        let attribution = lookup
+            .get_process_attribution(&conn)
             .expect("IPv6 UDP socket should have an owner");
 
-        assert_eq!(process.0, std::process::id());
-        assert_ne!(process.1, UNKNOWN_PROCESS_NAME);
+        assert_eq!(attribution.tgid, std::process::id());
+        assert_ne!(attribution.name, UNKNOWN_PROCESS_NAME);
+        assert_eq!(attribution.backend, AttributionBackend::PlatformNative);
+        assert!(attribution.executable.is_some());
+        assert_eq!(
+            attribution
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.ancestors.last())
+                .map(|ancestor| ancestor.pid),
+            attribution.ppid
+        );
+    }
+
+    #[test]
+    fn converts_windows_filetime_epoch_to_unix_milliseconds() {
+        const WINDOWS_TO_UNIX_EPOCH_100NS: u64 = 116_444_736_000_000_000;
+        let time = FILETIME {
+            dwLowDateTime: WINDOWS_TO_UNIX_EPOCH_100NS as u32,
+            dwHighDateTime: (WINDOWS_TO_UNIX_EPOCH_100NS >> 32) as u32,
+        };
+
+        assert_eq!(filetime_to_unix_ms(time), Some(0));
     }
 }
