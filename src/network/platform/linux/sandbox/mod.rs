@@ -8,7 +8,8 @@
 //! # Security Model
 //!
 //! After sandboxing is applied:
-//! - Filesystem: Only `/proc` and specified read paths (e.g., GeoIP databases) readable
+//! - Filesystem: Only `/proc`, public account databases, and specified read paths
+//!   (e.g., GeoIP databases) readable
 //! - Filesystem: Only specified write paths writable (e.g., logs, exports)
 //! - Network: TCP bind/connect blocked (kernel 6.7+, ABI v4)
 //! - Scope: abstract UNIX socket connects + signals to outside processes blocked

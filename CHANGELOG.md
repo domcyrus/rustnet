@@ -73,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped on the capture workers after privileged initialization (#498)
 
 ### Fixed
+- **Linux User Names in Connection Details**: The Landlock profile now permits
+  read-only access to the public NSS account files, so the Details tab resolves
+  process UID/GID values to user/group names instead of showing numeric values
+  such as `1000:1000` (#519)
 - **Comm-Truncated Linux Process Names**: The kernel `comm` field holds at most
   15 bytes, so both the eBPF and procfs backends showed names like
   "chromium-browse". When a name sits at that limit and the resolved

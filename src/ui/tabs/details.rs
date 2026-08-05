@@ -2378,6 +2378,35 @@ mod path_shortening_tests {
         assert_eq!(format_user_group(uid, Some(gid)), format!("{user}:{group}"));
     }
 
+    #[cfg(all(target_os = "linux", feature = "landlock"))]
+    #[test]
+    fn current_account_ids_resolve_with_landlock_enforced() {
+        use crate::network::platform::sandbox::{SandboxConfig, SandboxMode, apply_sandbox};
+
+        let result = apply_sandbox(&SandboxConfig {
+            mode: SandboxMode::BestEffort,
+            block_network: false,
+            read_paths: vec![],
+            write_paths: vec![],
+            drop_uid: None,
+        })
+        .expect("best-effort sandbox must apply without error");
+        if !result.landlock_fs_applied {
+            return;
+        }
+
+        // SAFETY: these calls only read this process's effective credentials.
+        let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        assert!(
+            super::resolve_user_name(uid).is_some(),
+            "current user must resolve inside the sandbox"
+        );
+        assert!(
+            super::resolve_group_name(gid).is_some(),
+            "current group must resolve inside the sandbox"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn account_name_must_be_terminated_inside_the_supplied_buffer() {

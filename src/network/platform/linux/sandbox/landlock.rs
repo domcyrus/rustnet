@@ -20,7 +20,9 @@
 //!
 //! # What We Restrict
 //!
-//! - Filesystem: Only allow read access to `/proc` (needed for process lookup)
+//! - Filesystem: Allow read access to `/proc` (needed for process lookup)
+//! - Filesystem: Allow read access to the public account databases used for
+//!   UID/GID names
 //! - Filesystem: Only allow read access to specified paths (e.g., GeoIP databases)
 //! - Filesystem: Only allow write access to specified paths (logs)
 //! - Network: Block TCP bind and connect (RustNet is passive)
@@ -54,6 +56,12 @@ const ABI_FS: ABI = ABI::V4;
 /// because V7 only adds audit-logging controls, which we don't use. The crate
 /// downgrades automatically (best effort) on kernels that support less.
 const ABI_SCOPE: ABI = ABI::V6;
+
+/// Public account files needed by libc's `getpwuid_r` and `getgrgid_r`.
+///
+/// These are file-scoped rules rather than an `/etc` subtree rule, so the
+/// sandbox does not expose unrelated system configuration or credentials.
+const ACCOUNT_DATABASE_PATHS: [&str; 3] = ["/etc/passwd", "/etc/group", "/etc/nsswitch.conf"];
 
 /// Result of Landlock application
 pub struct LandlockResult {
@@ -180,6 +188,22 @@ pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
     // against reading sensitive /proc files of processes outside our domain.
     if let Err(e) = add_path_rule(&mut ruleset_created, "/proc", read_access) {
         log::warn!("Could not add /proc rule: {}", e);
+    }
+
+    // The Details tab resolves process UID/GID values through libc after the
+    // sandbox is active. NSS needs its service configuration and the local
+    // account databases for that lookup. Grant only ReadFile on the exact
+    // files, never the containing /etc directory or the shadow databases.
+    for account_path in ACCOUNT_DATABASE_PATHS {
+        if Path::new(account_path).exists()
+            && let Err(e) = add_path_rule(
+                &mut ruleset_created,
+                account_path,
+                AccessFs::ReadFile.into(),
+            )
+        {
+            log::warn!("Could not add account database rule for {account_path}: {e}");
+        }
     }
 
     // Add rules for sysfs (read-only). The interface-stats poller enumerates
