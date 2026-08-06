@@ -1845,10 +1845,80 @@ pub(in crate::ui) fn draw_connection_details(
             crate::network::types::ApplicationProtocol::Quic(info) => Some(info.as_ref()),
             _ => None,
         });
+    // Unicast UDP DNS is timeable without a handshake: queries and responses
+    // pair up by transaction ID. TCP DNS keeps the TCP counters branch.
+    let dns_info = (conn.protocol == Protocol::Udp)
+        .then(|| {
+            conn.dpi_info
+                .as_ref()
+                .and_then(|dpi| match &dpi.application {
+                    crate::network::types::ApplicationProtocol::Dns(info) => Some(info),
+                    _ => None,
+                })
+        })
+        .flatten();
     let metrics_start = details_text.len();
     push_detail_section(&mut details_text, &mut detail_fields, "Transport Health");
     let show_rtt = conn.protocol == Protocol::Tcp || quic_info.is_some();
-    if !show_rtt {
+    if let Some(dns) = dns_info {
+        if let Some(rtt) = conn.dns_response_time {
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            let rtt_color = if rtt_ms < 50.0 {
+                theme::ok()
+            } else if rtt_ms < 150.0 {
+                theme::warn()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "DNS Response Time",
+                format!("{:.1}ms", rtt_ms),
+                label_style,
+                theme::fg(rtt_color),
+            );
+        } else {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "DNS Response Time",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+        if let Some(rcode) = dns.rcode {
+            let rcode_color = if rcode == 0 {
+                theme::ok()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Last Response Code",
+                crate::network::types::dns_rcode_name(rcode).into_owned(),
+                label_style,
+                theme::fg(rcode_color),
+            );
+        } else {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Last Response Code",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+        // Footnote style matching the QUIC branch below.
+        details_text.push(Line::from(""));
+        detail_fields.push(None);
+        push_detail_note(
+            &mut details_text,
+            &mut detail_fields,
+            "Timed by pairing query and response IDs",
+        );
+    } else if !show_rtt {
         // Nothing on a bare UDP/ICMP flow is timeable or countable: no
         // handshake to pair up, no sequence numbers to track.
         push_detail_note(

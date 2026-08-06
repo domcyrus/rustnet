@@ -1290,6 +1290,103 @@ mod snapshot_tests {
         );
     }
 
+    /// A unicast DNS flow has no handshake, but query/response pairs are
+    /// timeable by transaction ID, so its Transport Health card shows the
+    /// response time and last response code instead of the "no metrics" note.
+    #[test]
+    fn details_tab_dns_shows_response_time_in_transport_health() {
+        use crate::network::types::{ApplicationProtocol, DnsInfo, DnsQueryType, DpiInfo};
+
+        let app = test_app();
+        let mut connections = sample_connections();
+
+        let dns_conn = &mut connections[1];
+        dns_conn.dns_response_time = Some(Duration::from_micros(12_300));
+        dns_conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Dns(DnsInfo {
+                query_name: Some("example.com".to_string()),
+                query_type: Some(DnsQueryType::A),
+                response_ips: vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))],
+                is_response: true,
+                txid: 0x1234,
+                rcode: Some(0),
+            }),
+            last_update_time: std::time::Instant::now(),
+        });
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1, // Details
+            selected_connection_key: Some(connections[1].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw details");
+        });
+
+        assert!(
+            output.contains("DNS Response Time") && output.contains("12.3ms"),
+            "the paired query/response time should fill the card"
+        );
+        assert!(output.contains("Last Response Code") && output.contains("NOERROR"));
+        assert!(
+            output.contains("Timed by pairing query and response IDs"),
+            "the card should say where the timing comes from"
+        );
+        assert!(
+            !output.contains("No transport metrics for this protocol"),
+            "DNS flows now have a transport metric"
+        );
+        for non_dns in ["Initial RTT", "TCP Retransmits", "Window Size"] {
+            assert!(
+                !output.contains(non_dns),
+                "{non_dns} cannot be measured on a UDP DNS flow"
+            );
+        }
+
+        // Same geometry invariant as the QUIC card: Traffic Statistics must
+        // not move when flipping between a DNS and a TCP connection.
+        let tcp_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let tcp_output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &tcp_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw details");
+        });
+        let heading_row = |render: &str, heading: &str| {
+            render
+                .lines()
+                .position(|line| line.contains(heading))
+                .unwrap_or_else(|| panic!("missing {heading}"))
+        };
+        assert_eq!(
+            heading_row(&output, "Traffic Statistics"),
+            heading_row(&tcp_output, "Traffic Statistics"),
+            "Traffic Statistics moved between the DNS and TCP records"
+        );
+    }
+
     /// The Attribution section repeats PID beside the richer process fields so
     /// the identity remains visible as one self-contained block.
     #[test]

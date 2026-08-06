@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **DNS Response Time**: Unicast UDP DNS connections now show a transport
+  metric in the Details Transport Health card instead of "No transport metrics
+  for this protocol". Queries and responses are paired by their 16-bit
+  transaction ID using capture timestamps, the latest completed round trip is
+  shown as `DNS Response Time`, and the card also surfaces the last response
+  code (NOERROR, NXDOMAIN, SERVFAIL, ...). Pending queries are bounded (hard
+  cap plus 10s expiry), so floods cost samples, not memory. mDNS/LLMNR
+  first-response timing is a possible follow-up
 - **Cross-Platform Process Lineage**: The Details tab shows up to four parent
   processes for each attributed connection on Linux, macOS, Windows, and
   FreeBSD. JSONL exports include each ancestor's PID, name, executable path,

@@ -898,6 +898,14 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
     if new_info.is_response {
         old_info.is_response = true;
     }
+
+    // The txid identifies the most recent transaction on this socket
+    old_info.txid = new_info.txid;
+
+    // Latest response code wins; a query packet must not erase it
+    if new_info.rcode.is_some() {
+        old_info.rcode = new_info.rcode;
+    }
 }
 
 /// Merge SSH information
@@ -1079,6 +1087,8 @@ mod tests {
             query_type: None,
             response_ips: Vec::new(),
             is_response: true,
+            txid: 0x1234,
+            rcode: Some(0),
         };
 
         for i in 0..(MAX_MERGED_RESPONSE_IPS as u32 * 4) {
@@ -1090,11 +1100,50 @@ mod tests {
                     10, octets[1], octets[2], octets[3],
                 ))],
                 is_response: true,
+                txid: 0x1234,
+                rcode: Some(0),
             };
             merge_dns_info(&mut old, &new);
         }
 
         assert_eq!(old.response_ips.len(), MAX_MERGED_RESPONSE_IPS);
+    }
+
+    /// A follow-up query on the same socket must not erase the last response
+    /// code, while the txid always tracks the most recent transaction.
+    #[test]
+    fn test_merge_dns_keeps_rcode_and_tracks_latest_txid() {
+        let mut old = DnsInfo {
+            query_name: Some("example.com".to_string()),
+            query_type: None,
+            response_ips: Vec::new(),
+            is_response: true,
+            txid: 0x1111,
+            rcode: Some(3),
+        };
+        let new_query = DnsInfo {
+            query_name: None,
+            query_type: None,
+            response_ips: Vec::new(),
+            is_response: false,
+            txid: 0x2222,
+            rcode: None,
+        };
+
+        merge_dns_info(&mut old, &new_query);
+        assert_eq!(old.txid, 0x2222);
+        assert_eq!(old.rcode, Some(3), "a query must not erase the last rcode");
+
+        let new_response = DnsInfo {
+            query_name: None,
+            query_type: None,
+            response_ips: Vec::new(),
+            is_response: true,
+            txid: 0x2222,
+            rcode: Some(0),
+        };
+        merge_dns_info(&mut old, &new_response);
+        assert_eq!(old.rcode, Some(0), "the latest response code wins");
     }
 
     #[test]

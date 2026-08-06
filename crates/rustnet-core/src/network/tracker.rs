@@ -172,6 +172,9 @@ pub struct IngestOutcome {
     /// SYN-ACK matching a prior SYN, or a QUIC handshake packet answering one
     /// sent the other way.
     pub measured_rtt: Option<Duration>,
+    /// The latest completed DNS query→response round trip, if this packet was
+    /// a response matching a pending query by transaction ID.
+    pub dns_response_time: Option<Duration>,
 }
 
 /// A live, lifecycle-managed table of network connections built from parsed
@@ -266,6 +269,24 @@ impl ConnectionTracker {
             measured_rtt = tracker.record_quic_handshake(base_key, parsed.is_outgoing, now);
         }
 
+        // Time DNS query→response pairs by transaction ID. Port-53 gating
+        // already happened in DPI dispatch, so any Dns result here is unicast
+        // DNS (mDNS/LLMNR map to their own variants).
+        let mut dns_response_time: Option<Duration> = None;
+        if parsed.protocol == Protocol::Udp
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::Dns(dns) = &dpi.application
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            dns_response_time = tracker.record_dns_packet(
+                base_key,
+                dns.txid,
+                parsed.is_outgoing,
+                dns.is_response,
+                now,
+            );
+        }
+
         // A read guard makes ordinary packet updates atomic with cleanup. The
         // uncommon generation-split path drops it and reacquires a write guard
         // so retained-source readers also see one consistent move.
@@ -286,6 +307,7 @@ impl ConnectionTracker {
                 out_of_order: 0,
                 fast_retransmits: 0,
                 measured_rtt,
+                dns_response_time,
             };
         }
 
@@ -295,10 +317,10 @@ impl ConnectionTracker {
             .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
         if starts_new_generation {
             drop(lifecycle);
-            return self.ingest_new_generation(parsed, now, key, measured_rtt);
+            return self.ingest_new_generation(parsed, now, key, measured_rtt, dns_response_time);
         }
 
-        self.ingest_into_active(parsed, now, key, measured_rtt)
+        self.ingest_into_active(parsed, now, key, measured_rtt, dns_response_time)
     }
 
     fn ingest_into_active(
@@ -307,6 +329,7 @@ impl ConnectionTracker {
         now: SystemTime,
         key: ConnectionKey,
         measured_rtt: Option<Duration>,
+        dns_response_time: Option<Duration>,
     ) -> IngestOutcome {
         // Prevent unbounded growth from port scans or connection floods. Only
         // limit new connections; existing ones always get updated. The fast
@@ -327,6 +350,7 @@ impl ConnectionTracker {
                 out_of_order: 0,
                 fast_retransmits: 0,
                 measured_rtt,
+                dns_response_time,
             };
         }
 
@@ -341,12 +365,20 @@ impl ConnectionTracker {
                 {
                     conn.initial_rtt = Some(rtt);
                 }
+                // Last-wins, unlike `initial_rtt`: each completed query
+                // refreshes the displayed response time.
+                if let Some(rtt) = dns_response_time {
+                    conn.dns_response_time = Some(rtt);
+                }
             })
             .or_insert_with(|| {
                 created = true;
                 let mut conn = create_connection_from_packet(parsed, now);
                 if let Some(rtt) = measured_rtt {
                     conn.initial_rtt = Some(rtt);
+                }
+                if let Some(rtt) = dns_response_time {
+                    conn.dns_response_time = Some(rtt);
                 }
                 conn
             });
@@ -373,6 +405,7 @@ impl ConnectionTracker {
             out_of_order: deltas.out_of_order,
             fast_retransmits: deltas.fast_retransmits,
             measured_rtt,
+            dns_response_time,
         }
     }
 
@@ -382,6 +415,7 @@ impl ConnectionTracker {
         now: SystemTime,
         key: ConnectionKey,
         measured_rtt: Option<Duration>,
+        dns_response_time: Option<Duration>,
     ) -> IngestOutcome {
         let _lifecycle = self
             .lifecycle
@@ -418,7 +452,13 @@ impl ConnectionTracker {
         // waiting to acquire the write guard. Reassociate any visible QUIC ID
         // before creating the replacement.
         self.associate_quic_id(parsed, key);
-        let mut outcome = self.ingest_into_active(parsed, replacement_now, key, measured_rtt);
+        let mut outcome = self.ingest_into_active(
+            parsed,
+            replacement_now,
+            key,
+            measured_rtt,
+            dns_response_time,
+        );
         outcome.archived = archived;
         self.enforce_historic_limit();
         self.prune_recently_closed(now);
@@ -881,6 +921,34 @@ mod tests {
         }
     }
 
+    fn dns_packet(txid: u16, is_outgoing: bool, is_response: bool, rcode: u8) -> ParsedPacket {
+        use crate::network::dpi::DpiResult;
+        use crate::network::types::{DnsInfo, DnsQueryType, ProtocolState};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 53),
+            protocol_state: ProtocolState::Udp,
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 80,
+            dpi_result: Some(DpiResult {
+                application: ApplicationProtocol::Dns(DnsInfo {
+                    query_name: Some("example.com".to_string()),
+                    query_type: Some(DnsQueryType::A),
+                    response_ips: Vec::new(),
+                    is_response,
+                    txid,
+                    rcode: is_response.then_some(rcode),
+                }),
+            }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
     /// Capture time for a packet `millis` into a synthetic trace. Tests drive
     /// `ingest_at` with these rather than the wall clock so an RTT assertion
     /// pins a real duration instead of however long the test loop took.
@@ -1008,6 +1076,100 @@ mod tests {
                 .and_then(|conn| conn.initial_rtt),
             Some(Duration::from_millis(18))
         );
+    }
+
+    /// A DNS response pairs with its query by transaction ID, and the delta
+    /// between the two capture timestamps lands on the connection. The
+    /// transport-level `initial_rtt` must stay untouched: DNS time includes
+    /// resolver processing.
+    #[test]
+    fn dns_query_response_measures_response_time() {
+        let tracker = ConnectionTracker::new();
+
+        let query = tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
+        assert!(query.dns_response_time.is_none());
+
+        let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 0), capture_time(35));
+        assert_eq!(
+            response.dns_response_time,
+            Some(Duration::from_millis(35)),
+            "the response time is the gap between the two capture timestamps"
+        );
+        let conn = tracker.connections().get(&response.key).unwrap().clone();
+        assert_eq!(conn.dns_response_time, Some(Duration::from_millis(35)));
+        assert!(
+            conn.initial_rtt.is_none(),
+            "DNS timing must not pollute the transport RTT"
+        );
+    }
+
+    /// A response whose transaction ID matches no pending query (spoofed,
+    /// expired, or captured mid-exchange) measures nothing.
+    #[test]
+    fn dns_response_with_unknown_txid_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
+        let response = tracker.ingest_at(&dns_packet(0x9999, false, true, 0), capture_time(20));
+        assert!(response.dns_response_time.is_none());
+        assert!(
+            tracker
+                .connections()
+                .get(&response.key)
+                .and_then(|conn| conn.dns_response_time)
+                .is_none()
+        );
+    }
+
+    /// Stub resolvers reuse one socket for many queries, so each completed
+    /// exchange refreshes the connection's response time (last wins, unlike
+    /// the one-shot `initial_rtt`).
+    #[test]
+    fn later_dns_exchange_updates_the_response_time() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&dns_packet(1, true, false, 0), capture_time(0));
+        tracker.ingest_at(&dns_packet(1, false, true, 0), capture_time(35));
+        tracker.ingest_at(&dns_packet(2, true, false, 0), capture_time(1_000));
+        let second = tracker.ingest_at(&dns_packet(2, false, true, 0), capture_time(1_012));
+        assert_eq!(second.dns_response_time, Some(Duration::from_millis(12)));
+        assert_eq!(
+            tracker
+                .connections()
+                .get(&second.key)
+                .and_then(|conn| conn.dns_response_time),
+            Some(Duration::from_millis(12))
+        );
+    }
+
+    /// When the local host is the DNS server, the inbound query followed by
+    /// our own answer times the local resolver's turnaround, not the network,
+    /// so it must measure nothing (mirrors the QUIC direction rule).
+    #[test]
+    fn local_dns_server_role_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&dns_packet(0x1234, false, false, 0), capture_time(0));
+        let reply = tracker.ingest_at(&dns_packet(0x1234, true, true, 0), capture_time(1));
+        assert!(reply.dns_response_time.is_none());
+    }
+
+    /// A re-sent query restarts the timer from the most recent send, so the
+    /// measurement reflects the answered attempt, not the retry wait.
+    #[test]
+    fn retransmitted_dns_query_measures_from_the_last_send() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
+        tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(1_000));
+        let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 0), capture_time(1_018));
+        assert_eq!(response.dns_response_time, Some(Duration::from_millis(18)));
+    }
+
+    /// SERVFAIL is still an answer: the round trip completed, so it is a valid
+    /// timing sample. The response code is surfaced separately in the UI.
+    #[test]
+    fn dns_servfail_response_still_measures_response_time() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
+        let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 2), capture_time(40));
+        assert_eq!(response.dns_response_time, Some(Duration::from_millis(40)));
     }
 
     /// 1-RTT packets carry a short header with nothing timeable in the clear.
