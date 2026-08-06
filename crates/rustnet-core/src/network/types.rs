@@ -621,6 +621,23 @@ pub struct DnsInfo {
     pub query_type: Option<DnsQueryType>,
     pub response_ips: Vec<std::net::IpAddr>,
     pub is_response: bool,
+    /// 16-bit transaction ID pairing a query with its response.
+    pub txid: u16,
+    /// Response code (RCODE); `Some` only on responses.
+    pub rcode: Option<u8>,
+}
+
+/// Standard RCODE names (RFC 1035 / RFC 2136). Unknown codes render as "RCODE n".
+pub fn dns_rcode_name(rcode: u8) -> std::borrow::Cow<'static, str> {
+    match rcode {
+        0 => "NOERROR".into(),
+        1 => "FORMERR".into(),
+        2 => "SERVFAIL".into(),
+        3 => "NXDOMAIN".into(),
+        4 => "NOTIMP".into(),
+        5 => "REFUSED".into(),
+        n => format!("RCODE {}", n).into(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1843,21 +1860,32 @@ pub struct RttTracker {
     /// Outbound QUIC handshake packets awaiting a reply from the peer:
     /// (connection_key -> capture time)
     pending_quic_handshakes: HashMap<ConnectionKey, SystemTime>,
+    /// Outbound DNS queries awaiting their response, keyed by connection and
+    /// transaction ID (stub resolvers reuse one socket for many queries).
+    pending_dns: HashMap<(ConnectionKey, u16), SystemTime>,
     /// Recent RTT measurements for aggregation: (timestamp, rtt_duration)
     recent_rtts: VecDeque<(Instant, Duration)>,
     /// Maximum age for pending SYNs (cleanup stale entries)
     max_pending_age: Duration,
+    /// Maximum age for pending DNS queries, well past any resolver timeout
+    max_pending_dns_age: Duration,
     /// Maximum number of recent RTTs to keep
     max_recent_rtts: usize,
 }
+
+/// Hard cap on pending DNS queries. New entries are dropped at the cap, so a
+/// query flood costs unmatched samples, never memory.
+const MAX_PENDING_DNS: usize = 4096;
 
 impl RttTracker {
     pub fn new() -> Self {
         Self {
             pending_syns: HashMap::new(),
             pending_quic_handshakes: HashMap::new(),
+            pending_dns: HashMap::new(),
             recent_rtts: VecDeque::new(),
             max_pending_age: Duration::from_secs(30),
+            max_pending_dns_age: Duration::from_secs(10),
             max_recent_rtts: 100,
         }
     }
@@ -1914,6 +1942,42 @@ impl RttTracker {
         Some(rtt)
     }
 
+    /// Record a DNS packet, returning the query→response time when an incoming
+    /// response matches a pending outgoing query.
+    ///
+    /// Only the client role is timed: the timer starts on an outgoing query and
+    /// stops on the incoming response with the same transaction ID (the reverse
+    /// order would time the local resolver's turnaround, not the network). A
+    /// re-sent query overwrites its pending timestamp, so like QUIC handshakes
+    /// the measurement runs from the most recent send. The result is not fed
+    /// into the aggregate RTT samples: it includes resolver processing time,
+    /// which would pollute the transport-level average.
+    pub fn record_dns_packet(
+        &mut self,
+        key: ConnectionKey,
+        txid: u16,
+        is_outgoing: bool,
+        is_response: bool,
+        at: SystemTime,
+    ) -> Option<Duration> {
+        self.cleanup_stale(at);
+        match (is_outgoing, is_response) {
+            (true, false) => {
+                if self.pending_dns.len() < MAX_PENDING_DNS
+                    || self.pending_dns.contains_key(&(key, txid))
+                {
+                    self.pending_dns.insert((key, txid), at);
+                }
+                None
+            }
+            (false, true) => {
+                let sent_at = self.pending_dns.remove(&(key, txid))?;
+                Some(at.duration_since(sent_at).unwrap_or_default())
+            }
+            _ => None,
+        }
+    }
+
     /// Record a completed data round trip (segment to covering ACK) measured
     /// by the per-connection estimator, so the aggregate RTT view reflects
     /// established connections rather than only fresh handshakes.
@@ -1956,12 +2020,16 @@ impl RttTracker {
         };
         self.pending_syns.retain(|_, ts| *ts > cutoff);
         self.pending_quic_handshakes.retain(|_, ts| *ts > cutoff);
+        if let Some(dns_cutoff) = now.checked_sub(self.max_pending_dns_age) {
+            self.pending_dns.retain(|_, ts| *ts > dns_cutoff);
+        }
     }
 
     /// Clear all RTT tracking data
     pub fn clear(&mut self) {
         self.pending_syns.clear();
         self.pending_quic_handshakes.clear();
+        self.pending_dns.clear();
         self.recent_rtts.clear();
     }
 }
@@ -2506,6 +2574,11 @@ pub struct Connection {
     // handshake exchange. Set once, from the first round trip observed.
     pub initial_rtt: Option<std::time::Duration>,
 
+    // Latest DNS query→response time, paired by transaction ID. Updated on
+    // every completed query; includes resolver processing, so it is kept
+    // separate from the transport-level `initial_rtt`.
+    pub dns_response_time: Option<std::time::Duration>,
+
     // GeoIP information for remote address
     pub geoip_info: Option<crate::network::geoip::GeoIpInfo>,
 
@@ -2564,6 +2637,7 @@ impl Connection {
             current_outgoing_rate_bps: 0.0,
             tcp_analytics,
             initial_rtt: None,
+            dns_response_time: None,
             geoip_info: None,
             is_historic: false,
             closed_at: None,
@@ -3969,6 +4043,8 @@ mod tests {
             query_type: Some(DnsQueryType::A),
             response_ips: vec![],
             is_response: false,
+            txid: 0x1234,
+            rcode: None,
         };
 
         conn.dpi_info = Some(DpiInfo {
@@ -3983,6 +4059,8 @@ mod tests {
             query_type: Some(DnsQueryType::A),
             response_ips: vec!["93.184.216.34".parse().unwrap()],
             is_response: true,
+            txid: 0x1234,
+            rcode: Some(0),
         };
 
         conn.dpi_info = Some(DpiInfo {
@@ -4085,6 +4163,8 @@ mod tests {
             query_type: Some(DnsQueryType::A),
             response_ips: vec![],
             is_response: false,
+            txid: 0x1234,
+            rcode: None,
         };
 
         conn.dpi_info = Some(DpiInfo {
@@ -4311,6 +4391,53 @@ mod tests {
         assert!(avg.is_some());
         let avg = avg.unwrap();
         assert!(avg >= 5.0); // At least 5ms
+    }
+
+    /// Pending DNS queries expire after `max_pending_dns_age`: a response that
+    /// arrives later matches nothing, so an abandoned query can't produce a
+    /// bogus multi-minute sample.
+    #[test]
+    fn test_rtt_tracker_pending_dns_expires() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 40_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 53),
+        );
+
+        tracker.record_dns_packet(key, 0x1234, true, false, rtt_capture_time(0));
+        let rtt = tracker.record_dns_packet(key, 0x1234, false, true, rtt_capture_time(11_000));
+        assert!(rtt.is_none(), "the pending query expired after 10s");
+        assert!(tracker.pending_dns.is_empty());
+    }
+
+    /// At the hard cap, new pending queries are dropped (losing samples under
+    /// a query flood is harmless; growing without bound is not), but a
+    /// retransmit of an already-pending query still refreshes its timestamp.
+    #[test]
+    fn test_rtt_tracker_pending_dns_capped() {
+        let mut tracker = RttTracker::new();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 40_000);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 53);
+        let key = ConnectionKey::new(Protocol::Udp, local, remote);
+
+        for txid in 0..MAX_PENDING_DNS as u16 {
+            tracker.record_dns_packet(key, txid, true, false, rtt_capture_time(0));
+        }
+        assert_eq!(tracker.pending_dns.len(), MAX_PENDING_DNS);
+
+        // One more distinct query is rejected...
+        let overflow_key =
+            ConnectionKey::new(Protocol::Udp, SocketAddr::new(local.ip(), 40_001), remote);
+        tracker.record_dns_packet(overflow_key, 7, true, false, rtt_capture_time(1));
+        assert_eq!(tracker.pending_dns.len(), MAX_PENDING_DNS);
+        let rtt = tracker.record_dns_packet(overflow_key, 7, false, true, rtt_capture_time(20));
+        assert!(rtt.is_none(), "a rejected query has no pending timestamp");
+
+        // ...but a retransmit of a tracked query still restarts its timer.
+        tracker.record_dns_packet(key, 42, true, false, rtt_capture_time(1_000));
+        let rtt = tracker.record_dns_packet(key, 42, false, true, rtt_capture_time(1_015));
+        assert_eq!(rtt, Some(Duration::from_millis(15)));
     }
 
     // ========================================================================

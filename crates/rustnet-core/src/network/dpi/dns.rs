@@ -242,6 +242,8 @@ pub(super) struct DnsHeaderCounts {
     pub qdcount: u16,
     pub ancount: u16,
     pub arcount: u16,
+    pub txid: u16,
+    pub rcode: u8,
 }
 
 /// Decode the four 16-bit counts at the start of a DNS-shaped header.
@@ -255,6 +257,8 @@ pub(super) fn dns_header_counts(payload: &[u8]) -> Option<DnsHeaderCounts> {
         qdcount: u16::from_be_bytes([payload[4], payload[5]]),
         ancount: u16::from_be_bytes([payload[6], payload[7]]),
         arcount: u16::from_be_bytes([payload[10], payload[11]]),
+        txid: u16::from_be_bytes([payload[0], payload[1]]),
+        rcode: (flags & 0x000F) as u8,
     })
 }
 
@@ -296,6 +300,8 @@ pub fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
         query_type,
         response_ips: Vec::new(),
         is_response: header.is_response,
+        txid: header.txid,
+        rcode: header.is_response.then_some(header.rcode),
     };
 
     // Answer-section walk for A / AAAA records. Only runs on responses
@@ -331,6 +337,8 @@ pub(super) fn analyze_dns_for_mdns(payload: &[u8]) -> Option<DnsInfo> {
         query_type,
         response_ips: Vec::new(),
         is_response: header.is_response,
+        txid: header.txid,
+        rcode: header.is_response.then_some(header.rcode),
     };
 
     if header.is_response {
@@ -445,6 +453,39 @@ mod tests {
         assert_eq!(info.query_name, Some("example.com".to_string()));
         assert_eq!(info.query_type, Some(DnsQueryType::A));
         assert!(!info.is_response);
+    }
+
+    #[test]
+    fn test_query_parses_txid_and_has_no_rcode() {
+        let (mut payload, _) = make_example_question(false, 0);
+        payload[0] = 0xAB;
+        payload[1] = 0xCD;
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.txid, 0xABCD);
+        assert_eq!(
+            info.rcode, None,
+            "a query carries no response code even though the header bits are zero"
+        );
+    }
+
+    #[test]
+    fn test_response_parses_txid_and_rcode() {
+        let (mut payload, _) = make_example_question(true, 0);
+        payload[0] = 0xAB;
+        payload[1] = 0xCD;
+        payload[3] = 0x03; // RCODE = NXDOMAIN
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.txid, 0xABCD);
+        assert_eq!(info.rcode, Some(3));
+    }
+
+    #[test]
+    fn test_noerror_response_has_rcode_zero() {
+        let (payload, _) = make_example_question(true, 0);
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.rcode, Some(0));
     }
 
     #[test]
