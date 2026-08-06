@@ -1,8 +1,8 @@
 // network/platform/linux/process.rs - Linux procfs-based process lookup
 
 use crate::{
-    AttributionBackend, ConnectionKey, MatchQuality, ProcessAttribution, ProcessLookup,
-    relaxed_lookup,
+    AttributionBackend, ConnectionKey, MatchQuality, ProcessAncestor, ProcessAttribution,
+    ProcessLineage, ProcessLookup, collect_process_lineage, relaxed_lookup,
 };
 use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};
@@ -11,7 +11,7 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 use std::time::Instant;
 
 /// Resolve the executable path of a TGID from `/proc/<tgid>/exe`.
@@ -71,6 +71,80 @@ pub(crate) fn resolve_parent_pid(tgid: u32) -> Option<u32> {
         .and_then(|value| value.trim().parse().ok())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ProcStat {
+    name: String,
+    ppid: u32,
+    start_ticks: u64,
+}
+
+fn parse_proc_stat(stat: &str) -> Option<ProcStat> {
+    let name_start = stat.find('(')?;
+    let name_end = stat.rfind(')')?;
+    if name_end <= name_start {
+        return None;
+    }
+
+    // Fields after the closing parenthesis start at field 3 (`state`). The
+    // parent PID is field 4 and process start ticks are field 22.
+    let fields: Vec<&str> = stat.get(name_end + 1..)?.split_whitespace().collect();
+    Some(ProcStat {
+        name: stat.get(name_start + 1..name_end)?.to_string(),
+        ppid: fields.get(1)?.parse().ok()?,
+        start_ticks: fields.get(19)?.parse().ok()?,
+    })
+}
+
+fn boot_time_unix_ms() -> Option<u64> {
+    static BOOT_TIME: OnceLock<Option<u64>> = OnceLock::new();
+    *BOOT_TIME.get_or_init(|| {
+        fs::read_to_string("/proc/stat")
+            .ok()?
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))?
+            .parse::<u64>()
+            .ok()?
+            .checked_mul(1_000)
+    })
+}
+
+fn clock_ticks_per_second() -> Option<u64> {
+    static CLOCK_TICKS: OnceLock<Option<u64>> = OnceLock::new();
+    *CLOCK_TICKS.get_or_init(|| {
+        // SAFETY: `sysconf` reads a process-wide constant and has no pointer
+        // arguments or side effects.
+        u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) })
+            .ok()
+            .filter(|ticks| *ticks > 0)
+    })
+}
+
+fn process_start_unix_ms(start_ticks: u64) -> Option<u64> {
+    let ticks_per_second = clock_ticks_per_second()?;
+    let since_boot_ms = start_ticks.checked_mul(1_000)? / ticks_per_second;
+    boot_time_unix_ms()?.checked_add(since_boot_ms)
+}
+
+fn resolve_process_ancestor(pid: u32) -> Option<(ProcessAncestor, u32)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let stat = parse_proc_stat(&stat)?;
+    let executable = resolve_executable(pid);
+    let name = refine_truncated_name(stat.name, executable.as_deref());
+    Some((
+        ProcessAncestor {
+            pid,
+            name,
+            executable,
+            started_at_unix_ms: process_start_unix_ms(stat.start_ticks),
+        },
+        stat.ppid,
+    ))
+}
+
+fn resolve_process_lineage(tgid: u32, ppid: u32) -> Option<ProcessLineage> {
+    collect_process_lineage(tgid, ppid, resolve_process_ancestor)
+}
+
 /// Map of socket inode to (PID, process name)
 type InodeProcessMap = HashMap<u64, (u32, String)>;
 /// Map of PID to process name
@@ -83,6 +157,9 @@ pub struct LinuxProcessLookup {
     cache: RwLock<ProcessCache>,
     // Cache: PID -> process_name (for resolving eBPF thread names to main process names)
     pid_names: RwLock<HashMap<u32, String>>,
+    // Memo: TGID -> lineage, so many connections of one process walk /proc
+    // once per refresh instead of once each. Failures are memoized too.
+    lineages: RwLock<HashMap<u32, Option<ProcessLineage>>>,
 }
 
 struct ProcessCache {
@@ -102,6 +179,7 @@ impl LinuxProcessLookup {
                 last_refresh: Instant::now(),
             }),
             pid_names: RwLock::new(pid_names),
+            lineages: RwLock::new(HashMap::new()),
         })
     }
 
@@ -115,6 +193,7 @@ impl LinuxProcessLookup {
                 last_refresh: Instant::now(),
             }),
             pid_names: RwLock::new(HashMap::new()),
+            lineages: RwLock::new(HashMap::new()),
         }
     }
 
@@ -177,19 +256,46 @@ impl LinuxProcessLookup {
         Some((*pid, name.clone(), MatchQuality::ProcfsRelaxed))
     }
 
+    /// Resolve a process's parent chain, memoized per TGID until the next
+    /// socket-table refresh bounds PID-reuse staleness.
+    pub(crate) fn lineage_for(&self, tgid: u32, ppid: u32) -> Option<ProcessLineage> {
+        if let Some(lineage) = self
+            .lineages
+            .read()
+            .expect("lineages lock poisoned")
+            .get(&tgid)
+        {
+            return lineage.clone();
+        }
+
+        let lineage = resolve_process_lineage(tgid, ppid);
+        self.lineages
+            .write()
+            .expect("lineages lock poisoned")
+            .insert(tgid, lineage.clone());
+        lineage
+    }
+
     /// Turn a procfs socket-table match into a rich attribution by reading the
     /// live `/proc/<tgid>` entries for the owner.
     ///
     /// The socket table sources the name from `/proc/<tgid>/comm` during the
     /// scan, so a comm-truncated name is recovered from the executable here.
-    fn build_attribution(tgid: u32, name: String, quality: MatchQuality) -> ProcessAttribution {
+    fn build_attribution(
+        &self,
+        tgid: u32,
+        name: String,
+        quality: MatchQuality,
+    ) -> ProcessAttribution {
         let executable = resolve_executable(tgid);
         let name = refine_truncated_name(name, executable.as_deref());
         let mut attribution =
             ProcessAttribution::new(tgid, name, AttributionBackend::Procfs, quality)
                 .with_executable(executable);
         if let Some(ppid) = resolve_parent_pid(tgid) {
-            attribution = attribution.with_parent_pid(ppid);
+            attribution = attribution
+                .with_parent_pid(ppid)
+                .with_lineage(self.lineage_for(tgid, ppid));
         }
 
         match resolve_credentials(tgid) {
@@ -376,7 +482,7 @@ impl ProcessLookup for LinuxProcessLookup {
 
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let (tgid, name, quality) = self.lookup_match(conn)?;
-        Some(Self::build_attribution(tgid, name, quality))
+        Some(self.build_attribution(tgid, name, quality))
     }
 
     fn refresh(&self) -> Result<()> {
@@ -387,6 +493,10 @@ impl ProcessLookup for LinuxProcessLookup {
         cache.last_refresh = Instant::now();
 
         *self.pid_names.write().expect("pid_names lock poisoned") = pid_names;
+        self.lineages
+            .write()
+            .expect("lineages lock poisoned")
+            .clear();
 
         Ok(())
     }
@@ -524,6 +634,72 @@ mod tests {
     }
 
     #[test]
+    fn proc_stat_parser_handles_spaces_and_parentheses_in_names() {
+        let mut fields = vec!["S", "7"];
+        fields.resize(19, "0");
+        fields.push("12345");
+        let stat = format!("42 (worker ) pool) {}", fields.join(" "));
+
+        assert_eq!(
+            parse_proc_stat(&stat),
+            Some(ProcStat {
+                name: "worker ) pool".to_string(),
+                ppid: 7,
+                start_ticks: 12345,
+            })
+        );
+    }
+
+    /// Many connections share one owner, so the lineage memo must answer
+    /// repeat lookups (including failed walks) without re-walking `/proc`.
+    #[test]
+    fn lineage_memo_serves_repeat_lookups_without_rewalking() {
+        let lookup = LinuxProcessLookup::with_socket_table(HashMap::new());
+        let sentinel = ProcessLineage {
+            ancestors: vec![ProcessAncestor {
+                pid: 7,
+                name: "sentinel".to_string(),
+                executable: None,
+                started_at_unix_ms: None,
+            }],
+            truncated: false,
+        };
+        lookup
+            .lineages
+            .write()
+            .unwrap()
+            .insert(own_pid(), Some(sentinel.clone()));
+
+        // A live walk would resolve the real parent chain; getting the
+        // sentinel back proves the memo was consulted instead.
+        let parent_pid = u32::try_from(unsafe { libc::getppid() }).unwrap();
+        assert_eq!(lookup.lineage_for(own_pid(), parent_pid), Some(sentinel));
+
+        // Failed walks are memoized too, so a gone process is walked once.
+        assert_eq!(lookup.lineage_for(u32::MAX, u32::MAX - 1), None);
+        assert_eq!(lookup.lineages.read().unwrap().get(&u32::MAX), Some(&None));
+    }
+
+    #[test]
+    fn resolves_the_live_parent_chain() {
+        let parent_pid = u32::try_from(unsafe { libc::getppid() }).unwrap();
+        let lineage = resolve_process_lineage(own_pid(), parent_pid)
+            .expect("the test process parent must be readable");
+
+        assert!(lineage.ancestors.len() <= crate::MAX_PROCESS_ANCESTORS);
+        assert_eq!(lineage.ancestors.last().unwrap().pid, parent_pid);
+        assert!(!lineage.ancestors.last().unwrap().name.is_empty());
+        assert!(
+            lineage
+                .ancestors
+                .last()
+                .unwrap()
+                .started_at_unix_ms
+                .is_some()
+        );
+    }
+
+    #[test]
     fn exact_socket_table_hit_is_reported_as_an_exact_procfs_match() {
         let mut table = HashMap::new();
         table.insert(
@@ -547,6 +723,14 @@ mod tests {
         );
         assert_eq!(attribution.uid, Some(unsafe { libc::geteuid() }));
         assert_eq!(attribution.gid, Some(unsafe { libc::getegid() }));
+        assert_eq!(
+            attribution
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.ancestors.last())
+                .map(|ancestor| ancestor.pid),
+            attribution.ppid
+        );
         // procfs is a socket-table snapshot: no thread id, no observation time.
         assert_eq!(attribution.tid, None);
         assert_eq!(attribution.observed_at_ns, None);

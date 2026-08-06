@@ -236,7 +236,9 @@ mod ebpf_enhanced {
                 .with_executable(executable)
                 .with_observed_at_ns(info.timestamp);
             if let Some(ppid) = ppid {
-                attribution = attribution.with_parent_pid(ppid);
+                attribution = attribution
+                    .with_parent_pid(ppid)
+                    .with_lineage(self.procfs_lookup.lineage_for(info.pid, ppid));
             }
             attribution
         }

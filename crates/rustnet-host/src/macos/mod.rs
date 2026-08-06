@@ -57,7 +57,8 @@ impl ProcessLookup for PktapProcessLookup {
         if let Some(details) = process::resolve_process_details(pid) {
             attribution = attribution
                 .with_parent_pid(details.ppid)
-                .with_credentials(details.uid, details.gid);
+                .with_credentials(details.uid, details.gid)
+                .with_lineage(process::resolve_process_lineage(pid, details.ppid));
         }
         Some(attribution)
     }
@@ -124,6 +125,14 @@ mod tests {
         assert_eq!(
             (attribution.uid, attribution.gid),
             (Some(expected_credentials.0), Some(expected_credentials.1))
+        );
+        assert_eq!(
+            attribution
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.ancestors.last())
+                .map(|ancestor| ancestor.pid),
+            attribution.ppid
         );
     }
 
