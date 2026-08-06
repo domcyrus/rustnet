@@ -24,7 +24,7 @@ use std::{
 };
 
 use crate::network::dns::DnsResolver;
-use crate::network::types::{Connection, MatchQuality, Protocol, ProtocolState};
+use crate::network::types::{Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState};
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER,
@@ -350,6 +350,48 @@ fn shorten_executable_path(
         _ => path.display().to_string(),
     };
     fit_path_middle(&display, max_width)
+}
+
+fn process_tree_value(lineage: &ProcessLineage, owner_name: &str, max_width: usize) -> String {
+    let mut names: Vec<&str> = lineage
+        .ancestors
+        .iter()
+        .map(|ancestor| ancestor.name.as_str())
+        .collect();
+    names.push(owner_name);
+
+    let render = |start: usize, truncated: bool| {
+        let chain = names[start..].join(" > ");
+        if truncated {
+            format!("… > {chain}")
+        } else {
+            chain
+        }
+    };
+
+    let full = render(0, lineage.truncated);
+    if full.chars().count() <= max_width {
+        return full;
+    }
+
+    for start in 1..names.len() {
+        let candidate = render(start, true);
+        if candidate.chars().count() <= max_width {
+            return candidate;
+        }
+    }
+
+    if owner_name.chars().count() <= max_width {
+        return owner_name.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let prefix: String = owner_name
+        .chars()
+        .take(max_width.saturating_sub(1))
+        .collect();
+    format!("{prefix}…")
 }
 
 /// Component-aware middle ellipsis: `/nix/store/…/bin/hello`.
@@ -967,7 +1009,8 @@ pub(in crate::ui) fn draw_connection_details(
         || conn.process_ppid.is_some()
         || conn.executable.is_some()
         || conn.process_uid.is_some()
-        || conn.attribution_quality.is_some();
+        || conn.attribution_quality.is_some()
+        || conn.process_lineage.is_some();
     if has_attribution {
         let process_value_style = theme::fg(theme::field_process());
         push_detail_section(&mut details_text, &mut detail_fields, "Attribution");
@@ -988,6 +1031,19 @@ pub(in crate::ui) fn draw_connection_details(
                 &mut detail_fields,
                 "PPID",
                 ppid.to_string(),
+                label_style,
+                process_value_style,
+            );
+        }
+        if let (Some(lineage), Some(owner_name)) =
+            (&conn.process_lineage, conn.process_name.as_deref())
+        {
+            push_detail_field_with_copy(
+                &mut details_text,
+                &mut detail_fields,
+                "Process Tree",
+                process_tree_value(lineage, owner_name, value_width),
+                process_tree_value(lineage, owner_name, usize::MAX),
                 label_style,
                 process_value_style,
             );
@@ -2284,8 +2340,51 @@ pub(in crate::ui) fn draw_connection_details(
 
 #[cfg(test)]
 mod path_shortening_tests {
-    use super::{fit_path_middle, format_user_group, shorten_executable_path, user_group_label};
-    use std::path::Path;
+    use super::{
+        fit_path_middle, format_user_group, process_tree_value, shorten_executable_path,
+        user_group_label,
+    };
+    use crate::network::types::{ProcessAncestor, ProcessLineage};
+    use std::path::{Path, PathBuf};
+
+    fn lineage(truncated: bool) -> ProcessLineage {
+        ProcessLineage {
+            ancestors: [
+                (1, "systemd", "/usr/lib/systemd/systemd"),
+                (100, "sshd", "/usr/sbin/sshd"),
+                (200, "bash", "/usr/bin/bash"),
+            ]
+            .into_iter()
+            .map(|(pid, name, executable)| ProcessAncestor {
+                pid,
+                name: name.to_string(),
+                executable: Some(PathBuf::from(executable)),
+                started_at_unix_ms: None,
+            })
+            .collect(),
+            truncated,
+        }
+    }
+
+    #[test]
+    fn process_tree_runs_from_oldest_ancestor_to_owner() {
+        assert_eq!(
+            process_tree_value(&lineage(false), "curl", usize::MAX),
+            "systemd > sshd > bash > curl"
+        );
+    }
+
+    #[test]
+    fn process_tree_keeps_the_owner_visible_in_narrow_panes() {
+        assert_eq!(
+            process_tree_value(&lineage(false), "curl", 17),
+            "… > bash > curl"
+        );
+        assert_eq!(
+            process_tree_value(&lineage(true), "curl", usize::MAX),
+            "… > systemd > sshd > bash > curl"
+        );
+    }
 
     #[test]
     fn short_paths_render_unchanged() {

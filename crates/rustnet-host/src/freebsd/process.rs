@@ -1,8 +1,8 @@
 // network/platform/freebsd/process.rs - FreeBSD sockstat-based process lookup
 
 use crate::{
-    AttributionBackend, ConnectionKey, MatchQuality, ProcessAttribution, ProcessLookup,
-    relaxed_lookup,
+    AttributionBackend, ConnectionKey, MatchQuality, ProcessAncestor, ProcessAttribution,
+    ProcessLineage, ProcessLookup, collect_process_lineage, relaxed_lookup,
 };
 use anyhow::{Context, Result};
 use rustnet_core::network::types::{Connection, Protocol};
@@ -36,7 +36,9 @@ struct FreeBsdProcessDetails {
     ppid: u32,
     uid: u32,
     gid: u32,
+    name: String,
     executable: Option<PathBuf>,
+    started_at_unix_ms: Option<u64>,
 }
 
 impl FreeBSDProcessLookup {
@@ -144,8 +146,26 @@ impl FreeBSDProcessLookup {
             ppid: u32::try_from(info.ki_ppid).ok()?,
             uid: info.ki_uid,
             gid,
+            name: Self::decode_process_name(&info.ki_comm),
             executable: Self::resolve_executable(pid),
+            started_at_unix_ms: Self::timeval_unix_ms(&info.ki_start),
         })
+    }
+
+    fn timeval_unix_ms(time: &libc::timeval) -> Option<u64> {
+        let seconds = u64::try_from(time.tv_sec).ok()?;
+        let micros = u64::try_from(time.tv_usec).ok()?;
+        seconds.checked_mul(1_000)?.checked_add(micros / 1_000)
+    }
+
+    fn decode_process_name(chars: &[libc::c_char]) -> String {
+        let bytes: Vec<u8> = chars
+            .iter()
+            .copied()
+            .take_while(|value| *value != 0)
+            .map(|value| value as u8)
+            .collect();
+        String::from_utf8_lossy(&bytes).into_owned()
     }
 
     fn process_details(&self, pid: u32) -> Option<FreeBsdProcessDetails> {
@@ -164,6 +184,32 @@ impl FreeBSDProcessLookup {
             .expect("process details cache lock poisoned")
             .insert(pid, details.clone());
         details
+    }
+
+    fn process_lineage(&self, pid: u32, ppid: u32) -> Option<ProcessLineage> {
+        collect_process_lineage(pid, ppid, |ancestor_pid| {
+            let details = self.process_details(ancestor_pid)?;
+            let parent_pid = details.ppid;
+            let name = if details.name.is_empty() {
+                details
+                    .executable
+                    .as_deref()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| format!("PID {ancestor_pid}"))
+            } else {
+                details.name
+            };
+            Some((
+                ProcessAncestor {
+                    pid: ancestor_pid,
+                    name,
+                    executable: details.executable,
+                    started_at_unix_ms: details.started_at_unix_ms,
+                },
+                parent_pid,
+            ))
+        })
     }
 
     /// Build connection -> process mapping using sysctl
@@ -322,10 +368,12 @@ impl ProcessLookup for FreeBSDProcessLookup {
         let mut attribution =
             ProcessAttribution::new(pid, name, AttributionBackend::PlatformNative, quality);
         if let Some(details) = self.process_details(pid) {
+            let lineage = self.process_lineage(pid, details.ppid);
             attribution = attribution
                 .with_parent_pid(details.ppid)
                 .with_credentials(details.uid, details.gid)
-                .with_executable(details.executable);
+                .with_executable(details.executable)
+                .with_lineage(lineage);
         }
         Some(attribution)
     }
@@ -473,6 +521,14 @@ mod tests {
         assert_eq!(details.uid, unsafe { libc::geteuid() });
         assert_eq!(details.gid, unsafe { libc::getegid() });
         assert_eq!(details.executable, std::env::current_exe().ok());
+        assert!(!details.name.is_empty());
+        assert!(details.started_at_unix_ms.is_some());
+
+        let lookup = FreeBSDProcessLookup::new().unwrap();
+        let lineage = lookup
+            .process_lineage(std::process::id(), details.ppid)
+            .expect("current process parent must resolve");
+        assert_eq!(lineage.ancestors.last().unwrap().pid, details.ppid);
     }
 
     #[test]
