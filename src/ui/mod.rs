@@ -1391,8 +1391,8 @@ mod snapshot_tests {
     /// the identity remains visible as one self-contained block.
     #[test]
     fn details_tab_shows_complete_process_attribution() {
-        use crate::network::types::MatchQuality;
-        use std::path::Path;
+        use crate::network::types::{MatchQuality, ProcessAncestor, ProcessLineage};
+        use std::path::{Path, PathBuf};
         use std::sync::Arc;
 
         let app = test_app();
@@ -1434,12 +1434,30 @@ mod snapshot_tests {
         connections[0].process_uid = Some(1000);
         connections[0].process_gid = Some(1000);
         connections[0].attribution_quality = Some(MatchQuality::ExactTuple);
+        connections[0].process_lineage = Some(Arc::new(ProcessLineage {
+            ancestors: vec![
+                ProcessAncestor {
+                    pid: 1,
+                    name: "systemd".to_string(),
+                    executable: Some(PathBuf::from("/usr/lib/systemd/systemd")),
+                    started_at_unix_ms: Some(1_700_000_000_000),
+                },
+                ProcessAncestor {
+                    pid: 1900,
+                    name: "bash".to_string(),
+                    executable: Some(PathBuf::from("/usr/bin/bash")),
+                    started_at_unix_ms: Some(1_700_000_010_000),
+                },
+            ],
+            truncated: false,
+        }));
         app.set_connections_snapshot_for_test(connections.clone());
 
         let attributed = render_connections(&connections);
         assert!(attributed.contains("Attribution"));
         assert!(attributed.contains("1900"));
         assert!(attributed.contains("/usr/lib/firefox/firefox"));
+        assert!(attributed.contains("systemd > bash > firefox"));
         assert!(attributed.contains(&tabs::details::format_user_group(1000, Some(1000))));
         assert!(attributed.contains("exact tuple"));
     }

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -80,6 +80,30 @@ impl fmt::Display for MatchQuality {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// Maximum number of parent processes retained for one attribution.
+pub const MAX_PROCESS_ANCESTORS: usize = 4;
+
+/// One parent in an owning process's ancestry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessAncestor {
+    pub pid: u32,
+    pub name: String,
+    pub executable: Option<PathBuf>,
+    /// Process creation time as milliseconds since the Unix epoch.
+    pub started_at_unix_ms: Option<u64>,
+}
+
+/// Best-effort ancestry for an owning process.
+///
+/// Entries are ordered from the oldest retained ancestor to the direct
+/// parent. `truncated` is true when an older ancestor was omitted by
+/// [`MAX_PROCESS_ANCESTORS`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessLineage {
+    pub ancestors: Vec<ProcessAncestor>,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -2531,6 +2555,9 @@ pub struct Connection {
     /// How confidently the attribution was matched to this connection. `None`
     /// until the connection is attributed.
     pub attribution_quality: Option<MatchQuality>,
+    /// Parent processes, ordered from the oldest retained ancestor to the
+    /// direct parent. Shared because connection snapshots are cloned in bulk.
+    pub process_lineage: Option<Arc<ProcessLineage>>,
 
     // Kubernetes attribution (pod/container), populated on K8s nodes
     #[cfg(feature = "kubernetes")]
@@ -2620,6 +2647,7 @@ impl Connection {
             process_uid: None,
             process_gid: None,
             attribution_quality: None,
+            process_lineage: None,
             #[cfg(feature = "kubernetes")]
             k8s_info: None,
             connection_direction: None,
@@ -3449,10 +3477,10 @@ mod tests {
         assert!(snap.rate_tracker.samples.is_empty());
     }
 
-    /// The snapshot provider clones every connection on every tick, so the
-    /// executable path must be shared rather than reallocated per clone.
+    /// The snapshot provider clones every connection on every tick, so process
+    /// attribution allocations must be shared rather than copied per clone.
     #[test]
-    fn snapshot_clone_shares_the_interned_executable_path() {
+    fn snapshot_clone_shares_process_attribution_allocations() {
         use std::path::Path;
 
         let mut conn = Connection::new(
@@ -3467,6 +3495,16 @@ mod tests {
         conn.process_uid = Some(1000);
         conn.process_gid = Some(100);
         conn.attribution_quality = Some(MatchQuality::ExactTuple);
+        let lineage = Arc::new(ProcessLineage {
+            ancestors: vec![ProcessAncestor {
+                pid: 1,
+                name: "init".to_string(),
+                executable: Some(PathBuf::from("/sbin/init")),
+                started_at_unix_ms: Some(1_700_000_000_000),
+            }],
+            truncated: false,
+        });
+        conn.process_lineage = Some(Arc::clone(&lineage));
 
         let snap = conn.snapshot_clone();
 
@@ -3475,6 +3513,7 @@ mod tests {
         assert_eq!(snap.process_uid, Some(1000));
         assert_eq!(snap.process_gid, Some(100));
         assert_eq!(snap.attribution_quality, Some(MatchQuality::ExactTuple));
+        assert_eq!(snap.process_lineage.as_deref(), Some(lineage.as_ref()));
         assert!(
             Arc::ptr_eq(
                 conn.executable.as_ref().unwrap(),
@@ -3482,6 +3521,10 @@ mod tests {
             ),
             "the clone must share the path allocation, not copy it"
         );
+        assert!(Arc::ptr_eq(
+            conn.process_lineage.as_ref().unwrap(),
+            snap.process_lineage.as_ref().unwrap()
+        ));
     }
 
     #[test]
@@ -3498,6 +3541,7 @@ mod tests {
         assert!(conn.process_uid.is_none());
         assert!(conn.process_gid.is_none());
         assert!(conn.attribution_quality.is_none());
+        assert!(conn.process_lineage.is_none());
     }
 
     /// Export tokens are what users grep and filter on, so they are pinned

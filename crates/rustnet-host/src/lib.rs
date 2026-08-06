@@ -16,10 +16,10 @@
 //!
 //! [`ProcessLookup::get_process_attribution`] returns the richer
 //! [`ProcessAttribution`]: parent and thread ids, effective UID/GID, executable
-//! path, the producing [`AttributionBackend`], a [`MatchQuality`] saying how
-//! the connection was matched, and a monotonic observation time. Platforms
-//! that only implement the tuple API are bridged automatically, so
-//! `get_process_for_connection` keeps working everywhere.
+//! path, process lineage, the producing [`AttributionBackend`], a
+//! [`MatchQuality`] saying how the connection was matched, and a monotonic
+//! observation time. Platforms that only implement the tuple API are bridged
+//! automatically, so `get_process_for_connection` keeps working everywhere.
 //!
 //! When a platform can't use its optimal method, [`ProcessLookup::get_degradation_reason`]
 //! reports why via [`DegradationReason`] (e.g. missing `CAP_BPF`, no root for
@@ -94,15 +94,18 @@ bitflags::bitflags! {
 /// Defined in `rustnet-core` because [`Connection`] carries it and this crate
 /// depends on core, not the other way round. Re-exported here so attribution
 /// callers only need one import.
-pub use rustnet_core::network::types::MatchQuality;
+pub use rustnet_core::network::types::{
+    MAX_PROCESS_ANCESTORS, MatchQuality, ProcessAncestor, ProcessLineage,
+};
 
 /// A rich process-attribution result.
 ///
 /// Everything past `tgid`/`name` is best effort: a backend fills in what it
 /// actually observed and leaves the rest `None` rather than guessing. Only the
 /// Linux eBPF backends currently report thread ids and an observation
-/// timestamp. Linux, macOS, and FreeBSD can report parent process ids.
-/// Linux, macOS, and FreeBSD can report credentials and executable paths.
+/// timestamp. Every supported platform can report parent process ids,
+/// executable paths, and a capped parent chain. Linux, macOS, and FreeBSD can
+/// report credentials.
 ///
 /// Marked `#[non_exhaustive]` because cgroup and container fields are expected
 /// to land here later. Build values with [`ProcessAttribution::new`] plus the
@@ -136,6 +139,8 @@ pub struct ProcessAttribution {
     /// meaningful relative to other monotonic readings from the same boot, and
     /// must never be formatted as a date.
     pub observed_at_ns: Option<u64>,
+    /// Best-effort parent chain, ordered oldest retained ancestor first.
+    pub lineage: Option<ProcessLineage>,
 }
 
 impl ProcessAttribution {
@@ -157,6 +162,7 @@ impl ProcessAttribution {
             backend,
             quality,
             observed_at_ns: None,
+            lineage: None,
         }
     }
 
@@ -192,10 +198,62 @@ impl ProcessAttribution {
         self
     }
 
+    /// Attach the owning process's best-effort parent chain.
+    pub fn with_lineage(mut self, lineage: Option<ProcessLineage>) -> Self {
+        self.lineage = lineage;
+        self
+    }
+
     /// Reduce to the legacy `(pid, process_name)` pair.
     pub fn into_pid_name(self) -> (u32, String) {
         (self.tgid, self.name)
     }
+}
+
+/// Walk a platform-specific parent resolver into the shared lineage shape.
+///
+/// The resolver returns one ancestor and that process's parent PID. Missing
+/// metadata ends the best-effort walk without discarding ancestors already
+/// collected.
+pub(crate) fn collect_process_lineage<F>(
+    owner_pid: u32,
+    parent_pid: u32,
+    mut resolve: F,
+) -> Option<ProcessLineage>
+where
+    F: FnMut(u32) -> Option<(ProcessAncestor, u32)>,
+{
+    if parent_pid == 0 || parent_pid == owner_pid {
+        return None;
+    }
+
+    let mut ancestors = Vec::with_capacity(MAX_PROCESS_ANCESTORS);
+    let mut seen = vec![owner_pid];
+    let mut current_pid = parent_pid;
+    let mut truncated = false;
+
+    while current_pid != 0 && !seen.contains(&current_pid) {
+        let Some((ancestor, next_parent_pid)) = resolve(current_pid) else {
+            break;
+        };
+        seen.push(current_pid);
+        ancestors.push(ancestor);
+
+        if ancestors.len() == MAX_PROCESS_ANCESTORS {
+            truncated = next_parent_pid != 0 && !seen.contains(&next_parent_pid);
+            break;
+        }
+        current_pid = next_parent_pid;
+    }
+
+    if ancestors.is_empty() {
+        return None;
+    }
+    ancestors.reverse();
+    Some(ProcessLineage {
+        ancestors,
+        truncated,
+    })
 }
 
 impl From<ProcessAttribution> for (u32, String) {
@@ -579,6 +637,7 @@ mod tests {
             Some(Path::new("/usr/bin/curl"))
         );
         assert_eq!(attribution.observed_at_ns, Some(9_000));
+        assert_eq!(attribution.lineage, None);
 
         let (pid, name) = <(u32, String)>::from(attribution);
         assert_eq!(pid, 42);
@@ -601,6 +660,52 @@ mod tests {
         assert_eq!(attribution.gid, None);
         assert_eq!(attribution.executable, None);
         assert_eq!(attribution.observed_at_ns, None);
+        assert_eq!(attribution.lineage, None);
+    }
+
+    fn ancestor(pid: u32) -> ProcessAncestor {
+        ProcessAncestor {
+            pid,
+            name: format!("process-{pid}"),
+            executable: None,
+            started_at_unix_ms: Some(u64::from(pid) * 1_000),
+        }
+    }
+
+    #[test]
+    fn lineage_is_rootward_ordered_and_capped() {
+        let parents = HashMap::from([(5, 4), (4, 3), (3, 2), (2, 1), (1, 0)]);
+        let lineage =
+            collect_process_lineage(6, 5, |pid| Some((ancestor(pid), *parents.get(&pid)?)))
+                .unwrap();
+
+        assert_eq!(
+            lineage
+                .ancestors
+                .iter()
+                .map(|entry| entry.pid)
+                .collect::<Vec<_>>(),
+            [2, 3, 4, 5]
+        );
+        assert!(lineage.truncated);
+    }
+
+    #[test]
+    fn lineage_stops_at_cycles_without_claiming_cap_truncation() {
+        let parents = HashMap::from([(3, 2), (2, 3)]);
+        let lineage =
+            collect_process_lineage(4, 3, |pid| Some((ancestor(pid), *parents.get(&pid)?)))
+                .unwrap();
+
+        assert_eq!(
+            lineage
+                .ancestors
+                .iter()
+                .map(|entry| entry.pid)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
+        assert!(!lineage.truncated);
     }
 
     #[test]

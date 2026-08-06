@@ -8,7 +8,7 @@ use anyhow::Result;
 use crossbeam::channel::{self, Receiver, Sender};
 use dashmap::DashMap;
 use log::{debug, error, info, warn};
-use serde_json::json;
+use serde_json::{Map, Value, json};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ use crate::network::{
     tracker::{ConnectionTracker, IngestOutcome},
     types::{
         ApplicationProtocol, Connection, ConnectionKey, ConnectionLifecycleSample, DnsQueryType,
-        GraphScale, Protocol, TrafficHistory,
+        GraphScale, ProcessLineage, Protocol, TrafficHistory,
     },
 };
 
@@ -59,6 +59,32 @@ fn process_enrichment_complete(conn: &Connection, unknown_process_name: &str) ->
             .as_deref()
             .is_some_and(|name| name != unknown_process_name)
         && conn.attribution_quality.is_some()
+}
+
+fn process_lineage_json(lineage: &ProcessLineage) -> Value {
+    let ancestors: Vec<Value> = lineage
+        .ancestors
+        .iter()
+        .map(|ancestor| {
+            let mut value = Map::new();
+            value.insert("pid".to_string(), json!(ancestor.pid));
+            value.insert("name".to_string(), json!(ancestor.name));
+            if let Some(executable) = &ancestor.executable {
+                value.insert(
+                    "executable".to_string(),
+                    json!(executable.display().to_string()),
+                );
+            }
+            if let Some(started_at_unix_ms) = ancestor.started_at_unix_ms {
+                value.insert("started_at_unix_ms".to_string(), json!(started_at_unix_ms));
+            }
+            Value::Object(value)
+        })
+        .collect();
+    json!({
+        "ancestors": ancestors,
+        "truncated": lineage.truncated,
+    })
 }
 
 /// Sandbox status information for UI display
@@ -351,6 +377,9 @@ fn log_connection_event(
     if let Some(quality) = conn.attribution_quality {
         event["attribution_match"] = json!(quality.as_token());
     }
+    if let Some(lineage) = &conn.process_lineage {
+        event["process_lineage"] = process_lineage_json(lineage);
+    }
 
     // Round-trip estimate: smoothed data RTT, or the handshake RTT before
     // any data samples exist. One decimal of milliseconds.
@@ -495,6 +524,9 @@ fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
     }
     if let Some(quality) = conn.attribution_quality {
         event["attribution_match"] = json!(quality.as_token());
+    }
+    if let Some(lineage) = &conn.process_lineage {
+        event["process_lineage"] = process_lineage_json(lineage);
     }
 
     // Round-trip estimate: smoothed data RTT, or the handshake RTT before
@@ -1912,6 +1944,10 @@ impl App {
         // `Connection` is cloned in bulk on every snapshot tick. Interning here
         // means the clone copies an Arc pointer instead of a fresh PathBuf.
         let mut executables: HashMap<PathBuf, Arc<Path>> = HashMap::new();
+        // Lineage follows the same sharing rule, keyed by owner PID. Unlike the
+        // content-keyed executable map, a PID key can go stale on PID reuse, so
+        // the map is cleared on every full pass.
+        let mut lineages: HashMap<u32, Arc<ProcessLineage>> = HashMap::new();
 
         // Build and set the detection status from the process lookup implementation
         // Only set if not already detected as pktap (to handle race conditions)
@@ -1975,6 +2011,7 @@ impl App {
             let full_pass = last_full_pass.elapsed() >= full_pass_interval;
             if full_pass {
                 last_full_pass = Instant::now();
+                lineages.clear();
             }
 
             // Enrich connections without process info
@@ -2055,6 +2092,16 @@ impl App {
                         && let Some(gid) = attribution.gid
                     {
                         entry.process_gid = Some(gid);
+                        did_enrich = true;
+                    }
+                    if entry.process_lineage.is_none()
+                        && let Some(lineage) = attribution.lineage
+                    {
+                        let interned = lineages
+                            .entry(pid)
+                            .or_insert_with(|| Arc::new(lineage))
+                            .clone();
+                        entry.process_lineage = Some(interned);
                         did_enrich = true;
                     }
                     if entry.attribution_quality.is_none() {
@@ -3456,8 +3503,13 @@ impl Drop for App {
 
 #[cfg(test)]
 mod process_enrichment_tests {
-    use super::process_enrichment_complete;
-    use crate::network::types::{Connection, MatchQuality, Protocol, ProtocolState, TcpState};
+    use super::{process_enrichment_complete, process_lineage_json};
+    use crate::network::types::{
+        Connection, MatchQuality, ProcessAncestor, ProcessLineage, Protocol, ProtocolState,
+        TcpState,
+    };
+    use serde_json::json;
+    use std::path::PathBuf;
 
     fn connection() -> Connection {
         Connection::new(
@@ -3500,6 +3552,32 @@ mod process_enrichment_tests {
         conn.attribution_quality = Some(MatchQuality::Unspecified);
 
         assert!(!process_enrichment_complete(&conn, "Unknown"));
+    }
+
+    #[test]
+    fn lineage_json_preserves_process_identity_fields() {
+        let lineage = ProcessLineage {
+            ancestors: vec![ProcessAncestor {
+                pid: 1,
+                name: "systemd".to_string(),
+                executable: Some(PathBuf::from("/usr/lib/systemd/systemd")),
+                started_at_unix_ms: Some(1_700_000_000_000),
+            }],
+            truncated: true,
+        };
+
+        assert_eq!(
+            process_lineage_json(&lineage),
+            json!({
+                "ancestors": [{
+                    "pid": 1,
+                    "name": "systemd",
+                    "executable": "/usr/lib/systemd/systemd",
+                    "started_at_unix_ms": 1_700_000_000_000_u64,
+                }],
+                "truncated": true,
+            })
+        );
     }
 }
 

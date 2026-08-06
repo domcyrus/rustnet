@@ -205,7 +205,7 @@ Concurrent hashmap (`DashMap<ConnectionKey, Connection>`) for storing connection
 
 ### Process Lookup
 
-RustNet uses platform-specific APIs to associate network connections with processes:
+RustNet uses platform-specific APIs to associate network connections with processes. On every platform, an attribution also carries a capped parent-process chain (up to four ancestors with PID, name, executable path, and start time), shown as a process tree in the Details tab and exported in JSONL:
 
 #### Linux
 

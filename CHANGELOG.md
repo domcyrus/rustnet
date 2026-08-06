@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   code (NOERROR, NXDOMAIN, SERVFAIL, ...). Pending queries are bounded (hard
   cap plus 10s expiry), so floods cost samples, not memory. mDNS/LLMNR
   first-response timing is a possible follow-up
+- **Cross-Platform Process Lineage**: The Details tab shows up to four parent
+  processes for each attributed connection on Linux, macOS, Windows, and
+  FreeBSD. JSONL exports include each ancestor's PID, name, executable path,
+  start time, and whether the chain was truncated (#520)
 - **Per-Connection RTT**: Every TCP connection now carries a live round-trip
   estimate for its whole lifetime, not just a one-shot handshake RTT. An
   outbound data segment is timed until the ACK that covers it, with Karn's

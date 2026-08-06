@@ -1,8 +1,8 @@
 // network/platform/macos/process.rs - macOS lsof-based process lookup
 
 use crate::{
-    AttributionBackend, ConnectionKey, DegradationReason, MatchQuality, ProcessAttribution,
-    ProcessLookup, relaxed_lookup,
+    AttributionBackend, ConnectionKey, DegradationReason, MatchQuality, ProcessAncestor,
+    ProcessAttribution, ProcessLineage, ProcessLookup, collect_process_lineage, relaxed_lookup,
 };
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -33,6 +33,8 @@ pub(super) struct ProcessDetails {
     pub ppid: u32,
     pub uid: u32,
     pub gid: u32,
+    name: String,
+    started_at_unix_ms: Option<u64>,
 }
 
 pub(super) fn resolve_executable(pid: u32) -> Option<PathBuf> {
@@ -65,15 +67,20 @@ pub(super) fn resolve_executable(pid: u32) -> Option<PathBuf> {
 
 pub(super) fn resolve_process_details(pid: u32) -> Option<ProcessDetails> {
     let pid = libc::c_int::try_from(pid).ok()?;
-    let expected_size = size_of::<libc::proc_bsdshortinfo>();
-    let mut info = MaybeUninit::<libc::proc_bsdshortinfo>::zeroed();
+    resolve_full_process_details(pid).or_else(|| resolve_short_process_details(pid))
+}
+
+/// Fill `flavor`-shaped process info for `pid` via `proc_pidinfo`.
+fn query_proc_pidinfo<T>(pid: libc::c_int, flavor: libc::c_int) -> Option<T> {
+    let expected_size = size_of::<T>();
+    let mut info = MaybeUninit::<T>::zeroed();
 
     // SAFETY: libproc writes at most `expected_size` bytes into an aligned
-    // buffer with the C layout of `proc_bsdshortinfo`.
+    // buffer with the C layout of the requested flavor.
     let returned_size = unsafe {
         libc::proc_pidinfo(
             pid,
-            libc::PROC_PIDT_SHORTBSDINFO,
+            flavor,
             0,
             info.as_mut_ptr().cast(),
             libc::c_int::try_from(expected_size).expect("proc info size fits in c_int"),
@@ -83,12 +90,74 @@ pub(super) fn resolve_process_details(pid: u32) -> Option<ProcessDetails> {
         return None;
     }
 
-    // SAFETY: a full `proc_bsdshortinfo` was initialized by the successful call.
-    let info = unsafe { info.assume_init() };
+    // SAFETY: a full `T` was initialized by the successful call.
+    Some(unsafe { info.assume_init() })
+}
+
+fn resolve_full_process_details(pid: libc::c_int) -> Option<ProcessDetails> {
+    let info: libc::proc_bsdinfo = query_proc_pidinfo(pid, libc::PROC_PIDTBSDINFO)?;
+    let name = decode_process_name(&info.pbi_name)
+        .or_else(|| decode_process_name(&info.pbi_comm))
+        .unwrap_or_default();
+    Some(ProcessDetails {
+        ppid: info.pbi_ppid,
+        uid: info.pbi_uid,
+        gid: info.pbi_gid,
+        name,
+        started_at_unix_ms: info
+            .pbi_start_tvsec
+            .checked_mul(1_000)
+            .and_then(|millis| millis.checked_add(info.pbi_start_tvusec / 1_000)),
+    })
+}
+
+/// Fallback for processes the kernel's same-user policy hides from
+/// `PROC_PIDTBSDINFO`: the short flavor is exempt from that check, so an
+/// unprivileged run still resolves the PPID and credentials of other users'
+/// processes. It carries no start time and only a 16-character name.
+fn resolve_short_process_details(pid: libc::c_int) -> Option<ProcessDetails> {
+    let info: libc::proc_bsdshortinfo = query_proc_pidinfo(pid, libc::PROC_PIDT_SHORTBSDINFO)?;
     Some(ProcessDetails {
         ppid: info.pbsi_ppid,
         uid: info.pbsi_uid,
         gid: info.pbsi_gid,
+        name: decode_process_name(&info.pbsi_comm).unwrap_or_default(),
+        started_at_unix_ms: None,
+    })
+}
+
+fn decode_process_name(chars: &[libc::c_char]) -> Option<String> {
+    let bytes: Vec<u8> = chars
+        .iter()
+        .copied()
+        .take_while(|value| *value != 0)
+        .map(|value| value as u8)
+        .collect();
+    (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+pub(super) fn resolve_process_lineage(pid: u32, ppid: u32) -> Option<ProcessLineage> {
+    collect_process_lineage(pid, ppid, |ancestor_pid| {
+        let details = resolve_process_details(ancestor_pid)?;
+        let executable = resolve_executable(ancestor_pid);
+        let name = if details.name.is_empty() {
+            executable
+                .as_deref()
+                .and_then(|path| path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| format!("PID {ancestor_pid}"))
+        } else {
+            details.name
+        };
+        Some((
+            ProcessAncestor {
+                pid: ancestor_pid,
+                name,
+                executable,
+                started_at_unix_ms: details.started_at_unix_ms,
+            },
+            details.ppid,
+        ))
     })
 }
 
@@ -289,7 +358,8 @@ impl ProcessLookup for MacOSProcessLookup {
         if let Some(details) = resolve_process_details(process.pid) {
             attribution = attribution
                 .with_parent_pid(details.ppid)
-                .with_credentials(process.uid, details.gid);
+                .with_credentials(process.uid, details.gid)
+                .with_lineage(resolve_process_lineage(process.pid, details.ppid));
         }
         Some(attribution)
     }
@@ -544,6 +614,12 @@ server 42 root 3u IPv4 0x1 0t0 TCP 127.0.0.1:8080 (LISTEN)
             details.ppid,
             u32::try_from(unsafe { libc::getppid() }).unwrap()
         );
+        assert!(!details.name.is_empty());
+        assert!(details.started_at_unix_ms.is_some());
+
+        let lineage = resolve_process_lineage(pid, details.ppid)
+            .expect("current process parent should resolve");
+        assert_eq!(lineage.ancestors.last().unwrap().pid, details.ppid);
     }
 
     #[test]
