@@ -1857,6 +1857,14 @@ pub(in crate::ui) fn draw_connection_details(
                 })
         })
         .flatten();
+    let icmp_echo_sequence = match &conn.protocol_state {
+        crate::network::types::ProtocolState::Icmp {
+            icmp_type: 0 | 8 | 128 | 129,
+            icmp_sequence,
+            ..
+        } => *icmp_sequence,
+        _ => None,
+    };
     let metrics_start = details_text.len();
     push_detail_section(&mut details_text, &mut detail_fields, "Transport Health");
     let show_rtt = conn.protocol == Protocol::Tcp || quic_info.is_some();
@@ -1918,9 +1926,50 @@ pub(in crate::ui) fn draw_connection_details(
             &mut detail_fields,
             "Timed by pairing query and response IDs",
         );
+    } else if let Some(sequence) = icmp_echo_sequence {
+        if let Some(rtt) = conn.icmp_echo_rtt {
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            let rtt_color = if rtt_ms < 50.0 {
+                theme::ok()
+            } else if rtt_ms < 150.0 {
+                theme::warn()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Ping RTT",
+                format!("{:.1}ms", rtt_ms),
+                label_style,
+                theme::fg(rtt_color),
+            );
+        } else {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Ping RTT",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Last Sequence",
+            sequence.to_string(),
+            label_style,
+        );
+        details_text.push(Line::from(""));
+        detail_fields.push(None);
+        push_detail_note(
+            &mut details_text,
+            &mut detail_fields,
+            "Paired by echo ID and sequence",
+        );
     } else if !show_rtt {
-        // Nothing on a bare UDP/ICMP flow is timeable or countable: no
-        // handshake to pair up, no sequence numbers to track.
+        // Nothing on a bare UDP or non-echo ICMP flow is timeable or
+        // countable: there is no handshake or request/reply ID to pair.
         push_detail_note(
             &mut details_text,
             &mut detail_fields,

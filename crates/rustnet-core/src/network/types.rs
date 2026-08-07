@@ -338,6 +338,7 @@ pub enum ProtocolState {
     Icmp {
         icmp_type: u8,
         icmp_id: Option<u16>,
+        icmp_sequence: Option<u16>,
     },
     Igmp {
         igmp_type: u8,
@@ -1887,12 +1888,17 @@ pub struct RttTracker {
     /// Outbound DNS queries awaiting their response, keyed by connection and
     /// transaction ID (stub resolvers reuse one socket for many queries).
     pending_dns: HashMap<(ConnectionKey, u16), SystemTime>,
+    /// Outbound ICMP echo requests awaiting replies, keyed by connection,
+    /// identifier, and sequence number. The sequence keeps fast pings distinct.
+    pending_icmp_echoes: HashMap<(ConnectionKey, u16, u16), SystemTime>,
     /// Recent RTT measurements for aggregation: (timestamp, rtt_duration)
     recent_rtts: VecDeque<(Instant, Duration)>,
     /// Maximum age for pending SYNs (cleanup stale entries)
     max_pending_age: Duration,
     /// Maximum age for pending DNS queries, well past any resolver timeout
     max_pending_dns_age: Duration,
+    /// Maximum age for pending echo requests before they cannot produce an RTT
+    max_pending_icmp_age: Duration,
     /// Maximum number of recent RTTs to keep
     max_recent_rtts: usize,
 }
@@ -1901,15 +1907,21 @@ pub struct RttTracker {
 /// query flood costs unmatched samples, never memory.
 const MAX_PENDING_DNS: usize = 4096;
 
+/// Hard cap on pending echo requests. At `ping -i .2`, the 10-second expiry
+/// limits an unanswered flow to about 50 entries, far below this guardrail.
+const MAX_PENDING_ICMP_ECHOES: usize = 4096;
+
 impl RttTracker {
     pub fn new() -> Self {
         Self {
             pending_syns: HashMap::new(),
             pending_quic_handshakes: HashMap::new(),
             pending_dns: HashMap::new(),
+            pending_icmp_echoes: HashMap::new(),
             recent_rtts: VecDeque::new(),
             max_pending_age: Duration::from_secs(30),
             max_pending_dns_age: Duration::from_secs(10),
+            max_pending_icmp_age: Duration::from_secs(10),
             max_recent_rtts: 100,
         }
     }
@@ -2002,6 +2014,45 @@ impl RttTracker {
         }
     }
 
+    /// Record an ICMP echo packet, returning the RTT when an incoming reply
+    /// matches a pending outgoing request.
+    ///
+    /// Identifier alone is not enough because one ping process reuses it for
+    /// every request. Pairing identifier and sequence supports many requests
+    /// in flight at once, including subsecond intervals and reordered replies.
+    /// Only the client role is timed, so an inbound request followed by this
+    /// host's reply is not mistaken for a network round trip. `echo_key` is
+    /// `(identifier, sequence)` in the on-wire order.
+    pub fn record_icmp_echo(
+        &mut self,
+        key: ConnectionKey,
+        echo_key: (u16, u16),
+        is_outgoing: bool,
+        is_reply: bool,
+        at: SystemTime,
+    ) -> Option<Duration> {
+        self.cleanup_stale(at);
+        let (identifier, sequence) = echo_key;
+        let pending_key = (key, identifier, sequence);
+        match (is_outgoing, is_reply) {
+            (true, false) => {
+                if self.pending_icmp_echoes.len() < MAX_PENDING_ICMP_ECHOES
+                    || self.pending_icmp_echoes.contains_key(&pending_key)
+                {
+                    self.pending_icmp_echoes.insert(pending_key, at);
+                }
+                None
+            }
+            (false, true) => {
+                let sent_at = self.pending_icmp_echoes.remove(&pending_key)?;
+                let rtt = at.duration_since(sent_at).unwrap_or_default();
+                self.add_rtt_sample(rtt);
+                Some(rtt)
+            }
+            _ => None,
+        }
+    }
+
     /// Record a completed data round trip (segment to covering ACK) measured
     /// by the per-connection estimator, so the aggregate RTT view reflects
     /// established connections rather than only fresh handshakes.
@@ -2047,6 +2098,9 @@ impl RttTracker {
         if let Some(dns_cutoff) = now.checked_sub(self.max_pending_dns_age) {
             self.pending_dns.retain(|_, ts| *ts > dns_cutoff);
         }
+        if let Some(icmp_cutoff) = now.checked_sub(self.max_pending_icmp_age) {
+            self.pending_icmp_echoes.retain(|_, ts| *ts > icmp_cutoff);
+        }
     }
 
     /// Clear all RTT tracking data
@@ -2054,6 +2108,7 @@ impl RttTracker {
         self.pending_syns.clear();
         self.pending_quic_handshakes.clear();
         self.pending_dns.clear();
+        self.pending_icmp_echoes.clear();
         self.recent_rtts.clear();
     }
 }
@@ -2606,6 +2661,10 @@ pub struct Connection {
     // separate from the transport-level `initial_rtt`.
     pub dns_response_time: Option<std::time::Duration>,
 
+    // Latest ICMP echo round trip, paired by identifier and sequence number.
+    // Updated on every completed outgoing request and incoming reply pair.
+    pub icmp_echo_rtt: Option<std::time::Duration>,
+
     // GeoIP information for remote address
     pub geoip_info: Option<crate::network::geoip::GeoIpInfo>,
 
@@ -2666,6 +2725,7 @@ impl Connection {
             tcp_analytics,
             initial_rtt: None,
             dns_response_time: None,
+            icmp_echo_rtt: None,
             geoip_info: None,
             is_historic: false,
             closed_at: None,
@@ -2866,12 +2926,14 @@ impl Connection {
                     })
                 }
             }
-            ProtocolState::Icmp { icmp_type, icmp_id } => match icmp_type {
-                8 => match icmp_id {
+            ProtocolState::Icmp {
+                icmp_type, icmp_id, ..
+            } => match icmp_type {
+                8 | 128 => match icmp_id {
                     Some(id) => Cow::Owned(format!("ECHO_REQ({})", id)),
                     None => Cow::Borrowed("ECHO_REQUEST"),
                 },
-                0 => match icmp_id {
+                0 | 129 => match icmp_id {
                     Some(id) => Cow::Owned(format!("ECHO_REP({})", id)),
                     None => Cow::Borrowed("ECHO_REPLY"),
                 },
@@ -3063,15 +3125,15 @@ impl Connection {
         idle.as_secs_f32() / timeout.as_secs_f32()
     }
 
-    /// Live round-trip estimate for display: the smoothed data RTT once the
-    /// continuous estimator has samples, otherwise the handshake RTT. QUIC
-    /// connections only ever have the handshake value, since their ACKs are
-    /// encrypted on the wire.
+    /// Live round-trip estimate for display: the smoothed TCP data RTT once the
+    /// continuous estimator has samples, otherwise a TCP/QUIC handshake RTT or
+    /// the latest ICMP echo RTT.
     pub fn current_rtt(&self) -> Option<Duration> {
         self.tcp_analytics
             .as_ref()
             .and_then(|a| a.smoothed_rtt)
             .or(self.initial_rtt)
+            .or(self.icmp_echo_rtt)
     }
 }
 
@@ -4329,11 +4391,19 @@ mod tests {
             ProtocolState::Icmp {
                 icmp_type: 8,
                 icmp_id: Some(1234),
+                icmp_sequence: Some(7),
             },
         );
 
         assert_eq!(conn.state(), "ECHO_REQ(1234)");
         assert_eq!(conn.get_timeout(), Duration::from_secs(10));
+
+        conn.protocol_state = ProtocolState::Icmp {
+            icmp_type: 129,
+            icmp_id: Some(1234),
+            icmp_sequence: Some(7),
+        };
+        assert_eq!(conn.state(), "ECHO_REP(1234)");
 
         // Test ARP states
         conn.protocol = Protocol::Arp;
@@ -4482,6 +4552,57 @@ mod tests {
         tracker.record_dns_packet(key, 42, true, false, rtt_capture_time(1_000));
         let rtt = tracker.record_dns_packet(key, 42, false, true, rtt_capture_time(1_015));
         assert_eq!(rtt, Some(Duration::from_millis(15)));
+    }
+
+    #[test]
+    fn test_rtt_tracker_pending_icmp_echo_expires() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            Protocol::Icmp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 0),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+        );
+
+        tracker.record_icmp_echo(key, (7, 1), true, false, rtt_capture_time(0));
+        let rtt = tracker.record_icmp_echo(key, (7, 1), false, true, rtt_capture_time(11_000));
+        assert!(rtt.is_none(), "the pending echo expired after 10s");
+        assert!(tracker.pending_icmp_echoes.is_empty());
+    }
+
+    #[test]
+    fn test_rtt_tracker_pending_icmp_echo_is_capped() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            Protocol::Icmp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 0),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+        );
+
+        for sequence in 0..MAX_PENDING_ICMP_ECHOES as u16 {
+            tracker.record_icmp_echo(key, (7, sequence), true, false, rtt_capture_time(0));
+        }
+        assert_eq!(tracker.pending_icmp_echoes.len(), MAX_PENDING_ICMP_ECHOES);
+
+        let rejected_sequence = MAX_PENDING_ICMP_ECHOES as u16;
+        tracker.record_icmp_echo(
+            key,
+            (7, rejected_sequence),
+            true,
+            false,
+            rtt_capture_time(1),
+        );
+        let rtt = tracker.record_icmp_echo(
+            key,
+            (7, rejected_sequence),
+            false,
+            true,
+            rtt_capture_time(20),
+        );
+        assert!(rtt.is_none(), "an echo rejected at the cap has no timer");
+
+        tracker.record_icmp_echo(key, (7, 42), true, false, rtt_capture_time(1_000));
+        let rtt = tracker.record_icmp_echo(key, (7, 42), false, true, rtt_capture_time(1_009));
+        assert_eq!(rtt, Some(Duration::from_millis(9)));
     }
 
     // ========================================================================

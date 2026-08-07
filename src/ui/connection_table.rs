@@ -61,7 +61,7 @@ pub(in crate::ui) enum ColumnId {
     /// (full), "TCP·HTTPS" (compact), or bare "TCP" when DPI has nothing.
     Application,
     State,
-    /// Smoothed data RTT, falling back to the handshake RTT.
+    /// Best available TCP, QUIC handshake, or ICMP echo RTT.
     Rtt,
     Bandwidth,
 }
@@ -495,10 +495,11 @@ fn application_cell<'a>(conn: &Connection, width: u16, color_cells: bool) -> Cel
     }
 }
 
-/// RTT cell: smoothed data RTT (handshake RTT until samples exist),
-/// right-aligned, colored by the same thresholds as the Details card
-/// (green < 50ms, yellow < 150ms, red above). UDP flows other than QUIC
-/// have nothing measurable and show the placeholder.
+/// RTT cell: best available TCP, QUIC handshake, or ICMP echo RTT,
+/// right-aligned and colored by the same thresholds as the Details card
+/// (green < 50ms, yellow < 150ms, red above). ICMP echo flows use their
+/// latest paired request/reply RTT; protocols without a timing signal show
+/// the placeholder.
 fn rtt_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
     let Some(rtt) = conn.current_rtt() else {
         let line = Line::from(NONE_PLACEHOLDER).right_aligned();

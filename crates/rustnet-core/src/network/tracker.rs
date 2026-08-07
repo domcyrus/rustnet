@@ -4,9 +4,9 @@
 //! managed table of [`Connection`]s. It owns everything needed to turn a stream
 //! of [`ParsedPacket`]s into the same connection view the `rustnet` TUI shows —
 //! the active table, an archive of recently-closed ("historic") connections,
-//! RTT estimation from TCP SYN/SYN-ACK and QUIC handshake timing, QUIC
-//! connection-ID coalescing,
-//! and timeout-based cleanup — **without** any UI, capture, or process-lookup
+//! RTT estimation from TCP, QUIC handshakes, and ICMP echo, plus DNS response
+//! timing, QUIC connection-ID coalescing, and timeout-based cleanup, all
+//! without any UI, capture, or process-lookup
 //! dependency.
 //!
 //! This is the piece that makes headless tools easy: pair a capture source with
@@ -46,7 +46,8 @@ use crate::network::merge::{
 };
 use crate::network::parser::ParsedPacket;
 use crate::network::types::{
-    ApplicationProtocol, Connection, ConnectionKey, Protocol, QuicPacketType, RttTracker,
+    ApplicationProtocol, Connection, ConnectionKey, Protocol, ProtocolState, QuicPacketType,
+    RttTracker,
 };
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
@@ -175,6 +176,9 @@ pub struct IngestOutcome {
     /// The latest completed DNS query→response round trip, if this packet was
     /// a response matching a pending query by transaction ID.
     pub dns_response_time: Option<Duration>,
+    /// The latest completed ICMP echo round trip, if this packet was a reply
+    /// matching an outgoing request by identifier and sequence number.
+    pub icmp_echo_rtt: Option<Duration>,
 }
 
 /// A live, lifecycle-managed table of network connections built from parsed
@@ -287,6 +291,35 @@ impl ConnectionTracker {
             );
         }
 
+        // ICMP echo requests reuse one identifier for the life of a ping
+        // process, so sequence number is part of the key. That allows several
+        // subsecond requests to be pending at once and replies to arrive out of
+        // order without cross-pairing samples.
+        let echo_metadata = match &parsed.protocol_state {
+            ProtocolState::Icmp {
+                icmp_type,
+                icmp_id: Some(identifier),
+                icmp_sequence: Some(sequence),
+            } => match icmp_type {
+                8 | 128 => Some((*identifier, *sequence, false)),
+                0 | 129 => Some((*identifier, *sequence, true)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut icmp_echo_rtt: Option<Duration> = None;
+        if let Some((identifier, sequence, is_reply)) = echo_metadata
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            icmp_echo_rtt = tracker.record_icmp_echo(
+                base_key,
+                (identifier, sequence),
+                parsed.is_outgoing,
+                is_reply,
+                now,
+            );
+        }
+
         // A read guard makes ordinary packet updates atomic with cleanup. The
         // uncommon generation-split path drops it and reacquires a write guard
         // so retained-source readers also see one consistent move.
@@ -308,6 +341,7 @@ impl ConnectionTracker {
                 fast_retransmits: 0,
                 measured_rtt,
                 dns_response_time,
+                icmp_echo_rtt,
             };
         }
 
@@ -317,10 +351,24 @@ impl ConnectionTracker {
             .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
         if starts_new_generation {
             drop(lifecycle);
-            return self.ingest_new_generation(parsed, now, key, measured_rtt, dns_response_time);
+            return self.ingest_new_generation(
+                parsed,
+                now,
+                key,
+                measured_rtt,
+                dns_response_time,
+                icmp_echo_rtt,
+            );
         }
 
-        self.ingest_into_active(parsed, now, key, measured_rtt, dns_response_time)
+        self.ingest_into_active(
+            parsed,
+            now,
+            key,
+            measured_rtt,
+            dns_response_time,
+            icmp_echo_rtt,
+        )
     }
 
     fn ingest_into_active(
@@ -330,6 +378,7 @@ impl ConnectionTracker {
         key: ConnectionKey,
         measured_rtt: Option<Duration>,
         dns_response_time: Option<Duration>,
+        icmp_echo_rtt: Option<Duration>,
     ) -> IngestOutcome {
         // Prevent unbounded growth from port scans or connection floods. Only
         // limit new connections; existing ones always get updated. The fast
@@ -351,6 +400,7 @@ impl ConnectionTracker {
                 fast_retransmits: 0,
                 measured_rtt,
                 dns_response_time,
+                icmp_echo_rtt,
             };
         }
 
@@ -370,6 +420,9 @@ impl ConnectionTracker {
                 if let Some(rtt) = dns_response_time {
                     conn.dns_response_time = Some(rtt);
                 }
+                if let Some(rtt) = icmp_echo_rtt {
+                    conn.icmp_echo_rtt = Some(rtt);
+                }
             })
             .or_insert_with(|| {
                 created = true;
@@ -379,6 +432,9 @@ impl ConnectionTracker {
                 }
                 if let Some(rtt) = dns_response_time {
                     conn.dns_response_time = Some(rtt);
+                }
+                if let Some(rtt) = icmp_echo_rtt {
+                    conn.icmp_echo_rtt = Some(rtt);
                 }
                 conn
             });
@@ -406,6 +462,7 @@ impl ConnectionTracker {
             fast_retransmits: deltas.fast_retransmits,
             measured_rtt,
             dns_response_time,
+            icmp_echo_rtt,
         }
     }
 
@@ -416,6 +473,7 @@ impl ConnectionTracker {
         key: ConnectionKey,
         measured_rtt: Option<Duration>,
         dns_response_time: Option<Duration>,
+        icmp_echo_rtt: Option<Duration>,
     ) -> IngestOutcome {
         let _lifecycle = self
             .lifecycle
@@ -458,6 +516,7 @@ impl ConnectionTracker {
             key,
             measured_rtt,
             dns_response_time,
+            icmp_echo_rtt,
         );
         outcome.archived = archived;
         self.enforce_historic_limit();
@@ -811,8 +870,8 @@ impl ConnectionTracker {
         &self.historic
     }
 
-    /// Average RTT (in milliseconds) over the last `window_secs` seconds of
-    /// SYN/SYN-ACK samples, consuming the samples in that window. `None` if no
+    /// Average network RTT (in milliseconds) over the last `window_secs`
+    /// seconds of handshake, TCP data, and ICMP echo samples. `None` if no
     /// samples are available.
     pub fn take_average_rtt(&self, window_secs: u64) -> Option<f64> {
         self.rtt
@@ -944,6 +1003,33 @@ mod tests {
                     rcode: is_response.then_some(rcode),
                 }),
             }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    fn icmp_echo_packet(
+        identifier: u16,
+        sequence: u16,
+        is_outgoing: bool,
+        is_reply: bool,
+    ) -> ParsedPacket {
+        use crate::network::types::ProtocolState;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Icmp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 0),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+            protocol_state: ProtocolState::Icmp {
+                icmp_type: if is_reply { 0 } else { 8 },
+                icmp_id: Some(identifier),
+                icmp_sequence: Some(sequence),
+            },
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 84,
+            dpi_result: None,
             process_name: None,
             process_id: None,
         }
@@ -1170,6 +1256,61 @@ mod tests {
         tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
         let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 2), capture_time(40));
         assert_eq!(response.dns_response_time, Some(Duration::from_millis(40)));
+    }
+
+    /// Subsecond ping intervals can leave several requests outstanding. The
+    /// sequence number keeps each reply attached to its own send timestamp,
+    /// even when replies complete out of order.
+    #[test]
+    fn fast_ping_pairs_each_echo_by_identifier_and_sequence() {
+        let tracker = ConnectionTracker::new();
+
+        tracker.ingest_at(&icmp_echo_packet(0x1234, 1, true, false), capture_time(0));
+        tracker.ingest_at(&icmp_echo_packet(0x1234, 2, true, false), capture_time(200));
+        let second_reply =
+            tracker.ingest_at(&icmp_echo_packet(0x1234, 2, false, true), capture_time(225));
+        let first_reply =
+            tracker.ingest_at(&icmp_echo_packet(0x1234, 1, false, true), capture_time(350));
+
+        assert_eq!(second_reply.icmp_echo_rtt, Some(Duration::from_millis(25)));
+        assert_eq!(first_reply.icmp_echo_rtt, Some(Duration::from_millis(350)));
+
+        tracker.ingest_at(&icmp_echo_packet(0x1234, 3, true, false), capture_time(400));
+        let third_reply =
+            tracker.ingest_at(&icmp_echo_packet(0x1234, 3, false, true), capture_time(418));
+        let conn = tracker
+            .connections()
+            .get(&third_reply.key)
+            .expect("ping connection should exist")
+            .clone();
+        assert_eq!(third_reply.icmp_echo_rtt, Some(Duration::from_millis(18)));
+        assert_eq!(conn.icmp_echo_rtt, Some(Duration::from_millis(18)));
+        assert_eq!(conn.current_rtt(), Some(Duration::from_millis(18)));
+    }
+
+    #[test]
+    fn echo_reply_with_unknown_sequence_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&icmp_echo_packet(7, 10, true, false), capture_time(0));
+        let reply = tracker.ingest_at(&icmp_echo_packet(7, 11, false, true), capture_time(12));
+
+        assert!(reply.icmp_echo_rtt.is_none());
+        assert!(
+            tracker
+                .connections()
+                .get(&reply.key)
+                .and_then(|conn| conn.icmp_echo_rtt)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn local_echo_responder_turnaround_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&icmp_echo_packet(7, 1, false, false), capture_time(0));
+        let reply = tracker.ingest_at(&icmp_echo_packet(7, 1, true, true), capture_time(1));
+
+        assert!(reply.icmp_echo_rtt.is_none());
     }
 
     /// 1-RTT packets carry a short header with nothing timeable in the clear.

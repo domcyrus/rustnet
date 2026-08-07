@@ -1387,6 +1387,54 @@ mod snapshot_tests {
         );
     }
 
+    /// ICMP echo has an explicit identifier and sequence pair, so it can show
+    /// a real RTT even when requests are sent more often than the UI refreshes.
+    #[test]
+    fn details_tab_ping_shows_echo_rtt_and_sequence() {
+        let app = test_app();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 0);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0);
+        let mut ping = Connection::new(
+            Protocol::Icmp,
+            local,
+            remote,
+            ProtocolState::Icmp {
+                icmp_type: 0,
+                icmp_id: Some(0x1234),
+                icmp_sequence: Some(42),
+            },
+        );
+        ping.process_name = Some("ping".to_string());
+        ping.icmp_echo_rtt = Some(Duration::from_micros(8_700));
+        let connections = vec![ping];
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw ping details");
+        });
+
+        assert!(output.contains("Ping RTT") && output.contains("8.7ms"));
+        assert!(output.contains("Last Sequence") && output.contains("42"));
+        assert!(output.contains("Paired by echo ID and sequence"));
+        assert!(!output.contains("No transport metrics for this protocol"));
+    }
+
     /// The Attribution section repeats PID beside the richer process fields so
     /// the identity remains visible as one self-contained block.
     #[test]
