@@ -1482,6 +1482,57 @@ mod snapshot_tests {
         assert!(output.contains("RTT is timed by the remote sender"));
     }
 
+    /// A STUN flow has no handshake, but request/response pairs share a
+    /// transaction ID, so its Transport Health card shows a real RTT.
+    #[test]
+    fn details_tab_stun_shows_rtt_in_transport_health() {
+        use crate::network::types::{
+            ApplicationProtocol, DpiInfo, StunInfo, StunMessageClass, StunMethod,
+        };
+
+        let app = test_app();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 54_000);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478);
+        let mut stun = Connection::new(Protocol::Udp, local, remote, ProtocolState::Udp);
+        stun.stun_rtt = Some(Duration::from_micros(23_400));
+        stun.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Stun(StunInfo {
+                message_class: StunMessageClass::SuccessResponse,
+                method: StunMethod::Binding,
+                transaction_id: [7u8; 12],
+                software: None,
+            }),
+            last_update_time: std::time::Instant::now(),
+        });
+        let connections = vec![stun];
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw stun details");
+        });
+
+        assert!(output.contains("STUN RTT") && output.contains("23.4ms"));
+        assert!(output.contains("Last Message") && output.contains("Binding Success"));
+        assert!(output.contains("Paired by 96-bit transaction ID"));
+        assert!(!output.contains("No transport metrics for this protocol"));
+    }
+
     /// The Attribution section repeats PID beside the richer process fields so
     /// the identity remains visible as one self-contained block.
     #[test]

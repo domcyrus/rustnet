@@ -179,6 +179,19 @@ pub struct IngestOutcome {
     /// The latest completed ICMP echo round trip, if this packet was a reply
     /// matching an outgoing request by identifier and sequence number.
     pub icmp_echo_rtt: Option<Duration>,
+    /// The latest completed STUN request→response round trip, if this packet
+    /// was a response matching a pending request by transaction ID.
+    pub stun_rtt: Option<Duration>,
+}
+
+/// Timing measurements extracted from one packet, carried together through
+/// the connection-table update into the resulting [`IngestOutcome`].
+#[derive(Clone, Copy, Default)]
+struct PacketTimings {
+    measured_rtt: Option<Duration>,
+    dns_response_time: Option<Duration>,
+    icmp_echo_rtt: Option<Duration>,
+    stun_rtt: Option<Duration>,
 }
 
 /// A live, lifecycle-managed table of network connections built from parsed
@@ -325,6 +338,30 @@ impl ConnectionTracker {
             );
         }
 
+        // STUN requests and responses share a 96-bit transaction ID that
+        // retransmits reuse, so request→response pairing is exact.
+        let mut stun_rtt: Option<Duration> = None;
+        if parsed.protocol == Protocol::Udp
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::Stun(stun) = &dpi.application
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            stun_rtt = tracker.record_stun(
+                base_key,
+                stun.transaction_id,
+                parsed.is_outgoing,
+                stun.message_class,
+                now,
+            );
+        }
+
+        let timings = PacketTimings {
+            measured_rtt,
+            dns_response_time,
+            icmp_echo_rtt,
+            stun_rtt,
+        };
+
         // A read guard makes ordinary packet updates atomic with cleanup. The
         // uncommon generation-split path drops it and reacquires a write guard
         // so retained-source readers also see one consistent move.
@@ -344,9 +381,10 @@ impl ConnectionTracker {
                 retransmits: 0,
                 out_of_order: 0,
                 fast_retransmits: 0,
-                measured_rtt,
-                dns_response_time,
-                icmp_echo_rtt,
+                measured_rtt: timings.measured_rtt,
+                dns_response_time: timings.dns_response_time,
+                icmp_echo_rtt: timings.icmp_echo_rtt,
+                stun_rtt: timings.stun_rtt,
             };
         }
 
@@ -356,24 +394,10 @@ impl ConnectionTracker {
             .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
         if starts_new_generation {
             drop(lifecycle);
-            return self.ingest_new_generation(
-                parsed,
-                now,
-                key,
-                measured_rtt,
-                dns_response_time,
-                icmp_echo_rtt,
-            );
+            return self.ingest_new_generation(parsed, now, key, timings);
         }
 
-        self.ingest_into_active(
-            parsed,
-            now,
-            key,
-            measured_rtt,
-            dns_response_time,
-            icmp_echo_rtt,
-        )
+        self.ingest_into_active(parsed, now, key, timings)
     }
 
     fn ingest_into_active(
@@ -381,9 +405,7 @@ impl ConnectionTracker {
         parsed: &ParsedPacket,
         now: SystemTime,
         key: ConnectionKey,
-        measured_rtt: Option<Duration>,
-        dns_response_time: Option<Duration>,
-        icmp_echo_rtt: Option<Duration>,
+        timings: PacketTimings,
     ) -> IngestOutcome {
         // Prevent unbounded growth from port scans or connection floods. Only
         // limit new connections; existing ones always get updated. The fast
@@ -403,9 +425,10 @@ impl ConnectionTracker {
                 retransmits: 0,
                 out_of_order: 0,
                 fast_retransmits: 0,
-                measured_rtt,
-                dns_response_time,
-                icmp_echo_rtt,
+                measured_rtt: timings.measured_rtt,
+                dns_response_time: timings.dns_response_time,
+                icmp_echo_rtt: timings.icmp_echo_rtt,
+                stun_rtt: timings.stun_rtt,
             };
         }
 
@@ -415,31 +438,37 @@ impl ConnectionTracker {
             .entry(key)
             .and_modify(|conn| {
                 deltas = merge_packet_into_connection(conn, parsed, now);
-                if let Some(rtt) = measured_rtt
+                if let Some(rtt) = timings.measured_rtt
                     && conn.initial_rtt.is_none()
                 {
                     conn.initial_rtt = Some(rtt);
                 }
                 // Last-wins, unlike `initial_rtt`: each completed query
                 // refreshes the displayed response time.
-                if let Some(rtt) = dns_response_time {
+                if let Some(rtt) = timings.dns_response_time {
                     conn.dns_response_time = Some(rtt);
                 }
-                if let Some(rtt) = icmp_echo_rtt {
+                if let Some(rtt) = timings.icmp_echo_rtt {
                     conn.icmp_echo_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.stun_rtt {
+                    conn.stun_rtt = Some(rtt);
                 }
             })
             .or_insert_with(|| {
                 created = true;
                 let mut conn = create_connection_from_packet(parsed, now);
-                if let Some(rtt) = measured_rtt {
+                if let Some(rtt) = timings.measured_rtt {
                     conn.initial_rtt = Some(rtt);
                 }
-                if let Some(rtt) = dns_response_time {
+                if let Some(rtt) = timings.dns_response_time {
                     conn.dns_response_time = Some(rtt);
                 }
-                if let Some(rtt) = icmp_echo_rtt {
+                if let Some(rtt) = timings.icmp_echo_rtt {
                     conn.icmp_echo_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.stun_rtt {
+                    conn.stun_rtt = Some(rtt);
                 }
                 conn
             });
@@ -465,9 +494,10 @@ impl ConnectionTracker {
             retransmits: deltas.retransmits,
             out_of_order: deltas.out_of_order,
             fast_retransmits: deltas.fast_retransmits,
-            measured_rtt,
-            dns_response_time,
-            icmp_echo_rtt,
+            measured_rtt: timings.measured_rtt,
+            dns_response_time: timings.dns_response_time,
+            icmp_echo_rtt: timings.icmp_echo_rtt,
+            stun_rtt: timings.stun_rtt,
         }
     }
 
@@ -476,9 +506,7 @@ impl ConnectionTracker {
         parsed: &ParsedPacket,
         now: SystemTime,
         key: ConnectionKey,
-        measured_rtt: Option<Duration>,
-        dns_response_time: Option<Duration>,
-        icmp_echo_rtt: Option<Duration>,
+        timings: PacketTimings,
     ) -> IngestOutcome {
         let _lifecycle = self
             .lifecycle
@@ -515,14 +543,7 @@ impl ConnectionTracker {
         // waiting to acquire the write guard. Reassociate any visible QUIC ID
         // before creating the replacement.
         self.associate_quic_id(parsed, key);
-        let mut outcome = self.ingest_into_active(
-            parsed,
-            replacement_now,
-            key,
-            measured_rtt,
-            dns_response_time,
-            icmp_echo_rtt,
-        );
+        let mut outcome = self.ingest_into_active(parsed, replacement_now, key, timings);
         outcome.archived = archived;
         self.enforce_historic_limit();
         self.prune_recently_closed(now);
@@ -1359,6 +1380,79 @@ mod tests {
             .get(&inbound.key)
             .and_then(|conn| conn.connection_direction);
         assert_eq!(direction, Some(false), "our reply must not flip it");
+    }
+
+    fn stun_packet(
+        transaction_id: [u8; 12],
+        is_outgoing: bool,
+        class: crate::network::types::StunMessageClass,
+    ) -> ParsedPacket {
+        use crate::network::dpi::DpiResult;
+        use crate::network::types::{ProtocolState, StunInfo, StunMethod};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 54_000),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478),
+            protocol_state: ProtocolState::Udp,
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 48,
+            dpi_result: Some(DpiResult {
+                application: ApplicationProtocol::Stun(StunInfo {
+                    message_class: class,
+                    method: StunMethod::Binding,
+                    transaction_id,
+                    software: None,
+                }),
+            }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// STUN binding requests and responses pair by transaction ID, giving a
+    /// UDP flow with no handshake a real request→response time.
+    #[test]
+    fn stun_binding_response_measures_rtt() {
+        use crate::network::types::StunMessageClass;
+
+        let tracker = ConnectionTracker::new();
+        let txid = [3u8; 12];
+        tracker.ingest_at(
+            &stun_packet(txid, true, StunMessageClass::Request),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &stun_packet(txid, false, StunMessageClass::SuccessResponse),
+            capture_time(31),
+        );
+
+        assert_eq!(response.stun_rtt, Some(Duration::from_millis(31)));
+        let conn = tracker
+            .connections()
+            .get(&response.key)
+            .expect("stun connection should exist")
+            .clone();
+        assert_eq!(conn.stun_rtt, Some(Duration::from_millis(31)));
+    }
+
+    #[test]
+    fn stun_response_with_unknown_transaction_measures_nothing() {
+        use crate::network::types::StunMessageClass;
+
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &stun_packet([3u8; 12], true, StunMessageClass::Request),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &stun_packet([4u8; 12], false, StunMessageClass::SuccessResponse),
+            capture_time(31),
+        );
+
+        assert!(response.stun_rtt.is_none());
     }
 
     /// 1-RTT packets carry a short header with nothing timeable in the clear.
