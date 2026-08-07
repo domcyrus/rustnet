@@ -1533,6 +1533,56 @@ mod snapshot_tests {
         assert!(!output.contains("No transport metrics for this protocol"));
     }
 
+    /// An NTP poll is timeable through the originate timestamp echo, so its
+    /// Transport Health card shows a real RTT plus the server stratum.
+    #[test]
+    fn details_tab_ntp_shows_rtt_in_transport_health() {
+        use crate::network::types::{ApplicationProtocol, DpiInfo, NtpInfo, NtpMode};
+
+        let app = test_app();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 47_000);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123);
+        let mut ntp = Connection::new(Protocol::Udp, local, remote, ProtocolState::Udp);
+        ntp.ntp_rtt = Some(Duration::from_micros(6_500));
+        ntp.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Ntp(NtpInfo {
+                version: 4,
+                mode: NtpMode::Server,
+                stratum: 2,
+                origin_timestamp: 0xAABB,
+                transmit_timestamp: 0xCCDD,
+            }),
+            last_update_time: std::time::Instant::now(),
+        });
+        let connections = vec![ntp];
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw ntp details");
+        });
+
+        assert!(output.contains("NTP RTT") && output.contains("6.5ms"));
+        assert!(output.contains("Stratum"));
+        assert!(output.contains("Paired by originate timestamp echo"));
+        assert!(!output.contains("No transport metrics for this protocol"));
+    }
+
     /// The Attribution section repeats PID beside the richer process fields so
     /// the identity remains visible as one self-contained block.
     #[test]

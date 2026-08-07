@@ -182,6 +182,9 @@ pub struct IngestOutcome {
     /// The latest completed STUN request→response round trip, if this packet
     /// was a response matching a pending request by transaction ID.
     pub stun_rtt: Option<Duration>,
+    /// The latest completed NTP request→response round trip, if this packet
+    /// was a server response echoing a pending client transmit timestamp.
+    pub ntp_rtt: Option<Duration>,
 }
 
 /// Timing measurements extracted from one packet, carried together through
@@ -192,6 +195,7 @@ struct PacketTimings {
     dns_response_time: Option<Duration>,
     icmp_echo_rtt: Option<Duration>,
     stun_rtt: Option<Duration>,
+    ntp_rtt: Option<Duration>,
 }
 
 /// A live, lifecycle-managed table of network connections built from parsed
@@ -355,11 +359,23 @@ impl ConnectionTracker {
             );
         }
 
+        // NTP servers echo the client's transmit timestamp as the originate
+        // timestamp, pairing each poll with its response.
+        let mut ntp_rtt: Option<Duration> = None;
+        if parsed.protocol == Protocol::Udp
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::Ntp(ntp) = &dpi.application
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            ntp_rtt = tracker.record_ntp(base_key, ntp, parsed.is_outgoing, now);
+        }
+
         let timings = PacketTimings {
             measured_rtt,
             dns_response_time,
             icmp_echo_rtt,
             stun_rtt,
+            ntp_rtt,
         };
 
         // A read guard makes ordinary packet updates atomic with cleanup. The
@@ -385,6 +401,7 @@ impl ConnectionTracker {
                 dns_response_time: timings.dns_response_time,
                 icmp_echo_rtt: timings.icmp_echo_rtt,
                 stun_rtt: timings.stun_rtt,
+                ntp_rtt: timings.ntp_rtt,
             };
         }
 
@@ -429,6 +446,7 @@ impl ConnectionTracker {
                 dns_response_time: timings.dns_response_time,
                 icmp_echo_rtt: timings.icmp_echo_rtt,
                 stun_rtt: timings.stun_rtt,
+                ntp_rtt: timings.ntp_rtt,
             };
         }
 
@@ -454,6 +472,9 @@ impl ConnectionTracker {
                 if let Some(rtt) = timings.stun_rtt {
                     conn.stun_rtt = Some(rtt);
                 }
+                if let Some(rtt) = timings.ntp_rtt {
+                    conn.ntp_rtt = Some(rtt);
+                }
             })
             .or_insert_with(|| {
                 created = true;
@@ -469,6 +490,9 @@ impl ConnectionTracker {
                 }
                 if let Some(rtt) = timings.stun_rtt {
                     conn.stun_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.ntp_rtt {
+                    conn.ntp_rtt = Some(rtt);
                 }
                 conn
             });
@@ -498,6 +522,7 @@ impl ConnectionTracker {
             dns_response_time: timings.dns_response_time,
             icmp_echo_rtt: timings.icmp_echo_rtt,
             stun_rtt: timings.stun_rtt,
+            ntp_rtt: timings.ntp_rtt,
         }
     }
 
@@ -1436,6 +1461,63 @@ mod tests {
             .expect("stun connection should exist")
             .clone();
         assert_eq!(conn.stun_rtt, Some(Duration::from_millis(31)));
+    }
+
+    fn ntp_packet(
+        mode: crate::network::types::NtpMode,
+        is_outgoing: bool,
+        origin_timestamp: u64,
+        transmit_timestamp: u64,
+    ) -> ParsedPacket {
+        use crate::network::dpi::DpiResult;
+        use crate::network::types::{NtpInfo, ProtocolState};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 47_000),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123),
+            protocol_state: ProtocolState::Udp,
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 90,
+            dpi_result: Some(DpiResult {
+                application: ApplicationProtocol::Ntp(NtpInfo {
+                    version: 4,
+                    mode,
+                    stratum: 2,
+                    origin_timestamp,
+                    transmit_timestamp,
+                }),
+            }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// An NTP poll pairs with its response through the originate timestamp
+    /// echo, giving the UDP flow a request→response time.
+    #[test]
+    fn ntp_server_response_measures_rtt() {
+        use crate::network::types::NtpMode;
+
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &ntp_packet(NtpMode::Client, true, 0, 0xAABB),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &ntp_packet(NtpMode::Server, false, 0xAABB, 0xCCDD),
+            capture_time(21),
+        );
+
+        assert_eq!(response.ntp_rtt, Some(Duration::from_millis(21)));
+        let conn = tracker
+            .connections()
+            .get(&response.key)
+            .expect("ntp connection should exist")
+            .clone();
+        assert_eq!(conn.ntp_rtt, Some(Duration::from_millis(21)));
     }
 
     #[test]
