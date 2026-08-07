@@ -34,8 +34,8 @@ use crate::network::{
     services::ServiceLookup,
     tracker::{ConnectionTracker, IngestOutcome},
     types::{
-        ApplicationProtocol, Connection, ConnectionKey, ConnectionLifecycleSample, DnsQueryType,
-        GraphScale, ProcessLineage, Protocol, TrafficHistory,
+        AddrKind, ApplicationProtocol, Connection, ConnectionKey, ConnectionLifecycleSample,
+        DnsQueryType, GraphScale, ProcessLineage, Protocol, TrafficHistory,
     },
 };
 
@@ -342,6 +342,15 @@ fn log_connection_event(
         "destination_port": conn.remote_addr.port(),
     });
 
+    // Only emitted for broadcast/multicast endpoints, keeping unicast events
+    // (and consumers of older logs) unchanged.
+    if conn.local_addr_kind != AddrKind::Unicast {
+        event["source_addr_kind"] = json!(conn.local_addr_kind.as_token());
+    }
+    if conn.remote_addr_kind != AddrKind::Unicast {
+        event["destination_addr_kind"] = json!(conn.remote_addr_kind.as_token());
+    }
+
     // Add hostname fields if DNS resolution is enabled and hostnames are resolved
     // Skip ARP connections to avoid feedback loop (DNS lookups generate ARP traffic)
     if let Some(resolver) = dns_resolver.filter(|_| conn.protocol != Protocol::Arp) {
@@ -508,6 +517,15 @@ fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
         "bytes_received": conn.bytes_received,
         "state": conn.state(),
     });
+
+    // Only emitted for broadcast/multicast endpoints, keeping unicast records
+    // (and consumers of older sidecar files) unchanged.
+    if conn.local_addr_kind != AddrKind::Unicast {
+        event["local_addr_kind"] = json!(conn.local_addr_kind.as_token());
+    }
+    if conn.remote_addr_kind != AddrKind::Unicast {
+        event["remote_addr_kind"] = json!(conn.remote_addr_kind.as_token());
+    }
 
     // Per-connection record, so the full executable path is affordable here.
     if let Some(ppid) = conn.process_ppid {
@@ -3620,7 +3638,7 @@ mod connection_lifecycle_tests {
     use super::*;
     use crate::network::{
         protocol::tcp::{TcpFlags, TcpHeaderInfo},
-        types::{ProtocolState, TcpState},
+        types::{AddrKind, ProtocolState, TcpState},
     };
     use std::net::SocketAddr;
     use std::path::{Path, PathBuf};
@@ -3655,6 +3673,8 @@ mod connection_lifecycle_tests {
             protocol: Protocol::Tcp,
             local_addr: SocketAddr::from(([192, 0, 2, 1], 40_000)),
             remote_addr: SocketAddr::from(([198, 51, 100, 1], 443)),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1_000,
                 ack: 0,
@@ -3929,6 +3949,8 @@ mod pcapng_export_tests {
             protocol: Protocol::Tcp,
             local_addr: SocketAddr::from(([192, 0, 2, 9], 41_000)),
             remote_addr: SocketAddr::from(([198, 51, 100, 9], 443)),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1,
                 ack: 0,

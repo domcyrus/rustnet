@@ -3,7 +3,7 @@
 
 use crate::network::parser::ParsedPacket;
 use crate::network::protocol::TransportParams;
-use crate::network::types::{Protocol, ProtocolState};
+use crate::network::types::{AddrKind, Protocol, ProtocolState};
 use std::net::SocketAddr;
 
 /// Parse an ICMP (IPv4) packet
@@ -44,6 +44,9 @@ pub fn parse(
         protocol: Protocol::Icmp,
         local_addr,
         remote_addr,
+        // Overwritten centrally in PacketParser::parse_packet
+        local_addr_kind: AddrKind::Unicast,
+        remote_addr_kind: AddrKind::Unicast,
         tcp_header: None,
         protocol_state: ProtocolState::Icmp { icmp_type, icmp_id },
         is_outgoing,
@@ -92,6 +95,9 @@ pub fn parse_v6(
         protocol: Protocol::Icmp,
         local_addr,
         remote_addr,
+        // Overwritten centrally in PacketParser::parse_packet
+        local_addr_kind: AddrKind::Unicast,
+        remote_addr_kind: AddrKind::Unicast,
         tcp_header: None,
         protocol_state: ProtocolState::Icmp { icmp_type, icmp_id },
         is_outgoing,

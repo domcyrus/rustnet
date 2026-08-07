@@ -24,7 +24,9 @@ use std::{
 };
 
 use crate::network::dns::DnsResolver;
-use crate::network::types::{Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState};
+use crate::network::types::{
+    AddrKind, Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState,
+};
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER,
@@ -467,6 +469,27 @@ fn format_quic_close(close: &crate::network::types::QuicCloseInfo) -> String {
     format!("{} 0x{:x}", origin, close.error_code)
 }
 
+/// Endpoint address with a broadcast/multicast annotation when the address
+/// is a group or broadcast destination rather than an actual host.
+fn annotated_addr(addr: std::net::SocketAddr, kind: AddrKind) -> String {
+    match kind {
+        AddrKind::Broadcast => format!("{addr} (broadcast)"),
+        AddrKind::Multicast => format!("{addr} (multicast)"),
+        AddrKind::Unicast => addr.to_string(),
+    }
+}
+
+/// Scope of the remote endpoint. `bogon::classify` is stateless and cannot
+/// recognize subnet-directed broadcasts (it would report the private range),
+/// so the connection's parser-derived kind overrides it.
+fn remote_scope(conn: &Connection) -> crate::network::bogon::Scope {
+    if conn.remote_addr_kind == AddrKind::Broadcast {
+        crate::network::bogon::Scope::Broadcast
+    } else {
+        crate::network::bogon::classify(conn.remote_addr.ip())
+    }
+}
+
 /// Push a muted explanatory line into a card. Unlike a field row this carries
 /// no label/value pair, so it registers no click-to-copy target.
 fn push_detail_note<'a>(
@@ -845,7 +868,7 @@ pub(in crate::ui) fn draw_connection_details(
         &mut details_text,
         &mut detail_fields,
         "Local Address",
-        conn.local_addr.to_string(),
+        annotated_addr(conn.local_addr, conn.local_addr_kind),
         label_style,
         theme::fg(theme::field_local_addr()),
     );
@@ -853,7 +876,7 @@ pub(in crate::ui) fn draw_connection_details(
         &mut details_text,
         &mut detail_fields,
         "Remote Address",
-        conn.remote_addr.to_string(),
+        annotated_addr(conn.remote_addr, conn.remote_addr_kind),
         label_style,
         theme::fg(theme::field_remote_addr()),
     );
@@ -861,9 +884,7 @@ pub(in crate::ui) fn draw_connection_details(
         &mut details_text,
         &mut detail_fields,
         "Scope",
-        crate::network::bogon::classify(conn.remote_addr.ip())
-            .label()
-            .to_string(),
+        remote_scope(conn).label().to_string(),
         label_style,
         theme::fg(theme::field_remote_addr()),
     );
@@ -2608,5 +2629,45 @@ mod path_shortening_tests {
             super::account_name_from_buffer(unterminated.as_ptr(), &unterminated),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod endpoint_annotation_tests {
+    use super::{annotated_addr, remote_scope};
+    use crate::network::bogon::Scope;
+    use crate::network::types::{AddrKind, Connection, Protocol, ProtocolState};
+
+    #[test]
+    fn addresses_are_annotated_by_kind() {
+        let addr = "192.168.0.255:51234".parse().unwrap();
+        assert_eq!(
+            annotated_addr(addr, AddrKind::Broadcast),
+            "192.168.0.255:51234 (broadcast)"
+        );
+        let addr = "224.0.0.251:5353".parse().unwrap();
+        assert_eq!(
+            annotated_addr(addr, AddrKind::Multicast),
+            "224.0.0.251:5353 (multicast)"
+        );
+        let addr = "192.168.0.52:60236".parse().unwrap();
+        assert_eq!(
+            annotated_addr(addr, AddrKind::Unicast),
+            "192.168.0.52:60236"
+        );
+    }
+
+    #[test]
+    fn scope_reports_broadcast_for_subnet_directed_remote() {
+        let mut conn = Connection::new(
+            Protocol::Udp,
+            "192.168.0.132:138".parse().unwrap(),
+            "192.168.0.255:138".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        // Stateless classification alone would report the private range.
+        assert_eq!(remote_scope(&conn), Scope::Private);
+        conn.remote_addr_kind = AddrKind::Broadcast;
+        assert_eq!(remote_scope(&conn), Scope::Broadcast);
     }
 }

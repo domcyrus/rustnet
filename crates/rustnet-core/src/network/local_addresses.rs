@@ -1,20 +1,66 @@
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-/// Collect every address currently assigned to the host.
+/// Snapshot of the host's assigned addresses plus the IPv4 subnet-directed
+/// broadcast address of every assigned network (e.g. 192.168.0.255 for a /24).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LocalAddresses {
+    pub ips: HashSet<IpAddr>,
+    /// Subnet-directed broadcasts only; the limited broadcast
+    /// (255.255.255.255) needs no prefix knowledge and is handled statelessly.
+    pub v4_broadcasts: HashSet<Ipv4Addr>,
+}
+
+#[cfg(test)]
+impl LocalAddresses {
+    /// Test helper: a snapshot with the given addresses and no broadcast set.
+    pub(crate) fn from_ips(ips: impl IntoIterator<Item = IpAddr>) -> Self {
+        Self {
+            ips: ips.into_iter().collect(),
+            v4_broadcasts: HashSet::new(),
+        }
+    }
+}
+
+/// Directed-broadcast address of `ip`'s subnet, or `None` when the prefix has
+/// no broadcast (/31 point-to-point per RFC 3021, /32 host routes).
+fn v4_subnet_broadcast(ip: Ipv4Addr, prefix: u8) -> Option<Ipv4Addr> {
+    if prefix >= 31 {
+        return None;
+    }
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    Some(Ipv4Addr::from(u32::from(ip) | !mask))
+}
+
+/// Collect every address currently assigned to the host, together with the
+/// broadcast addresses of its IPv4 subnets.
 ///
 /// `pnet_datalink` supplies the portable implementation. Its Windows backend
 /// still uses the IPv4-only `GetAdaptersInfo`, so Windows supplements it with
 /// `GetAdaptersAddresses` to include all IPv4 and IPv6 unicast addresses.
-pub(crate) fn collect_local_ips() -> HashSet<IpAddr> {
-    let mut local_ips = HashSet::new();
+pub(crate) fn collect_local_addresses() -> LocalAddresses {
+    let mut local = LocalAddresses::default();
     for interface in pnet_datalink::interfaces() {
-        local_ips.extend(interface.ips.into_iter().map(|network| network.ip()));
+        for network in interface.ips {
+            let ip = network.ip();
+            local.ips.insert(ip);
+            if let IpAddr::V4(v4) = ip
+                && let Some(broadcast) = v4_subnet_broadcast(v4, network.prefix())
+            {
+                local.v4_broadcasts.insert(broadcast);
+            }
+        }
     }
 
+    // The Windows supplement stays IP-only: its added value is IPv6 (which
+    // has no broadcast concept); IPv4 prefixes are already covered above.
     #[cfg(windows)]
     match windows_unicast_addresses() {
-        Ok(addresses) => local_ips.extend(addresses),
+        Ok(addresses) => local.ips.extend(addresses),
         Err(code) => {
             // Warn once so a persistent failure is visible at default log
             // levels without repeating every refresh interval.
@@ -32,9 +78,9 @@ pub(crate) fn collect_local_ips() -> HashSet<IpAddr> {
         }
     }
 
-    local_ips.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
-    local_ips.insert(IpAddr::V6(Ipv6Addr::LOCALHOST));
-    local_ips
+    local.ips.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
+    local.ips.insert(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    local
 }
 
 #[cfg(windows)]
@@ -135,16 +181,38 @@ mod tests {
 
     #[test]
     fn collector_always_includes_loopback_addresses() {
-        let addresses = collect_local_ips();
-        assert!(addresses.contains(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
-        assert!(addresses.contains(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        let addresses = collect_local_addresses();
+        assert!(addresses.ips.contains(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(addresses.ips.contains(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+    }
+
+    #[test]
+    fn subnet_broadcast_is_derived_from_prefix() {
+        assert_eq!(
+            v4_subnet_broadcast(Ipv4Addr::new(192, 168, 0, 52), 24),
+            Some(Ipv4Addr::new(192, 168, 0, 255))
+        );
+        assert_eq!(
+            v4_subnet_broadcast(Ipv4Addr::new(10, 1, 2, 3), 8),
+            Some(Ipv4Addr::new(10, 255, 255, 255))
+        );
+        assert_eq!(
+            v4_subnet_broadcast(Ipv4Addr::new(0, 0, 0, 0), 0),
+            Some(Ipv4Addr::BROADCAST)
+        );
+    }
+
+    #[test]
+    fn point_to_point_prefixes_have_no_broadcast() {
+        assert_eq!(v4_subnet_broadcast(Ipv4Addr::new(10, 0, 0, 1), 31), None);
+        assert_eq!(v4_subnet_broadcast(Ipv4Addr::new(10, 0, 0, 1), 32), None);
     }
 
     #[cfg(windows)]
     #[test]
     fn combined_snapshot_contains_windows_native_addresses() {
         let native = windows_unicast_addresses().expect("GetAdaptersAddresses should succeed");
-        let combined = collect_local_ips();
+        let combined = collect_local_addresses().ips;
 
         for address in native {
             assert!(

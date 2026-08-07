@@ -2524,12 +2524,41 @@ pub struct K8sInfo {
     pub cgroup_path: Option<String>,
 }
 
+/// Classification of a connection endpoint address. `Broadcast` covers both
+/// the limited broadcast (255.255.255.255) and subnet-directed broadcasts
+/// (e.g. 192.168.0.255 on a /24), which require interface prefix knowledge
+/// and are therefore computed by the packet parser, not derivable from the
+/// address alone. IPv6 has no broadcast, only multicast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AddrKind {
+    #[default]
+    Unicast,
+    Broadcast,
+    Multicast,
+}
+
+impl AddrKind {
+    /// Stable lowercase token for JSON log output.
+    pub fn as_token(self) -> &'static str {
+        match self {
+            AddrKind::Unicast => "unicast",
+            AddrKind::Broadcast => "broadcast",
+            AddrKind::Multicast => "multicast",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Connection {
     // Core identification
     pub protocol: Protocol,
     pub local_addr: SocketAddr,
     pub remote_addr: SocketAddr,
+    /// Kind of the local endpoint address. Broadcast/multicast flows keep the
+    /// group/broadcast address on the local side when the sender is a peer;
+    /// this field lets the UI render that intentionally.
+    pub local_addr_kind: AddrKind,
+    pub remote_addr_kind: AddrKind,
 
     // Protocol state
     pub protocol_state: ProtocolState,
@@ -2639,6 +2668,8 @@ impl Connection {
             protocol,
             local_addr,
             remote_addr,
+            local_addr_kind: AddrKind::default(),
+            remote_addr_kind: AddrKind::default(),
             protocol_state: state,
             pid: None,
             process_ppid: None,

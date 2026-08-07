@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Broadcast/Multicast Endpoint Display**: A broadcast or multicast datagram
+  sent by a peer (e.g. NetBIOS to 192.168.0.255) used to render its
+  destination as a normal-looking Local address. Such endpoints now render as
+  `bcast:PORT` / `mcast:PORT` in the Overview table, the Details tab annotates
+  the full address with `(broadcast)` / `(multicast)`, and the Scope field
+  reports BROADCAST for subnet-directed broadcasts instead of PRIVATE.
+  Interface prefixes are now collected alongside local addresses to recognize
+  each subnet's broadcast address; recognized broadcasts no longer trigger
+  ambiguous-endpoint interface re-enumeration. JSONL logs gain
+  `local_addr_kind`/`remote_addr_kind` (sidecar) and
+  `source_addr_kind`/`destination_addr_kind` (event log) keys, emitted only
+  for non-unicast endpoints
+
 ### Added
 - **DNS Response Time**: Unicast UDP DNS connections now show a transport
   metric in the Details Transport Health card instead of "No transport metrics

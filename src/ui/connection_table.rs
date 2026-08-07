@@ -23,8 +23,10 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Row};
 
+use std::net::SocketAddr;
+
 use crate::network::dns::DnsResolver;
-use crate::network::types::{Connection, Protocol};
+use crate::network::types::{AddrKind, Connection, Protocol};
 use crate::ui::{
     NONE_PLACEHOLDER, SortColumn, UIState, dpi_color,
     format::{format_rate_compact, format_rtt_compact},
@@ -238,10 +240,22 @@ fn service_text<'a>(conn: &'a Connection, ui_state: &UIState) -> Cow<'a, str> {
     }
 }
 
+/// Table cell for an endpoint: broadcast/multicast endpoints render as an
+/// intentional label ("bcast:138", "mcast:5353") instead of an address that
+/// reads like a unicast host; the full address stays visible in Details.
+fn endpoint_display(addr: SocketAddr, kind: AddrKind, max_width: usize) -> String {
+    match kind {
+        AddrKind::Broadcast => format!("bcast:{}", addr.port()),
+        AddrKind::Multicast => format!("mcast:{}", addr.port()),
+        AddrKind::Unicast => truncate_with_ellipsis(&addr.to_string(), max_width),
+    }
+}
+
 /// Remote address (or resolved hostname) with port, fitted to
 /// `max_width` cells. Hostnames keep their port visible when cut
 /// ("host…:443"); raw addresses only ellipsize as a last resort at
-/// very narrow widths.
+/// very narrow widths. Broadcast/multicast endpoints render as labels
+/// and skip hostname resolution.
 fn remote_display(
     conn: &Connection,
     ui_state: &UIState,
@@ -250,6 +264,7 @@ fn remote_display(
 ) -> String {
     if ui_state.show_hostnames
         && conn.protocol != Protocol::Arp
+        && conn.remote_addr_kind == AddrKind::Unicast
         && let Some(resolver) = dns_resolver
         && let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip())
     {
@@ -263,7 +278,7 @@ fn remote_display(
             full
         }
     } else {
-        truncate_with_ellipsis(&conn.remote_addr.to_string(), max_width)
+        endpoint_display(conn.remote_addr, conn.remote_addr_kind, max_width)
     }
 }
 
@@ -409,8 +424,9 @@ pub(in crate::ui) fn connection_row<'a>(
                 col.width as usize,
             ))
             .style(style_if_colored(theme::field_remote_addr())),
-            ColumnId::Local => Cell::from(truncate_with_ellipsis(
-                &conn.local_addr.to_string(),
+            ColumnId::Local => Cell::from(endpoint_display(
+                conn.local_addr,
+                conn.local_addr_kind,
                 col.width as usize,
             ))
             .style(style_if_colored(theme::field_local_addr())),
@@ -739,6 +755,42 @@ mod tests {
         let narrow = remote_display(&conn, &ui_state, None, REMOTE_MIN_WIDTH as usize);
         assert_eq!(narrow.chars().count(), REMOTE_MIN_WIDTH as usize);
         assert!(narrow.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn endpoint_display_labels_broadcast_and_multicast() {
+        let bcast: SocketAddr = "192.168.0.255:138".parse().unwrap();
+        assert_eq!(
+            endpoint_display(bcast, AddrKind::Broadcast, 18),
+            "bcast:138"
+        );
+
+        let mcast: SocketAddr = "224.0.0.251:5353".parse().unwrap();
+        assert_eq!(
+            endpoint_display(mcast, AddrKind::Multicast, 18),
+            "mcast:5353"
+        );
+
+        let unicast: SocketAddr = "192.168.0.52:60236".parse().unwrap();
+        assert_eq!(
+            endpoint_display(unicast, AddrKind::Unicast, 18),
+            "192.168.0.52:60236"
+        );
+        assert!(endpoint_display(unicast, AddrKind::Unicast, 10).ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn remote_display_labels_multicast_instead_of_resolving_hostnames() {
+        let mut conn = Connection::new(
+            Protocol::Udp,
+            "192.168.0.132:5353".parse().unwrap(),
+            "224.0.0.251:5353".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        conn.remote_addr_kind = AddrKind::Multicast;
+        let ui_state = UIState::default();
+
+        assert_eq!(remote_display(&conn, &ui_state, None, 24), "mcast:5353");
     }
 
     #[test]
