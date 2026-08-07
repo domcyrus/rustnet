@@ -28,11 +28,27 @@ pub fn analyze_ntp(payload: &[u8]) -> Option<NtpInfo> {
         return None;
     }
 
+    // A server echoes the client's transmit timestamp back as the originate
+    // timestamp (RFC 5905 §8), which is what pairs a request with its
+    // response for round-trip timing.
+    let origin_timestamp = read_u64(payload, 24);
+    let transmit_timestamp = read_u64(payload, 40);
+
     Some(NtpInfo {
         version,
         mode: NtpMode::from(mode),
         stratum,
+        origin_timestamp,
+        transmit_timestamp,
     })
+}
+
+/// Read a big-endian u64 at `offset`; the caller guarantees the bounds via
+/// the minimum packet size check.
+fn read_u64(payload: &[u8], offset: usize) -> u64 {
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&payload[offset..offset + 8]);
+    u64::from_be_bytes(bytes)
 }
 
 #[cfg(test)]
@@ -54,6 +70,16 @@ mod tests {
         assert_eq!(info.version, 4);
         assert_eq!(info.mode, NtpMode::Client);
         assert_eq!(info.stratum, 0);
+    }
+
+    #[test]
+    fn test_ntp_extracts_origin_and_transmit_timestamps() {
+        let mut packet = build_ntp_packet(4, 4, 2);
+        packet[24..32].copy_from_slice(&0x1122_3344_5566_7788u64.to_be_bytes());
+        packet[40..48].copy_from_slice(&0x99AA_BBCC_DDEE_FF00u64.to_be_bytes());
+        let info = analyze_ntp(&packet).expect("should parse");
+        assert_eq!(info.origin_timestamp, 0x1122_3344_5566_7788);
+        assert_eq!(info.transmit_timestamp, 0x99AA_BBCC_DDEE_FF00);
     }
 
     #[test]

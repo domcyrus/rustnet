@@ -381,8 +381,8 @@ fn log_connection_event(
         event["process_lineage"] = process_lineage_json(lineage);
     }
 
-    // Round-trip estimate: smoothed data RTT, or the handshake RTT before
-    // any data samples exist. One decimal of milliseconds.
+    // Round-trip estimate: smoothed TCP data RTT, a handshake RTT, or the
+    // latest ICMP echo RTT. One decimal of milliseconds.
     if let Some(rtt) = conn.current_rtt() {
         event["rtt_ms"] = json!((rtt.as_secs_f64() * 10_000.0).round() / 10.0);
     }
@@ -529,8 +529,8 @@ fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
         event["process_lineage"] = process_lineage_json(lineage);
     }
 
-    // Round-trip estimate: smoothed data RTT, or the handshake RTT before
-    // any data samples exist. One decimal of milliseconds.
+    // Round-trip estimate: smoothed TCP data RTT, a handshake RTT, or the
+    // latest ICMP echo RTT. One decimal of milliseconds.
     if let Some(rtt) = conn.current_rtt() {
         event["rtt_ms"] = json!((rtt.as_secs_f64() * 10_000.0).round() / 10.0);
     }

@@ -4,9 +4,9 @@
 //! managed table of [`Connection`]s. It owns everything needed to turn a stream
 //! of [`ParsedPacket`]s into the same connection view the `rustnet` TUI shows —
 //! the active table, an archive of recently-closed ("historic") connections,
-//! RTT estimation from TCP SYN/SYN-ACK and QUIC handshake timing, QUIC
-//! connection-ID coalescing,
-//! and timeout-based cleanup — **without** any UI, capture, or process-lookup
+//! RTT estimation from TCP, QUIC handshakes, and ICMP echo, plus DNS response
+//! timing, QUIC connection-ID coalescing, and timeout-based cleanup, all
+//! without any UI, capture, or process-lookup
 //! dependency.
 //!
 //! This is the piece that makes headless tools easy: pair a capture source with
@@ -46,7 +46,8 @@ use crate::network::merge::{
 };
 use crate::network::parser::ParsedPacket;
 use crate::network::types::{
-    ApplicationProtocol, Connection, ConnectionKey, Protocol, QuicPacketType, RttTracker,
+    ApplicationProtocol, Connection, ConnectionKey, Protocol, ProtocolState, QuicPacketType,
+    RttTracker,
 };
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
@@ -175,6 +176,26 @@ pub struct IngestOutcome {
     /// The latest completed DNS query→response round trip, if this packet was
     /// a response matching a pending query by transaction ID.
     pub dns_response_time: Option<Duration>,
+    /// The latest completed ICMP echo round trip, if this packet was a reply
+    /// matching an outgoing request by identifier and sequence number.
+    pub icmp_echo_rtt: Option<Duration>,
+    /// The latest completed STUN request→response round trip, if this packet
+    /// was a response matching a pending request by transaction ID.
+    pub stun_rtt: Option<Duration>,
+    /// The latest completed NTP request→response round trip, if this packet
+    /// was a server response echoing a pending client transmit timestamp.
+    pub ntp_rtt: Option<Duration>,
+}
+
+/// Timing measurements extracted from one packet, carried together through
+/// the connection-table update into the resulting [`IngestOutcome`].
+#[derive(Clone, Copy, Default)]
+struct PacketTimings {
+    measured_rtt: Option<Duration>,
+    dns_response_time: Option<Duration>,
+    icmp_echo_rtt: Option<Duration>,
+    stun_rtt: Option<Duration>,
+    ntp_rtt: Option<Duration>,
 }
 
 /// A live, lifecycle-managed table of network connections built from parsed
@@ -287,6 +308,76 @@ impl ConnectionTracker {
             );
         }
 
+        // ICMP echo requests reuse one identifier for the life of a ping
+        // process, so sequence number is part of the key. That allows several
+        // subsecond requests to be pending at once and replies to arrive out of
+        // order without cross-pairing samples.
+        let echo_metadata = match &parsed.protocol_state {
+            ProtocolState::Icmp {
+                icmp_type,
+                icmp_id: Some(identifier),
+                icmp_sequence: Some(sequence),
+            } => match icmp_type {
+                8 | 128 => Some((*identifier, *sequence, false)),
+                0 | 129 => Some((*identifier, *sequence, true)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut icmp_echo_rtt: Option<Duration> = None;
+        if let Some((identifier, sequence, is_reply)) = echo_metadata
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            // Loopback captures classify the reply as outgoing too (both
+            // endpoints are local), so reclassify it as incoming to let it
+            // match the pending request.
+            let is_outgoing = parsed.is_outgoing
+                && !(is_reply && parsed.local_addr.ip() == parsed.remote_addr.ip());
+            icmp_echo_rtt = tracker.record_icmp_echo(
+                base_key,
+                (identifier, sequence),
+                is_outgoing,
+                is_reply,
+                now,
+            );
+        }
+
+        // STUN requests and responses share a 96-bit transaction ID that
+        // retransmits reuse, so request→response pairing is exact.
+        let mut stun_rtt: Option<Duration> = None;
+        if parsed.protocol == Protocol::Udp
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::Stun(stun) = &dpi.application
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            stun_rtt = tracker.record_stun(
+                base_key,
+                stun.transaction_id,
+                parsed.is_outgoing,
+                stun.message_class,
+                now,
+            );
+        }
+
+        // NTP servers echo the client's transmit timestamp as the originate
+        // timestamp, pairing each poll with its response.
+        let mut ntp_rtt: Option<Duration> = None;
+        if parsed.protocol == Protocol::Udp
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::Ntp(ntp) = &dpi.application
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            ntp_rtt = tracker.record_ntp(base_key, ntp, parsed.is_outgoing, now);
+        }
+
+        let timings = PacketTimings {
+            measured_rtt,
+            dns_response_time,
+            icmp_echo_rtt,
+            stun_rtt,
+            ntp_rtt,
+        };
+
         // A read guard makes ordinary packet updates atomic with cleanup. The
         // uncommon generation-split path drops it and reacquires a write guard
         // so retained-source readers also see one consistent move.
@@ -306,8 +397,11 @@ impl ConnectionTracker {
                 retransmits: 0,
                 out_of_order: 0,
                 fast_retransmits: 0,
-                measured_rtt,
-                dns_response_time,
+                measured_rtt: timings.measured_rtt,
+                dns_response_time: timings.dns_response_time,
+                icmp_echo_rtt: timings.icmp_echo_rtt,
+                stun_rtt: timings.stun_rtt,
+                ntp_rtt: timings.ntp_rtt,
             };
         }
 
@@ -317,10 +411,10 @@ impl ConnectionTracker {
             .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
         if starts_new_generation {
             drop(lifecycle);
-            return self.ingest_new_generation(parsed, now, key, measured_rtt, dns_response_time);
+            return self.ingest_new_generation(parsed, now, key, timings);
         }
 
-        self.ingest_into_active(parsed, now, key, measured_rtt, dns_response_time)
+        self.ingest_into_active(parsed, now, key, timings)
     }
 
     fn ingest_into_active(
@@ -328,8 +422,7 @@ impl ConnectionTracker {
         parsed: &ParsedPacket,
         now: SystemTime,
         key: ConnectionKey,
-        measured_rtt: Option<Duration>,
-        dns_response_time: Option<Duration>,
+        timings: PacketTimings,
     ) -> IngestOutcome {
         // Prevent unbounded growth from port scans or connection floods. Only
         // limit new connections; existing ones always get updated. The fast
@@ -349,8 +442,11 @@ impl ConnectionTracker {
                 retransmits: 0,
                 out_of_order: 0,
                 fast_retransmits: 0,
-                measured_rtt,
-                dns_response_time,
+                measured_rtt: timings.measured_rtt,
+                dns_response_time: timings.dns_response_time,
+                icmp_echo_rtt: timings.icmp_echo_rtt,
+                stun_rtt: timings.stun_rtt,
+                ntp_rtt: timings.ntp_rtt,
             };
         }
 
@@ -360,25 +456,43 @@ impl ConnectionTracker {
             .entry(key)
             .and_modify(|conn| {
                 deltas = merge_packet_into_connection(conn, parsed, now);
-                if let Some(rtt) = measured_rtt
+                if let Some(rtt) = timings.measured_rtt
                     && conn.initial_rtt.is_none()
                 {
                     conn.initial_rtt = Some(rtt);
                 }
                 // Last-wins, unlike `initial_rtt`: each completed query
                 // refreshes the displayed response time.
-                if let Some(rtt) = dns_response_time {
+                if let Some(rtt) = timings.dns_response_time {
                     conn.dns_response_time = Some(rtt);
+                }
+                if let Some(rtt) = timings.icmp_echo_rtt {
+                    conn.icmp_echo_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.stun_rtt {
+                    conn.stun_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.ntp_rtt {
+                    conn.ntp_rtt = Some(rtt);
                 }
             })
             .or_insert_with(|| {
                 created = true;
                 let mut conn = create_connection_from_packet(parsed, now);
-                if let Some(rtt) = measured_rtt {
+                if let Some(rtt) = timings.measured_rtt {
                     conn.initial_rtt = Some(rtt);
                 }
-                if let Some(rtt) = dns_response_time {
+                if let Some(rtt) = timings.dns_response_time {
                     conn.dns_response_time = Some(rtt);
+                }
+                if let Some(rtt) = timings.icmp_echo_rtt {
+                    conn.icmp_echo_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.stun_rtt {
+                    conn.stun_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.ntp_rtt {
+                    conn.ntp_rtt = Some(rtt);
                 }
                 conn
             });
@@ -404,8 +518,11 @@ impl ConnectionTracker {
             retransmits: deltas.retransmits,
             out_of_order: deltas.out_of_order,
             fast_retransmits: deltas.fast_retransmits,
-            measured_rtt,
-            dns_response_time,
+            measured_rtt: timings.measured_rtt,
+            dns_response_time: timings.dns_response_time,
+            icmp_echo_rtt: timings.icmp_echo_rtt,
+            stun_rtt: timings.stun_rtt,
+            ntp_rtt: timings.ntp_rtt,
         }
     }
 
@@ -414,8 +531,7 @@ impl ConnectionTracker {
         parsed: &ParsedPacket,
         now: SystemTime,
         key: ConnectionKey,
-        measured_rtt: Option<Duration>,
-        dns_response_time: Option<Duration>,
+        timings: PacketTimings,
     ) -> IngestOutcome {
         let _lifecycle = self
             .lifecycle
@@ -452,13 +568,7 @@ impl ConnectionTracker {
         // waiting to acquire the write guard. Reassociate any visible QUIC ID
         // before creating the replacement.
         self.associate_quic_id(parsed, key);
-        let mut outcome = self.ingest_into_active(
-            parsed,
-            replacement_now,
-            key,
-            measured_rtt,
-            dns_response_time,
-        );
+        let mut outcome = self.ingest_into_active(parsed, replacement_now, key, timings);
         outcome.archived = archived;
         self.enforce_historic_limit();
         self.prune_recently_closed(now);
@@ -811,8 +921,8 @@ impl ConnectionTracker {
         &self.historic
     }
 
-    /// Average RTT (in milliseconds) over the last `window_secs` seconds of
-    /// SYN/SYN-ACK samples, consuming the samples in that window. `None` if no
+    /// Average network RTT (in milliseconds) over the last `window_secs`
+    /// seconds of handshake, TCP data, and ICMP echo samples. `None` if no
     /// samples are available.
     pub fn take_average_rtt(&self, window_secs: u64) -> Option<f64> {
         self.rtt
@@ -944,6 +1054,33 @@ mod tests {
                     rcode: is_response.then_some(rcode),
                 }),
             }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    fn icmp_echo_packet(
+        identifier: u16,
+        sequence: u16,
+        is_outgoing: bool,
+        is_reply: bool,
+    ) -> ParsedPacket {
+        use crate::network::types::ProtocolState;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Icmp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 0),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+            protocol_state: ProtocolState::Icmp {
+                icmp_type: if is_reply { 0 } else { 8 },
+                icmp_id: Some(identifier),
+                icmp_sequence: Some(sequence),
+            },
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 84,
+            dpi_result: None,
             process_name: None,
             process_id: None,
         }
@@ -1170,6 +1307,234 @@ mod tests {
         tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
         let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 2), capture_time(40));
         assert_eq!(response.dns_response_time, Some(Duration::from_millis(40)));
+    }
+
+    /// Subsecond ping intervals can leave several requests outstanding. The
+    /// sequence number keeps each reply attached to its own send timestamp,
+    /// even when replies complete out of order.
+    #[test]
+    fn fast_ping_pairs_each_echo_by_identifier_and_sequence() {
+        let tracker = ConnectionTracker::new();
+
+        tracker.ingest_at(&icmp_echo_packet(0x1234, 1, true, false), capture_time(0));
+        tracker.ingest_at(&icmp_echo_packet(0x1234, 2, true, false), capture_time(200));
+        let second_reply =
+            tracker.ingest_at(&icmp_echo_packet(0x1234, 2, false, true), capture_time(225));
+        let first_reply =
+            tracker.ingest_at(&icmp_echo_packet(0x1234, 1, false, true), capture_time(350));
+
+        assert_eq!(second_reply.icmp_echo_rtt, Some(Duration::from_millis(25)));
+        assert_eq!(first_reply.icmp_echo_rtt, Some(Duration::from_millis(350)));
+
+        tracker.ingest_at(&icmp_echo_packet(0x1234, 3, true, false), capture_time(400));
+        let third_reply =
+            tracker.ingest_at(&icmp_echo_packet(0x1234, 3, false, true), capture_time(418));
+        let conn = tracker
+            .connections()
+            .get(&third_reply.key)
+            .expect("ping connection should exist")
+            .clone();
+        assert_eq!(third_reply.icmp_echo_rtt, Some(Duration::from_millis(18)));
+        assert_eq!(conn.icmp_echo_rtt, Some(Duration::from_millis(18)));
+        assert_eq!(conn.current_rtt(), Some(Duration::from_millis(18)));
+    }
+
+    #[test]
+    fn echo_reply_with_unknown_sequence_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&icmp_echo_packet(7, 10, true, false), capture_time(0));
+        let reply = tracker.ingest_at(&icmp_echo_packet(7, 11, false, true), capture_time(12));
+
+        assert!(reply.icmp_echo_rtt.is_none());
+        assert!(
+            tracker
+                .connections()
+                .get(&reply.key)
+                .and_then(|conn| conn.icmp_echo_rtt)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn local_echo_responder_turnaround_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&icmp_echo_packet(7, 1, false, false), capture_time(0));
+        let reply = tracker.ingest_at(&icmp_echo_packet(7, 1, true, true), capture_time(1));
+
+        assert!(reply.icmp_echo_rtt.is_none());
+    }
+
+    fn loopback_echo_packet(identifier: u16, sequence: u16, is_reply: bool) -> ParsedPacket {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let mut packet = icmp_echo_packet(identifier, sequence, true, is_reply);
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        packet.local_addr = loopback;
+        packet.remote_addr = loopback;
+        packet
+    }
+
+    /// Loopback captures classify both the request and its reply as outgoing
+    /// because both endpoints are local. The reply must still pair up.
+    #[test]
+    fn loopback_ping_measures_rtt() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&loopback_echo_packet(9, 1, false), capture_time(0));
+        let reply = tracker.ingest_at(&loopback_echo_packet(9, 1, true), capture_time(1));
+
+        assert_eq!(reply.icmp_echo_rtt, Some(Duration::from_millis(1)));
+    }
+
+    /// Echo requests reveal who initiated the flow; the Details tab uses the
+    /// direction to hide the RTT row on flows this host only answers.
+    #[test]
+    fn echo_request_sets_connection_direction() {
+        let tracker = ConnectionTracker::new();
+        let outgoing = tracker.ingest_at(&icmp_echo_packet(7, 1, true, false), capture_time(0));
+        let direction = tracker
+            .connections()
+            .get(&outgoing.key)
+            .and_then(|conn| conn.connection_direction);
+        assert_eq!(direction, Some(true));
+
+        let tracker = ConnectionTracker::new();
+        let inbound = tracker.ingest_at(&icmp_echo_packet(7, 1, false, false), capture_time(0));
+        tracker.ingest_at(&icmp_echo_packet(7, 1, true, true), capture_time(1));
+        let direction = tracker
+            .connections()
+            .get(&inbound.key)
+            .and_then(|conn| conn.connection_direction);
+        assert_eq!(direction, Some(false), "our reply must not flip it");
+    }
+
+    fn stun_packet(
+        transaction_id: [u8; 12],
+        is_outgoing: bool,
+        class: crate::network::types::StunMessageClass,
+    ) -> ParsedPacket {
+        use crate::network::dpi::DpiResult;
+        use crate::network::types::{ProtocolState, StunInfo, StunMethod};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 54_000),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478),
+            protocol_state: ProtocolState::Udp,
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 48,
+            dpi_result: Some(DpiResult {
+                application: ApplicationProtocol::Stun(StunInfo {
+                    message_class: class,
+                    method: StunMethod::Binding,
+                    transaction_id,
+                    software: None,
+                }),
+            }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// STUN binding requests and responses pair by transaction ID, giving a
+    /// UDP flow with no handshake a real request→response time.
+    #[test]
+    fn stun_binding_response_measures_rtt() {
+        use crate::network::types::StunMessageClass;
+
+        let tracker = ConnectionTracker::new();
+        let txid = [3u8; 12];
+        tracker.ingest_at(
+            &stun_packet(txid, true, StunMessageClass::Request),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &stun_packet(txid, false, StunMessageClass::SuccessResponse),
+            capture_time(31),
+        );
+
+        assert_eq!(response.stun_rtt, Some(Duration::from_millis(31)));
+        let conn = tracker
+            .connections()
+            .get(&response.key)
+            .expect("stun connection should exist")
+            .clone();
+        assert_eq!(conn.stun_rtt, Some(Duration::from_millis(31)));
+    }
+
+    fn ntp_packet(
+        mode: crate::network::types::NtpMode,
+        is_outgoing: bool,
+        origin_timestamp: u64,
+        transmit_timestamp: u64,
+    ) -> ParsedPacket {
+        use crate::network::dpi::DpiResult;
+        use crate::network::types::{NtpInfo, ProtocolState};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 47_000),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123),
+            protocol_state: ProtocolState::Udp,
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 90,
+            dpi_result: Some(DpiResult {
+                application: ApplicationProtocol::Ntp(NtpInfo {
+                    version: 4,
+                    mode,
+                    stratum: 2,
+                    origin_timestamp,
+                    transmit_timestamp,
+                }),
+            }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// An NTP poll pairs with its response through the originate timestamp
+    /// echo, giving the UDP flow a request→response time.
+    #[test]
+    fn ntp_server_response_measures_rtt() {
+        use crate::network::types::NtpMode;
+
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &ntp_packet(NtpMode::Client, true, 0, 0xAABB),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &ntp_packet(NtpMode::Server, false, 0xAABB, 0xCCDD),
+            capture_time(21),
+        );
+
+        assert_eq!(response.ntp_rtt, Some(Duration::from_millis(21)));
+        let conn = tracker
+            .connections()
+            .get(&response.key)
+            .expect("ntp connection should exist")
+            .clone();
+        assert_eq!(conn.ntp_rtt, Some(Duration::from_millis(21)));
+    }
+
+    #[test]
+    fn stun_response_with_unknown_transaction_measures_nothing() {
+        use crate::network::types::StunMessageClass;
+
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &stun_packet([3u8; 12], true, StunMessageClass::Request),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &stun_packet([4u8; 12], false, StunMessageClass::SuccessResponse),
+            capture_time(31),
+        );
+
+        assert!(response.stun_rtt.is_none());
     }
 
     /// 1-RTT packets carry a short header with nothing timeable in the clear.
