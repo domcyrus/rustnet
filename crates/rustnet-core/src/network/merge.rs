@@ -260,6 +260,7 @@ pub fn merge_packet_into_connection(
     // connections whose first packet raced interface enumeration.
     conn.local_addr_kind = parsed.local_addr_kind;
     conn.remote_addr_kind = parsed.remote_addr_kind;
+    conn.remote_is_gateway = parsed.remote_is_gateway;
 
     // Update packet counts and bytes
     if parsed.is_outgoing {
@@ -455,6 +456,7 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
     );
     conn.local_addr_kind = parsed.local_addr_kind;
     conn.remote_addr_kind = parsed.remote_addr_kind;
+    conn.remote_is_gateway = parsed.remote_is_gateway;
 
     // Set initial TCP state based on flags if TCP
     if let Some(tcp_header) = parsed.tcp_header {
@@ -1086,6 +1088,7 @@ mod tests {
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
             local_addr_kind: AddrKind::Unicast,
             remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Tcp(TcpState::Unknown),
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1000,
@@ -1214,6 +1217,19 @@ mod tests {
         assert_eq!(conn.local_addr_kind, AddrKind::Unicast);
         merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
         assert_eq!(conn.local_addr_kind, AddrKind::Broadcast);
+    }
+
+    #[test]
+    fn gateway_flag_is_copied_and_refreshed_on_merge() {
+        let mut packet = create_test_packet(false, false);
+        packet.remote_is_gateway = true;
+        let mut conn = create_connection_from_packet(&packet, SystemTime::now());
+        assert!(conn.remote_is_gateway);
+
+        // A route change is reflected by the next packet after the refresh.
+        packet.remote_is_gateway = false;
+        merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
+        assert!(!conn.remote_is_gateway);
     }
 
     #[test]

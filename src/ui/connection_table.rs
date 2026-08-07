@@ -243,11 +243,26 @@ fn service_text<'a>(conn: &'a Connection, ui_state: &UIState) -> Cow<'a, str> {
 /// Table cell for an endpoint: broadcast/multicast endpoints render as an
 /// intentional label ("bcast:138", "mcast:5353") instead of an address that
 /// reads like a unicast host; the full address stays visible in Details.
-fn endpoint_display(addr: SocketAddr, kind: AddrKind, max_width: usize) -> String {
+/// Default-gateway endpoints keep the address visible and gain a "(gw)"
+/// suffix when it fits.
+fn endpoint_display(
+    addr: SocketAddr,
+    kind: AddrKind,
+    is_gateway: bool,
+    max_width: usize,
+) -> String {
     match kind {
         AddrKind::Broadcast => format!("bcast:{}", addr.port()),
         AddrKind::Multicast => format!("mcast:{}", addr.port()),
-        AddrKind::Unicast => truncate_with_ellipsis(&addr.to_string(), max_width),
+        AddrKind::Unicast => {
+            if is_gateway {
+                let with_marker = format!("{addr} (gw)");
+                if with_marker.chars().count() <= max_width {
+                    return with_marker;
+                }
+            }
+            truncate_with_ellipsis(&addr.to_string(), max_width)
+        }
     }
 }
 
@@ -278,7 +293,12 @@ fn remote_display(
             full
         }
     } else {
-        endpoint_display(conn.remote_addr, conn.remote_addr_kind, max_width)
+        endpoint_display(
+            conn.remote_addr,
+            conn.remote_addr_kind,
+            conn.remote_is_gateway,
+            max_width,
+        )
     }
 }
 
@@ -427,6 +447,7 @@ pub(in crate::ui) fn connection_row<'a>(
             ColumnId::Local => Cell::from(endpoint_display(
                 conn.local_addr,
                 conn.local_addr_kind,
+                false,
                 col.width as usize,
             ))
             .style(style_if_colored(theme::field_local_addr())),
@@ -762,22 +783,41 @@ mod tests {
     fn endpoint_display_labels_broadcast_and_multicast() {
         let bcast: SocketAddr = "192.168.0.255:138".parse().unwrap();
         assert_eq!(
-            endpoint_display(bcast, AddrKind::Broadcast, 18),
+            endpoint_display(bcast, AddrKind::Broadcast, false, 18),
             "bcast:138"
         );
 
         let mcast: SocketAddr = "224.0.0.251:5353".parse().unwrap();
         assert_eq!(
-            endpoint_display(mcast, AddrKind::Multicast, 18),
+            endpoint_display(mcast, AddrKind::Multicast, false, 18),
             "mcast:5353"
         );
 
         let unicast: SocketAddr = "192.168.0.52:60236".parse().unwrap();
         assert_eq!(
-            endpoint_display(unicast, AddrKind::Unicast, 18),
+            endpoint_display(unicast, AddrKind::Unicast, false, 18),
             "192.168.0.52:60236"
         );
-        assert!(endpoint_display(unicast, AddrKind::Unicast, 10).ends_with('\u{2026}'));
+        assert!(endpoint_display(unicast, AddrKind::Unicast, false, 10).ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn endpoint_display_marks_gateways_when_width_allows() {
+        let gateway: SocketAddr = "192.168.0.1:34824".parse().unwrap();
+        assert_eq!(
+            endpoint_display(gateway, AddrKind::Unicast, true, 24),
+            "192.168.0.1:34824 (gw)"
+        );
+        // Falls back to the plain address when the marker does not fit.
+        assert_eq!(
+            endpoint_display(gateway, AddrKind::Unicast, true, 18),
+            "192.168.0.1:34824"
+        );
+        // The kind label wins over the gateway marker for non-unicast kinds.
+        assert_eq!(
+            endpoint_display(gateway, AddrKind::Broadcast, true, 24),
+            "bcast:34824"
+        );
     }
 
     #[test]

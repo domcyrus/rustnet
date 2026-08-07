@@ -29,6 +29,9 @@ pub struct ParsedPacket {
     /// (subnet-broadcast detection needs the parser's interface snapshot).
     pub local_addr_kind: AddrKind,
     pub remote_addr_kind: AddrKind,
+    /// Whether the remote endpoint is a default-gateway address, stamped
+    /// centrally alongside the address kinds from the parser's route snapshot.
+    pub remote_is_gateway: bool,
     pub tcp_header: Option<TcpHeaderInfo>, // TCP header info (seq, ack, window, flags)
     pub protocol_state: ProtocolState,
     pub is_outgoing: bool,
@@ -132,6 +135,9 @@ pub struct PacketParser {
     /// Subnet-directed broadcast addresses of the host's IPv4 networks,
     /// refreshed together with `local_ips`.
     v4_broadcasts: std::collections::HashSet<Ipv4Addr>,
+    /// Default-gateway addresses from the host's routing table, refreshed
+    /// together with `local_ips`.
+    gateways: std::collections::HashSet<IpAddr>,
     last_local_ip_refresh: Instant,
     last_ambiguous_endpoint_refresh: Option<Instant>,
     unchanged_ambiguous_refreshes: u32,
@@ -158,6 +164,7 @@ impl PacketParser {
         Self {
             local_ips: local.ips,
             v4_broadcasts: local.v4_broadcasts,
+            gateways: local.gateways,
             last_local_ip_refresh: Instant::now(),
             last_ambiguous_endpoint_refresh: None,
             unchanged_ambiguous_refreshes: 0,
@@ -258,6 +265,8 @@ impl PacketParser {
         let mut parsed = self.parse_packet_link_layer(data)?;
         parsed.local_addr_kind = self.classify_addr(parsed.local_addr.ip());
         parsed.remote_addr_kind = self.classify_addr(parsed.remote_addr.ip());
+        parsed.remote_is_gateway = parsed.remote_addr_kind == AddrKind::Unicast
+            && self.gateways.contains(&parsed.remote_addr.ip());
         Some(parsed)
     }
 
@@ -369,7 +378,10 @@ impl PacketParser {
     {
         let refreshed = collector();
         self.last_local_ip_refresh = Instant::now();
-        if refreshed.ips == self.local_ips && refreshed.v4_broadcasts == self.v4_broadcasts {
+        if refreshed.ips == self.local_ips
+            && refreshed.v4_broadcasts == self.v4_broadcasts
+            && refreshed.gateways == self.gateways
+        {
             return false;
         }
 
@@ -380,6 +392,7 @@ impl PacketParser {
         );
         self.local_ips = refreshed.ips;
         self.v4_broadcasts = refreshed.v4_broadcasts;
+        self.gateways = refreshed.gateways;
         self.unchanged_ambiguous_refreshes = 0;
         true
     }
@@ -675,6 +688,7 @@ impl PacketParser {
             // Overwritten centrally in PacketParser::parse_packet
             local_addr_kind: AddrKind::Unicast,
             remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             tcp_header: None,
             protocol_state: ProtocolState::Arp(arp_info),
             is_outgoing,
@@ -1229,6 +1243,60 @@ mod tests {
         assert!(parsed.is_outgoing);
         assert_eq!(parsed.local_addr_kind, AddrKind::Unicast);
         assert_eq!(parsed.remote_addr_kind, AddrKind::Broadcast);
+    }
+
+    #[test]
+    fn gateway_remote_endpoint_is_stamped() {
+        let mut parser = create_parser_with_linktype(1);
+        parser
+            .gateways
+            .insert(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+
+        // The local host (192.168.1.100) talks to the gateway
+        let packet = ethernet_ipv4_udp([192, 168, 1, 100], [192, 168, 1, 1]);
+        let parsed = parser.parse_packet(&packet).expect("packet should parse");
+        assert_eq!(parsed.remote_addr_kind, AddrKind::Unicast);
+        assert!(parsed.remote_is_gateway);
+
+        // An ordinary peer on the same subnet must not be marked
+        let packet = ethernet_ipv4_udp([192, 168, 1, 100], [192, 168, 1, 52]);
+        let parsed = parser.parse_packet(&packet).expect("packet should parse");
+        assert!(!parsed.remote_is_gateway);
+    }
+
+    #[test]
+    fn broadcast_remote_is_never_marked_as_gateway() {
+        let mut parser = create_parser_with_linktype(1);
+        parser.v4_broadcasts.insert(Ipv4Addr::new(192, 168, 1, 255));
+        parser
+            .gateways
+            .insert(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)));
+
+        let packet = ethernet_ipv4_udp([192, 168, 1, 100], [192, 168, 1, 255]);
+        let parsed = parser.parse_packet(&packet).expect("packet should parse");
+        assert_eq!(parsed.remote_addr_kind, AddrKind::Broadcast);
+        assert!(!parsed.remote_is_gateway);
+    }
+
+    #[test]
+    fn refresh_picks_up_gateway_changes() {
+        let mut parser = create_parser_with_linktype(1);
+        parser.local_ips = [IpAddr::V4(Ipv4Addr::LOCALHOST)].into_iter().collect();
+        parser.v4_broadcasts.clear();
+        parser.gateways.clear();
+        let gateway = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let collector =
+            || LocalAddresses::from_ips([IpAddr::V4(Ipv4Addr::LOCALHOST)]).with_gateways([gateway]);
+
+        assert!(
+            parser.refresh_local_ips_with(collector),
+            "a gateway-only change must count as a snapshot change"
+        );
+        assert!(parser.gateways.contains(&gateway));
+        assert!(
+            !parser.refresh_local_ips_with(collector),
+            "an unchanged snapshot must not report a change"
+        );
     }
 
     #[test]

@@ -50,6 +50,7 @@ pub fn parse(
         // Overwritten centrally in PacketParser::parse_packet
         local_addr_kind: AddrKind::Unicast,
         remote_addr_kind: AddrKind::Unicast,
+        remote_is_gateway: false,
         tcp_header: None,
         protocol_state: ProtocolState::Udp,
         is_outgoing,

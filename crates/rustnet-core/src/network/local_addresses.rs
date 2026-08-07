@@ -1,3 +1,4 @@
+use crate::network::gateway;
 use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -9,16 +10,27 @@ pub(crate) struct LocalAddresses {
     /// Subnet-directed broadcasts only; the limited broadcast
     /// (255.255.255.255) needs no prefix knowledge and is handled statelessly.
     pub v4_broadcasts: HashSet<Ipv4Addr>,
+    /// Next-hop addresses of the host's default routes, refreshed together
+    /// with the interface addresses.
+    pub gateways: HashSet<IpAddr>,
 }
 
 #[cfg(test)]
 impl LocalAddresses {
-    /// Test helper: a snapshot with the given addresses and no broadcast set.
+    /// Test helper: a snapshot with the given addresses and no broadcast or
+    /// gateway sets.
     pub(crate) fn from_ips(ips: impl IntoIterator<Item = IpAddr>) -> Self {
         Self {
             ips: ips.into_iter().collect(),
             v4_broadcasts: HashSet::new(),
+            gateways: HashSet::new(),
         }
+    }
+
+    /// Test helper: the snapshot with the given default-gateway addresses.
+    pub(crate) fn with_gateways(mut self, gateways: impl IntoIterator<Item = IpAddr>) -> Self {
+        self.gateways = gateways.into_iter().collect();
+        self
     }
 }
 
@@ -80,6 +92,7 @@ pub(crate) fn collect_local_addresses() -> LocalAddresses {
 
     local.ips.insert(IpAddr::V4(Ipv4Addr::LOCALHOST));
     local.ips.insert(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    local.gateways = gateway::default_gateways();
     local
 }
 
