@@ -34,6 +34,8 @@ fn make_parsed_packet() -> rustnet_monitor::network::parser::ParsedPacket {
         protocol: Protocol::Tcp,
         local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321),
         remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
+        local_addr_kind: AddrKind::Unicast,
+        remote_addr_kind: AddrKind::Unicast,
         tcp_header: Some(TcpHeaderInfo {
             seq: 1000,
             ack: 2000,

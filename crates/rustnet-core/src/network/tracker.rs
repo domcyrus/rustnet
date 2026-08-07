@@ -977,13 +977,15 @@ mod tests {
 
     fn tcp_packet(syn: bool, ack: bool, fin: bool, rst: bool, is_outgoing: bool) -> ParsedPacket {
         use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
-        use crate::network::types::{ProtocolState, TcpState};
+        use crate::network::types::{AddrKind, ProtocolState, TcpState};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         ParsedPacket {
             protocol: Protocol::Tcp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
             protocol_state: ProtocolState::Tcp(TcpState::Unknown),
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1_000,
@@ -1009,7 +1011,7 @@ mod tests {
 
     fn quic_packet(packet_type: QuicPacketType, is_outgoing: bool) -> ParsedPacket {
         use crate::network::dpi::DpiResult;
-        use crate::network::types::{ProtocolState, QuicInfo};
+        use crate::network::types::{AddrKind, ProtocolState, QuicInfo};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         let mut quic = QuicInfo::new(1);
@@ -1019,6 +1021,8 @@ mod tests {
             protocol: Protocol::Udp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
             protocol_state: ProtocolState::Udp,
             tcp_header: None,
             is_outgoing,
@@ -1033,13 +1037,15 @@ mod tests {
 
     fn dns_packet(txid: u16, is_outgoing: bool, is_response: bool, rcode: u8) -> ParsedPacket {
         use crate::network::dpi::DpiResult;
-        use crate::network::types::{DnsInfo, DnsQueryType, ProtocolState};
+        use crate::network::types::{AddrKind, DnsInfo, DnsQueryType, ProtocolState};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         ParsedPacket {
             protocol: Protocol::Udp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 53),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
             protocol_state: ProtocolState::Udp,
             tcp_header: None,
             is_outgoing,

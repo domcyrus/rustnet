@@ -16,6 +16,8 @@ fn make_packet(flow: u16, seq: u32) -> ParsedPacket {
         protocol: Protocol::Tcp,
         local_addr,
         remote_addr,
+        local_addr_kind: AddrKind::Unicast,
+        remote_addr_kind: AddrKind::Unicast,
         tcp_header: Some(TcpHeaderInfo {
             seq,
             ack: seq.wrapping_add(1),

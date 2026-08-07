@@ -2,7 +2,7 @@
 
 use crate::network::parser::ParsedPacket;
 use crate::network::protocol::TransportParams;
-use crate::network::types::{Protocol, ProtocolState};
+use crate::network::types::{AddrKind, Protocol, ProtocolState};
 use std::net::{Ipv4Addr, SocketAddr};
 
 /// Parse an IGMP packet
@@ -62,6 +62,9 @@ pub fn parse(
         protocol: Protocol::Igmp,
         local_addr,
         remote_addr,
+        // Overwritten centrally in PacketParser::parse_packet
+        local_addr_kind: AddrKind::Unicast,
+        remote_addr_kind: AddrKind::Unicast,
         tcp_header: None,
         protocol_state: ProtocolState::Igmp {
             igmp_type,
