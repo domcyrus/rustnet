@@ -2716,6 +2716,9 @@ pub struct Connection {
     /// this field lets the UI render that intentionally.
     pub local_addr_kind: AddrKind,
     pub remote_addr_kind: AddrKind,
+    /// Whether the remote endpoint is a default-gateway address from the
+    /// host's routing table at the time the last packet was observed.
+    pub remote_is_gateway: bool,
 
     // Protocol state
     pub protocol_state: ProtocolState,
@@ -2839,6 +2842,7 @@ impl Connection {
             remote_addr,
             local_addr_kind: AddrKind::default(),
             remote_addr_kind: AddrKind::default(),
+            remote_is_gateway: false,
             protocol_state: state,
             pid: None,
             process_ppid: None,

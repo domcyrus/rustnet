@@ -479,6 +479,15 @@ fn annotated_addr(addr: std::net::SocketAddr, kind: AddrKind) -> String {
     }
 }
 
+/// Remote address annotated like `annotated_addr`, plus a gateway marker when
+/// the endpoint is the host's default gateway (router).
+fn annotated_remote_addr(addr: std::net::SocketAddr, kind: AddrKind, is_gateway: bool) -> String {
+    if is_gateway && kind == AddrKind::Unicast {
+        return format!("{addr} (gateway)");
+    }
+    annotated_addr(addr, kind)
+}
+
 /// Scope of the remote endpoint. `bogon::classify` is stateless and cannot
 /// recognize subnet-directed broadcasts (it would report the private range),
 /// so the connection's parser-derived kind overrides it.
@@ -876,7 +885,11 @@ pub(in crate::ui) fn draw_connection_details(
         &mut details_text,
         &mut detail_fields,
         "Remote Address",
-        annotated_addr(conn.remote_addr, conn.remote_addr_kind),
+        annotated_remote_addr(
+            conn.remote_addr,
+            conn.remote_addr_kind,
+            conn.remote_is_gateway,
+        ),
         label_style,
         theme::fg(theme::field_remote_addr()),
     );
@@ -2794,7 +2807,7 @@ mod path_shortening_tests {
 
 #[cfg(test)]
 mod endpoint_annotation_tests {
-    use super::{annotated_addr, remote_scope};
+    use super::{annotated_addr, annotated_remote_addr, remote_scope};
     use crate::network::bogon::Scope;
     use crate::network::types::{AddrKind, Connection, Protocol, ProtocolState};
 
@@ -2814,6 +2827,24 @@ mod endpoint_annotation_tests {
         assert_eq!(
             annotated_addr(addr, AddrKind::Unicast),
             "192.168.0.52:60236"
+        );
+    }
+
+    #[test]
+    fn remote_addresses_are_annotated_as_gateway() {
+        let addr = "192.168.0.1:34824".parse().unwrap();
+        assert_eq!(
+            annotated_remote_addr(addr, AddrKind::Unicast, true),
+            "192.168.0.1:34824 (gateway)"
+        );
+        assert_eq!(
+            annotated_remote_addr(addr, AddrKind::Unicast, false),
+            "192.168.0.1:34824"
+        );
+        // The kind annotation wins over the gateway marker.
+        assert_eq!(
+            annotated_remote_addr(addr, AddrKind::Broadcast, true),
+            "192.168.0.1:34824 (broadcast)"
         );
     }
 

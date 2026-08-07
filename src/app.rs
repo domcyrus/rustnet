@@ -350,6 +350,9 @@ fn log_connection_event(
     if conn.remote_addr_kind != AddrKind::Unicast {
         event["destination_addr_kind"] = json!(conn.remote_addr_kind.as_token());
     }
+    if conn.remote_is_gateway {
+        event["destination_is_gateway"] = json!(true);
+    }
 
     // Add hostname fields if DNS resolution is enabled and hostnames are resolved
     // Skip ARP connections to avoid feedback loop (DNS lookups generate ARP traffic)
@@ -525,6 +528,9 @@ fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
     }
     if conn.remote_addr_kind != AddrKind::Unicast {
         event["remote_addr_kind"] = json!(conn.remote_addr_kind.as_token());
+    }
+    if conn.remote_is_gateway {
+        event["remote_is_gateway"] = json!(true);
     }
 
     // Per-connection record, so the full executable path is affordable here.
@@ -3675,6 +3681,7 @@ mod connection_lifecycle_tests {
             remote_addr: SocketAddr::from(([198, 51, 100, 1], 443)),
             local_addr_kind: AddrKind::Unicast,
             remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1_000,
                 ack: 0,
@@ -3951,6 +3958,7 @@ mod pcapng_export_tests {
             remote_addr: SocketAddr::from(([198, 51, 100, 9], 443)),
             local_addr_kind: AddrKind::Unicast,
             remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1,
                 ack: 0,

@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **Default Gateway Marker**: Connections whose remote endpoint is the host's
+  default gateway (the local router) are now marked. The Overview Remote
+  column appends `(gw)` when it fits, the Details tab annotates the remote
+  address with `(gateway)`, and JSONL logs gain `remote_is_gateway` (sidecar)
+  and `destination_is_gateway` (event log) keys, emitted only when true.
+  Gateways are read from the OS routing table (`/proc/net/route` and
+  `/proc/net/ipv6_route` on Linux, a `PF_ROUTE` sysctl dump on macOS/FreeBSD,
+  `GetIpForwardTable2` on Windows) and refreshed with the local-address
+  snapshot, so VPN or network changes are picked up
 - **NTP RTT**: NTP client connections now show the latest request→response
   round trip in the Details Transport Health card, along with the server
   stratum. Polls pair with responses through the originate timestamp echo

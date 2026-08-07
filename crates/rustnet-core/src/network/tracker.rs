@@ -986,6 +986,7 @@ mod tests {
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
             local_addr_kind: AddrKind::Unicast,
             remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Tcp(TcpState::Unknown),
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1_000,
@@ -1023,6 +1024,7 @@ mod tests {
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
             local_addr_kind: AddrKind::Unicast,
             remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Udp,
             tcp_header: None,
             is_outgoing,
@@ -1046,6 +1048,7 @@ mod tests {
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 53),
             local_addr_kind: AddrKind::Unicast,
             remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Udp,
             tcp_header: None,
             is_outgoing,
@@ -1071,13 +1074,16 @@ mod tests {
         is_outgoing: bool,
         is_reply: bool,
     ) -> ParsedPacket {
-        use crate::network::types::ProtocolState;
+        use crate::network::types::{AddrKind, ProtocolState};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         ParsedPacket {
             protocol: Protocol::Icmp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 0),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Icmp {
                 icmp_type: if is_reply { 0 } else { 8 },
                 icmp_id: Some(identifier),
@@ -1419,13 +1425,16 @@ mod tests {
         class: crate::network::types::StunMessageClass,
     ) -> ParsedPacket {
         use crate::network::dpi::DpiResult;
-        use crate::network::types::{ProtocolState, StunInfo, StunMethod};
+        use crate::network::types::{AddrKind, ProtocolState, StunInfo, StunMethod};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         ParsedPacket {
             protocol: Protocol::Udp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 54_000),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Udp,
             tcp_header: None,
             is_outgoing,
@@ -1476,13 +1485,16 @@ mod tests {
         transmit_timestamp: u64,
     ) -> ParsedPacket {
         use crate::network::dpi::DpiResult;
-        use crate::network::types::{NtpInfo, ProtocolState};
+        use crate::network::types::{AddrKind, NtpInfo, ProtocolState};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         ParsedPacket {
             protocol: Protocol::Udp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 47_000),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Udp,
             tcp_header: None,
             is_outgoing,
