@@ -784,7 +784,7 @@ pub(in crate::ui) fn draw_connection_details(
 
     // Unlike regular sections, the first card starts without a blank separator.
     // Together with the fixed Network Context card below this gives the left
-    // dashboard column a stable 17-row footprint.
+    // dashboard column a stable 19-row footprint.
     details_text.push(Line::from(Span::styled(
         "Connection",
         theme::bold_fg(theme::heading()),
@@ -918,6 +918,28 @@ pub(in crate::ui) fn draw_connection_details(
         })
         .unwrap_or((None, None));
 
+    // MAC + vendor from the ARP-learned neighbor cache. Present only for
+    // on-link addresses that appeared in an ARP exchange, so a public remote
+    // can never show the router's identity. ARP connections keep their
+    // placeholders; the Application card already shows both MACs.
+    let (local_mac, remote_mac) = if conn.protocol == Protocol::Arp {
+        (None, None)
+    } else {
+        (
+            ctx.app.lookup_neighbor(conn.local_addr.ip()),
+            ctx.app.lookup_neighbor(conn.remote_addr.ip()),
+        )
+    };
+    let format_mac = |entry: crate::network::neighbors::NeighborEntry| {
+        if let Some(vendor) = entry.vendor {
+            format!("{} ({})", entry.mac, vendor)
+        } else if crate::network::oui::is_locally_administered(&entry.mac) {
+            format!("{} (locally administered)", entry.mac)
+        } else {
+            entry.mac
+        }
+    };
+
     let country = conn
         .geoip_info
         .as_ref()
@@ -967,8 +989,28 @@ pub(in crate::ui) fn draw_connection_details(
     push_detail_field_styled(
         &mut details_text,
         &mut detail_fields,
+        "Local MAC",
+        local_mac
+            .map(format_mac)
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+        theme::fg(theme::field_local_addr()),
+    );
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
         "Remote Hostname",
         remote_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+        theme::fg(theme::field_remote_addr()),
+    );
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "Remote MAC",
+        remote_mac
+            .map(format_mac)
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
         label_style,
         theme::fg(theme::field_remote_addr()),
     );

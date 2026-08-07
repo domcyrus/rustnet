@@ -27,6 +27,7 @@ use crate::network::{
     interface_stats::{
         InterfaceRates, InterfaceStats, InterfaceStatsProvider, InterfaceTrafficWindow,
     },
+    neighbors::NeighborEntry,
     oui::OuiLookup,
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
@@ -1516,7 +1517,7 @@ impl App {
                         let mut parser = PacketParser::with_config(parser_config.clone())
                             .with_linktype(linktype);
                         if let Some(ref oui) = oui_lookup {
-                            parser = parser.with_oui_lookup((**oui).clone());
+                            parser = parser.with_oui_lookup(Arc::clone(oui));
                         }
                         break parser;
                     }
@@ -2959,6 +2960,11 @@ impl App {
         self.dns_resolver.is_some()
     }
 
+    /// The ARP-learned MAC/vendor mapping for `ip`, if one has been observed.
+    pub fn lookup_neighbor(&self, ip: std::net::IpAddr) -> Option<NeighborEntry> {
+        self.tracker.neighbor(&ip)
+    }
+
     /// Get GeoIP database availability status.
     /// Returns (has_location, has_asn, has_city) where has_location is true when
     /// either the country or city database is loaded.
@@ -2991,6 +2997,12 @@ impl App {
     #[cfg(test)]
     pub(crate) fn set_loading_for_test(&self, value: bool) {
         self.is_loading.store(value, Ordering::Relaxed);
+    }
+
+    /// Seed the tracker's neighbor cache through a real ARP ingest. Tests only.
+    #[cfg(test)]
+    pub(crate) fn ingest_packet_for_test(&self, parsed: &ParsedPacket) {
+        self.tracker.ingest(parsed);
     }
 
     /// Override the current interface label. Tests only.

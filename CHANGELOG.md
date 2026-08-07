@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **LAN Device Identification**: The Details tab's Network Context card shows
+  Local MAC and Remote MAC rows with the OUI vendor (e.g. "Apple, Inc."),
+  backed by a neighbor cache that passively learns IP-to-MAC mappings from
+  observed ARP traffic. Only on-link addresses (LAN devices and the gateway)
+  ever populate, since ARP does not cross routers; randomized MACs are labeled
+  "locally administered". IPv6 (NDP) learning is a possible follow-up
 - **DNS Response Time**: Unicast UDP DNS connections now show a transport
   metric in the Details Transport Health card instead of "No transport metrics
   for this protocol". Queries and responses are paired by their 16-bit
@@ -73,6 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Shared OUI Database**: The OUI vendor table is now shared between
+  packet-processor threads via `Arc` instead of being cloned per thread,
+  saving roughly 10 MB of memory
 - **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF
   trampoline programs (fentry/fexit) and falls back to legacy kprobes and then procfs,
   choosing the backend from actual BTF, load, and attach results rather than the

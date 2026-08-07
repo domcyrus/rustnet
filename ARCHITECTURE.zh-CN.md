@@ -403,7 +403,7 @@ RustNet 在编译时嵌入静态查找数据库，避免运行时文件依赖。
 
 ### OUI 厂商数据库（`crates/rustnet-core/assets/oui.gz`）
 
-IEEE MA-L OUI 前缀到厂商的映射，用于 MAC 地址厂商解析（例如 `00:1B:63` -> Apple）。Gzip 压缩以减小二进制体积（压缩后约 400KB，原始约 1.2MB）。由 `crates/rustnet-core/src/network/oui.rs` 中的 `OuiLookup` 使用 `include_bytes!` + `flate2` 在启动时解压。
+IEEE MA-L OUI 前缀到厂商的映射，用于 MAC 地址厂商解析（例如 `00:1B:63` -> Apple）。Gzip 压缩以减小二进制体积（压缩后约 400KB，原始约 1.2MB）。由 `crates/rustnet-core/src/network/oui.rs` 中的 `OuiLookup` 使用 `include_bytes!` + `flate2` 在启动时解压。用于 ARP 连接以及详情页的本地/远程 MAC 行，后者由一个邻居缓存（`crates/rustnet-core/src/network/neighbors.rs`）支撑，该缓存从观察到的 ARP 流量中被动学习 IP 到 MAC 的映射。由于 ARP 不会跨越路由器，缓存只会标注链路内地址（局域网设备和网关），绝不会标注公网远端。
 
 GitHub Action（`.github/workflows/update-oui.yml`）每月从 [IEEE 公开数据库](https://standards-oui.ieee.org/oui/oui.txt) 更新此文件，如有变更则自动打开 PR。
 

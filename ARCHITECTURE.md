@@ -410,7 +410,7 @@ Port-to-service-name mappings (e.g., 80/tcp -> http). Loaded by `ServiceLookup` 
 
 ### OUI Vendor Database (`crates/rustnet-core/assets/oui.gz`)
 
-IEEE MA-L OUI prefix-to-vendor mappings for MAC address vendor resolution (e.g., `00:1B:63` -> Apple). Gzip-compressed to reduce binary size (~400KB compressed vs ~1.2MB raw). Decompressed at startup by `OuiLookup` in `crates/rustnet-core/src/network/oui.rs` using `include_bytes!` + `flate2`. Currently used for ARP connections only.
+IEEE MA-L OUI prefix-to-vendor mappings for MAC address vendor resolution (e.g., `00:1B:63` -> Apple). Gzip-compressed to reduce binary size (~400KB compressed vs ~1.2MB raw). Decompressed at startup by `OuiLookup` in `crates/rustnet-core/src/network/oui.rs` using `include_bytes!` + `flate2`. Used for ARP connections and for the Local/Remote MAC rows in the Details tab, which are backed by a neighbor cache (`crates/rustnet-core/src/network/neighbors.rs`) that passively learns IP-to-MAC mappings from observed ARP traffic. Because ARP never crosses a router, the cache only ever labels on-link addresses (LAN devices and the gateway), never public remotes.
 
 A GitHub Action (`.github/workflows/update-oui.yml`) updates this file monthly from the [IEEE public database](https://standards-oui.ieee.org/oui/oui.txt) and opens a PR if there are changes.
 
