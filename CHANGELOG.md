@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the Overview RTT column and the Details Transport Health card. Requests
   and replies are paired by identifier and sequence number using per-packet
   capture timestamps, so overlapping or reordered exchanges from commands such
-  as `ping 8.8.8.8 -i .2` remain distinct. Pending requests expire after 10
-  seconds and have a hard cap
+  as `ping 8.8.8.8 -i .2` remain distinct. Loopback pings are timed too, and
+  inbound echo flows skip the RTT row since only the remote sender can measure
+  it. Pending requests expire after 10 seconds and have a hard cap
 - **DNS Response Time**: Unicast UDP DNS connections now show a transport
   metric in the Details Transport Health card instead of "No transport metrics
   for this protocol". Queries and responses are paired by their 16-bit

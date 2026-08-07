@@ -1435,6 +1435,53 @@ mod snapshot_tests {
         assert!(!output.contains("No transport metrics for this protocol"));
     }
 
+    /// Inbound pings are answered here but timed by the remote sender, so the
+    /// responder view drops the Ping RTT row instead of showing a permanent
+    /// placeholder.
+    #[test]
+    fn details_tab_inbound_ping_hides_rtt_row() {
+        let app = test_app();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 0);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 0);
+        let mut ping = Connection::new(
+            Protocol::Icmp,
+            local,
+            remote,
+            ProtocolState::Icmp {
+                icmp_type: 8,
+                icmp_id: Some(0x0042),
+                icmp_sequence: Some(4242),
+            },
+        );
+        ping.connection_direction = Some(false);
+        let connections = vec![ping];
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw inbound ping details");
+        });
+
+        assert!(!output.contains("Ping RTT"));
+        assert!(output.contains("Last Sequence") && output.contains("4242"));
+        assert!(output.contains("RTT is timed by the remote sender"));
+    }
+
     /// The Attribution section repeats PID beside the richer process fields so
     /// the identity remains visible as one self-contained block.
     #[test]

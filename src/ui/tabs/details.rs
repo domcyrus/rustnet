@@ -1927,6 +1927,9 @@ pub(in crate::ui) fn draw_connection_details(
             "Timed by pairing query and response IDs",
         );
     } else if let Some(sequence) = icmp_echo_sequence {
+        // A flow the remote side initiated is only ever answered here, so
+        // there is no round trip to measure and no point in a placeholder.
+        let is_responder = conn.connection_direction == Some(false);
         if let Some(rtt) = conn.icmp_echo_rtt {
             let rtt_ms = rtt.as_secs_f64() * 1000.0;
             let rtt_color = if rtt_ms < 50.0 {
@@ -1944,7 +1947,7 @@ pub(in crate::ui) fn draw_connection_details(
                 label_style,
                 theme::fg(rtt_color),
             );
-        } else {
+        } else if !is_responder {
             push_detail_field(
                 &mut details_text,
                 &mut detail_fields,
@@ -1965,7 +1968,11 @@ pub(in crate::ui) fn draw_connection_details(
         push_detail_note(
             &mut details_text,
             &mut detail_fields,
-            "Paired by echo ID and sequence",
+            if is_responder {
+                "Inbound echo: RTT is timed by the remote sender"
+            } else {
+                "Paired by echo ID and sequence"
+            },
         );
     } else if !show_rtt {
         // Nothing on a bare UDP or non-echo ICMP flow is timeable or

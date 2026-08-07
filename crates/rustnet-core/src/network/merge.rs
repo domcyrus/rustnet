@@ -320,6 +320,12 @@ pub fn merge_packet_into_connection(
                 conn.protocol_state = parsed.protocol_state.clone();
             }
         }
+
+        // A flow first seen mid-capture starts with an unknown direction;
+        // a later echo request still settles who initiated it.
+        if conn.connection_direction.is_none() {
+            conn.connection_direction = icmp_echo_direction(parsed);
+        }
     }
 
     // Update DPI info if available
@@ -420,6 +426,20 @@ pub fn merge_packet_into_connection(
     tcp_events
 }
 
+/// Flow direction from an ICMP echo request: whoever sends the request
+/// initiated the flow. Replies are ignored because loopback captures see
+/// them as outgoing too, which would misread a local ping as inbound.
+fn icmp_echo_direction(parsed: &ParsedPacket) -> Option<bool> {
+    match parsed.protocol_state {
+        ProtocolState::Icmp {
+            icmp_type: 8 | 128,
+            icmp_id: Some(_),
+            ..
+        } => Some(parsed.is_outgoing),
+        _ => None,
+    }
+}
+
 /// Create a new connection from a parsed packet
 pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> Connection {
     let mut conn = Connection::new(
@@ -461,9 +481,11 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
             conn.connection_direction
         );
     } else {
-        // For non-TCP protocols, use the provided state directly
-        // Connection direction is not determinable for stateless protocols
+        // For non-TCP protocols, use the provided state directly. ICMP echo
+        // requests still reveal the initiator; other stateless protocols
+        // leave the direction unknown.
         conn.protocol_state = parsed.protocol_state.clone();
+        conn.connection_direction = icmp_echo_direction(parsed);
     }
 
     // Set initial stats based on packet direction

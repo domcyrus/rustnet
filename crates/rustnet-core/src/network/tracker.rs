@@ -311,10 +311,15 @@ impl ConnectionTracker {
         if let Some((identifier, sequence, is_reply)) = echo_metadata
             && let Ok(mut tracker) = self.rtt.lock()
         {
+            // Loopback captures classify the reply as outgoing too (both
+            // endpoints are local), so reclassify it as incoming to let it
+            // match the pending request.
+            let is_outgoing = parsed.is_outgoing
+                && !(is_reply && parsed.local_addr.ip() == parsed.remote_addr.ip());
             icmp_echo_rtt = tracker.record_icmp_echo(
                 base_key,
                 (identifier, sequence),
-                parsed.is_outgoing,
+                is_outgoing,
                 is_reply,
                 now,
             );
@@ -1311,6 +1316,49 @@ mod tests {
         let reply = tracker.ingest_at(&icmp_echo_packet(7, 1, true, true), capture_time(1));
 
         assert!(reply.icmp_echo_rtt.is_none());
+    }
+
+    fn loopback_echo_packet(identifier: u16, sequence: u16, is_reply: bool) -> ParsedPacket {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let mut packet = icmp_echo_packet(identifier, sequence, true, is_reply);
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        packet.local_addr = loopback;
+        packet.remote_addr = loopback;
+        packet
+    }
+
+    /// Loopback captures classify both the request and its reply as outgoing
+    /// because both endpoints are local. The reply must still pair up.
+    #[test]
+    fn loopback_ping_measures_rtt() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&loopback_echo_packet(9, 1, false), capture_time(0));
+        let reply = tracker.ingest_at(&loopback_echo_packet(9, 1, true), capture_time(1));
+
+        assert_eq!(reply.icmp_echo_rtt, Some(Duration::from_millis(1)));
+    }
+
+    /// Echo requests reveal who initiated the flow; the Details tab uses the
+    /// direction to hide the RTT row on flows this host only answers.
+    #[test]
+    fn echo_request_sets_connection_direction() {
+        let tracker = ConnectionTracker::new();
+        let outgoing = tracker.ingest_at(&icmp_echo_packet(7, 1, true, false), capture_time(0));
+        let direction = tracker
+            .connections()
+            .get(&outgoing.key)
+            .and_then(|conn| conn.connection_direction);
+        assert_eq!(direction, Some(true));
+
+        let tracker = ConnectionTracker::new();
+        let inbound = tracker.ingest_at(&icmp_echo_packet(7, 1, false, false), capture_time(0));
+        tracker.ingest_at(&icmp_echo_packet(7, 1, true, true), capture_time(1));
+        let direction = tracker
+            .connections()
+            .get(&inbound.key)
+            .and_then(|conn| conn.connection_direction);
+        assert_eq!(direction, Some(false), "our reply must not flip it");
     }
 
     /// 1-RTT packets carry a short header with nothing timeable in the clear.
