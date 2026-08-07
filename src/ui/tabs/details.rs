@@ -1857,6 +1857,24 @@ pub(in crate::ui) fn draw_connection_details(
                 })
         })
         .flatten();
+    // STUN requests carry a transaction ID their response echoes, so a UDP
+    // flow with no handshake still has a timeable exchange.
+    let stun_info = conn
+        .dpi_info
+        .as_ref()
+        .and_then(|dpi| match &dpi.application {
+            crate::network::types::ApplicationProtocol::Stun(info) => Some(info),
+            _ => None,
+        });
+    // NTP responses echo the client's transmit timestamp, so polls are
+    // timeable the same way.
+    let ntp_info = conn
+        .dpi_info
+        .as_ref()
+        .and_then(|dpi| match &dpi.application {
+            crate::network::types::ApplicationProtocol::Ntp(info) => Some(info),
+            _ => None,
+        });
     let icmp_echo_sequence = match &conn.protocol_state {
         crate::network::types::ProtocolState::Icmp {
             icmp_type: 0 | 8 | 128 | 129,
@@ -1925,6 +1943,92 @@ pub(in crate::ui) fn draw_connection_details(
             &mut details_text,
             &mut detail_fields,
             "Timed by pairing query and response IDs",
+        );
+    } else if let Some(stun) = stun_info {
+        if let Some(rtt) = conn.stun_rtt {
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            let rtt_color = if rtt_ms < 50.0 {
+                theme::ok()
+            } else if rtt_ms < 150.0 {
+                theme::warn()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "STUN RTT",
+                format!("{:.1}ms", rtt_ms),
+                label_style,
+                theme::fg(rtt_color),
+            );
+        } else {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "STUN RTT",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Last Message",
+            format!("{} {}", stun.method, stun.message_class),
+            label_style,
+        );
+        details_text.push(Line::from(""));
+        detail_fields.push(None);
+        push_detail_note(
+            &mut details_text,
+            &mut detail_fields,
+            "Paired by 96-bit transaction ID",
+        );
+    } else if let Some(ntp) = ntp_info {
+        if let Some(rtt) = conn.ntp_rtt {
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            let rtt_color = if rtt_ms < 50.0 {
+                theme::ok()
+            } else if rtt_ms < 150.0 {
+                theme::warn()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "NTP RTT",
+                format!("{:.1}ms", rtt_ms),
+                label_style,
+                theme::fg(rtt_color),
+            );
+        } else {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "NTP RTT",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Stratum",
+            if ntp.stratum == 0 {
+                NONE_PLACEHOLDER.to_string()
+            } else {
+                ntp.stratum.to_string()
+            },
+            label_style,
+        );
+        details_text.push(Line::from(""));
+        detail_fields.push(None);
+        push_detail_note(
+            &mut details_text,
+            &mut detail_fields,
+            "Paired by originate timestamp echo",
         );
     } else if let Some(sequence) = icmp_echo_sequence {
         // A flow the remote side initiated is only ever answered here, so

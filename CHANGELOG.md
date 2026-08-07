@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **NTP RTT**: NTP client connections now show the latest request→response
+  round trip in the Details Transport Health card, along with the server
+  stratum. Polls pair with responses through the originate timestamp echo
+  (RFC 5905), so daemons polling several servers stay distinct. Pending
+  requests are bounded (hard cap plus 10s expiry) like DNS queries
+- **STUN RTT**: STUN connections now show the latest request→response round
+  trip in the Details Transport Health card, paired by the 96-bit transaction
+  ID that retransmits reuse. Pending requests are bounded (hard cap plus 10s
+  expiry) like DNS queries
 - **Ping RTT**: ICMPv4 and ICMPv6 echo connections now show their latest RTT
   in the Overview RTT column and the Details Transport Health card. Requests
   and replies are paired by identifier and sequence number using per-packet
