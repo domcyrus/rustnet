@@ -25,10 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **LAN Device Identification**: The Details tab's Network Context card shows
   Local MAC and Remote MAC rows with the OUI vendor (e.g. "Apple, Inc."),
   backed by a neighbor cache that passively learns IP-to-MAC mappings from
-  observed ARP traffic. Since ARP does not cross routers, normally only
-  on-link addresses (LAN devices and the gateway) populate; randomized MACs
-  are labeled "locally administered". IPv6 (NDP) learning is a possible
-  follow-up.
+  observed ARP (IPv4) and NDP (IPv6) traffic; NDP messages are only trusted
+  at hop limit 255, per RFC 4861. Since neither protocol crosses routers,
+  normally only on-link addresses (LAN devices and the gateway) populate;
+  randomized MACs are labeled "locally administered".
 - **Default Gateway Marker**: Connections whose remote endpoint is the host's
   default gateway (the local router) are now marked. The Overview Remote
   column appends `(gw)` when it fits, the Details tab annotates the remote

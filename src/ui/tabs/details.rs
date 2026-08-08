@@ -952,10 +952,11 @@ pub(in crate::ui) fn draw_connection_details(
         })
         .unwrap_or((None, None));
 
-    // MAC + vendor from the ARP-learned neighbor cache. Present only for
-    // on-link addresses that appeared in an ARP exchange, so a public remote
-    // can never show the router's identity. ARP connections keep their
-    // placeholders; the Application card already shows both MACs.
+    // MAC + vendor from the neighbor cache (learned from ARP and NDP).
+    // Present only for on-link addresses that appeared in such an exchange,
+    // so a public remote can never show the router's identity. ARP
+    // connections keep their placeholders; the Application card already
+    // shows both MACs.
     let (local_mac, remote_mac) = if conn.protocol == Protocol::Arp {
         (None, None)
     } else {

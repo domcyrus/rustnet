@@ -1109,6 +1109,7 @@ mod tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
+            ndp_neighbor: None,
         }
     }
 

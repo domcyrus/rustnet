@@ -76,6 +76,7 @@ pub fn parse(
         dpi_result: None,
         process_name: params.process_name,
         process_id: params.process_id,
+        ndp_neighbor: None,
     })
 }
 
