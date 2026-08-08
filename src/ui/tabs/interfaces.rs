@@ -60,13 +60,14 @@ pub(in crate::ui) fn draw_interface_stats(
         };
 
         // Get rate for this interface
-        let rx_rate_str = if let Some(rate) = rates.get(&stat.interface_name) {
+        let rate = rates.get(&stat.interface_name);
+        let rx_rate_str = if let Some(rate) = rate {
             format!("{}/s", format_bytes(rate.rx_bytes_per_sec))
         } else {
             "---".to_string()
         };
 
-        let tx_rate_str = if let Some(rate) = rates.get(&stat.interface_name) {
+        let tx_rate_str = if let Some(rate) = rate {
             format!("{}/s", format_bytes(rate.tx_bytes_per_sec))
         } else {
             "---".to_string()
@@ -77,7 +78,7 @@ pub(in crate::ui) fn draw_interface_stats(
             Cell::from(Line::from(Span::styled(s, style)).right_aligned())
         };
         rows.push(Row::new(vec![
-            Cell::from(stat.interface_name.clone()),
+            Cell::from(stat.interface_name.as_str()),
             right(rx_rate_str),
             right(tx_rate_str),
             right(format!("{}", stat.rx_packets)),
