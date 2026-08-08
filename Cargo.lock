@@ -2657,6 +2657,7 @@ dependencies = [
  "dashmap",
  "dns-lookup",
  "flate2",
+ "libc",
  "log",
  "maxminddb",
  "pnet_datalink",

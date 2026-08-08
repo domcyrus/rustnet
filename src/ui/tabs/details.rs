@@ -24,7 +24,9 @@ use std::{
 };
 
 use crate::network::dns::DnsResolver;
-use crate::network::types::{Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState};
+use crate::network::types::{
+    AddrKind, Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState,
+};
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER,
@@ -467,6 +469,36 @@ fn format_quic_close(close: &crate::network::types::QuicCloseInfo) -> String {
     format!("{} 0x{:x}", origin, close.error_code)
 }
 
+/// Endpoint address with a broadcast/multicast annotation when the address
+/// is a group or broadcast destination rather than an actual host.
+fn annotated_addr(addr: std::net::SocketAddr, kind: AddrKind) -> String {
+    match kind {
+        AddrKind::Broadcast => format!("{addr} (broadcast)"),
+        AddrKind::Multicast => format!("{addr} (multicast)"),
+        AddrKind::Unicast => addr.to_string(),
+    }
+}
+
+/// Remote address annotated like `annotated_addr`, plus a gateway marker when
+/// the endpoint is the host's default gateway (router).
+fn annotated_remote_addr(addr: std::net::SocketAddr, kind: AddrKind, is_gateway: bool) -> String {
+    if is_gateway && kind == AddrKind::Unicast {
+        return format!("{addr} (gateway)");
+    }
+    annotated_addr(addr, kind)
+}
+
+/// Scope of the remote endpoint. `bogon::classify` is stateless and cannot
+/// recognize subnet-directed broadcasts (it would report the private range),
+/// so the connection's parser-derived kind overrides it.
+fn remote_scope(conn: &Connection) -> crate::network::bogon::Scope {
+    if conn.remote_addr_kind == AddrKind::Broadcast {
+        crate::network::bogon::Scope::Broadcast
+    } else {
+        crate::network::bogon::classify(conn.remote_addr.ip())
+    }
+}
+
 /// Push a muted explanatory line into a card. Unlike a field row this carries
 /// no label/value pair, so it registers no click-to-copy target.
 fn push_detail_note<'a>(
@@ -845,7 +877,7 @@ pub(in crate::ui) fn draw_connection_details(
         &mut details_text,
         &mut detail_fields,
         "Local Address",
-        conn.local_addr.to_string(),
+        annotated_addr(conn.local_addr, conn.local_addr_kind),
         label_style,
         theme::fg(theme::field_local_addr()),
     );
@@ -853,7 +885,11 @@ pub(in crate::ui) fn draw_connection_details(
         &mut details_text,
         &mut detail_fields,
         "Remote Address",
-        conn.remote_addr.to_string(),
+        annotated_remote_addr(
+            conn.remote_addr,
+            conn.remote_addr_kind,
+            conn.remote_is_gateway,
+        ),
         label_style,
         theme::fg(theme::field_remote_addr()),
     );
@@ -861,9 +897,7 @@ pub(in crate::ui) fn draw_connection_details(
         &mut details_text,
         &mut detail_fields,
         "Scope",
-        crate::network::bogon::classify(conn.remote_addr.ip())
-            .label()
-            .to_string(),
+        remote_scope(conn).label().to_string(),
         label_style,
         theme::fg(theme::field_remote_addr()),
     );
@@ -1899,6 +1933,32 @@ pub(in crate::ui) fn draw_connection_details(
                 })
         })
         .flatten();
+    // STUN requests carry a transaction ID their response echoes, so a UDP
+    // flow with no handshake still has a timeable exchange.
+    let stun_info = conn
+        .dpi_info
+        .as_ref()
+        .and_then(|dpi| match &dpi.application {
+            crate::network::types::ApplicationProtocol::Stun(info) => Some(info),
+            _ => None,
+        });
+    // NTP responses echo the client's transmit timestamp, so polls are
+    // timeable the same way.
+    let ntp_info = conn
+        .dpi_info
+        .as_ref()
+        .and_then(|dpi| match &dpi.application {
+            crate::network::types::ApplicationProtocol::Ntp(info) => Some(info),
+            _ => None,
+        });
+    let icmp_echo_sequence = match &conn.protocol_state {
+        crate::network::types::ProtocolState::Icmp {
+            icmp_type: 0 | 8 | 128 | 129,
+            icmp_sequence,
+            ..
+        } => *icmp_sequence,
+        _ => None,
+    };
     let metrics_start = details_text.len();
     push_detail_section(&mut details_text, &mut detail_fields, "Transport Health");
     let show_rtt = conn.protocol == Protocol::Tcp || quic_info.is_some();
@@ -1960,9 +2020,143 @@ pub(in crate::ui) fn draw_connection_details(
             &mut detail_fields,
             "Timed by pairing query and response IDs",
         );
+    } else if let Some(stun) = stun_info {
+        if let Some(rtt) = conn.stun_rtt {
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            let rtt_color = if rtt_ms < 50.0 {
+                theme::ok()
+            } else if rtt_ms < 150.0 {
+                theme::warn()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "STUN RTT",
+                format!("{:.1}ms", rtt_ms),
+                label_style,
+                theme::fg(rtt_color),
+            );
+        } else {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "STUN RTT",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Last Message",
+            format!("{} {}", stun.method, stun.message_class),
+            label_style,
+        );
+        details_text.push(Line::from(""));
+        detail_fields.push(None);
+        push_detail_note(
+            &mut details_text,
+            &mut detail_fields,
+            "Paired by 96-bit transaction ID",
+        );
+    } else if let Some(ntp) = ntp_info {
+        if let Some(rtt) = conn.ntp_rtt {
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            let rtt_color = if rtt_ms < 50.0 {
+                theme::ok()
+            } else if rtt_ms < 150.0 {
+                theme::warn()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "NTP RTT",
+                format!("{:.1}ms", rtt_ms),
+                label_style,
+                theme::fg(rtt_color),
+            );
+        } else {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "NTP RTT",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Stratum",
+            if ntp.stratum == 0 {
+                NONE_PLACEHOLDER.to_string()
+            } else {
+                ntp.stratum.to_string()
+            },
+            label_style,
+        );
+        details_text.push(Line::from(""));
+        detail_fields.push(None);
+        push_detail_note(
+            &mut details_text,
+            &mut detail_fields,
+            "Paired by originate timestamp echo",
+        );
+    } else if let Some(sequence) = icmp_echo_sequence {
+        // A flow the remote side initiated is only ever answered here, so
+        // there is no round trip to measure and no point in a placeholder.
+        let is_responder = conn.connection_direction == Some(false);
+        if let Some(rtt) = conn.icmp_echo_rtt {
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            let rtt_color = if rtt_ms < 50.0 {
+                theme::ok()
+            } else if rtt_ms < 150.0 {
+                theme::warn()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Ping RTT",
+                format!("{:.1}ms", rtt_ms),
+                label_style,
+                theme::fg(rtt_color),
+            );
+        } else if !is_responder {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Ping RTT",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Last Sequence",
+            sequence.to_string(),
+            label_style,
+        );
+        details_text.push(Line::from(""));
+        detail_fields.push(None);
+        push_detail_note(
+            &mut details_text,
+            &mut detail_fields,
+            if is_responder {
+                "Inbound echo: RTT is timed by the remote sender"
+            } else {
+                "Paired by echo ID and sequence"
+            },
+        );
     } else if !show_rtt {
-        // Nothing on a bare UDP/ICMP flow is timeable or countable: no
-        // handshake to pair up, no sequence numbers to track.
+        // Nothing on a bare UDP or non-echo ICMP flow is timeable or
+        // countable: there is no handshake or request/reply ID to pair.
         push_detail_note(
             &mut details_text,
             &mut detail_fields,
@@ -2650,5 +2844,63 @@ mod path_shortening_tests {
             super::account_name_from_buffer(unterminated.as_ptr(), &unterminated),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod endpoint_annotation_tests {
+    use super::{annotated_addr, annotated_remote_addr, remote_scope};
+    use crate::network::bogon::Scope;
+    use crate::network::types::{AddrKind, Connection, Protocol, ProtocolState};
+
+    #[test]
+    fn addresses_are_annotated_by_kind() {
+        let addr = "192.168.0.255:51234".parse().unwrap();
+        assert_eq!(
+            annotated_addr(addr, AddrKind::Broadcast),
+            "192.168.0.255:51234 (broadcast)"
+        );
+        let addr = "224.0.0.251:5353".parse().unwrap();
+        assert_eq!(
+            annotated_addr(addr, AddrKind::Multicast),
+            "224.0.0.251:5353 (multicast)"
+        );
+        let addr = "192.168.0.52:60236".parse().unwrap();
+        assert_eq!(
+            annotated_addr(addr, AddrKind::Unicast),
+            "192.168.0.52:60236"
+        );
+    }
+
+    #[test]
+    fn remote_addresses_are_annotated_as_gateway() {
+        let addr = "192.168.0.1:34824".parse().unwrap();
+        assert_eq!(
+            annotated_remote_addr(addr, AddrKind::Unicast, true),
+            "192.168.0.1:34824 (gateway)"
+        );
+        assert_eq!(
+            annotated_remote_addr(addr, AddrKind::Unicast, false),
+            "192.168.0.1:34824"
+        );
+        // The kind annotation wins over the gateway marker.
+        assert_eq!(
+            annotated_remote_addr(addr, AddrKind::Broadcast, true),
+            "192.168.0.1:34824 (broadcast)"
+        );
+    }
+
+    #[test]
+    fn scope_reports_broadcast_for_subnet_directed_remote() {
+        let mut conn = Connection::new(
+            Protocol::Udp,
+            "192.168.0.132:138".parse().unwrap(),
+            "192.168.0.255:138".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        // Stateless classification alone would report the private range.
+        assert_eq!(remote_scope(&conn), Scope::Private);
+        conn.remote_addr_kind = AddrKind::Broadcast;
+        assert_eq!(remote_scope(&conn), Scope::Broadcast);
     }
 }

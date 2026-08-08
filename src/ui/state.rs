@@ -148,7 +148,7 @@ pub enum SortColumn {
     Application,
     Service,
     State,
-    Rtt, // Smoothed data RTT, falling back to the handshake RTT
+    Rtt, // Best available TCP, QUIC handshake, or ICMP echo RTT
 }
 
 impl SortColumn {

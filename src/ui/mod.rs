@@ -1152,7 +1152,7 @@ mod snapshot_tests {
     /// MAC + vendor. The fixture's remote (140.82.121.4) is public and never
     /// ARPs, so its "Remote MAC" row must stay a placeholder.
     fn gateway_arp_reply() -> crate::network::parser::ParsedPacket {
-        use crate::network::types::{ArpInfo, ArpOperation};
+        use crate::network::types::{AddrKind, ArpInfo, ArpOperation};
 
         let gateway = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let host = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
@@ -1160,6 +1160,9 @@ mod snapshot_tests {
             protocol: Protocol::Arp,
             local_addr: SocketAddr::new(host, 0),
             remote_addr: SocketAddr::new(gateway, 0),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             tcp_header: None,
             protocol_state: ProtocolState::Arp(ArpInfo {
                 operation: ArpOperation::Reply,
@@ -1417,6 +1420,202 @@ mod snapshot_tests {
             heading_row(&tcp_output, "Traffic Statistics"),
             "Traffic Statistics moved between the DNS and TCP records"
         );
+    }
+
+    /// ICMP echo has an explicit identifier and sequence pair, so it can show
+    /// a real RTT even when requests are sent more often than the UI refreshes.
+    #[test]
+    fn details_tab_ping_shows_echo_rtt_and_sequence() {
+        let app = test_app();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 0);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0);
+        let mut ping = Connection::new(
+            Protocol::Icmp,
+            local,
+            remote,
+            ProtocolState::Icmp {
+                icmp_type: 0,
+                icmp_id: Some(0x1234),
+                icmp_sequence: Some(42),
+            },
+        );
+        ping.process_name = Some("ping".to_string());
+        ping.icmp_echo_rtt = Some(Duration::from_micros(8_700));
+        let connections = vec![ping];
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw ping details");
+        });
+
+        assert!(output.contains("Ping RTT") && output.contains("8.7ms"));
+        assert!(output.contains("Last Sequence") && output.contains("42"));
+        assert!(output.contains("Paired by echo ID and sequence"));
+        assert!(!output.contains("No transport metrics for this protocol"));
+    }
+
+    /// Inbound pings are answered here but timed by the remote sender, so the
+    /// responder view drops the Ping RTT row instead of showing a permanent
+    /// placeholder.
+    #[test]
+    fn details_tab_inbound_ping_hides_rtt_row() {
+        let app = test_app();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 0);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 0);
+        let mut ping = Connection::new(
+            Protocol::Icmp,
+            local,
+            remote,
+            ProtocolState::Icmp {
+                icmp_type: 8,
+                icmp_id: Some(0x0042),
+                icmp_sequence: Some(4242),
+            },
+        );
+        ping.connection_direction = Some(false);
+        let connections = vec![ping];
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw inbound ping details");
+        });
+
+        assert!(!output.contains("Ping RTT"));
+        assert!(output.contains("Last Sequence") && output.contains("4242"));
+        assert!(output.contains("RTT is timed by the remote sender"));
+    }
+
+    /// A STUN flow has no handshake, but request/response pairs share a
+    /// transaction ID, so its Transport Health card shows a real RTT.
+    #[test]
+    fn details_tab_stun_shows_rtt_in_transport_health() {
+        use crate::network::types::{
+            ApplicationProtocol, DpiInfo, StunInfo, StunMessageClass, StunMethod,
+        };
+
+        let app = test_app();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 54_000);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478);
+        let mut stun = Connection::new(Protocol::Udp, local, remote, ProtocolState::Udp);
+        stun.stun_rtt = Some(Duration::from_micros(23_400));
+        stun.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Stun(StunInfo {
+                message_class: StunMessageClass::SuccessResponse,
+                method: StunMethod::Binding,
+                transaction_id: [7u8; 12],
+                software: None,
+            }),
+            last_update_time: std::time::Instant::now(),
+        });
+        let connections = vec![stun];
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw stun details");
+        });
+
+        assert!(output.contains("STUN RTT") && output.contains("23.4ms"));
+        assert!(output.contains("Last Message") && output.contains("Binding Success"));
+        assert!(output.contains("Paired by 96-bit transaction ID"));
+        assert!(!output.contains("No transport metrics for this protocol"));
+    }
+
+    /// An NTP poll is timeable through the originate timestamp echo, so its
+    /// Transport Health card shows a real RTT plus the server stratum.
+    #[test]
+    fn details_tab_ntp_shows_rtt_in_transport_health() {
+        use crate::network::types::{ApplicationProtocol, DpiInfo, NtpInfo, NtpMode};
+
+        let app = test_app();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 47_000);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123);
+        let mut ntp = Connection::new(Protocol::Udp, local, remote, ProtocolState::Udp);
+        ntp.ntp_rtt = Some(Duration::from_micros(6_500));
+        ntp.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Ntp(NtpInfo {
+                version: 4,
+                mode: NtpMode::Server,
+                stratum: 2,
+                origin_timestamp: 0xAABB,
+                transmit_timestamp: 0xCCDD,
+            }),
+            last_update_time: std::time::Instant::now(),
+        });
+        let connections = vec![ntp];
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[0].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw ntp details");
+        });
+
+        assert!(output.contains("NTP RTT") && output.contains("6.5ms"));
+        assert!(output.contains("Stratum"));
+        assert!(output.contains("Paired by originate timestamp echo"));
+        assert!(!output.contains("No transport metrics for this protocol"));
     }
 
     /// The Attribution section repeats PID beside the richer process fields so

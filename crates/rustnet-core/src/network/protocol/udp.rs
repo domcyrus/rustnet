@@ -3,7 +3,7 @@
 use crate::network::dpi;
 use crate::network::parser::{ParsedPacket, ParserConfig};
 use crate::network::protocol::TransportParams;
-use crate::network::types::{Protocol, ProtocolState};
+use crate::network::types::{AddrKind, Protocol, ProtocolState};
 use std::net::SocketAddr;
 
 /// Parse a UDP packet
@@ -47,6 +47,10 @@ pub fn parse(
         protocol: Protocol::Udp,
         local_addr,
         remote_addr,
+        // Overwritten centrally in PacketParser::parse_packet
+        local_addr_kind: AddrKind::Unicast,
+        remote_addr_kind: AddrKind::Unicast,
+        remote_is_gateway: false,
         tcp_header: None,
         protocol_state: ProtocolState::Udp,
         is_outgoing,

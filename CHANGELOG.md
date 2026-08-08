@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Broadcast/Multicast Endpoint Display**: A broadcast or multicast datagram
+  sent by a peer (e.g. NetBIOS to 192.168.0.255) used to render its
+  destination as a normal-looking Local address. Such endpoints now render as
+  `bcast:PORT` / `mcast:PORT` in the Overview table, the Details tab annotates
+  the full address with `(broadcast)` / `(multicast)`, and the Scope field
+  reports BROADCAST for subnet-directed broadcasts instead of PRIVATE.
+  Interface prefixes are now collected alongside local addresses to recognize
+  each subnet's broadcast address; recognized broadcasts no longer trigger
+  ambiguous-endpoint interface re-enumeration. JSONL logs gain
+  `local_addr_kind`/`remote_addr_kind` (sidecar) and
+  `source_addr_kind`/`destination_addr_kind` (event log) keys, emitted only
+  for non-unicast endpoints
+
 ### Added
 - **LAN Device Identification**: The Details tab's Network Context card shows
   Local MAC and Remote MAC rows with the OUI vendor (e.g. "Apple, Inc."),
@@ -14,6 +28,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   observed ARP traffic. Only on-link addresses (LAN devices and the gateway)
   ever populate, since ARP does not cross routers; randomized MACs are labeled
   "locally administered". IPv6 (NDP) learning is a possible follow-up
+- **Default Gateway Marker**: Connections whose remote endpoint is the host's
+  default gateway (the local router) are now marked. The Overview Remote
+  column appends `(gw)` when it fits, the Details tab annotates the remote
+  address with `(gateway)`, and JSONL logs gain `remote_is_gateway` (sidecar)
+  and `destination_is_gateway` (event log) keys, emitted only when true.
+  Gateways are read from the OS routing table (`/proc/net/route` and
+  `/proc/net/ipv6_route` on Linux, a `PF_ROUTE` sysctl dump on macOS/FreeBSD,
+  `GetIpForwardTable2` on Windows) and refreshed with the local-address
+  snapshot, so VPN or network changes are picked up
+- **NTP RTT**: NTP client connections now show the latest request→response
+  round trip in the Details Transport Health card, along with the server
+  stratum. Polls pair with responses through the originate timestamp echo
+  (RFC 5905), so daemons polling several servers stay distinct. Pending
+  requests are bounded (hard cap plus 10s expiry) like DNS queries
+- **STUN RTT**: STUN connections now show the latest request→response round
+  trip in the Details Transport Health card, paired by the 96-bit transaction
+  ID that retransmits reuse. Pending requests are bounded (hard cap plus 10s
+  expiry) like DNS queries
+- **Ping RTT**: ICMPv4 and ICMPv6 echo connections now show their latest RTT
+  in the Overview RTT column and the Details Transport Health card. Requests
+  and replies are paired by identifier and sequence number using per-packet
+  capture timestamps, so overlapping or reordered exchanges from commands such
+  as `ping 8.8.8.8 -i .2` remain distinct. Loopback pings are timed too, and
+  inbound echo flows skip the RTT row since only the remote sender can measure
+  it. Pending requests expire after 10 seconds and have a hard cap
 - **DNS Response Time**: Unicast UDP DNS connections now show a transport
   metric in the Details Transport Health card instead of "No transport metrics
   for this protocol". Queries and responses are paired by their 16-bit
