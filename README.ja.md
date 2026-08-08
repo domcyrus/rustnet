@@ -23,6 +23,7 @@ RustNet は、各接続を所有するプロセス、通信量、状態、アプ
 - `port:`、`process:`、`sni:`、`state:` などのフィルター
 - 注釈付き PCAPNG、PCAP と JSONL sidecar、JSON ログの出力
 - ローカル GeoIP データベースによる国、ASN、都市情報
+- ARP トラフィックから受動的に学習した LAN 機器・ゲートウェイの MAC アドレスとベンダー表示（内蔵 IEEE OUI データベース）
 - Linux Landlock、macOS Seatbelt、Windows の権限削減によるサンドボックス
 - オプションの Kubernetes pod、namespace、container 帰属情報
 

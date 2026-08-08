@@ -16,6 +16,7 @@ pub mod interface_stats;
 pub mod link_layer;
 mod local_addresses;
 pub mod merge;
+pub mod neighbors;
 pub mod oui;
 pub mod parser;
 pub mod process_activity;

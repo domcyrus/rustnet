@@ -65,6 +65,19 @@ impl OuiLookup {
     }
 }
 
+/// Parse the first octet of a MAC address string.
+/// Supports the same formats as [`parse_mac_prefix`].
+pub fn mac_first_octet(mac: &str) -> Option<u8> {
+    parse_mac_prefix(mac).map(|prefix| prefix[0])
+}
+
+/// Whether the MAC has the locally-administered bit set (and is unicast).
+/// Such addresses are software-assigned (typically the randomized MACs
+/// modern phones use for privacy) and never appear in the OUI registry.
+pub fn is_locally_administered(mac: &str) -> bool {
+    mac_first_octet(mac).is_some_and(|first| first & 0x02 != 0 && first & 0x01 == 0)
+}
+
 /// Parse the first 3 octets of a MAC address string into a byte array.
 /// Supports formats: "aa:bb:cc:...", "aa-bb-cc-...", "aabbcc..."
 fn parse_mac_prefix(mac: &str) -> Option<[u8; 3]> {
@@ -129,6 +142,17 @@ mod tests {
     #[test]
     fn test_parse_mac_prefix_invalid_hex() {
         assert_eq!(parse_mac_prefix("zz:yy:xx:00:00:00"), None);
+    }
+
+    #[test]
+    fn test_is_locally_administered() {
+        // 0x5a has the locally-administered bit (0x02) set.
+        assert!(is_locally_administered("5a:33:44:55:66:77"));
+        // Universally administered vendor OUI.
+        assert!(!is_locally_administered("68:5e:dd:09:15:5e"));
+        // Group addresses (I/G bit) are excluded even with 0x02 set.
+        assert!(!is_locally_administered("33:33:00:00:00:01"));
+        assert!(!is_locally_administered("not a mac"));
     }
 
     #[test]

@@ -143,7 +143,7 @@ pub struct PacketParser {
     unchanged_ambiguous_refreshes: u32,
     config: ParserConfig,
     linktype: Option<i32>, // DLT linktype - 149 means PKTAP on macOS
-    oui_lookup: Option<OuiLookup>,
+    oui_lookup: Option<std::sync::Arc<OuiLookup>>,
 }
 
 impl Default for PacketParser {
@@ -174,9 +174,11 @@ impl PacketParser {
         }
     }
 
-    /// Set the OUI lookup for MAC vendor resolution
-    pub fn with_oui_lookup(mut self, oui_lookup: OuiLookup) -> Self {
-        self.oui_lookup = Some(oui_lookup);
+    /// Set the OUI lookup for MAC vendor resolution. Accepts either an owned
+    /// `OuiLookup` (as before) or an `Arc<OuiLookup>`, so the ~3 MB vendor
+    /// table can be shared between processor threads instead of cloned.
+    pub fn with_oui_lookup(mut self, oui_lookup: impl Into<std::sync::Arc<OuiLookup>>) -> Self {
+        self.oui_lookup = Some(oui_lookup.into());
         self
     }
 
