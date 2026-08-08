@@ -1,10 +1,12 @@
 //! Passive ARP-learned neighbor cache: IP address -> MAC address + OUI vendor.
 //!
 //! Populated from ARP packets the parser already decodes, so it costs nothing
-//! on the per-frame hot path. An entry exists only after an ARP exchange was
-//! observed on the wire, which also guarantees the mapped IP is on-link: ARP
-//! never crosses a router, so the cache cannot mislabel an off-link private
-//! address (e.g. a VPN peer) with a LAN device's identity.
+//! on the per-frame hot path. An entry exists only after an ARP frame for the
+//! IP was observed on the local segment, which normally keeps the cache to
+//! on-link addresses (ARP never crosses a router). The frames themselves are
+//! trusted, though: under proxy ARP or ARP spoofing an off-link address can
+//! appear mapped to a local MAC — the entry then names the L2 hop actually
+//! answering for that IP on this segment, not the remote host itself.
 
 use crate::network::types::{ArpInfo, ArpOperation};
 use dashmap::DashMap;
@@ -13,7 +15,11 @@ use std::net::IpAddr;
 use std::time::SystemTime;
 
 /// Bound against ARP-spoof floods and subnet scans. A real LAN segment holds
-/// at most a few hundred neighbors; when full, the stalest entry is evicted.
+/// at most a few hundred neighbors; when full, new keys are dropped rather
+/// than evicting: an eviction policy would let a flood of forged sender IPs
+/// push out the legitimate neighbors (which are always the stalest entries
+/// relative to the attacker's constantly-fresh junk), while dropping keeps
+/// them intact and still lets them refresh.
 const MAX_ENTRIES: usize = 4096;
 
 /// One learned neighbor.
@@ -60,30 +66,34 @@ impl NeighborCache {
         }
 
         // The cap only gates brand-new keys; refreshing a known neighbor is
-        // always allowed. `len()` read-locks every shard, but this path runs
-        // only for ARP packets, which are rare.
+        // always allowed (see MAX_ENTRIES). Both checks run before the shard
+        // lock below, so racing processor threads can overshoot the cap by at
+        // most a thread count's worth of entries — harmless. `len()` must not
+        // be called while the entry guard is held: it read-locks every shard.
         if !self.entries.contains_key(&ip) && self.entries.len() >= MAX_ENTRIES {
-            self.evict_stalest();
+            return;
         }
 
-        self.entries.insert(
-            ip,
-            NeighborEntry {
-                mac: mac.to_string(),
-                vendor: vendor.clone(),
-                last_seen: now,
-            },
-        );
-    }
-
-    fn evict_stalest(&self) {
-        let stalest = self
-            .entries
-            .iter()
-            .min_by_key(|entry| entry.last_seen)
-            .map(|entry| *entry.key());
-        if let Some(ip) = stalest {
-            self.entries.remove(&ip);
+        match self.entries.entry(ip) {
+            dashmap::Entry::Occupied(mut entry) => {
+                // Packet batches fan out across processor threads, so two ARP
+                // frames for the same IP can arrive here out of capture order;
+                // never let the older observation overwrite the newer one.
+                if entry.get().last_seen <= now {
+                    entry.insert(NeighborEntry {
+                        mac: mac.to_string(),
+                        vendor: vendor.clone(),
+                        last_seen: now,
+                    });
+                }
+            }
+            dashmap::Entry::Vacant(entry) => {
+                entry.insert(NeighborEntry {
+                    mac: mac.to_string(),
+                    vendor: vendor.clone(),
+                    last_seen: now,
+                });
+            }
         }
     }
 }
@@ -93,9 +103,23 @@ impl NeighborCache {
 /// (broadcast `ff:ff:...` and multicast, i.e. the first octet's I/G bit set).
 fn is_unicast_hardware_mac(mac: &str) -> bool {
     match crate::network::oui::mac_first_octet(mac) {
-        Some(first) => first & 0x01 == 0 && mac != "00:00:00:00:00:00",
+        Some(first) => first & 0x01 == 0 && !is_zero_mac(mac),
         None => false,
     }
+}
+
+/// All-zero MAC in any separator format the OUI parser accepts, so the check
+/// does not silently depend on the ARP parser's colon-lowercase formatting.
+fn is_zero_mac(mac: &str) -> bool {
+    let mut zero_digits = 0usize;
+    for c in mac.trim().chars() {
+        match c {
+            '0' => zero_digits += 1,
+            ':' | '-' => {}
+            _ => return false,
+        }
+    }
+    zero_digits == 12
 }
 
 #[cfg(test)]
@@ -230,7 +254,21 @@ mod tests {
     }
 
     #[test]
-    fn cap_evicts_stalest_entry() {
+    fn stale_arp_does_not_overwrite_newer_entry() {
+        let cache = NeighborCache::default();
+        let newer = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10);
+        let older = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5);
+        cache.learn(ip("192.168.0.50"), "aa:aa:aa:00:00:01", &None, newer);
+        // Delivered late by another processor thread.
+        cache.learn(ip("192.168.0.50"), "ce:ce:ce:00:00:02", &None, older);
+
+        let entry = cache.get(&ip("192.168.0.50")).unwrap();
+        assert_eq!(entry.mac, "aa:aa:aa:00:00:01");
+        assert_eq!(entry.last_seen, newer);
+    }
+
+    #[test]
+    fn cap_drops_new_keys_but_still_refreshes_known_ones() {
         let cache = NeighborCache::default();
         let base = SystemTime::UNIX_EPOCH;
         for i in 0..MAX_ENTRIES {
@@ -244,7 +282,7 @@ mod tests {
         }
         assert_eq!(cache.entries.len(), MAX_ENTRIES);
 
-        // The first (stalest) entry makes room for the newcomer.
+        // A brand-new key is dropped; nothing already learned is evicted.
         cache.learn(
             ip("192.168.0.200"),
             "aa:bb:cc:00:00:02",
@@ -252,7 +290,25 @@ mod tests {
             base + std::time::Duration::from_secs(MAX_ENTRIES as u64 + 10),
         );
         assert_eq!(cache.entries.len(), MAX_ENTRIES);
-        assert!(cache.get(&ip("10.0.0.0")).is_none());
-        assert!(cache.get(&ip("192.168.0.200")).is_some());
+        assert!(cache.get(&ip("192.168.0.200")).is_none());
+        assert!(cache.get(&ip("10.0.0.0")).is_some());
+
+        // A known neighbor still refreshes at cap.
+        cache.learn(
+            ip("10.0.0.0"),
+            "aa:bb:cc:00:00:03",
+            &None,
+            base + std::time::Duration::from_secs(MAX_ENTRIES as u64 + 20),
+        );
+        assert_eq!(cache.get(&ip("10.0.0.0")).unwrap().mac, "aa:bb:cc:00:00:03");
+    }
+
+    #[test]
+    fn zero_mac_is_rejected_in_any_format() {
+        assert!(is_zero_mac("00:00:00:00:00:00"));
+        assert!(is_zero_mac("00-00-00-00-00-00"));
+        assert!(is_zero_mac("000000000000"));
+        assert!(!is_zero_mac("00:00:00:00:00:01"));
+        assert!(!is_zero_mac("68:5e:dd:09:15:5e"));
     }
 }
