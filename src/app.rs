@@ -3707,6 +3707,7 @@ mod connection_lifecycle_tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
+            ndp_neighbor: None,
         }
     }
 
@@ -3991,6 +3992,7 @@ mod pcapng_export_tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
+            ndp_neighbor: None,
         });
         let key = outcome.key;
         tracker.connections().get_mut(&key).unwrap().process_name = Some("nginx".to_string());

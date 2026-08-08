@@ -364,6 +364,21 @@ pub enum ArpOperation {
     Reply,
 }
 
+/// One IP-to-MAC mapping extracted from an NDP (IPv6 Neighbor Discovery,
+/// RFC 4861) message's link-layer address option — the IPv6 analogue of what
+/// [`ArpInfo`] carries for IPv4.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NdpNeighbor {
+    /// The IPv6 address the option maps: the packet's source address for a
+    /// source link-layer option (RS/RA/NS), the advertised target address for
+    /// a target link-layer option (NA/Redirect).
+    pub ip: std::net::IpAddr,
+    /// Colon-separated lowercase MAC, as formatted by the parser.
+    pub mac: String,
+    /// OUI vendor, resolved at parse time when the database is loaded.
+    pub vendor: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SshConnectionState {
     Banner,

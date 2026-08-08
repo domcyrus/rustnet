@@ -64,6 +64,7 @@ pub fn parse(
         dpi_result: None,
         process_name: params.process_name,
         process_id: params.process_id,
+        ndp_neighbor: None,
     })
 }
 
@@ -124,6 +125,8 @@ pub fn parse_v6(
         dpi_result: None, // No DPI for ICMPv6
         process_name: params.process_name,
         process_id: params.process_id,
+        // Filled by the parser for NDP messages that pass the hop-limit gate.
+        ndp_neighbor: None,
     })
 }
 

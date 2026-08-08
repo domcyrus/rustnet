@@ -1,14 +1,17 @@
-//! Passive ARP-learned neighbor cache: IP address -> MAC address + OUI vendor.
+//! Passive neighbor cache: IP address -> MAC address + OUI vendor, learned
+//! from ARP (IPv4) and NDP (IPv6) traffic.
 //!
-//! Populated from ARP packets the parser already decodes, so it costs nothing
-//! on the per-frame hot path. An entry exists only after an ARP frame for the
-//! IP was observed on the local segment, which normally keeps the cache to
-//! on-link addresses (ARP never crosses a router). The frames themselves are
-//! trusted, though: under proxy ARP or ARP spoofing an off-link address can
-//! appear mapped to a local MAC — the entry then names the L2 hop actually
-//! answering for that IP on this segment, not the remote host itself.
+//! Populated from ARP and NDP packets the parser already decodes, so it costs
+//! nothing on the per-frame hot path. An entry exists only after such a frame
+//! was observed on the local segment, which normally keeps the cache to
+//! on-link addresses (ARP never crosses a router; NDP messages are only
+//! accepted at hop limit 255, which proves they were not routed). The frames
+//! themselves are trusted, though: under proxy ARP/NDP or spoofing an
+//! off-link address can appear mapped to a local MAC — the entry then names
+//! the L2 hop actually answering for that IP on this segment, not the remote
+//! host itself.
 
-use crate::network::types::{ArpInfo, ArpOperation};
+use crate::network::types::{ArpInfo, ArpOperation, NdpNeighbor};
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
 use std::net::IpAddr;
@@ -55,13 +58,22 @@ impl NeighborCache {
         }
     }
 
+    /// Fold one NDP-carried mapping into the table. The parser extracts these
+    /// only from messages that passed the hop-limit-255 check (RFC 4861), the
+    /// IPv6 equivalent of ARP's on-link guarantee.
+    pub fn learn_from_ndp(&self, neighbor: &NdpNeighbor, now: SystemTime) {
+        self.learn(neighbor.ip, &neighbor.mac, &neighbor.vendor, now);
+    }
+
     /// The learned entry for `ip`, if any.
     pub fn get(&self, ip: &IpAddr) -> Option<NeighborEntry> {
         self.entries.get(ip).map(|entry| entry.clone())
     }
 
     fn learn(&self, ip: IpAddr, mac: &str, vendor: &Option<String>, now: SystemTime) {
-        if ip.is_unspecified() || !is_unicast_hardware_mac(mac) {
+        // Unspecified covers ARP probes and DAD solicitations; a multicast IP
+        // never names a neighbor (possible in a forged NA target field).
+        if ip.is_unspecified() || ip.is_multicast() || !is_unicast_hardware_mac(mac) {
             return;
         }
 
@@ -301,6 +313,17 @@ mod tests {
             base + std::time::Duration::from_secs(MAX_ENTRIES as u64 + 20),
         );
         assert_eq!(cache.get(&ip("10.0.0.0")).unwrap().mac, "aa:bb:cc:00:00:03");
+    }
+
+    #[test]
+    fn multicast_ip_is_rejected() {
+        // A forged NA can advertise a multicast target; it never names a
+        // neighbor.
+        let cache = NeighborCache::default();
+        cache.learn(ip("ff02::1"), "68:5e:dd:09:15:5e", &None, SystemTime::now());
+        cache.learn(ip("224.0.0.251"), "68:5e:dd:09:15:5e", &None, SystemTime::now());
+        assert!(cache.get(&ip("ff02::1")).is_none());
+        assert!(cache.get(&ip("224.0.0.251")).is_none());
     }
 
     #[test]

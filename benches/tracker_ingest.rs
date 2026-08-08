@@ -39,6 +39,7 @@ fn make_packet(flow: u16, seq: u32) -> ParsedPacket {
         dpi_result: None,
         process_name: None,
         process_id: None,
+        ndp_neighbor: None,
     }
 }
 

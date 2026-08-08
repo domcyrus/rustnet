@@ -39,6 +39,10 @@ pub struct ParsedPacket {
     pub dpi_result: Option<DpiResult>, // DPI results if available
     pub process_name: Option<String>,  // Process name from PKTAP metadata
     pub process_id: Option<u32>,       // Process ID from PKTAP metadata
+    /// IP-to-MAC mapping carried by an NDP message's link-layer address
+    /// option, extracted only when the IPv6 hop limit was 255 (RFC 4861).
+    /// Feeds the tracker's neighbor cache — the IPv6 analogue of ARP.
+    pub ndp_neighbor: Option<NdpNeighbor>,
 }
 
 impl ParsedPacket {
@@ -599,7 +603,22 @@ impl PacketParser {
             TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
         match final_next_header {
-            58 => protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips),
+            58 => {
+                let mut packet =
+                    protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips)?;
+                // NDP receivers require hop limit 255 (RFC 4861): a forged
+                // message routed from off-link cannot arrive with it, which
+                // keeps the neighbor cache on-link the way ARP's
+                // non-routability does for IPv4.
+                if ip_data[7] == 255 {
+                    packet.ndp_neighbor = protocol::ndp::extract_neighbor(
+                        final_transport_data,
+                        src_ip,
+                        self.oui_lookup.as_deref(),
+                    );
+                }
+                Some(packet)
+            }
             6 => protocol::tcp::parse(final_transport_data, params, &self.config, &self.local_ips),
             17 => protocol::udp::parse(final_transport_data, params, &self.config, &self.local_ips),
             _ => None,
@@ -698,6 +717,7 @@ impl PacketParser {
             dpi_result: None,
             process_name,
             process_id,
+            ndp_neighbor: None,
         })
     }
 
@@ -842,7 +862,19 @@ impl PacketParser {
             TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
         match final_next_header {
-            58 => protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips),
+            58 => {
+                let mut packet =
+                    protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips)?;
+                // Same hop-limit-255 gate as the Ethernet path (RFC 4861).
+                if data[7] == 255 {
+                    packet.ndp_neighbor = protocol::ndp::extract_neighbor(
+                        final_transport_data,
+                        src_ip,
+                        self.oui_lookup.as_deref(),
+                    );
+                }
+                Some(packet)
+            }
             6 => protocol::tcp::parse(final_transport_data, params, &self.config, &self.local_ips),
             17 => protocol::udp::parse(final_transport_data, params, &self.config, &self.local_ips),
             _ => None,

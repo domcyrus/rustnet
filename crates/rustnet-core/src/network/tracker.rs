@@ -268,9 +268,13 @@ impl ConnectionTracker {
     /// difference between two packets' `now` values, so a shared timestamp
     /// collapses every round trip that completes within one batch to zero.
     pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
-        // Harvest IP -> MAC mappings from ARP packets; only they pay this cost.
+        // Harvest IP -> MAC mappings from ARP and NDP packets; only they pay
+        // this cost.
         if let ProtocolState::Arp(arp_info) = &parsed.protocol_state {
             self.neighbors.learn_from_arp(arp_info, now);
+        }
+        if let Some(ndp_neighbor) = &parsed.ndp_neighbor {
+            self.neighbors.learn_from_ndp(ndp_neighbor, now);
         }
 
         // Track RTT for TCP connections using SYN/SYN-ACK timing, and for QUIC
@@ -1023,6 +1027,7 @@ mod tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
+            ndp_neighbor: None,
         }
     }
 
@@ -1050,6 +1055,7 @@ mod tests {
             }),
             process_name: None,
             process_id: None,
+            ndp_neighbor: None,
         }
     }
 
@@ -1081,6 +1087,7 @@ mod tests {
             }),
             process_name: None,
             process_id: None,
+            ndp_neighbor: None,
         }
     }
 
@@ -1111,6 +1118,7 @@ mod tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
+            ndp_neighbor: None,
         }
     }
 
@@ -1147,6 +1155,7 @@ mod tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
+            ndp_neighbor: None,
         }
     }
 
@@ -1176,6 +1185,51 @@ mod tests {
         // The mapping survives removal of the ARP connection entry.
         tracker.connections().remove(&outcome.key);
         assert!(tracker.neighbor(&gateway).is_some());
+    }
+
+    /// A full Ethernet+IPv6 frame carrying an NDP neighbor advertisement,
+    /// so the test exercises the parser's hop-limit gate end to end.
+    fn ndp_advertisement_frame(hop_limit: u8) -> Vec<u8> {
+        let mut f = Vec::new();
+        // Ethernet header: dst mac, src mac, ethertype IPv6 (0x86dd)
+        f.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+        f.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]);
+        f.extend_from_slice(&[0x86, 0xdd]);
+        // IPv6 header (40 bytes)
+        f.extend_from_slice(&[0x60, 0, 0, 0]); // version/tc/flow
+        f.extend_from_slice(&32u16.to_be_bytes()); // payload length
+        f.push(58); // next header = ICMPv6
+        f.push(hop_limit);
+        let src: std::net::Ipv6Addr = "fe80::cafe".parse().unwrap();
+        let dst: std::net::Ipv6Addr = "ff02::1".parse().unwrap();
+        f.extend_from_slice(&src.octets());
+        f.extend_from_slice(&dst.octets());
+        // ICMPv6 neighbor advertisement: header, target address, then the
+        // target link-layer address option.
+        f.extend_from_slice(&[136, 0, 0, 0, 0x20, 0, 0, 0]); // override flag
+        let target: std::net::Ipv6Addr = "2001:db8::10".parse().unwrap();
+        f.extend_from_slice(&target.octets());
+        f.extend_from_slice(&[2, 1, 0x68, 0x5e, 0xdd, 0x09, 0x15, 0x5e]);
+        f
+    }
+
+    /// Ingesting an NDP neighbor advertisement must populate the neighbor
+    /// cache for the advertised target address — but only when the frame
+    /// arrived with hop limit 255, which proves it was not routed (RFC 4861).
+    #[test]
+    fn ndp_ingest_learns_advertised_target_at_hop_limit_255_only() {
+        let target: std::net::IpAddr = "2001:db8::10".parse().unwrap();
+
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&parse(&ndp_advertisement_frame(255)), capture_time(0));
+        assert_eq!(
+            tracker.neighbor(&target).expect("target learned").mac,
+            "68:5e:dd:09:15:5e"
+        );
+
+        let routed = ConnectionTracker::new();
+        routed.ingest_at(&parse(&ndp_advertisement_frame(64)), capture_time(0));
+        assert!(routed.neighbor(&target).is_none());
     }
 
     /// QUIC's handshake is the only round trip an on-path observer can time,
@@ -1522,6 +1576,7 @@ mod tests {
             }),
             process_name: None,
             process_id: None,
+            ndp_neighbor: None,
         }
     }
 
@@ -1583,6 +1638,7 @@ mod tests {
             }),
             process_name: None,
             process_id: None,
+            ndp_neighbor: None,
         }
     }
 
