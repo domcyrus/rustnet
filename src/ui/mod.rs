@@ -94,7 +94,7 @@ pub fn set_no_color(enabled: bool) {
 mod state;
 pub use state::{
     ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, PaneScroll,
-    SortColumn, UIState, compute_grouped_rows, compute_scroll_offset,
+    SortColumn, UIState, compute_grouped_rows, compute_scroll_offset, process_group_label,
 };
 pub(crate) use widgets::tabs_bar::{HELP_TAB_INDEX, TAB_COUNT};
 

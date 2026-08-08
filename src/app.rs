@@ -717,7 +717,7 @@ impl ConnectionCounts {
                 Protocol::Udp => counts.udp += 1,
                 _ => {}
             }
-            processes.insert(connection.process_name.as_deref().unwrap_or("<unknown>"));
+            processes.insert(crate::ui::process_group_label(connection));
         }
 
         counts.processes = processes.len();
