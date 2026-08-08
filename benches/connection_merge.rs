@@ -57,7 +57,6 @@ fn make_parsed_packet() -> rustnet_monitor::network::parser::ParsedPacket {
         dpi_result: None,
         process_name: None,
         process_id: None,
-        ndp_neighbor: None,
     }
 }
 

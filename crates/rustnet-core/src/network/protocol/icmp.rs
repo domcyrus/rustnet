@@ -58,13 +58,13 @@ pub fn parse(
             icmp_type,
             icmp_id,
             icmp_sequence,
+            ndp_neighbor: None,
         },
         is_outgoing,
         packet_len: params.packet_len,
         dpi_result: None,
         process_name: params.process_name,
         process_id: params.process_id,
-        ndp_neighbor: None,
     })
 }
 
@@ -119,14 +119,15 @@ pub fn parse_v6(
             icmp_type,
             icmp_id,
             icmp_sequence,
+            // Filled by the parser for NDP messages that pass the
+            // hop-limit and fragmentation gates.
+            ndp_neighbor: None,
         },
         is_outgoing,
         packet_len: params.packet_len,
         dpi_result: None, // No DPI for ICMPv6
         process_name: params.process_name,
         process_id: params.process_id,
-        // Filled by the parser for NDP messages that pass the hop-limit gate.
-        ndp_neighbor: None,
     })
 }
 
@@ -155,6 +156,7 @@ mod tests {
                 icmp_type: 8,
                 icmp_id: Some(0x1234),
                 icmp_sequence: Some(0x5678),
+                ndp_neighbor: None,
             }
         ));
     }
@@ -178,6 +180,7 @@ mod tests {
                 icmp_type: 129,
                 icmp_id: Some(0xabcd),
                 icmp_sequence: Some(42),
+                ndp_neighbor: None,
             }
         ));
     }

@@ -15,24 +15,41 @@ use crate::network::types::{ArpInfo, ArpOperation, NdpNeighbor};
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
 use std::net::IpAddr;
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 /// Bound against ARP-spoof floods and subnet scans. A real LAN segment holds
-/// at most a few hundred neighbors; when full, new keys are dropped rather
-/// than evicting: an eviction policy would let a flood of forged sender IPs
-/// push out the legitimate neighbors (which are always the stalest entries
-/// relative to the attacker's constantly-fresh junk), while dropping keeps
-/// them intact and still lets them refresh.
+/// at most a few hundred neighbors. When full, stale entries are swept out
+/// to make room (see [`STALE_AFTER`]); if none are stale, new keys are
+/// dropped rather than evicting fresh ones: an eviction policy would let a
+/// flood of forged sender IPs push out the legitimate neighbors (which are
+/// always the stalest entries relative to the attacker's constantly-fresh
+/// junk), while dropping keeps them intact and still lets them refresh.
 const MAX_ENTRIES: usize = 4096;
+
+/// Entries whose neighbor has not been seen in ARP/NDP traffic for this long
+/// are dropped when the table is full and a new key needs room. Active
+/// neighbors re-announce every few minutes, so only devices that left the
+/// segment — or junk left over from a past flood — age this far. Sweeping
+/// only at the cap keeps the hot path free of expiry bookkeeping, and
+/// staleness-based sweeping cannot be weaponized by a live flood: the
+/// flood's own entries are the freshest ones in the table.
+const STALE_AFTER: Duration = Duration::from_secs(30 * 60);
+
+/// Floor between two sweeps, so a sustained flood against a full table
+/// cannot turn every dropped packet into a full-table scan.
+const SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(60);
 
 /// One learned neighbor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeighborEntry {
-    /// Colon-separated lowercase MAC, as formatted by the ARP parser.
+    /// Colon-separated lowercase MAC, as produced by
+    /// [`crate::network::oui::format_mac`].
     pub mac: String,
-    /// OUI vendor, resolved by the ARP parse path when the database is loaded.
+    /// OUI vendor, resolved by the parse path when the database is loaded.
     pub vendor: Option<String>,
-    /// Capture timestamp of the ARP packet this entry was learned from.
+    /// Capture timestamp of the ARP/NDP packet this entry was learned from
+    /// or last refreshed by.
     pub last_seen: SystemTime,
 }
 
@@ -41,6 +58,8 @@ pub struct NeighborEntry {
 #[derive(Debug, Default)]
 pub struct NeighborCache {
     entries: DashMap<IpAddr, NeighborEntry, FxBuildHasher>,
+    /// Unix-epoch seconds of the last stale sweep; `0` means never swept.
+    last_sweep_epoch_secs: AtomicU64,
 }
 
 impl NeighborCache {
@@ -70,33 +89,58 @@ impl NeighborCache {
         self.entries.get(ip).map(|entry| entry.clone())
     }
 
+    /// Forget every learned neighbor. Part of the tracker-wide clear, so the
+    /// user-facing reset also recovers from a poisoned or flood-filled table.
+    pub fn clear(&self) {
+        self.entries.clear();
+    }
+
     fn learn(&self, ip: IpAddr, mac: &str, vendor: &Option<String>, now: SystemTime) {
-        // Unspecified covers ARP probes and DAD solicitations; a multicast IP
-        // never names a neighbor (possible in a forged NA target field).
-        if ip.is_unspecified() || ip.is_multicast() || !is_unicast_hardware_mac(mac) {
+        // Unspecified covers ARP probes and DAD solicitations; a multicast or
+        // limited-broadcast IP never names a neighbor (possible in a forged
+        // NA target or ARP sender field). Subnet-directed broadcasts are not
+        // recognizable here — that would need the interface prefixes.
+        let is_v4_broadcast = matches!(ip, IpAddr::V4(v4) if v4.is_broadcast());
+        if ip.is_unspecified()
+            || ip.is_multicast()
+            || is_v4_broadcast
+            || !is_unicast_hardware_mac(mac)
+        {
             return;
         }
 
         // The cap only gates brand-new keys; refreshing a known neighbor is
-        // always allowed (see MAX_ENTRIES). Both checks run before the shard
-        // lock below, so racing processor threads can overshoot the cap by at
-        // most a thread count's worth of entries — harmless. `len()` must not
-        // be called while the entry guard is held: it read-locks every shard.
+        // always allowed (see MAX_ENTRIES). When full, stale entries are
+        // swept out to make room, so a transient flood or a long-gone scan
+        // cannot poison the table for the rest of the process lifetime.
+        // These checks run before the shard lock below, so racing processor
+        // threads can overshoot the cap by at most a thread count's worth of
+        // entries — harmless. `len()` must not be called while the entry
+        // guard is held: it read-locks every shard.
         if !self.entries.contains_key(&ip) && self.entries.len() >= MAX_ENTRIES {
-            return;
+            self.sweep_stale(now);
+            if self.entries.len() >= MAX_ENTRIES {
+                return;
+            }
         }
 
         match self.entries.entry(ip) {
             dashmap::Entry::Occupied(mut entry) => {
-                // Packet batches fan out across processor threads, so two ARP
-                // frames for the same IP can arrive here out of capture order;
-                // never let the older observation overwrite the newer one.
-                if entry.get().last_seen <= now {
-                    entry.insert(NeighborEntry {
-                        mac: mac.to_string(),
-                        vendor: vendor.clone(),
-                        last_seen: now,
-                    });
+                // Packet batches fan out across processor threads, so two
+                // frames for the same IP can arrive here out of capture
+                // order; never let the older observation overwrite the newer
+                // one. A refresh that changes nothing but the timestamp
+                // skips the string allocations — the common case for every
+                // periodic re-announcement of a known neighbor.
+                let entry = entry.get_mut();
+                if entry.last_seen <= now {
+                    if entry.mac != mac {
+                        entry.mac = mac.to_string();
+                    }
+                    if entry.vendor.as_deref() != vendor.as_deref() {
+                        entry.vendor = vendor.clone();
+                    }
+                    entry.last_seen = now;
                 }
             }
             dashmap::Entry::Vacant(entry) => {
@@ -107,6 +151,34 @@ impl NeighborCache {
                 });
             }
         }
+    }
+
+    /// Drop entries not refreshed within [`STALE_AFTER`], at most once per
+    /// [`SWEEP_MIN_INTERVAL`]. Only called when the table is full and a new
+    /// key needs room.
+    fn sweep_stale(&self, now: SystemTime) {
+        let now_secs = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let last = self.last_sweep_epoch_secs.load(Ordering::Relaxed);
+        if now_secs < last.saturating_add(SWEEP_MIN_INTERVAL.as_secs()) {
+            return;
+        }
+        // Losing the race means another thread is already sweeping.
+        if self
+            .last_sweep_epoch_secs
+            .compare_exchange(last, now_secs, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        self.entries
+            .retain(|_, entry| match now.duration_since(entry.last_seen) {
+                Ok(age) => age < STALE_AFTER,
+                // `last_seen` ahead of `now`: a racing thread refreshed the
+                // entry with a newer capture timestamp — certainly fresh.
+                Err(_) => true,
+            });
     }
 }
 
@@ -283,13 +355,15 @@ mod tests {
     fn cap_drops_new_keys_but_still_refreshes_known_ones() {
         let cache = NeighborCache::default();
         let base = SystemTime::UNIX_EPOCH;
+        // All entries fresh (well within STALE_AFTER of the probes below),
+        // so the at-cap sweep finds nothing to drop.
         for i in 0..MAX_ENTRIES {
             let octets = [10u8, (i >> 16) as u8, (i >> 8) as u8, i as u8];
             cache.learn(
                 IpAddr::from(octets),
                 "aa:bb:cc:00:00:01",
                 &None,
-                base + std::time::Duration::from_secs(i as u64 + 1),
+                base + std::time::Duration::from_secs(1),
             );
         }
         assert_eq!(cache.entries.len(), MAX_ENTRIES);
@@ -299,7 +373,7 @@ mod tests {
             ip("192.168.0.200"),
             "aa:bb:cc:00:00:02",
             &None,
-            base + std::time::Duration::from_secs(MAX_ENTRIES as u64 + 10),
+            base + std::time::Duration::from_secs(100),
         );
         assert_eq!(cache.entries.len(), MAX_ENTRIES);
         assert!(cache.get(&ip("192.168.0.200")).is_none());
@@ -310,9 +384,80 @@ mod tests {
             ip("10.0.0.0"),
             "aa:bb:cc:00:00:03",
             &None,
-            base + std::time::Duration::from_secs(MAX_ENTRIES as u64 + 20),
+            base + std::time::Duration::from_secs(200),
         );
         assert_eq!(cache.get(&ip("10.0.0.0")).unwrap().mac, "aa:bb:cc:00:00:03");
+    }
+
+    #[test]
+    fn full_table_sweeps_stale_entries_to_admit_new_ones() {
+        let cache = NeighborCache::default();
+        let base = SystemTime::UNIX_EPOCH;
+        // A burst of junk (e.g. a subnet scan with forged senders) fills the
+        // table at one instant...
+        for i in 0..MAX_ENTRIES {
+            let octets = [10u8, (i >> 16) as u8, (i >> 8) as u8, i as u8];
+            cache.learn(
+                IpAddr::from(octets),
+                "aa:bb:cc:00:00:01",
+                &None,
+                base + std::time::Duration::from_secs(1),
+            );
+        }
+        assert_eq!(cache.entries.len(), MAX_ENTRIES);
+
+        // ...and once it has gone stale, a genuinely new neighbor gets room
+        // instead of being dropped forever.
+        let later = base + STALE_AFTER + std::time::Duration::from_secs(120);
+        cache.learn(ip("192.168.0.200"), "aa:bb:cc:00:00:02", &None, later);
+        assert_eq!(
+            cache.get(&ip("192.168.0.200")).unwrap().mac,
+            "aa:bb:cc:00:00:02"
+        );
+        assert!(cache.get(&ip("10.0.0.0")).is_none());
+    }
+
+    #[test]
+    fn clear_forgets_learned_neighbors() {
+        let cache = NeighborCache::default();
+        cache.learn(
+            ip("192.168.0.7"),
+            "68:5e:dd:09:15:5e",
+            &None,
+            SystemTime::now(),
+        );
+        assert!(cache.get(&ip("192.168.0.7")).is_some());
+        cache.clear();
+        assert!(cache.get(&ip("192.168.0.7")).is_none());
+    }
+
+    #[test]
+    fn broadcast_ip_is_rejected() {
+        // A forged ARP can name the limited-broadcast address as sender or
+        // target; it never names a neighbor.
+        let cache = NeighborCache::default();
+        cache.learn(
+            ip("255.255.255.255"),
+            "68:5e:dd:09:15:5e",
+            &None,
+            SystemTime::now(),
+        );
+        assert!(cache.get(&ip("255.255.255.255")).is_none());
+    }
+
+    #[test]
+    fn unchanged_refresh_updates_timestamp_in_place() {
+        let cache = NeighborCache::default();
+        let earlier = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(5);
+        let later = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10);
+        let vendor = Some("Sender Corp".to_string());
+        cache.learn(ip("192.168.0.50"), "68:5e:dd:09:15:5e", &vendor, earlier);
+        cache.learn(ip("192.168.0.50"), "68:5e:dd:09:15:5e", &vendor, later);
+
+        let entry = cache.get(&ip("192.168.0.50")).unwrap();
+        assert_eq!(entry.mac, "68:5e:dd:09:15:5e");
+        assert_eq!(entry.vendor.as_deref(), Some("Sender Corp"));
+        assert_eq!(entry.last_seen, later);
     }
 
     #[test]

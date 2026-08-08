@@ -218,9 +218,9 @@ pub struct ConnectionTracker {
     /// by a few entries under concurrent ingest near the limit — acceptable
     /// for a flood-protection bound.
     active_count: AtomicUsize,
-    /// IP -> MAC/vendor mappings learned passively from ingested ARP packets.
-    /// Outlives the ARP connections themselves, so LAN peers stay identified
-    /// after their ARP rows are cleaned up.
+    /// IP -> MAC/vendor mappings learned passively from ingested ARP (IPv4)
+    /// and NDP (IPv6) packets. Outlives the connections themselves, so LAN
+    /// peers stay identified after their ARP/NDP rows are cleaned up.
     neighbors: NeighborCache,
 }
 
@@ -270,11 +270,13 @@ impl ConnectionTracker {
     pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
         // Harvest IP -> MAC mappings from ARP and NDP packets; only they pay
         // this cost.
-        if let ProtocolState::Arp(arp_info) = &parsed.protocol_state {
-            self.neighbors.learn_from_arp(arp_info, now);
-        }
-        if let Some(ndp_neighbor) = &parsed.ndp_neighbor {
-            self.neighbors.learn_from_ndp(ndp_neighbor, now);
+        match &parsed.protocol_state {
+            ProtocolState::Arp(arp_info) => self.neighbors.learn_from_arp(arp_info, now),
+            ProtocolState::Icmp {
+                ndp_neighbor: Some(neighbor),
+                ..
+            } => self.neighbors.learn_from_ndp(neighbor, now),
+            _ => {}
         }
 
         // Track RTT for TCP connections using SYN/SYN-ACK timing, and for QUIC
@@ -332,6 +334,7 @@ impl ConnectionTracker {
                 icmp_type,
                 icmp_id: Some(identifier),
                 icmp_sequence: Some(sequence),
+                ..
             } => match icmp_type {
                 8 | 128 => Some((*identifier, *sequence, false)),
                 0 | 129 => Some((*identifier, *sequence, true)),
@@ -893,7 +896,8 @@ impl ConnectionTracker {
         self.historic.len()
     }
 
-    /// Drop all active and historic connections and reset RTT/QUIC state.
+    /// Drop all active and historic connections and reset RTT/QUIC state and
+    /// the learned-neighbor cache.
     pub fn clear(&self) {
         let _lifecycle = self
             .lifecycle
@@ -912,6 +916,7 @@ impl ConnectionTracker {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        self.neighbors.clear();
     }
 
     /// The tracker's configuration.
@@ -936,7 +941,8 @@ impl ConnectionTracker {
         &self.historic
     }
 
-    /// The ARP-learned MAC/vendor mapping for `ip`, if one has been observed.
+    /// The ARP/NDP-learned MAC/vendor mapping for `ip`, if one has been
+    /// observed.
     pub fn neighbor(&self, ip: &std::net::IpAddr) -> Option<NeighborEntry> {
         self.neighbors.get(ip)
     }
@@ -1027,7 +1033,6 @@ mod tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
-            ndp_neighbor: None,
         }
     }
 
@@ -1055,7 +1060,6 @@ mod tests {
             }),
             process_name: None,
             process_id: None,
-            ndp_neighbor: None,
         }
     }
 
@@ -1087,7 +1091,6 @@ mod tests {
             }),
             process_name: None,
             process_id: None,
-            ndp_neighbor: None,
         }
     }
 
@@ -1111,6 +1114,7 @@ mod tests {
                 icmp_type: if is_reply { 0 } else { 8 },
                 icmp_id: Some(identifier),
                 icmp_sequence: Some(sequence),
+                ndp_neighbor: None,
             },
             tcp_header: None,
             is_outgoing,
@@ -1118,7 +1122,6 @@ mod tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
-            ndp_neighbor: None,
         }
     }
 
@@ -1155,7 +1158,6 @@ mod tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
-            ndp_neighbor: None,
         }
     }
 
@@ -1576,7 +1578,6 @@ mod tests {
             }),
             process_name: None,
             process_id: None,
-            ndp_neighbor: None,
         }
     }
 
@@ -1638,7 +1639,6 @@ mod tests {
             }),
             process_name: None,
             process_id: None,
-            ndp_neighbor: None,
         }
     }
 

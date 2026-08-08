@@ -55,26 +55,30 @@ fn target_address(icmpv6_data: &[u8]) -> Option<IpAddr> {
 }
 
 /// Walk the TLV option list for a source (1) or target (2) link-layer
-/// address option and format its MAC. Option lengths count 8-octet units; a
-/// zero length is malformed and aborts the walk (RFC 4861 §4.6). A matching
-/// option is used only at length 1 (2 header bytes + 6 address bytes), the
-/// Ethernet form — other link layers use other sizes.
+/// address option and format its MAC. Option lengths count 8-octet units.
+/// RFC 4861 (§4.6, §7.1.1) requires the whole message to be discarded when
+/// any included option is malformed, so the walk always continues to the end
+/// of the list and the candidate is returned only after every option — a
+/// zero length, a declared length running past the packet, or a trailing
+/// partial option rejects the message even when the wanted option came
+/// first. A matching option is used only at length 1 (2 header bytes +
+/// 6 address bytes), the Ethernet form — other link layers use other sizes.
 fn find_link_layer_option(mut options: &[u8], wanted: u8) -> Option<String> {
-    while options.len() >= 8 {
+    let mut mac = None;
+    while !options.is_empty() {
+        if options.len() < 8 {
+            return None;
+        }
         let length = options[1] as usize * 8;
         if length == 0 {
             return None;
         }
-        if options[0] == wanted && length == 8 {
-            let mac = &options[2..8];
-            return Some(format!(
-                "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-            ));
+        if mac.is_none() && options[0] == wanted && length == 8 {
+            mac = Some(crate::network::oui::format_mac(&options[2..8]));
         }
         options = options.get(length..)?;
     }
-    None
+    mac
 }
 
 #[cfg(test)]
@@ -163,6 +167,30 @@ mod tests {
     fn malformed_zero_length_option_aborts() {
         let mut msg = solicitation("fe80::1");
         msg.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 0]); // length 0
+        assert!(extract_neighbor(&msg, ip("fe80::2"), None).is_none());
+    }
+
+    /// RFC 4861 §7.1.1: a message is discarded when *any* option is invalid,
+    /// including ones after the link-layer option already found.
+    #[test]
+    fn malformed_option_after_the_match_rejects_the_message() {
+        // Valid source link-layer option, then a zero-length option.
+        let mut msg = solicitation("fe80::1");
+        msg.extend_from_slice(&option(1, &MAC));
+        msg.extend_from_slice(&[5, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(extract_neighbor(&msg, ip("fe80::2"), None).is_none());
+
+        // Valid source link-layer option, then one whose declared length
+        // runs past the end of the packet.
+        let mut msg = solicitation("fe80::1");
+        msg.extend_from_slice(&option(1, &MAC));
+        msg.extend_from_slice(&[5, 4, 0, 0, 0, 0, 0, 0]); // claims 32 bytes
+        assert!(extract_neighbor(&msg, ip("fe80::2"), None).is_none());
+
+        // Valid source link-layer option, then a trailing partial option.
+        let mut msg = solicitation("fe80::1");
+        msg.extend_from_slice(&option(1, &MAC));
+        msg.extend_from_slice(&[5, 1, 0]);
         assert!(extract_neighbor(&msg, ip("fe80::2"), None).is_none());
     }
 

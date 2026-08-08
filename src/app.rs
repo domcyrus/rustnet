@@ -2984,7 +2984,8 @@ impl App {
         self.dns_resolver.is_some()
     }
 
-    /// The ARP-learned MAC/vendor mapping for `ip`, if one has been observed.
+    /// The ARP/NDP-learned MAC/vendor mapping for `ip`, if one has been
+    /// observed.
     pub fn lookup_neighbor(&self, ip: std::net::IpAddr) -> Option<NeighborEntry> {
         self.tracker.neighbor(&ip)
     }
@@ -3707,7 +3708,6 @@ mod connection_lifecycle_tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
-            ndp_neighbor: None,
         }
     }
 
@@ -3992,7 +3992,6 @@ mod pcapng_export_tests {
             dpi_result: None,
             process_name: None,
             process_id: None,
-            ndp_neighbor: None,
         });
         let key = outcome.key;
         tracker.connections().get_mut(&key).unwrap().process_name = Some("nginx".to_string());

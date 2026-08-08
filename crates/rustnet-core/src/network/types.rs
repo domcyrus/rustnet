@@ -339,6 +339,12 @@ pub enum ProtocolState {
         icmp_type: u8,
         icmp_id: Option<u16>,
         icmp_sequence: Option<u16>,
+        /// IP-to-MAC mapping carried by an NDP message's link-layer address
+        /// option (ICMPv6 only), extracted by the parser when the enclosing
+        /// IPv6 header proved on-link origin (hop limit 255, no Fragment
+        /// Header — RFC 4861, RFC 6980). Feeds the tracker's neighbor cache,
+        /// the IPv6 analogue of [`ProtocolState::Arp`].
+        ndp_neighbor: Option<NdpNeighbor>,
     },
     Igmp {
         igmp_type: u8,
@@ -4554,6 +4560,7 @@ mod tests {
                 icmp_type: 8,
                 icmp_id: Some(1234),
                 icmp_sequence: Some(7),
+                ndp_neighbor: None,
             },
         );
 
@@ -4564,6 +4571,7 @@ mod tests {
             icmp_type: 129,
             icmp_id: Some(1234),
             icmp_sequence: Some(7),
+            ndp_neighbor: None,
         };
         assert_eq!(conn.state(), "ECHO_REP(1234)");
 
