@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **Ubuntu 24.04 LTS (Noble) PPA**: The PPA now also builds for Ubuntu 24.04
+  LTS using its backported `rustc-1.89` toolchain, which makes the documented
+  `add-apt-repository` install work on Ubuntu 24.04 and Linux Mint 22.x.
+  Install docs updated accordingly (#533)
 - **DNS Query Name in Details**: The Details tab's DNS card now shows the
   queried domain as `DNS Query` alongside the query type and response IPs.
   The name was already parsed from query and response packets but only used

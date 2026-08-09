@@ -11,12 +11,13 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-This automatically builds and uploads source packages for both supported Ubuntu series:
+This automatically builds and uploads source packages for all supported Ubuntu series:
 
+- Ubuntu 24.04 LTS (Noble Numbat)
 - Ubuntu 25.10 (Questing Quokka)
 - Ubuntu 26.04 LTS (Resolute Raccoon)
 
-Both series ship `rustc-1.88` / `cargo-1.88`, which is the minimum required for the let-chains feature used by the project (see `rust-version` in `Cargo.toml`).
+Each series ships versioned `rustc`/`cargo` packages satisfying the Rust 1.88 minimum required for the let-chains feature used by the project (see `rust-version` in `Cargo.toml`). The workflow pins the toolchain per series (Noble: 1.89, Questing: 1.88, Resolute: 1.91).
 
 ## GitHub Secrets Setup
 
@@ -54,7 +55,7 @@ sudo apt install rustnet
 - **Binary**: rustnet
 - **Maintainer**: Marco Cadetg <cadetg@gmail.com>
 - **PPA**: https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet
-- **Supported**: Ubuntu 25.10 (Questing) and 26.04 LTS (Resolute)
+- **Supported**: Ubuntu 24.04 LTS (Noble), 25.10 (Questing) and 26.04 LTS (Resolute)
 - **Architectures**: amd64, arm64, armhf
 
 ## Workflow

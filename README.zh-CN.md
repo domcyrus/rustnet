@@ -122,7 +122,7 @@ RustNet 将进程级流量计量与实时网络接口统计整合在一起：
 brew install rustnet
 ```
 
-**Ubuntu(25.10+):**
+**Ubuntu(24.04 LTS+)/ Linux Mint 22:**
 ```bash
 sudo add-apt-repository ppa:domcyrus/rustnet
 sudo apt update && sudo apt install rustnet
