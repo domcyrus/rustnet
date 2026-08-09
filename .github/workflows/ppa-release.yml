@@ -16,6 +16,7 @@ on:
         default: 'resolute'
         type: choice
         options:
+          - jammy # 22.04 LTS (also Linux Mint 21.x, Pop!_OS 22.04)
           - noble # 24.04 LTS (also Linux Mint 22.x)
           - questing # 25.10
           - resolute # 26.04 LTS
@@ -45,8 +46,8 @@ jobs:
             echo 'releases=["${{ inputs.ubuntu_release }}"]' >> $GITHUB_OUTPUT
             echo "Dispatch: building only ${{ inputs.ubuntu_release }}"
           else
-            echo 'releases=["noble","questing","resolute"]' >> $GITHUB_OUTPUT
-            echo "Auto: building noble, questing and resolute"
+            echo 'releases=["jammy","noble","questing","resolute"]' >> $GITHUB_OUTPUT
+            echo "Auto: building jammy, noble, questing and resolute"
           fi
 
   build-and-upload:
@@ -133,6 +134,7 @@ jobs:
           # packages. We pin to the lowest version available on the target
           # release that still satisfies our >= 1.88 floor (let-chains).
           case "${{ matrix.ubuntu_release }}" in
+            jammy) RUST_VERSION=1.89 ;;
             noble) RUST_VERSION=1.89 ;;
             questing) RUST_VERSION=1.88 ;;
             resolute) RUST_VERSION=1.91 ;;
