@@ -671,6 +671,16 @@ pub struct DnsInfo {
     pub txid: u16,
     /// Response code (RCODE); `Some` only on responses.
     pub rcode: Option<u8>,
+    /// `Some(true)` when a NOERROR response carried no answer record of the
+    /// queried type (NODATA, e.g. a CNAME-only answer or an empty answer
+    /// section): the name exists but has no such record. Claimed per RFC 2308
+    /// §2.2 only when the whole answer section parsed, the response is not
+    /// truncated (TC), and the authority section is NODATA-shaped (SOA or
+    /// empty, not a referral's NS-without-SOA). `Some(false)` when a NOERROR
+    /// response did answer the queried type; `None` before a response is
+    /// seen, when the question section is missing, or when the response is
+    /// ambiguous.
+    pub nodata: Option<bool>,
 }
 
 /// Standard RCODE names (RFC 1035 / RFC 2136). Unknown codes render as "RCODE n".
@@ -739,6 +749,62 @@ pub enum DnsQueryType {
     TA,         // 32768
     DLV,        // 32769
     Other(u16), // For any other type
+}
+
+impl DnsQueryType {
+    /// Map a wire-format QTYPE / record TYPE value to its enum variant.
+    pub fn from_wire(qtype: u16) -> Self {
+        match qtype {
+            1 => DnsQueryType::A,
+            2 => DnsQueryType::NS,
+            5 => DnsQueryType::CNAME,
+            6 => DnsQueryType::SOA,
+            12 => DnsQueryType::PTR,
+            13 => DnsQueryType::HINFO,
+            15 => DnsQueryType::MX,
+            16 => DnsQueryType::TXT,
+            17 => DnsQueryType::RP,
+            18 => DnsQueryType::AFSDB,
+            24 => DnsQueryType::SIG,
+            25 => DnsQueryType::KEY,
+            28 => DnsQueryType::AAAA,
+            29 => DnsQueryType::LOC,
+            33 => DnsQueryType::SRV,
+            35 => DnsQueryType::NAPTR,
+            36 => DnsQueryType::KX,
+            37 => DnsQueryType::CERT,
+            39 => DnsQueryType::DNAME,
+            42 => DnsQueryType::APL,
+            43 => DnsQueryType::DS,
+            44 => DnsQueryType::SSHFP,
+            45 => DnsQueryType::IPSECKEY,
+            46 => DnsQueryType::RRSIG,
+            47 => DnsQueryType::NSEC,
+            48 => DnsQueryType::DNSKEY,
+            49 => DnsQueryType::DHCID,
+            50 => DnsQueryType::NSEC3,
+            51 => DnsQueryType::NSEC3PARAM,
+            52 => DnsQueryType::TLSA,
+            53 => DnsQueryType::SMIMEA,
+            55 => DnsQueryType::HIP,
+            59 => DnsQueryType::CDS,
+            60 => DnsQueryType::CDNSKEY,
+            61 => DnsQueryType::OPENPGPKEY,
+            62 => DnsQueryType::CSYNC,
+            63 => DnsQueryType::ZONEMD,
+            64 => DnsQueryType::SVCB,
+            65 => DnsQueryType::HTTPS,
+            108 => DnsQueryType::EUI48,
+            109 => DnsQueryType::EUI64,
+            249 => DnsQueryType::TKEY,
+            250 => DnsQueryType::TSIG,
+            256 => DnsQueryType::URI,
+            257 => DnsQueryType::CAA,
+            32768 => DnsQueryType::TA,
+            32769 => DnsQueryType::DLV,
+            other => DnsQueryType::Other(other),
+        }
+    }
 }
 
 impl std::fmt::Display for DnsQueryType {
@@ -4319,6 +4385,7 @@ mod tests {
             is_response: false,
             txid: 0x1234,
             rcode: None,
+            nodata: None,
         };
 
         conn.dpi_info = Some(DpiInfo {
@@ -4335,6 +4402,7 @@ mod tests {
             is_response: true,
             txid: 0x1234,
             rcode: Some(0),
+            nodata: Some(false),
         };
 
         conn.dpi_info = Some(DpiInfo {
@@ -4439,6 +4507,7 @@ mod tests {
             is_response: false,
             txid: 0x1234,
             rcode: None,
+            nodata: None,
         };
 
         conn.dpi_info = Some(DpiInfo {

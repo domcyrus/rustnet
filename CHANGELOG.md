@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **DNS Query Name in Details**: The Details tab's DNS card now shows the
+  queried domain as `DNS Query` alongside the query type and response IPs.
+  The name was already parsed from query and response packets but only used
+  for filtering and the Overview protocol column. The card also flags NODATA
+  answers: a NOERROR response whose answer section holds no record of the
+  queried type (e.g. an HTTPS-type lookup for a name with only A/AAAA
+  records) shows `DNS Answer: no data` instead of silently omitting the
+  response rows. The claim follows RFC 2308: truncated (TC) responses,
+  referrals (NS-without-SOA authority), and answer sections that do not
+  parse completely leave the flag unset rather than reporting a false
+  "no data". `rustnet-core` API note: `DnsInfo` gained a `nodata` field,
+  a breaking change for code constructing that struct with a literal (#532)
 - **LAN Device Identification**: The Details tab's Network Context card shows
   Local MAC and Remote MAC rows with the OUI vendor (e.g. "Apple, Inc.") for
   addresses the neighbor cache has resolved, learned passively from observed

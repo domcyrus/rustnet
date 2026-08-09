@@ -629,11 +629,8 @@ impl PacketParser {
             && !saw_fragment
             && let ProtocolState::Icmp { ndp_neighbor, .. } = &mut packet.protocol_state
         {
-            *ndp_neighbor = protocol::ndp::extract_neighbor(
-                transport_data,
-                src_ip,
-                self.oui_lookup.as_deref(),
-            );
+            *ndp_neighbor =
+                protocol::ndp::extract_neighbor(transport_data, src_ip, self.oui_lookup.as_deref());
         }
         Some(packet)
     }

@@ -1087,6 +1087,7 @@ mod tests {
                     is_response,
                     txid,
                     rcode: is_response.then_some(rcode),
+                    nodata: None,
                 }),
             }),
             process_name: None,
