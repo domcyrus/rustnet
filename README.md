@@ -122,7 +122,7 @@ Stats are collected every 2 seconds in a background thread with minimal performa
 brew install rustnet
 ```
 
-**Ubuntu (25.10+):**
+**Ubuntu (24.04 LTS+) / Linux Mint 22:**
 ```bash
 sudo add-apt-repository ppa:domcyrus/rustnet
 sudo apt update && sudo apt install rustnet

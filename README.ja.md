@@ -35,7 +35,7 @@ macOS または Linux:
 brew install rustnet
 ```
 
-Ubuntu 25.10 以降:
+Ubuntu 24.04 LTS 以降 / Linux Mint 22:
 
 ```bash
 sudo add-apt-repository ppa:domcyrus/rustnet

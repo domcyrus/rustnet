@@ -16,6 +16,7 @@ on:
         default: 'resolute'
         type: choice
         options:
+          - noble # 24.04 LTS (also Linux Mint 22.x)
           - questing # 25.10
           - resolute # 26.04 LTS
       tarball_suffix:
@@ -44,8 +45,8 @@ jobs:
             echo 'releases=["${{ inputs.ubuntu_release }}"]' >> $GITHUB_OUTPUT
             echo "Dispatch: building only ${{ inputs.ubuntu_release }}"
           else
-            echo 'releases=["questing","resolute"]' >> $GITHUB_OUTPUT
-            echo "Auto: building questing and resolute"
+            echo 'releases=["noble","questing","resolute"]' >> $GITHUB_OUTPUT
+            echo "Auto: building noble, questing and resolute"
           fi
 
   build-and-upload:
@@ -132,6 +133,7 @@ jobs:
           # packages. We pin to the lowest version available on the target
           # release that still satisfies our >= 1.88 floor (let-chains).
           case "${{ matrix.ubuntu_release }}" in
+            noble) RUST_VERSION=1.89 ;;
             questing) RUST_VERSION=1.88 ;;
             resolute) RUST_VERSION=1.91 ;;
             *) echo "::error::Unknown release ${{ matrix.ubuntu_release }} - add it to the case statement"; exit 1 ;;

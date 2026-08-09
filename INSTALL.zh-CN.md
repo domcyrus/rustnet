@@ -93,12 +93,15 @@ choco install rustnet
 
 ### Linux 包安装<a id="linux-package-installation"></a>
 
-#### Ubuntu PPA（推荐用于 Ubuntu 25.10 Questing 和 26.04 LTS Resolute）
+#### Ubuntu PPA（推荐用于 Ubuntu 24.04 LTS、25.10、26.04 LTS 和 Linux Mint 22）
 
 在 Ubuntu 上安装 RustNet 最简单的方式是通过官方 PPA。该 PPA 为以下 Ubuntu 系列发布构建：
 
+- Ubuntu 24.04 LTS（Noble Numbat）
 - Ubuntu 25.10（Questing Quokka）
 - Ubuntu 26.04 LTS（Resolute Raccoon）
+
+Linux Mint 22.x 基于 Ubuntu 24.04，且 Mint 会将 PPA 注册到对应的 Ubuntu 基础系列，因此相同的命令在 Mint 上同样适用。
 
 ```bash
 # 添加 RustNet PPA
@@ -118,7 +121,7 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**重要：** 该 PPA 仅支持上述两个系列（Ubuntu 25.10 Questing 和 26.04 LTS Resolute），因为构建需要 Rust 1.88+（项目中使用了 let-chains）。早期 Ubuntu 版本的仓库中没有足够新的 `rustc`。对于旧版 Ubuntu，请使用 GitHub releases 中的 [.deb 包](#debianubuntu-deb-packages)或[从源码构建](#building-from-source)。
+**重要：** 该 PPA 仅支持上述三个系列，因为构建需要 Rust 1.88+（项目中使用了 let-chains）。其他 Ubuntu 系列的仓库中没有足够新的 `rustc`。对于这些版本，请使用 GitHub releases 中的 [.deb 包](#debianubuntu-deb-packages)或[从源码构建](#building-from-source)。
 
 #### Debian/Ubuntu（.deb 包）<a id="debianubuntu-deb-packages"></a>
 
