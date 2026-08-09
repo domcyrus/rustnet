@@ -143,7 +143,7 @@ pub struct PacketParser {
     unchanged_ambiguous_refreshes: u32,
     config: ParserConfig,
     linktype: Option<i32>, // DLT linktype - 149 means PKTAP on macOS
-    oui_lookup: Option<OuiLookup>,
+    oui_lookup: Option<std::sync::Arc<OuiLookup>>,
 }
 
 impl Default for PacketParser {
@@ -174,9 +174,11 @@ impl PacketParser {
         }
     }
 
-    /// Set the OUI lookup for MAC vendor resolution
-    pub fn with_oui_lookup(mut self, oui_lookup: OuiLookup) -> Self {
-        self.oui_lookup = Some(oui_lookup);
+    /// Set the OUI lookup for MAC vendor resolution. Accepts either an owned
+    /// `OuiLookup` (as before) or an `Arc<OuiLookup>`, so the ~3 MB vendor
+    /// table can be shared between processor threads instead of cloned.
+    pub fn with_oui_lookup(mut self, oui_lookup: impl Into<std::sync::Arc<OuiLookup>>) -> Self {
+        self.oui_lookup = Some(oui_lookup.into());
         self
     }
 
@@ -586,7 +588,7 @@ impl PacketParser {
 
         // Handle extension headers if needed (`None` = non-first fragment,
         // which carries no transport header)
-        let (final_next_header, transport_offset) =
+        let (final_next_header, transport_offset, saw_fragment) =
             self.parse_ipv6_extension_headers(next_header, transport_data)?;
         // A crafted extension header can declare a length that runs past the
         // captured bytes, so `transport_offset` may exceed the slice length.
@@ -597,11 +599,43 @@ impl PacketParser {
             TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
         match final_next_header {
-            58 => protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips),
+            58 => self.parse_icmpv6(final_transport_data, params, ip_data[7], saw_fragment),
             6 => protocol::tcp::parse(final_transport_data, params, &self.config, &self.local_ips),
             17 => protocol::udp::parse(final_transport_data, params, &self.config, &self.local_ips),
             _ => None,
         }
+    }
+
+    /// Parse an ICMPv6 transport payload and, when the enclosing IPv6 header
+    /// proves on-link origin, attach any NDP-carried neighbor mapping to the
+    /// resulting `ProtocolState::Icmp`.
+    ///
+    /// NDP receivers require hop limit 255 (RFC 4861): a forged message
+    /// routed from off-link cannot arrive with it, which keeps the neighbor
+    /// cache on-link the way ARP's non-routability does for IPv4. Messages
+    /// whose extension-header chain included a Fragment Header are never
+    /// learned from: RFC 6980 forbids fragmented NDP precisely because
+    /// fragmentation lets crafted options evade validation.
+    fn parse_icmpv6(
+        &self,
+        transport_data: &[u8],
+        params: TransportParams,
+        hop_limit: u8,
+        saw_fragment: bool,
+    ) -> Option<ParsedPacket> {
+        let src_ip = params.src_ip;
+        let mut packet = protocol::icmp::parse_v6(transport_data, params, &self.local_ips)?;
+        if hop_limit == 255
+            && !saw_fragment
+            && let ProtocolState::Icmp { ndp_neighbor, .. } = &mut packet.protocol_state
+        {
+            *ndp_neighbor = protocol::ndp::extract_neighbor(
+                transport_data,
+                src_ip,
+                self.oui_lookup.as_deref(),
+            );
+        }
+        Some(packet)
     }
 
     /// Parse an ARP packet from Ethernet frame data
@@ -637,14 +671,8 @@ impl PacketParser {
         }
 
         // Extract MAC addresses
-        let sender_mac = format!(
-            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            arp_data[8], arp_data[9], arp_data[10], arp_data[11], arp_data[12], arp_data[13]
-        );
-        let target_mac = format!(
-            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            arp_data[18], arp_data[19], arp_data[20], arp_data[21], arp_data[22], arp_data[23]
-        );
+        let sender_mac = crate::network::oui::format_mac(&arp_data[8..14]);
+        let target_mac = crate::network::oui::format_mac(&arp_data[18..24]);
 
         let sender_ip = IpAddr::from([arp_data[14], arp_data[15], arp_data[16], arp_data[17]]);
         let target_ip = IpAddr::from([arp_data[24], arp_data[25], arp_data[26], arp_data[27]]);
@@ -829,7 +857,7 @@ impl PacketParser {
 
         // Handle extension headers if needed (`None` = non-first fragment,
         // which carries no transport header)
-        let (final_next_header, transport_offset) =
+        let (final_next_header, transport_offset, saw_fragment) =
             self.parse_ipv6_extension_headers(next_header, transport_data)?;
         // A crafted extension header can declare a length that runs past the
         // captured bytes, so `transport_offset` may exceed the slice length.
@@ -840,7 +868,7 @@ impl PacketParser {
             TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
         match final_next_header {
-            58 => protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips),
+            58 => self.parse_icmpv6(final_transport_data, params, data[7], saw_fragment),
             6 => protocol::tcp::parse(final_transport_data, params, &self.config, &self.local_ips),
             17 => protocol::udp::parse(final_transport_data, params, &self.config, &self.local_ips),
             _ => None,
@@ -848,15 +876,18 @@ impl PacketParser {
     }
 
     /// Walk the IPv6 extension-header chain. Returns the final next-header
-    /// value and the offset of the transport header, or `None` for a
-    /// non-first fragment: its "transport header" position holds mid-payload
-    /// bytes that must not be parsed as ports.
+    /// value, the offset of the transport header, and whether a Fragment
+    /// Header was traversed (a first/atomic fragment still carries the
+    /// transport header, but NDP must not be learned from it — RFC 6980).
+    /// `None` for a non-first fragment: its "transport header" position
+    /// holds mid-payload bytes that must not be parsed as ports.
     fn parse_ipv6_extension_headers(
         &self,
         mut next_header: u8,
         data: &[u8],
-    ) -> Option<(u8, usize)> {
+    ) -> Option<(u8, usize, bool)> {
         let mut offset = 0;
+        let mut saw_fragment = false;
 
         const HOP_BY_HOP: u8 = 0;
         const ROUTING: u8 = 43;
@@ -869,15 +900,16 @@ impl PacketParser {
             match next_header {
                 HOP_BY_HOP | ROUTING | DESTINATION_OPTIONS => {
                     if data.len() < offset + 2 {
-                        return Some((next_header, offset));
+                        return Some((next_header, offset, saw_fragment));
                     }
                     next_header = data[offset];
                     let header_len = ((data[offset + 1] as usize) + 1) * 8;
                     offset += header_len;
                 }
                 FRAGMENT => {
+                    saw_fragment = true;
                     if data.len() < offset + 8 {
-                        return Some((next_header, offset));
+                        return Some((next_header, offset, saw_fragment));
                     }
                     // Bytes 2-3: fragment offset (upper 13 bits). Only the
                     // first fragment (offset 0) carries the transport header.
@@ -891,22 +923,22 @@ impl PacketParser {
                 }
                 AUTHENTICATION => {
                     if data.len() < offset + 2 {
-                        return Some((next_header, offset));
+                        return Some((next_header, offset, saw_fragment));
                     }
                     next_header = data[offset];
                     let header_len = ((data[offset + 1] as usize) + 2) * 4;
                     offset += header_len;
                 }
                 ENCAPSULATING_SECURITY => {
-                    return Some((next_header, offset));
+                    return Some((next_header, offset, saw_fragment));
                 }
                 _ => {
-                    return Some((next_header, offset));
+                    return Some((next_header, offset, saw_fragment));
                 }
             }
 
             if offset >= data.len() {
-                return Some((next_header, offset));
+                return Some((next_header, offset, saw_fragment));
             }
         }
     }
@@ -977,6 +1009,41 @@ mod tests {
         ]
     }
 
+    /// Ethernet IPv6 ICMPv6 Neighbor Solicitation from fe80::2 for fe80::1,
+    /// carrying a source link-layer option, hop limit 255. `fragmented`
+    /// inserts an atomic Fragment Header (offset 0) before the ICMPv6 header.
+    fn ethernet_ipv6_ndp_solicitation(fragmented: bool) -> Vec<u8> {
+        let mut icmpv6 = vec![135, 0, 0, 0, 0, 0, 0, 0]; // NS header
+        icmpv6.extend_from_slice(&[
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, // target fe80::1
+        ]);
+        icmpv6.extend_from_slice(&[1, 1, 0x68, 0x5e, 0xdd, 0x09, 0x15, 0x5e]); // source LL option
+
+        let (next_header, payload) = if fragmented {
+            let mut p = vec![58, 0, 0, 0, 0, 0, 0, 1]; // atomic fragment, offset 0
+            p.extend_from_slice(&icmpv6);
+            (44u8, p)
+        } else {
+            (58u8, icmpv6)
+        };
+
+        let mut frame = vec![
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x86, 0xdd,
+            0x60, 0x00, 0x00, 0x00,
+        ];
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        frame.push(next_header);
+        frame.push(255); // hop limit
+        frame.extend_from_slice(&[
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, // src fe80::2
+        ]);
+        frame.extend_from_slice(&[
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, // dst fe80::1
+        ]);
+        frame.extend_from_slice(&payload);
+        frame
+    }
+
     fn linux_sll_ipv4_tcp() -> Vec<u8> {
         vec![
             // Linux SLL header
@@ -1021,6 +1088,38 @@ mod tests {
         assert_eq!(p.remote_addr.port(), 80, "Remote port should be 80");
         assert!(p.tcp_header.is_some());
         assert!(p.tcp_header.unwrap().flags.syn, "SYN flag should be set");
+    }
+
+    #[test]
+    fn ndp_is_learned_at_hop_limit_255_but_never_from_fragments() {
+        let parser = create_parser_with_linktype(1); // DLT_EN10MB
+
+        let parsed = parser
+            .parse_packet(&ethernet_ipv6_ndp_solicitation(false))
+            .expect("NDP solicitation should parse");
+        match &parsed.protocol_state {
+            ProtocolState::Icmp {
+                ndp_neighbor: Some(neighbor),
+                ..
+            } => {
+                assert_eq!(neighbor.ip, "fe80::2".parse::<IpAddr>().unwrap());
+                assert_eq!(neighbor.mac, "68:5e:dd:09:15:5e");
+            }
+            other => panic!("expected a learned NDP neighbor, got {:?}", other),
+        }
+
+        // RFC 6980: an NDP message whose header chain includes a Fragment
+        // Header must be ignored, even a first/atomic fragment.
+        let parsed = parser
+            .parse_packet(&ethernet_ipv6_ndp_solicitation(true))
+            .expect("fragmented solicitation should still parse as ICMPv6");
+        assert!(matches!(
+            &parsed.protocol_state,
+            ProtocolState::Icmp {
+                ndp_neighbor: None,
+                ..
+            }
+        ));
     }
 
     #[test]

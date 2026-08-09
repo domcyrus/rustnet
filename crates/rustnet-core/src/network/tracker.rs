@@ -44,6 +44,7 @@
 use crate::network::merge::{
     TcpMergeEvents, create_connection_from_packet, merge_packet_into_connection,
 };
+use crate::network::neighbors::{NeighborCache, NeighborEntry};
 use crate::network::parser::ParsedPacket;
 use crate::network::types::{
     ApplicationProtocol, Connection, ConnectionKey, Protocol, ProtocolState, QuicPacketType,
@@ -217,6 +218,10 @@ pub struct ConnectionTracker {
     /// by a few entries under concurrent ingest near the limit — acceptable
     /// for a flood-protection bound.
     active_count: AtomicUsize,
+    /// IP -> MAC/vendor mappings learned passively from ingested ARP (IPv4)
+    /// and NDP (IPv6) packets. Outlives the connections themselves, so LAN
+    /// peers stay identified after their ARP/NDP rows are cleaned up.
+    neighbors: NeighborCache,
 }
 
 impl ConnectionTracker {
@@ -236,6 +241,7 @@ impl ConnectionTracker {
             recently_closed: Mutex::new(HashMap::new()),
             config,
             active_count: AtomicUsize::new(0),
+            neighbors: NeighborCache::default(),
         }
     }
 
@@ -262,6 +268,17 @@ impl ConnectionTracker {
     /// difference between two packets' `now` values, so a shared timestamp
     /// collapses every round trip that completes within one batch to zero.
     pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
+        // Harvest IP -> MAC mappings from ARP and NDP packets; only they pay
+        // this cost.
+        match &parsed.protocol_state {
+            ProtocolState::Arp(arp_info) => self.neighbors.learn_from_arp(arp_info, now),
+            ProtocolState::Icmp {
+                ndp_neighbor: Some(neighbor),
+                ..
+            } => self.neighbors.learn_from_ndp(neighbor, now),
+            _ => {}
+        }
+
         // Track RTT for TCP connections using SYN/SYN-ACK timing, and for QUIC
         // using the long-header handshake exchange. Everything QUIC sends after
         // the handshake is behind header protection, so this initial flight is
@@ -317,6 +334,7 @@ impl ConnectionTracker {
                 icmp_type,
                 icmp_id: Some(identifier),
                 icmp_sequence: Some(sequence),
+                ..
             } => match icmp_type {
                 8 | 128 => Some((*identifier, *sequence, false)),
                 0 | 129 => Some((*identifier, *sequence, true)),
@@ -878,7 +896,8 @@ impl ConnectionTracker {
         self.historic.len()
     }
 
-    /// Drop all active and historic connections and reset RTT/QUIC state.
+    /// Drop all active and historic connections and reset RTT/QUIC state and
+    /// the learned-neighbor cache.
     pub fn clear(&self) {
         let _lifecycle = self
             .lifecycle
@@ -897,6 +916,7 @@ impl ConnectionTracker {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        self.neighbors.clear();
     }
 
     /// The tracker's configuration.
@@ -919,6 +939,12 @@ impl ConnectionTracker {
     /// Direct access to the historic (recently-closed) connection table.
     pub fn historic(&self) -> &HistoricMap {
         &self.historic
+    }
+
+    /// The ARP/NDP-learned MAC/vendor mapping for `ip`, if one has been
+    /// observed.
+    pub fn neighbor(&self, ip: &std::net::IpAddr) -> Option<NeighborEntry> {
+        self.neighbors.get(ip)
     }
 
     /// Average network RTT (in milliseconds) over the last `window_secs`
@@ -1088,6 +1114,7 @@ mod tests {
                 icmp_type: if is_reply { 0 } else { 8 },
                 icmp_id: Some(identifier),
                 icmp_sequence: Some(sequence),
+                ndp_neighbor: None,
             },
             tcp_header: None,
             is_outgoing,
@@ -1103,6 +1130,108 @@ mod tests {
     /// pins a real duration instead of however long the test loop took.
     fn capture_time(millis: u64) -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000) + Duration::from_millis(millis)
+    }
+
+    fn arp_packet(operation: crate::network::types::ArpOperation) -> ParsedPacket {
+        use crate::network::types::{AddrKind, ArpInfo, ProtocolState};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Arp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 132)), 0),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 0),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
+            protocol_state: ProtocolState::Arp(ArpInfo {
+                operation,
+                sender_mac: "04:d9:f5:c5:ed:e8".to_string(),
+                sender_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
+                target_mac: "68:5e:dd:09:15:5e".to_string(),
+                target_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 132)),
+                sender_vendor: Some("ASUSTek COMPUTER INC.".to_string()),
+                target_vendor: Some("Apple, Inc.".to_string()),
+            }),
+            tcp_header: None,
+            is_outgoing: false,
+            packet_len: 42,
+            dpi_result: None,
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// Ingesting an ARP reply must populate the neighbor cache for both the
+    /// answering host and the requester, and the mapping must outlive the ARP
+    /// connection row itself.
+    #[test]
+    fn arp_ingest_learns_neighbors() {
+        use crate::network::types::ArpOperation;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let tracker = ConnectionTracker::new();
+        let gateway = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
+        let laptop = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 132));
+        assert!(tracker.neighbor(&gateway).is_none());
+
+        let outcome = tracker.ingest_at(&arp_packet(ArpOperation::Reply), capture_time(0));
+
+        let entry = tracker.neighbor(&gateway).expect("gateway learned");
+        assert_eq!(entry.mac, "04:d9:f5:c5:ed:e8");
+        assert_eq!(entry.vendor.as_deref(), Some("ASUSTek COMPUTER INC."));
+        assert_eq!(
+            tracker.neighbor(&laptop).expect("requester learned").mac,
+            "68:5e:dd:09:15:5e"
+        );
+
+        // The mapping survives removal of the ARP connection entry.
+        tracker.connections().remove(&outcome.key);
+        assert!(tracker.neighbor(&gateway).is_some());
+    }
+
+    /// A full Ethernet+IPv6 frame carrying an NDP neighbor advertisement,
+    /// so the test exercises the parser's hop-limit gate end to end.
+    fn ndp_advertisement_frame(hop_limit: u8) -> Vec<u8> {
+        let mut f = Vec::new();
+        // Ethernet header: dst mac, src mac, ethertype IPv6 (0x86dd)
+        f.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+        f.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]);
+        f.extend_from_slice(&[0x86, 0xdd]);
+        // IPv6 header (40 bytes)
+        f.extend_from_slice(&[0x60, 0, 0, 0]); // version/tc/flow
+        f.extend_from_slice(&32u16.to_be_bytes()); // payload length
+        f.push(58); // next header = ICMPv6
+        f.push(hop_limit);
+        let src: std::net::Ipv6Addr = "fe80::cafe".parse().unwrap();
+        let dst: std::net::Ipv6Addr = "ff02::1".parse().unwrap();
+        f.extend_from_slice(&src.octets());
+        f.extend_from_slice(&dst.octets());
+        // ICMPv6 neighbor advertisement: header, target address, then the
+        // target link-layer address option.
+        f.extend_from_slice(&[136, 0, 0, 0, 0x20, 0, 0, 0]); // override flag
+        let target: std::net::Ipv6Addr = "2001:db8::10".parse().unwrap();
+        f.extend_from_slice(&target.octets());
+        f.extend_from_slice(&[2, 1, 0x68, 0x5e, 0xdd, 0x09, 0x15, 0x5e]);
+        f
+    }
+
+    /// Ingesting an NDP neighbor advertisement must populate the neighbor
+    /// cache for the advertised target address — but only when the frame
+    /// arrived with hop limit 255, which proves it was not routed (RFC 4861).
+    #[test]
+    fn ndp_ingest_learns_advertised_target_at_hop_limit_255_only() {
+        let target: std::net::IpAddr = "2001:db8::10".parse().unwrap();
+
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&parse(&ndp_advertisement_frame(255)), capture_time(0));
+        assert_eq!(
+            tracker.neighbor(&target).expect("target learned").mac,
+            "68:5e:dd:09:15:5e"
+        );
+
+        let routed = ConnectionTracker::new();
+        routed.ingest_at(&parse(&ndp_advertisement_frame(64)), capture_time(0));
+        assert!(routed.neighbor(&target).is_none());
     }
 
     /// QUIC's handshake is the only round trip an on-path observer can time,

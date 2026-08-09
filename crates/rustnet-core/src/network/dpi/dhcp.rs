@@ -31,7 +31,7 @@ pub fn analyze_dhcp(payload: &[u8]) -> Option<DhcpInfo> {
     }
 
     // Extract client MAC address from bytes 28-33 (chaddr field, first 6 bytes)
-    let client_mac = format_mac(&payload[28..34]);
+    let client_mac = crate::network::oui::format_mac(&payload[28..34]);
 
     // Parse DHCP options starting at byte 240
     let (message_type, hostname) = parse_dhcp_options(&payload[240..])?;
@@ -41,14 +41,6 @@ pub fn analyze_dhcp(payload: &[u8]) -> Option<DhcpInfo> {
         hostname,
         client_mac: Some(client_mac),
     })
-}
-
-/// Format a 6-byte MAC address as a string
-fn format_mac(bytes: &[u8]) -> String {
-    format!(
-        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
-    )
 }
 
 /// Parse DHCP options and extract message type and hostname

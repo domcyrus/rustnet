@@ -22,6 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **LAN Device Identification**: The Details tab's Network Context card shows
+  Local MAC and Remote MAC rows with the OUI vendor (e.g. "Apple, Inc.") for
+  addresses the neighbor cache has resolved, learned passively from observed
+  ARP (IPv4) and NDP (IPv6) traffic. NDP messages are trusted only at hop
+  limit 255 (RFC 4861), fragmented NDP is ignored (RFC 6980), and messages
+  carrying any malformed option are discarded whole (RFC 4861 §7.1.1). Since
+  neither protocol crosses routers, normally only on-link addresses (LAN
+  devices and the gateway) populate; randomized MACs are labeled "locally
+  administered". The cache holds up to 4096 neighbors — when full, entries
+  idle for 30+ minutes are swept out to make room — and the clear-connections
+  action resets it. `rustnet-core` API note: `ProtocolState::Icmp` gained an
+  `ndp_neighbor` field, a breaking change for code constructing or
+  exhaustively matching that variant.
 - **Default Gateway Marker**: Connections whose remote endpoint is the host's
   default gateway (the local router) are now marked. The Overview Remote
   column appends `(gw)` when it fits, the Details tab annotates the remote
@@ -112,6 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Shared OUI Database**: The OUI vendor table is now shared between
+  packet-processor threads via `Arc` instead of being cloned per thread,
+  saving roughly 10 MB of memory
 - **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF
   trampoline programs (fentry/fexit) and falls back to legacy kprobes and then procfs,
   choosing the backend from actual BTF, load, and attach results rather than the

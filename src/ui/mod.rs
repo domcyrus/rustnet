@@ -94,7 +94,7 @@ pub fn set_no_color(enabled: bool) {
 mod state;
 pub use state::{
     ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, PaneScroll,
-    SortColumn, UIState, compute_grouped_rows, compute_scroll_offset,
+    SortColumn, UIState, compute_grouped_rows, compute_scroll_offset, process_group_label,
 };
 pub(crate) use widgets::tabs_bar::{HELP_TAB_INDEX, TAB_COUNT};
 
@@ -1147,9 +1147,44 @@ mod snapshot_tests {
         assert!(output.contains("Total Connections: 4"));
     }
 
+    /// One observed ARP reply between the gateway and this host. Seeds the
+    /// tracker's neighbor cache so Details can label on-link addresses with
+    /// MAC + vendor. The fixture's remote (140.82.121.4) is public and never
+    /// ARPs, so no "Remote MAC" row is rendered for it.
+    fn gateway_arp_reply() -> crate::network::parser::ParsedPacket {
+        use crate::network::types::{AddrKind, ArpInfo, ArpOperation};
+
+        let gateway = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let host = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        crate::network::parser::ParsedPacket {
+            protocol: Protocol::Arp,
+            local_addr: SocketAddr::new(host, 0),
+            remote_addr: SocketAddr::new(gateway, 0),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
+            tcp_header: None,
+            protocol_state: ProtocolState::Arp(ArpInfo {
+                operation: ArpOperation::Reply,
+                sender_mac: "04:d9:f5:c5:ed:e8".to_string(),
+                sender_ip: gateway,
+                target_mac: "68:5e:dd:09:15:5e".to_string(),
+                target_ip: host,
+                sender_vendor: Some("ASUSTek COMPUTER INC.".to_string()),
+                target_vendor: Some("Apple, Inc.".to_string()),
+            }),
+            is_outgoing: false,
+            packet_len: 42,
+            dpi_result: None,
+            process_name: None,
+            process_id: None,
+        }
+    }
+
     #[test]
     fn details_tab_tcp_https() {
         let app = test_app();
+        app.ingest_packet_for_test(&gateway_arp_reply());
         let connections = sample_connections();
         app.set_connections_snapshot_for_test(connections.clone());
 
@@ -1402,6 +1437,7 @@ mod snapshot_tests {
                 icmp_type: 0,
                 icmp_id: Some(0x1234),
                 icmp_sequence: Some(42),
+                ndp_neighbor: None,
             },
         );
         ping.process_name = Some("ping".to_string());
@@ -1451,6 +1487,7 @@ mod snapshot_tests {
                 icmp_type: 8,
                 icmp_id: Some(0x0042),
                 icmp_sequence: Some(4242),
+                ndp_neighbor: None,
             },
         );
         ping.connection_direction = Some(false);
@@ -1676,6 +1713,9 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut click_regions = ClickableRegions::default();
+        // 40 rows: the Attribution card must stay visible on a 40-row
+        // terminal — unresolved MAC rows are omitted, not rendered as
+        // placeholders, precisely so the dashboard column does not grow.
         let output = render(140, 40, |f| {
             draw(
                 f,
@@ -1722,6 +1762,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut click_regions = ClickableRegions::default();
+        // 40 rows for the same reason as the partial-attribution test above.
         let output = render(140, 40, |f| {
             draw(
                 f,
