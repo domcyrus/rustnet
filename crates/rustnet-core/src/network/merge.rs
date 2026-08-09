@@ -937,6 +937,12 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
     if new_info.rcode.is_some() {
         old_info.rcode = new_info.rcode;
     }
+
+    // Same rule for the NODATA flag: it is only ever set on responses, and
+    // the latest response describes the current transaction
+    if new_info.nodata.is_some() {
+        old_info.nodata = new_info.nodata;
+    }
 }
 
 /// Merge SSH information
@@ -1123,6 +1129,7 @@ mod tests {
             is_response: true,
             txid: 0x1234,
             rcode: Some(0),
+            nodata: None,
         };
 
         for i in 0..(MAX_MERGED_RESPONSE_IPS as u32 * 4) {
@@ -1136,6 +1143,7 @@ mod tests {
                 is_response: true,
                 txid: 0x1234,
                 rcode: Some(0),
+                nodata: None,
             };
             merge_dns_info(&mut old, &new);
         }
@@ -1154,6 +1162,7 @@ mod tests {
             is_response: true,
             txid: 0x1111,
             rcode: Some(3),
+            nodata: None,
         };
         let new_query = DnsInfo {
             query_name: None,
@@ -1162,6 +1171,7 @@ mod tests {
             is_response: false,
             txid: 0x2222,
             rcode: None,
+            nodata: None,
         };
 
         merge_dns_info(&mut old, &new_query);
@@ -1175,6 +1185,7 @@ mod tests {
             is_response: true,
             txid: 0x2222,
             rcode: Some(0),
+            nodata: None,
         };
         merge_dns_info(&mut old, &new_response);
         assert_eq!(old.rcode, Some(0), "the latest response code wins");

@@ -466,7 +466,12 @@ mod tests {
         // neighbor.
         let cache = NeighborCache::default();
         cache.learn(ip("ff02::1"), "68:5e:dd:09:15:5e", &None, SystemTime::now());
-        cache.learn(ip("224.0.0.251"), "68:5e:dd:09:15:5e", &None, SystemTime::now());
+        cache.learn(
+            ip("224.0.0.251"),
+            "68:5e:dd:09:15:5e",
+            &None,
+            SystemTime::now(),
+        );
         assert!(cache.get(&ip("ff02::1")).is_none());
         assert!(cache.get(&ip("224.0.0.251")).is_none());
     }

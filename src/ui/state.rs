@@ -962,7 +962,10 @@ pub fn compute_grouped_rows<'a>(
     // to avoid cloning N Strings just to use as HashMap keys.
     let mut groups: HashMap<&'a str, Vec<&'a Connection>> = HashMap::new();
     for conn in connections {
-        groups.entry(process_group_label(conn)).or_default().push(conn);
+        groups
+            .entry(process_group_label(conn))
+            .or_default()
+            .push(conn);
     }
 
     // Build stats for each group in a single pass over each group's connections
@@ -1240,7 +1243,11 @@ mod tests {
                 } => {
                     assert_eq!(
                         stats.connection_count,
-                        if process_name == UNKNOWN_PROCESS_GROUP { 2 } else { 1 }
+                        if process_name == UNKNOWN_PROCESS_GROUP {
+                            2
+                        } else {
+                            1
+                        }
                     );
                     Some(process_name.as_str())
                 }

@@ -1345,6 +1345,7 @@ mod snapshot_tests {
                 is_response: true,
                 txid: 0x1234,
                 rcode: Some(0),
+                nodata: Some(false),
             }),
             last_update_time: std::time::Instant::now(),
         });
@@ -1375,6 +1376,10 @@ mod snapshot_tests {
             "the paired query/response time should fill the card"
         );
         assert!(output.contains("Last Response Code") && output.contains("NOERROR"));
+        assert!(
+            output.contains("DNS Query") && output.contains("example.com"),
+            "the queried name should show alongside the response details"
+        );
         assert!(
             output.contains("Timed by pairing query and response IDs"),
             "the card should say where the timing comes from"

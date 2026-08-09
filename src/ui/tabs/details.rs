@@ -1329,6 +1329,15 @@ pub(in crate::ui) fn draw_connection_details(
                 }
             }
             crate::network::types::ApplicationProtocol::Dns(info) => {
+                if let Some(query_name) = &info.query_name {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "DNS Query",
+                        query_name.clone(),
+                        label_style,
+                    );
+                }
                 if let Some(query_type) = &info.query_type {
                     push_detail_field(
                         &mut details_text,
@@ -1344,6 +1353,18 @@ pub(in crate::ui) fn draw_connection_details(
                         &mut detail_fields,
                         "DNS Response IPs",
                         format!("{:?}", info.response_ips),
+                        label_style,
+                    );
+                }
+                // Disambiguate "record doesn't exist" from "answer not
+                // parsed": a NOERROR response whose answer section held no
+                // record of the queried type is a deliberate empty answer.
+                if info.nodata == Some(true) {
+                    push_detail_field(
+                        &mut details_text,
+                        &mut detail_fields,
+                        "DNS Answer",
+                        "no data (name exists, no record of this type)".to_string(),
                         label_style,
                     );
                 }

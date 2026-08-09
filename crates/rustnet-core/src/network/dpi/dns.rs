@@ -122,56 +122,7 @@ fn parse_question(payload: &[u8], start: usize) -> (Option<String>, Option<DnsQu
     let mut query_type = None;
     if offset + 2 <= payload.len() {
         let qtype = u16::from_be_bytes([payload[offset], payload[offset + 1]]);
-        query_type = Some(match qtype {
-            1 => DnsQueryType::A,
-            2 => DnsQueryType::NS,
-            5 => DnsQueryType::CNAME,
-            6 => DnsQueryType::SOA,
-            12 => DnsQueryType::PTR,
-            13 => DnsQueryType::HINFO,
-            15 => DnsQueryType::MX,
-            16 => DnsQueryType::TXT,
-            17 => DnsQueryType::RP,
-            18 => DnsQueryType::AFSDB,
-            24 => DnsQueryType::SIG,
-            25 => DnsQueryType::KEY,
-            28 => DnsQueryType::AAAA,
-            29 => DnsQueryType::LOC,
-            33 => DnsQueryType::SRV,
-            35 => DnsQueryType::NAPTR,
-            36 => DnsQueryType::KX,
-            37 => DnsQueryType::CERT,
-            39 => DnsQueryType::DNAME,
-            42 => DnsQueryType::APL,
-            43 => DnsQueryType::DS,
-            44 => DnsQueryType::SSHFP,
-            45 => DnsQueryType::IPSECKEY,
-            46 => DnsQueryType::RRSIG,
-            47 => DnsQueryType::NSEC,
-            48 => DnsQueryType::DNSKEY,
-            49 => DnsQueryType::DHCID,
-            50 => DnsQueryType::NSEC3,
-            51 => DnsQueryType::NSEC3PARAM,
-            52 => DnsQueryType::TLSA,
-            53 => DnsQueryType::SMIMEA,
-            55 => DnsQueryType::HIP,
-            59 => DnsQueryType::CDS,
-            60 => DnsQueryType::CDNSKEY,
-            61 => DnsQueryType::OPENPGPKEY,
-            62 => DnsQueryType::CSYNC,
-            63 => DnsQueryType::ZONEMD,
-            64 => DnsQueryType::SVCB,
-            65 => DnsQueryType::HTTPS,
-            108 => DnsQueryType::EUI48,
-            109 => DnsQueryType::EUI64,
-            249 => DnsQueryType::TKEY,
-            250 => DnsQueryType::TSIG,
-            256 => DnsQueryType::URI,
-            257 => DnsQueryType::CAA,
-            32768 => DnsQueryType::TA,
-            32769 => DnsQueryType::DLV,
-            other => DnsQueryType::Other(other),
-        });
+        query_type = Some(DnsQueryType::from_wire(qtype));
     }
     // Advance past QTYPE (2) and QCLASS (2). If they run past the payload,
     // downstream walks' bounds checks will short-circuit cleanly.
@@ -181,17 +132,29 @@ fn parse_question(payload: &[u8], start: usize) -> (Option<String>, Option<DnsQu
 }
 
 /// Walk `count` resource records starting at `offset`, pushing A / AAAA
-/// rdata into `ips` (subject to [`MAX_RESPONSE_IPS_PER_PACKET`]). Returns
-/// the offset of the byte immediately after the last record successfully
-/// walked, so callers can chain a second walk (e.g. ANCOUNT then ARCOUNT
-/// for mDNS).
-fn walk_a_aaaa_records(payload: &[u8], start: usize, count: usize, ips: &mut Vec<IpAddr>) -> usize {
+/// rdata into `ips` (subject to [`MAX_RESPONSE_IPS_PER_PACKET`]) and counting
+/// records whose TYPE matches `queried_type` into `matched` (for NODATA
+/// detection; pass `None` to skip counting, e.g. on the mDNS additional-records
+/// walk where the concept does not apply). Returns the offset of the byte
+/// immediately after the last record successfully walked (so callers can
+/// chain a second walk, e.g. ANCOUNT then ARCOUNT for mDNS) together with
+/// the number of records fully walked (so callers can tell a complete walk
+/// from one that bailed on a malformed or truncated record).
+fn walk_a_aaaa_records(
+    payload: &[u8],
+    start: usize,
+    count: usize,
+    ips: &mut Vec<IpAddr>,
+    queried_type: Option<DnsQueryType>,
+    matched: &mut usize,
+) -> (usize, usize) {
     let mut offset = start;
+    let mut walked = 0;
     let count = count.min(MAX_ANSWERS_TO_PARSE);
     for _ in 0..count {
         let after_name = match skip_dns_name(payload, offset) {
             Some(o) => o,
-            None => return offset,
+            None => return (offset, walked),
         };
         // Fixed-size RR fields: TYPE (2) + CLASS (2) + TTL (4) + RDLENGTH (2) = 10.
         if after_name
@@ -199,7 +162,7 @@ fn walk_a_aaaa_records(payload: &[u8], start: usize, count: usize, ips: &mut Vec
             .map(|e| e > payload.len())
             .unwrap_or(true)
         {
-            return offset;
+            return (offset, walked);
         }
         let atype = u16::from_be_bytes([payload[after_name], payload[after_name + 1]]);
         let rdlength =
@@ -207,8 +170,12 @@ fn walk_a_aaaa_records(payload: &[u8], start: usize, count: usize, ips: &mut Vec
         let rdata_start = after_name + 10;
         let rdata_end = match rdata_start.checked_add(rdlength) {
             Some(e) if e <= payload.len() => e,
-            _ => return offset,
+            _ => return (offset, walked),
         };
+
+        if queried_type.is_some() && queried_type == Some(DnsQueryType::from_wire(atype)) {
+            *matched += 1;
+        }
 
         if ips.len() < MAX_RESPONSE_IPS_PER_PACKET {
             match (atype, rdlength) {
@@ -231,16 +198,62 @@ fn walk_a_aaaa_records(payload: &[u8], start: usize, count: usize, ips: &mut Vec
         }
 
         offset = rdata_end;
+        walked += 1;
     }
-    offset
+    (offset, walked)
+}
+
+/// RFC 2308 §2.2: a NODATA response carries an SOA record in the authority
+/// section (types 1 and 2) or an empty authority section (type 3). NS
+/// records without an SOA are a referral instead, which says nothing about
+/// whether the queried type exists at the name. Returns true only when the
+/// authority section parses completely and has a NODATA shape.
+fn authority_marks_nodata(payload: &[u8], start: usize, count: usize) -> bool {
+    if count == 0 {
+        return true;
+    }
+    if count > MAX_ANSWERS_TO_PARSE {
+        return false;
+    }
+    let mut offset = start;
+    let mut has_soa = false;
+    for _ in 0..count {
+        let after_name = match skip_dns_name(payload, offset) {
+            Some(o) => o,
+            None => return false,
+        };
+        if after_name
+            .checked_add(10)
+            .map(|e| e > payload.len())
+            .unwrap_or(true)
+        {
+            return false;
+        }
+        let atype = u16::from_be_bytes([payload[after_name], payload[after_name + 1]]);
+        let rdlength =
+            u16::from_be_bytes([payload[after_name + 8], payload[after_name + 9]]) as usize;
+        let rdata_end = match (after_name + 10).checked_add(rdlength) {
+            Some(e) if e <= payload.len() => e,
+            _ => return false,
+        };
+        if atype == 6 {
+            has_soa = true;
+        }
+        offset = rdata_end;
+    }
+    has_soa
 }
 
 /// Parsed DNS-shaped header counts. Surfaced as a thin internal helper so
 /// the mDNS / LLMNR wrappers can also reach ARCOUNT without re-decoding.
 pub(super) struct DnsHeaderCounts {
     pub is_response: bool,
+    /// TC bit: the response was cut to fit the transport, so section counts
+    /// may promise records the payload does not carry.
+    pub truncated: bool,
     pub qdcount: u16,
     pub ancount: u16,
+    pub nscount: u16,
     pub arcount: u16,
     pub txid: u16,
     pub rcode: u8,
@@ -254,8 +267,10 @@ pub(super) fn dns_header_counts(payload: &[u8]) -> Option<DnsHeaderCounts> {
     let flags = u16::from_be_bytes([payload[2], payload[3]]);
     Some(DnsHeaderCounts {
         is_response: (flags & 0x8000) != 0,
+        truncated: (flags & 0x0200) != 0,
         qdcount: u16::from_be_bytes([payload[4], payload[5]]),
         ancount: u16::from_be_bytes([payload[6], payload[7]]),
+        nscount: u16::from_be_bytes([payload[8], payload[9]]),
         arcount: u16::from_be_bytes([payload[10], payload[11]]),
         txid: u16::from_be_bytes([payload[0], payload[1]]),
         rcode: (flags & 0x000F) as u8,
@@ -302,18 +317,41 @@ pub fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
         is_response: header.is_response,
         txid: header.txid,
         rcode: header.is_response.then_some(header.rcode),
+        nodata: None,
     };
 
     // Answer-section walk for A / AAAA records. Only runs on responses
     // (QR bit set), since `DnsInfo.response_ips` is only meaningful for
     // resolver answers.
     if header.is_response {
-        offset = walk_a_aaaa_records(
+        let mut matched = 0;
+        let (after_answers, answers_walked) = walk_a_aaaa_records(
             payload,
             offset,
             header.ancount as usize,
             &mut info.response_ips,
+            info.query_type,
+            &mut matched,
         );
+        offset = after_answers;
+        // NODATA: the resolver said NOERROR but the answer section holds no
+        // record of the queried type (empty, or e.g. a CNAME chain that ends
+        // without one). A parsed record of the queried type proves the data
+        // exists; its absence proves NODATA only when the whole answer
+        // section parsed, the response is not truncated (TC), and the
+        // authority section has RFC 2308 §2.2's NODATA shape (SOA or empty)
+        // rather than a referral's NS-without-SOA. Ambiguous responses leave
+        // the flag unset.
+        if header.rcode == 0 && info.query_type.is_some() {
+            if matched > 0 {
+                info.nodata = Some(false);
+            } else if !header.truncated
+                && answers_walked == header.ancount as usize
+                && authority_marks_nodata(payload, offset, header.nscount as usize)
+            {
+                info.nodata = Some(true);
+            }
+        }
         // `offset` is now positioned for callers that want to keep walking
         // (e.g. mDNS's additional-records pass — see `analyze_dns_for_mdns`).
         let _ = offset;
@@ -339,38 +377,40 @@ pub(super) fn analyze_dns_for_mdns(payload: &[u8]) -> Option<DnsInfo> {
         is_response: header.is_response,
         txid: header.txid,
         rcode: header.is_response.then_some(header.rcode),
+        // NODATA is a unicast-DNS concept; mDNS negative responses use NSEC
+        // (RFC 6762 §6.1) and announcements carry no question to compare
+        // against, so the flag stays unset on this path.
+        nodata: None,
     };
 
     if header.is_response {
-        offset = walk_a_aaaa_records(
+        let mut matched = 0;
+        let (after_answers, _) = walk_a_aaaa_records(
             payload,
             offset,
             header.ancount as usize,
             &mut info.response_ips,
+            None,
+            &mut matched,
         );
+        offset = after_answers;
         // RFC 6762: mDNS responses frequently place A / AAAA in the
         // ADDITIONAL section (NSEC / negative responses, "known-answer
         // suppression"-related additionals, etc.). Skip NSCOUNT (the
         // authority section) records before reaching ADDITIONAL.
-        if let Some(after_authority) = skip_records(payload, offset, header_nscount(payload)) {
+        if let Some(after_authority) = skip_records(payload, offset, header.nscount) {
             let _ = walk_a_aaaa_records(
                 payload,
                 after_authority,
                 header.arcount as usize,
                 &mut info.response_ips,
+                None,
+                &mut matched,
             );
         }
     }
 
     Some(info)
-}
-
-/// Decode the NSCOUNT (authority-records count) at bytes 8-9 of the header.
-fn header_nscount(payload: &[u8]) -> u16 {
-    if payload.len() < 12 {
-        return 0;
-    }
-    u16::from_be_bytes([payload[8], payload[9]])
 }
 
 /// Skip `count` resource records starting at `offset` without collecting
@@ -479,6 +519,10 @@ mod tests {
         let info = analyze_dns(&payload).unwrap();
         assert_eq!(info.txid, 0xABCD);
         assert_eq!(info.rcode, Some(3));
+        assert_eq!(
+            info.nodata, None,
+            "NODATA only applies to NOERROR responses; NXDOMAIN says it all"
+        );
     }
 
     #[test]
@@ -561,6 +605,86 @@ mod tests {
             info.response_ips,
             vec![IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34))]
         );
+        assert_eq!(
+            info.nodata,
+            Some(false),
+            "the answer contains a record of the queried type"
+        );
+    }
+
+    #[test]
+    fn test_noerror_response_without_queried_type_flags_nodata() {
+        // NOERROR answer holding only a CNAME for an A question: the name
+        // exists but has no record of the queried type (NODATA). This is
+        // the shape of e.g. an HTTPS-type lookup for an aliased name with
+        // no HTTPS record at the target.
+        let (mut payload, _) = make_example_question(true, 1);
+        payload.extend_from_slice(&[0xC0, 0x0C]); // NAME: pointer to question
+        payload.extend_from_slice(&[0, 5, 0, 1, 0, 0, 0, 60, 0, 2]); // CNAME, IN, TTL 60, RDLENGTH 2
+        payload.extend_from_slice(&[0xC0, 0x0C]); // RDATA: compressed name
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.rcode, Some(0));
+        assert_eq!(info.nodata, Some(true));
+        assert!(info.response_ips.is_empty());
+    }
+
+    #[test]
+    fn test_soa_authority_confirms_nodata() {
+        // NOERROR, empty answer, SOA in authority: the canonical NODATA
+        // shape (RFC 2308 §2.2 types 1 and 2).
+        let (mut payload, _) = make_example_question(true, 0);
+        payload[8..10].copy_from_slice(&1u16.to_be_bytes()); // nscount = 1
+        payload.extend_from_slice(&[0xC0, 0x0C]); // NAME: pointer to question
+        // SOA, IN, TTL 60, RDLENGTH 24: MNAME + RNAME as pointers + 5 u32 timers
+        payload.extend_from_slice(&[0, 6, 0, 1, 0, 0, 0, 60, 0, 24]);
+        payload.extend_from_slice(&[0xC0, 0x0C, 0xC0, 0x0C]);
+        payload.extend_from_slice(&[0u8; 20]);
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.rcode, Some(0));
+        assert_eq!(info.nodata, Some(true));
+    }
+
+    #[test]
+    fn test_referral_response_leaves_nodata_unset() {
+        // NOERROR with an empty answer and an NS record but no SOA in the
+        // authority section is a referral (RFC 2308 §2.2), not NODATA: the
+        // responder is pointing at another server, not denying the record.
+        let (mut payload, _) = make_example_question(true, 0);
+        payload[8..10].copy_from_slice(&1u16.to_be_bytes()); // nscount = 1
+        payload.extend_from_slice(&[0xC0, 0x0C]); // NAME: pointer to question
+        payload.extend_from_slice(&[0, 2, 0, 1, 0, 0, 0, 60, 0, 2]); // NS, IN, TTL 60, RDLENGTH 2
+        payload.extend_from_slice(&[0xC0, 0x0C]); // RDATA: compressed name
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.rcode, Some(0));
+        assert_eq!(info.nodata, None);
+    }
+
+    #[test]
+    fn test_truncated_response_leaves_nodata_unset() {
+        // TC=1 with an empty answer section: the full answer goes over TCP,
+        // so the empty section proves nothing about the queried name.
+        let (mut payload, _) = make_example_question(true, 0);
+        payload[2] |= 0x02; // TC bit
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.rcode, Some(0));
+        assert_eq!(info.nodata, None);
+    }
+
+    #[test]
+    fn test_unparseable_answer_section_leaves_nodata_unset() {
+        // ANCOUNT promises a record the payload does not carry (e.g. a
+        // capture snap length cutting the packet without the TC bit set):
+        // failing to parse records is not evidence of NODATA.
+        let (payload, _) = make_example_question(true, 1);
+
+        let info = analyze_dns(&payload).unwrap();
+        assert_eq!(info.rcode, Some(0));
+        assert_eq!(info.nodata, None);
+        assert!(info.response_ips.is_empty());
     }
 
     #[test]
@@ -625,6 +749,7 @@ mod tests {
         let info = analyze_dns(&payload).unwrap();
         assert!(!info.is_response);
         assert!(info.response_ips.is_empty());
+        assert_eq!(info.nodata, None, "a query cannot claim NODATA");
     }
 
     #[test]
