@@ -906,6 +906,13 @@ pub(super) fn get_process_name_from_pid(pid: u32) -> Option<String> {
 }
 
 fn query_process_name(pid: u32) -> ProcessNameLookup {
+    // PID 4 is the kernel's System process, fixed since Windows XP. It owns
+    // real sockets (NetBIOS name service, SMB) but has no image to query —
+    // QueryFullProcessImageNameW has nothing to return — so without this it
+    // surfaces as the "Unknown" placeholder in every process list.
+    if pid == 4 {
+        return ProcessNameLookup::Named("System".to_string());
+    }
     unsafe {
         // Open process with query information access
         let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
@@ -974,7 +981,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_pid_when_process_name_is_unavailable() {
+    fn names_the_kernel_system_process() {
         let key = ConnectionKey {
             protocol: Protocol::Udp,
             local_addr: "127.0.0.1:12346".parse().unwrap(),
@@ -984,13 +991,11 @@ mod tests {
         let mut process_names = ProcessNameCache::new();
 
         // PID 4 is the System process: always alive, but its image name is
-        // not queryable via QueryFullProcessImageNameW.
+        // not queryable via QueryFullProcessImageNameW, so it is named
+        // directly rather than cached as the Unknown placeholder.
         cache_process(&mut cache, &mut process_names, key.clone(), 4);
 
-        assert_eq!(
-            cache.get(&key),
-            Some(&(4, UNKNOWN_PROCESS_NAME.to_string()))
-        );
+        assert_eq!(cache.get(&key), Some(&(4, "System".to_string())));
     }
 
     #[test]

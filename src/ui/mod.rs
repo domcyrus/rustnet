@@ -94,7 +94,7 @@ pub fn set_no_color(enabled: bool) {
 mod state;
 pub use state::{
     ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, PaneScroll,
-    SortColumn, UIState, compute_grouped_rows, compute_scroll_offset,
+    SortColumn, UIState, compute_grouped_rows, compute_scroll_offset, process_group_label,
 };
 pub(crate) use widgets::tabs_bar::{HELP_TAB_INDEX, TAB_COUNT};
 
@@ -1150,7 +1150,7 @@ mod snapshot_tests {
     /// One observed ARP reply between the gateway and this host. Seeds the
     /// tracker's neighbor cache so Details can label on-link addresses with
     /// MAC + vendor. The fixture's remote (140.82.121.4) is public and never
-    /// ARPs, so its "Remote MAC" row must stay a placeholder.
+    /// ARPs, so no "Remote MAC" row is rendered for it.
     fn gateway_arp_reply() -> crate::network::parser::ParsedPacket {
         use crate::network::types::{AddrKind, ArpInfo, ArpOperation};
 
@@ -1437,6 +1437,7 @@ mod snapshot_tests {
                 icmp_type: 0,
                 icmp_id: Some(0x1234),
                 icmp_sequence: Some(42),
+                ndp_neighbor: None,
             },
         );
         ping.process_name = Some("ping".to_string());
@@ -1486,6 +1487,7 @@ mod snapshot_tests {
                 icmp_type: 8,
                 icmp_id: Some(0x0042),
                 icmp_sequence: Some(4242),
+                ndp_neighbor: None,
             },
         );
         ping.connection_direction = Some(false);
@@ -1711,9 +1713,10 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut click_regions = ClickableRegions::default();
-        // 44 rows: the Attribution card sits below the 19-row dashboard
-        // column plus the two MAC rows' worth of growth; 40 clips it.
-        let output = render(140, 44, |f| {
+        // 40 rows: the Attribution card must stay visible on a 40-row
+        // terminal — unresolved MAC rows are omitted, not rendered as
+        // placeholders, precisely so the dashboard column does not grow.
+        let output = render(140, 40, |f| {
             draw(
                 f,
                 &app,
@@ -1759,8 +1762,8 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut click_regions = ClickableRegions::default();
-        // 44 rows for the same reason as the partial-attribution test above.
-        let output = render(140, 44, |f| {
+        // 40 rows for the same reason as the partial-attribution test above.
+        let output = render(140, 40, |f| {
             draw(
                 f,
                 &app,

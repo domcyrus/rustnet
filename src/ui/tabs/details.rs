@@ -815,8 +815,8 @@ pub(in crate::ui) fn draw_connection_details(
     let mut right_ranges: Vec<std::ops::Range<usize>> = Vec::new();
 
     // Unlike regular sections, the first card starts without a blank separator.
-    // Together with the fixed Network Context card below this gives the left
-    // dashboard column a stable 19-row footprint.
+    // Together with the Network Context card below this gives the left
+    // dashboard column a 17-row footprint, plus one row per resolved MAC.
     details_text.push(Line::from(Span::styled(
         "Connection",
         theme::bold_fg(theme::heading()),
@@ -952,10 +952,11 @@ pub(in crate::ui) fn draw_connection_details(
         })
         .unwrap_or((None, None));
 
-    // MAC + vendor from the ARP-learned neighbor cache. Present only for
-    // on-link addresses that appeared in an ARP exchange, so a public remote
-    // can never show the router's identity. ARP connections keep their
-    // placeholders; the Application card already shows both MACs.
+    // MAC + vendor from the neighbor cache (learned from ARP and NDP).
+    // Present only for on-link addresses that appeared in such an exchange,
+    // so a public remote can never show the router's identity. ARP
+    // connections never show the rows; their Application card already
+    // shows both MACs.
     let (local_mac, remote_mac) = if conn.protocol == Protocol::Arp {
         (None, None)
     } else {
@@ -1020,16 +1021,21 @@ pub(in crate::ui) fn draw_connection_details(
         label_style,
         theme::fg(theme::field_local_addr()),
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
-        "Local MAC",
-        local_mac
-            .map(format_mac)
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
-        theme::fg(theme::field_local_addr()),
-    );
+    // MAC rows appear only once the neighbor cache actually resolved the
+    // address (like the Attribution card's fields): most connections —
+    // every public remote, for one — can never resolve, and a permanent
+    // placeholder row would push the Attribution card below the fold on
+    // shorter terminals.
+    if let Some(entry) = local_mac {
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Local MAC",
+            format_mac(entry),
+            label_style,
+            theme::fg(theme::field_local_addr()),
+        );
+    }
     push_detail_field_styled(
         &mut details_text,
         &mut detail_fields,
@@ -1038,16 +1044,16 @@ pub(in crate::ui) fn draw_connection_details(
         label_style,
         theme::fg(theme::field_remote_addr()),
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
-        "Remote MAC",
-        remote_mac
-            .map(format_mac)
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
-        theme::fg(theme::field_remote_addr()),
-    );
+    if let Some(entry) = remote_mac {
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Remote MAC",
+            format_mac(entry),
+            label_style,
+            theme::fg(theme::field_remote_addr()),
+        );
+    }
     let location_value_style = theme::fg(theme::field_location());
     push_detail_field_styled(
         &mut details_text,

@@ -65,6 +65,20 @@ impl OuiLookup {
     }
 }
 
+/// Format a 6-byte MAC address in the canonical colon-separated lowercase
+/// form every producer in this crate uses (and the string-keyed MAC checks
+/// in `neighbors` rely on).
+///
+/// # Panics
+///
+/// Panics if `bytes` is shorter than 6 bytes.
+pub fn format_mac(bytes: &[u8]) -> String {
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
+    )
+}
+
 /// Parse the first octet of a MAC address string.
 /// Supports the same formats as [`parse_mac_prefix`].
 pub fn mac_first_octet(mac: &str) -> Option<u8> {

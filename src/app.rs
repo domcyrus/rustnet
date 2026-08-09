@@ -717,7 +717,7 @@ impl ConnectionCounts {
                 Protocol::Udp => counts.udp += 1,
                 _ => {}
             }
-            processes.insert(connection.process_name.as_deref().unwrap_or("<unknown>"));
+            processes.insert(crate::ui::process_group_label(connection));
         }
 
         counts.processes = processes.len();
@@ -2984,7 +2984,8 @@ impl App {
         self.dns_resolver.is_some()
     }
 
-    /// The ARP-learned MAC/vendor mapping for `ip`, if one has been observed.
+    /// The ARP/NDP-learned MAC/vendor mapping for `ip`, if one has been
+    /// observed.
     pub fn lookup_neighbor(&self, ip: std::net::IpAddr) -> Option<NeighborEntry> {
         self.tracker.neighbor(&ip)
     }
