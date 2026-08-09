@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **Ubuntu 22.04 LTS (Jammy) PPA**: The PPA now also builds for Ubuntu 22.04
+  LTS using its backported `rustc-1.89` toolchain, covering Linux Mint 21.x
+  and Pop!_OS 22.04. Install docs now list the supported derivatives and the
+  Pop!_OS `apt-manage` command (#534)
 - **Ubuntu 24.04 LTS (Noble) PPA**: The PPA now also builds for Ubuntu 24.04
   LTS using its backported `rustc-1.89` toolchain, which makes the documented
   `add-apt-repository` install work on Ubuntu 24.04 and Linux Mint 22.x.
