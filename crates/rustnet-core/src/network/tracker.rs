@@ -336,14 +336,25 @@ impl ConnectionTracker {
         if parsed.protocol == Protocol::Udp
             && let Some(dpi) = &parsed.dpi_result
             && let ApplicationProtocol::NetBios(netbios) = &dpi.application
-            && let Ok(mut tracker) = self.rtt.lock()
         {
-            netbios_response_time = tracker.record_netbios_packet(
-                base_key.local_addr,
-                netbios,
-                parsed.is_outgoing,
-                now,
-            );
+            let completed = match self.rtt.lock() {
+                Ok(mut tracker) => {
+                    tracker.record_netbios_packet(base_key, netbios, parsed.is_outgoing, now)
+                }
+                Err(_) => None,
+            };
+            if let Some((rtt, request_key)) = completed {
+                netbios_response_time = Some(rtt);
+                // A broadcast request and its unicast reply live under
+                // different keys. Stamp the requesting connection too, so the
+                // row showing the query also shows its round trip; this
+                // packet's own connection is updated in the ingest path below.
+                if request_key != base_key
+                    && let Some(mut conn) = self.connections.get_mut(&request_key)
+                {
+                    conn.netbios_response_time = Some(rtt);
+                }
+            }
         }
 
         // ICMP echo requests reuse one identifier for the life of a ping
@@ -1562,6 +1573,14 @@ mod tests {
         let conn = tracker.connections().get(&response.key).unwrap().clone();
         assert_eq!(conn.netbios_response_time, Some(Duration::from_millis(27)));
         assert!(conn.initial_rtt.is_none());
+
+        // The broadcast row is the one a user naturally inspects, so the
+        // round trip must land there as well, not only on the responder.
+        let query_conn = tracker.connections().get(&query.key).unwrap().clone();
+        assert_eq!(
+            query_conn.netbios_response_time,
+            Some(Duration::from_millis(27))
+        );
     }
 
     #[test]

@@ -2039,9 +2039,11 @@ pub struct RttTracker {
     /// transaction ID (stub resolvers reuse one socket for many queries).
     pending_dns: HashMap<(ConnectionKey, u16), SystemTime>,
     /// Outbound NetBIOS requests awaiting a response. The remote endpoint is
-    /// intentionally absent because Name Service requests are commonly sent
-    /// to a broadcast address and answered by an individual host.
-    pending_netbios: HashMap<(SocketAddr, NetBiosService, u16), SystemTime>,
+    /// intentionally absent from the map key because Name Service requests are
+    /// commonly sent to a broadcast address and answered by an individual
+    /// host. The requesting connection's key is stored so a reply arriving
+    /// under the responder's unicast key can stamp the request row too.
+    pending_netbios: HashMap<(SocketAddr, NetBiosService, u16), (SystemTime, ConnectionKey)>,
     /// Outbound ICMP echo requests awaiting replies, keyed by connection,
     /// identifier, and sequence number. The sequence keeps fast pings distinct.
     pending_icmp_echoes: HashMap<(ConnectionKey, u16, u16), SystemTime>,
@@ -2196,34 +2198,37 @@ impl RttTracker {
         }
     }
 
-    /// Record a NetBIOS packet and return the request-to-response time when an
-    /// incoming final response matches an outgoing request.
+    /// Record a NetBIOS packet and, when an incoming final response matches an
+    /// outgoing request, return the request-to-response time together with the
+    /// requesting connection's key.
     ///
     /// NetBIOS Name Service usually sends requests to a broadcast address,
     /// while the responding host replies from its unicast address. Pairing by
     /// local socket, service, and transaction ID handles both broadcast and
-    /// unicast exchanges. Like DNS timing, the result includes remote service
+    /// unicast exchanges; the returned key lets the caller stamp the round
+    /// trip on the requesting connection when the reply arrives under a
+    /// different one. Like DNS timing, the result includes remote service
     /// processing and is not added to transport RTT aggregates.
     pub fn record_netbios_packet(
         &mut self,
-        local_addr: SocketAddr,
+        key: ConnectionKey,
         info: &NetBiosInfo,
         is_outgoing: bool,
         at: SystemTime,
-    ) -> Option<Duration> {
+    ) -> Option<(Duration, ConnectionKey)> {
         self.cleanup_stale(at);
-        let key = (local_addr, info.service, info.transaction_id);
+        let pending_key = (key.local_addr, info.service, info.transaction_id);
         if is_outgoing && info.is_request() {
             if self.pending_netbios.len() < MAX_PENDING_NETBIOS
-                || self.pending_netbios.contains_key(&key)
+                || self.pending_netbios.contains_key(&pending_key)
             {
-                self.pending_netbios.insert(key, at);
+                self.pending_netbios.insert(pending_key, (at, key));
             }
             return None;
         }
         if !is_outgoing && info.is_response {
-            let sent_at = self.pending_netbios.remove(&key)?;
-            return Some(at.duration_since(sent_at).unwrap_or_default());
+            let (sent_at, request_key) = self.pending_netbios.remove(&pending_key)?;
+            return Some((at.duration_since(sent_at).unwrap_or_default(), request_key));
         }
         None
     }
@@ -2380,7 +2385,8 @@ impl RttTracker {
             self.pending_dns.retain(|_, ts| *ts > dns_cutoff);
         }
         if let Some(netbios_cutoff) = now.checked_sub(self.max_pending_netbios_age) {
-            self.pending_netbios.retain(|_, ts| *ts > netbios_cutoff);
+            self.pending_netbios
+                .retain(|_, (ts, _)| *ts > netbios_cutoff);
         }
         if let Some(icmp_cutoff) = now.checked_sub(self.max_pending_icmp_age) {
             self.pending_icmp_echoes.retain(|_, ts| *ts > icmp_cutoff);
@@ -4924,12 +4930,16 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_netbios_expires() {
         let mut tracker = RttTracker::new();
-        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 137);
+        let key = ConnectionKey::new(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 137),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)), 137),
+        );
         let request = netbios_test_info(NetBiosService::NameService, 0x1234, false);
         let response = netbios_test_info(NetBiosService::NameService, 0x1234, true);
 
-        tracker.record_netbios_packet(local, &request, true, rtt_capture_time(0));
-        let rtt = tracker.record_netbios_packet(local, &response, false, rtt_capture_time(11_000));
+        tracker.record_netbios_packet(key, &request, true, rtt_capture_time(0));
+        let rtt = tracker.record_netbios_packet(key, &response, false, rtt_capture_time(11_000));
         assert!(rtt.is_none(), "the pending request expired after 10s");
         assert!(tracker.pending_netbios.is_empty());
     }
@@ -4938,20 +4948,26 @@ mod tests {
     fn test_rtt_tracker_pending_netbios_capped() {
         let mut tracker = RttTracker::new();
         let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 137);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)), 137);
+        let key = ConnectionKey::new(Protocol::Udp, local, remote);
 
         for transaction_id in 0..MAX_PENDING_NETBIOS as u16 {
             let request = netbios_test_info(NetBiosService::NameService, transaction_id, false);
-            tracker.record_netbios_packet(local, &request, true, rtt_capture_time(0));
+            tracker.record_netbios_packet(key, &request, true, rtt_capture_time(0));
         }
         assert_eq!(tracker.pending_netbios.len(), MAX_PENDING_NETBIOS);
 
-        let overflow_local = SocketAddr::new(local.ip(), 138);
+        let overflow_key = ConnectionKey::new(
+            Protocol::Udp,
+            SocketAddr::new(local.ip(), 138),
+            SocketAddr::new(remote.ip(), 138),
+        );
         let overflow_request = netbios_test_info(NetBiosService::DatagramService, 7, false);
         let overflow_response = netbios_test_info(NetBiosService::DatagramService, 7, true);
-        tracker.record_netbios_packet(overflow_local, &overflow_request, true, rtt_capture_time(1));
+        tracker.record_netbios_packet(overflow_key, &overflow_request, true, rtt_capture_time(1));
         assert_eq!(tracker.pending_netbios.len(), MAX_PENDING_NETBIOS);
         let rtt = tracker.record_netbios_packet(
-            overflow_local,
+            overflow_key,
             &overflow_response,
             false,
             rtt_capture_time(20),
@@ -4960,9 +4976,13 @@ mod tests {
 
         let request = netbios_test_info(NetBiosService::NameService, 42, false);
         let response = netbios_test_info(NetBiosService::NameService, 42, true);
-        tracker.record_netbios_packet(local, &request, true, rtt_capture_time(1_000));
-        let rtt = tracker.record_netbios_packet(local, &response, false, rtt_capture_time(1_015));
-        assert_eq!(rtt, Some(Duration::from_millis(15)));
+        tracker.record_netbios_packet(key, &request, true, rtt_capture_time(1_000));
+        let rtt = tracker.record_netbios_packet(key, &response, false, rtt_capture_time(1_015));
+        assert_eq!(
+            rtt,
+            Some((Duration::from_millis(15), key)),
+            "a match returns the round trip and the requesting connection's key"
+        );
     }
 
     #[test]
