@@ -338,6 +338,13 @@ pub enum ProtocolState {
     Icmp {
         icmp_type: u8,
         icmp_id: Option<u16>,
+        icmp_sequence: Option<u16>,
+        /// IP-to-MAC mapping carried by an NDP message's link-layer address
+        /// option (ICMPv6 only), extracted by the parser when the enclosing
+        /// IPv6 header proved on-link origin (hop limit 255, no Fragment
+        /// Header — RFC 4861, RFC 6980). Feeds the tracker's neighbor cache,
+        /// the IPv6 analogue of [`ProtocolState::Arp`].
+        ndp_neighbor: Option<NdpNeighbor>,
     },
     Igmp {
         igmp_type: u8,
@@ -361,6 +368,21 @@ pub struct ArpInfo {
 pub enum ArpOperation {
     Request,
     Reply,
+}
+
+/// One IP-to-MAC mapping extracted from an NDP (IPv6 Neighbor Discovery,
+/// RFC 4861) message's link-layer address option — the IPv6 analogue of what
+/// [`ArpInfo`] carries for IPv4.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NdpNeighbor {
+    /// The IPv6 address the option maps: the packet's source address for a
+    /// source link-layer option (RS/RA/NS), the advertised target address for
+    /// a target link-layer option (NA/Redirect).
+    pub ip: std::net::IpAddr,
+    /// Colon-separated lowercase MAC, as formatted by the parser.
+    pub mac: String,
+    /// OUI vendor, resolved at parse time when the database is loaded.
+    pub vendor: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -649,6 +671,16 @@ pub struct DnsInfo {
     pub txid: u16,
     /// Response code (RCODE); `Some` only on responses.
     pub rcode: Option<u8>,
+    /// `Some(true)` when a NOERROR response carried no answer record of the
+    /// queried type (NODATA, e.g. a CNAME-only answer or an empty answer
+    /// section): the name exists but has no such record. Claimed per RFC 2308
+    /// §2.2 only when the whole answer section parsed, the response is not
+    /// truncated (TC), and the authority section is NODATA-shaped (SOA or
+    /// empty, not a referral's NS-without-SOA). `Some(false)` when a NOERROR
+    /// response did answer the queried type; `None` before a response is
+    /// seen, when the question section is missing, or when the response is
+    /// ambiguous.
+    pub nodata: Option<bool>,
 }
 
 /// Standard RCODE names (RFC 1035 / RFC 2136). Unknown codes render as "RCODE n".
@@ -719,6 +751,62 @@ pub enum DnsQueryType {
     Other(u16), // For any other type
 }
 
+impl DnsQueryType {
+    /// Map a wire-format QTYPE / record TYPE value to its enum variant.
+    pub fn from_wire(qtype: u16) -> Self {
+        match qtype {
+            1 => DnsQueryType::A,
+            2 => DnsQueryType::NS,
+            5 => DnsQueryType::CNAME,
+            6 => DnsQueryType::SOA,
+            12 => DnsQueryType::PTR,
+            13 => DnsQueryType::HINFO,
+            15 => DnsQueryType::MX,
+            16 => DnsQueryType::TXT,
+            17 => DnsQueryType::RP,
+            18 => DnsQueryType::AFSDB,
+            24 => DnsQueryType::SIG,
+            25 => DnsQueryType::KEY,
+            28 => DnsQueryType::AAAA,
+            29 => DnsQueryType::LOC,
+            33 => DnsQueryType::SRV,
+            35 => DnsQueryType::NAPTR,
+            36 => DnsQueryType::KX,
+            37 => DnsQueryType::CERT,
+            39 => DnsQueryType::DNAME,
+            42 => DnsQueryType::APL,
+            43 => DnsQueryType::DS,
+            44 => DnsQueryType::SSHFP,
+            45 => DnsQueryType::IPSECKEY,
+            46 => DnsQueryType::RRSIG,
+            47 => DnsQueryType::NSEC,
+            48 => DnsQueryType::DNSKEY,
+            49 => DnsQueryType::DHCID,
+            50 => DnsQueryType::NSEC3,
+            51 => DnsQueryType::NSEC3PARAM,
+            52 => DnsQueryType::TLSA,
+            53 => DnsQueryType::SMIMEA,
+            55 => DnsQueryType::HIP,
+            59 => DnsQueryType::CDS,
+            60 => DnsQueryType::CDNSKEY,
+            61 => DnsQueryType::OPENPGPKEY,
+            62 => DnsQueryType::CSYNC,
+            63 => DnsQueryType::ZONEMD,
+            64 => DnsQueryType::SVCB,
+            65 => DnsQueryType::HTTPS,
+            108 => DnsQueryType::EUI48,
+            109 => DnsQueryType::EUI64,
+            249 => DnsQueryType::TKEY,
+            250 => DnsQueryType::TSIG,
+            256 => DnsQueryType::URI,
+            257 => DnsQueryType::CAA,
+            32768 => DnsQueryType::TA,
+            32769 => DnsQueryType::DLV,
+            other => DnsQueryType::Other(other),
+        }
+    }
+}
+
 impl std::fmt::Display for DnsQueryType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -734,6 +822,12 @@ pub struct NtpInfo {
     pub version: u8,
     pub mode: NtpMode,
     pub stratum: u8,
+    /// Originate timestamp (raw 64-bit NTP format): in a server response,
+    /// the echo of the client's transmit timestamp.
+    pub origin_timestamp: u64,
+    /// Transmit timestamp (raw 64-bit NTP format): when the sender put the
+    /// packet on the wire, by its own clock.
+    pub transmit_timestamp: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1948,6 +2042,15 @@ pub struct RttTracker {
     /// intentionally absent because Name Service requests are commonly sent
     /// to a broadcast address and answered by an individual host.
     pending_netbios: HashMap<(SocketAddr, NetBiosService, u16), SystemTime>,
+    /// Outbound ICMP echo requests awaiting replies, keyed by connection,
+    /// identifier, and sequence number. The sequence keeps fast pings distinct.
+    pending_icmp_echoes: HashMap<(ConnectionKey, u16, u16), SystemTime>,
+    /// Outbound STUN requests awaiting their response, keyed by connection
+    /// and the 96-bit transaction ID.
+    pending_stun: HashMap<(ConnectionKey, [u8; 12]), SystemTime>,
+    /// Outbound NTP client requests awaiting a server response, keyed by
+    /// connection and the transmit timestamp the response echoes back.
+    pending_ntp: HashMap<(ConnectionKey, u64), SystemTime>,
     /// Recent RTT measurements for aggregation: (timestamp, rtt_duration)
     recent_rtts: VecDeque<(Instant, Duration)>,
     /// Maximum age for pending SYNs (cleanup stale entries)
@@ -1956,6 +2059,13 @@ pub struct RttTracker {
     max_pending_dns_age: Duration,
     /// Maximum age for pending NetBIOS requests.
     max_pending_netbios_age: Duration,
+    /// Maximum age for pending echo requests before they cannot produce an RTT
+    max_pending_icmp_age: Duration,
+    /// Maximum age for pending STUN requests, past the RFC 5389 retransmit
+    /// window's useful range
+    max_pending_stun_age: Duration,
+    /// Maximum age for pending NTP requests, well past any sane response
+    max_pending_ntp_age: Duration,
     /// Maximum number of recent RTTs to keep
     max_recent_rtts: usize,
 }
@@ -1967,6 +2077,16 @@ const MAX_PENDING_DNS: usize = 4096;
 /// Hard cap on pending NetBIOS requests.
 const MAX_PENDING_NETBIOS: usize = 4096;
 
+/// Hard cap on pending echo requests. At `ping -i .2`, the 10-second expiry
+/// limits an unanswered flow to about 50 entries, far below this guardrail.
+const MAX_PENDING_ICMP_ECHOES: usize = 4096;
+
+/// Hard cap on pending STUN requests, mirroring the DNS guardrail.
+const MAX_PENDING_STUN: usize = 4096;
+
+/// Hard cap on pending NTP requests, mirroring the DNS guardrail.
+const MAX_PENDING_NTP: usize = 4096;
+
 impl RttTracker {
     pub fn new() -> Self {
         Self {
@@ -1974,10 +2094,16 @@ impl RttTracker {
             pending_quic_handshakes: HashMap::new(),
             pending_dns: HashMap::new(),
             pending_netbios: HashMap::new(),
+            pending_icmp_echoes: HashMap::new(),
+            pending_stun: HashMap::new(),
+            pending_ntp: HashMap::new(),
             recent_rtts: VecDeque::new(),
             max_pending_age: Duration::from_secs(30),
             max_pending_dns_age: Duration::from_secs(10),
             max_pending_netbios_age: Duration::from_secs(10),
+            max_pending_icmp_age: Duration::from_secs(10),
+            max_pending_stun_age: Duration::from_secs(10),
+            max_pending_ntp_age: Duration::from_secs(10),
             max_recent_rtts: 100,
         }
     }
@@ -2102,6 +2228,112 @@ impl RttTracker {
         None
     }
 
+    /// Record an ICMP echo packet, returning the RTT when an incoming reply
+    /// matches a pending outgoing request.
+    ///
+    /// Identifier alone is not enough because one ping process reuses it for
+    /// every request. Pairing identifier and sequence supports many requests
+    /// in flight at once, including subsecond intervals and reordered replies.
+    /// Only the client role is timed, so an inbound request followed by this
+    /// host's reply is not mistaken for a network round trip. `echo_key` is
+    /// `(identifier, sequence)` in the on-wire order.
+    pub fn record_icmp_echo(
+        &mut self,
+        key: ConnectionKey,
+        echo_key: (u16, u16),
+        is_outgoing: bool,
+        is_reply: bool,
+        at: SystemTime,
+    ) -> Option<Duration> {
+        self.cleanup_stale(at);
+        let (identifier, sequence) = echo_key;
+        let pending_key = (key, identifier, sequence);
+        match (is_outgoing, is_reply) {
+            (true, false) => {
+                if self.pending_icmp_echoes.len() < MAX_PENDING_ICMP_ECHOES
+                    || self.pending_icmp_echoes.contains_key(&pending_key)
+                {
+                    self.pending_icmp_echoes.insert(pending_key, at);
+                }
+                None
+            }
+            (false, true) => {
+                let sent_at = self.pending_icmp_echoes.remove(&pending_key)?;
+                let rtt = at.duration_since(sent_at).unwrap_or_default();
+                self.add_rtt_sample(rtt);
+                Some(rtt)
+            }
+            _ => None,
+        }
+    }
+
+    /// Record a STUN packet, returning the RTT when an incoming success or
+    /// error response matches a pending outgoing request by transaction ID.
+    ///
+    /// Retransmitted requests reuse their transaction ID (RFC 5389 §7.2.1),
+    /// so a retransmit refreshes the pending timestamp and the eventual
+    /// response measures from the most recent send. Indications have no
+    /// response and are never recorded.
+    pub fn record_stun(
+        &mut self,
+        key: ConnectionKey,
+        transaction_id: [u8; 12],
+        is_outgoing: bool,
+        class: StunMessageClass,
+        at: SystemTime,
+    ) -> Option<Duration> {
+        self.cleanup_stale(at);
+        let pending_key = (key, transaction_id);
+        match (is_outgoing, class) {
+            (true, StunMessageClass::Request) => {
+                if self.pending_stun.len() < MAX_PENDING_STUN
+                    || self.pending_stun.contains_key(&pending_key)
+                {
+                    self.pending_stun.insert(pending_key, at);
+                }
+                None
+            }
+            (false, StunMessageClass::SuccessResponse | StunMessageClass::ErrorResponse) => {
+                let sent_at = self.pending_stun.remove(&pending_key)?;
+                Some(at.duration_since(sent_at).unwrap_or_default())
+            }
+            _ => None,
+        }
+    }
+
+    /// Record an NTP packet, returning the round trip when an incoming
+    /// server response matches a pending outgoing client request.
+    ///
+    /// A server echoes the client's transmit timestamp back as the originate
+    /// timestamp (RFC 5905 §8), which pairs each exchange exactly even when
+    /// a daemon polls several servers from one socket. Broadcast and
+    /// symmetric modes have no such echo and are not timed.
+    pub fn record_ntp(
+        &mut self,
+        key: ConnectionKey,
+        info: &NtpInfo,
+        is_outgoing: bool,
+        at: SystemTime,
+    ) -> Option<Duration> {
+        self.cleanup_stale(at);
+        match (is_outgoing, info.mode) {
+            (true, NtpMode::Client) => {
+                let pending_key = (key, info.transmit_timestamp);
+                if self.pending_ntp.len() < MAX_PENDING_NTP
+                    || self.pending_ntp.contains_key(&pending_key)
+                {
+                    self.pending_ntp.insert(pending_key, at);
+                }
+                None
+            }
+            (false, NtpMode::Server) => {
+                let sent_at = self.pending_ntp.remove(&(key, info.origin_timestamp))?;
+                Some(at.duration_since(sent_at).unwrap_or_default())
+            }
+            _ => None,
+        }
+    }
+
     /// Record a completed data round trip (segment to covering ACK) measured
     /// by the per-connection estimator, so the aggregate RTT view reflects
     /// established connections rather than only fresh handshakes.
@@ -2150,6 +2382,15 @@ impl RttTracker {
         if let Some(netbios_cutoff) = now.checked_sub(self.max_pending_netbios_age) {
             self.pending_netbios.retain(|_, ts| *ts > netbios_cutoff);
         }
+        if let Some(icmp_cutoff) = now.checked_sub(self.max_pending_icmp_age) {
+            self.pending_icmp_echoes.retain(|_, ts| *ts > icmp_cutoff);
+        }
+        if let Some(stun_cutoff) = now.checked_sub(self.max_pending_stun_age) {
+            self.pending_stun.retain(|_, ts| *ts > stun_cutoff);
+        }
+        if let Some(ntp_cutoff) = now.checked_sub(self.max_pending_ntp_age) {
+            self.pending_ntp.retain(|_, ts| *ts > ntp_cutoff);
+        }
     }
 
     /// Clear all RTT tracking data
@@ -2158,6 +2399,9 @@ impl RttTracker {
         self.pending_quic_handshakes.clear();
         self.pending_dns.clear();
         self.pending_netbios.clear();
+        self.pending_icmp_echoes.clear();
+        self.pending_stun.clear();
+        self.pending_ntp.clear();
         self.recent_rtts.clear();
     }
 }
@@ -2628,12 +2872,44 @@ pub struct K8sInfo {
     pub cgroup_path: Option<String>,
 }
 
+/// Classification of a connection endpoint address. `Broadcast` covers both
+/// the limited broadcast (255.255.255.255) and subnet-directed broadcasts
+/// (e.g. 192.168.0.255 on a /24), which require interface prefix knowledge
+/// and are therefore computed by the packet parser, not derivable from the
+/// address alone. IPv6 has no broadcast, only multicast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AddrKind {
+    #[default]
+    Unicast,
+    Broadcast,
+    Multicast,
+}
+
+impl AddrKind {
+    /// Stable lowercase token for JSON log output.
+    pub fn as_token(self) -> &'static str {
+        match self {
+            AddrKind::Unicast => "unicast",
+            AddrKind::Broadcast => "broadcast",
+            AddrKind::Multicast => "multicast",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Connection {
     // Core identification
     pub protocol: Protocol,
     pub local_addr: SocketAddr,
     pub remote_addr: SocketAddr,
+    /// Kind of the local endpoint address. Broadcast/multicast flows keep the
+    /// group/broadcast address on the local side when the sender is a peer;
+    /// this field lets the UI render that intentionally.
+    pub local_addr_kind: AddrKind,
+    pub remote_addr_kind: AddrKind,
+    /// Whether the remote endpoint is a default-gateway address from the
+    /// host's routing table at the time the last packet was observed.
+    pub remote_is_gateway: bool,
 
     // Protocol state
     pub protocol_state: ProtocolState,
@@ -2714,6 +2990,18 @@ pub struct Connection {
     // Kept separate from transport RTT because it includes service processing.
     pub netbios_response_time: Option<std::time::Duration>,
 
+    // Latest ICMP echo round trip, paired by identifier and sequence number.
+    // Updated on every completed outgoing request and incoming reply pair.
+    pub icmp_echo_rtt: Option<std::time::Duration>,
+
+    // Latest STUN request→response round trip, paired by transaction ID.
+    // Like `dns_response_time`, kept separate from the transport-level RTT.
+    pub stun_rtt: Option<std::time::Duration>,
+
+    // Latest NTP request→response round trip, paired by the originate
+    // timestamp echo. Kept separate from the transport-level RTT.
+    pub ntp_rtt: Option<std::time::Duration>,
+
     // GeoIP information for remote address
     pub geoip_info: Option<crate::network::geoip::GeoIpInfo>,
 
@@ -2747,6 +3035,9 @@ impl Connection {
             protocol,
             local_addr,
             remote_addr,
+            local_addr_kind: AddrKind::default(),
+            remote_addr_kind: AddrKind::default(),
+            remote_is_gateway: false,
             protocol_state: state,
             pid: None,
             process_ppid: None,
@@ -2775,6 +3066,9 @@ impl Connection {
             initial_rtt: None,
             dns_response_time: None,
             netbios_response_time: None,
+            icmp_echo_rtt: None,
+            stun_rtt: None,
+            ntp_rtt: None,
             geoip_info: None,
             is_historic: false,
             closed_at: None,
@@ -2975,12 +3269,14 @@ impl Connection {
                     })
                 }
             }
-            ProtocolState::Icmp { icmp_type, icmp_id } => match icmp_type {
-                8 => match icmp_id {
+            ProtocolState::Icmp {
+                icmp_type, icmp_id, ..
+            } => match icmp_type {
+                8 | 128 => match icmp_id {
                     Some(id) => Cow::Owned(format!("ECHO_REQ({})", id)),
                     None => Cow::Borrowed("ECHO_REQUEST"),
                 },
-                0 => match icmp_id {
+                0 | 129 => match icmp_id {
                     Some(id) => Cow::Owned(format!("ECHO_REP({})", id)),
                     None => Cow::Borrowed("ECHO_REPLY"),
                 },
@@ -3172,15 +3468,15 @@ impl Connection {
         idle.as_secs_f32() / timeout.as_secs_f32()
     }
 
-    /// Live round-trip estimate for display: the smoothed data RTT once the
-    /// continuous estimator has samples, otherwise the handshake RTT. QUIC
-    /// connections only ever have the handshake value, since their ACKs are
-    /// encrypted on the wire.
+    /// Live round-trip estimate for display: the smoothed TCP data RTT once the
+    /// continuous estimator has samples, otherwise a TCP/QUIC handshake RTT or
+    /// the latest ICMP echo RTT.
     pub fn current_rtt(&self) -> Option<Duration> {
         self.tcp_analytics
             .as_ref()
             .and_then(|a| a.smoothed_rtt)
             .or(self.initial_rtt)
+            .or(self.icmp_echo_rtt)
     }
 }
 
@@ -4198,6 +4494,7 @@ mod tests {
             is_response: false,
             txid: 0x1234,
             rcode: None,
+            nodata: None,
         };
 
         conn.dpi_info = Some(DpiInfo {
@@ -4214,6 +4511,7 @@ mod tests {
             is_response: true,
             txid: 0x1234,
             rcode: Some(0),
+            nodata: Some(false),
         };
 
         conn.dpi_info = Some(DpiInfo {
@@ -4318,6 +4616,7 @@ mod tests {
             is_response: false,
             txid: 0x1234,
             rcode: None,
+            nodata: None,
         };
 
         conn.dpi_info = Some(DpiInfo {
@@ -4438,11 +4737,21 @@ mod tests {
             ProtocolState::Icmp {
                 icmp_type: 8,
                 icmp_id: Some(1234),
+                icmp_sequence: Some(7),
+                ndp_neighbor: None,
             },
         );
 
         assert_eq!(conn.state(), "ECHO_REQ(1234)");
         assert_eq!(conn.get_timeout(), Duration::from_secs(10));
+
+        conn.protocol_state = ProtocolState::Icmp {
+            icmp_type: 129,
+            icmp_id: Some(1234),
+            icmp_sequence: Some(7),
+            ndp_neighbor: None,
+        };
+        assert_eq!(conn.state(), "ECHO_REP(1234)");
 
         // Test ARP states
         conn.protocol = Protocol::Arp;
@@ -4654,6 +4963,191 @@ mod tests {
         tracker.record_netbios_packet(local, &request, true, rtt_capture_time(1_000));
         let rtt = tracker.record_netbios_packet(local, &response, false, rtt_capture_time(1_015));
         assert_eq!(rtt, Some(Duration::from_millis(15)));
+    }
+
+    #[test]
+    fn test_rtt_tracker_pending_icmp_echo_expires() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            Protocol::Icmp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 0),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+        );
+
+        tracker.record_icmp_echo(key, (7, 1), true, false, rtt_capture_time(0));
+        let rtt = tracker.record_icmp_echo(key, (7, 1), false, true, rtt_capture_time(11_000));
+        assert!(rtt.is_none(), "the pending echo expired after 10s");
+        assert!(tracker.pending_icmp_echoes.is_empty());
+    }
+
+    #[test]
+    fn test_rtt_tracker_pending_icmp_echo_is_capped() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            Protocol::Icmp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 0),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+        );
+
+        for sequence in 0..MAX_PENDING_ICMP_ECHOES as u16 {
+            tracker.record_icmp_echo(key, (7, sequence), true, false, rtt_capture_time(0));
+        }
+        assert_eq!(tracker.pending_icmp_echoes.len(), MAX_PENDING_ICMP_ECHOES);
+
+        let rejected_sequence = MAX_PENDING_ICMP_ECHOES as u16;
+        tracker.record_icmp_echo(
+            key,
+            (7, rejected_sequence),
+            true,
+            false,
+            rtt_capture_time(1),
+        );
+        let rtt = tracker.record_icmp_echo(
+            key,
+            (7, rejected_sequence),
+            false,
+            true,
+            rtt_capture_time(20),
+        );
+        assert!(rtt.is_none(), "an echo rejected at the cap has no timer");
+
+        tracker.record_icmp_echo(key, (7, 42), true, false, rtt_capture_time(1_000));
+        let rtt = tracker.record_icmp_echo(key, (7, 42), false, true, rtt_capture_time(1_009));
+        assert_eq!(rtt, Some(Duration::from_millis(9)));
+    }
+
+    #[test]
+    fn test_rtt_tracker_stun_pairs_by_transaction_id() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 54_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478),
+        );
+        let txid = [7u8; 12];
+
+        tracker.record_stun(
+            key,
+            txid,
+            true,
+            StunMessageClass::Request,
+            rtt_capture_time(0),
+        );
+        let rtt = tracker.record_stun(
+            key,
+            txid,
+            false,
+            StunMessageClass::SuccessResponse,
+            rtt_capture_time(23),
+        );
+        assert_eq!(rtt, Some(Duration::from_millis(23)));
+
+        // Indications have no response and must not leave a pending timer.
+        tracker.record_stun(
+            key,
+            [9u8; 12],
+            true,
+            StunMessageClass::Indication,
+            rtt_capture_time(100),
+        );
+        assert!(tracker.pending_stun.is_empty());
+    }
+
+    #[test]
+    fn test_rtt_tracker_pending_stun_expires() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 54_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478),
+        );
+        let txid = [7u8; 12];
+
+        tracker.record_stun(
+            key,
+            txid,
+            true,
+            StunMessageClass::Request,
+            rtt_capture_time(0),
+        );
+        let rtt = tracker.record_stun(
+            key,
+            txid,
+            false,
+            StunMessageClass::ErrorResponse,
+            rtt_capture_time(11_000),
+        );
+        assert!(rtt.is_none(), "the pending request expired after 10s");
+        assert!(tracker.pending_stun.is_empty());
+    }
+
+    fn ntp_info(mode: NtpMode, origin_timestamp: u64, transmit_timestamp: u64) -> NtpInfo {
+        NtpInfo {
+            version: 4,
+            mode,
+            stratum: 2,
+            origin_timestamp,
+            transmit_timestamp,
+        }
+    }
+
+    #[test]
+    fn test_rtt_tracker_ntp_pairs_by_originate_timestamp() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 47_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123),
+        );
+
+        tracker.record_ntp(
+            key,
+            &ntp_info(NtpMode::Client, 0, 0xAABB),
+            true,
+            rtt_capture_time(0),
+        );
+        // The server echoes the client's transmit timestamp as originate.
+        let rtt = tracker.record_ntp(
+            key,
+            &ntp_info(NtpMode::Server, 0xAABB, 0xCCDD),
+            false,
+            rtt_capture_time(17),
+        );
+        assert_eq!(rtt, Some(Duration::from_millis(17)));
+
+        // A response whose originate echo matches nothing measures nothing.
+        let rtt = tracker.record_ntp(
+            key,
+            &ntp_info(NtpMode::Server, 0x1234, 0xCCDD),
+            false,
+            rtt_capture_time(30),
+        );
+        assert!(rtt.is_none());
+    }
+
+    #[test]
+    fn test_rtt_tracker_pending_ntp_expires() {
+        let mut tracker = RttTracker::new();
+        let key = ConnectionKey::new(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 47_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123),
+        );
+
+        tracker.record_ntp(
+            key,
+            &ntp_info(NtpMode::Client, 0, 0xAABB),
+            true,
+            rtt_capture_time(0),
+        );
+        let rtt = tracker.record_ntp(
+            key,
+            &ntp_info(NtpMode::Server, 0xAABB, 0xCCDD),
+            false,
+            rtt_capture_time(11_000),
+        );
+        assert!(rtt.is_none(), "the pending request expired after 10s");
+        assert!(tracker.pending_ntp.is_empty());
     }
 
     // ========================================================================

@@ -7,12 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Broadcast/Multicast Endpoint Display**: A broadcast or multicast datagram
+  sent by a peer (e.g. NetBIOS to 192.168.0.255) used to render its
+  destination as a normal-looking Local address. Such endpoints now render as
+  `bcast:PORT` / `mcast:PORT` in the Overview table, the Details tab annotates
+  the full address with `(broadcast)` / `(multicast)`, and the Scope field
+  reports BROADCAST for subnet-directed broadcasts instead of PRIVATE.
+  Interface prefixes are now collected alongside local addresses to recognize
+  each subnet's broadcast address; recognized broadcasts no longer trigger
+  ambiguous-endpoint interface re-enumeration. JSONL logs gain
+  `local_addr_kind`/`remote_addr_kind` (sidecar) and
+  `source_addr_kind`/`destination_addr_kind` (event log) keys, emitted only
+  for non-unicast endpoints
+
 ### Added
 - **NetBIOS Response Time**: UDP Name Service and Datagram Service requests now
   show response time and the latest response status in Details. Pairing uses the
   16-bit transaction ID plus the local socket and service, so broadcast requests
   match replies from individual hosts. WACK packets keep the request pending
   until its final response, and pending requests have a 10s expiry and hard cap
+- **Ubuntu 22.04 LTS (Jammy) PPA**: The PPA now also builds for Ubuntu 22.04
+  LTS using its backported `rustc-1.89` toolchain, covering Linux Mint 21.x
+  and Pop!_OS 22.04. Install docs now list the supported derivatives and the
+  Pop!_OS `apt-manage` command (#534)
+- **Ubuntu 24.04 LTS (Noble) PPA**: The PPA now also builds for Ubuntu 24.04
+  LTS using its backported `rustc-1.89` toolchain, which makes the documented
+  `add-apt-repository` install work on Ubuntu 24.04 and Linux Mint 22.x.
+  Install docs updated accordingly (#533)
+- **DNS Query Name in Details**: The Details tab's DNS card now shows the
+  queried domain as `DNS Query` alongside the query type and response IPs.
+  The name was already parsed from query and response packets but only used
+  for filtering and the Overview protocol column. The card also flags NODATA
+  answers: a NOERROR response whose answer section holds no record of the
+  queried type (e.g. an HTTPS-type lookup for a name with only A/AAAA
+  records) shows `DNS Answer: no data` instead of silently omitting the
+  response rows. The claim follows RFC 2308: truncated (TC) responses,
+  referrals (NS-without-SOA authority), and answer sections that do not
+  parse completely leave the flag unset rather than reporting a false
+  "no data". `rustnet-core` API note: `DnsInfo` gained a `nodata` field,
+  a breaking change for code constructing that struct with a literal (#532)
+- **LAN Device Identification**: The Details tab's Network Context card shows
+  Local MAC and Remote MAC rows with the OUI vendor (e.g. "Apple, Inc.") for
+  addresses the neighbor cache has resolved, learned passively from observed
+  ARP (IPv4) and NDP (IPv6) traffic. NDP messages are trusted only at hop
+  limit 255 (RFC 4861), fragmented NDP is ignored (RFC 6980), and messages
+  carrying any malformed option are discarded whole (RFC 4861 §7.1.1). Since
+  neither protocol crosses routers, normally only on-link addresses (LAN
+  devices and the gateway) populate; randomized MACs are labeled "locally
+  administered". The cache holds up to 4096 neighbors — when full, entries
+  idle for 30+ minutes are swept out to make room — and the clear-connections
+  action resets it. `rustnet-core` API note: `ProtocolState::Icmp` gained an
+  `ndp_neighbor` field, a breaking change for code constructing or
+  exhaustively matching that variant.
+- **Default Gateway Marker**: Connections whose remote endpoint is the host's
+  default gateway (the local router) are now marked. The Overview Remote
+  column appends `(gw)` when it fits, the Details tab annotates the remote
+  address with `(gateway)`, and JSONL logs gain `remote_is_gateway` (sidecar)
+  and `destination_is_gateway` (event log) keys, emitted only when true.
+  Gateways are read from the OS routing table (`/proc/net/route` and
+  `/proc/net/ipv6_route` on Linux, a `PF_ROUTE` sysctl dump on macOS/FreeBSD,
+  `GetIpForwardTable2` on Windows) and refreshed with the local-address
+  snapshot, so VPN or network changes are picked up
+- **NTP RTT**: NTP client connections now show the latest request→response
+  round trip in the Details Transport Health card, along with the server
+  stratum. Polls pair with responses through the originate timestamp echo
+  (RFC 5905), so daemons polling several servers stay distinct. Pending
+  requests are bounded (hard cap plus 10s expiry) like DNS queries
+- **STUN RTT**: STUN connections now show the latest request→response round
+  trip in the Details Transport Health card, paired by the 96-bit transaction
+  ID that retransmits reuse. Pending requests are bounded (hard cap plus 10s
+  expiry) like DNS queries
+- **Ping RTT**: ICMPv4 and ICMPv6 echo connections now show their latest RTT
+  in the Overview RTT column and the Details Transport Health card. Requests
+  and replies are paired by identifier and sequence number using per-packet
+  capture timestamps, so overlapping or reordered exchanges from commands such
+  as `ping 8.8.8.8 -i .2` remain distinct. Loopback pings are timed too, and
+  inbound echo flows skip the RTT row since only the remote sender can measure
+  it. Pending requests expire after 10 seconds and have a hard cap
 - **DNS Response Time**: Unicast UDP DNS connections now show a transport
   metric in the Details Transport Health card instead of "No transport metrics
   for this protocol". Queries and responses are paired by their 16-bit
@@ -78,6 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Shared OUI Database**: The OUI vendor table is now shared between
+  packet-processor threads via `Arc` instead of being cloned per thread,
+  saving roughly 10 MB of memory
 - **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF
   trampoline programs (fentry/fexit) and falls back to legacy kprobes and then procfs,
   choosing the backend from actual BTF, load, and attach results rather than the

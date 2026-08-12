@@ -93,12 +93,19 @@ choco install rustnet
 
 ### Linux Package Installation
 
-#### Ubuntu PPA (Recommended for Ubuntu 25.10 Questing and 26.04 LTS Resolute)
+#### Ubuntu PPA (Recommended for Ubuntu 22.04+, Linux Mint and Pop!_OS)
 
-The easiest way to install RustNet on Ubuntu is via the official PPA. The PPA publishes builds for the following Ubuntu series:
+The easiest way to install RustNet on Ubuntu and its derivatives is via the official PPA. The PPA publishes builds for the following Ubuntu series:
 
+- Ubuntu 22.04 LTS (Jammy Jellyfish)
+- Ubuntu 24.04 LTS (Noble Numbat)
 - Ubuntu 25.10 (Questing Quokka)
 - Ubuntu 26.04 LTS (Resolute Raccoon)
+
+Derivatives register PPAs under their Ubuntu base series, so the same commands work there:
+
+- Linux Mint 21.x (Jammy base) and 22.x (Noble base)
+- Pop!_OS 22.04 (Jammy base) and 24.04 (Noble base). Pop!_OS ships `apt-manage` instead of `add-apt-repository`: use `sudo apt-manage add ppa:domcyrus/rustnet`.
 
 ```bash
 # Add the RustNet PPA
@@ -118,7 +125,7 @@ sudo setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' /usr/bin/rustnet
 rustnet
 ```
 
-**Important:** The PPA supports only the two series listed above (Ubuntu 25.10 Questing and 26.04 LTS Resolute) because the build requires Rust 1.88+ (used for let-chains in the project). Earlier Ubuntu versions don't ship a recent enough `rustc` in their repositories. For older Ubuntu versions, use the [.deb packages](#debianubuntu-deb-packages) from GitHub releases or [build from source](#building-from-source).
+**Important:** The PPA supports only the four series listed above because the build requires Rust 1.88+ (used for let-chains in the project). Other Ubuntu series don't ship a recent enough `rustc` in their repositories. For those, use the [.deb packages](#debianubuntu-deb-packages) from GitHub releases or [build from source](#building-from-source).
 
 #### Debian/Ubuntu (.deb packages)
 

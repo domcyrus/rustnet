@@ -27,6 +27,7 @@ use crate::network::{
     interface_stats::{
         InterfaceRates, InterfaceStats, InterfaceStatsProvider, InterfaceTrafficWindow,
     },
+    neighbors::NeighborEntry,
     oui::OuiLookup,
     parser::{PacketParser, ParsedPacket, ParserConfig},
     platform::create_process_lookup,
@@ -34,8 +35,8 @@ use crate::network::{
     services::ServiceLookup,
     tracker::{ConnectionTracker, IngestOutcome},
     types::{
-        ApplicationProtocol, Connection, ConnectionKey, ConnectionLifecycleSample, DnsQueryType,
-        GraphScale, ProcessLineage, Protocol, TrafficHistory,
+        AddrKind, ApplicationProtocol, Connection, ConnectionKey, ConnectionLifecycleSample,
+        DnsQueryType, GraphScale, ProcessLineage, Protocol, TrafficHistory,
     },
 };
 
@@ -342,6 +343,18 @@ fn log_connection_event(
         "destination_port": conn.remote_addr.port(),
     });
 
+    // Only emitted for broadcast/multicast endpoints, keeping unicast events
+    // (and consumers of older logs) unchanged.
+    if conn.local_addr_kind != AddrKind::Unicast {
+        event["source_addr_kind"] = json!(conn.local_addr_kind.as_token());
+    }
+    if conn.remote_addr_kind != AddrKind::Unicast {
+        event["destination_addr_kind"] = json!(conn.remote_addr_kind.as_token());
+    }
+    if conn.remote_is_gateway {
+        event["destination_is_gateway"] = json!(true);
+    }
+
     // Add hostname fields if DNS resolution is enabled and hostnames are resolved
     // Skip ARP connections to avoid feedback loop (DNS lookups generate ARP traffic)
     if let Some(resolver) = dns_resolver.filter(|_| conn.protocol != Protocol::Arp) {
@@ -381,8 +394,8 @@ fn log_connection_event(
         event["process_lineage"] = process_lineage_json(lineage);
     }
 
-    // Round-trip estimate: smoothed data RTT, or the handshake RTT before
-    // any data samples exist. One decimal of milliseconds.
+    // Round-trip estimate: smoothed TCP data RTT, a handshake RTT, or the
+    // latest ICMP echo RTT. One decimal of milliseconds.
     if let Some(rtt) = conn.current_rtt() {
         event["rtt_ms"] = json!((rtt.as_secs_f64() * 10_000.0).round() / 10.0);
     }
@@ -509,6 +522,18 @@ fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
         "state": conn.state(),
     });
 
+    // Only emitted for broadcast/multicast endpoints, keeping unicast records
+    // (and consumers of older sidecar files) unchanged.
+    if conn.local_addr_kind != AddrKind::Unicast {
+        event["local_addr_kind"] = json!(conn.local_addr_kind.as_token());
+    }
+    if conn.remote_addr_kind != AddrKind::Unicast {
+        event["remote_addr_kind"] = json!(conn.remote_addr_kind.as_token());
+    }
+    if conn.remote_is_gateway {
+        event["remote_is_gateway"] = json!(true);
+    }
+
     // Per-connection record, so the full executable path is affordable here.
     if let Some(ppid) = conn.process_ppid {
         event["process_ppid"] = json!(ppid);
@@ -529,8 +554,8 @@ fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
         event["process_lineage"] = process_lineage_json(lineage);
     }
 
-    // Round-trip estimate: smoothed data RTT, or the handshake RTT before
-    // any data samples exist. One decimal of milliseconds.
+    // Round-trip estimate: smoothed TCP data RTT, a handshake RTT, or the
+    // latest ICMP echo RTT. One decimal of milliseconds.
     if let Some(rtt) = conn.current_rtt() {
         event["rtt_ms"] = json!((rtt.as_secs_f64() * 10_000.0).round() / 10.0);
     }
@@ -692,7 +717,7 @@ impl ConnectionCounts {
                 Protocol::Udp => counts.udp += 1,
                 _ => {}
             }
-            processes.insert(connection.process_name.as_deref().unwrap_or("<unknown>"));
+            processes.insert(crate::ui::process_group_label(connection));
         }
 
         counts.processes = processes.len();
@@ -1516,7 +1541,7 @@ impl App {
                         let mut parser = PacketParser::with_config(parser_config.clone())
                             .with_linktype(linktype);
                         if let Some(ref oui) = oui_lookup {
-                            parser = parser.with_oui_lookup((**oui).clone());
+                            parser = parser.with_oui_lookup(Arc::clone(oui));
                         }
                         break parser;
                     }
@@ -2959,6 +2984,12 @@ impl App {
         self.dns_resolver.is_some()
     }
 
+    /// The ARP/NDP-learned MAC/vendor mapping for `ip`, if one has been
+    /// observed.
+    pub fn lookup_neighbor(&self, ip: std::net::IpAddr) -> Option<NeighborEntry> {
+        self.tracker.neighbor(&ip)
+    }
+
     /// Get GeoIP database availability status.
     /// Returns (has_location, has_asn, has_city) where has_location is true when
     /// either the country or city database is loaded.
@@ -2991,6 +3022,12 @@ impl App {
     #[cfg(test)]
     pub(crate) fn set_loading_for_test(&self, value: bool) {
         self.is_loading.store(value, Ordering::Relaxed);
+    }
+
+    /// Seed the tracker's neighbor cache through a real ARP ingest. Tests only.
+    #[cfg(test)]
+    pub(crate) fn ingest_packet_for_test(&self, parsed: &ParsedPacket) {
+        self.tracker.ingest(parsed);
     }
 
     /// Override the current interface label. Tests only.
@@ -3620,7 +3657,7 @@ mod connection_lifecycle_tests {
     use super::*;
     use crate::network::{
         protocol::tcp::{TcpFlags, TcpHeaderInfo},
-        types::{ProtocolState, TcpState},
+        types::{AddrKind, ProtocolState, TcpState},
     };
     use std::net::SocketAddr;
     use std::path::{Path, PathBuf};
@@ -3655,6 +3692,9 @@ mod connection_lifecycle_tests {
             protocol: Protocol::Tcp,
             local_addr: SocketAddr::from(([192, 0, 2, 1], 40_000)),
             remote_addr: SocketAddr::from(([198, 51, 100, 1], 443)),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1_000,
                 ack: 0,
@@ -3929,6 +3969,9 @@ mod pcapng_export_tests {
             protocol: Protocol::Tcp,
             local_addr: SocketAddr::from(([192, 0, 2, 9], 41_000)),
             remote_addr: SocketAddr::from(([198, 51, 100, 9], 443)),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1,
                 ack: 0,

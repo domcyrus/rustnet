@@ -148,7 +148,7 @@ pub enum SortColumn {
     Application,
     Service,
     State,
-    Rtt, // Smoothed data RTT, falling back to the handshake RTT
+    Rtt, // Best available TCP, QUIC handshake, or ICMP echo RTT
 }
 
 impl SortColumn {
@@ -937,6 +937,21 @@ impl UIState {
 }
 
 /// Compute grouped rows from a list of connections
+/// Group label shown for connections without a resolved process name.
+pub const UNKNOWN_PROCESS_GROUP: &str = "<unknown>";
+
+/// The process-group label for a connection. Attribution can fail two ways:
+/// no owner found at all (`process_name` is `None`), or an owner PID whose
+/// name lookup failed and stored the platform's "Unknown" placeholder
+/// (protected processes, the pre-resolution ETW window). Both fold into one
+/// bucket so the UI never shows two different unknown groups side by side.
+pub fn process_group_label(conn: &Connection) -> &str {
+    match conn.process_name.as_deref() {
+        None | Some("Unknown") => UNKNOWN_PROCESS_GROUP,
+        Some(name) => name,
+    }
+}
+
 pub fn compute_grouped_rows<'a>(
     connections: &'a [Connection],
     expanded_groups: &HashSet<String>,
@@ -947,8 +962,10 @@ pub fn compute_grouped_rows<'a>(
     // to avoid cloning N Strings just to use as HashMap keys.
     let mut groups: HashMap<&'a str, Vec<&'a Connection>> = HashMap::new();
     for conn in connections {
-        let key = conn.process_name.as_deref().unwrap_or("<unknown>");
-        groups.entry(key).or_default().push(conn);
+        groups
+            .entry(process_group_label(conn))
+            .or_default()
+            .push(conn);
     }
 
     // Build stats for each group in a single pass over each group's connections
@@ -1202,6 +1219,43 @@ mod tests {
 
         assert_eq!(ui.get_selected_grouped_index(&rows), Some(2));
         assert_eq!(ui.selected_grouped_index_hint.get(), Some(2));
+    }
+
+    /// Unattributed connections and ones carrying the "Unknown" name
+    /// placeholder (e.g. a PID whose name lookup was denied) must share one
+    /// group instead of showing "<unknown>" and "Unknown" side by side.
+    #[test]
+    fn unknown_placeholder_groups_with_unattributed_connections() {
+        let mut unattributed = test_connection(1000, "ignored");
+        unattributed.process_name = None;
+        let placeholder = test_connection(1001, "Unknown");
+        let named = test_connection(1002, "firefox");
+        let connections = vec![unattributed, placeholder, named];
+
+        let rows = compute_grouped_rows(&connections, &HashSet::new());
+        let mut headers: Vec<&str> = rows
+            .iter()
+            .filter_map(|row| match row {
+                GroupedRow::Group {
+                    process_name,
+                    stats,
+                    ..
+                } => {
+                    assert_eq!(
+                        stats.connection_count,
+                        if process_name == UNKNOWN_PROCESS_GROUP {
+                            2
+                        } else {
+                            1
+                        }
+                    );
+                    Some(process_name.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        headers.sort_unstable();
+        assert_eq!(headers, vec![UNKNOWN_PROCESS_GROUP, "firefox"]);
     }
 
     #[test]

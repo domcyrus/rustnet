@@ -19,10 +19,11 @@ RustNet は、各接続を所有するプロセス、通信量、状態、アプ
 
 - TCP、UDP、QUIC 接続とプロセスの対応付け。詳細には PID、実行ファイル、ユーザー/グループ名、照合の信頼度、全プラットフォーム共通の親プロセスチェーン（上限あり）を表示
 - HTTP、TLS/SNI、DNS、SSH、QUIC などの深層パケット解析
-- 往復時間（RTT）、再送、順序入れ替わり、帯域幅、接続状態のリアルタイム表示
+- TCP、QUIC ハンドシェイク、DNS 応答、ICMP エコーの往復時間（RTT）と、TCP の再送・順序入れ替わりをリアルタイム表示
 - `port:`、`process:`、`sni:`、`state:` などのフィルター
 - 注釈付き PCAPNG、PCAP と JSONL sidecar、JSON ログの出力
 - ローカル GeoIP データベースによる国、ASN、都市情報
+- ARP トラフィックから受動的に学習した LAN 機器・ゲートウェイの MAC アドレスとベンダー表示（内蔵 IEEE OUI データベース）
 - Linux Landlock、macOS Seatbelt、Windows の権限削減によるサンドボックス
 - オプションの Kubernetes pod、namespace、container 帰属情報
 
@@ -34,10 +35,11 @@ macOS または Linux:
 brew install rustnet
 ```
 
-Ubuntu 25.10 以降:
+Ubuntu 22.04 LTS 以降 / Linux Mint 21 以降 / Pop!_OS 22.04 以降:
 
 ```bash
 sudo add-apt-repository ppa:domcyrus/rustnet
+# Pop!_OS の場合: sudo apt-manage add ppa:domcyrus/rustnet
 sudo apt update && sudo apt install rustnet
 ```
 

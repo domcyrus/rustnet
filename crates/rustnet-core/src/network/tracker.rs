@@ -4,9 +4,9 @@
 //! managed table of [`Connection`]s. It owns everything needed to turn a stream
 //! of [`ParsedPacket`]s into the same connection view the `rustnet` TUI shows —
 //! the active table, an archive of recently-closed ("historic") connections,
-//! RTT estimation from TCP SYN/SYN-ACK and QUIC handshake timing, QUIC
-//! connection-ID coalescing,
-//! and timeout-based cleanup — **without** any UI, capture, or process-lookup
+//! RTT estimation from TCP, QUIC handshakes, and ICMP echo, plus DNS response
+//! timing, QUIC connection-ID coalescing, and timeout-based cleanup, all
+//! without any UI, capture, or process-lookup
 //! dependency.
 //!
 //! This is the piece that makes headless tools easy: pair a capture source with
@@ -44,9 +44,11 @@
 use crate::network::merge::{
     TcpMergeEvents, create_connection_from_packet, merge_packet_into_connection,
 };
+use crate::network::neighbors::{NeighborCache, NeighborEntry};
 use crate::network::parser::ParsedPacket;
 use crate::network::types::{
-    ApplicationProtocol, Connection, ConnectionKey, Protocol, QuicPacketType, RttTracker,
+    ApplicationProtocol, Connection, ConnectionKey, Protocol, ProtocolState, QuicPacketType,
+    RttTracker,
 };
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
@@ -178,6 +180,27 @@ pub struct IngestOutcome {
     /// The latest completed NetBIOS request-to-response round trip, if this
     /// packet matched a pending request by transaction ID.
     pub netbios_response_time: Option<Duration>,
+    /// The latest completed ICMP echo round trip, if this packet was a reply
+    /// matching an outgoing request by identifier and sequence number.
+    pub icmp_echo_rtt: Option<Duration>,
+    /// The latest completed STUN request→response round trip, if this packet
+    /// was a response matching a pending request by transaction ID.
+    pub stun_rtt: Option<Duration>,
+    /// The latest completed NTP request→response round trip, if this packet
+    /// was a server response echoing a pending client transmit timestamp.
+    pub ntp_rtt: Option<Duration>,
+}
+
+/// Timing measurements extracted from one packet, carried together through
+/// the connection-table update into the resulting [`IngestOutcome`].
+#[derive(Clone, Copy, Default)]
+struct PacketTimings {
+    measured_rtt: Option<Duration>,
+    dns_response_time: Option<Duration>,
+    netbios_response_time: Option<Duration>,
+    icmp_echo_rtt: Option<Duration>,
+    stun_rtt: Option<Duration>,
+    ntp_rtt: Option<Duration>,
 }
 
 /// A live, lifecycle-managed table of network connections built from parsed
@@ -199,6 +222,10 @@ pub struct ConnectionTracker {
     /// by a few entries under concurrent ingest near the limit — acceptable
     /// for a flood-protection bound.
     active_count: AtomicUsize,
+    /// IP -> MAC/vendor mappings learned passively from ingested ARP (IPv4)
+    /// and NDP (IPv6) packets. Outlives the connections themselves, so LAN
+    /// peers stay identified after their ARP/NDP rows are cleaned up.
+    neighbors: NeighborCache,
 }
 
 impl ConnectionTracker {
@@ -218,6 +245,7 @@ impl ConnectionTracker {
             recently_closed: Mutex::new(HashMap::new()),
             config,
             active_count: AtomicUsize::new(0),
+            neighbors: NeighborCache::default(),
         }
     }
 
@@ -244,6 +272,17 @@ impl ConnectionTracker {
     /// difference between two packets' `now` values, so a shared timestamp
     /// collapses every round trip that completes within one batch to zero.
     pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
+        // Harvest IP -> MAC mappings from ARP and NDP packets; only they pay
+        // this cost.
+        match &parsed.protocol_state {
+            ProtocolState::Arp(arp_info) => self.neighbors.learn_from_arp(arp_info, now),
+            ProtocolState::Icmp {
+                ndp_neighbor: Some(neighbor),
+                ..
+            } => self.neighbors.learn_from_ndp(neighbor, now),
+            _ => {}
+        }
+
         // Track RTT for TCP connections using SYN/SYN-ACK timing, and for QUIC
         // using the long-header handshake exchange. Everything QUIC sends after
         // the handshake is behind header protection, so this initial flight is
@@ -307,6 +346,78 @@ impl ConnectionTracker {
             );
         }
 
+        // ICMP echo requests reuse one identifier for the life of a ping
+        // process, so sequence number is part of the key. That allows several
+        // subsecond requests to be pending at once and replies to arrive out of
+        // order without cross-pairing samples.
+        let echo_metadata = match &parsed.protocol_state {
+            ProtocolState::Icmp {
+                icmp_type,
+                icmp_id: Some(identifier),
+                icmp_sequence: Some(sequence),
+                ..
+            } => match icmp_type {
+                8 | 128 => Some((*identifier, *sequence, false)),
+                0 | 129 => Some((*identifier, *sequence, true)),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut icmp_echo_rtt: Option<Duration> = None;
+        if let Some((identifier, sequence, is_reply)) = echo_metadata
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            // Loopback captures classify the reply as outgoing too (both
+            // endpoints are local), so reclassify it as incoming to let it
+            // match the pending request.
+            let is_outgoing = parsed.is_outgoing
+                && !(is_reply && parsed.local_addr.ip() == parsed.remote_addr.ip());
+            icmp_echo_rtt = tracker.record_icmp_echo(
+                base_key,
+                (identifier, sequence),
+                is_outgoing,
+                is_reply,
+                now,
+            );
+        }
+
+        // STUN requests and responses share a 96-bit transaction ID that
+        // retransmits reuse, so request→response pairing is exact.
+        let mut stun_rtt: Option<Duration> = None;
+        if parsed.protocol == Protocol::Udp
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::Stun(stun) = &dpi.application
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            stun_rtt = tracker.record_stun(
+                base_key,
+                stun.transaction_id,
+                parsed.is_outgoing,
+                stun.message_class,
+                now,
+            );
+        }
+
+        // NTP servers echo the client's transmit timestamp as the originate
+        // timestamp, pairing each poll with its response.
+        let mut ntp_rtt: Option<Duration> = None;
+        if parsed.protocol == Protocol::Udp
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::Ntp(ntp) = &dpi.application
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            ntp_rtt = tracker.record_ntp(base_key, ntp, parsed.is_outgoing, now);
+        }
+
+        let timings = PacketTimings {
+            measured_rtt,
+            dns_response_time,
+            netbios_response_time,
+            icmp_echo_rtt,
+            stun_rtt,
+            ntp_rtt,
+        };
+
         // A read guard makes ordinary packet updates atomic with cleanup. The
         // uncommon generation-split path drops it and reacquires a write guard
         // so retained-source readers also see one consistent move.
@@ -326,9 +437,12 @@ impl ConnectionTracker {
                 retransmits: 0,
                 out_of_order: 0,
                 fast_retransmits: 0,
-                measured_rtt,
-                dns_response_time,
-                netbios_response_time,
+                measured_rtt: timings.measured_rtt,
+                dns_response_time: timings.dns_response_time,
+                netbios_response_time: timings.netbios_response_time,
+                icmp_echo_rtt: timings.icmp_echo_rtt,
+                stun_rtt: timings.stun_rtt,
+                ntp_rtt: timings.ntp_rtt,
             };
         }
 
@@ -338,24 +452,10 @@ impl ConnectionTracker {
             .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
         if starts_new_generation {
             drop(lifecycle);
-            return self.ingest_new_generation(
-                parsed,
-                now,
-                key,
-                measured_rtt,
-                dns_response_time,
-                netbios_response_time,
-            );
+            return self.ingest_new_generation(parsed, now, key, timings);
         }
 
-        self.ingest_into_active(
-            parsed,
-            now,
-            key,
-            measured_rtt,
-            dns_response_time,
-            netbios_response_time,
-        )
+        self.ingest_into_active(parsed, now, key, timings)
     }
 
     fn ingest_into_active(
@@ -363,9 +463,7 @@ impl ConnectionTracker {
         parsed: &ParsedPacket,
         now: SystemTime,
         key: ConnectionKey,
-        measured_rtt: Option<Duration>,
-        dns_response_time: Option<Duration>,
-        netbios_response_time: Option<Duration>,
+        timings: PacketTimings,
     ) -> IngestOutcome {
         // Prevent unbounded growth from port scans or connection floods. Only
         // limit new connections; existing ones always get updated. The fast
@@ -385,9 +483,12 @@ impl ConnectionTracker {
                 retransmits: 0,
                 out_of_order: 0,
                 fast_retransmits: 0,
-                measured_rtt,
-                dns_response_time,
-                netbios_response_time,
+                measured_rtt: timings.measured_rtt,
+                dns_response_time: timings.dns_response_time,
+                netbios_response_time: timings.netbios_response_time,
+                icmp_echo_rtt: timings.icmp_echo_rtt,
+                stun_rtt: timings.stun_rtt,
+                ntp_rtt: timings.ntp_rtt,
             };
         }
 
@@ -397,31 +498,49 @@ impl ConnectionTracker {
             .entry(key)
             .and_modify(|conn| {
                 deltas = merge_packet_into_connection(conn, parsed, now);
-                if let Some(rtt) = measured_rtt
+                if let Some(rtt) = timings.measured_rtt
                     && conn.initial_rtt.is_none()
                 {
                     conn.initial_rtt = Some(rtt);
                 }
                 // Last-wins, unlike `initial_rtt`: each completed query
                 // refreshes the displayed response time.
-                if let Some(rtt) = dns_response_time {
+                if let Some(rtt) = timings.dns_response_time {
                     conn.dns_response_time = Some(rtt);
                 }
-                if let Some(rtt) = netbios_response_time {
+                if let Some(rtt) = timings.netbios_response_time {
                     conn.netbios_response_time = Some(rtt);
+                }
+                if let Some(rtt) = timings.icmp_echo_rtt {
+                    conn.icmp_echo_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.stun_rtt {
+                    conn.stun_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.ntp_rtt {
+                    conn.ntp_rtt = Some(rtt);
                 }
             })
             .or_insert_with(|| {
                 created = true;
                 let mut conn = create_connection_from_packet(parsed, now);
-                if let Some(rtt) = measured_rtt {
+                if let Some(rtt) = timings.measured_rtt {
                     conn.initial_rtt = Some(rtt);
                 }
-                if let Some(rtt) = dns_response_time {
+                if let Some(rtt) = timings.dns_response_time {
                     conn.dns_response_time = Some(rtt);
                 }
-                if let Some(rtt) = netbios_response_time {
+                if let Some(rtt) = timings.netbios_response_time {
                     conn.netbios_response_time = Some(rtt);
+                }
+                if let Some(rtt) = timings.icmp_echo_rtt {
+                    conn.icmp_echo_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.stun_rtt {
+                    conn.stun_rtt = Some(rtt);
+                }
+                if let Some(rtt) = timings.ntp_rtt {
+                    conn.ntp_rtt = Some(rtt);
                 }
                 conn
             });
@@ -447,9 +566,12 @@ impl ConnectionTracker {
             retransmits: deltas.retransmits,
             out_of_order: deltas.out_of_order,
             fast_retransmits: deltas.fast_retransmits,
-            measured_rtt,
-            dns_response_time,
-            netbios_response_time,
+            measured_rtt: timings.measured_rtt,
+            dns_response_time: timings.dns_response_time,
+            netbios_response_time: timings.netbios_response_time,
+            icmp_echo_rtt: timings.icmp_echo_rtt,
+            stun_rtt: timings.stun_rtt,
+            ntp_rtt: timings.ntp_rtt,
         }
     }
 
@@ -458,9 +580,7 @@ impl ConnectionTracker {
         parsed: &ParsedPacket,
         now: SystemTime,
         key: ConnectionKey,
-        measured_rtt: Option<Duration>,
-        dns_response_time: Option<Duration>,
-        netbios_response_time: Option<Duration>,
+        timings: PacketTimings,
     ) -> IngestOutcome {
         let _lifecycle = self
             .lifecycle
@@ -497,14 +617,7 @@ impl ConnectionTracker {
         // waiting to acquire the write guard. Reassociate any visible QUIC ID
         // before creating the replacement.
         self.associate_quic_id(parsed, key);
-        let mut outcome = self.ingest_into_active(
-            parsed,
-            replacement_now,
-            key,
-            measured_rtt,
-            dns_response_time,
-            netbios_response_time,
-        );
+        let mut outcome = self.ingest_into_active(parsed, replacement_now, key, timings);
         outcome.archived = archived;
         self.enforce_historic_limit();
         self.prune_recently_closed(now);
@@ -814,7 +927,8 @@ impl ConnectionTracker {
         self.historic.len()
     }
 
-    /// Drop all active and historic connections and reset RTT/QUIC state.
+    /// Drop all active and historic connections and reset RTT/QUIC state and
+    /// the learned-neighbor cache.
     pub fn clear(&self) {
         let _lifecycle = self
             .lifecycle
@@ -833,6 +947,7 @@ impl ConnectionTracker {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
+        self.neighbors.clear();
     }
 
     /// The tracker's configuration.
@@ -857,8 +972,14 @@ impl ConnectionTracker {
         &self.historic
     }
 
-    /// Average RTT (in milliseconds) over the last `window_secs` seconds of
-    /// SYN/SYN-ACK samples, consuming the samples in that window. `None` if no
+    /// The ARP/NDP-learned MAC/vendor mapping for `ip`, if one has been
+    /// observed.
+    pub fn neighbor(&self, ip: &std::net::IpAddr) -> Option<NeighborEntry> {
+        self.neighbors.get(ip)
+    }
+
+    /// Average network RTT (in milliseconds) over the last `window_secs`
+    /// seconds of handshake, TCP data, and ICMP echo samples. `None` if no
     /// samples are available.
     pub fn take_average_rtt(&self, window_secs: u64) -> Option<f64> {
         self.rtt
@@ -914,13 +1035,16 @@ mod tests {
 
     fn tcp_packet(syn: bool, ack: bool, fin: bool, rst: bool, is_outgoing: bool) -> ParsedPacket {
         use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
-        use crate::network::types::{ProtocolState, TcpState};
+        use crate::network::types::{AddrKind, ProtocolState, TcpState};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         ParsedPacket {
             protocol: Protocol::Tcp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Tcp(TcpState::Unknown),
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1_000,
@@ -946,7 +1070,7 @@ mod tests {
 
     fn quic_packet(packet_type: QuicPacketType, is_outgoing: bool) -> ParsedPacket {
         use crate::network::dpi::DpiResult;
-        use crate::network::types::{ProtocolState, QuicInfo};
+        use crate::network::types::{AddrKind, ProtocolState, QuicInfo};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         let mut quic = QuicInfo::new(1);
@@ -956,6 +1080,9 @@ mod tests {
             protocol: Protocol::Udp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Udp,
             tcp_header: None,
             is_outgoing,
@@ -970,13 +1097,16 @@ mod tests {
 
     fn dns_packet(txid: u16, is_outgoing: bool, is_response: bool, rcode: u8) -> ParsedPacket {
         use crate::network::dpi::DpiResult;
-        use crate::network::types::{DnsInfo, DnsQueryType, ProtocolState};
+        use crate::network::types::{AddrKind, DnsInfo, DnsQueryType, ProtocolState};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         ParsedPacket {
             protocol: Protocol::Udp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 53),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Udp,
             tcp_header: None,
             is_outgoing,
@@ -989,6 +1119,7 @@ mod tests {
                     is_response,
                     txid,
                     rcode: is_response.then_some(rcode),
+                    nodata: None,
                 }),
             }),
             process_name: None,
@@ -1005,7 +1136,7 @@ mod tests {
     ) -> ParsedPacket {
         use crate::network::dpi::DpiResult;
         use crate::network::types::{
-            NetBiosInfo, NetBiosResponseStatus, NetBiosService, ProtocolState,
+            AddrKind, NetBiosInfo, NetBiosResponseStatus, NetBiosService, ProtocolState,
         };
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -1013,6 +1144,13 @@ mod tests {
             protocol: Protocol::Udp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 137),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(remote_ip)), 137),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: if remote_ip == [255, 255, 255, 255] {
+                AddrKind::Broadcast
+            } else {
+                AddrKind::Unicast
+            },
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Udp,
             tcp_header: None,
             is_outgoing,
@@ -1032,11 +1170,144 @@ mod tests {
         }
     }
 
+    fn icmp_echo_packet(
+        identifier: u16,
+        sequence: u16,
+        is_outgoing: bool,
+        is_reply: bool,
+    ) -> ParsedPacket {
+        use crate::network::types::{AddrKind, ProtocolState};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Icmp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 0),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
+            protocol_state: ProtocolState::Icmp {
+                icmp_type: if is_reply { 0 } else { 8 },
+                icmp_id: Some(identifier),
+                icmp_sequence: Some(sequence),
+                ndp_neighbor: None,
+            },
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 84,
+            dpi_result: None,
+            process_name: None,
+            process_id: None,
+        }
+    }
+
     /// Capture time for a packet `millis` into a synthetic trace. Tests drive
     /// `ingest_at` with these rather than the wall clock so an RTT assertion
     /// pins a real duration instead of however long the test loop took.
     fn capture_time(millis: u64) -> SystemTime {
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000) + Duration::from_millis(millis)
+    }
+
+    fn arp_packet(operation: crate::network::types::ArpOperation) -> ParsedPacket {
+        use crate::network::types::{AddrKind, ArpInfo, ProtocolState};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Arp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 132)), 0),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 0),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
+            protocol_state: ProtocolState::Arp(ArpInfo {
+                operation,
+                sender_mac: "04:d9:f5:c5:ed:e8".to_string(),
+                sender_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
+                target_mac: "68:5e:dd:09:15:5e".to_string(),
+                target_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 132)),
+                sender_vendor: Some("ASUSTek COMPUTER INC.".to_string()),
+                target_vendor: Some("Apple, Inc.".to_string()),
+            }),
+            tcp_header: None,
+            is_outgoing: false,
+            packet_len: 42,
+            dpi_result: None,
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// Ingesting an ARP reply must populate the neighbor cache for both the
+    /// answering host and the requester, and the mapping must outlive the ARP
+    /// connection row itself.
+    #[test]
+    fn arp_ingest_learns_neighbors() {
+        use crate::network::types::ArpOperation;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let tracker = ConnectionTracker::new();
+        let gateway = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1));
+        let laptop = IpAddr::V4(Ipv4Addr::new(192, 168, 0, 132));
+        assert!(tracker.neighbor(&gateway).is_none());
+
+        let outcome = tracker.ingest_at(&arp_packet(ArpOperation::Reply), capture_time(0));
+
+        let entry = tracker.neighbor(&gateway).expect("gateway learned");
+        assert_eq!(entry.mac, "04:d9:f5:c5:ed:e8");
+        assert_eq!(entry.vendor.as_deref(), Some("ASUSTek COMPUTER INC."));
+        assert_eq!(
+            tracker.neighbor(&laptop).expect("requester learned").mac,
+            "68:5e:dd:09:15:5e"
+        );
+
+        // The mapping survives removal of the ARP connection entry.
+        tracker.connections().remove(&outcome.key);
+        assert!(tracker.neighbor(&gateway).is_some());
+    }
+
+    /// A full Ethernet+IPv6 frame carrying an NDP neighbor advertisement,
+    /// so the test exercises the parser's hop-limit gate end to end.
+    fn ndp_advertisement_frame(hop_limit: u8) -> Vec<u8> {
+        let mut f = Vec::new();
+        // Ethernet header: dst mac, src mac, ethertype IPv6 (0x86dd)
+        f.extend_from_slice(&[0x02, 0, 0, 0, 0, 1]);
+        f.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]);
+        f.extend_from_slice(&[0x86, 0xdd]);
+        // IPv6 header (40 bytes)
+        f.extend_from_slice(&[0x60, 0, 0, 0]); // version/tc/flow
+        f.extend_from_slice(&32u16.to_be_bytes()); // payload length
+        f.push(58); // next header = ICMPv6
+        f.push(hop_limit);
+        let src: std::net::Ipv6Addr = "fe80::cafe".parse().unwrap();
+        let dst: std::net::Ipv6Addr = "ff02::1".parse().unwrap();
+        f.extend_from_slice(&src.octets());
+        f.extend_from_slice(&dst.octets());
+        // ICMPv6 neighbor advertisement: header, target address, then the
+        // target link-layer address option.
+        f.extend_from_slice(&[136, 0, 0, 0, 0x20, 0, 0, 0]); // override flag
+        let target: std::net::Ipv6Addr = "2001:db8::10".parse().unwrap();
+        f.extend_from_slice(&target.octets());
+        f.extend_from_slice(&[2, 1, 0x68, 0x5e, 0xdd, 0x09, 0x15, 0x5e]);
+        f
+    }
+
+    /// Ingesting an NDP neighbor advertisement must populate the neighbor
+    /// cache for the advertised target address — but only when the frame
+    /// arrived with hop limit 255, which proves it was not routed (RFC 4861).
+    #[test]
+    fn ndp_ingest_learns_advertised_target_at_hop_limit_255_only() {
+        let target: std::net::IpAddr = "2001:db8::10".parse().unwrap();
+
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&parse(&ndp_advertisement_frame(255)), capture_time(0));
+        assert_eq!(
+            tracker.neighbor(&target).expect("target learned").mac,
+            "68:5e:dd:09:15:5e"
+        );
+
+        let routed = ConnectionTracker::new();
+        routed.ingest_at(&parse(&ndp_advertisement_frame(64)), capture_time(0));
+        assert!(routed.neighbor(&target).is_none());
     }
 
     /// QUIC's handshake is the only round trip an on-path observer can time,
@@ -1354,6 +1625,240 @@ mod tests {
             response.netbios_response_time,
             Some(Duration::from_millis(40))
         );
+    }
+
+    /// Subsecond ping intervals can leave several requests outstanding. The
+    /// sequence number keeps each reply attached to its own send timestamp,
+    /// even when replies complete out of order.
+    #[test]
+    fn fast_ping_pairs_each_echo_by_identifier_and_sequence() {
+        let tracker = ConnectionTracker::new();
+
+        tracker.ingest_at(&icmp_echo_packet(0x1234, 1, true, false), capture_time(0));
+        tracker.ingest_at(&icmp_echo_packet(0x1234, 2, true, false), capture_time(200));
+        let second_reply =
+            tracker.ingest_at(&icmp_echo_packet(0x1234, 2, false, true), capture_time(225));
+        let first_reply =
+            tracker.ingest_at(&icmp_echo_packet(0x1234, 1, false, true), capture_time(350));
+
+        assert_eq!(second_reply.icmp_echo_rtt, Some(Duration::from_millis(25)));
+        assert_eq!(first_reply.icmp_echo_rtt, Some(Duration::from_millis(350)));
+
+        tracker.ingest_at(&icmp_echo_packet(0x1234, 3, true, false), capture_time(400));
+        let third_reply =
+            tracker.ingest_at(&icmp_echo_packet(0x1234, 3, false, true), capture_time(418));
+        let conn = tracker
+            .connections()
+            .get(&third_reply.key)
+            .expect("ping connection should exist")
+            .clone();
+        assert_eq!(third_reply.icmp_echo_rtt, Some(Duration::from_millis(18)));
+        assert_eq!(conn.icmp_echo_rtt, Some(Duration::from_millis(18)));
+        assert_eq!(conn.current_rtt(), Some(Duration::from_millis(18)));
+    }
+
+    #[test]
+    fn echo_reply_with_unknown_sequence_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&icmp_echo_packet(7, 10, true, false), capture_time(0));
+        let reply = tracker.ingest_at(&icmp_echo_packet(7, 11, false, true), capture_time(12));
+
+        assert!(reply.icmp_echo_rtt.is_none());
+        assert!(
+            tracker
+                .connections()
+                .get(&reply.key)
+                .and_then(|conn| conn.icmp_echo_rtt)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn local_echo_responder_turnaround_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&icmp_echo_packet(7, 1, false, false), capture_time(0));
+        let reply = tracker.ingest_at(&icmp_echo_packet(7, 1, true, true), capture_time(1));
+
+        assert!(reply.icmp_echo_rtt.is_none());
+    }
+
+    fn loopback_echo_packet(identifier: u16, sequence: u16, is_reply: bool) -> ParsedPacket {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let mut packet = icmp_echo_packet(identifier, sequence, true, is_reply);
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        packet.local_addr = loopback;
+        packet.remote_addr = loopback;
+        packet
+    }
+
+    /// Loopback captures classify both the request and its reply as outgoing
+    /// because both endpoints are local. The reply must still pair up.
+    #[test]
+    fn loopback_ping_measures_rtt() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(&loopback_echo_packet(9, 1, false), capture_time(0));
+        let reply = tracker.ingest_at(&loopback_echo_packet(9, 1, true), capture_time(1));
+
+        assert_eq!(reply.icmp_echo_rtt, Some(Duration::from_millis(1)));
+    }
+
+    /// Echo requests reveal who initiated the flow; the Details tab uses the
+    /// direction to hide the RTT row on flows this host only answers.
+    #[test]
+    fn echo_request_sets_connection_direction() {
+        let tracker = ConnectionTracker::new();
+        let outgoing = tracker.ingest_at(&icmp_echo_packet(7, 1, true, false), capture_time(0));
+        let direction = tracker
+            .connections()
+            .get(&outgoing.key)
+            .and_then(|conn| conn.connection_direction);
+        assert_eq!(direction, Some(true));
+
+        let tracker = ConnectionTracker::new();
+        let inbound = tracker.ingest_at(&icmp_echo_packet(7, 1, false, false), capture_time(0));
+        tracker.ingest_at(&icmp_echo_packet(7, 1, true, true), capture_time(1));
+        let direction = tracker
+            .connections()
+            .get(&inbound.key)
+            .and_then(|conn| conn.connection_direction);
+        assert_eq!(direction, Some(false), "our reply must not flip it");
+    }
+
+    fn stun_packet(
+        transaction_id: [u8; 12],
+        is_outgoing: bool,
+        class: crate::network::types::StunMessageClass,
+    ) -> ParsedPacket {
+        use crate::network::dpi::DpiResult;
+        use crate::network::types::{AddrKind, ProtocolState, StunInfo, StunMethod};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 54_000),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
+            protocol_state: ProtocolState::Udp,
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 48,
+            dpi_result: Some(DpiResult {
+                application: ApplicationProtocol::Stun(StunInfo {
+                    message_class: class,
+                    method: StunMethod::Binding,
+                    transaction_id,
+                    software: None,
+                }),
+            }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// STUN binding requests and responses pair by transaction ID, giving a
+    /// UDP flow with no handshake a real request→response time.
+    #[test]
+    fn stun_binding_response_measures_rtt() {
+        use crate::network::types::StunMessageClass;
+
+        let tracker = ConnectionTracker::new();
+        let txid = [3u8; 12];
+        tracker.ingest_at(
+            &stun_packet(txid, true, StunMessageClass::Request),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &stun_packet(txid, false, StunMessageClass::SuccessResponse),
+            capture_time(31),
+        );
+
+        assert_eq!(response.stun_rtt, Some(Duration::from_millis(31)));
+        let conn = tracker
+            .connections()
+            .get(&response.key)
+            .expect("stun connection should exist")
+            .clone();
+        assert_eq!(conn.stun_rtt, Some(Duration::from_millis(31)));
+    }
+
+    fn ntp_packet(
+        mode: crate::network::types::NtpMode,
+        is_outgoing: bool,
+        origin_timestamp: u64,
+        transmit_timestamp: u64,
+    ) -> ParsedPacket {
+        use crate::network::dpi::DpiResult;
+        use crate::network::types::{AddrKind, NtpInfo, ProtocolState};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 47_000),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
+            protocol_state: ProtocolState::Udp,
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 90,
+            dpi_result: Some(DpiResult {
+                application: ApplicationProtocol::Ntp(NtpInfo {
+                    version: 4,
+                    mode,
+                    stratum: 2,
+                    origin_timestamp,
+                    transmit_timestamp,
+                }),
+            }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// An NTP poll pairs with its response through the originate timestamp
+    /// echo, giving the UDP flow a request→response time.
+    #[test]
+    fn ntp_server_response_measures_rtt() {
+        use crate::network::types::NtpMode;
+
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &ntp_packet(NtpMode::Client, true, 0, 0xAABB),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &ntp_packet(NtpMode::Server, false, 0xAABB, 0xCCDD),
+            capture_time(21),
+        );
+
+        assert_eq!(response.ntp_rtt, Some(Duration::from_millis(21)));
+        let conn = tracker
+            .connections()
+            .get(&response.key)
+            .expect("ntp connection should exist")
+            .clone();
+        assert_eq!(conn.ntp_rtt, Some(Duration::from_millis(21)));
+    }
+
+    #[test]
+    fn stun_response_with_unknown_transaction_measures_nothing() {
+        use crate::network::types::StunMessageClass;
+
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &stun_packet([3u8; 12], true, StunMessageClass::Request),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &stun_packet([4u8; 12], false, StunMessageClass::SuccessResponse),
+            capture_time(31),
+        );
+
+        assert!(response.stun_rtt.is_none());
     }
 
     /// 1-RTT packets carry a short header with nothing timeable in the clear.

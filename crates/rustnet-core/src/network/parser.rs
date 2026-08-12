@@ -5,7 +5,7 @@ use crate::network::link_layer;
 use crate::network::link_layer::ethernet;
 #[cfg(target_os = "macos")]
 use crate::network::link_layer::pktap;
-use crate::network::local_addresses::collect_local_ips;
+use crate::network::local_addresses::{LocalAddresses, collect_local_addresses};
 use crate::network::oui::OuiLookup;
 use crate::network::protocol;
 use crate::network::protocol::TransportParams;
@@ -25,6 +25,13 @@ pub struct ParsedPacket {
     pub protocol: Protocol,
     pub local_addr: SocketAddr,
     pub remote_addr: SocketAddr,
+    /// Endpoint address kinds, stamped centrally in `PacketParser::parse_packet`
+    /// (subnet-broadcast detection needs the parser's interface snapshot).
+    pub local_addr_kind: AddrKind,
+    pub remote_addr_kind: AddrKind,
+    /// Whether the remote endpoint is a default-gateway address, stamped
+    /// centrally alongside the address kinds from the parser's route snapshot.
+    pub remote_is_gateway: bool,
     pub tcp_header: Option<TcpHeaderInfo>, // TCP header info (seq, ack, window, flags)
     pub protocol_state: ProtocolState,
     pub is_outgoing: bool,
@@ -125,12 +132,18 @@ impl ParserConfig {
 /// Packet parser with a refreshable snapshot of the host's local addresses.
 pub struct PacketParser {
     local_ips: std::collections::HashSet<IpAddr>,
+    /// Subnet-directed broadcast addresses of the host's IPv4 networks,
+    /// refreshed together with `local_ips`.
+    v4_broadcasts: std::collections::HashSet<Ipv4Addr>,
+    /// Default-gateway addresses from the host's routing table, refreshed
+    /// together with `local_ips`.
+    gateways: std::collections::HashSet<IpAddr>,
     last_local_ip_refresh: Instant,
     last_ambiguous_endpoint_refresh: Option<Instant>,
     unchanged_ambiguous_refreshes: u32,
     config: ParserConfig,
     linktype: Option<i32>, // DLT linktype - 149 means PKTAP on macOS
-    oui_lookup: Option<OuiLookup>,
+    oui_lookup: Option<std::sync::Arc<OuiLookup>>,
 }
 
 impl Default for PacketParser {
@@ -143,20 +156,15 @@ impl PacketParser {
     /// Create a new packet parser with default configuration
     /// Automatically detects local IP addresses from network interfaces
     pub fn new() -> Self {
-        Self {
-            local_ips: collect_local_ips(),
-            last_local_ip_refresh: Instant::now(),
-            last_ambiguous_endpoint_refresh: None,
-            unchanged_ambiguous_refreshes: 0,
-            config: ParserConfig::default(),
-            linktype: None,
-            oui_lookup: None,
-        }
+        Self::with_config(ParserConfig::default())
     }
 
     pub fn with_config(config: ParserConfig) -> Self {
+        let local = collect_local_addresses();
         Self {
-            local_ips: collect_local_ips(),
+            local_ips: local.ips,
+            v4_broadcasts: local.v4_broadcasts,
+            gateways: local.gateways,
             last_local_ip_refresh: Instant::now(),
             last_ambiguous_endpoint_refresh: None,
             unchanged_ambiguous_refreshes: 0,
@@ -166,9 +174,11 @@ impl PacketParser {
         }
     }
 
-    /// Set the OUI lookup for MAC vendor resolution
-    pub fn with_oui_lookup(mut self, oui_lookup: OuiLookup) -> Self {
-        self.oui_lookup = Some(oui_lookup);
+    /// Set the OUI lookup for MAC vendor resolution. Accepts either an owned
+    /// `OuiLookup` (as before) or an `Arc<OuiLookup>`, so the ~3 MB vendor
+    /// table can be shared between processor threads instead of cloned.
+    pub fn with_oui_lookup(mut self, oui_lookup: impl Into<std::sync::Arc<OuiLookup>>) -> Self {
+        self.oui_lookup = Some(oui_lookup.into());
         self
     }
 
@@ -207,7 +217,7 @@ impl PacketParser {
     /// rotation do not leave endpoint orientation stale for the lifetime of
     /// the process.
     pub fn refresh_local_ips(&mut self) -> bool {
-        self.refresh_local_ips_with(collect_local_ips)
+        self.refresh_local_ips_with(collect_local_addresses)
     }
 
     /// Refresh the local-address snapshot once `interval` has elapsed.
@@ -226,11 +236,44 @@ impl PacketParser {
     /// by unrelated forwarded traffic are rate-limited with exponential
     /// backoff while they keep observing no change.
     pub fn parse_packet_with_refresh(&mut self, data: &[u8]) -> Option<ParsedPacket> {
-        self.parse_packet_with_local_ip_collector(data, collect_local_ips)
+        self.parse_packet_with_local_ip_collector(data, collect_local_addresses)
+    }
+
+    /// Classify an endpoint address against the current interface snapshot.
+    fn classify_addr(&self, ip: IpAddr) -> AddrKind {
+        match ip {
+            IpAddr::V4(v4) if v4.is_multicast() => AddrKind::Multicast,
+            IpAddr::V4(v4) if v4 == Ipv4Addr::BROADCAST || self.v4_broadcasts.contains(&v4) => {
+                AddrKind::Broadcast
+            }
+            IpAddr::V6(v6) if v6.is_multicast() => AddrKind::Multicast,
+            _ => AddrKind::Unicast,
+        }
+    }
+
+    /// Whether `ip` can plausibly be a local unicast endpoint. Subnet-directed
+    /// broadcasts are recognized via the interface prefix snapshot, so they do
+    /// not trigger ambiguous-endpoint interface re-enumeration.
+    fn is_unicast_endpoint(&self, ip: IpAddr) -> bool {
+        !ip.is_unspecified() && self.classify_addr(ip) == AddrKind::Unicast
+    }
+
+    /// Parse a raw packet and stamp both endpoint address kinds.
+    ///
+    /// The kinds are stamped here, at the single chokepoint every link-layer
+    /// path funnels through, because subnet-broadcast detection needs this
+    /// parser's interface snapshot.
+    pub fn parse_packet(&self, data: &[u8]) -> Option<ParsedPacket> {
+        let mut parsed = self.parse_packet_link_layer(data)?;
+        parsed.local_addr_kind = self.classify_addr(parsed.local_addr.ip());
+        parsed.remote_addr_kind = self.classify_addr(parsed.remote_addr.ip());
+        parsed.remote_is_gateway = parsed.remote_addr_kind == AddrKind::Unicast
+            && self.gateways.contains(&parsed.remote_addr.ip());
+        Some(parsed)
     }
 
     /// Parse a raw packet using the appropriate link-layer parser
-    pub fn parse_packet(&self, data: &[u8]) -> Option<ParsedPacket> {
+    fn parse_packet_link_layer(&self, data: &[u8]) -> Option<ParsedPacket> {
         if let Some(linktype) = self.linktype {
             // Determine the link layer type
             let link_type = link_layer::LinkLayerType::from_dlt(linktype);
@@ -284,7 +327,7 @@ impl PacketParser {
         collector: F,
     ) -> Option<ParsedPacket>
     where
-        F: FnOnce() -> std::collections::HashSet<IpAddr>,
+        F: FnOnce() -> LocalAddresses,
     {
         let parsed = self.parse_packet(data)?;
         let local_ip = parsed.local_addr.ip();
@@ -292,8 +335,8 @@ impl PacketParser {
 
         if self.local_ips.contains(&local_ip)
             || self.local_ips.contains(&remote_ip)
-            || !is_unicast_endpoint(local_ip)
-            || !is_unicast_endpoint(remote_ip)
+            || !self.is_unicast_endpoint(local_ip)
+            || !self.is_unicast_endpoint(remote_ip)
         {
             return Some(parsed);
         }
@@ -318,11 +361,12 @@ impl PacketParser {
 
     /// Interval between ambiguous-endpoint refresh attempts.
     ///
-    /// Sustained traffic with no local endpoint (e.g. subnet-directed
-    /// broadcasts, which `is_unicast_endpoint` cannot recognize without prefix
-    /// information, or mirrored traffic) would otherwise re-enumerate
-    /// interfaces every second forever, so each fruitless refresh doubles the
-    /// interval up to a cap. Any refresh that observes a change resets it.
+    /// Sustained traffic with no local endpoint (e.g. mirrored or forwarded
+    /// traffic) would otherwise re-enumerate interfaces every second forever,
+    /// so each fruitless refresh doubles the interval up to a cap. Any refresh
+    /// that observes a change resets it. Subnet-directed broadcasts are
+    /// recognized by `is_unicast_endpoint` via the interface prefix snapshot
+    /// and never reach this path.
     fn ambiguous_refresh_interval(&self) -> Duration {
         let factor = 1u32 << self.unchanged_ambiguous_refreshes.min(6);
         AMBIGUOUS_ENDPOINT_REFRESH_INTERVAL
@@ -332,20 +376,25 @@ impl PacketParser {
 
     fn refresh_local_ips_with<F>(&mut self, collector: F) -> bool
     where
-        F: FnOnce() -> std::collections::HashSet<IpAddr>,
+        F: FnOnce() -> LocalAddresses,
     {
         let refreshed = collector();
         self.last_local_ip_refresh = Instant::now();
-        if refreshed == self.local_ips {
+        if refreshed.ips == self.local_ips
+            && refreshed.v4_broadcasts == self.v4_broadcasts
+            && refreshed.gateways == self.gateways
+        {
             return false;
         }
 
         log::debug!(
             "Local address set changed: {} -> {} address(es)",
             self.local_ips.len(),
-            refreshed.len()
+            refreshed.ips.len()
         );
-        self.local_ips = refreshed;
+        self.local_ips = refreshed.ips;
+        self.v4_broadcasts = refreshed.v4_broadcasts;
+        self.gateways = refreshed.gateways;
         self.unchanged_ambiguous_refreshes = 0;
         true
     }
@@ -539,7 +588,7 @@ impl PacketParser {
 
         // Handle extension headers if needed (`None` = non-first fragment,
         // which carries no transport header)
-        let (final_next_header, transport_offset) =
+        let (final_next_header, transport_offset, saw_fragment) =
             self.parse_ipv6_extension_headers(next_header, transport_data)?;
         // A crafted extension header can declare a length that runs past the
         // captured bytes, so `transport_offset` may exceed the slice length.
@@ -550,11 +599,40 @@ impl PacketParser {
             TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
         match final_next_header {
-            58 => protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips),
+            58 => self.parse_icmpv6(final_transport_data, params, ip_data[7], saw_fragment),
             6 => protocol::tcp::parse(final_transport_data, params, &self.config, &self.local_ips),
             17 => protocol::udp::parse(final_transport_data, params, &self.config, &self.local_ips),
             _ => None,
         }
+    }
+
+    /// Parse an ICMPv6 transport payload and, when the enclosing IPv6 header
+    /// proves on-link origin, attach any NDP-carried neighbor mapping to the
+    /// resulting `ProtocolState::Icmp`.
+    ///
+    /// NDP receivers require hop limit 255 (RFC 4861): a forged message
+    /// routed from off-link cannot arrive with it, which keeps the neighbor
+    /// cache on-link the way ARP's non-routability does for IPv4. Messages
+    /// whose extension-header chain included a Fragment Header are never
+    /// learned from: RFC 6980 forbids fragmented NDP precisely because
+    /// fragmentation lets crafted options evade validation.
+    fn parse_icmpv6(
+        &self,
+        transport_data: &[u8],
+        params: TransportParams,
+        hop_limit: u8,
+        saw_fragment: bool,
+    ) -> Option<ParsedPacket> {
+        let src_ip = params.src_ip;
+        let mut packet = protocol::icmp::parse_v6(transport_data, params, &self.local_ips)?;
+        if hop_limit == 255
+            && !saw_fragment
+            && let ProtocolState::Icmp { ndp_neighbor, .. } = &mut packet.protocol_state
+        {
+            *ndp_neighbor =
+                protocol::ndp::extract_neighbor(transport_data, src_ip, self.oui_lookup.as_deref());
+        }
+        Some(packet)
     }
 
     /// Parse an ARP packet from Ethernet frame data
@@ -590,14 +668,8 @@ impl PacketParser {
         }
 
         // Extract MAC addresses
-        let sender_mac = format!(
-            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            arp_data[8], arp_data[9], arp_data[10], arp_data[11], arp_data[12], arp_data[13]
-        );
-        let target_mac = format!(
-            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            arp_data[18], arp_data[19], arp_data[20], arp_data[21], arp_data[22], arp_data[23]
-        );
+        let sender_mac = crate::network::oui::format_mac(&arp_data[8..14]);
+        let target_mac = crate::network::oui::format_mac(&arp_data[18..24]);
 
         let sender_ip = IpAddr::from([arp_data[14], arp_data[15], arp_data[16], arp_data[17]]);
         let target_ip = IpAddr::from([arp_data[24], arp_data[25], arp_data[26], arp_data[27]]);
@@ -638,6 +710,10 @@ impl PacketParser {
             protocol: Protocol::Arp,
             local_addr,
             remote_addr,
+            // Overwritten centrally in PacketParser::parse_packet
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             tcp_header: None,
             protocol_state: ProtocolState::Arp(arp_info),
             is_outgoing,
@@ -778,7 +854,7 @@ impl PacketParser {
 
         // Handle extension headers if needed (`None` = non-first fragment,
         // which carries no transport header)
-        let (final_next_header, transport_offset) =
+        let (final_next_header, transport_offset, saw_fragment) =
             self.parse_ipv6_extension_headers(next_header, transport_data)?;
         // A crafted extension header can declare a length that runs past the
         // captured bytes, so `transport_offset` may exceed the slice length.
@@ -789,7 +865,7 @@ impl PacketParser {
             TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
 
         match final_next_header {
-            58 => protocol::icmp::parse_v6(final_transport_data, params, &self.local_ips),
+            58 => self.parse_icmpv6(final_transport_data, params, data[7], saw_fragment),
             6 => protocol::tcp::parse(final_transport_data, params, &self.config, &self.local_ips),
             17 => protocol::udp::parse(final_transport_data, params, &self.config, &self.local_ips),
             _ => None,
@@ -797,15 +873,18 @@ impl PacketParser {
     }
 
     /// Walk the IPv6 extension-header chain. Returns the final next-header
-    /// value and the offset of the transport header, or `None` for a
-    /// non-first fragment: its "transport header" position holds mid-payload
-    /// bytes that must not be parsed as ports.
+    /// value, the offset of the transport header, and whether a Fragment
+    /// Header was traversed (a first/atomic fragment still carries the
+    /// transport header, but NDP must not be learned from it — RFC 6980).
+    /// `None` for a non-first fragment: its "transport header" position
+    /// holds mid-payload bytes that must not be parsed as ports.
     fn parse_ipv6_extension_headers(
         &self,
         mut next_header: u8,
         data: &[u8],
-    ) -> Option<(u8, usize)> {
+    ) -> Option<(u8, usize, bool)> {
         let mut offset = 0;
+        let mut saw_fragment = false;
 
         const HOP_BY_HOP: u8 = 0;
         const ROUTING: u8 = 43;
@@ -818,15 +897,16 @@ impl PacketParser {
             match next_header {
                 HOP_BY_HOP | ROUTING | DESTINATION_OPTIONS => {
                     if data.len() < offset + 2 {
-                        return Some((next_header, offset));
+                        return Some((next_header, offset, saw_fragment));
                     }
                     next_header = data[offset];
                     let header_len = ((data[offset + 1] as usize) + 1) * 8;
                     offset += header_len;
                 }
                 FRAGMENT => {
+                    saw_fragment = true;
                     if data.len() < offset + 8 {
-                        return Some((next_header, offset));
+                        return Some((next_header, offset, saw_fragment));
                     }
                     // Bytes 2-3: fragment offset (upper 13 bits). Only the
                     // first fragment (offset 0) carries the transport header.
@@ -840,31 +920,24 @@ impl PacketParser {
                 }
                 AUTHENTICATION => {
                     if data.len() < offset + 2 {
-                        return Some((next_header, offset));
+                        return Some((next_header, offset, saw_fragment));
                     }
                     next_header = data[offset];
                     let header_len = ((data[offset + 1] as usize) + 2) * 4;
                     offset += header_len;
                 }
                 ENCAPSULATING_SECURITY => {
-                    return Some((next_header, offset));
+                    return Some((next_header, offset, saw_fragment));
                 }
                 _ => {
-                    return Some((next_header, offset));
+                    return Some((next_header, offset, saw_fragment));
                 }
             }
 
             if offset >= data.len() {
-                return Some((next_header, offset));
+                return Some((next_header, offset, saw_fragment));
             }
         }
-    }
-}
-
-fn is_unicast_endpoint(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => !ip.is_unspecified() && !ip.is_multicast() && ip != Ipv4Addr::BROADCAST,
-        IpAddr::V6(ip) => !ip.is_unspecified() && !ip.is_multicast(),
     }
 }
 
@@ -908,6 +981,17 @@ mod tests {
         ]
     }
 
+    fn ethernet_ipv4_udp(src: [u8; 4], dst: [u8; 4]) -> Vec<u8> {
+        vec![
+            // Ethernet
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x08, 0x00,
+            // IPv4
+            0x45, 0x00, 0x00, 0x20, 0x00, 0x01, 0x00, 0x00, 0x40, 0x11, 0x00, 0x00, src[0], src[1],
+            src[2], src[3], dst[0], dst[1], dst[2], dst[3], // UDP: 60236 -> 51234
+            0xeb, 0x4c, 0xc8, 0x22, 0x00, 0x0c, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+        ]
+    }
+
     fn ethernet_ipv6_tcp() -> Vec<u8> {
         vec![
             // Ethernet
@@ -920,6 +1004,41 @@ mod tests {
             0x04, 0xd2, 0x00, 0x50, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x50, 0x02,
             0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
         ]
+    }
+
+    /// Ethernet IPv6 ICMPv6 Neighbor Solicitation from fe80::2 for fe80::1,
+    /// carrying a source link-layer option, hop limit 255. `fragmented`
+    /// inserts an atomic Fragment Header (offset 0) before the ICMPv6 header.
+    fn ethernet_ipv6_ndp_solicitation(fragmented: bool) -> Vec<u8> {
+        let mut icmpv6 = vec![135, 0, 0, 0, 0, 0, 0, 0]; // NS header
+        icmpv6.extend_from_slice(&[
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, // target fe80::1
+        ]);
+        icmpv6.extend_from_slice(&[1, 1, 0x68, 0x5e, 0xdd, 0x09, 0x15, 0x5e]); // source LL option
+
+        let (next_header, payload) = if fragmented {
+            let mut p = vec![58, 0, 0, 0, 0, 0, 0, 1]; // atomic fragment, offset 0
+            p.extend_from_slice(&icmpv6);
+            (44u8, p)
+        } else {
+            (58u8, icmpv6)
+        };
+
+        let mut frame = vec![
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x86, 0xdd,
+            0x60, 0x00, 0x00, 0x00,
+        ];
+        frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        frame.push(next_header);
+        frame.push(255); // hop limit
+        frame.extend_from_slice(&[
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02, // src fe80::2
+        ]);
+        frame.extend_from_slice(&[
+            0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, // dst fe80::1
+        ]);
+        frame.extend_from_slice(&payload);
+        frame
     }
 
     fn linux_sll_ipv4_tcp() -> Vec<u8> {
@@ -966,6 +1085,38 @@ mod tests {
         assert_eq!(p.remote_addr.port(), 80, "Remote port should be 80");
         assert!(p.tcp_header.is_some());
         assert!(p.tcp_header.unwrap().flags.syn, "SYN flag should be set");
+    }
+
+    #[test]
+    fn ndp_is_learned_at_hop_limit_255_but_never_from_fragments() {
+        let parser = create_parser_with_linktype(1); // DLT_EN10MB
+
+        let parsed = parser
+            .parse_packet(&ethernet_ipv6_ndp_solicitation(false))
+            .expect("NDP solicitation should parse");
+        match &parsed.protocol_state {
+            ProtocolState::Icmp {
+                ndp_neighbor: Some(neighbor),
+                ..
+            } => {
+                assert_eq!(neighbor.ip, "fe80::2".parse::<IpAddr>().unwrap());
+                assert_eq!(neighbor.mac, "68:5e:dd:09:15:5e");
+            }
+            other => panic!("expected a learned NDP neighbor, got {:?}", other),
+        }
+
+        // RFC 6980: an NDP message whose header chain includes a Fragment
+        // Header must be ignored, even a first/atomic fragment.
+        let parsed = parser
+            .parse_packet(&ethernet_ipv6_ndp_solicitation(true))
+            .expect("fragmented solicitation should still parse as ICMPv6");
+        assert!(matches!(
+            &parsed.protocol_state,
+            ProtocolState::Icmp {
+                ndp_neighbor: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1112,6 +1263,139 @@ mod tests {
     }
 
     #[test]
+    fn classify_addr_recognizes_broadcast_and_multicast() {
+        let mut parser = create_parser_with_linktype(1);
+        parser.v4_broadcasts.insert(Ipv4Addr::new(192, 168, 1, 255));
+
+        assert_eq!(
+            parser.classify_addr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255))),
+            AddrKind::Broadcast,
+            "subnet-directed broadcast from the interface snapshot"
+        );
+        assert_eq!(
+            parser.classify_addr(IpAddr::V4(Ipv4Addr::BROADCAST)),
+            AddrKind::Broadcast
+        );
+        assert_eq!(
+            parser.classify_addr(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 251))),
+            AddrKind::Multicast
+        );
+        assert_eq!(
+            parser.classify_addr(IpAddr::V6(
+                "ff02::fb".parse().expect("valid fixture address")
+            )),
+            AddrKind::Multicast
+        );
+        assert_eq!(
+            parser.classify_addr(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 254))),
+            AddrKind::Unicast,
+            "adjacent host must not be mistaken for the broadcast address"
+        );
+        assert_eq!(
+            parser.classify_addr(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))),
+            AddrKind::Unicast
+        );
+    }
+
+    #[test]
+    fn incoming_subnet_broadcast_is_stamped_and_skips_refresh() {
+        use std::cell::Cell;
+
+        let mut parser = create_parser_with_linktype(1);
+        parser.v4_broadcasts.insert(Ipv4Addr::new(192, 168, 1, 255));
+        // Peer -> subnet broadcast; neither endpoint is a local unicast address
+        let packet = ethernet_ipv4_udp([192, 168, 1, 52], [192, 168, 1, 255]);
+        let collector_calls = Cell::new(0u32);
+
+        let parsed = parser
+            .parse_packet_with_local_ip_collector(&packet, || {
+                collector_calls.set(collector_calls.get() + 1);
+                LocalAddresses::default()
+            })
+            .expect("packet should parse");
+
+        assert_eq!(
+            parsed.local_addr.ip(),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255))
+        );
+        assert_eq!(parsed.local_addr_kind, AddrKind::Broadcast);
+        assert_eq!(parsed.remote_addr_kind, AddrKind::Unicast);
+        assert_eq!(
+            collector_calls.get(),
+            0,
+            "a recognized subnet broadcast must not re-enumerate interfaces"
+        );
+    }
+
+    #[test]
+    fn outgoing_broadcast_marks_the_remote_side() {
+        let mut parser = create_parser_with_linktype(1);
+        parser.v4_broadcasts.insert(Ipv4Addr::new(192, 168, 1, 255));
+        // The local host (192.168.1.100) sends to the subnet broadcast
+        let packet = ethernet_ipv4_udp([192, 168, 1, 100], [192, 168, 1, 255]);
+
+        let parsed = parser.parse_packet(&packet).expect("packet should parse");
+
+        assert!(parsed.is_outgoing);
+        assert_eq!(parsed.local_addr_kind, AddrKind::Unicast);
+        assert_eq!(parsed.remote_addr_kind, AddrKind::Broadcast);
+    }
+
+    #[test]
+    fn gateway_remote_endpoint_is_stamped() {
+        let mut parser = create_parser_with_linktype(1);
+        parser
+            .gateways
+            .insert(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+
+        // The local host (192.168.1.100) talks to the gateway
+        let packet = ethernet_ipv4_udp([192, 168, 1, 100], [192, 168, 1, 1]);
+        let parsed = parser.parse_packet(&packet).expect("packet should parse");
+        assert_eq!(parsed.remote_addr_kind, AddrKind::Unicast);
+        assert!(parsed.remote_is_gateway);
+
+        // An ordinary peer on the same subnet must not be marked
+        let packet = ethernet_ipv4_udp([192, 168, 1, 100], [192, 168, 1, 52]);
+        let parsed = parser.parse_packet(&packet).expect("packet should parse");
+        assert!(!parsed.remote_is_gateway);
+    }
+
+    #[test]
+    fn broadcast_remote_is_never_marked_as_gateway() {
+        let mut parser = create_parser_with_linktype(1);
+        parser.v4_broadcasts.insert(Ipv4Addr::new(192, 168, 1, 255));
+        parser
+            .gateways
+            .insert(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)));
+
+        let packet = ethernet_ipv4_udp([192, 168, 1, 100], [192, 168, 1, 255]);
+        let parsed = parser.parse_packet(&packet).expect("packet should parse");
+        assert_eq!(parsed.remote_addr_kind, AddrKind::Broadcast);
+        assert!(!parsed.remote_is_gateway);
+    }
+
+    #[test]
+    fn refresh_picks_up_gateway_changes() {
+        let mut parser = create_parser_with_linktype(1);
+        parser.local_ips = [IpAddr::V4(Ipv4Addr::LOCALHOST)].into_iter().collect();
+        parser.v4_broadcasts.clear();
+        parser.gateways.clear();
+        let gateway = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let collector =
+            || LocalAddresses::from_ips([IpAddr::V4(Ipv4Addr::LOCALHOST)]).with_gateways([gateway]);
+
+        assert!(
+            parser.refresh_local_ips_with(collector),
+            "a gateway-only change must count as a snapshot change"
+        );
+        assert!(parser.gateways.contains(&gateway));
+        assert!(
+            !parser.refresh_local_ips_with(collector),
+            "an unchanged snapshot must not report a change"
+        );
+    }
+
+    #[test]
     fn ambiguous_ipv6_packet_refreshes_local_addresses_and_reorients_endpoints() {
         let mut parser = create_parser_with_linktype(1);
         parser.local_ips.clear();
@@ -1126,13 +1410,11 @@ mod tests {
         let new_local = IpAddr::V6("2001:db8::1".parse().expect("valid fixture address"));
         let corrected = parser
             .parse_packet_with_local_ip_collector(&packet, || {
-                [
+                LocalAddresses::from_ips([
                     IpAddr::V4(Ipv4Addr::LOCALHOST),
                     IpAddr::V6(Ipv6Addr::LOCALHOST),
                     new_local,
-                ]
-                .into_iter()
-                .collect()
+                ])
             })
             .expect("packet should be reparsed");
 
@@ -1149,7 +1431,7 @@ mod tests {
         let new = IpAddr::V6("2001:db8::2".parse().expect("valid new address"));
         parser.local_ips = [old].into_iter().collect();
 
-        assert!(parser.refresh_local_ips_with(|| [new].into_iter().collect()));
+        assert!(parser.refresh_local_ips_with(|| LocalAddresses::from_ips([new])));
         assert!(!parser.local_ips.contains(&old));
         assert!(parser.local_ips.contains(&new));
     }
@@ -1165,7 +1447,7 @@ mod tests {
         let collector_calls = Cell::new(0u32);
         let unchanged_collector = || {
             collector_calls.set(collector_calls.get() + 1);
-            [IpAddr::V4(Ipv4Addr::LOCALHOST)].into_iter().collect()
+            LocalAddresses::from_ips([IpAddr::V4(Ipv4Addr::LOCALHOST)])
         };
 
         parser
@@ -1197,7 +1479,7 @@ mod tests {
         );
 
         let new = IpAddr::V6("2001:db8::99".parse().expect("valid address"));
-        assert!(parser.refresh_local_ips_with(|| [new].into_iter().collect()));
+        assert!(parser.refresh_local_ips_with(|| LocalAddresses::from_ips([new])));
         assert_eq!(
             parser.unchanged_ambiguous_refreshes, 0,
             "a refresh that observes a change must reset the backoff"

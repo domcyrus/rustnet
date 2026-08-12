@@ -256,6 +256,12 @@ pub fn merge_packet_into_connection(
     let observation_time = conn.last_activity.max(now);
     conn.last_activity = observation_time;
 
+    // Deterministic for a given interface snapshot; last-wins self-heals
+    // connections whose first packet raced interface enumeration.
+    conn.local_addr_kind = parsed.local_addr_kind;
+    conn.remote_addr_kind = parsed.remote_addr_kind;
+    conn.remote_is_gateway = parsed.remote_is_gateway;
+
     // Update packet counts and bytes
     if parsed.is_outgoing {
         conn.packets_sent += 1;
@@ -319,6 +325,12 @@ pub fn merge_packet_into_connection(
                 // Use the state from the packet for non-TCP protocols
                 conn.protocol_state = parsed.protocol_state.clone();
             }
+        }
+
+        // A flow first seen mid-capture starts with an unknown direction;
+        // a later echo request still settles who initiated it.
+        if conn.connection_direction.is_none() {
+            conn.connection_direction = icmp_echo_direction(parsed);
         }
     }
 
@@ -420,6 +432,20 @@ pub fn merge_packet_into_connection(
     tcp_events
 }
 
+/// Flow direction from an ICMP echo request: whoever sends the request
+/// initiated the flow. Replies are ignored because loopback captures see
+/// them as outgoing too, which would misread a local ping as inbound.
+fn icmp_echo_direction(parsed: &ParsedPacket) -> Option<bool> {
+    match parsed.protocol_state {
+        ProtocolState::Icmp {
+            icmp_type: 8 | 128,
+            icmp_id: Some(_),
+            ..
+        } => Some(parsed.is_outgoing),
+        _ => None,
+    }
+}
+
 /// Create a new connection from a parsed packet
 pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> Connection {
     let mut conn = Connection::new(
@@ -428,6 +454,9 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
         parsed.remote_addr,
         parsed.protocol_state.clone(),
     );
+    conn.local_addr_kind = parsed.local_addr_kind;
+    conn.remote_addr_kind = parsed.remote_addr_kind;
+    conn.remote_is_gateway = parsed.remote_is_gateway;
 
     // Set initial TCP state based on flags if TCP
     if let Some(tcp_header) = parsed.tcp_header {
@@ -461,9 +490,11 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
             conn.connection_direction
         );
     } else {
-        // For non-TCP protocols, use the provided state directly
-        // Connection direction is not determinable for stateless protocols
+        // For non-TCP protocols, use the provided state directly. ICMP echo
+        // requests still reveal the initiator; other stateless protocols
+        // leave the direction unknown.
         conn.protocol_state = parsed.protocol_state.clone();
+        conn.connection_direction = icmp_echo_direction(parsed);
     }
 
     // Set initial stats based on packet direction
@@ -914,6 +945,12 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
     if new_info.rcode.is_some() {
         old_info.rcode = new_info.rcode;
     }
+
+    // Same rule for the NODATA flag: it is only ever set on responses, and
+    // the latest response describes the current transaction
+    if new_info.nodata.is_some() {
+        old_info.nodata = new_info.nodata;
+    }
 }
 
 /// Merge NetBIOS request and response information.
@@ -1064,7 +1101,7 @@ fn update_connection_rates(conn: &mut Connection) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::types::{Protocol, ProtocolState, TcpState};
+    use crate::network::types::{AddrKind, Protocol, ProtocolState, TcpState};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn create_test_connection() -> Connection {
@@ -1083,6 +1120,9 @@ mod tests {
             protocol: Protocol::Tcp,
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
             protocol_state: ProtocolState::Tcp(TcpState::Unknown),
             tcp_header: Some(TcpHeaderInfo {
                 seq: 1000,
@@ -1117,6 +1157,7 @@ mod tests {
             is_response: true,
             txid: 0x1234,
             rcode: Some(0),
+            nodata: None,
         };
 
         for i in 0..(MAX_MERGED_RESPONSE_IPS as u32 * 4) {
@@ -1130,6 +1171,7 @@ mod tests {
                 is_response: true,
                 txid: 0x1234,
                 rcode: Some(0),
+                nodata: None,
             };
             merge_dns_info(&mut old, &new);
         }
@@ -1148,6 +1190,7 @@ mod tests {
             is_response: true,
             txid: 0x1111,
             rcode: Some(3),
+            nodata: None,
         };
         let new_query = DnsInfo {
             query_name: None,
@@ -1156,6 +1199,7 @@ mod tests {
             is_response: false,
             txid: 0x2222,
             rcode: None,
+            nodata: None,
         };
 
         merge_dns_info(&mut old, &new_query);
@@ -1169,6 +1213,7 @@ mod tests {
             is_response: true,
             txid: 0x2222,
             rcode: Some(0),
+            nodata: None,
         };
         merge_dns_info(&mut old, &new_response);
         assert_eq!(old.rcode, Some(0), "the latest response code wins");
@@ -1240,6 +1285,36 @@ mod tests {
         assert_eq!(conn.packets_received, 1);
         assert_eq!(conn.bytes_received, 100);
         assert_eq!(conn.packets_sent, 0);
+    }
+
+    #[test]
+    fn endpoint_kinds_are_copied_and_refreshed_on_merge() {
+        let mut packet = create_test_packet(false, false);
+        packet.local_addr_kind = AddrKind::Broadcast;
+        let conn = create_connection_from_packet(&packet, SystemTime::now());
+        assert_eq!(conn.local_addr_kind, AddrKind::Broadcast);
+        assert_eq!(conn.remote_addr_kind, AddrKind::Unicast);
+
+        // A connection first seen before a refresh added its subnet self-heals
+        // when a later packet carries the corrected kind.
+        let stale = create_test_packet(false, false);
+        let mut conn = create_connection_from_packet(&stale, SystemTime::now());
+        assert_eq!(conn.local_addr_kind, AddrKind::Unicast);
+        merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
+        assert_eq!(conn.local_addr_kind, AddrKind::Broadcast);
+    }
+
+    #[test]
+    fn gateway_flag_is_copied_and_refreshed_on_merge() {
+        let mut packet = create_test_packet(false, false);
+        packet.remote_is_gateway = true;
+        let mut conn = create_connection_from_packet(&packet, SystemTime::now());
+        assert!(conn.remote_is_gateway);
+
+        // A route change is reflected by the next packet after the refresh.
+        packet.remote_is_gateway = false;
+        merge_packet_into_connection(&mut conn, &packet, SystemTime::now());
+        assert!(!conn.remote_is_gateway);
     }
 
     #[test]

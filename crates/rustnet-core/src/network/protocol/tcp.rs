@@ -3,7 +3,7 @@
 use crate::network::dpi;
 use crate::network::parser::{ParsedPacket, ParserConfig};
 use crate::network::protocol::TransportParams;
-use crate::network::types::{Protocol, ProtocolState, TcpState};
+use crate::network::types::{AddrKind, Protocol, ProtocolState, TcpState};
 use std::net::SocketAddr;
 
 // Define TCP flags as bit masks
@@ -139,6 +139,10 @@ pub fn parse(
         protocol: Protocol::Tcp,
         local_addr,
         remote_addr,
+        // Overwritten centrally in PacketParser::parse_packet
+        local_addr_kind: AddrKind::Unicast,
+        remote_addr_kind: AddrKind::Unicast,
+        remote_is_gateway: false,
         tcp_header: Some(tcp_header),
         protocol_state: ProtocolState::Tcp(TcpState::Unknown),
         is_outgoing,

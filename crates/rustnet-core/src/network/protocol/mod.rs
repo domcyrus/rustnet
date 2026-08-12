@@ -6,9 +6,11 @@
 //! - ICMP (Internet Control Message Protocol)
 //! - ICMPv6 (Internet Control Message Protocol for IPv6)
 //! - IGMP (Internet Group Management Protocol)
+//! - NDP (Neighbor Discovery Protocol, link-layer address extraction only)
 
 pub mod icmp;
 pub mod igmp;
+pub mod ndp;
 pub mod tcp;
 pub mod udp;
 
