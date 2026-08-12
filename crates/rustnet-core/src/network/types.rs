@@ -921,12 +921,69 @@ pub struct NetBiosInfo {
     pub service: NetBiosService,
     pub opcode: NetBiosOpcode,
     pub name: Option<String>,
+    /// Name Service transaction ID or Datagram Service datagram ID.
+    pub transaction_id: u16,
+    /// Whether this packet is a final response to a request.
+    ///
+    /// Name Service WACK packets are deliberately excluded because a later
+    /// response completes the transaction.
+    pub is_response: bool,
+    /// Result carried by a final Name or Datagram Service response.
+    pub response_status: Option<NetBiosResponseStatus>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl NetBiosInfo {
+    pub fn is_request(&self) -> bool {
+        !self.is_response
+            && matches!(
+                self.opcode,
+                NetBiosOpcode::Query
+                    | NetBiosOpcode::Registration
+                    | NetBiosOpcode::Release
+                    | NetBiosOpcode::Refresh
+            )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NetBiosService {
     NameService,
     DatagramService,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetBiosResponseStatus {
+    /// Four-bit RCODE from a NetBIOS Name Service response.
+    NameService(u8),
+    DatagramPositive,
+    DatagramNegative,
+}
+
+impl NetBiosResponseStatus {
+    pub fn is_success(self) -> bool {
+        matches!(
+            self,
+            NetBiosResponseStatus::NameService(0) | NetBiosResponseStatus::DatagramPositive
+        )
+    }
+}
+
+impl std::fmt::Display for NetBiosResponseStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NetBiosResponseStatus::NameService(0) => write!(f, "SUCCESS"),
+            NetBiosResponseStatus::NameService(1) => write!(f, "FMT_ERR"),
+            NetBiosResponseStatus::NameService(2) => write!(f, "SRV_ERR"),
+            NetBiosResponseStatus::NameService(3) => write!(f, "NAM_ERR"),
+            NetBiosResponseStatus::NameService(4) => write!(f, "IMP_ERR"),
+            NetBiosResponseStatus::NameService(5) => write!(f, "RFS_ERR"),
+            NetBiosResponseStatus::NameService(6) => write!(f, "ACT_ERR"),
+            NetBiosResponseStatus::NameService(7) => write!(f, "CFT_ERR"),
+            NetBiosResponseStatus::NameService(code) => write!(f, "RCODE {}", code),
+            NetBiosResponseStatus::DatagramPositive => write!(f, "POSITIVE"),
+            NetBiosResponseStatus::DatagramNegative => write!(f, "NEGATIVE"),
+        }
+    }
 }
 
 impl std::fmt::Display for NetBiosService {
@@ -1887,12 +1944,18 @@ pub struct RttTracker {
     /// Outbound DNS queries awaiting their response, keyed by connection and
     /// transaction ID (stub resolvers reuse one socket for many queries).
     pending_dns: HashMap<(ConnectionKey, u16), SystemTime>,
+    /// Outbound NetBIOS requests awaiting a response. The remote endpoint is
+    /// intentionally absent because Name Service requests are commonly sent
+    /// to a broadcast address and answered by an individual host.
+    pending_netbios: HashMap<(SocketAddr, NetBiosService, u16), SystemTime>,
     /// Recent RTT measurements for aggregation: (timestamp, rtt_duration)
     recent_rtts: VecDeque<(Instant, Duration)>,
     /// Maximum age for pending SYNs (cleanup stale entries)
     max_pending_age: Duration,
     /// Maximum age for pending DNS queries, well past any resolver timeout
     max_pending_dns_age: Duration,
+    /// Maximum age for pending NetBIOS requests.
+    max_pending_netbios_age: Duration,
     /// Maximum number of recent RTTs to keep
     max_recent_rtts: usize,
 }
@@ -1901,15 +1964,20 @@ pub struct RttTracker {
 /// query flood costs unmatched samples, never memory.
 const MAX_PENDING_DNS: usize = 4096;
 
+/// Hard cap on pending NetBIOS requests.
+const MAX_PENDING_NETBIOS: usize = 4096;
+
 impl RttTracker {
     pub fn new() -> Self {
         Self {
             pending_syns: HashMap::new(),
             pending_quic_handshakes: HashMap::new(),
             pending_dns: HashMap::new(),
+            pending_netbios: HashMap::new(),
             recent_rtts: VecDeque::new(),
             max_pending_age: Duration::from_secs(30),
             max_pending_dns_age: Duration::from_secs(10),
+            max_pending_netbios_age: Duration::from_secs(10),
             max_recent_rtts: 100,
         }
     }
@@ -2002,6 +2070,38 @@ impl RttTracker {
         }
     }
 
+    /// Record a NetBIOS packet and return the request-to-response time when an
+    /// incoming final response matches an outgoing request.
+    ///
+    /// NetBIOS Name Service usually sends requests to a broadcast address,
+    /// while the responding host replies from its unicast address. Pairing by
+    /// local socket, service, and transaction ID handles both broadcast and
+    /// unicast exchanges. Like DNS timing, the result includes remote service
+    /// processing and is not added to transport RTT aggregates.
+    pub fn record_netbios_packet(
+        &mut self,
+        local_addr: SocketAddr,
+        info: &NetBiosInfo,
+        is_outgoing: bool,
+        at: SystemTime,
+    ) -> Option<Duration> {
+        self.cleanup_stale(at);
+        let key = (local_addr, info.service, info.transaction_id);
+        if is_outgoing && info.is_request() {
+            if self.pending_netbios.len() < MAX_PENDING_NETBIOS
+                || self.pending_netbios.contains_key(&key)
+            {
+                self.pending_netbios.insert(key, at);
+            }
+            return None;
+        }
+        if !is_outgoing && info.is_response {
+            let sent_at = self.pending_netbios.remove(&key)?;
+            return Some(at.duration_since(sent_at).unwrap_or_default());
+        }
+        None
+    }
+
     /// Record a completed data round trip (segment to covering ACK) measured
     /// by the per-connection estimator, so the aggregate RTT view reflects
     /// established connections rather than only fresh handshakes.
@@ -2047,6 +2147,9 @@ impl RttTracker {
         if let Some(dns_cutoff) = now.checked_sub(self.max_pending_dns_age) {
             self.pending_dns.retain(|_, ts| *ts > dns_cutoff);
         }
+        if let Some(netbios_cutoff) = now.checked_sub(self.max_pending_netbios_age) {
+            self.pending_netbios.retain(|_, ts| *ts > netbios_cutoff);
+        }
     }
 
     /// Clear all RTT tracking data
@@ -2054,6 +2157,7 @@ impl RttTracker {
         self.pending_syns.clear();
         self.pending_quic_handshakes.clear();
         self.pending_dns.clear();
+        self.pending_netbios.clear();
         self.recent_rtts.clear();
     }
 }
@@ -2606,6 +2710,10 @@ pub struct Connection {
     // separate from the transport-level `initial_rtt`.
     pub dns_response_time: Option<std::time::Duration>,
 
+    // Latest NetBIOS request-to-response time, paired by transaction ID.
+    // Kept separate from transport RTT because it includes service processing.
+    pub netbios_response_time: Option<std::time::Duration>,
+
     // GeoIP information for remote address
     pub geoip_info: Option<crate::network::geoip::GeoIpInfo>,
 
@@ -2666,6 +2774,7 @@ impl Connection {
             tcp_analytics,
             initial_rtt: None,
             dns_response_time: None,
+            netbios_response_time: None,
             geoip_info: None,
             is_historic: false,
             closed_at: None,
@@ -4361,6 +4470,25 @@ mod tests {
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000) + Duration::from_millis(millis)
     }
 
+    fn netbios_test_info(
+        service: NetBiosService,
+        transaction_id: u16,
+        is_response: bool,
+    ) -> NetBiosInfo {
+        NetBiosInfo {
+            service,
+            opcode: if is_response {
+                NetBiosOpcode::Response
+            } else {
+                NetBiosOpcode::Query
+            },
+            name: Some("FILESERVER".to_string()),
+            transaction_id,
+            is_response,
+            response_status: is_response.then_some(NetBiosResponseStatus::NameService(0)),
+        }
+    }
+
     #[test]
     fn test_rtt_tracker_new() {
         let tracker = RttTracker::new();
@@ -4481,6 +4609,50 @@ mod tests {
         // ...but a retransmit of a tracked query still restarts its timer.
         tracker.record_dns_packet(key, 42, true, false, rtt_capture_time(1_000));
         let rtt = tracker.record_dns_packet(key, 42, false, true, rtt_capture_time(1_015));
+        assert_eq!(rtt, Some(Duration::from_millis(15)));
+    }
+
+    #[test]
+    fn test_rtt_tracker_pending_netbios_expires() {
+        let mut tracker = RttTracker::new();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 137);
+        let request = netbios_test_info(NetBiosService::NameService, 0x1234, false);
+        let response = netbios_test_info(NetBiosService::NameService, 0x1234, true);
+
+        tracker.record_netbios_packet(local, &request, true, rtt_capture_time(0));
+        let rtt = tracker.record_netbios_packet(local, &response, false, rtt_capture_time(11_000));
+        assert!(rtt.is_none(), "the pending request expired after 10s");
+        assert!(tracker.pending_netbios.is_empty());
+    }
+
+    #[test]
+    fn test_rtt_tracker_pending_netbios_capped() {
+        let mut tracker = RttTracker::new();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 137);
+
+        for transaction_id in 0..MAX_PENDING_NETBIOS as u16 {
+            let request = netbios_test_info(NetBiosService::NameService, transaction_id, false);
+            tracker.record_netbios_packet(local, &request, true, rtt_capture_time(0));
+        }
+        assert_eq!(tracker.pending_netbios.len(), MAX_PENDING_NETBIOS);
+
+        let overflow_local = SocketAddr::new(local.ip(), 138);
+        let overflow_request = netbios_test_info(NetBiosService::DatagramService, 7, false);
+        let overflow_response = netbios_test_info(NetBiosService::DatagramService, 7, true);
+        tracker.record_netbios_packet(overflow_local, &overflow_request, true, rtt_capture_time(1));
+        assert_eq!(tracker.pending_netbios.len(), MAX_PENDING_NETBIOS);
+        let rtt = tracker.record_netbios_packet(
+            overflow_local,
+            &overflow_response,
+            false,
+            rtt_capture_time(20),
+        );
+        assert!(rtt.is_none());
+
+        let request = netbios_test_info(NetBiosService::NameService, 42, false);
+        let response = netbios_test_info(NetBiosService::NameService, 42, true);
+        tracker.record_netbios_packet(local, &request, true, rtt_capture_time(1_000));
+        let rtt = tracker.record_netbios_packet(local, &response, false, rtt_capture_time(1_015));
         assert_eq!(rtt, Some(Duration::from_millis(15)));
     }
 

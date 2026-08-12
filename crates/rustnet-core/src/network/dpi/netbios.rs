@@ -2,7 +2,7 @@
 //!
 //! Parses NetBIOS Name Service (UDP 137) and Datagram Service (UDP 138) packets.
 
-use crate::network::types::{NetBiosInfo, NetBiosOpcode, NetBiosService};
+use crate::network::types::{NetBiosInfo, NetBiosOpcode, NetBiosResponseStatus, NetBiosService};
 
 /// Minimum NetBIOS Name Service packet size
 const MIN_NBNS_SIZE: usize = 12;
@@ -29,13 +29,15 @@ pub fn analyze_netbios_ns(payload: &[u8]) -> Option<NetBiosInfo> {
 
     // Extract opcode from flags (bits 11-14)
     let opcode_value = ((flags >> 11) & 0x0F) as u8;
-    let is_response = (flags & 0x8000) != 0;
+    let has_response_flag = (flags & 0x8000) != 0;
 
-    let opcode = if is_response {
-        NetBiosOpcode::Response
-    } else {
-        parse_opcode(opcode_value)
+    let opcode = match (has_response_flag, opcode_value) {
+        // A WACK is an interim response asking the client to keep waiting.
+        (true, 7) => NetBiosOpcode::Wack,
+        (true, _) => NetBiosOpcode::Response,
+        (false, _) => parse_opcode(opcode_value),
     };
+    let is_response = has_response_flag && opcode != NetBiosOpcode::Wack;
 
     // Try to decode NetBIOS name if present
     let name = if payload.len() > 12 {
@@ -48,6 +50,10 @@ pub fn analyze_netbios_ns(payload: &[u8]) -> Option<NetBiosInfo> {
         service: NetBiosService::NameService,
         opcode,
         name,
+        transaction_id: u16::from_be_bytes([payload[0], payload[1]]),
+        is_response,
+        response_status: is_response
+            .then_some(NetBiosResponseStatus::NameService((flags & 0x000F) as u8)),
     })
 }
 
@@ -60,30 +66,44 @@ pub fn analyze_netbios_dgm(payload: &[u8]) -> Option<NetBiosInfo> {
 
     // RFC 1002 §4.4: header size — and therefore where the encoded name
     // starts — depends on the message type.
-    let (opcode, min_size, name_offset) = match msg_type {
+    let (opcode, min_size, name_offset, response_status) = match msg_type {
         // §4.4.1 DIRECT_UNIQUE / DIRECT_GROUP / BROADCAST: message
         // delivery, SOURCE_NAME follows the 14-byte header
         0x10..=0x12 => (
             NetBiosOpcode::Datagram,
             NBDGM_DIRECT_HEADER,
             Some(NBDGM_DIRECT_HEADER),
+            None,
         ),
         // §4.4.2 DATAGRAM ERROR: header + error code, no name
-        0x13 => (NetBiosOpcode::Error, NBDGM_ERROR_SIZE, None),
+        0x13 => (NetBiosOpcode::Error, NBDGM_ERROR_SIZE, None, None),
         // §4.4.3 DATAGRAM QUERY REQUEST: DESTINATION_NAME follows the
         // 10-byte header
         0x14 => (
             NetBiosOpcode::Query,
             NBDGM_QUERY_HEADER,
             Some(NBDGM_QUERY_HEADER),
+            None,
         ),
         // §4.4.3 POSITIVE / NEGATIVE QUERY RESPONSE
-        0x15 | 0x16 => (
+        0x15 => (
             NetBiosOpcode::Response,
             NBDGM_QUERY_HEADER,
             Some(NBDGM_QUERY_HEADER),
+            Some(NetBiosResponseStatus::DatagramPositive),
         ),
-        other => (NetBiosOpcode::Unknown(other), NBDGM_QUERY_HEADER, None),
+        0x16 => (
+            NetBiosOpcode::Response,
+            NBDGM_QUERY_HEADER,
+            Some(NBDGM_QUERY_HEADER),
+            Some(NetBiosResponseStatus::DatagramNegative),
+        ),
+        other => (
+            NetBiosOpcode::Unknown(other),
+            NBDGM_QUERY_HEADER,
+            None,
+            None,
+        ),
     };
 
     if payload.len() < min_size {
@@ -98,6 +118,9 @@ pub fn analyze_netbios_dgm(payload: &[u8]) -> Option<NetBiosInfo> {
         service: NetBiosService::DatagramService,
         opcode,
         name,
+        transaction_id: u16::from_be_bytes([payload[2], payload[3]]),
+        is_response: response_status.is_some(),
+        response_status,
     })
 }
 
@@ -230,6 +253,9 @@ mod tests {
         assert_eq!(info.service, NetBiosService::NameService);
         assert_eq!(info.opcode, NetBiosOpcode::Query);
         assert_eq!(info.name, Some("WORKSTATION".to_string()));
+        assert_eq!(info.transaction_id, 1);
+        assert!(!info.is_response);
+        assert_eq!(info.response_status, None);
     }
 
     #[test]
@@ -239,6 +265,36 @@ mod tests {
         assert_eq!(info.service, NetBiosService::NameService);
         assert_eq!(info.opcode, NetBiosOpcode::Response);
         assert_eq!(info.name, Some("FILESERVER".to_string()));
+        assert_eq!(info.transaction_id, 1);
+        assert!(info.is_response);
+        assert_eq!(
+            info.response_status,
+            Some(NetBiosResponseStatus::NameService(0))
+        );
+    }
+
+    #[test]
+    fn test_nbns_negative_response_status() {
+        let mut packet = build_nbns_response("MISSING");
+        packet[3] = 0x03; // NAM_ERR
+        let info = analyze_netbios_ns(&packet).expect("should parse");
+        assert_eq!(
+            info.response_status,
+            Some(NetBiosResponseStatus::NameService(3))
+        );
+        assert_eq!(info.response_status.unwrap().to_string(), "NAM_ERR");
+        assert!(!info.response_status.unwrap().is_success());
+    }
+
+    #[test]
+    fn test_nbns_wack_is_not_final_response() {
+        let mut packet = [0u8; MIN_NBNS_SIZE];
+        packet[0..2].copy_from_slice(&0x1234u16.to_be_bytes());
+        packet[2..4].copy_from_slice(&0xB800u16.to_be_bytes());
+        let info = analyze_netbios_ns(&packet).expect("should parse");
+        assert_eq!(info.opcode, NetBiosOpcode::Wack);
+        assert!(!info.is_response);
+        assert_eq!(info.response_status, None);
     }
 
     #[test]
@@ -278,6 +334,25 @@ mod tests {
         let info = analyze_netbios_dgm(&packet).expect("should parse");
         assert_eq!(info.opcode, NetBiosOpcode::Query);
         assert_eq!(info.name, Some("FILESERVER".to_string()));
+        assert_eq!(info.transaction_id, 0);
+        assert!(!info.is_response);
+    }
+
+    #[test]
+    fn test_nbdgm_negative_query_response() {
+        let mut packet = vec![0u8; 10];
+        packet[0] = 0x16;
+        packet[2..4].copy_from_slice(&0x4567u16.to_be_bytes());
+        packet.extend_from_slice(&encode_netbios_name("FILESERVER"));
+        let info = analyze_netbios_dgm(&packet).expect("should parse");
+        assert_eq!(info.opcode, NetBiosOpcode::Response);
+        assert_eq!(info.transaction_id, 0x4567);
+        assert!(info.is_response);
+        assert_eq!(
+            info.response_status,
+            Some(NetBiosResponseStatus::DatagramNegative)
+        );
+        assert!(!info.response_status.unwrap().is_success());
     }
 
     #[test]

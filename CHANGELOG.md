@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **NetBIOS Response Time**: UDP Name Service and Datagram Service requests now
+  show response time and the latest response status in Details. Pairing uses the
+  16-bit transaction ID plus the local socket and service, so broadcast requests
+  match replies from individual hosts. WACK packets keep the request pending
+  until its final response, and pending requests have a 10s expiry and hard cap
 - **DNS Response Time**: Unicast UDP DNS connections now show a transport
   metric in the Details Transport Health card instead of "No transport metrics
   for this protocol". Queries and responses are paired by their 16-bit

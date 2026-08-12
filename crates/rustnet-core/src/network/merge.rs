@@ -7,7 +7,7 @@ use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reasse
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
     ApplicationProtocol, Connection, DnsInfo, DpiInfo, FtpInfo, HttpInfo, HttpsInfo, MqttInfo,
-    ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState,
+    NetBiosInfo, ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState,
 };
 
 /// Get the priority of a QUIC connection state for proper state progression
@@ -565,6 +565,14 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     merge_dns_info(old_info, new_info);
                 }
 
+                // NetBIOS request/response merging
+                (
+                    ApplicationProtocol::NetBios(old_info),
+                    ApplicationProtocol::NetBios(new_info),
+                ) => {
+                    merge_netbios_info(old_info, new_info);
+                }
+
                 // SSH - merge SSH info
                 (ApplicationProtocol::Ssh(old_info), ApplicationProtocol::Ssh(new_info)) => {
                     merge_ssh_info(old_info, new_info);
@@ -908,6 +916,26 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
     }
 }
 
+/// Merge NetBIOS request and response information.
+fn merge_netbios_info(old_info: &mut NetBiosInfo, new_info: &NetBiosInfo) {
+    if old_info.name.is_none() && new_info.name.is_some() {
+        old_info.name.clone_from(&new_info.name);
+    }
+
+    old_info.opcode = new_info.opcode;
+    old_info.transaction_id = new_info.transaction_id;
+
+    if new_info.is_response {
+        old_info.is_response = true;
+    }
+
+    // Keep the last completed response status. A later request on the same
+    // socket must not erase it before its response arrives.
+    if new_info.response_status.is_some() {
+        old_info.response_status = new_info.response_status;
+    }
+}
+
 /// Merge SSH information
 fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
     // Update version if not set
@@ -1144,6 +1172,52 @@ mod tests {
         };
         merge_dns_info(&mut old, &new_response);
         assert_eq!(old.rcode, Some(0), "the latest response code wins");
+    }
+
+    #[test]
+    fn test_merge_netbios_keeps_status_and_tracks_latest_transaction() {
+        use crate::network::types::{NetBiosOpcode, NetBiosResponseStatus, NetBiosService};
+
+        let mut old = NetBiosInfo {
+            service: NetBiosService::NameService,
+            opcode: NetBiosOpcode::Response,
+            name: Some("FILESERVER".to_string()),
+            transaction_id: 0x1111,
+            is_response: true,
+            response_status: Some(NetBiosResponseStatus::NameService(3)),
+        };
+        let new_query = NetBiosInfo {
+            service: NetBiosService::NameService,
+            opcode: NetBiosOpcode::Query,
+            name: None,
+            transaction_id: 0x2222,
+            is_response: false,
+            response_status: None,
+        };
+
+        merge_netbios_info(&mut old, &new_query);
+        assert_eq!(old.opcode, NetBiosOpcode::Query);
+        assert_eq!(old.transaction_id, 0x2222);
+        assert_eq!(
+            old.response_status,
+            Some(NetBiosResponseStatus::NameService(3)),
+            "a request must not erase the last response status"
+        );
+
+        let new_response = NetBiosInfo {
+            service: NetBiosService::NameService,
+            opcode: NetBiosOpcode::Response,
+            name: None,
+            transaction_id: 0x2222,
+            is_response: true,
+            response_status: Some(NetBiosResponseStatus::NameService(0)),
+        };
+        merge_netbios_info(&mut old, &new_response);
+        assert_eq!(old.opcode, NetBiosOpcode::Response);
+        assert_eq!(
+            old.response_status,
+            Some(NetBiosResponseStatus::NameService(0))
+        );
     }
 
     #[test]

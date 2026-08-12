@@ -175,6 +175,9 @@ pub struct IngestOutcome {
     /// The latest completed DNS query→response round trip, if this packet was
     /// a response matching a pending query by transaction ID.
     pub dns_response_time: Option<Duration>,
+    /// The latest completed NetBIOS request-to-response round trip, if this
+    /// packet matched a pending request by transaction ID.
+    pub netbios_response_time: Option<Duration>,
 }
 
 /// A live, lifecycle-managed table of network connections built from parsed
@@ -287,6 +290,23 @@ impl ConnectionTracker {
             );
         }
 
+        // NetBIOS Name Service broadcasts are answered from a host's unicast
+        // address, so the RTT tracker pairs on local socket, service, and
+        // transaction ID rather than the full connection key.
+        let mut netbios_response_time: Option<Duration> = None;
+        if parsed.protocol == Protocol::Udp
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::NetBios(netbios) = &dpi.application
+            && let Ok(mut tracker) = self.rtt.lock()
+        {
+            netbios_response_time = tracker.record_netbios_packet(
+                base_key.local_addr,
+                netbios,
+                parsed.is_outgoing,
+                now,
+            );
+        }
+
         // A read guard makes ordinary packet updates atomic with cleanup. The
         // uncommon generation-split path drops it and reacquires a write guard
         // so retained-source readers also see one consistent move.
@@ -308,6 +328,7 @@ impl ConnectionTracker {
                 fast_retransmits: 0,
                 measured_rtt,
                 dns_response_time,
+                netbios_response_time,
             };
         }
 
@@ -317,10 +338,24 @@ impl ConnectionTracker {
             .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
         if starts_new_generation {
             drop(lifecycle);
-            return self.ingest_new_generation(parsed, now, key, measured_rtt, dns_response_time);
+            return self.ingest_new_generation(
+                parsed,
+                now,
+                key,
+                measured_rtt,
+                dns_response_time,
+                netbios_response_time,
+            );
         }
 
-        self.ingest_into_active(parsed, now, key, measured_rtt, dns_response_time)
+        self.ingest_into_active(
+            parsed,
+            now,
+            key,
+            measured_rtt,
+            dns_response_time,
+            netbios_response_time,
+        )
     }
 
     fn ingest_into_active(
@@ -330,6 +365,7 @@ impl ConnectionTracker {
         key: ConnectionKey,
         measured_rtt: Option<Duration>,
         dns_response_time: Option<Duration>,
+        netbios_response_time: Option<Duration>,
     ) -> IngestOutcome {
         // Prevent unbounded growth from port scans or connection floods. Only
         // limit new connections; existing ones always get updated. The fast
@@ -351,6 +387,7 @@ impl ConnectionTracker {
                 fast_retransmits: 0,
                 measured_rtt,
                 dns_response_time,
+                netbios_response_time,
             };
         }
 
@@ -370,6 +407,9 @@ impl ConnectionTracker {
                 if let Some(rtt) = dns_response_time {
                     conn.dns_response_time = Some(rtt);
                 }
+                if let Some(rtt) = netbios_response_time {
+                    conn.netbios_response_time = Some(rtt);
+                }
             })
             .or_insert_with(|| {
                 created = true;
@@ -379,6 +419,9 @@ impl ConnectionTracker {
                 }
                 if let Some(rtt) = dns_response_time {
                     conn.dns_response_time = Some(rtt);
+                }
+                if let Some(rtt) = netbios_response_time {
+                    conn.netbios_response_time = Some(rtt);
                 }
                 conn
             });
@@ -406,6 +449,7 @@ impl ConnectionTracker {
             fast_retransmits: deltas.fast_retransmits,
             measured_rtt,
             dns_response_time,
+            netbios_response_time,
         }
     }
 
@@ -416,6 +460,7 @@ impl ConnectionTracker {
         key: ConnectionKey,
         measured_rtt: Option<Duration>,
         dns_response_time: Option<Duration>,
+        netbios_response_time: Option<Duration>,
     ) -> IngestOutcome {
         let _lifecycle = self
             .lifecycle
@@ -458,6 +503,7 @@ impl ConnectionTracker {
             key,
             measured_rtt,
             dns_response_time,
+            netbios_response_time,
         );
         outcome.archived = archived;
         self.enforce_historic_limit();
@@ -832,6 +878,7 @@ impl Default for ConnectionTracker {
 mod tests {
     use super::*;
     use crate::network::parser::PacketParser;
+    use crate::network::types::NetBiosOpcode;
 
     /// A minimal Ethernet+IPv4+UDP frame, parsed into a `ParsedPacket` so we can
     /// exercise the tracker with a realistic input.
@@ -942,6 +989,42 @@ mod tests {
                     is_response,
                     txid,
                     rcode: is_response.then_some(rcode),
+                }),
+            }),
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    fn netbios_packet(
+        transaction_id: u16,
+        is_outgoing: bool,
+        opcode: NetBiosOpcode,
+        is_response: bool,
+        remote_ip: [u8; 4],
+    ) -> ParsedPacket {
+        use crate::network::dpi::DpiResult;
+        use crate::network::types::{
+            NetBiosInfo, NetBiosResponseStatus, NetBiosService, ProtocolState,
+        };
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        ParsedPacket {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 137),
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(remote_ip)), 137),
+            protocol_state: ProtocolState::Udp,
+            tcp_header: None,
+            is_outgoing,
+            packet_len: 80,
+            dpi_result: Some(DpiResult {
+                application: ApplicationProtocol::NetBios(NetBiosInfo {
+                    service: NetBiosService::NameService,
+                    opcode,
+                    name: Some("FILESERVER".to_string()),
+                    transaction_id,
+                    is_response,
+                    response_status: is_response.then_some(NetBiosResponseStatus::NameService(0)),
                 }),
             }),
             process_name: None,
@@ -1170,6 +1253,107 @@ mod tests {
         tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
         let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 2), capture_time(40));
         assert_eq!(response.dns_response_time, Some(Duration::from_millis(40)));
+    }
+
+    /// Name Service requests are normally broadcast, then answered from a
+    /// host's unicast address. The transaction still pairs even though the
+    /// request and response belong to different connection-table keys.
+    #[test]
+    fn netbios_broadcast_request_measures_unicast_response_time() {
+        let tracker = ConnectionTracker::new();
+        let query = tracker.ingest_at(
+            &netbios_packet(
+                0x1234,
+                true,
+                NetBiosOpcode::Query,
+                false,
+                [255, 255, 255, 255],
+            ),
+            capture_time(0),
+        );
+        assert!(query.netbios_response_time.is_none());
+
+        let response = tracker.ingest_at(
+            &netbios_packet(
+                0x1234,
+                false,
+                NetBiosOpcode::Response,
+                true,
+                [192, 168, 0, 20],
+            ),
+            capture_time(27),
+        );
+        assert_ne!(query.key, response.key);
+        assert_eq!(
+            response.netbios_response_time,
+            Some(Duration::from_millis(27))
+        );
+        let conn = tracker.connections().get(&response.key).unwrap().clone();
+        assert_eq!(conn.netbios_response_time, Some(Duration::from_millis(27)));
+        assert!(conn.initial_rtt.is_none());
+    }
+
+    #[test]
+    fn netbios_response_with_unknown_transaction_id_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &netbios_packet(
+                0x1234,
+                true,
+                NetBiosOpcode::Query,
+                false,
+                [255, 255, 255, 255],
+            ),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &netbios_packet(
+                0x9999,
+                false,
+                NetBiosOpcode::Response,
+                true,
+                [192, 168, 0, 20],
+            ),
+            capture_time(27),
+        );
+        assert!(response.netbios_response_time.is_none());
+    }
+
+    /// A WACK extends an NBNS transaction and must not consume its pending
+    /// request. The eventual final response completes the original timing.
+    #[test]
+    fn netbios_wack_keeps_request_pending() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &netbios_packet(
+                0x1234,
+                true,
+                NetBiosOpcode::Registration,
+                false,
+                [192, 168, 0, 2],
+            ),
+            capture_time(0),
+        );
+        let wack = tracker.ingest_at(
+            &netbios_packet(0x1234, false, NetBiosOpcode::Wack, false, [192, 168, 0, 2]),
+            capture_time(10),
+        );
+        assert!(wack.netbios_response_time.is_none());
+
+        let response = tracker.ingest_at(
+            &netbios_packet(
+                0x1234,
+                false,
+                NetBiosOpcode::Response,
+                true,
+                [192, 168, 0, 2],
+            ),
+            capture_time(40),
+        );
+        assert_eq!(
+            response.netbios_response_time,
+            Some(Duration::from_millis(40))
+        );
     }
 
     /// 1-RTT packets carry a short header with nothing timeable in the clear.
