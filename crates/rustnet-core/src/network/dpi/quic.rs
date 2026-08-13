@@ -105,12 +105,8 @@ fn is_valid_hostname(hostname: &str) -> bool {
     }
 
     // Each label must be non-empty and at most 63 characters
-    let parts: Vec<&str> = hostname.split('.').collect();
-    if parts.len() < 2 {
-        return false;
-    }
-    if !parts
-        .iter()
+    if !hostname
+        .split('.')
         .all(|part| !part.is_empty() && part.len() <= 63)
     {
         return false;
@@ -637,9 +633,14 @@ fn try_decrypt_initial_with_secret(packet: &[u8], secret: &[u8], version: u32) -
     let mut iv = [0u8; 12];
     let mut hp_key = [0u8; 16];
 
-    if !derive_packet_protection_key(secret, &mut key, version)
-        || !derive_packet_protection_iv(secret, &mut iv, version)
-        || !derive_header_protection_key(secret, &mut hp_key, version)
+    if !derive_protection_material(secret, &mut key, version, ProtectionMaterial::Key)
+        || !derive_protection_material(secret, &mut iv, version, ProtectionMaterial::Iv)
+        || !derive_protection_material(
+            secret,
+            &mut hp_key,
+            version,
+            ProtectionMaterial::HeaderProtection,
+        )
     {
         debug!("QUIC: Failed to derive keys from secret");
         return None;
@@ -1174,7 +1175,7 @@ fn try_extract_greedy_from_reassembler(reassembler: &CryptoFrameReassembler) -> 
 
     // Try greedy extraction on fragments
     for fragment_data in reassembler.get_fragments().values() {
-        if let Some(sni) = try_extract_sni_greedy(fragment_data, true) {
+        if let Some(sni) = scan_for_sni_extension(fragment_data, true, SniScanStrictness::Lenient) {
             let mut tls_info = TlsInfo::new();
             tls_info.sni = Some(sni);
             debug!("QUIC: Greedy extraction succeeded from fragment");
@@ -1184,7 +1185,7 @@ fn try_extract_greedy_from_reassembler(reassembler: &CryptoFrameReassembler) -> 
 
     // Also try on contiguous data if available
     if let Some(contiguous) = reassembler.get_contiguous_data()
-        && let Some(sni) = try_extract_sni_greedy(&contiguous, true)
+        && let Some(sni) = scan_for_sni_extension(&contiguous, true, SniScanStrictness::Lenient)
     {
         let mut tls_info = TlsInfo::new();
         tls_info.sni = Some(sni);
@@ -1663,80 +1664,99 @@ fn parse_alpn_extension(data: &[u8]) -> Option<Vec<String>> {
     }
 }
 
-/// Greedy SNI extraction - scans raw data for SNI extension pattern
+/// Validation strictness applied to SNI extension candidates found by raw byte scanning
+#[derive(Clone, Copy)]
+enum SniScanStrictness {
+    /// Accept any candidate whose server name list fits within the extension length
+    Lenient,
+    /// Require a plausible server name list length, tolerating truncated extension data
+    Moderate,
+    /// Require the full extension to be present with exactly consistent header lengths
+    Strict,
+}
+
+/// Try to match an SNI extension at position `i` in raw scan data
+///
+/// SNI extension structure:
+/// - 0x00 0x00 - extension type (SNI)
+/// - 2 bytes - extension length
+/// - 2 bytes - server name list length
+/// - 0x00 - name type (hostname)
+/// - 2 bytes - hostname length
+/// - N bytes - hostname
+fn match_sni_extension_at(
+    data: &[u8],
+    i: usize,
+    allow_partial: bool,
+    strictness: SniScanStrictness,
+) -> Option<String> {
+    let min_tail = match strictness {
+        SniScanStrictness::Lenient => 9,
+        SniScanStrictness::Moderate => 10,
+        SniScanStrictness::Strict => 20,
+    };
+    if i + min_tail >= data.len() {
+        return None;
+    }
+
+    // Look for SNI extension type marker
+    if data[i] != 0x00 || data[i + 1] != 0x00 {
+        return None;
+    }
+
+    // Sanity check extension length (5-300 bytes is reasonable for SNI)
+    let ext_len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+    if !(5..=300).contains(&ext_len) {
+        return None;
+    }
+
+    let ext_data = match strictness {
+        SniScanStrictness::Lenient => &data[i + 4..],
+        SniScanStrictness::Moderate => {
+            if i + 4 + ext_len <= data.len() {
+                &data[i + 4..i + 4 + ext_len]
+            } else {
+                &data[i + 4..]
+            }
+        }
+        SniScanStrictness::Strict => {
+            if i + 4 + ext_len > data.len() {
+                return None;
+            }
+            &data[i + 4..i + 4 + ext_len]
+        }
+    };
+
+    // Parse SNI header using unified helper
+    let header = parse_sni_header(ext_data)?;
+    let list_len = header.list_len as usize;
+
+    let header_plausible = match strictness {
+        SniScanStrictness::Lenient => list_len <= ext_len,
+        SniScanStrictness::Moderate => (3..=256).contains(&list_len),
+        SniScanStrictness::Strict => {
+            (3..=256).contains(&list_len) && list_len == header.name_len as usize + 3
+        }
+    };
+    if !header_plausible {
+        return None;
+    }
+
+    parse_sni_extension(ext_data, allow_partial)
+}
+
+/// Scan raw data for an SNI extension pattern
 /// This works even when full ClientHello parsing fails due to incomplete data
 ///
 /// The `allow_partial` parameter controls whether partial SNI extraction is allowed:
 /// - `false`: Only return complete SNI
 /// - `true`: Return partial SNI as fallback when full hostname is truncated
-fn try_extract_sni_greedy(data: &[u8], allow_partial: bool) -> Option<String> {
-    // SNI extension structure:
-    // 0x00 0x00 - extension type (SNI)
-    // 2 bytes - extension length
-    // 2 bytes - server name list length
-    // 0x00 - name type (hostname)
-    // 2 bytes - hostname length
-    // N bytes - hostname
-
-    if data.len() < 9 {
-        return None;
-    }
-
-    // Scan for SNI extension type pattern (0x00 0x00)
-    for i in 0..data.len().saturating_sub(9) {
-        // Look for SNI extension type marker
-        if data[i] == 0x00 && data[i + 1] == 0x00 {
-            // Read extension length
-            if i + 4 > data.len() {
-                continue;
-            }
-            let ext_len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
-
-            // Sanity check extension length (5-300 bytes is reasonable for SNI)
-            if !(5..=300).contains(&ext_len) {
-                continue;
-            }
-
-            // Parse SNI header using unified helper
-            let sni_data = &data[i + 4..];
-            let header = match parse_sni_header(sni_data) {
-                Some(h) => h,
-                None => continue,
-            };
-
-            // List length should be <= ext_len - 2
-            if header.list_len as usize > ext_len {
-                continue;
-            }
-
-            let name_len = header.name_len as usize;
-            let hostname_start = i + 9; // After: ext_type(2) + ext_len(2) + list_len(2) + name_type(1) + name_len(2)
-            let hostname_end = hostname_start + name_len;
-
-            if hostname_end <= data.len() {
-                // Full hostname available
-                if let Ok(hostname) = std::str::from_utf8(&data[hostname_start..hostname_end])
-                    && is_valid_hostname(hostname)
-                {
-                    debug!("QUIC: Greedy SNI extraction found: {}", hostname);
-                    return Some(hostname.to_string());
-                }
-            } else if allow_partial && hostname_start < data.len() {
-                // Partial hostname available - extract what we have (only if allowed)
-                if let Ok(partial) = std::str::from_utf8(&data[hostname_start..])
-                    && is_valid_partial_hostname(partial)
-                {
-                    debug!(
-                        "QUIC: Greedy SNI extraction found partial: {}",
-                        mark_partial_sni(partial)
-                    );
-                    return Some(mark_partial_sni(partial));
-                }
-            }
-        }
-    }
-
-    None
+fn scan_for_sni_extension(
+    data: &[u8],
+    allow_partial: bool,
+    strictness: SniScanStrictness,
+) -> Option<String> {
+    (0..data.len()).find_map(|i| match_sni_extension_at(data, i, allow_partial, strictness))
 }
 
 /// Parse supported versions extension
@@ -1847,36 +1867,30 @@ fn derive_secret(prk: &hkdf::Prk, label: &[u8], out: &mut [u8]) -> bool {
         .is_ok()
 }
 
-/// Derive packet protection key
-fn derive_packet_protection_key(secret: &[u8], out: &mut [u8], version: u32) -> bool {
-    let prk = hkdf::Prk::new_less_safe(hkdf::HKDF_SHA256, secret);
-    let label: &[u8] = if is_quic_v2(version) {
-        b"quicv2 key"
-    } else {
-        b"quic key"
-    };
-    derive_secret(&prk, label, out)
+/// Packet protection material derivable from an initial secret
+enum ProtectionMaterial {
+    Key,
+    Iv,
+    HeaderProtection,
 }
 
-/// Derive packet protection IV
-fn derive_packet_protection_iv(secret: &[u8], out: &mut [u8], version: u32) -> bool {
-    let prk = hkdf::Prk::new_less_safe(hkdf::HKDF_SHA256, secret);
-    let label: &[u8] = if is_quic_v2(version) {
-        b"quicv2 iv"
-    } else {
-        b"quic iv"
+/// Derive packet protection material (key, IV, or header protection key)
+/// using the version-specific HKDF label
+fn derive_protection_material(
+    secret: &[u8],
+    out: &mut [u8],
+    version: u32,
+    material: ProtectionMaterial,
+) -> bool {
+    let label: &[u8] = match (material, is_quic_v2(version)) {
+        (ProtectionMaterial::Key, false) => b"quic key",
+        (ProtectionMaterial::Key, true) => b"quicv2 key",
+        (ProtectionMaterial::Iv, false) => b"quic iv",
+        (ProtectionMaterial::Iv, true) => b"quicv2 iv",
+        (ProtectionMaterial::HeaderProtection, false) => b"quic hp",
+        (ProtectionMaterial::HeaderProtection, true) => b"quicv2 hp",
     };
-    derive_secret(&prk, label, out)
-}
-
-/// Derive header protection key
-fn derive_header_protection_key(secret: &[u8], out: &mut [u8], version: u32) -> bool {
     let prk = hkdf::Prk::new_less_safe(hkdf::HKDF_SHA256, secret);
-    let label: &[u8] = if is_quic_v2(version) {
-        b"quicv2 hp"
-    } else {
-        b"quic hp"
-    };
     derive_secret(&prk, label, out)
 }
 
@@ -2053,35 +2067,13 @@ fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsInfo> {
         }
 
         // Look for SNI extension pattern directly (0x00 0x00 for SNI type)
-        // Add strict validation to reduce false positives from encrypted data
-        if offset + 20 < payload.len() && payload[offset] == 0x00 && payload[offset + 1] == 0x00 {
-            let ext_len = u16::from_be_bytes([payload[offset + 2], payload[offset + 3]]) as usize;
-
-            // Strict validation: reasonable extension length
-            if (5..=300).contains(&ext_len) && offset + 4 + ext_len <= payload.len() {
-                let ext_data = &payload[offset + 4..offset + 4 + ext_len];
-
-                // Pre-validate SNI structure before parsing
-                if ext_data.len() >= 5 {
-                    let list_len = u16::from_be_bytes([ext_data[0], ext_data[1]]) as usize;
-                    let sni_type = ext_data[2];
-                    let name_len = u16::from_be_bytes([ext_data[3], ext_data[4]]) as usize;
-
-                    // Only parse if structure looks valid
-                    if sni_type == 0x00
-                        && name_len > 0
-                        && name_len <= 253
-                        && (3..=256).contains(&list_len)
-                        && list_len == name_len + 3
-                        && let Some(sni) = parse_sni_extension(ext_data, false)
-                    {
-                        debug!("QUIC: Found SNI directly in packet: {}", sni);
-                        let mut tls_info = TlsInfo::new();
-                        tls_info.sni = Some(sni);
-                        return Some(tls_info);
-                    }
-                }
-            }
+        // Strict validation reduces false positives from encrypted data
+        if let Some(sni) = match_sni_extension_at(payload, offset, false, SniScanStrictness::Strict)
+        {
+            debug!("QUIC: Found SNI directly in packet: {}", sni);
+            let mut tls_info = TlsInfo::new();
+            tls_info.sni = Some(sni);
+            return Some(tls_info);
         }
 
         // Look for ALPN extension pattern (0x00 0x10 for ALPN type)
@@ -2146,39 +2138,13 @@ fn try_reconstruct_sni_from_fragments(reassembler: &CryptoFrameReassembler) -> O
 
             // Look for SNI extension header patterns in this fragment
             // Be more restrictive to avoid false positives from encrypted data
-            let mut i = 0;
-            while i + 10 < data.len() {
-                // Look for SNI extension: 0x00 0x00 (extension type) followed by length
-                if data[i] == 0x00 && data[i + 1] == 0x00 {
-                    let ext_len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
-
-                    // SNI extension length should be reasonable (5-300 bytes typically)
-                    if (5..=300).contains(&ext_len) {
-                        // Check if we have full extension data or partial
-                        let available_ext_data = if i + 4 + ext_len <= data.len() {
-                            &data[i + 4..i + 4 + ext_len]
-                        } else {
-                            &data[i + 4..]
-                        };
-
-                        // Parse SNI header using unified helper
-                        if let Some(header) = parse_sni_header(available_ext_data) {
-                            // Additional validation: list_len should be reasonable
-                            if (3..=256).contains(&(header.list_len as usize)) {
-                                // Try to parse with partial extraction allowed
-                                if let Some(sni) = parse_sni_extension(available_ext_data, true) {
-                                    if is_partial_sni(&sni) {
-                                        debug!("QUIC: Found partial SNI in fragment: {}", sni);
-                                    } else {
-                                        debug!("QUIC: Found complete SNI in fragment: {}", sni);
-                                    }
-                                    return Some(sni);
-                                }
-                            }
-                        }
-                    }
+            if let Some(sni) = scan_for_sni_extension(data, true, SniScanStrictness::Moderate) {
+                if is_partial_sni(&sni) {
+                    debug!("QUIC: Found partial SNI in fragment: {}", sni);
+                } else {
+                    debug!("QUIC: Found complete SNI in fragment: {}", sni);
                 }
-                i += 1;
+                return Some(sni);
             }
         }
     }
@@ -2430,7 +2396,7 @@ mod tests {
     fn test_greedy_sni_extraction_complete() {
         let sni_ext = build_sni_extension("www.example.com");
         // allow_partial doesn't matter when full hostname is available
-        let result = try_extract_sni_greedy(&sni_ext, false);
+        let result = scan_for_sni_extension(&sni_ext, false, SniScanStrictness::Lenient);
         assert_eq!(result, Some("www.example.com".to_string()));
     }
 
@@ -2439,7 +2405,7 @@ mod tests {
         // Add some random bytes before the SNI extension
         let mut data = vec![0x01, 0x02, 0x03, 0x04, 0x05];
         data.extend(build_sni_extension("api.google.com"));
-        let result = try_extract_sni_greedy(&data, false);
+        let result = scan_for_sni_extension(&data, false, SniScanStrictness::Lenient);
         assert_eq!(result, Some("api.google.com".to_string()));
     }
 
@@ -2457,11 +2423,11 @@ mod tests {
         data.extend_from_slice(b"www.examp"); // only 9 chars provided
 
         // With allow_partial=false, returns None
-        let result = try_extract_sni_greedy(&data, false);
+        let result = scan_for_sni_extension(&data, false, SniScanStrictness::Lenient);
         assert_eq!(result, None);
 
         // With allow_partial=true, returns partial SNI
-        let result = try_extract_sni_greedy(&data, true);
+        let result = scan_for_sni_extension(&data, true, SniScanStrictness::Lenient);
         assert_eq!(result, Some("www.examp[PARTIAL]".to_string()));
     }
 
@@ -2585,7 +2551,7 @@ mod tests {
     fn test_greedy_extraction_ignores_invalid_patterns() {
         // Data with 0x00 0x00 but invalid SNI structure
         let data = vec![0x00, 0x00, 0x00, 0x01, 0x00]; // ext_len = 1 (too short)
-        let result = try_extract_sni_greedy(&data, true);
+        let result = scan_for_sni_extension(&data, true, SniScanStrictness::Lenient);
         assert_eq!(result, None);
     }
 
@@ -2594,7 +2560,7 @@ mod tests {
         // Data with multiple 0x00 0x00 sequences, only one valid
         let mut data = vec![0x00, 0x00, 0x00, 0x02, 0xFF]; // Invalid SNI
         data.extend(build_sni_extension("valid.example.com"));
-        let result = try_extract_sni_greedy(&data, false);
+        let result = scan_for_sni_extension(&data, false, SniScanStrictness::Lenient);
         assert_eq!(result, Some("valid.example.com".to_string()));
     }
 
@@ -2730,9 +2696,24 @@ mod tests {
         let mut key = [0u8; 16];
         let mut iv = [0u8; 12];
         let mut hp = [0u8; 16];
-        assert!(derive_packet_protection_key(&client_secret, &mut key, 1));
-        assert!(derive_packet_protection_iv(&client_secret, &mut iv, 1));
-        assert!(derive_header_protection_key(&client_secret, &mut hp, 1));
+        assert!(derive_protection_material(
+            &client_secret,
+            &mut key,
+            1,
+            ProtectionMaterial::Key
+        ));
+        assert!(derive_protection_material(
+            &client_secret,
+            &mut iv,
+            1,
+            ProtectionMaterial::Iv
+        ));
+        assert!(derive_protection_material(
+            &client_secret,
+            &mut hp,
+            1,
+            ProtectionMaterial::HeaderProtection
+        ));
         assert_eq!(key.to_vec(), from_hex("1f369613dd76d5467730efcbe3b1a22d"));
         assert_eq!(iv.to_vec(), from_hex("fa044b2f42a3fd3b46fb255c"));
         assert_eq!(hp.to_vec(), from_hex("9f50449e04a0e810283a1e9933adedd2"));
@@ -2845,9 +2826,24 @@ mod tests {
         let mut key = [0u8; 16];
         let mut iv = [0u8; 12];
         let mut hp = [0u8; 16];
-        assert!(derive_packet_protection_key(&client_secret, &mut key, 1));
-        assert!(derive_packet_protection_iv(&client_secret, &mut iv, 1));
-        assert!(derive_header_protection_key(&client_secret, &mut hp, 1));
+        assert!(derive_protection_material(
+            &client_secret,
+            &mut key,
+            1,
+            ProtectionMaterial::Key
+        ));
+        assert!(derive_protection_material(
+            &client_secret,
+            &mut iv,
+            1,
+            ProtectionMaterial::Iv
+        ));
+        assert!(derive_protection_material(
+            &client_secret,
+            &mut hp,
+            1,
+            ProtectionMaterial::HeaderProtection
+        ));
 
         let mut header = vec![0xc3]; // long header, Initial, pn_len = 4
         header.extend_from_slice(&1u32.to_be_bytes());
