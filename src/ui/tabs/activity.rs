@@ -16,7 +16,7 @@ use crate::network::process_activity::{ProcessActivity, ProcessActivitySnapshot}
 use crate::ui::{
     ActivityDirection, ActivitySort, ClickableRegions, Component, ComponentContext, Effect,
     HandlerContext, UIState,
-    format::{format_bytes, format_rate},
+    format::{format_bytes, format_rate, format_rate_compact, truncate_with_ellipsis},
     section_header, theme, try_handle_pane_scroll, try_handle_pane_wheel,
     widgets::glow_bar,
 };
@@ -697,7 +697,7 @@ fn draw_traffic_share(
         .into_iter()
         .take(inner.height as usize)
         .map(|process| {
-            let name = truncate(&process.identity.display_name(), name_width);
+            let name = truncate_with_ellipsis(&process.identity.display_name(), name_width);
             let mut spans = vec![Span::styled(
                 format!("{name:<name_width$} "),
                 theme::fg(theme::field_process()),
@@ -770,7 +770,10 @@ fn draw_interface_pulse(f: &mut Frame, app: &App, direction: ActivityDirection, 
                 ActivityDirection::Ingress => rate.rx_bytes_per_sec,
             };
             let mut spans = vec![Span::styled(
-                format!("{:<name_width$} ", truncate(&name, name_width)),
+                format!(
+                    "{:<name_width$} ",
+                    truncate_with_ellipsis(&name, name_width)
+                ),
                 theme::fg(theme::field_local_addr()),
             )];
             spans.extend(glow_bar::spans(
@@ -779,44 +782,23 @@ fn draw_interface_pulse(f: &mut Frame, app: &App, direction: ActivityDirection, 
                 direction_ramp(direction),
             ));
             spans.push(Span::styled(
-                format!(" ↑{}", compact_rate(rate.tx_bytes_per_sec)),
+                format!(
+                    " ↑{}",
+                    format_rate_compact(rate.tx_bytes_per_sec as f64, "0B")
+                ),
                 theme::fg(theme::tx()),
             ));
             spans.push(Span::styled(
-                format!(" ↓{}", compact_rate(rate.rx_bytes_per_sec)),
+                format!(
+                    " ↓{}",
+                    format_rate_compact(rate.rx_bytes_per_sec as f64, "0B")
+                ),
                 theme::fg(theme::rx()),
             ));
             Line::from(spans)
         })
         .collect();
     f.render_widget(Paragraph::new(lines), inner);
-}
-
-fn compact_rate(bytes_per_second: u64) -> String {
-    if bytes_per_second >= 1024 * 1024 * 1024 {
-        format!(
-            "{:.1}G",
-            bytes_per_second as f64 / (1024.0 * 1024.0 * 1024.0)
-        )
-    } else if bytes_per_second >= 1024 * 1024 {
-        format!("{:.1}M", bytes_per_second as f64 / (1024.0 * 1024.0))
-    } else if bytes_per_second >= 1024 {
-        format!("{:.0}K", bytes_per_second as f64 / 1024.0)
-    } else {
-        format!("{bytes_per_second}B")
-    }
-}
-
-fn truncate(value: &str, width: usize) -> String {
-    if value.chars().count() <= width {
-        return value.to_string();
-    }
-    if width <= 1 {
-        return "…".to_string();
-    }
-    let mut result: String = value.chars().take(width - 1).collect();
-    result.push('…');
-    result
 }
 
 #[cfg(test)]
@@ -902,8 +884,8 @@ mod tests {
 
     #[test]
     fn truncation_uses_single_cell_ellipsis() {
-        assert_eq!(truncate("agent-helper", 6), "agent…");
-        assert_eq!(truncate("short", 6), "short");
+        assert_eq!(truncate_with_ellipsis("agent-helper", 6), "agent…");
+        assert_eq!(truncate_with_ellipsis("short", 6), "short");
     }
 
     #[test]

@@ -2,6 +2,7 @@ use crate::network::merge::merge_tls_info;
 use crate::network::types::{
     CryptoFrameReassembler, QuicConnectionState, QuicInfo, QuicPacketType, TlsInfo, TlsVersion,
 };
+use crate::network::util::hex_encode;
 use aes::Aes128;
 use aes::cipher::{BlockCipherEncrypt, KeyInit};
 use log::{debug, warn};
@@ -527,10 +528,10 @@ fn extract_tls_from_long_header_packet(
                 {
                     quic_info.tls_info = Some(tls_info);
                     // This is a Client Initial packet with crypto frames - mark it for connection tracking
-                    quic_info.connection_id_hex = Some(connection_id_to_hex(dcid));
+                    quic_info.connection_id_hex = Some(hex_encode(dcid, ":"));
                     debug!(
                         "QUIC: Marking Client Initial packet with DCID {} for connection tracking",
-                        connection_id_to_hex(dcid)
+                        hex_encode(dcid, ":")
                     );
                 }
             } else {
@@ -1920,14 +1921,6 @@ fn aes_ecb_encrypt(key: &[u8], block: &[u8]) -> Option<[u8; 16]> {
     let mut output: aes::cipher::Array<u8, aes::cipher::consts::U16> = block.try_into().ok()?;
     cipher.encrypt_block(&mut output);
     Some(output.into())
-}
-
-/// Convert connection ID to hex string
-fn connection_id_to_hex(id: &[u8]) -> String {
-    id.iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<Vec<String>>()
-        .join(":")
 }
 
 /// Check if a packet is likely a QUIC packet

@@ -1,7 +1,8 @@
-//! Human-readable formatters for byte counts and per-second rates,
-//! shared across the connection list, stats panel, interface table,
-//! and graph tab. Returns the parent module's `NONE_PLACEHOLDER`
-//! ("-") for zero/absent rates so the UI reads consistently.
+//! Human-readable formatters for byte counts, per-second rates, and
+//! ellipsis truncation, shared across the connection list, stats
+//! panel, interface table, activity tab, and graph tab. Rates render
+//! the parent module's `NONE_PLACEHOLDER` ("-") for zero/absent
+//! values so the UI reads consistently.
 
 /// Format rate to human readable form
 pub(super) fn format_rate(bytes_per_second: f64) -> String {
@@ -22,8 +23,10 @@ pub(super) fn format_rate(bytes_per_second: f64) -> String {
     }
 }
 
-/// Format rate to compact form for tight spaces
-pub(super) fn format_rate_compact(bytes_per_second: f64) -> String {
+/// Format rate to compact form for tight spaces. `zero` is what a
+/// zero/absent rate renders as: the "-" placeholder in tables, "0B"
+/// in the activity bars.
+pub(super) fn format_rate_compact(bytes_per_second: f64, zero: &str) -> String {
     const KB_PER_SEC: f64 = 1024.0;
     const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
     const GB_PER_SEC: f64 = MB_PER_SEC * 1024.0;
@@ -37,7 +40,7 @@ pub(super) fn format_rate_compact(bytes_per_second: f64) -> String {
     } else if bytes_per_second > 0.0 {
         format!("{:.0}B", bytes_per_second)
     } else {
-        super::NONE_PLACEHOLDER.to_string()
+        zero.to_string()
     }
 }
 
@@ -70,4 +73,17 @@ pub(super) fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{} B", bytes)
     }
+}
+
+/// Char-safe truncation to `width` cells, ending in "…" when cut.
+pub(super) fn truncate_with_ellipsis(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    if width <= 1 {
+        return "…".to_string();
+    }
+    let mut out: String = s.chars().take(width - 1).collect();
+    out.push('…');
+    out
 }
