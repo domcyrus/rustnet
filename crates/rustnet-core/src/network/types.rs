@@ -331,6 +331,13 @@ impl fmt::Display for TcpState {
     }
 }
 
+/// Whether a TCP state is terminal. Closing states that can still carry
+/// legitimate shutdown traffic are intentionally not included until they
+/// reach TIME_WAIT or CLOSED.
+fn tcp_state_is_terminal(state: &TcpState) -> bool {
+    matches!(state, TcpState::TimeWait | TcpState::Closed)
+}
+
 #[derive(Debug, Clone)]
 pub enum ProtocolState {
     Tcp(TcpState),
@@ -1630,8 +1637,10 @@ impl TrafficHistory {
             0.0
         };
 
-        let smoothed_rate =
-            |current: u64, previous_count: usize, rate: fn(&TrafficSample) -> u64| {
+        // Trailing average over the newest samples; byte rates truncate while
+        // lifecycle rates (stored in tenths) round to nearest.
+        let smoothed =
+            |current: u64, previous_count: usize, rate: fn(&TrafficSample) -> u64, round: bool| {
                 let (sum, count) = self
                     .samples
                     .iter()
@@ -1640,33 +1649,24 @@ impl TrafficHistory {
                     .fold((u128::from(current), 1u128), |(sum, count), sample| {
                         (sum + u128::from(rate(sample)), count + 1)
                     });
+                let sum = if round { sum + count / 2 } else { sum };
                 (sum / count) as u64
             };
-        let smoothed_lifecycle_rate =
-            |current: u64, previous_count: usize, rate: fn(&TrafficSample) -> u64| {
-                let (sum, count) = self
-                    .samples
-                    .iter()
-                    .rev()
-                    .take(previous_count)
-                    .fold((u128::from(current), 1u128), |(sum, count), sample| {
-                        (sum + u128::from(rate(sample)), count + 1)
-                    });
-                ((sum + count / 2) / count) as u64
-            };
         let smoothed_rx_bytes_per_sec =
-            smoothed_rate(rx_bytes_per_sec, 2, |sample| sample.rx_bytes_per_sec);
+            smoothed(rx_bytes_per_sec, 2, |sample| sample.rx_bytes_per_sec, false);
         let smoothed_tx_bytes_per_sec =
-            smoothed_rate(tx_bytes_per_sec, 2, |sample| sample.tx_bytes_per_sec);
-        let smoothed_opened_connections_per_sec_tenths = smoothed_lifecycle_rate(
+            smoothed(tx_bytes_per_sec, 2, |sample| sample.tx_bytes_per_sec, false);
+        let smoothed_opened_connections_per_sec_tenths = smoothed(
             lifecycle.opened_per_sec_tenths,
             OPENED_RATE_SMOOTHING_SAMPLES - 1,
             |sample| sample.opened_connections_per_sec_tenths,
+            true,
         );
-        let smoothed_closed_connections_per_sec_tenths = smoothed_lifecycle_rate(
+        let smoothed_closed_connections_per_sec_tenths = smoothed(
             lifecycle.closed_per_sec_tenths,
             CLOSED_RATE_SMOOTHING_SAMPLES - 1,
             |sample| sample.closed_connections_per_sec_tenths,
+            true,
         );
 
         let sample = TrafficSample {
@@ -1690,30 +1690,19 @@ impl TrafficHistory {
             self.samples.pop_front();
         }
         self.samples.push_back(sample);
-        let rx_peak = self
-            .samples
-            .iter()
-            .map(|sample| sample.smoothed_rx_bytes_per_sec)
-            .max()
-            .unwrap_or(0);
-        let tx_peak = self
-            .samples
-            .iter()
-            .map(|sample| sample.smoothed_tx_bytes_per_sec)
-            .max()
-            .unwrap_or(0);
-        let opened_peak = self
-            .samples
-            .iter()
-            .map(|sample| sample.smoothed_opened_connections_per_sec_tenths)
-            .max()
-            .unwrap_or(0);
-        let closed_peak = self
-            .samples
-            .iter()
-            .map(|sample| sample.smoothed_closed_connections_per_sec_tenths)
-            .max()
-            .unwrap_or(0);
+        let picks: [fn(&TrafficSample) -> u64; 4] = [
+            |sample| sample.smoothed_rx_bytes_per_sec,
+            |sample| sample.smoothed_tx_bytes_per_sec,
+            |sample| sample.smoothed_opened_connections_per_sec_tenths,
+            |sample| sample.smoothed_closed_connections_per_sec_tenths,
+        ];
+        let mut peaks = [0u64; 4];
+        for sample in &self.samples {
+            for (peak, pick) in peaks.iter_mut().zip(picks) {
+                *peak = (*peak).max(pick(sample));
+            }
+        }
+        let [rx_peak, tx_peak, opened_peak, closed_peak] = peaks;
         self.rx_scale.update_peak(rx_peak);
         self.tx_scale.update_peak(tx_peak);
         self.opened_scale.update_peak(opened_peak);
@@ -1774,57 +1763,39 @@ impl TrafficHistory {
         quantize_scroll_fraction(raw)
     }
 
+    /// Last `count` values of `pick`, oldest first (newest last).
+    ///
+    /// `samples` is filled push_back/pop_front, so `iter()` is already
+    /// oldest→newest. Skip past everything but the last `count` instead of
+    /// the rev→take→collect→rev→collect dance, which allocated twice.
+    fn sparkline(&self, count: usize, pick: fn(&TrafficSample) -> u64) -> Vec<u64> {
+        let skip = self.samples.len().saturating_sub(count);
+        self.samples.iter().skip(skip).map(pick).collect()
+    }
+
     /// Get RX bytes/sec values for sparkline (newest last). Each value is
     /// smoothed when sampled so trimming the ring cannot rewrite its left edge.
     pub fn get_rx_sparkline_data(&self, count: usize) -> Vec<u64> {
-        // `samples` is filled push_back/pop_front, so `iter()` is already
-        // oldest→newest. Skip past everything but the last `count` instead of
-        // the rev→take→collect→rev→collect dance, which allocated twice.
-        let skip = self.samples.len().saturating_sub(count);
-        self.samples
-            .iter()
-            .skip(skip)
-            .map(|s| s.smoothed_rx_bytes_per_sec)
-            .collect()
+        self.sparkline(count, |s| s.smoothed_rx_bytes_per_sec)
     }
 
     /// Get TX bytes/sec values for sparkline (newest last). Each value is
     /// smoothed when sampled so trimming the ring cannot rewrite its left edge.
     pub fn get_tx_sparkline_data(&self, count: usize) -> Vec<u64> {
-        let skip = self.samples.len().saturating_sub(count);
-        self.samples
-            .iter()
-            .skip(skip)
-            .map(|s| s.smoothed_tx_bytes_per_sec)
-            .collect()
+        self.sparkline(count, |s| s.smoothed_tx_bytes_per_sec)
     }
 
     /// Get active connection count values for sparkline (newest last)
     pub fn get_connection_sparkline_data(&self, count: usize) -> Vec<u64> {
-        let skip = self.samples.len().saturating_sub(count);
-        self.samples
-            .iter()
-            .skip(skip)
-            .map(|s| s.connection_count as u64)
-            .collect()
+        self.sparkline(count, |s| s.connection_count as u64)
     }
 
     pub fn get_opened_sparkline_data(&self, count: usize) -> Vec<u64> {
-        let skip = self.samples.len().saturating_sub(count);
-        self.samples
-            .iter()
-            .skip(skip)
-            .map(|sample| sample.smoothed_opened_connections_per_sec_tenths)
-            .collect()
+        self.sparkline(count, |s| s.smoothed_opened_connections_per_sec_tenths)
     }
 
     pub fn get_closed_sparkline_data(&self, count: usize) -> Vec<u64> {
-        let skip = self.samples.len().saturating_sub(count);
-        self.samples
-            .iter()
-            .skip(skip)
-            .map(|sample| sample.smoothed_closed_connections_per_sec_tenths)
-            .collect()
+        self.sparkline(count, |s| s.smoothed_closed_connections_per_sec_tenths)
     }
 
     pub fn latest_connection_counts(&self) -> (usize, usize) {
@@ -1834,61 +1805,53 @@ impl TrafficHistory {
             .unwrap_or((0, 0))
     }
 
+    /// Average age in seconds of the samples in a smoothing window.
+    fn avg_age(now: Instant, window: &[&TrafficSample]) -> f64 {
+        window
+            .iter()
+            .map(|s| now.duration_since(s.timestamp).as_secs_f64())
+            .sum::<f64>()
+            / window.len() as f64
+    }
+
+    /// Moving-average series of `value` as (negative age, value) pairs,
+    /// falling back to raw points when there are fewer than `window` samples.
+    fn windowed_series(
+        &self,
+        now: Instant,
+        window: usize,
+        value: fn(&TrafficSample) -> f64,
+    ) -> ChartData {
+        if self.samples.len() < window {
+            // Not enough data for smoothing, return raw
+            return self
+                .samples
+                .iter()
+                .map(|s| {
+                    let age = now.duration_since(s.timestamp).as_secs_f64();
+                    (-age, value(s))
+                })
+                .collect();
+        }
+
+        let samples: Vec<_> = self.samples.iter().collect();
+        samples
+            .windows(window)
+            .map(|w| {
+                let avg: f64 = w.iter().map(|s| value(s)).sum::<f64>() / window as f64;
+                (-Self::avg_age(now, w), avg)
+            })
+            .collect()
+    }
+
     /// Get data for Chart widget: (time_offset, rate) pairs, smoothed with moving average
     /// Time offset is negative seconds from now
     pub fn get_chart_data(&self) -> (ChartData, ChartData) {
         let now = Instant::now();
-        let samples: Vec<_> = self.samples.iter().collect();
-
         // Apply smoothing with window of 3
         let window = 3;
-        if samples.len() < window {
-            // Not enough data for smoothing, return raw
-            let rx: ChartData = samples
-                .iter()
-                .map(|s| {
-                    let age = now.duration_since(s.timestamp).as_secs_f64();
-                    (-age, s.rx_bytes_per_sec as f64)
-                })
-                .collect();
-            let tx: ChartData = samples
-                .iter()
-                .map(|s| {
-                    let age = now.duration_since(s.timestamp).as_secs_f64();
-                    (-age, s.tx_bytes_per_sec as f64)
-                })
-                .collect();
-            return (rx, tx);
-        }
-
-        let rx: ChartData = samples
-            .windows(window)
-            .map(|w| {
-                let avg_age: f64 = w
-                    .iter()
-                    .map(|s| now.duration_since(s.timestamp).as_secs_f64())
-                    .sum::<f64>()
-                    / window as f64;
-                let avg_rate: f64 =
-                    w.iter().map(|s| s.rx_bytes_per_sec as f64).sum::<f64>() / window as f64;
-                (-avg_age, avg_rate)
-            })
-            .collect();
-
-        let tx: ChartData = samples
-            .windows(window)
-            .map(|w| {
-                let avg_age: f64 = w
-                    .iter()
-                    .map(|s| now.duration_since(s.timestamp).as_secs_f64())
-                    .sum::<f64>()
-                    / window as f64;
-                let avg_rate: f64 =
-                    w.iter().map(|s| s.tx_bytes_per_sec as f64).sum::<f64>() / window as f64;
-                (-avg_age, avg_rate)
-            })
-            .collect();
-
+        let rx = self.windowed_series(now, window, |s| s.rx_bytes_per_sec as f64);
+        let tx = self.windowed_series(now, window, |s| s.tx_bytes_per_sec as f64);
         (rx, tx)
     }
 
@@ -1896,20 +1859,14 @@ impl TrafficHistory {
     /// Time offset is negative seconds from now
     pub fn get_health_chart_data(&self) -> (ChartData, ChartData) {
         let now = Instant::now();
-        let samples: Vec<_> = self.samples.iter().collect();
-
         // Apply smoothing with window of 3
         let window = 3;
-        if samples.len() < window {
-            // Not enough data for smoothing, return raw
-            let loss: ChartData = samples
-                .iter()
-                .map(|s| {
-                    let age = now.duration_since(s.timestamp).as_secs_f64();
-                    (-age, s.packet_loss_pct as f64)
-                })
-                .collect();
-            let rtt: ChartData = samples
+        let loss = self.windowed_series(now, window, |s| s.packet_loss_pct as f64);
+
+        // RTT samples are optional per interval, so the moving average runs
+        // over the values present in each window rather than a fixed divisor.
+        let rtt: ChartData = if self.samples.len() < window {
+            self.samples
                 .iter()
                 .filter_map(|s| {
                     s.avg_rtt_ms.map(|rtt| {
@@ -1917,41 +1874,22 @@ impl TrafficHistory {
                         (-age, rtt)
                     })
                 })
-                .collect();
-            return (loss, rtt);
-        }
-
-        let loss: ChartData = samples
-            .windows(window)
-            .map(|w| {
-                let avg_age: f64 = w
-                    .iter()
-                    .map(|s| now.duration_since(s.timestamp).as_secs_f64())
-                    .sum::<f64>()
-                    / window as f64;
-                let avg_loss: f64 =
-                    w.iter().map(|s| s.packet_loss_pct as f64).sum::<f64>() / window as f64;
-                (-avg_age, avg_loss)
-            })
-            .collect();
-
-        let rtt: ChartData = samples
-            .windows(window)
-            .filter_map(|w| {
-                let rtts: Vec<f64> = w.iter().filter_map(|s| s.avg_rtt_ms).collect();
-                if rtts.is_empty() {
-                    None
-                } else {
-                    let avg_age: f64 = w
-                        .iter()
-                        .map(|s| now.duration_since(s.timestamp).as_secs_f64())
-                        .sum::<f64>()
-                        / window as f64;
-                    let avg_rtt: f64 = rtts.iter().sum::<f64>() / rtts.len() as f64;
-                    Some((-avg_age, avg_rtt))
-                }
-            })
-            .collect();
+                .collect()
+        } else {
+            let samples: Vec<_> = self.samples.iter().collect();
+            samples
+                .windows(window)
+                .filter_map(|w| {
+                    let rtts: Vec<f64> = w.iter().filter_map(|s| s.avg_rtt_ms).collect();
+                    if rtts.is_empty() {
+                        None
+                    } else {
+                        let avg_rtt: f64 = rtts.iter().sum::<f64>() / rtts.len() as f64;
+                        Some((-Self::avg_age(now, w), avg_rtt))
+                    }
+                })
+                .collect()
+        };
 
         (loss, rtt)
     }
@@ -2019,6 +1957,86 @@ impl std::fmt::Display for ConnectionKey {
 // RTT Tracking Types (for latency measurement)
 // ============================================================================
 
+/// Capture time of a pending entry, for staleness pruning.
+trait PendingStamp {
+    fn stamp(&self) -> SystemTime;
+}
+
+impl PendingStamp for SystemTime {
+    fn stamp(&self) -> SystemTime {
+        *self
+    }
+}
+
+impl PendingStamp for (SystemTime, ConnectionKey) {
+    fn stamp(&self) -> SystemTime {
+        self.0
+    }
+}
+
+/// Bounded map of in-flight requests awaiting their matching reply.
+///
+/// New entries are dropped at the cap, so a request flood costs unmatched
+/// samples, never memory. A retransmit of an already-pending request still
+/// refreshes its timestamp even at the cap, so the eventual reply measures
+/// from the most recent send.
+#[derive(Debug)]
+struct PendingTable<K, V = SystemTime> {
+    map: HashMap<K, V>,
+    cap: usize,
+    max_age: Duration,
+}
+
+impl<K: Eq + std::hash::Hash, V: PendingStamp> PendingTable<K, V> {
+    fn new(cap: usize, max_age: Duration) -> Self {
+        Self {
+            map: HashMap::new(),
+            cap,
+            max_age,
+        }
+    }
+
+    /// Record a request, dropping new keys at the cap.
+    fn start(&mut self, key: K, value: V) {
+        if self.map.len() < self.cap || self.map.contains_key(&key) {
+            self.map.insert(key, value);
+        }
+    }
+
+    /// Take the pending entry a reply matches, if its request was tracked.
+    fn complete(&mut self, key: &K) -> Option<V> {
+        self.map.remove(key)
+    }
+
+    /// Drop entries older than `max_age` relative to the capture time of the
+    /// packet being processed.
+    fn prune(&mut self, now: SystemTime) {
+        let Some(cutoff) = now.checked_sub(self.max_age) else {
+            return;
+        };
+        self.map.retain(|_, v| v.stamp() > cutoff);
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    #[cfg(test)]
+    fn contains_key(&self, key: &K) -> bool {
+        self.map.contains_key(key)
+    }
+}
+
 /// Tracks pending handshake packets and recent RTT measurements.
 ///
 /// Every pending timestamp here is the packet's **capture** time, supplied by
@@ -2031,102 +2049,74 @@ impl std::fmt::Display for ConnectionKey {
 #[derive(Debug)]
 pub struct RttTracker {
     /// Pending SYN packets awaiting SYN-ACK: (connection_key -> capture time)
-    pending_syns: HashMap<ConnectionKey, SystemTime>,
+    pending_syns: PendingTable<ConnectionKey>,
     /// Outbound QUIC handshake packets awaiting a reply from the peer:
     /// (connection_key -> capture time)
-    pending_quic_handshakes: HashMap<ConnectionKey, SystemTime>,
+    pending_quic_handshakes: PendingTable<ConnectionKey>,
     /// Outbound DNS queries awaiting their response, keyed by connection and
     /// transaction ID (stub resolvers reuse one socket for many queries).
-    pending_dns: HashMap<(ConnectionKey, u16), SystemTime>,
+    pending_dns: PendingTable<(ConnectionKey, u16)>,
     /// Outbound NetBIOS requests awaiting a response. The remote endpoint is
     /// intentionally absent from the map key because Name Service requests are
     /// commonly sent to a broadcast address and answered by an individual
     /// host. The requesting connection's key is stored so a reply arriving
     /// under the responder's unicast key can stamp the request row too.
-    pending_netbios: HashMap<(SocketAddr, NetBiosService, u16), (SystemTime, ConnectionKey)>,
+    pending_netbios: PendingTable<(SocketAddr, NetBiosService, u16), (SystemTime, ConnectionKey)>,
     /// Outbound ICMP echo requests awaiting replies, keyed by connection,
     /// identifier, and sequence number. The sequence keeps fast pings distinct.
-    pending_icmp_echoes: HashMap<(ConnectionKey, u16, u16), SystemTime>,
+    pending_icmp_echoes: PendingTable<(ConnectionKey, u16, u16)>,
     /// Outbound STUN requests awaiting their response, keyed by connection
     /// and the 96-bit transaction ID.
-    pending_stun: HashMap<(ConnectionKey, [u8; 12]), SystemTime>,
+    pending_stun: PendingTable<(ConnectionKey, [u8; 12])>,
     /// Outbound NTP client requests awaiting a server response, keyed by
     /// connection and the transmit timestamp the response echoes back.
-    pending_ntp: HashMap<(ConnectionKey, u64), SystemTime>,
+    pending_ntp: PendingTable<(ConnectionKey, u64)>,
     /// Recent RTT measurements for aggregation: (timestamp, rtt_duration)
     recent_rtts: VecDeque<(Instant, Duration)>,
-    /// Maximum age for pending SYNs (cleanup stale entries)
-    max_pending_age: Duration,
-    /// Maximum age for pending DNS queries, well past any resolver timeout
-    max_pending_dns_age: Duration,
-    /// Maximum age for pending NetBIOS requests.
-    max_pending_netbios_age: Duration,
-    /// Maximum age for pending echo requests before they cannot produce an RTT
-    max_pending_icmp_age: Duration,
-    /// Maximum age for pending STUN requests, past the RFC 5389 retransmit
-    /// window's useful range
-    max_pending_stun_age: Duration,
-    /// Maximum age for pending NTP requests, well past any sane response
-    max_pending_ntp_age: Duration,
     /// Maximum number of recent RTTs to keep
     max_recent_rtts: usize,
 }
 
-/// Hard cap on pending DNS queries. New entries are dropped at the cap, so a
-/// query flood costs unmatched samples, never memory.
-const MAX_PENDING_DNS: usize = 4096;
-
-/// Hard cap on pending NetBIOS requests.
-const MAX_PENDING_NETBIOS: usize = 4096;
-
-/// Hard cap on pending echo requests. At `ping -i .2`, the 10-second expiry
+/// Hard cap on each pending table. At `ping -i .2`, the 10-second expiry
 /// limits an unanswered flow to about 50 entries, far below this guardrail.
-const MAX_PENDING_ICMP_ECHOES: usize = 4096;
-
-/// Hard cap on pending STUN requests, mirroring the DNS guardrail.
-const MAX_PENDING_STUN: usize = 4096;
-
-/// Hard cap on pending NTP requests, mirroring the DNS guardrail.
-const MAX_PENDING_NTP: usize = 4096;
+const MAX_PENDING: usize = 4096;
 
 impl RttTracker {
     pub fn new() -> Self {
+        // Pending handshakes stay matchable for 30 seconds; the
+        // request/response protocols expire after 10 seconds, well past any
+        // resolver timeout, the RFC 5389 STUN retransmit window's useful
+        // range, or any sane NTP response.
+        let max_handshake_age = Duration::from_secs(30);
+        let max_request_age = Duration::from_secs(10);
         Self {
-            pending_syns: HashMap::new(),
-            pending_quic_handshakes: HashMap::new(),
-            pending_dns: HashMap::new(),
-            pending_netbios: HashMap::new(),
-            pending_icmp_echoes: HashMap::new(),
-            pending_stun: HashMap::new(),
-            pending_ntp: HashMap::new(),
+            pending_syns: PendingTable::new(MAX_PENDING, max_handshake_age),
+            pending_quic_handshakes: PendingTable::new(MAX_PENDING, max_handshake_age),
+            pending_dns: PendingTable::new(MAX_PENDING, max_request_age),
+            pending_netbios: PendingTable::new(MAX_PENDING, max_request_age),
+            pending_icmp_echoes: PendingTable::new(MAX_PENDING, max_request_age),
+            pending_stun: PendingTable::new(MAX_PENDING, max_request_age),
+            pending_ntp: PendingTable::new(MAX_PENDING, max_request_age),
             recent_rtts: VecDeque::new(),
-            max_pending_age: Duration::from_secs(30),
-            max_pending_dns_age: Duration::from_secs(10),
-            max_pending_netbios_age: Duration::from_secs(10),
-            max_pending_icmp_age: Duration::from_secs(10),
-            max_pending_stun_age: Duration::from_secs(10),
-            max_pending_ntp_age: Duration::from_secs(10),
             max_recent_rtts: 100,
         }
     }
 
     /// Record a SYN packet being sent/received, stamped with its capture time.
     pub fn record_syn(&mut self, key: ConnectionKey, at: SystemTime) {
-        self.pending_syns.insert(key, at);
-        self.cleanup_stale(at);
+        self.pending_syns.prune(at);
+        self.pending_syns.start(key, at);
     }
 
     /// Try to match a SYN-ACK to a pending SYN and calculate RTT
     /// Returns the RTT if a match was found
     pub fn record_syn_ack(&mut self, key: &ConnectionKey, at: SystemTime) -> Option<Duration> {
         // SYN and SYN-ACK have the same (local_addr, remote_addr) from parser's perspective
-        if let Some(syn_time) = self.pending_syns.remove(key) {
-            let rtt = at.duration_since(syn_time).unwrap_or_default();
-            self.add_rtt_sample(rtt);
-            Some(rtt)
-        } else {
-            None
-        }
+        self.pending_syns.prune(at);
+        let syn_time = self.pending_syns.complete(key)?;
+        let rtt = at.duration_since(syn_time).unwrap_or_default();
+        self.add_rtt_sample(rtt);
+        Some(rtt)
     }
 
     /// Record a QUIC long-header handshake packet, returning the RTT when it
@@ -2151,12 +2141,12 @@ impl RttTracker {
         is_outgoing: bool,
         at: SystemTime,
     ) -> Option<Duration> {
-        self.cleanup_stale(at);
+        self.pending_quic_handshakes.prune(at);
         if is_outgoing {
-            self.pending_quic_handshakes.insert(key, at);
+            self.pending_quic_handshakes.start(key, at);
             return None;
         }
-        let sent_at = self.pending_quic_handshakes.remove(&key)?;
+        let sent_at = self.pending_quic_handshakes.complete(&key)?;
         let rtt = at.duration_since(sent_at).unwrap_or_default();
         self.add_rtt_sample(rtt);
         Some(rtt)
@@ -2180,18 +2170,14 @@ impl RttTracker {
         is_response: bool,
         at: SystemTime,
     ) -> Option<Duration> {
-        self.cleanup_stale(at);
+        self.pending_dns.prune(at);
         match (is_outgoing, is_response) {
             (true, false) => {
-                if self.pending_dns.len() < MAX_PENDING_DNS
-                    || self.pending_dns.contains_key(&(key, txid))
-                {
-                    self.pending_dns.insert((key, txid), at);
-                }
+                self.pending_dns.start((key, txid), at);
                 None
             }
             (false, true) => {
-                let sent_at = self.pending_dns.remove(&(key, txid))?;
+                let sent_at = self.pending_dns.complete(&(key, txid))?;
                 Some(at.duration_since(sent_at).unwrap_or_default())
             }
             _ => None,
@@ -2216,18 +2202,14 @@ impl RttTracker {
         is_outgoing: bool,
         at: SystemTime,
     ) -> Option<(Duration, ConnectionKey)> {
-        self.cleanup_stale(at);
+        self.pending_netbios.prune(at);
         let pending_key = (key.local_addr, info.service, info.transaction_id);
         if is_outgoing && info.is_request() {
-            if self.pending_netbios.len() < MAX_PENDING_NETBIOS
-                || self.pending_netbios.contains_key(&pending_key)
-            {
-                self.pending_netbios.insert(pending_key, (at, key));
-            }
+            self.pending_netbios.start(pending_key, (at, key));
             return None;
         }
         if !is_outgoing && info.is_response {
-            let (sent_at, request_key) = self.pending_netbios.remove(&pending_key)?;
+            let (sent_at, request_key) = self.pending_netbios.complete(&pending_key)?;
             return Some((at.duration_since(sent_at).unwrap_or_default(), request_key));
         }
         None
@@ -2250,20 +2232,16 @@ impl RttTracker {
         is_reply: bool,
         at: SystemTime,
     ) -> Option<Duration> {
-        self.cleanup_stale(at);
+        self.pending_icmp_echoes.prune(at);
         let (identifier, sequence) = echo_key;
         let pending_key = (key, identifier, sequence);
         match (is_outgoing, is_reply) {
             (true, false) => {
-                if self.pending_icmp_echoes.len() < MAX_PENDING_ICMP_ECHOES
-                    || self.pending_icmp_echoes.contains_key(&pending_key)
-                {
-                    self.pending_icmp_echoes.insert(pending_key, at);
-                }
+                self.pending_icmp_echoes.start(pending_key, at);
                 None
             }
             (false, true) => {
-                let sent_at = self.pending_icmp_echoes.remove(&pending_key)?;
+                let sent_at = self.pending_icmp_echoes.complete(&pending_key)?;
                 let rtt = at.duration_since(sent_at).unwrap_or_default();
                 self.add_rtt_sample(rtt);
                 Some(rtt)
@@ -2287,19 +2265,15 @@ impl RttTracker {
         class: StunMessageClass,
         at: SystemTime,
     ) -> Option<Duration> {
-        self.cleanup_stale(at);
+        self.pending_stun.prune(at);
         let pending_key = (key, transaction_id);
         match (is_outgoing, class) {
             (true, StunMessageClass::Request) => {
-                if self.pending_stun.len() < MAX_PENDING_STUN
-                    || self.pending_stun.contains_key(&pending_key)
-                {
-                    self.pending_stun.insert(pending_key, at);
-                }
+                self.pending_stun.start(pending_key, at);
                 None
             }
             (false, StunMessageClass::SuccessResponse | StunMessageClass::ErrorResponse) => {
-                let sent_at = self.pending_stun.remove(&pending_key)?;
+                let sent_at = self.pending_stun.complete(&pending_key)?;
                 Some(at.duration_since(sent_at).unwrap_or_default())
             }
             _ => None,
@@ -2320,19 +2294,14 @@ impl RttTracker {
         is_outgoing: bool,
         at: SystemTime,
     ) -> Option<Duration> {
-        self.cleanup_stale(at);
+        self.pending_ntp.prune(at);
         match (is_outgoing, info.mode) {
             (true, NtpMode::Client) => {
-                let pending_key = (key, info.transmit_timestamp);
-                if self.pending_ntp.len() < MAX_PENDING_NTP
-                    || self.pending_ntp.contains_key(&pending_key)
-                {
-                    self.pending_ntp.insert(pending_key, at);
-                }
+                self.pending_ntp.start((key, info.transmit_timestamp), at);
                 None
             }
             (false, NtpMode::Server) => {
-                let sent_at = self.pending_ntp.remove(&(key, info.origin_timestamp))?;
+                let sent_at = self.pending_ntp.complete(&(key, info.origin_timestamp))?;
                 Some(at.duration_since(sent_at).unwrap_or_default())
             }
             _ => None,
@@ -2370,32 +2339,6 @@ impl RttTracker {
         } else {
             let total_ms: f64 = samples.iter().map(|d| d.as_secs_f64() * 1000.0).sum();
             Some(total_ms / samples.len() as f64)
-        }
-    }
-
-    /// Clean up pending handshakes older than `max_pending_age` relative to the
-    /// capture time of the packet being processed.
-    fn cleanup_stale(&mut self, now: SystemTime) {
-        let Some(cutoff) = now.checked_sub(self.max_pending_age) else {
-            return;
-        };
-        self.pending_syns.retain(|_, ts| *ts > cutoff);
-        self.pending_quic_handshakes.retain(|_, ts| *ts > cutoff);
-        if let Some(dns_cutoff) = now.checked_sub(self.max_pending_dns_age) {
-            self.pending_dns.retain(|_, ts| *ts > dns_cutoff);
-        }
-        if let Some(netbios_cutoff) = now.checked_sub(self.max_pending_netbios_age) {
-            self.pending_netbios
-                .retain(|_, (ts, _)| *ts > netbios_cutoff);
-        }
-        if let Some(icmp_cutoff) = now.checked_sub(self.max_pending_icmp_age) {
-            self.pending_icmp_echoes.retain(|_, ts| *ts > icmp_cutoff);
-        }
-        if let Some(stun_cutoff) = now.checked_sub(self.max_pending_stun_age) {
-            self.pending_stun.retain(|_, ts| *ts > stun_cutoff);
-        }
-        if let Some(ntp_cutoff) = now.checked_sub(self.max_pending_ntp_age) {
-            self.pending_ntp.retain(|_, ts| *ts > ntp_cutoff);
         }
     }
 
@@ -2480,30 +2423,17 @@ impl AppProtocolDistribution {
     /// Get distribution as percentages (label, count, percentage)
     pub fn as_percentages(&self) -> Vec<(&'static str, usize, f64)> {
         let total = self.total().max(1) as f64;
-        vec![
-            (
-                "HTTPS",
-                self.https_count,
-                self.https_count as f64 / total * 100.0,
-            ),
-            (
-                "QUIC",
-                self.quic_count,
-                self.quic_count as f64 / total * 100.0,
-            ),
-            (
-                "HTTP",
-                self.http_count,
-                self.http_count as f64 / total * 100.0,
-            ),
-            ("DNS", self.dns_count, self.dns_count as f64 / total * 100.0),
-            ("SSH", self.ssh_count, self.ssh_count as f64 / total * 100.0),
-            (
-                "Other",
-                self.other_count,
-                self.other_count as f64 / total * 100.0,
-            ),
+        [
+            ("HTTPS", self.https_count),
+            ("QUIC", self.quic_count),
+            ("HTTP", self.http_count),
+            ("DNS", self.dns_count),
+            ("SSH", self.ssh_count),
+            ("Other", self.other_count),
         ]
+        .into_iter()
+        .map(|(label, count)| (label, count, count as f64 / total * 100.0))
+        .collect()
     }
 }
 
@@ -2517,6 +2447,19 @@ struct RateSample {
     // Delta values since last sample
     delta_sent: u64,
     delta_received: u64,
+}
+
+/// Drop the oldest sample while keeping the window totals equal to the sum of
+/// the deltas still held in `samples`.
+fn pop_oldest_sample(
+    samples: &mut VecDeque<RateSample>,
+    window_sent_total: &mut u64,
+    window_received_total: &mut u64,
+) {
+    if let Some(old) = samples.pop_front() {
+        *window_sent_total = window_sent_total.saturating_sub(old.delta_sent);
+        *window_received_total = window_received_total.saturating_sub(old.delta_received);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2588,12 +2531,11 @@ impl RateTracker {
         // Lightweight overflow guard: drop oldest samples if we exceed the cap.
         // Full time-based pruning happens in prune() every ~1s.
         while samples.len() > self.max_samples {
-            if let Some(old) = samples.pop_front() {
-                self.window_sent_total = self.window_sent_total.saturating_sub(old.delta_sent);
-                self.window_received_total = self
-                    .window_received_total
-                    .saturating_sub(old.delta_received);
-            }
+            pop_oldest_sample(
+                samples,
+                &mut self.window_sent_total,
+                &mut self.window_received_total,
+            );
         }
 
         // Update last values for next delta calculation
@@ -2621,26 +2563,24 @@ impl RateTracker {
 
         let samples = Arc::make_mut(&mut self.samples);
 
-        while let Some(oldest) = samples.front() {
-            if oldest.timestamp >= cutoff_time {
-                break;
-            }
-            if let Some(old) = samples.pop_front() {
-                self.window_sent_total = self.window_sent_total.saturating_sub(old.delta_sent);
-                self.window_received_total = self
-                    .window_received_total
-                    .saturating_sub(old.delta_received);
-            }
+        while samples
+            .front()
+            .is_some_and(|oldest| oldest.timestamp < cutoff_time)
+        {
+            pop_oldest_sample(
+                samples,
+                &mut self.window_sent_total,
+                &mut self.window_received_total,
+            );
         }
 
         // Limit total samples to prevent memory bloat
         while samples.len() > self.max_samples {
-            if let Some(old) = samples.pop_front() {
-                self.window_sent_total = self.window_sent_total.saturating_sub(old.delta_sent);
-                self.window_received_total = self
-                    .window_received_total
-                    .saturating_sub(old.delta_received);
-            }
+            pop_oldest_sample(
+                samples,
+                &mut self.window_sent_total,
+                &mut self.window_received_total,
+            );
         }
     }
 
@@ -3031,11 +2971,8 @@ impl Connection {
         } else {
             None
         };
-        let terminal_since = matches!(
-            &state,
-            ProtocolState::Tcp(TcpState::TimeWait | TcpState::Closed)
-        )
-        .then_some(now);
+        let terminal_since =
+            matches!(&state, ProtocolState::Tcp(tcp) if tcp_state_is_terminal(tcp)).then_some(now);
 
         Self {
             protocol,
@@ -3133,7 +3070,7 @@ impl Connection {
     /// included until they reach TIME_WAIT or CLOSED.
     pub fn is_terminal(&self) -> bool {
         match &self.protocol_state {
-            ProtocolState::Tcp(state) => matches!(state, TcpState::TimeWait | TcpState::Closed),
+            ProtocolState::Tcp(state) => tcp_state_is_terminal(state),
             ProtocolState::Udp => self.dpi_info.as_ref().is_some_and(|dpi| {
                 matches!(
                     &dpi.application,
@@ -4908,16 +4845,16 @@ mod tests {
         let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 53);
         let key = ConnectionKey::new(Protocol::Udp, local, remote);
 
-        for txid in 0..MAX_PENDING_DNS as u16 {
+        for txid in 0..MAX_PENDING as u16 {
             tracker.record_dns_packet(key, txid, true, false, rtt_capture_time(0));
         }
-        assert_eq!(tracker.pending_dns.len(), MAX_PENDING_DNS);
+        assert_eq!(tracker.pending_dns.len(), MAX_PENDING);
 
         // One more distinct query is rejected...
         let overflow_key =
             ConnectionKey::new(Protocol::Udp, SocketAddr::new(local.ip(), 40_001), remote);
         tracker.record_dns_packet(overflow_key, 7, true, false, rtt_capture_time(1));
-        assert_eq!(tracker.pending_dns.len(), MAX_PENDING_DNS);
+        assert_eq!(tracker.pending_dns.len(), MAX_PENDING);
         let rtt = tracker.record_dns_packet(overflow_key, 7, false, true, rtt_capture_time(20));
         assert!(rtt.is_none(), "a rejected query has no pending timestamp");
 
@@ -4951,11 +4888,11 @@ mod tests {
         let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)), 137);
         let key = ConnectionKey::new(Protocol::Udp, local, remote);
 
-        for transaction_id in 0..MAX_PENDING_NETBIOS as u16 {
+        for transaction_id in 0..MAX_PENDING as u16 {
             let request = netbios_test_info(NetBiosService::NameService, transaction_id, false);
             tracker.record_netbios_packet(key, &request, true, rtt_capture_time(0));
         }
-        assert_eq!(tracker.pending_netbios.len(), MAX_PENDING_NETBIOS);
+        assert_eq!(tracker.pending_netbios.len(), MAX_PENDING);
 
         let overflow_key = ConnectionKey::new(
             Protocol::Udp,
@@ -4965,7 +4902,7 @@ mod tests {
         let overflow_request = netbios_test_info(NetBiosService::DatagramService, 7, false);
         let overflow_response = netbios_test_info(NetBiosService::DatagramService, 7, true);
         tracker.record_netbios_packet(overflow_key, &overflow_request, true, rtt_capture_time(1));
-        assert_eq!(tracker.pending_netbios.len(), MAX_PENDING_NETBIOS);
+        assert_eq!(tracker.pending_netbios.len(), MAX_PENDING);
         let rtt = tracker.record_netbios_packet(
             overflow_key,
             &overflow_response,
@@ -5009,12 +4946,12 @@ mod tests {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
         );
 
-        for sequence in 0..MAX_PENDING_ICMP_ECHOES as u16 {
+        for sequence in 0..MAX_PENDING as u16 {
             tracker.record_icmp_echo(key, (7, sequence), true, false, rtt_capture_time(0));
         }
-        assert_eq!(tracker.pending_icmp_echoes.len(), MAX_PENDING_ICMP_ECHOES);
+        assert_eq!(tracker.pending_icmp_echoes.len(), MAX_PENDING);
 
-        let rejected_sequence = MAX_PENDING_ICMP_ECHOES as u16;
+        let rejected_sequence = MAX_PENDING as u16;
         tracker.record_icmp_echo(
             key,
             (7, rejected_sequence),
