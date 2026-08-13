@@ -1960,6 +1960,18 @@ pub(in crate::ui) fn draw_connection_details(
                 })
         })
         .flatten();
+    // NetBIOS requests and responses pair by transaction ID, including
+    // broadcast requests answered from a host's unicast address.
+    let netbios_info = (conn.protocol == Protocol::Udp)
+        .then(|| {
+            conn.dpi_info
+                .as_ref()
+                .and_then(|dpi| match &dpi.application {
+                    crate::network::types::ApplicationProtocol::NetBios(info) => Some(info),
+                    _ => None,
+                })
+        })
+        .flatten();
     // STUN requests carry a transaction ID their response echoes, so a UDP
     // flow with no handshake still has a timeable exchange.
     let stun_info = conn
@@ -2046,6 +2058,63 @@ pub(in crate::ui) fn draw_connection_details(
             &mut details_text,
             &mut detail_fields,
             "Timed by pairing query and response IDs",
+        );
+    } else if let Some(netbios) = netbios_info {
+        if let Some(rtt) = conn.netbios_response_time {
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            let rtt_color = if rtt_ms < 50.0 {
+                theme::ok()
+            } else if rtt_ms < 150.0 {
+                theme::warn()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "NetBIOS Response Time",
+                format!("{:.1}ms", rtt_ms),
+                label_style,
+                theme::fg(rtt_color),
+            );
+        } else {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "NetBIOS Response Time",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+        if let Some(status) = netbios.response_status {
+            let status_color = if status.is_success() {
+                theme::ok()
+            } else {
+                theme::err()
+            };
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Last Response Status",
+                status.to_string(),
+                label_style,
+                theme::fg(status_color),
+            );
+        } else {
+            push_detail_field(
+                &mut details_text,
+                &mut detail_fields,
+                "Last Response Status",
+                NONE_PLACEHOLDER.to_string(),
+                label_style,
+            );
+        }
+        details_text.push(Line::from(""));
+        detail_fields.push(None);
+        push_detail_note(
+            &mut details_text,
+            &mut detail_fields,
+            "Timed by pairing request and response IDs",
         );
     } else if let Some(stun) = stun_info {
         if let Some(rtt) = conn.stun_rtt {

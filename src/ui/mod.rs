@@ -1427,6 +1427,56 @@ mod snapshot_tests {
         );
     }
 
+    #[test]
+    fn details_tab_netbios_shows_response_time_in_transport_health() {
+        use crate::network::types::{
+            ApplicationProtocol, DpiInfo, NetBiosInfo, NetBiosOpcode, NetBiosResponseStatus,
+            NetBiosService,
+        };
+
+        let app = test_app();
+        let mut connections = sample_connections();
+        let netbios_conn = &mut connections[1];
+        netbios_conn.netbios_response_time = Some(Duration::from_micros(18_700));
+        netbios_conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::NetBios(NetBiosInfo {
+                service: NetBiosService::NameService,
+                opcode: NetBiosOpcode::Response,
+                name: Some("FILESERVER".to_string()),
+                transaction_id: 0x1234,
+                is_response: true,
+                response_status: Some(NetBiosResponseStatus::NameService(3)),
+            }),
+            last_update_time: std::time::Instant::now(),
+        });
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let stats = app.get_stats();
+        let ui_state = UIState {
+            selected_tab: 1,
+            selected_connection_key: Some(connections[1].key()),
+            ..Default::default()
+        };
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, 40, |f| {
+            draw(
+                f,
+                &app,
+                &ui_state,
+                &connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw details");
+        });
+
+        assert!(output.contains("NetBIOS Response Time") && output.contains("18.7ms"));
+        assert!(output.contains("Last Response Status") && output.contains("NAM_ERR"));
+        assert!(output.contains("Timed by pairing request and response IDs"));
+        assert!(!output.contains("No transport metrics for this protocol"));
+    }
+
     /// ICMP echo has an explicit identifier and sequence pair, so it can show
     /// a real RTT even when requests are sent more often than the UI refreshes.
     #[test]

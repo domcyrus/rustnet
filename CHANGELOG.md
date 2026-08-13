@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **NetBIOS Response Time**: UDP Name Service and Datagram Service requests now
+  show response time and the latest response status in Details. Pairing uses the
+  16-bit transaction ID plus the local socket and service, so broadcast requests
+  match replies from individual hosts, and the round trip is shown on both the
+  broadcast request row and the responder's connection. WACK packets keep the
+  request pending until its final response, and pending requests have a 10s
+  expiry and hard cap
 - **Ubuntu 22.04 LTS (Jammy) PPA**: The PPA now also builds for Ubuntu 22.04
   LTS using its backported `rustc-1.89` toolchain, covering Linux Mint 21.x
   and Pop!_OS 22.04. Install docs now list the supported derivatives and the
