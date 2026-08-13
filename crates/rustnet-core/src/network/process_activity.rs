@@ -6,7 +6,7 @@
 //! existing active and bounded historic rows into compact one-second and
 //! rolling-window metrics for user interfaces and exporters.
 
-use crate::network::types::{ApplicationProtocol, Connection, ConnectionKey};
+use crate::network::types::{Connection, ConnectionKey};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
@@ -736,20 +736,7 @@ fn percentage(part: f64, total: f64) -> f64 {
 
 fn destination_label(conn: &Connection) -> Option<String> {
     let dpi = conn.dpi_info.as_ref()?;
-    match &dpi.application {
-        ApplicationProtocol::Https(info) => info
-            .tls_info
-            .as_ref()
-            .and_then(|tls| tls.sni.as_ref())
-            .cloned(),
-        ApplicationProtocol::Quic(info) => info
-            .tls_info
-            .as_ref()
-            .and_then(|tls| tls.sni.as_ref())
-            .cloned(),
-        ApplicationProtocol::Http(info) => info.host.clone(),
-        _ => None,
-    }
+    dpi.application.hostname().map(str::to_string)
 }
 
 #[cfg(test)]

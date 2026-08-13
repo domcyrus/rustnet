@@ -553,6 +553,25 @@ impl ApplicationProtocol {
             ApplicationProtocol::Stun(_) => "STUN",
         }
     }
+
+    /// TLS handshake metadata for the protocols that carry it (HTTPS, QUIC).
+    pub fn tls_info(&self) -> Option<&TlsInfo> {
+        match self {
+            ApplicationProtocol::Https(info) => info.tls_info.as_ref(),
+            ApplicationProtocol::Quic(info) => info.tls_info.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Hostname carried in the protocol payload: the TLS SNI for HTTPS and
+    /// QUIC, or the Host header for HTTP. DNS query names are deliberately
+    /// excluded; call sites that want them match `Dns` explicitly.
+    pub fn hostname(&self) -> Option<&str> {
+        match self {
+            ApplicationProtocol::Http(info) => info.host.as_deref(),
+            _ => self.tls_info().and_then(|tls| tls.sni.as_deref()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
