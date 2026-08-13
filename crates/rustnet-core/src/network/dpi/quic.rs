@@ -1,3 +1,4 @@
+use crate::network::merge::merge_tls_info;
 use crate::network::types::{
     CryptoFrameReassembler, QuicConnectionState, QuicInfo, QuicPacketType, TlsInfo, TlsVersion,
 };
@@ -281,31 +282,7 @@ fn merge_quic_packet_info(existing: Option<QuicInfo>, new: QuicInfo) -> QuicInfo
             }
 
             // Merge TLS info - prefer complete SNI over partial
-            match (&existing.tls_info, &new.tls_info) {
-                (None, Some(new_tls)) => {
-                    existing.tls_info = Some(new_tls.clone());
-                }
-                (Some(old_tls), Some(new_tls)) => {
-                    let old_is_partial = old_tls
-                        .sni
-                        .as_ref()
-                        .map(|s| is_partial_sni(s))
-                        .unwrap_or(true);
-                    let new_is_partial = new_tls
-                        .sni
-                        .as_ref()
-                        .map(|s| is_partial_sni(s))
-                        .unwrap_or(true);
-
-                    // Prefer complete SNI over partial, or any SNI over none
-                    if (old_is_partial && !new_is_partial)
-                        || (old_tls.sni.is_none() && new_tls.sni.is_some())
-                    {
-                        existing.tls_info = Some(new_tls.clone());
-                    }
-                }
-                _ => {}
-            }
+            merge_tls_info(&mut existing.tls_info, &new.tls_info);
 
             // Update connection ID if we have a better one
             if existing.connection_id.is_empty() && !new.connection_id.is_empty() {
