@@ -21,61 +21,7 @@ pub fn parse_sll(
     process_name: Option<String>,
     process_id: Option<u32>,
 ) -> Option<ParsedPacket> {
-    if data.len() < 16 {
-        log::debug!("Linux SLL packet too small: {} bytes", data.len());
-        return None;
-    }
-
-    // Protocol type is at bytes 14-15 (EtherType)
-    let protocol = u16::from_be_bytes([data[14], data[15]]);
-
-    match protocol {
-        0x0800 => {
-            // IPv4 - payload starts at byte 16
-            log::trace!("Linux SLL: IPv4 packet detected");
-            let ip_data = &data[16..];
-            parser.parse_raw_ipv4_packet(ip_data, process_name, process_id)
-        }
-        0x86dd => {
-            // IPv6 - payload starts at byte 16
-            log::trace!("Linux SLL: IPv6 packet detected");
-            let ip_data = &data[16..];
-            parser.parse_raw_ipv6_packet(ip_data, process_name, process_id)
-        }
-        0x0806 => {
-            // ARP - payload starts at byte 16
-            log::trace!("Linux SLL: ARP packet detected");
-            parser.parse_arp_packet_with_offset(data, 16, process_name, process_id)
-        }
-        0x8100 => {
-            // 802.1Q VLAN-tagged (reconstructed by libpcap from kernel metadata)
-            // Layout after reconstruction: SLL header (14 bytes) + TPID (2) + TCI (2) + inner EtherType (2)
-            if data.len() < 20 {
-                log::debug!("Linux SLL: VLAN frame too small: {} bytes", data.len());
-                return None;
-            }
-            let inner_proto = u16::from_be_bytes([data[18], data[19]]);
-            match inner_proto {
-                0x0800 => {
-                    log::trace!("Linux SLL: VLAN-tagged IPv4 packet detected");
-                    parser.parse_raw_ipv4_packet(&data[20..], process_name, process_id)
-                }
-                0x86dd => {
-                    log::trace!("Linux SLL: VLAN-tagged IPv6 packet detected");
-                    parser.parse_raw_ipv6_packet(&data[20..], process_name, process_id)
-                }
-                0x0806 => {
-                    log::trace!("Linux SLL: VLAN-tagged ARP packet detected");
-                    parser.parse_arp_packet_with_offset(data, 20, process_name, process_id)
-                }
-                _ => None,
-            }
-        }
-        _ => {
-            log::debug!("Linux SLL: Unknown protocol: 0x{:04x}", protocol);
-            None
-        }
-    }
+    parse_cooked(data, parser, 16, 14, "Linux SLL", process_name, process_id)
 }
 
 /// Parse Linux Cooked Capture v2 packet (DLT_LINUX_SLL2)
@@ -96,59 +42,63 @@ pub fn parse_sll2(
     process_name: Option<String>,
     process_id: Option<u32>,
 ) -> Option<ParsedPacket> {
-    if data.len() < 20 {
-        log::debug!("Linux SLL2 packet too small: {} bytes", data.len());
+    parse_cooked(data, parser, 20, 0, "Linux SLL2", process_name, process_id)
+}
+
+/// Shared body for both cooked-capture versions.
+///
+/// `header_len` is the cooked header size, `proto_offset` the position of the
+/// EtherType field within it. A VLAN tag (SLL: reconstructed by libpcap from
+/// kernel metadata; SLL2: visible when rx-vlan-offload is disabled, libpcap
+/// does not reconstruct tags for SLL2, see libpcap#1105) puts TPID 0x8100 in
+/// the EtherType field and appends TCI (2 bytes) + inner EtherType (2 bytes),
+/// so the payload then starts at `header_len + 4`.
+fn parse_cooked(
+    data: &[u8],
+    parser: &PacketParser,
+    header_len: usize,
+    proto_offset: usize,
+    name: &str,
+    process_name: Option<String>,
+    process_id: Option<u32>,
+) -> Option<ParsedPacket> {
+    if data.len() < header_len {
+        log::debug!("{} packet too small: {} bytes", name, data.len());
         return None;
     }
 
-    // Protocol type is at bytes 0-1 (EtherType)
-    let protocol = u16::from_be_bytes([data[0], data[1]]);
+    let protocol = u16::from_be_bytes([data[proto_offset], data[proto_offset + 1]]);
+
+    let (protocol, payload_offset) = if protocol == 0x8100 {
+        if data.len() < header_len + 4 {
+            log::debug!("{}: VLAN frame too small: {} bytes", name, data.len());
+            return None;
+        }
+        let inner_proto = u16::from_be_bytes([data[header_len + 2], data[header_len + 3]]);
+        log::trace!("{}: 802.1Q VLAN tag detected", name);
+        (inner_proto, header_len + 4)
+    } else {
+        (protocol, header_len)
+    };
 
     match protocol {
         0x0800 => {
-            // IPv4 - payload starts at byte 20
-            log::trace!("Linux SLL2: IPv4 packet detected");
-            let ip_data = &data[20..];
-            parser.parse_raw_ipv4_packet(ip_data, process_name, process_id)
+            // IPv4 - the cooked header is sliced off, so packet_len excludes it
+            log::trace!("{}: IPv4 packet detected", name);
+            parser.parse_raw_ipv4_packet(&data[payload_offset..], process_name, process_id)
         }
         0x86dd => {
-            // IPv6 - payload starts at byte 20
-            log::trace!("Linux SLL2: IPv6 packet detected");
-            let ip_data = &data[20..];
-            parser.parse_raw_ipv6_packet(ip_data, process_name, process_id)
+            // IPv6 - the cooked header is sliced off, so packet_len excludes it
+            log::trace!("{}: IPv6 packet detected", name);
+            parser.parse_raw_ipv6_packet(&data[payload_offset..], process_name, process_id)
         }
         0x0806 => {
-            // ARP - payload starts at byte 20
-            log::trace!("Linux SLL2: ARP packet detected");
-            parser.parse_arp_packet_with_offset(data, 20, process_name, process_id)
-        }
-        0x8100 => {
-            // 802.1Q VLAN-tagged (visible when rx-vlan-offload is disabled;
-            // libpcap does not reconstruct VLAN tags for SLL2, see libpcap#1105)
-            // Layout: SLL2 header (20 bytes) + TCI (2) + inner EtherType (2)
-            if data.len() < 24 {
-                log::debug!("Linux SLL2: VLAN frame too small: {} bytes", data.len());
-                return None;
-            }
-            let inner_proto = u16::from_be_bytes([data[22], data[23]]);
-            match inner_proto {
-                0x0800 => {
-                    log::trace!("Linux SLL2: VLAN-tagged IPv4 packet detected");
-                    parser.parse_raw_ipv4_packet(&data[24..], process_name, process_id)
-                }
-                0x86dd => {
-                    log::trace!("Linux SLL2: VLAN-tagged IPv6 packet detected");
-                    parser.parse_raw_ipv6_packet(&data[24..], process_name, process_id)
-                }
-                0x0806 => {
-                    log::trace!("Linux SLL2: VLAN-tagged ARP packet detected");
-                    parser.parse_arp_packet_with_offset(data, 24, process_name, process_id)
-                }
-                _ => None,
-            }
+            // ARP - packet_len covers the whole captured frame
+            log::trace!("{}: ARP packet detected", name);
+            parser.parse_arp_packet_with_offset(data, payload_offset, process_name, process_id)
         }
         _ => {
-            log::debug!("Linux SLL2: Unknown protocol: 0x{:04x}", protocol);
+            log::debug!("{}: Unknown protocol: 0x{:04x}", name, protocol);
             None
         }
     }
