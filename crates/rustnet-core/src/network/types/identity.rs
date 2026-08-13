@@ -9,7 +9,8 @@ use std::path::PathBuf;
 /// lookup may therefore have to relax the key, and the caller deserves to know
 /// that it did: a relaxed hit is a plausible owner, not a proven one.
 ///
-/// Defined here rather than in `rustnet-host` because [`Connection`] carries it
+/// Defined here rather than in `rustnet-host` because
+/// [`Connection`](crate::network::types::Connection) carries it
 /// and `rustnet-host` depends on this crate, not the other way round.
 /// `rustnet-host` re-exports it.
 ///

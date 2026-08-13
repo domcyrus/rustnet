@@ -446,10 +446,7 @@ fn parse_short_header_packet(payload: &[u8]) -> Option<QuicInfo> {
 }
 
 /// Process all frames in a decrypted QUIC packet payload and extract CRYPTO frames
-pub fn process_crypto_frames_in_packet(
-    payload: &[u8],
-    quic_info: &mut QuicInfo,
-) -> Option<TlsInfo> {
+fn process_crypto_frames_in_packet(payload: &[u8], quic_info: &mut QuicInfo) -> Option<TlsInfo> {
     // Ensure we have a reassembler
     quic_info.ensure_reassembler();
 

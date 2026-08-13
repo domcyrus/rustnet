@@ -504,6 +504,84 @@ mod tests {
         assert_eq!(tracker.recent_rtts.len(), 1);
     }
 
+    /// At the hard cap, new pending SYNs are dropped (losing samples under a
+    /// SYN flood is harmless; growing without bound is not), but a
+    /// retransmitted SYN of a tracked key still refreshes its timestamp.
+    #[test]
+    fn test_rtt_tracker_pending_syns_capped() {
+        let mut tracker = RttTracker::new();
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+
+        for port in 0..MAX_PENDING as u16 {
+            let key = ConnectionKey::new(
+                Protocol::Tcp,
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 10_000 + port),
+                remote,
+            );
+            tracker.record_syn(key, rtt_capture_time(0));
+        }
+        assert_eq!(tracker.pending_syns.len(), MAX_PENDING);
+
+        // One more distinct SYN is rejected...
+        let overflow_key = ConnectionKey::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 10_000),
+            remote,
+        );
+        tracker.record_syn(overflow_key, rtt_capture_time(1));
+        assert_eq!(tracker.pending_syns.len(), MAX_PENDING);
+        let rtt = tracker.record_syn_ack(&overflow_key, rtt_capture_time(20));
+        assert!(rtt.is_none(), "a rejected SYN has no pending timestamp");
+
+        // ...but a retransmit of a tracked SYN still restarts its timer.
+        let tracked_key = ConnectionKey::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 10_000),
+            remote,
+        );
+        tracker.record_syn(tracked_key, rtt_capture_time(1_000));
+        let rtt = tracker.record_syn_ack(&tracked_key, rtt_capture_time(1_015));
+        assert_eq!(rtt, Some(Duration::from_millis(15)));
+    }
+
+    #[test]
+    fn test_rtt_tracker_pending_quic_handshakes_capped() {
+        let mut tracker = RttTracker::new();
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(142, 250, 74, 78)), 443);
+
+        for port in 0..MAX_PENDING as u16 {
+            let key = ConnectionKey::new(
+                Protocol::Udp,
+                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 10_000 + port),
+                remote,
+            );
+            tracker.record_quic_handshake(key, true, rtt_capture_time(0));
+        }
+        assert_eq!(tracker.pending_quic_handshakes.len(), MAX_PENDING);
+
+        let overflow_key = ConnectionKey::new(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 10_000),
+            remote,
+        );
+        tracker.record_quic_handshake(overflow_key, true, rtt_capture_time(1));
+        assert_eq!(tracker.pending_quic_handshakes.len(), MAX_PENDING);
+        let rtt = tracker.record_quic_handshake(overflow_key, false, rtt_capture_time(20));
+        assert!(
+            rtt.is_none(),
+            "a rejected handshake has no pending timestamp"
+        );
+
+        let tracked_key = ConnectionKey::new(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 10_000),
+            remote,
+        );
+        tracker.record_quic_handshake(tracked_key, true, rtt_capture_time(1_000));
+        let rtt = tracker.record_quic_handshake(tracked_key, false, rtt_capture_time(1_015));
+        assert_eq!(rtt, Some(Duration::from_millis(15)));
+    }
+
     #[test]
     fn test_rtt_tracker_take_average_rtt() {
         let mut tracker = RttTracker::new();

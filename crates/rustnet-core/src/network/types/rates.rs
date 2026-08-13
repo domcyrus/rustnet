@@ -218,7 +218,8 @@ impl RateTracker {
     /// `Arc::make_mut` deep copy of the whole window (up to `max_samples`
     /// entries). Read-only consumers (UI snapshots, historic archives) never
     /// look at raw samples — they read the cached `current_*_rate_bps`
-    /// fields on [`Connection`] — so they should use this instead and leave
+    /// fields on [`Connection`](crate::network::types::Connection) — so they
+    /// should use this instead and leave
     /// the live tracker as the buffer's unique owner.
     pub fn clone_without_samples(&self) -> Self {
         Self {

@@ -654,8 +654,10 @@ fn overwrite_if_present<T: Clone>(dst: &mut Option<T>, src: &Option<T>) {
 /// changed. Every field is first-wins except the SNI, which follows the QUIC
 /// partial-promotion policy adopted as the single merge policy for all TLS
 /// carriers: any SNI beats none, and a complete SNI replaces a `[PARTIAL]`
-/// marked one. Plain HTTPS never produces partial markers today, so this
-/// stays first-wins there.
+/// marked one. Plain HTTPS parsing also emits `[PARTIAL]` SNIs from truncated
+/// ClientHellos, so it benefits from the promotion too. Promotion is per
+/// field: only the SNI is replaced, while version, ALPN, and cipher suite
+/// keep their first observed values.
 pub(crate) fn merge_tls_info(dst: &mut Option<TlsInfo>, src: &Option<TlsInfo>) -> bool {
     let Some(src_tls) = src else {
         return false;
@@ -996,7 +998,7 @@ fn update_connection_rates(conn: &mut Connection) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::types::{AddrKind, Protocol, ProtocolState, TcpState};
+    use crate::network::types::{AddrKind, Protocol, ProtocolState, TcpState, TlsVersion};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn create_test_connection() -> Connection {
@@ -1072,6 +1074,62 @@ mod tests {
         }
 
         assert_eq!(old.response_ips.len(), MAX_MERGED_RESPONSE_IPS);
+    }
+
+    /// A `[PARTIAL]` SNI is promoted to a complete one, but only the SNI
+    /// field: everything already observed stays first-wins.
+    #[test]
+    fn test_merge_tls_info_promotes_partial_sni_per_field() {
+        let mut dst = Some(TlsInfo {
+            version: None,
+            sni: Some("exa[PARTIAL]".to_string()),
+            alpn: vec!["h3".to_string()],
+            cipher_suite: None,
+        });
+        let src = Some(TlsInfo {
+            version: Some(TlsVersion::Tls13),
+            sni: Some("example.com".to_string()),
+            alpn: Vec::new(),
+            cipher_suite: None,
+        });
+
+        assert!(merge_tls_info(&mut dst, &src));
+        let merged = dst.as_ref().unwrap();
+        assert_eq!(merged.sni.as_deref(), Some("example.com"));
+        assert_eq!(merged.alpn, vec!["h3".to_string()]);
+        assert_eq!(merged.version, Some(TlsVersion::Tls13));
+
+        // A complete SNI is never displaced by a later one.
+        let other = Some(TlsInfo {
+            version: None,
+            sni: Some("other.example".to_string()),
+            alpn: Vec::new(),
+            cipher_suite: None,
+        });
+        assert!(!merge_tls_info(&mut dst, &other));
+        assert_eq!(dst.unwrap().sni.as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn test_merge_tls_info_fills_missing_sni() {
+        let mut dst = Some(TlsInfo {
+            version: Some(TlsVersion::Tls12),
+            sni: None,
+            alpn: Vec::new(),
+            cipher_suite: Some(0x1301),
+        });
+        let src = Some(TlsInfo {
+            version: Some(TlsVersion::Tls13),
+            sni: Some("example.com".to_string()),
+            alpn: Vec::new(),
+            cipher_suite: Some(0x1302),
+        });
+
+        assert!(merge_tls_info(&mut dst, &src));
+        let merged = dst.unwrap();
+        assert_eq!(merged.sni.as_deref(), Some("example.com"));
+        assert_eq!(merged.version, Some(TlsVersion::Tls12));
+        assert_eq!(merged.cipher_suite, Some(0x1301));
     }
 
     /// A follow-up query on the same socket must not erase the last response
