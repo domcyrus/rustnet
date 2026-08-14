@@ -13,6 +13,7 @@ use crate::network::platform::create_process_lookup;
 use crate::network::tracker::ConnectionTracker;
 use crate::network::types::{Connection, ProcessLineage};
 
+use super::sampling::spawn_loop;
 use super::state::App;
 use super::types::ProcessDetectionStatus;
 
@@ -390,41 +391,32 @@ impl App {
             None => return Ok(()), // No resolver available
         };
 
-        let should_stop = Arc::clone(&self.should_stop);
-
-        thread::Builder::new()
-            .name("geoip-enrichment".to_string())
-            .spawn(move || {
-                info!("GeoIP enrichment thread started");
-                let interval = Duration::from_millis(500);
-
-                loop {
-                    if should_stop.load(Ordering::Relaxed) {
-                        info!("GeoIP enrichment thread stopping");
-                        break;
-                    }
-
-                    // Enrich connections without GeoIP info
-                    let mut enriched = 0;
-                    for mut entry in tracker.connections().iter_mut() {
-                        if entry.geoip_info.is_none() {
-                            let remote_ip = entry.remote_addr.ip();
-                            let info = geoip_resolver.lookup(remote_ip);
-                            if info.has_data() {
-                                entry.geoip_info = Some(info);
-                                enriched += 1;
-                            }
+        spawn_loop(
+            "geoip-enrichment",
+            "GeoIP enrichment thread started",
+            "GeoIP enrichment thread stopping",
+            Duration::from_millis(500),
+            Arc::clone(&self.should_stop),
+            move || {
+                // Enrich connections without GeoIP info
+                let mut enriched = 0;
+                for mut entry in tracker.connections().iter_mut() {
+                    if entry.geoip_info.is_none() {
+                        let remote_ip = entry.remote_addr.ip();
+                        let info = geoip_resolver.lookup(remote_ip);
+                        if info.has_data() {
+                            entry.geoip_info = Some(info);
+                            enriched += 1;
                         }
                     }
-
-                    if enriched > 0 {
-                        debug!("Enriched {} connections with GeoIP info", enriched);
-                    }
-
-                    thread::sleep(interval);
                 }
-            })
-            .expect("Failed to spawn GeoIP enrichment thread");
+
+                if enriched > 0 {
+                    debug!("Enriched {} connections with GeoIP info", enriched);
+                }
+            },
+        )
+        .expect("Failed to spawn GeoIP enrichment thread");
 
         Ok(())
     }

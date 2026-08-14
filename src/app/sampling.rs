@@ -2,10 +2,11 @@
 //! stats, traffic history, and connection cleanup.
 
 use anyhow::Result;
+use dashmap::DashMap;
 use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -30,12 +31,61 @@ use super::logging::{log_connection_event, log_pcap_connection};
 use super::state::App;
 use super::{LIVE_RATE_INTERVAL, MIN_RATE_SAMPLE_SECONDS, TRAFFIC_HISTORY_CAPACITY};
 
+/// Spawn a named worker thread that runs `body` every `interval` until
+/// `should_stop` is set.
+///
+/// The started/stopping log lines are passed in verbatim rather than derived
+/// from the thread name: the existing workers' labels are not derivable from
+/// their names ("state_refresh" logs as "Rate refresh"), and the interface
+/// stats worker's two lines already disagree with each other.
+pub(super) fn spawn_loop(
+    thread_name: &'static str,
+    started_msg: &'static str,
+    stopping_msg: &'static str,
+    interval: Duration,
+    should_stop: Arc<AtomicBool>,
+    mut body: impl FnMut() + Send + 'static,
+) -> std::io::Result<()> {
+    thread::Builder::new()
+        .name(thread_name.to_string())
+        .spawn(move || {
+            info!("{started_msg}");
+            loop {
+                if should_stop.load(Ordering::Relaxed) {
+                    info!("{stopping_msg}");
+                    break;
+                }
+                body();
+                thread::sleep(interval);
+            }
+        })
+        .map(|_| ())
+}
+
+/// Clone-and-filter one connection table (active or historic) into snapshot
+/// records.
+///
+/// snapshot_clone: leave the live tracker as unique owner of its rate
+/// samples, otherwise the next per-packet update pays an `Arc::make_mut`
+/// deep copy.
+fn snapshot_source<K: Eq + std::hash::Hash, S: std::hash::BuildHasher + Clone>(
+    source: &DashMap<K, Connection, S>,
+    enrich_and_filter: impl Fn(&mut Connection) -> bool,
+) -> Vec<Connection> {
+    source
+        .iter()
+        .filter_map(|entry| {
+            let mut conn = entry.value().snapshot_clone();
+            enrich_and_filter(&mut conn).then_some(conn)
+        })
+        .collect()
+}
+
 impl App {
     /// Start snapshot provider thread for UI updates
     pub(super) fn start_snapshot_provider(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let snapshot = Arc::clone(&self.connections_snapshot);
         let snapshot_generation = Arc::clone(&self.snapshot_generation);
-        let should_stop = Arc::clone(&self.should_stop);
         let stats = Arc::clone(&self.stats);
         let service_lookup = Arc::clone(&self.service_lookup);
         let process_activity = Arc::clone(&self.process_activity);
@@ -44,9 +94,14 @@ impl App {
         let refresh_interval = Duration::from_millis(self.config.refresh_interval);
         let loop_interval = refresh_interval.min(Duration::from_secs(1));
 
+        let passes_localhost_filter = move |conn: &Connection| -> bool {
+            !(filter_localhost
+                && conn.local_addr.ip().is_loopback()
+                && conn.remote_addr.ip().is_loopback())
+        };
+
         let enrich_and_filter = move |conn: &mut Connection,
-                                      service_lookup: &ServiceLookup,
-                                      filter_localhost: bool|
+                                      service_lookup: &ServiceLookup|
               -> bool {
             // Enrich with service name
             if conn.service_name.is_none() {
@@ -60,269 +115,214 @@ impl App {
                 }
             }
             // Apply localhost filter
-            if filter_localhost
-                && conn.local_addr.ip().is_loopback()
-                && conn.remote_addr.ip().is_loopback()
-            {
-                return false;
-            }
-            true
+            passes_localhost_filter(conn)
         };
 
-        thread::Builder::new()
-            .name("snapshot_ui".to_string())
-            .spawn(move || {
-                info!("Snapshot provider thread started");
-                let mut last_ui_publish: Option<Instant> = None;
-                let mut last_activity_sample: Option<Instant> = None;
+        let mut last_ui_publish: Option<Instant> = None;
+        let mut last_activity_sample: Option<Instant> = None;
 
-                loop {
-                    if should_stop.load(Ordering::Relaxed) {
-                        info!("Snapshot provider thread stopping");
-                        break;
-                    }
+        spawn_loop(
+            "snapshot_ui",
+            "Snapshot provider thread started",
+            "Snapshot provider thread stopping",
+            loop_interval,
+            Arc::clone(&self.should_stop),
+            move || {
+                // Create snapshot
+                let start = Instant::now();
+                let total_connections = tracker.len();
 
-                    // Create snapshot
-                    let start = Instant::now();
-                    let total_connections = tracker.len();
+                let mut snapshot_data = snapshot_source(tracker.connections(), |conn| {
+                    enrich_and_filter(conn, &service_lookup)
+                });
 
-                    let mut snapshot_data: Vec<Connection> = tracker
-                        .connections()
-                        .iter()
-                        .filter_map(|entry| {
-                            // snapshot_clone: leave the live tracker as unique
-                            // owner of its rate samples, otherwise the next
-                            // per-packet update pays an Arc::make_mut deep copy.
-                            let mut conn = entry.value().snapshot_clone();
-                            if enrich_and_filter(&mut conn, &service_lookup, filter_localhost) {
-                                Some(conn)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-
-                    // Append historic connections when toggle is on
-                    if show_historic.load(Ordering::Relaxed) {
-                        let historic: Vec<Connection> = tracker
-                            .historic()
-                            .iter()
-                            .filter_map(|entry| {
-                                let mut conn = entry.value().snapshot_clone();
-                                if enrich_and_filter(&mut conn, &service_lookup, filter_localhost) {
-                                    Some(conn)
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        snapshot_data.extend(historic);
-                    }
-
-                    // Sort by creation time (oldest first, newest last for maximum stability)
-                    snapshot_data.sort_by_key(|a| a.created_at);
-
-                    let filtered_count = snapshot_data.len();
-
-                    let activity_due = last_activity_sample
-                        .is_none_or(|sampled| sampled.elapsed() >= Duration::from_secs(1));
-                    if activity_due {
-                        if let Ok(mut activity) = process_activity.write() {
-                            tracker.with_retained_sources(|active, historic| {
-                                let include = |conn: &Connection| {
-                                    !(filter_localhost
-                                        && conn.local_addr.ip().is_loopback()
-                                        && conn.remote_addr.ip().is_loopback())
-                                };
-                                activity.observe_sources(
-                                    SystemTime::now(),
-                                    |observe| {
-                                        for entry in active.iter() {
-                                            let conn = entry.value();
-                                            if include(conn) {
-                                                observe(conn);
-                                            }
-                                        }
-                                    },
-                                    |observe| {
-                                        for entry in historic.iter() {
-                                            let conn = entry.value();
-                                            if include(conn) {
-                                                observe(conn);
-                                            }
-                                        }
-                                    },
-                                );
-                            });
-                        }
-                        last_activity_sample = Some(Instant::now());
-                    }
-
-                    let ui_publish_due = last_ui_publish
-                        .is_none_or(|published| published.elapsed() >= refresh_interval);
-                    if ui_publish_due {
-                        // Publish the connection vector used by the UI.
-                        *snapshot.write().unwrap() = snapshot_data;
-                        snapshot_generation.fetch_add(1, Ordering::Release);
-                        last_ui_publish = Some(Instant::now());
-
-                        // Update stats (only count active connections)
-                        stats
-                            .connections_tracked
-                            .store(total_connections as u64, Ordering::Relaxed);
-                        *stats.last_update.write().unwrap() = Instant::now();
-                    }
-
-                    debug!(
-                        "Snapshot updated in {:?} - Total: {}, Filtered: {}",
-                        start.elapsed(),
-                        total_connections,
-                        filtered_count
-                    );
-
-                    thread::sleep(loop_interval);
+                // Append historic connections when toggle is on
+                if show_historic.load(Ordering::Relaxed) {
+                    snapshot_data.extend(snapshot_source(tracker.historic(), |conn| {
+                        enrich_and_filter(conn, &service_lookup)
+                    }));
                 }
-            })
-            .expect("Failed to spawn snapshot_ui thread");
+
+                // Sort by creation time (oldest first, newest last for maximum stability)
+                snapshot_data.sort_by_key(|a| a.created_at);
+
+                let filtered_count = snapshot_data.len();
+
+                let activity_due = last_activity_sample
+                    .is_none_or(|sampled| sampled.elapsed() >= Duration::from_secs(1));
+                if activity_due {
+                    if let Ok(mut activity) = process_activity.write() {
+                        tracker.with_retained_sources(|active, historic| {
+                            activity.observe_sources(
+                                SystemTime::now(),
+                                |observe| {
+                                    for entry in active.iter() {
+                                        let conn = entry.value();
+                                        if passes_localhost_filter(conn) {
+                                            observe(conn);
+                                        }
+                                    }
+                                },
+                                |observe| {
+                                    for entry in historic.iter() {
+                                        let conn = entry.value();
+                                        if passes_localhost_filter(conn) {
+                                            observe(conn);
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                    }
+                    last_activity_sample = Some(Instant::now());
+                }
+
+                let ui_publish_due =
+                    last_ui_publish.is_none_or(|published| published.elapsed() >= refresh_interval);
+                if ui_publish_due {
+                    // Publish the connection vector used by the UI.
+                    *snapshot.write().unwrap() = snapshot_data;
+                    snapshot_generation.fetch_add(1, Ordering::Release);
+                    last_ui_publish = Some(Instant::now());
+
+                    // Update stats (only count active connections)
+                    stats
+                        .connections_tracked
+                        .store(total_connections as u64, Ordering::Relaxed);
+                    *stats.last_update.write().unwrap() = Instant::now();
+                }
+
+                debug!(
+                    "Snapshot updated in {:?} - Total: {}, Filtered: {}",
+                    start.elapsed(),
+                    total_connections,
+                    filtered_count
+                );
+            },
+        )
+        .expect("Failed to spawn snapshot_ui thread");
 
         Ok(())
     }
 
     /// Start rate refresh thread to update rates for idle connections
     pub(super) fn start_rate_refresh_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
-        let should_stop = Arc::clone(&self.should_stop);
-
-        thread::Builder::new()
-            .name("state_refresh".to_string())
-            .spawn(move || {
-                info!("Rate refresh thread started");
-
-                loop {
-                    if should_stop.load(Ordering::Relaxed) {
-                        info!("Rate refresh thread stopping");
-                        break;
+        // Keep idle-rate decay aligned with the live graph cadence.
+        spawn_loop(
+            "state_refresh",
+            "Rate refresh thread started",
+            "Rate refresh thread stopping",
+            LIVE_RATE_INTERVAL,
+            Arc::clone(&self.should_stop),
+            move || {
+                // Refresh rates for connections that may still have non-zero rates.
+                // Skip connections idle >30s whose rates are already zero.
+                let sweep_start = Instant::now();
+                let mut refreshed = 0usize;
+                for mut entry in tracker.connections().iter_mut() {
+                    let conn = entry.value_mut();
+                    let idle_secs = conn.last_activity.elapsed().unwrap_or_default().as_secs();
+                    if idle_secs <= 30 || conn.has_nonzero_rates() {
+                        conn.refresh_rates();
+                        refreshed += 1;
                     }
-
-                    // Refresh rates for connections that may still have non-zero rates.
-                    // Skip connections idle >30s whose rates are already zero.
-                    let sweep_start = Instant::now();
-                    let mut refreshed = 0usize;
-                    for mut entry in tracker.connections().iter_mut() {
-                        let conn = entry.value_mut();
-                        let idle_secs = conn.last_activity.elapsed().unwrap_or_default().as_secs();
-                        if idle_secs <= 30 || conn.has_nonzero_rates() {
-                            conn.refresh_rates();
-                            refreshed += 1;
-                        }
-                    }
-                    debug!(
-                        "State refresh sweep took {:?} for {} refreshed connections",
-                        sweep_start.elapsed(),
-                        refreshed
-                    );
-
-                    // Keep idle-rate decay aligned with the live graph cadence.
-                    thread::sleep(LIVE_RATE_INTERVAL);
                 }
-            })
-            .expect("Failed to spawn state_refresh thread");
+                debug!(
+                    "State refresh sweep took {:?} for {} refreshed connections",
+                    sweep_start.elapsed(),
+                    refreshed
+                );
+            },
+        )
+        .expect("Failed to spawn state_refresh thread");
 
         Ok(())
     }
 
     /// Start interface statistics collection thread
     pub(super) fn start_interface_stats_thread(&self) -> Result<()> {
-        let should_stop = Arc::clone(&self.should_stop);
         let interface_stats = Arc::clone(&self.interface_stats);
         let interface_rates = Arc::clone(&self.interface_rates);
         let interface_traffic_windows = Arc::clone(&self.interface_traffic_windows);
         let interface_traffic_history = Arc::clone(&self.interface_traffic_history);
 
-        thread::Builder::new()
-            .name("ifstats_poll".to_string())
-            .spawn(move || {
-                info!("Interface stats collection thread started");
+        let provider = PlatformStatsProvider;
+        let mut previous_stats: HashMap<String, InterfaceStats> = HashMap::new();
+        // Warn once if stat collection ever fails so a permission/sandbox
+        // regression (e.g. Landlock denying /sys) is visible at the
+        // default log level instead of being silently swallowed.
+        let mut warned_collect_failure = false;
 
-                let provider = PlatformStatsProvider;
-                let mut previous_stats: HashMap<String, InterfaceStats> = HashMap::new();
-                // Warn once if stat collection ever fails so a permission/sandbox
-                // regression (e.g. Landlock denying /sys) is visible at the
-                // default log level instead of being silently swallowed.
-                let mut warned_collect_failure = false;
+        // Keep interface rates fresh for the live graphs.
+        spawn_loop(
+            "ifstats_poll",
+            "Interface stats collection thread started",
+            "Interface stats thread stopping",
+            LIVE_RATE_INTERVAL,
+            Arc::clone(&self.should_stop),
+            move || {
+                // Collect stats from all interfaces
+                match provider.get_all_stats() {
+                    Ok(stats_vec) => {
+                        let mut stats_history = interface_traffic_history
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        // Clear old entries
+                        interface_stats.clear();
+                        interface_rates.clear();
+                        interface_traffic_windows.clear();
 
-                loop {
-                    if should_stop.load(Ordering::Relaxed) {
-                        info!("Interface stats thread stopping");
-                        break;
-                    }
-
-                    // Collect stats from all interfaces
-                    match provider.get_all_stats() {
-                        Ok(stats_vec) => {
-                            let mut stats_history = interface_traffic_history
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            // Clear old entries
-                            interface_stats.clear();
-                            interface_rates.clear();
-                            interface_traffic_windows.clear();
-
-                            for stat in stats_vec {
-                                // Calculate rates if we have previous data
-                                if let Some(prev) = previous_stats.get(&stat.interface_name) {
-                                    let rates = stat.calculate_rates(prev);
-                                    interface_rates.insert(stat.interface_name.clone(), rates);
-                                }
-
-                                // Store current stats
-                                let name = stat.interface_name.clone();
-                                interface_stats.insert(name.clone(), stat.clone());
-                                previous_stats.insert(name.clone(), stat.clone());
-
-                                let history = stats_history.entry(name.clone()).or_default();
-                                history.push_back(stat.clone());
-                                while history.len() > 2
-                                    && history.get(1).is_some_and(|sample| {
-                                        stat.timestamp
-                                            .duration_since(sample.timestamp)
-                                            .unwrap_or_default()
-                                            >= Duration::from_secs(60)
-                                    })
-                                {
-                                    history.pop_front();
-                                }
-                                if let Some(oldest) = history.front() {
-                                    interface_traffic_windows
-                                        .insert(name, stat.traffic_since(oldest));
-                                }
+                        for stat in stats_vec {
+                            // Calculate rates if we have previous data
+                            if let Some(prev) = previous_stats.get(&stat.interface_name) {
+                                let rates = stat.calculate_rates(prev);
+                                interface_rates.insert(stat.interface_name.clone(), rates);
                             }
-                            stats_history.retain(|name, _| interface_stats.contains_key(name));
-                        }
-                        Err(e) => {
-                            if !warned_collect_failure {
-                                warn!(
-                                    "Failed to collect interface stats: {} (interface panel will be empty; on Linux this is often a sandbox/permission issue reading /sys/class/net)",
-                                    e
-                                );
-                                warned_collect_failure = true;
-                            } else {
-                                debug!("Failed to collect interface stats: {}", e);
+
+                            // Store current stats
+                            let name = stat.interface_name.clone();
+                            interface_stats.insert(name.clone(), stat.clone());
+                            previous_stats.insert(name.clone(), stat.clone());
+
+                            let history = stats_history.entry(name.clone()).or_default();
+                            history.push_back(stat.clone());
+                            while history.len() > 2
+                                && history.get(1).is_some_and(|sample| {
+                                    stat.timestamp
+                                        .duration_since(sample.timestamp)
+                                        .unwrap_or_default()
+                                        >= Duration::from_secs(60)
+                                })
+                            {
+                                history.pop_front();
+                            }
+                            if let Some(oldest) = history.front() {
+                                interface_traffic_windows.insert(name, stat.traffic_since(oldest));
                             }
                         }
+                        stats_history.retain(|name, _| interface_stats.contains_key(name));
                     }
-
-                    // Keep interface rates fresh for the live graphs.
-                    thread::sleep(LIVE_RATE_INTERVAL);
+                    Err(e) => {
+                        if !warned_collect_failure {
+                            warn!(
+                                "Failed to collect interface stats: {} (interface panel will be empty; on Linux this is often a sandbox/permission issue reading /sys/class/net)",
+                                e
+                            );
+                            warned_collect_failure = true;
+                        } else {
+                            debug!("Failed to collect interface stats: {}", e);
+                        }
+                    }
                 }
-            })
-            .expect("Failed to spawn ifstats_poll thread");
+            },
+        )
+        .expect("Failed to spawn ifstats_poll thread");
 
         Ok(())
     }
 
     /// Start traffic history thread for graph visualization
     pub(super) fn start_traffic_history_thread(&self) -> Result<()> {
-        let should_stop = Arc::clone(&self.should_stop);
         let traffic_history = Arc::clone(&self.traffic_history);
         let conn_rate_history = Arc::clone(&self.conn_rate_history);
         let interface_rates = Arc::clone(&self.interface_rates);
@@ -330,143 +330,129 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let tracker = Arc::clone(&self.tracker);
 
-        thread::Builder::new()
-            .name("graph_ui".to_string())
-            .spawn(move || {
-                info!("Traffic history thread started");
+        // Track previous values for delta calculation
+        let mut prev_packets = stats.packets_processed.load(Ordering::Relaxed);
+        let mut prev_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
+        let mut prev_connections_created = stats.total_connections_created.load(Ordering::Relaxed);
+        let mut prev_connections_archived =
+            stats.total_connections_archived.load(Ordering::Relaxed);
+        let mut previous_sample_at = Instant::now();
 
-                // Track previous values for delta calculation
-                let mut prev_packets = stats.packets_processed.load(Ordering::Relaxed);
-                let mut prev_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
-                let mut prev_connections_created =
-                    stats.total_connections_created.load(Ordering::Relaxed);
-                let mut prev_connections_archived =
-                    stats.total_connections_archived.load(Ordering::Relaxed);
-                let mut previous_sample_at = Instant::now();
+        // Update twice per second for a more responsive graph.
+        spawn_loop(
+            "graph_ui",
+            "Traffic history thread started",
+            "Traffic history thread stopping",
+            LIVE_RATE_INTERVAL,
+            Arc::clone(&self.should_stop),
+            move || {
+                // Aggregate rates from all interfaces
+                let (total_rx, total_tx) =
+                    interface_rates
+                        .iter()
+                        .fold((0u64, 0u64), |(rx, tx), entry| {
+                            (
+                                rx + entry.value().rx_bytes_per_sec,
+                                tx + entry.value().tx_bytes_per_sec,
+                            )
+                        });
 
-                loop {
-                    if should_stop.load(Ordering::Relaxed) {
-                        info!("Traffic history thread stopping");
-                        break;
-                    }
-
-                    // Aggregate rates from all interfaces
-                    let (total_rx, total_tx) =
-                        interface_rates
-                            .iter()
-                            .fold((0u64, 0u64), |(rx, tx), entry| {
-                                (
-                                    rx + entry.value().rx_bytes_per_sec,
-                                    tx + entry.value().tx_bytes_per_sec,
-                                )
-                            });
-
-                    // Get active connection count from snapshot (excludes
-                    // historic) and record per-connection rate samples on
-                    // the same cadence as the aggregate history.
-                    let connection_count = connections_snapshot
-                        .read()
-                        .map(|snap| {
-                            if let Ok(mut rates) = conn_rate_history.write() {
-                                let alive: std::collections::HashSet<String> = snap
-                                    .iter()
-                                    .filter(|c| !c.is_historic)
-                                    .map(|c| c.key())
-                                    .collect();
-                                rates.retain(|key, _| alive.contains(key));
-                                for conn in snap.iter().filter(|c| !c.is_historic) {
-                                    rates.entry(conn.key()).or_default().push_for_generation(
-                                        conn.created_at,
-                                        conn.current_incoming_rate_bps as u64,
-                                        conn.current_outgoing_rate_bps as u64,
-                                        TRAFFIC_HISTORY_CAPACITY,
-                                    );
-                                }
+                // Get active connection count from snapshot (excludes
+                // historic) and record per-connection rate samples on
+                // the same cadence as the aggregate history.
+                let connection_count = connections_snapshot
+                    .read()
+                    .map(|snap| {
+                        if let Ok(mut rates) = conn_rate_history.write() {
+                            let alive: std::collections::HashSet<String> = snap
+                                .iter()
+                                .filter(|c| !c.is_historic)
+                                .map(|c| c.key())
+                                .collect();
+                            rates.retain(|key, _| alive.contains(key));
+                            for conn in snap.iter().filter(|c| !c.is_historic) {
+                                rates.entry(conn.key()).or_default().push_for_generation(
+                                    conn.created_at,
+                                    conn.current_incoming_rate_bps as u64,
+                                    conn.current_outgoing_rate_bps as u64,
+                                    TRAFFIC_HISTORY_CAPACITY,
+                                );
                             }
-                            snap.iter().filter(|c| !c.is_historic).count()
-                        })
-                        .unwrap_or(0);
+                        }
+                        snap.iter().filter(|c| !c.is_historic).count()
+                    })
+                    .unwrap_or(0);
 
-                    // Get packet and retransmit counts (calculate deltas)
-                    let current_packets = stats.packets_processed.load(Ordering::Relaxed);
-                    let current_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
-                    let current_connections_created =
-                        stats.total_connections_created.load(Ordering::Relaxed);
-                    let current_connections_archived =
-                        stats.total_connections_archived.load(Ordering::Relaxed);
+                // Get packet and retransmit counts (calculate deltas)
+                let current_packets = stats.packets_processed.load(Ordering::Relaxed);
+                let current_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
+                let current_connections_created =
+                    stats.total_connections_created.load(Ordering::Relaxed);
+                let current_connections_archived =
+                    stats.total_connections_archived.load(Ordering::Relaxed);
 
-                    let packets_delta = current_packets.saturating_sub(prev_packets);
-                    let retransmits_delta = current_retransmits.saturating_sub(prev_retransmits);
-                    let connections_created_delta =
-                        current_connections_created.saturating_sub(prev_connections_created);
-                    let connections_archived_delta =
-                        current_connections_archived.saturating_sub(prev_connections_archived);
+                let packets_delta = current_packets.saturating_sub(prev_packets);
+                let retransmits_delta = current_retransmits.saturating_sub(prev_retransmits);
+                let connections_created_delta =
+                    current_connections_created.saturating_sub(prev_connections_created);
+                let connections_archived_delta =
+                    current_connections_archived.saturating_sub(prev_connections_archived);
 
-                    let sampled_at = Instant::now();
-                    let sample_seconds =
-                        sampled_at.duration_since(previous_sample_at).as_secs_f64();
-                    let packets_per_sec = per_second_rate(packets_delta, sample_seconds, 1.0);
-                    let retransmits_per_sec =
-                        per_second_rate(retransmits_delta, sample_seconds, 1.0);
-                    let opened_per_sec_tenths =
-                        per_second_rate(connections_created_delta, sample_seconds, 10.0);
-                    let closed_per_sec_tenths =
-                        per_second_rate(connections_archived_delta, sample_seconds, 10.0);
+                let sampled_at = Instant::now();
+                let sample_seconds = sampled_at.duration_since(previous_sample_at).as_secs_f64();
+                let packets_per_sec = per_second_rate(packets_delta, sample_seconds, 1.0);
+                let retransmits_per_sec = per_second_rate(retransmits_delta, sample_seconds, 1.0);
+                let opened_per_sec_tenths =
+                    per_second_rate(connections_created_delta, sample_seconds, 10.0);
+                let closed_per_sec_tenths =
+                    per_second_rate(connections_archived_delta, sample_seconds, 10.0);
 
-                    prev_packets = current_packets;
-                    prev_retransmits = current_retransmits;
-                    prev_connections_created = current_connections_created;
-                    prev_connections_archived = current_connections_archived;
-                    previous_sample_at = sampled_at;
+                prev_packets = current_packets;
+                prev_retransmits = current_retransmits;
+                prev_connections_created = current_connections_created;
+                prev_connections_archived = current_connections_archived;
+                previous_sample_at = sampled_at;
 
-                    // Get average RTT from tracker (last 1 second window)
-                    let avg_rtt_ms = tracker.take_average_rtt(1);
+                // Get average RTT from tracker (last 1 second window)
+                let avg_rtt_ms = tracker.take_average_rtt(1);
 
-                    // Add sample to traffic history
-                    if let Ok(mut history) = traffic_history.write() {
-                        history.add_sample_with_lifecycle(
-                            total_rx,
-                            total_tx,
-                            ConnectionLifecycleSample {
-                                active: connection_count,
-                                retained: tracker.historic_len(),
-                                opened_per_sec_tenths,
-                                closed_per_sec_tenths,
-                            },
-                            packets_per_sec,
-                            retransmits_per_sec,
-                            avg_rtt_ms,
-                        );
-                    }
-
-                    // Update twice per second for a more responsive graph.
-                    thread::sleep(LIVE_RATE_INTERVAL);
+                // Add sample to traffic history
+                if let Ok(mut history) = traffic_history.write() {
+                    history.add_sample_with_lifecycle(
+                        total_rx,
+                        total_tx,
+                        ConnectionLifecycleSample {
+                            active: connection_count,
+                            retained: tracker.historic_len(),
+                            opened_per_sec_tenths,
+                            closed_per_sec_tenths,
+                        },
+                        packets_per_sec,
+                        retransmits_per_sec,
+                        avg_rtt_ms,
+                    );
                 }
-            })
-            .expect("Failed to spawn graph_ui thread");
+            },
+        )
+        .expect("Failed to spawn graph_ui thread");
 
         Ok(())
     }
 
     /// Start cleanup thread to remove old connections
     pub(super) fn start_cleanup_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
-        let should_stop = Arc::clone(&self.should_stop);
         let json_log_file = self.json_log_file.clone();
         let pcap_sidecar_file = self.pcap_sidecar_file.clone();
         let dns_resolver = self.dns_resolver.clone();
         let stats = Arc::clone(&self.stats);
 
-        thread::Builder::new()
-            .name("cleanup_thread".to_string())
-            .spawn(move || {
-            info!("Cleanup thread started");
-
-            loop {
-                if should_stop.load(Ordering::Relaxed) {
-                    info!("Cleanup thread stopping");
-                    break;
-                }
-
+        spawn_loop(
+            "cleanup_thread",
+            "Cleanup thread started",
+            "Cleanup thread stopping",
+            Duration::from_secs(5),
+            Arc::clone(&self.should_stop),
+            move || {
                 // Remove inactive connections. The tracker handles the timeout
                 // sweep, historic archiving + eviction, and QUIC-mapping cleanup;
                 // we layer the app's close-event logging on the returned set.
@@ -519,10 +505,8 @@ impl App {
                         removed.len()
                     );
                 }
-
-                thread::sleep(Duration::from_secs(5));
-            }
-        })
+            },
+        )
         .expect("Failed to spawn cleanup_thread");
 
         Ok(())
