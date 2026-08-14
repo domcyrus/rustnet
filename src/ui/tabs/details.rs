@@ -188,6 +188,43 @@ fn push_detail_field_with_copy<'a>(
     fields.push(Some((label.to_string(), copy)));
 }
 
+/// Push an RTT field with the value colored by latency (green < 50ms,
+/// yellow < 150ms, red above), or the "-" placeholder when unmeasured.
+fn push_rtt_field<'a>(
+    lines: &mut Vec<Line<'a>>,
+    fields: &mut Vec<Option<(String, String)>>,
+    label: &str,
+    rtt: Option<std::time::Duration>,
+    label_style: Style,
+) {
+    if let Some(rtt) = rtt {
+        let rtt_ms = rtt.as_secs_f64() * 1000.0;
+        let rtt_color = if rtt_ms < 50.0 {
+            theme::ok()
+        } else if rtt_ms < 150.0 {
+            theme::warn()
+        } else {
+            theme::err()
+        };
+        push_detail_field_styled(
+            lines,
+            fields,
+            label,
+            format!("{:.1}ms", rtt_ms),
+            label_style,
+            theme::fg(rtt_color),
+        );
+    } else {
+        push_detail_field(
+            lines,
+            fields,
+            label,
+            NONE_PLACEHOLDER.to_string(),
+            label_style,
+        );
+    }
+}
+
 #[cfg(unix)]
 static USER_NAMES: OnceLock<Mutex<HashMap<u32, Option<String>>>> = OnceLock::new();
 #[cfg(unix)]
@@ -1724,11 +1761,7 @@ pub(in crate::ui) fn draw_connection_details(
                     info.message_class.to_string(),
                     label_style,
                 );
-                let txn_id = info
-                    .transaction_id
-                    .iter()
-                    .map(|b| format!("{:02x}", b))
-                    .collect::<String>();
+                let txn_id = crate::network::util::hex_encode(&info.transaction_id, "");
                 push_detail_field(
                     &mut details_text,
                     &mut detail_fields,
@@ -2002,32 +2035,13 @@ pub(in crate::ui) fn draw_connection_details(
     push_detail_section(&mut details_text, &mut detail_fields, "Transport Health");
     let show_rtt = conn.protocol == Protocol::Tcp || quic_info.is_some();
     if let Some(dns) = dns_info {
-        if let Some(rtt) = conn.dns_response_time {
-            let rtt_ms = rtt.as_secs_f64() * 1000.0;
-            let rtt_color = if rtt_ms < 50.0 {
-                theme::ok()
-            } else if rtt_ms < 150.0 {
-                theme::warn()
-            } else {
-                theme::err()
-            };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "DNS Response Time",
-                format!("{:.1}ms", rtt_ms),
-                label_style,
-                theme::fg(rtt_color),
-            );
-        } else {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "DNS Response Time",
-                NONE_PLACEHOLDER.to_string(),
-                label_style,
-            );
-        }
+        push_rtt_field(
+            &mut details_text,
+            &mut detail_fields,
+            "DNS Response Time",
+            conn.dns_response_time,
+            label_style,
+        );
         if let Some(rcode) = dns.rcode {
             let rcode_color = if rcode == 0 {
                 theme::ok()
@@ -2060,32 +2074,13 @@ pub(in crate::ui) fn draw_connection_details(
             "Timed by pairing query and response IDs",
         );
     } else if let Some(netbios) = netbios_info {
-        if let Some(rtt) = conn.netbios_response_time {
-            let rtt_ms = rtt.as_secs_f64() * 1000.0;
-            let rtt_color = if rtt_ms < 50.0 {
-                theme::ok()
-            } else if rtt_ms < 150.0 {
-                theme::warn()
-            } else {
-                theme::err()
-            };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "NetBIOS Response Time",
-                format!("{:.1}ms", rtt_ms),
-                label_style,
-                theme::fg(rtt_color),
-            );
-        } else {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "NetBIOS Response Time",
-                NONE_PLACEHOLDER.to_string(),
-                label_style,
-            );
-        }
+        push_rtt_field(
+            &mut details_text,
+            &mut detail_fields,
+            "NetBIOS Response Time",
+            conn.netbios_response_time,
+            label_style,
+        );
         if let Some(status) = netbios.response_status {
             let status_color = if status.is_success() {
                 theme::ok()
@@ -2117,32 +2112,13 @@ pub(in crate::ui) fn draw_connection_details(
             "Timed by pairing request and response IDs",
         );
     } else if let Some(stun) = stun_info {
-        if let Some(rtt) = conn.stun_rtt {
-            let rtt_ms = rtt.as_secs_f64() * 1000.0;
-            let rtt_color = if rtt_ms < 50.0 {
-                theme::ok()
-            } else if rtt_ms < 150.0 {
-                theme::warn()
-            } else {
-                theme::err()
-            };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "STUN RTT",
-                format!("{:.1}ms", rtt_ms),
-                label_style,
-                theme::fg(rtt_color),
-            );
-        } else {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "STUN RTT",
-                NONE_PLACEHOLDER.to_string(),
-                label_style,
-            );
-        }
+        push_rtt_field(
+            &mut details_text,
+            &mut detail_fields,
+            "STUN RTT",
+            conn.stun_rtt,
+            label_style,
+        );
         push_detail_field(
             &mut details_text,
             &mut detail_fields,
@@ -2158,32 +2134,13 @@ pub(in crate::ui) fn draw_connection_details(
             "Paired by 96-bit transaction ID",
         );
     } else if let Some(ntp) = ntp_info {
-        if let Some(rtt) = conn.ntp_rtt {
-            let rtt_ms = rtt.as_secs_f64() * 1000.0;
-            let rtt_color = if rtt_ms < 50.0 {
-                theme::ok()
-            } else if rtt_ms < 150.0 {
-                theme::warn()
-            } else {
-                theme::err()
-            };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "NTP RTT",
-                format!("{:.1}ms", rtt_ms),
-                label_style,
-                theme::fg(rtt_color),
-            );
-        } else {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "NTP RTT",
-                NONE_PLACEHOLDER.to_string(),
-                label_style,
-            );
-        }
+        push_rtt_field(
+            &mut details_text,
+            &mut detail_fields,
+            "NTP RTT",
+            conn.ntp_rtt,
+            label_style,
+        );
         push_detail_field(
             &mut details_text,
             &mut detail_fields,
@@ -2206,29 +2163,12 @@ pub(in crate::ui) fn draw_connection_details(
         // A flow the remote side initiated is only ever answered here, so
         // there is no round trip to measure and no point in a placeholder.
         let is_responder = conn.connection_direction == Some(false);
-        if let Some(rtt) = conn.icmp_echo_rtt {
-            let rtt_ms = rtt.as_secs_f64() * 1000.0;
-            let rtt_color = if rtt_ms < 50.0 {
-                theme::ok()
-            } else if rtt_ms < 150.0 {
-                theme::warn()
-            } else {
-                theme::err()
-            };
-            push_detail_field_styled(
+        if conn.icmp_echo_rtt.is_some() || !is_responder {
+            push_rtt_field(
                 &mut details_text,
                 &mut detail_fields,
                 "Ping RTT",
-                format!("{:.1}ms", rtt_ms),
-                label_style,
-                theme::fg(rtt_color),
-            );
-        } else if !is_responder {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Ping RTT",
-                NONE_PLACEHOLDER.to_string(),
+                conn.icmp_echo_rtt,
                 label_style,
             );
         }
@@ -2258,29 +2198,12 @@ pub(in crate::ui) fn draw_connection_details(
             &mut detail_fields,
             "No transport metrics for this protocol",
         );
-    } else if let Some(rtt) = conn.initial_rtt {
-        let rtt_ms = rtt.as_secs_f64() * 1000.0;
-        let rtt_color = if rtt_ms < 50.0 {
-            theme::ok()
-        } else if rtt_ms < 150.0 {
-            theme::warn()
-        } else {
-            theme::err()
-        };
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
-            "Initial RTT",
-            format!("{:.1}ms", rtt_ms),
-            label_style,
-            theme::fg(rtt_color),
-        );
     } else {
-        push_detail_field(
+        push_rtt_field(
             &mut details_text,
             &mut detail_fields,
             "Initial RTT",
-            NONE_PLACEHOLDER.to_string(),
+            conn.initial_rtt,
             label_style,
         );
     }
@@ -2317,32 +2240,13 @@ pub(in crate::ui) fn draw_connection_details(
         let counters = conn.tcp_analytics.as_ref();
         // Live RTT: EWMA over data-segment round trips, updated for the whole
         // life of the connection (unlike the one-shot handshake RTT above).
-        if let Some(rtt) = counters.and_then(|a| a.smoothed_rtt) {
-            let rtt_ms = rtt.as_secs_f64() * 1000.0;
-            let rtt_color = if rtt_ms < 50.0 {
-                theme::ok()
-            } else if rtt_ms < 150.0 {
-                theme::warn()
-            } else {
-                theme::err()
-            };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Live RTT",
-                format!("{:.1}ms", rtt_ms),
-                label_style,
-                theme::fg(rtt_color),
-            );
-        } else {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Live RTT",
-                NONE_PLACEHOLDER.to_string(),
-                label_style,
-            );
-        }
+        push_rtt_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Live RTT",
+            counters.and_then(|a| a.smoothed_rtt),
+            label_style,
+        );
         for (label, value) in [
             ("TCP Retransmits", counters.map(|a| a.retransmit_count)),
             (

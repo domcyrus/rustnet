@@ -68,7 +68,7 @@ pub fn parse(
         0x0806 => {
             // ARP
             log::trace!("Ethernet: ARP packet detected");
-            parser.parse_arp_packet_inner(data, offset, process_name, process_id)
+            parser.parse_arp_packet_with_offset(data, offset, process_name, process_id)
         }
         _ => {
             log::debug!("Ethernet: Unknown EtherType: 0x{:04x}", ethertype);

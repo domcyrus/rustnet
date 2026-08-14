@@ -35,5 +35,5 @@ pub mod network;
 // home and keeps internal `crate::network::*` paths working unchanged.
 pub use network::{
     bogon, dns, dpi, geoip, interface_stats, link_layer, merge, neighbors, oui, parser,
-    process_activity, protocol, services, tracker, types,
+    process_activity, protocol, services, tracker, types, util,
 };

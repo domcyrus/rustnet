@@ -203,6 +203,55 @@ struct PacketTimings {
     ntp_rtt: Option<Duration>,
 }
 
+impl PacketTimings {
+    /// An [`IngestOutcome`] carrying these timings, with every other field at
+    /// its quiescent value for the caller to override via struct update.
+    fn outcome(self, key: ConnectionKey) -> IngestOutcome {
+        IngestOutcome {
+            key,
+            created: false,
+            dropped: false,
+            ignored_late: false,
+            archived: None,
+            retransmits: 0,
+            out_of_order: 0,
+            fast_retransmits: 0,
+            measured_rtt: self.measured_rtt,
+            dns_response_time: self.dns_response_time,
+            netbios_response_time: self.netbios_response_time,
+            icmp_echo_rtt: self.icmp_echo_rtt,
+            stun_rtt: self.stun_rtt,
+            ntp_rtt: self.ntp_rtt,
+        }
+    }
+}
+
+/// Stamp any round trips this packet completed onto its connection.
+fn apply_timings(conn: &mut Connection, timings: &PacketTimings) {
+    if let Some(rtt) = timings.measured_rtt
+        && conn.initial_rtt.is_none()
+    {
+        conn.initial_rtt = Some(rtt);
+    }
+    // Last-wins, unlike `initial_rtt`: each completed query refreshes the
+    // displayed response time.
+    if let Some(rtt) = timings.dns_response_time {
+        conn.dns_response_time = Some(rtt);
+    }
+    if let Some(rtt) = timings.netbios_response_time {
+        conn.netbios_response_time = Some(rtt);
+    }
+    if let Some(rtt) = timings.icmp_echo_rtt {
+        conn.icmp_echo_rtt = Some(rtt);
+    }
+    if let Some(rtt) = timings.stun_rtt {
+        conn.stun_rtt = Some(rtt);
+    }
+    if let Some(rtt) = timings.ntp_rtt {
+        conn.ntp_rtt = Some(rtt);
+    }
+}
+
 /// A live, lifecycle-managed table of network connections built from parsed
 /// packets. See the [module docs](self) for the intended usage.
 pub struct ConnectionTracker {
@@ -283,6 +332,39 @@ impl ConnectionTracker {
             _ => {}
         }
 
+        let timings = self.measure_timings(parsed, now);
+
+        // A read guard makes ordinary packet updates atomic with cleanup. The
+        // uncommon generation-split path drops it and reacquires a write guard
+        // so retained-source readers also see one consistent move.
+        let lifecycle = self
+            .lifecycle
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let key = self.resolve_connection_key(parsed);
+
+        if !self.connections.contains_key(&key) && self.is_recent_late_packet(key, parsed, now) {
+            return IngestOutcome {
+                ignored_late: true,
+                ..timings.outcome(key)
+            };
+        }
+
+        let starts_new_generation = self
+            .connections
+            .get(&key)
+            .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
+        if starts_new_generation {
+            drop(lifecycle);
+            return self.ingest_new_generation(parsed, now, key, timings);
+        }
+
+        self.ingest_into_active(parsed, now, key, timings)
+    }
+
+    /// Run this packet through the RTT tracker and collect any round trips it
+    /// completed.
+    fn measure_timings(&self, parsed: &ParsedPacket, now: SystemTime) -> PacketTimings {
         // Track RTT for TCP connections using SYN/SYN-ACK timing, and for QUIC
         // using the long-header handshake exchange. Everything QUIC sends after
         // the handshake is behind header protection, so this initial flight is
@@ -420,53 +502,14 @@ impl ConnectionTracker {
             ntp_rtt = tracker.record_ntp(base_key, ntp, parsed.is_outgoing, now);
         }
 
-        let timings = PacketTimings {
+        PacketTimings {
             measured_rtt,
             dns_response_time,
             netbios_response_time,
             icmp_echo_rtt,
             stun_rtt,
             ntp_rtt,
-        };
-
-        // A read guard makes ordinary packet updates atomic with cleanup. The
-        // uncommon generation-split path drops it and reacquires a write guard
-        // so retained-source readers also see one consistent move.
-        let lifecycle = self
-            .lifecycle
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let key = self.resolve_connection_key(parsed);
-
-        if !self.connections.contains_key(&key) && self.is_recent_late_packet(key, parsed, now) {
-            return IngestOutcome {
-                key,
-                created: false,
-                dropped: false,
-                ignored_late: true,
-                archived: None,
-                retransmits: 0,
-                out_of_order: 0,
-                fast_retransmits: 0,
-                measured_rtt: timings.measured_rtt,
-                dns_response_time: timings.dns_response_time,
-                netbios_response_time: timings.netbios_response_time,
-                icmp_echo_rtt: timings.icmp_echo_rtt,
-                stun_rtt: timings.stun_rtt,
-                ntp_rtt: timings.ntp_rtt,
-            };
         }
-
-        let starts_new_generation = self
-            .connections
-            .get(&key)
-            .is_some_and(|conn| Self::packet_starts_new_generation(&conn, parsed));
-        if starts_new_generation {
-            drop(lifecycle);
-            return self.ingest_new_generation(parsed, now, key, timings);
-        }
-
-        self.ingest_into_active(parsed, now, key, timings)
     }
 
     fn ingest_into_active(
@@ -486,20 +529,8 @@ impl ConnectionTracker {
             && !self.connections.contains_key(&key)
         {
             return IngestOutcome {
-                key,
-                created: false,
                 dropped: true,
-                ignored_late: false,
-                archived: None,
-                retransmits: 0,
-                out_of_order: 0,
-                fast_retransmits: 0,
-                measured_rtt: timings.measured_rtt,
-                dns_response_time: timings.dns_response_time,
-                netbios_response_time: timings.netbios_response_time,
-                icmp_echo_rtt: timings.icmp_echo_rtt,
-                stun_rtt: timings.stun_rtt,
-                ntp_rtt: timings.ntp_rtt,
+                ..timings.outcome(key)
             };
         }
 
@@ -509,50 +540,12 @@ impl ConnectionTracker {
             .entry(key)
             .and_modify(|conn| {
                 deltas = merge_packet_into_connection(conn, parsed, now);
-                if let Some(rtt) = timings.measured_rtt
-                    && conn.initial_rtt.is_none()
-                {
-                    conn.initial_rtt = Some(rtt);
-                }
-                // Last-wins, unlike `initial_rtt`: each completed query
-                // refreshes the displayed response time.
-                if let Some(rtt) = timings.dns_response_time {
-                    conn.dns_response_time = Some(rtt);
-                }
-                if let Some(rtt) = timings.netbios_response_time {
-                    conn.netbios_response_time = Some(rtt);
-                }
-                if let Some(rtt) = timings.icmp_echo_rtt {
-                    conn.icmp_echo_rtt = Some(rtt);
-                }
-                if let Some(rtt) = timings.stun_rtt {
-                    conn.stun_rtt = Some(rtt);
-                }
-                if let Some(rtt) = timings.ntp_rtt {
-                    conn.ntp_rtt = Some(rtt);
-                }
+                apply_timings(conn, &timings);
             })
             .or_insert_with(|| {
                 created = true;
                 let mut conn = create_connection_from_packet(parsed, now);
-                if let Some(rtt) = timings.measured_rtt {
-                    conn.initial_rtt = Some(rtt);
-                }
-                if let Some(rtt) = timings.dns_response_time {
-                    conn.dns_response_time = Some(rtt);
-                }
-                if let Some(rtt) = timings.netbios_response_time {
-                    conn.netbios_response_time = Some(rtt);
-                }
-                if let Some(rtt) = timings.icmp_echo_rtt {
-                    conn.icmp_echo_rtt = Some(rtt);
-                }
-                if let Some(rtt) = timings.stun_rtt {
-                    conn.stun_rtt = Some(rtt);
-                }
-                if let Some(rtt) = timings.ntp_rtt {
-                    conn.ntp_rtt = Some(rtt);
-                }
+                apply_timings(&mut conn, &timings);
                 conn
             });
         if created {
@@ -569,20 +562,11 @@ impl ConnectionTracker {
         }
 
         IngestOutcome {
-            key,
             created,
-            dropped: false,
-            ignored_late: false,
-            archived: None,
             retransmits: deltas.retransmits,
             out_of_order: deltas.out_of_order,
             fast_retransmits: deltas.fast_retransmits,
-            measured_rtt: timings.measured_rtt,
-            dns_response_time: timings.dns_response_time,
-            netbios_response_time: timings.netbios_response_time,
-            icmp_echo_rtt: timings.icmp_echo_rtt,
-            stun_rtt: timings.stun_rtt,
-            ntp_rtt: timings.ntp_rtt,
+            ..timings.outcome(key)
         }
     }
 

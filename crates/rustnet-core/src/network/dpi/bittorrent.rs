@@ -1,5 +1,5 @@
 use crate::network::types::{BitTorrentInfo, BitTorrentType};
-use std::fmt::Write as _;
+use crate::network::util::hex_encode;
 
 /// BitTorrent protocol handshake prefix: length byte (19) + "BitTorrent protocol"
 const BT_HANDSHAKE_PREFIX: &[u8] = b"\x13BitTorrent protocol";
@@ -44,7 +44,7 @@ pub fn analyze_bittorrent(payload: &[u8]) -> Option<BitTorrentInfo> {
 
     let info_hash = if payload.len() >= 48 {
         let hash_bytes = &payload[28..48];
-        Some(hex_encode(hash_bytes))
+        Some(hex_encode(hash_bytes, ""))
     } else {
         None
     };
@@ -283,16 +283,6 @@ fn format_version(bytes: &[u8]) -> String {
         .join(".")
 }
 
-/// Encode bytes as a lowercase hex string.
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        // write! to a String never fails.
-        let _ = write!(out, "{b:02x}");
-    }
-    out
-}
-
 /// Find the first occurrence of a subsequence in a byte slice.
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
@@ -451,12 +441,6 @@ mod tests {
         assert!(analyze_bittorrent(b"GET / HTTP/1.1\r\n").is_none());
         assert!(analyze_bittorrent(b"SSH-2.0-OpenSSH\r\n").is_none());
         assert!(analyze_bittorrent(b"").is_none());
-    }
-
-    #[test]
-    fn test_hex_encode() {
-        assert_eq!(hex_encode(&[0xDE, 0xAD, 0xBE, 0xEF]), "deadbeef");
-        assert_eq!(hex_encode(&[0x00, 0xFF]), "00ff");
     }
 
     #[test]
@@ -645,29 +629,5 @@ mod tests {
     #[test]
     fn test_udp_returns_none_for_unknown() {
         assert!(analyze_udp_bittorrent(b"GET / HTTP/1.1\r\n").is_none());
-    }
-
-    #[test]
-    fn test_hex_encode_lowercase_20_byte_info_hash() {
-        // A representative 20-byte info-hash (the size BitTorrent always uses).
-        let info_hash: [u8; 20] = [
-            0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x00, 0xff, 0x01, 0x02, 0x03, 0x04,
-            0x05, 0x06, 0x07, 0x08, 0x09, 0x0a,
-        ];
-        assert_eq!(
-            hex_encode(&info_hash),
-            "123456789abcdef000ff0102030405060708090a"
-        );
-    }
-
-    #[test]
-    fn test_hex_encode_empty_slice() {
-        assert_eq!(hex_encode(&[]), "");
-    }
-
-    #[test]
-    fn test_hex_encode_pads_single_digit_bytes() {
-        // Locks the `{:02x}` padding contract — 0x00..=0x0f stay two chars.
-        assert_eq!(hex_encode(&[0x00, 0x0a, 0x0f, 0x10]), "000a0f10");
     }
 }

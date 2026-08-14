@@ -307,31 +307,13 @@ impl ConnectionFilter {
         false
     }
 
-    /// Check if SNI matches the filter value
+    /// Check if SNI matches the filter value (DNS query names are not
+    /// considered; use the DNS-aware filters for those)
     fn matches_sni(&self, connection: &Connection, fv: &FilterValue) -> bool {
-        if let Some(ref dpi_info) = connection.dpi_info {
-            match &dpi_info.application {
-                ApplicationProtocol::Https(info) => {
-                    if let Some(ref tls_info) = info.tls_info
-                        && let Some(ref sni) = tls_info.sni
-                    {
-                        return match_text(sni, fv);
-                    }
-                }
-                ApplicationProtocol::Quic(info) => {
-                    if let Some(ref tls_info) = info.tls_info
-                        && let Some(ref sni) = tls_info.sni
-                    {
-                        return match_text(sni, fv);
-                    }
-                }
-                ApplicationProtocol::Http(info) => {
-                    if let Some(ref host) = info.host {
-                        return match_text(host, fv);
-                    }
-                }
-                _ => {}
-            }
+        if let Some(ref dpi_info) = connection.dpi_info
+            && let Some(hostname) = dpi_info.application.hostname()
+        {
+            return match_text(hostname, fv);
         }
         false
     }
@@ -371,8 +353,8 @@ impl ConnectionFilter {
                     return true;
                 }
             }
-            ApplicationProtocol::Https(info) => {
-                if let Some(ref tls_info) = info.tls_info {
+            ApplicationProtocol::Https(_) | ApplicationProtocol::Quic(_) => {
+                if let Some(tls_info) = application.tls_info() {
                     if let Some(ref sni) = tls_info.sni
                         && match_text(sni, fv)
                     {
@@ -391,21 +373,6 @@ impl ConnectionFilter {
                     && match_text(query_name, fv)
                 {
                     return true;
-                }
-            }
-            ApplicationProtocol::Quic(info) => {
-                if let Some(ref tls_info) = info.tls_info {
-                    if let Some(ref sni) = tls_info.sni
-                        && match_text(sni, fv)
-                    {
-                        return true;
-                    }
-                    // Check ALPN protocols
-                    for alpn in &tls_info.alpn {
-                        if match_text(alpn, fv) {
-                            return true;
-                        }
-                    }
                 }
             }
             ApplicationProtocol::Ssh(info) => {

@@ -424,15 +424,7 @@ impl PacketParser {
             }
             12 => {
                 // DLT_RAW - Raw IP packet
-                if payload.is_empty() {
-                    return None;
-                }
-                let version = payload[0] >> 4;
-                match version {
-                    4 => self.parse_raw_ipv4_packet(payload, process_name, process_id),
-                    6 => self.parse_raw_ipv6_packet(payload, process_name, process_id),
-                    _ => None,
-                }
+                link_layer::raw_ip::parse(payload, self, process_name, process_id)
             }
             _ => {
                 log::debug!("Unsupported PKTAP inner DLT: {}", pktap_header.inner_dlt());
@@ -441,8 +433,8 @@ impl PacketParser {
         }
     }
 
-    /// Parse an IPv4 packet from Ethernet frame data
-    /// (data includes the 14-byte Ethernet header)
+    /// Parse an IPv4 packet from link-layer frame data
+    /// (data includes the link-layer header of `offset` bytes)
     pub fn parse_ipv4_packet_inner(
         &self,
         data: &[u8],
@@ -524,7 +516,7 @@ impl PacketParser {
         }
     }
 
-    /// Parse an IPv6 packet from Ethernet frame data
+    /// Parse an IPv6 packet from link-layer frame data
     /// (data includes the link-layer header of `offset` bytes)
     pub fn parse_ipv6_packet_inner(
         &self,
@@ -635,18 +627,8 @@ impl PacketParser {
         Some(packet)
     }
 
-    /// Parse an ARP packet from Ethernet frame data
-    /// (data includes the link-layer header of `offset` bytes)
-    pub fn parse_arp_packet_inner(
-        &self,
-        data: &[u8],
-        offset: usize,
-        process_name: Option<String>,
-        process_id: Option<u32>,
-    ) -> Option<ParsedPacket> {
-        self.parse_arp_packet_with_offset(data, offset, process_name, process_id)
-    }
-
+    /// Parse an ARP packet from link-layer frame data
+    /// (data includes the link-layer header of `header_len` bytes)
     pub fn parse_arp_packet_with_offset(
         &self,
         data: &[u8],
@@ -732,65 +714,7 @@ impl PacketParser {
         process_name: Option<String>,
         process_id: Option<u32>,
     ) -> Option<ParsedPacket> {
-        if data.len() < 20 {
-            return None;
-        }
-
-        let version = data[0] >> 4;
-        if version != 4 {
-            return None;
-        }
-
-        // Extract actual packet length from IP header (bytes 2-3: Total Length field)
-        // For raw IP packets, there's no Ethernet header
-        let actual_packet_len = u16::from_be_bytes([data[2], data[3]]) as usize;
-
-        // Bytes 6-7: flags + fragment offset. A non-first fragment carries
-        // no transport header — parsing it would read mid-payload bytes as
-        // ports and fabricate connections.
-        let fragment_offset = u16::from_be_bytes([data[6], data[7]]) & 0x1FFF;
-        if fragment_offset != 0 {
-            return None;
-        }
-
-        let protocol_num = data[9];
-        let src_ip = IpAddr::V4(Ipv4Addr::new(data[12], data[13], data[14], data[15]));
-        let dst_ip = IpAddr::V4(Ipv4Addr::new(data[16], data[17], data[18], data[19]));
-
-        let ihl = data[0] & 0x0F;
-        // IHL below 5 is invalid (the fixed header alone is 20 bytes);
-        // treating it as a header length would overlap header and payload.
-        if ihl < 5 {
-            return None;
-        }
-        let ip_header_len = (ihl as usize) * 4;
-
-        if data.len() < ip_header_len {
-            return None;
-        }
-
-        let transport_data = &data[ip_header_len..];
-
-        // Same trailing-bytes problem as the Ethernet path: cooked captures
-        // (Linux SLL/SLL2) keep the Ethernet padding of short frames, so trim
-        // to the declared Total Length. Keep the untrimmed slice when the
-        // field is unusable (0 under TSO/LRO, or below the header length), and
-        // clamp to what was captured when the snaplen truncated the packet.
-        let transport_data = match actual_packet_len.checked_sub(ip_header_len) {
-            Some(payload_len) => &transport_data[..payload_len.min(transport_data.len())],
-            None => transport_data,
-        };
-
-        let params =
-            TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
-
-        match protocol_num {
-            1 => protocol::icmp::parse(transport_data, params, &self.local_ips),
-            2 => protocol::igmp::parse(transport_data, params, &self.local_ips),
-            6 => protocol::tcp::parse(transport_data, params, &self.config, &self.local_ips),
-            17 => protocol::udp::parse(transport_data, params, &self.config, &self.local_ips),
-            _ => None,
-        }
+        self.parse_ipv4_packet_inner(data, 0, process_name, process_id)
     }
 
     /// Parse a raw IPv6 packet (no link-layer header)
@@ -801,75 +725,7 @@ impl PacketParser {
         process_name: Option<String>,
         process_id: Option<u32>,
     ) -> Option<ParsedPacket> {
-        if data.len() < 40 {
-            return None;
-        }
-
-        let version = data[0] >> 4;
-        if version != 6 {
-            return None;
-        }
-
-        // Extract actual packet length from IPv6 header (bytes 4-5: Payload Length field)
-        // For raw IP packets, actual size = IPv6 header (40 bytes) + payload length
-        let ipv6_payload_length = u16::from_be_bytes([data[4], data[5]]) as usize;
-        let actual_packet_len = 40 + ipv6_payload_length;
-
-        let next_header = data[6];
-
-        // Extract IPv6 addresses
-        let src_ip = IpAddr::V6(Ipv6Addr::new(
-            u16::from_be_bytes([data[8], data[9]]),
-            u16::from_be_bytes([data[10], data[11]]),
-            u16::from_be_bytes([data[12], data[13]]),
-            u16::from_be_bytes([data[14], data[15]]),
-            u16::from_be_bytes([data[16], data[17]]),
-            u16::from_be_bytes([data[18], data[19]]),
-            u16::from_be_bytes([data[20], data[21]]),
-            u16::from_be_bytes([data[22], data[23]]),
-        ));
-
-        let dst_ip = IpAddr::V6(Ipv6Addr::new(
-            u16::from_be_bytes([data[24], data[25]]),
-            u16::from_be_bytes([data[26], data[27]]),
-            u16::from_be_bytes([data[28], data[29]]),
-            u16::from_be_bytes([data[30], data[31]]),
-            u16::from_be_bytes([data[32], data[33]]),
-            u16::from_be_bytes([data[34], data[35]]),
-            u16::from_be_bytes([data[36], data[37]]),
-            u16::from_be_bytes([data[38], data[39]]),
-        ));
-
-        let transport_data = &data[40..];
-
-        // Same trailing-bytes problem as the Ethernet path: trim to the
-        // declared Payload Length. A zero means the field carries no usable
-        // length (TSO/LRO, or a jumbogram whose real size lives in a
-        // Hop-by-Hop option, RFC 2675), so the untrimmed slice is kept then.
-        let transport_data = if ipv6_payload_length == 0 {
-            transport_data
-        } else {
-            &transport_data[..ipv6_payload_length.min(transport_data.len())]
-        };
-
-        // Handle extension headers if needed (`None` = non-first fragment,
-        // which carries no transport header)
-        let (final_next_header, transport_offset, saw_fragment) =
-            self.parse_ipv6_extension_headers(next_header, transport_data)?;
-        // A crafted extension header can declare a length that runs past the
-        // captured bytes, so `transport_offset` may exceed the slice length.
-        // Clamp before slicing to avoid an out-of-bounds panic (one-packet DoS).
-        let final_transport_data = &transport_data[transport_offset.min(transport_data.len())..];
-
-        let params =
-            TransportParams::new(src_ip, dst_ip, actual_packet_len, process_name, process_id);
-
-        match final_next_header {
-            58 => self.parse_icmpv6(final_transport_data, params, data[7], saw_fragment),
-            6 => protocol::tcp::parse(final_transport_data, params, &self.config, &self.local_ips),
-            17 => protocol::udp::parse(final_transport_data, params, &self.config, &self.local_ips),
-            _ => None,
-        }
+        self.parse_ipv6_packet_inner(data, 0, process_name, process_id)
     }
 
     /// Walk the IPv6 extension-header chain. Returns the final next-header

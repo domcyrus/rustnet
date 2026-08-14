@@ -442,32 +442,8 @@ fn log_connection_event(
         event["dpi_protocol"] = json!(dpi.application.to_string());
 
         // Extract domain/hostname from DPI info
-        match &dpi.application {
-            ApplicationProtocol::Dns(info) => {
-                if let Some(domain) = &info.query_name {
-                    event["dpi_domain"] = json!(domain);
-                }
-            }
-            ApplicationProtocol::Http(info) => {
-                if let Some(host) = &info.host {
-                    event["dpi_domain"] = json!(host);
-                }
-            }
-            ApplicationProtocol::Https(info) => {
-                if let Some(tls_info) = &info.tls_info
-                    && let Some(sni) = &tls_info.sni
-                {
-                    event["dpi_domain"] = json!(sni);
-                }
-            }
-            ApplicationProtocol::Quic(info) => {
-                if let Some(tls_info) = &info.tls_info
-                    && let Some(sni) = &tls_info.sni
-                {
-                    event["dpi_domain"] = json!(sni);
-                }
-            }
-            _ => {}
+        if let Some(domain) = dpi_domain(&dpi.application) {
+            event["dpi_domain"] = json!(domain);
         }
     }
 
@@ -3506,13 +3482,12 @@ fn build_pcapng_comment(conn: &Connection) -> Option<String> {
     }
 }
 
+/// Domain reported for a connection: DNS query name, or the hostname from
+/// the payload (SNI or HTTP Host) for other protocols.
 fn dpi_domain(application: &ApplicationProtocol) -> Option<&str> {
     match application {
         ApplicationProtocol::Dns(info) => info.query_name.as_deref(),
-        ApplicationProtocol::Http(info) => info.host.as_deref(),
-        ApplicationProtocol::Https(info) => info.tls_info.as_ref()?.sni.as_deref(),
-        ApplicationProtocol::Quic(info) => info.tls_info.as_ref()?.sni.as_deref(),
-        _ => None,
+        _ => application.hostname(),
     }
 }
 

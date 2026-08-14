@@ -6,8 +6,8 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reassembler};
 use crate::network::parser::{ParsedPacket, TcpFlags};
 use crate::network::types::{
-    ApplicationProtocol, Connection, DnsInfo, DpiInfo, FtpInfo, HttpInfo, HttpsInfo, MqttInfo,
-    NetBiosInfo, ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState,
+    ApplicationProtocol, Connection, DnsInfo, DpiInfo, FtpInfo, HttpInfo, MqttInfo, NetBiosInfo,
+    ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState, TlsInfo,
 };
 
 /// Get the priority of a QUIC connection state for proper state progression
@@ -583,7 +583,7 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
 
                 // HTTPS/TLS merging
                 (ApplicationProtocol::Https(old_info), ApplicationProtocol::Https(new_info)) => {
-                    merge_https_info(old_info, new_info);
+                    merge_tls_info(&mut old_info.tls_info, &new_info.tls_info);
                 }
 
                 // QUIC merging - this is where the reassembly happens
@@ -614,12 +614,8 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     ApplicationProtocol::BitTorrent(old_info),
                     ApplicationProtocol::BitTorrent(new_info),
                 ) => {
-                    if old_info.client.is_none() {
-                        old_info.client.clone_from(&new_info.client);
-                    }
-                    if old_info.info_hash.is_none() {
-                        old_info.info_hash.clone_from(&new_info.info_hash);
-                    }
+                    set_if_absent(&mut old_info.client, &new_info.client);
+                    set_if_absent(&mut old_info.info_hash, &new_info.info_hash);
                 }
 
                 // MQTT - merge client_id and topic from subsequent packets
@@ -640,54 +636,72 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
     }
 }
 
-/// Merge HTTP information
-fn merge_http_info(old_info: &mut HttpInfo, new_info: &HttpInfo) {
-    // Update method if not set
-    if old_info.method.is_none() && new_info.method.is_some() {
-        old_info.method = new_info.method.clone();
-    }
-
-    // Update path if not set
-    if old_info.path.is_none() && new_info.path.is_some() {
-        old_info.path = new_info.path.clone();
-    }
-
-    // Update host if not set
-    if old_info.host.is_none() && new_info.host.is_some() {
-        old_info.host = new_info.host.clone();
-    }
-
-    // Update user agent if not set
-    if old_info.user_agent.is_none() && new_info.user_agent.is_some() {
-        old_info.user_agent = new_info.user_agent.clone();
-    }
-
-    // Update status code if not set
-    if old_info.status_code.is_none() && new_info.status_code.is_some() {
-        old_info.status_code = new_info.status_code;
+/// First-wins merge: copy `src` into `dst` only when `dst` is unset.
+fn set_if_absent<T: Clone>(dst: &mut Option<T>, src: &Option<T>) {
+    if dst.is_none() && src.is_some() {
+        dst.clone_from(src);
     }
 }
 
-/// Merge HTTPS/TLS information
-fn merge_https_info(old_info: &mut HttpsInfo, new_info: &HttpsInfo) {
-    // Update version if not set or if new is more specific
-    if old_info.tls_info.is_none() && new_info.tls_info.is_some() {
-        old_info.tls_info = new_info.tls_info.clone();
-    } else if let (Some(old_tls), Some(new_tls)) = (&mut old_info.tls_info, &new_info.tls_info) {
-        // Merge TLS info - prefer more complete info
-        if old_tls.version.is_none() && new_tls.version.is_some() {
-            old_tls.version = new_tls.version;
-        }
-        if old_tls.sni.is_none() && new_tls.sni.is_some() {
-            old_tls.sni = new_tls.sni.clone();
-        }
-        if old_tls.alpn.is_empty() && !new_tls.alpn.is_empty() {
-            old_tls.alpn = new_tls.alpn.clone();
-        }
-        if old_tls.cipher_suite.is_none() && new_tls.cipher_suite.is_some() {
-            old_tls.cipher_suite = new_tls.cipher_suite;
-        }
+/// Latest-wins merge: overwrite `dst` whenever `src` carries a value.
+fn overwrite_if_present<T: Clone>(dst: &mut Option<T>, src: &Option<T>) {
+    if src.is_some() {
+        dst.clone_from(src);
     }
+}
+
+/// Merge `src` TLS info into `dst` field by field, returning whether anything
+/// changed. Every field is first-wins except the SNI, which follows the QUIC
+/// partial-promotion policy adopted as the single merge policy for all TLS
+/// carriers: any SNI beats none, and a complete SNI replaces a `[PARTIAL]`
+/// marked one. Plain HTTPS parsing also emits `[PARTIAL]` SNIs from truncated
+/// ClientHellos, so it benefits from the promotion too. Promotion is per
+/// field: only the SNI is replaced, while version, ALPN, and cipher suite
+/// keep their first observed values.
+pub(crate) fn merge_tls_info(dst: &mut Option<TlsInfo>, src: &Option<TlsInfo>) -> bool {
+    let Some(src_tls) = src else {
+        return false;
+    };
+    let Some(dst_tls) = dst else {
+        *dst = Some(src_tls.clone());
+        return true;
+    };
+
+    let mut updated = false;
+
+    let promote_sni = match (&dst_tls.sni, &src_tls.sni) {
+        (None, Some(_)) => true,
+        (Some(old), Some(new)) => is_partial_sni(old) && !is_partial_sni(new),
+        _ => false,
+    };
+    if promote_sni {
+        dst_tls.sni.clone_from(&src_tls.sni);
+        updated = true;
+    }
+
+    if dst_tls.version.is_none() && src_tls.version.is_some() {
+        dst_tls.version = src_tls.version;
+        updated = true;
+    }
+    if dst_tls.alpn.is_empty() && !src_tls.alpn.is_empty() {
+        dst_tls.alpn.clone_from(&src_tls.alpn);
+        updated = true;
+    }
+    if dst_tls.cipher_suite.is_none() && src_tls.cipher_suite.is_some() {
+        dst_tls.cipher_suite = src_tls.cipher_suite;
+        updated = true;
+    }
+
+    updated
+}
+
+/// Merge HTTP information
+fn merge_http_info(old_info: &mut HttpInfo, new_info: &HttpInfo) {
+    set_if_absent(&mut old_info.method, &new_info.method);
+    set_if_absent(&mut old_info.path, &new_info.path);
+    set_if_absent(&mut old_info.host, &new_info.host);
+    set_if_absent(&mut old_info.user_agent, &new_info.user_agent);
+    set_if_absent(&mut old_info.status_code, &new_info.status_code);
 }
 
 /// Merge QUIC information with reassembly support
@@ -715,9 +729,7 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
     }
 
     // Update version string if we didn't have it
-    if old_info.version_string.is_none() && new_info.version_string.is_some() {
-        old_info.version_string = new_info.version_string.clone();
-    }
+    set_if_absent(&mut old_info.version_string, &new_info.version_string);
 
     // Merge CRYPTO frame reassembler state - this is crucial for proper SNI extraction
     // The reassembler must persist across multiple packets to handle fragmented TLS handshakes
@@ -801,54 +813,8 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
     }
 
     // Update TLS info if new packet has better info
-    match (&old_info.tls_info, &new_info.tls_info) {
-        (None, Some(new_tls)) => {
-            old_info.tls_info = Some(new_tls.clone());
-            debug!("QUIC: Added TLS info - SNI: {:?}", new_tls.sni);
-        }
-        (Some(old_tls), Some(new_tls)) => {
-            // Merge TLS info - prefer more complete info
-            let mut updated = false;
-            let mut merged_tls = old_tls.clone();
-
-            // Prefer complete SNI over partial, or any SNI over none
-            let old_sni_is_partial = old_tls.sni.as_ref().is_some_and(|s| is_partial_sni(s));
-            let new_sni_is_partial = new_tls.sni.as_ref().is_some_and(|s| is_partial_sni(s));
-
-            if old_tls.sni.is_none() && new_tls.sni.is_some() {
-                merged_tls.sni = new_tls.sni.clone();
-                updated = true;
-            } else if old_sni_is_partial && new_tls.sni.is_some() && !new_sni_is_partial {
-                // Replace partial with complete
-                debug!(
-                    "QUIC: Replacing partial SNI {:?} with complete SNI {:?}",
-                    old_tls.sni, new_tls.sni
-                );
-                merged_tls.sni = new_tls.sni.clone();
-                updated = true;
-            }
-
-            if old_tls.alpn.is_empty() && !new_tls.alpn.is_empty() {
-                merged_tls.alpn = new_tls.alpn.clone();
-                updated = true;
-            }
-
-            if old_tls.version.is_none() && new_tls.version.is_some() {
-                merged_tls.version = new_tls.version;
-                updated = true;
-            }
-
-            if old_tls.cipher_suite.is_none() && new_tls.cipher_suite.is_some() {
-                merged_tls.cipher_suite = new_tls.cipher_suite;
-                updated = true;
-            }
-
-            if updated {
-                old_info.tls_info = Some(merged_tls);
-                debug!("QUIC: Merged TLS info");
-            }
-        }
-        _ => {}
+    if merge_tls_info(&mut old_info.tls_info, &new_info.tls_info) {
+        debug!("QUIC: Merged TLS info");
     }
 
     // Update has_crypto_frame flag
@@ -901,22 +867,13 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
     }
 
     // Update idle timeout if provided
-    if new_info.idle_timeout.is_some() {
-        old_info.idle_timeout = new_info.idle_timeout;
-    }
+    overwrite_if_present(&mut old_info.idle_timeout, &new_info.idle_timeout);
 }
 
 /// Merge DNS information
 fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
-    // Update query name if not set
-    if old_info.query_name.is_none() && new_info.query_name.is_some() {
-        old_info.query_name = new_info.query_name.clone();
-    }
-
-    // Update query type if not set
-    if old_info.query_type.is_none() && new_info.query_type.is_some() {
-        old_info.query_type = new_info.query_type;
-    }
+    set_if_absent(&mut old_info.query_name, &new_info.query_name);
+    set_if_absent(&mut old_info.query_type, &new_info.query_type);
 
     // Merge response IPs (keep unique). Cap the accumulator: a long-lived
     // DNS-shaped UDP flow (the idle timeout is refreshed on every packet) would
@@ -942,22 +899,16 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
     old_info.txid = new_info.txid;
 
     // Latest response code wins; a query packet must not erase it
-    if new_info.rcode.is_some() {
-        old_info.rcode = new_info.rcode;
-    }
+    overwrite_if_present(&mut old_info.rcode, &new_info.rcode);
 
     // Same rule for the NODATA flag: it is only ever set on responses, and
     // the latest response describes the current transaction
-    if new_info.nodata.is_some() {
-        old_info.nodata = new_info.nodata;
-    }
+    overwrite_if_present(&mut old_info.nodata, &new_info.nodata);
 }
 
 /// Merge NetBIOS request and response information.
 fn merge_netbios_info(old_info: &mut NetBiosInfo, new_info: &NetBiosInfo) {
-    if old_info.name.is_none() && new_info.name.is_some() {
-        old_info.name.clone_from(&new_info.name);
-    }
+    set_if_absent(&mut old_info.name, &new_info.name);
 
     old_info.opcode = new_info.opcode;
     old_info.transaction_id = new_info.transaction_id;
@@ -968,41 +919,24 @@ fn merge_netbios_info(old_info: &mut NetBiosInfo, new_info: &NetBiosInfo) {
 
     // Keep the last completed response status. A later request on the same
     // socket must not erase it before its response arrives.
-    if new_info.response_status.is_some() {
-        old_info.response_status = new_info.response_status;
-    }
+    overwrite_if_present(&mut old_info.response_status, &new_info.response_status);
 }
 
 /// Merge SSH information
 fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
-    // Update version if not set
-    if old_info.version.is_none() && new_info.version.is_some() {
-        old_info.version = new_info.version.clone();
-    }
-
-    // Update client software if not set
-    if old_info.client_software.is_none() && new_info.client_software.is_some() {
-        old_info.client_software = new_info.client_software.clone();
-    }
-
-    // Update server software if not set
-    if old_info.server_software.is_none() && new_info.server_software.is_some() {
-        old_info.server_software = new_info.server_software.clone();
-    }
+    set_if_absent(&mut old_info.version, &new_info.version);
+    set_if_absent(&mut old_info.client_software, &new_info.client_software);
+    set_if_absent(&mut old_info.server_software, &new_info.server_software);
 
     // Update connection state to the more advanced state
     use crate::network::types::SshConnectionState;
     match (&old_info.connection_state, &new_info.connection_state) {
-        (SshConnectionState::Banner, _) => {
-            old_info.connection_state = new_info.connection_state.clone()
-        }
-        (SshConnectionState::KeyExchange, SshConnectionState::Authentication) => {
-            old_info.connection_state = new_info.connection_state.clone()
-        }
-        (SshConnectionState::KeyExchange, SshConnectionState::Established) => {
-            old_info.connection_state = new_info.connection_state.clone()
-        }
-        (SshConnectionState::Authentication, SshConnectionState::Established) => {
+        (SshConnectionState::Banner, _)
+        | (
+            SshConnectionState::KeyExchange,
+            SshConnectionState::Authentication | SshConnectionState::Established,
+        )
+        | (SshConnectionState::Authentication, SshConnectionState::Established) => {
             old_info.connection_state = new_info.connection_state.clone()
         }
         _ => {} // Keep existing state if it's more advanced
@@ -1014,15 +948,7 @@ fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
         (_, SshConnectionState::Established) if !new_info.algorithms.is_empty() => {
             old_info.algorithms = new_info.algorithms.clone();
         }
-        // If both are in Established state, merge unique algorithms
-        (SshConnectionState::Established, SshConnectionState::Established) => {
-            for algo in &new_info.algorithms {
-                if !old_info.algorithms.contains(algo) {
-                    old_info.algorithms.push(algo.clone());
-                }
-            }
-        }
-        // For earlier states, accumulate all seen algorithms
+        // Otherwise accumulate all seen algorithms
         _ => {
             for algo in &new_info.algorithms {
                 if !old_info.algorithms.contains(algo) {
@@ -1032,10 +958,7 @@ fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
         }
     }
 
-    // Update auth method if not set
-    if old_info.auth_method.is_none() && new_info.auth_method.is_some() {
-        old_info.auth_method = new_info.auth_method.clone();
-    }
+    set_if_absent(&mut old_info.auth_method, &new_info.auth_method);
 }
 
 /// Merge FTP information across packets in the same control connection.
@@ -1046,48 +969,22 @@ fn merge_ssh_info(old_info: &mut SshInfo, new_info: &SshInfo) {
 /// `response_message`) is latest-wins so the connection-table column reflects
 /// the most recent exchange.
 fn merge_ftp_info(old_info: &mut FtpInfo, new_info: &FtpInfo) {
-    if old_info.username.is_none() && new_info.username.is_some() {
-        old_info.username.clone_from(&new_info.username);
-    }
-    if old_info.server_software.is_none() && new_info.server_software.is_some() {
-        old_info
-            .server_software
-            .clone_from(&new_info.server_software);
-    }
-    if old_info.system_type.is_none() && new_info.system_type.is_some() {
-        old_info.system_type.clone_from(&new_info.system_type);
-    }
+    set_if_absent(&mut old_info.username, &new_info.username);
+    set_if_absent(&mut old_info.server_software, &new_info.server_software);
+    set_if_absent(&mut old_info.system_type, &new_info.system_type);
     old_info.message_type = new_info.message_type;
-    if new_info.command.is_some() {
-        old_info.command.clone_from(&new_info.command);
-    }
-    if new_info.args.is_some() {
-        old_info.args.clone_from(&new_info.args);
-    }
-    if new_info.response_code.is_some() {
-        old_info.response_code = new_info.response_code;
-    }
-    if new_info.response_message.is_some() {
-        old_info
-            .response_message
-            .clone_from(&new_info.response_message);
-    }
+    overwrite_if_present(&mut old_info.command, &new_info.command);
+    overwrite_if_present(&mut old_info.args, &new_info.args);
+    overwrite_if_present(&mut old_info.response_code, &new_info.response_code);
+    overwrite_if_present(&mut old_info.response_message, &new_info.response_message);
 }
 
 /// Merge MQTT information
 fn merge_mqtt_info(old_info: &mut MqttInfo, new_info: &MqttInfo) {
-    if old_info.version.is_none() && new_info.version.is_some() {
-        old_info.version = new_info.version;
-    }
-    if old_info.client_id.is_none() && new_info.client_id.is_some() {
-        old_info.client_id.clone_from(&new_info.client_id);
-    }
-    if old_info.topic.is_none() && new_info.topic.is_some() {
-        old_info.topic.clone_from(&new_info.topic);
-    }
-    if old_info.qos.is_none() && new_info.qos.is_some() {
-        old_info.qos = new_info.qos;
-    }
+    set_if_absent(&mut old_info.version, &new_info.version);
+    set_if_absent(&mut old_info.client_id, &new_info.client_id);
+    set_if_absent(&mut old_info.topic, &new_info.topic);
+    set_if_absent(&mut old_info.qos, &new_info.qos);
     // Always update packet_type to show the latest activity
     old_info.packet_type = new_info.packet_type;
 }
@@ -1101,7 +998,7 @@ fn update_connection_rates(conn: &mut Connection) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::types::{AddrKind, Protocol, ProtocolState, TcpState};
+    use crate::network::types::{AddrKind, Protocol, ProtocolState, TcpState, TlsVersion};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn create_test_connection() -> Connection {
@@ -1177,6 +1074,62 @@ mod tests {
         }
 
         assert_eq!(old.response_ips.len(), MAX_MERGED_RESPONSE_IPS);
+    }
+
+    /// A `[PARTIAL]` SNI is promoted to a complete one, but only the SNI
+    /// field: everything already observed stays first-wins.
+    #[test]
+    fn test_merge_tls_info_promotes_partial_sni_per_field() {
+        let mut dst = Some(TlsInfo {
+            version: None,
+            sni: Some("exa[PARTIAL]".to_string()),
+            alpn: vec!["h3".to_string()],
+            cipher_suite: None,
+        });
+        let src = Some(TlsInfo {
+            version: Some(TlsVersion::Tls13),
+            sni: Some("example.com".to_string()),
+            alpn: Vec::new(),
+            cipher_suite: None,
+        });
+
+        assert!(merge_tls_info(&mut dst, &src));
+        let merged = dst.as_ref().unwrap();
+        assert_eq!(merged.sni.as_deref(), Some("example.com"));
+        assert_eq!(merged.alpn, vec!["h3".to_string()]);
+        assert_eq!(merged.version, Some(TlsVersion::Tls13));
+
+        // A complete SNI is never displaced by a later one.
+        let other = Some(TlsInfo {
+            version: None,
+            sni: Some("other.example".to_string()),
+            alpn: Vec::new(),
+            cipher_suite: None,
+        });
+        assert!(!merge_tls_info(&mut dst, &other));
+        assert_eq!(dst.unwrap().sni.as_deref(), Some("example.com"));
+    }
+
+    #[test]
+    fn test_merge_tls_info_fills_missing_sni() {
+        let mut dst = Some(TlsInfo {
+            version: Some(TlsVersion::Tls12),
+            sni: None,
+            alpn: Vec::new(),
+            cipher_suite: Some(0x1301),
+        });
+        let src = Some(TlsInfo {
+            version: Some(TlsVersion::Tls13),
+            sni: Some("example.com".to_string()),
+            alpn: Vec::new(),
+            cipher_suite: Some(0x1302),
+        });
+
+        assert!(merge_tls_info(&mut dst, &src));
+        let merged = dst.unwrap();
+        assert_eq!(merged.sni.as_deref(), Some("example.com"));
+        assert_eq!(merged.version, Some(TlsVersion::Tls12));
+        assert_eq!(merged.cipher_suite, Some(0x1301));
     }
 
     /// A follow-up query on the same socket must not erase the last response

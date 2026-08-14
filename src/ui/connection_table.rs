@@ -29,7 +29,7 @@ use crate::network::dns::DnsResolver;
 use crate::network::types::{AddrKind, Connection, Protocol};
 use crate::ui::{
     NONE_PLACEHOLDER, SortColumn, UIState, dpi_color,
-    format::{format_rate_compact, format_rtt_compact},
+    format::{format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
     state_color, theme,
 };
 
@@ -302,17 +302,6 @@ fn remote_display(
     }
 }
 
-/// Char-safe truncation to `max_chars` cells, ending in "…" when cut.
-fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let keep = max_chars.saturating_sub(1);
-    let mut out: String = s.chars().take(keep).collect();
-    out.push('…');
-    out
-}
-
 /// Header label for a column. Short on purpose — no " Address" suffixes.
 fn header_label(id: ColumnId, ui_state: &UIState) -> &'static str {
     match id {
@@ -571,8 +560,8 @@ fn rtt_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
 /// rates so the grouped view can feed per-group aggregates through the
 /// same formatting.
 pub(in crate::ui) fn bandwidth_cell<'a>(rx_bps: f64, tx_bps: f64, color_cells: bool) -> Cell<'a> {
-    let rx = format_rate_compact(rx_bps);
-    let tx = format_rate_compact(tx_bps);
+    let rx = format_rate_compact(rx_bps, NONE_PLACEHOLDER);
+    let tx = format_rate_compact(tx_bps, NONE_PLACEHOLDER);
     let active = rx_bps > 0.0 || tx_bps > 0.0;
 
     let line = if !color_cells {

@@ -29,5 +29,5 @@ pub use rustnet_capture as capture;
 #[allow(unused_imports)]
 pub use rustnet_core::network::{
     bogon, dns, dpi, geoip, interface_stats, link_layer, merge, neighbors, oui, parser,
-    process_activity, protocol, services, tracker, types,
+    process_activity, protocol, services, tracker, types, util,
 };
