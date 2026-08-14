@@ -1,6 +1,22 @@
 use std::io;
 use std::time::{Duration, SystemTime};
 
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+mod bsd;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "windows")]
+mod windows;
+
+#[cfg(target_os = "freebsd")]
+pub use bsd::FreeBSDStatsProvider;
+#[cfg(target_os = "macos")]
+pub use bsd::MacOSStatsProvider;
+#[cfg(target_os = "linux")]
+pub use linux::LinuxStatsProvider;
+#[cfg(target_os = "windows")]
+pub use windows::WindowsStatsProvider;
+
 /// Statistics for a network interface
 #[derive(Debug, Clone)]
 pub struct InterfaceStats {
@@ -76,6 +92,35 @@ pub struct InterfaceTrafficWindow {
 pub trait InterfaceStatsProvider: Send + Sync {
     /// Get statistics for all available interfaces
     fn get_all_stats(&self) -> Result<Vec<InterfaceStats>, io::Error>;
+}
+
+/// Create the interface-stats provider for the current platform: sysfs on
+/// Linux, `getifaddrs` on macOS/FreeBSD, the IP Helper API on Windows.
+/// The composition point for front-ends, mirroring
+/// `rustnet_host::create_process_lookup`.
+#[cfg(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "windows"
+))]
+pub fn create_stats_provider() -> Box<dyn InterfaceStatsProvider> {
+    #[cfg(target_os = "linux")]
+    {
+        Box::new(LinuxStatsProvider)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Box::new(MacOSStatsProvider)
+    }
+    #[cfg(target_os = "freebsd")]
+    {
+        Box::new(FreeBSDStatsProvider)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Box::new(WindowsStatsProvider)
+    }
 }
 
 #[cfg(test)]

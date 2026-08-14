@@ -1,20 +1,17 @@
-// network/platform/windows/interface_stats.rs - Windows IP Helper API interface stats
+// interface_stats/windows.rs - Windows IP Helper API interface stats
 
-use crate::network::interface_stats::{InterfaceStats, InterfaceStatsProvider};
+use super::{InterfaceStats, InterfaceStatsProvider};
 use std::collections::HashMap;
 use std::io;
 use std::time::SystemTime;
 
-#[cfg(target_os = "windows")]
 use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
-#[cfg(target_os = "windows")]
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 
 /// Windows-specific implementation using IP Helper API
 pub struct WindowsStatsProvider;
 
 impl InterfaceStatsProvider for WindowsStatsProvider {
-    #[cfg(target_os = "windows")]
     fn get_all_stats(&self) -> Result<Vec<InterfaceStats>, io::Error> {
         unsafe {
             let mut table: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
@@ -117,51 +114,19 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
             Ok(stats_vec)
         }
     }
-
-    #[cfg(not(target_os = "windows"))]
-    fn get_all_stats(&self) -> Result<Vec<InterfaceStats>, io::Error> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "Windows interface stats not available on this platform",
-        ))
-    }
 }
 
 #[cfg(test)]
-#[cfg(target_os = "windows")]
 mod tests {
     use super::*;
 
     #[test]
     fn test_windows_list_interfaces() {
         let provider = WindowsStatsProvider;
-        let result = provider.get_all_stats();
-
-        match result {
-            Ok(stats) => {
-                assert!(!stats.is_empty(), "Expected at least one interface");
-            }
-            Err(e) => {
-                panic!("Failed to list interfaces: {:?}", e);
-            }
-        }
-    }
-
-    #[test]
-    fn test_windows_get_all_stats() {
-        let provider = WindowsStatsProvider;
-        let result = provider.get_all_stats();
-
-        match result {
-            Ok(stats) => {
-                assert!(!stats.is_empty(), "Expected at least one interface");
-                for stat in stats {
-                    assert!(!stat.interface_name.is_empty());
-                }
-            }
-            Err(e) => {
-                panic!("Failed to get stats: {:?}", e);
-            }
+        let stats = provider.get_all_stats().expect("Failed to list interfaces");
+        assert!(!stats.is_empty(), "Expected at least one interface");
+        for stat in stats {
+            assert!(!stat.interface_name.is_empty());
         }
     }
 }

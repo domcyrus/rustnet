@@ -1,11 +1,12 @@
-// network/platform/mod.rs - Platform-specific interface stats and sandboxing.
+// network/platform/mod.rs - Platform-specific sandboxing.
 //
 // Per-connection process attribution moved to the `rustnet-host` crate; its
 // public API (`ProcessLookup`, `DegradationReason`, `ConnectionKey`, and the
 // `create_process_lookup` factory) is re-exported here so the rest of the
-// binary keeps using `crate::network::platform::*` unchanged. What remains in
-// the binary is the per-platform interface-statistics providers and the
-// privilege-dropping sandbox (Landlock / Seatbelt / restricted token).
+// binary keeps using `crate::network::platform::*` unchanged. Interface
+// statistics live in rustnet-core (`interface_stats::create_stats_provider`);
+// what remains in the binary is the privilege-dropping sandbox
+// (Landlock / Seatbelt / restricted token).
 
 // Process attribution lives in the rustnet-host crate. Re-export the bits the
 // binary uses; the full API (ProcessLookup, ConnectionKey, ...) is available
@@ -16,7 +17,7 @@ pub use rustnet_host::{DegradationReason, create_process_lookup};
 #[cfg(target_os = "macos")]
 pub use rustnet_host::report_pktap_degradation;
 
-// Platform-specific modules (interface stats + sandbox)
+// Platform-specific modules (sandbox / privilege drop)
 #[cfg(target_os = "freebsd")]
 mod freebsd;
 #[cfg(target_os = "linux")]
@@ -26,15 +27,11 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
-// Re-export interface-stats providers and the sandbox entry points.
-#[cfg(target_os = "freebsd")]
-pub use freebsd::FreeBSDStatsProvider;
+// Re-export the sandbox entry points.
 // FreeBSD has no sandbox module yet (Capsicum planned); the uid drop is the
 // containment layer in the meantime.
 #[cfg(target_os = "freebsd")]
 pub use freebsd::privdrop;
-#[cfg(target_os = "linux")]
-pub use linux::LinuxStatsProvider;
 // Not gated on the `landlock` feature: the sandbox module always compiles on
 // Linux (a non-landlock build still sets PR_SET_NO_NEW_PRIVS via the stub).
 #[cfg(target_os = "linux")]
@@ -43,14 +40,10 @@ pub use linux::sandbox;
 // level so callers can use `platform::privdrop` uniformly across platforms.
 #[cfg(target_os = "linux")]
 pub use linux::sandbox::privdrop;
-#[cfg(target_os = "macos")]
-pub use macos::MacOSStatsProvider;
 // Not gated on the `macos-sandbox` feature: the uid drop works without Seatbelt.
 #[cfg(target_os = "macos")]
 pub use macos::privdrop;
 #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
 pub use macos::sandbox;
-#[cfg(target_os = "windows")]
-pub use windows::WindowsStatsProvider;
 #[cfg(target_os = "windows")]
 pub use windows::sandbox;
