@@ -161,7 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   strict hostname rules as QUIC (values containing characters like `/ @ : ?`
   or single-label names are no longer shown), ClientHellos larger than 16 KB
   (e.g. post-quantum key shares) are now parsed on TCP, and the 100-extension
-  parsing cap now also applies to QUIC (#546)
+  parsing cap now also applies to QUIC. Invalid older supported-version values
+  cannot cause QUIC handshakes to be reported below TLS 1.3 (#546)
 - **Shared OUI Database**: The OUI vendor table is now shared between
   packet-processor threads via `Arc` instead of being cloned per thread,
   saving roughly 10 MB of memory

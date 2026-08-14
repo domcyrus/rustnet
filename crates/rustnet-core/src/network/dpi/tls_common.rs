@@ -73,8 +73,9 @@ impl TlsParseOptions {
         self.transport == TlsTransport::Tcp
     }
 
-    /// The supported_versions extension implies TLS 1.3 on QUIC even when no
-    /// listed version is recognized (RFC 9001 mandates TLS 1.3).
+    /// The supported_versions extension identifies a QUIC handshake as TLS
+    /// 1.3. Older versions are invalid for QUIC, and newer versions cannot be
+    /// represented by [`TlsVersion`].
     fn assume_tls13(&self) -> bool {
         self.transport == TlsTransport::Quic
     }
@@ -441,10 +442,10 @@ fn parse_extensions(data: &[u8], info: &mut TlsInfo, is_client: bool, opts: TlsP
                 }
                 0x002b => {
                     // Supported Versions
-                    if let Some(version) = parse_supported_versions(ext_data, is_client) {
-                        info.version = Some(version);
-                    } else if opts.assume_tls13() {
+                    if opts.assume_tls13() {
                         info.version = Some(TlsVersion::Tls13);
+                    } else if let Some(version) = parse_supported_versions(ext_data, is_client) {
+                        info.version = Some(version);
                     }
                 }
                 _ => {
@@ -710,6 +711,24 @@ mod tests {
         msg
     }
 
+    /// Build a minimal ServerHello handshake message (type + length header
+    /// included) carrying the given extensions blob.
+    fn build_server_hello(extensions: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x03, 0x03]); // legacy version TLS 1.2
+        body.extend_from_slice(&[0u8; 32]); // random
+        body.push(0); // session id length
+        body.extend_from_slice(&[0x13, 0x01]); // TLS_AES_128_GCM_SHA256
+        body.push(0); // null compression
+        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+        body.extend_from_slice(extensions);
+
+        let mut msg = vec![0x02];
+        msg.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        msg.extend_from_slice(&body);
+        msg
+    }
+
     fn build_sni_extension(hostname: &str) -> Vec<u8> {
         let name_len = hostname.len() as u16;
         let list_len = name_len + 3;
@@ -801,12 +820,61 @@ mod tests {
         let msg = build_client_hello(&ext);
 
         let mut quic_info = TlsInfo::new();
-        assert!(parse_handshake(&msg, &mut quic_info, TlsParseOptions::quic(false)));
+        assert!(parse_handshake(
+            &msg,
+            &mut quic_info,
+            TlsParseOptions::quic(false)
+        ));
         assert_eq!(quic_info.version, Some(TlsVersion::Tls13));
 
         let mut tcp_info = TlsInfo::new();
         assert!(parse_handshake(&msg, &mut tcp_info, TlsParseOptions::tcp()));
         // TCP falls back to the legacy version from the ClientHello body
+        assert_eq!(tcp_info.version, Some(TlsVersion::Tls12));
+    }
+
+    #[test]
+    fn test_quic_client_supported_versions_reports_tls13_for_older_value() {
+        let extensions = [
+            0x00, 0x2b, // supported_versions
+            0x00, 0x03, // extension length
+            0x02, // version list length
+            0x03, 0x03, // TLS 1.2, invalid for QUIC
+        ];
+        let msg = build_client_hello(&extensions);
+
+        let mut quic_info = TlsInfo::new();
+        assert!(parse_handshake(
+            &msg,
+            &mut quic_info,
+            TlsParseOptions::quic(false)
+        ));
+        assert_eq!(quic_info.version, Some(TlsVersion::Tls13));
+
+        let mut tcp_info = TlsInfo::new();
+        assert!(parse_handshake(&msg, &mut tcp_info, TlsParseOptions::tcp()));
+        assert_eq!(tcp_info.version, Some(TlsVersion::Tls12));
+    }
+
+    #[test]
+    fn test_quic_server_supported_versions_reports_tls13_for_older_value() {
+        let extensions = [
+            0x00, 0x2b, // supported_versions
+            0x00, 0x02, // extension length
+            0x03, 0x03, // TLS 1.2, invalid for QUIC
+        ];
+        let msg = build_server_hello(&extensions);
+
+        let mut quic_info = TlsInfo::new();
+        assert!(parse_handshake(
+            &msg,
+            &mut quic_info,
+            TlsParseOptions::quic(false)
+        ));
+        assert_eq!(quic_info.version, Some(TlsVersion::Tls13));
+
+        let mut tcp_info = TlsInfo::new();
+        assert!(parse_handshake(&msg, &mut tcp_info, TlsParseOptions::tcp()));
         assert_eq!(tcp_info.version, Some(TlsVersion::Tls12));
     }
 
@@ -821,7 +889,11 @@ mod tests {
         assert_eq!(tcp_info.version, Some(TlsVersion::Tls12));
 
         let mut quic_info = TlsInfo::new();
-        assert!(parse_handshake(&msg, &mut quic_info, TlsParseOptions::quic(false)));
+        assert!(parse_handshake(
+            &msg,
+            &mut quic_info,
+            TlsParseOptions::quic(false)
+        ));
         assert_eq!(quic_info.version, None);
         assert_eq!(quic_info.sni, Some("www.example.com".to_string()));
     }

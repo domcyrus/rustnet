@@ -2,8 +2,7 @@ use crate::network::types::{CryptoFrameReassembler, TlsInfo};
 use log::debug;
 
 use super::tls::{
-    SniScanStrictness, match_sni_extension_at, parse_partial_tls_handshake,
-    scan_for_sni_extension,
+    SniScanStrictness, match_sni_extension_at, parse_partial_tls_handshake, scan_for_sni_extension,
 };
 use crate::network::dpi::tls_common::{is_partial_sni, is_valid_hostname, parse_alpn_extension};
 
