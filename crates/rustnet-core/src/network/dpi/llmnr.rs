@@ -13,63 +13,22 @@ use super::dns;
 /// Returns `None` if the packet cannot be parsed as DNS.
 pub fn analyze_llmnr(payload: &[u8]) -> Option<LlmnrInfo> {
     // Reuse DNS parser - LLMNR has the same wire format
-    let dns_info = dns::analyze_dns(payload)?;
-
-    Some(LlmnrInfo {
-        query_name: dns_info.query_name,
-        query_type: dns_info.query_type,
-        is_response: dns_info.is_response,
-        response_ips: dns_info.response_ips,
-    })
+    dns::analyze_dns(payload).map(LlmnrInfo::from)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::dns::test_fixtures::{build_dns_packet, encode_name};
     use super::*;
     use crate::network::types::DnsQueryType;
 
     fn build_llmnr_query(name: &str, qtype: u16) -> Vec<u8> {
-        let mut packet = Vec::new();
-
-        // DNS header (12 bytes)
-        packet.extend_from_slice(&[0x00, 0x01]); // Transaction ID
-        packet.extend_from_slice(&[0x00, 0x00]); // Flags (query)
-        packet.extend_from_slice(&[0x00, 0x01]); // Questions: 1
-        packet.extend_from_slice(&[0x00, 0x00]); // Answer RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Authority RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Additional RRs: 0
-
-        // Question section - encode name (single label for LLMNR)
-        packet.push(name.len() as u8);
-        packet.extend_from_slice(name.as_bytes());
-        packet.push(0x00); // Null terminator
-
-        // Query type and class
-        packet.extend_from_slice(&qtype.to_be_bytes());
-        packet.extend_from_slice(&[0x00, 0x01]); // Class: IN
-
-        packet
+        build_dns_packet(0x0001, 0x0000, name, qtype)
     }
 
     fn build_llmnr_response(name: &str, qtype: u16) -> Vec<u8> {
-        let mut packet = Vec::new();
-
-        // DNS header (12 bytes)
-        packet.extend_from_slice(&[0x00, 0x01]); // Transaction ID
-        packet.extend_from_slice(&[0x80, 0x00]); // Flags (response)
-        packet.extend_from_slice(&[0x00, 0x01]); // Questions: 1
-        packet.extend_from_slice(&[0x00, 0x00]); // Answer RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Authority RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Additional RRs: 0
-
-        // Question section
-        packet.push(name.len() as u8);
-        packet.extend_from_slice(name.as_bytes());
-        packet.push(0x00);
-        packet.extend_from_slice(&qtype.to_be_bytes());
-        packet.extend_from_slice(&[0x00, 0x01]);
-
-        packet
+        // Flags: response
+        build_dns_packet(0x0001, 0x8000, name, qtype)
     }
 
     #[test]
@@ -110,9 +69,7 @@ mod tests {
         packet.extend_from_slice(&[0x00, 0x01, 0x80, 0x00, 0x00, 0x01, 0x00, 0x01]);
         packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
         // Question (single label).
-        packet.push(name.len() as u8);
-        packet.extend_from_slice(name.as_bytes());
-        packet.push(0x00);
+        encode_name(&mut packet, name);
         packet.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE A, QCLASS IN
         // Answer: NAME pointer back to offset 12, TYPE A, CLASS IN, TTL, RDLENGTH 4, RDATA.
         packet.extend_from_slice(&[

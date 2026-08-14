@@ -435,6 +435,37 @@ fn skip_records(payload: &[u8], start: usize, count: u16) -> Option<usize> {
     Some(offset)
 }
 
+/// DNS wire-format builders shared by the DNS-family DPI tests: mDNS and
+/// LLMNR reuse the DNS packet layout, so their tests encode packets here.
+#[cfg(test)]
+pub(super) mod test_fixtures {
+    /// Append `name` as uncompressed DNS labels (split on '.') plus the null
+    /// terminator.
+    pub(crate) fn encode_name(packet: &mut Vec<u8>, name: &str) {
+        for label in name.split('.') {
+            packet.push(label.len() as u8);
+            packet.extend_from_slice(label.as_bytes());
+        }
+        packet.push(0x00);
+    }
+
+    /// A DNS packet with the given header `txid` and `flags`, one question
+    /// for `name` with `qtype` (class IN), and empty remaining sections.
+    pub(crate) fn build_dns_packet(txid: u16, flags: u16, name: &str, qtype: u16) -> Vec<u8> {
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&txid.to_be_bytes());
+        packet.extend_from_slice(&flags.to_be_bytes());
+        packet.extend_from_slice(&[0x00, 0x01]); // Questions: 1
+        packet.extend_from_slice(&[0x00, 0x00]); // Answer RRs: 0
+        packet.extend_from_slice(&[0x00, 0x00]); // Authority RRs: 0
+        packet.extend_from_slice(&[0x00, 0x00]); // Additional RRs: 0
+        encode_name(&mut packet, name);
+        packet.extend_from_slice(&qtype.to_be_bytes());
+        packet.extend_from_slice(&[0x00, 0x01]); // Class: IN
+        packet
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

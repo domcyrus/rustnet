@@ -12,60 +12,7 @@ pub fn parse(
     params: TransportParams,
     local_ips: &std::collections::HashSet<std::net::IpAddr>,
 ) -> Option<ParsedPacket> {
-    if transport_data.is_empty() {
-        return None;
-    }
-
-    let icmp_type = transport_data[0];
-
-    // Echo requests and replies carry an identifier plus a sequence number.
-    // Both are needed to pair several concurrent requests from one ping flow.
-    let (icmp_id, icmp_sequence) =
-        if transport_data.len() >= 8 && (icmp_type == 8 || icmp_type == 0) {
-            (
-                Some(u16::from_be_bytes([transport_data[4], transport_data[5]])),
-                Some(u16::from_be_bytes([transport_data[6], transport_data[7]])),
-            )
-        } else {
-            (None, None)
-        };
-
-    // Determine direction based on local IPs
-    let is_outgoing = local_ips.contains(&params.src_ip);
-
-    let (local_addr, remote_addr) = if is_outgoing {
-        (
-            SocketAddr::new(params.src_ip, 0),
-            SocketAddr::new(params.dst_ip, 0),
-        )
-    } else {
-        (
-            SocketAddr::new(params.dst_ip, 0),
-            SocketAddr::new(params.src_ip, 0),
-        )
-    };
-
-    Some(ParsedPacket {
-        protocol: Protocol::Icmp,
-        local_addr,
-        remote_addr,
-        // Overwritten centrally in PacketParser::parse_packet
-        local_addr_kind: AddrKind::Unicast,
-        remote_addr_kind: AddrKind::Unicast,
-        remote_is_gateway: false,
-        tcp_header: None,
-        protocol_state: ProtocolState::Icmp {
-            icmp_type,
-            icmp_id,
-            icmp_sequence,
-            ndp_neighbor: None,
-        },
-        is_outgoing,
-        packet_len: params.packet_len,
-        dpi_result: None,
-        process_name: params.process_name,
-        process_id: params.process_id,
-    })
+    parse_icmp(transport_data, params, local_ips, (8, 0))
 }
 
 /// Parse an ICMPv6 packet
@@ -74,15 +21,28 @@ pub fn parse_v6(
     params: TransportParams,
     local_ips: &std::collections::HashSet<std::net::IpAddr>,
 ) -> Option<ParsedPacket> {
+    parse_icmp(transport_data, params, local_ips, (128, 129))
+}
+
+/// Shared ICMPv4/ICMPv6 parse; `echo_types` carries the version's echo
+/// request and reply type values, the only place the two formats differ.
+fn parse_icmp(
+    transport_data: &[u8],
+    params: TransportParams,
+    local_ips: &std::collections::HashSet<std::net::IpAddr>,
+    echo_types: (u8, u8),
+) -> Option<ParsedPacket> {
     if transport_data.is_empty() {
         return None;
     }
 
     let icmp_type = transport_data[0];
+    let (echo_request, echo_reply) = echo_types;
 
-    // ICMPv6 echo uses the same identifier and sequence layout as ICMPv4.
+    // Echo requests and replies carry an identifier plus a sequence number.
+    // Both are needed to pair several concurrent requests from one ping flow.
     let (icmp_id, icmp_sequence) =
-        if transport_data.len() >= 8 && (icmp_type == 128 || icmp_type == 129) {
+        if transport_data.len() >= 8 && (icmp_type == echo_request || icmp_type == echo_reply) {
             (
                 Some(u16::from_be_bytes([transport_data[4], transport_data[5]])),
                 Some(u16::from_be_bytes([transport_data[6], transport_data[7]])),
@@ -119,13 +79,13 @@ pub fn parse_v6(
             icmp_type,
             icmp_id,
             icmp_sequence,
-            // Filled by the parser for NDP messages that pass the
-            // hop-limit and fragmentation gates.
+            // Filled by the parser for ICMPv6 NDP messages that pass
+            // the hop-limit and fragmentation gates.
             ndp_neighbor: None,
         },
         is_outgoing,
         packet_len: params.packet_len,
-        dpi_result: None, // No DPI for ICMPv6
+        dpi_result: None,
         process_name: params.process_name,
         process_id: params.process_id,
     })
