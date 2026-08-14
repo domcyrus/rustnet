@@ -18,65 +18,16 @@
 
 mod restricted;
 
-/// Sandbox enforcement mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SandboxMode {
-    /// Apply sandbox with best-effort (graceful degradation)
-    #[default]
-    BestEffort,
-    /// Require full sandbox enforcement or fail
-    Strict,
-    /// Disable sandboxing entirely
-    Disabled,
-}
+use crate::{SandboxConfig, SandboxMode, SandboxReport, SandboxStatus};
 
-/// Configuration for the sandbox
-#[derive(Debug, Clone, Default)]
-pub struct SandboxConfig {
-    /// Sandbox enforcement mode
-    pub mode: SandboxMode,
-}
-
-/// Result of sandbox application
-#[derive(Debug, Clone)]
-pub struct SandboxResult {
-    /// Overall status
-    pub status: SandboxStatus,
-    /// Human-readable message
-    pub message: String,
-    /// Whether dangerous privileges were removed
-    pub privileges_removed: bool,
-    /// Number of privileges removed
-    pub privileges_removed_count: u32,
-    /// Whether job object was applied
-    pub job_object_applied: bool,
-}
-
-/// Status of sandbox application
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SandboxStatus {
-    /// Sandbox fully enforced (privileges removed + job object)
-    FullyEnforced,
-    /// Sandbox partially enforced (some components failed)
-    PartiallyEnforced,
-    /// Sandbox not applied (disabled or all components failed)
-    NotApplied,
-}
-
-/// Apply the sandbox with the given configuration
-///
-/// This should be called AFTER:
-/// - Npcap handles are opened
-/// - Log files are created
-pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
+/// Apply the sandbox with the given configuration (see crate docs for the
+/// required application order).
+pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     if config.mode == SandboxMode::Disabled {
         log::info!("Sandbox disabled by configuration");
-        return Ok(SandboxResult {
-            status: SandboxStatus::NotApplied,
+        return Ok(SandboxReport {
             message: "Sandbox disabled by configuration".to_string(),
-            privileges_removed: false,
-            privileges_removed_count: 0,
-            job_object_applied: false,
+            ..SandboxReport::default()
         });
     }
 
@@ -134,11 +85,12 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         ));
     }
 
-    Ok(SandboxResult {
+    Ok(SandboxReport {
         status,
         message: messages.join("; "),
         privileges_removed,
         privileges_removed_count,
         job_object_applied,
+        ..SandboxReport::default()
     })
 }

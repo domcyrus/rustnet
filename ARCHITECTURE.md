@@ -23,7 +23,8 @@ RustNet is a Cargo workspace of four crates. The analysis logic, capture backend
 | [`rustnet-core`](crates/rustnet-core) | library | Platform- and capture-independent analysis core: packet parsing, protocol/connection types, deep packet inspection, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups, a reusable `ConnectionTracker`, and bounded retained process-activity accounting. Operates only on byte slices and parsed structures, with no libpcap, raw sockets, or OS process tables. |
 | [`rustnet-capture`](crates/rustnet-capture) | library | libpcap/Npcap packet-capture backend: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame `PacketReader`. |
 | [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution behind one `ProcessLookup` trait: eBPF/procfs on Linux, PKTAP/lsof on macOS, ETW/IP Helper on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
-| `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, app event loop, sandboxing (Landlock/Seatbelt), and interface statistics. Dogfoods `ConnectionTracker` as the single source of truth. |
+| [`rustnet-sandbox`](crates/rustnet-sandbox) | library | Post-initialization sandboxing and root privilege dropping behind one `apply_sandbox` entry point: Landlock + capability drops on Linux, Seatbelt on macOS, restricted token + job object on Windows, and the shared uid drop on Linux/macOS/FreeBSD. Depends on no other workspace crate. |
+| `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, app event loop, and interface statistics. Dogfoods `ConnectionTracker` as the single source of truth. |
 
 The package is named `rustnet-monitor` because the `rustnet` crate name is taken on crates.io; the installed binary is `rustnet`.
 
@@ -34,20 +35,22 @@ flowchart TD
     BIN[rustnet-monitor<br/>bin: rustnet]
     CAP[rustnet-capture]
     HOST[rustnet-host]
+    SBX[rustnet-sandbox]
     CORE[rustnet-core]
 
     BIN --> CAP
     BIN --> HOST
+    BIN --> SBX
     BIN --> CORE
     CAP --> CORE
     HOST --> CORE
 ```
 
-The graph is acyclic: `rustnet-core` has no workspace dependencies, and both `rustnet-capture` and `rustnet-host` depend only on it. Keeping `rustnet-core` a leaf lets it be published and reused independently -- a headless front-end (e.g. a Prometheus exporter) can pair `rustnet-capture` + `rustnet-core` without the TUI.
+The graph is acyclic: `rustnet-core` has no workspace dependencies, `rustnet-capture` and `rustnet-host` depend only on it, and `rustnet-sandbox` depends on no workspace crate at all. Keeping `rustnet-core` a leaf lets it be published and reused independently -- a headless front-end (e.g. a Prometheus exporter) can pair `rustnet-capture` + `rustnet-core` without the TUI.
 
 ### Re-export Facade
 
-To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. The `src/network/platform` module still hosts the OS sandboxing (Landlock/Seatbelt) and interface-stats collectors, and wires in `rustnet-host`'s process lookup.
+To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. The `src/network/platform` module still hosts the interface-stats collectors and wires in `rustnet-host`'s process lookup; sandboxing and the root uid drop live in `rustnet-sandbox`, which the binary uses directly.
 
 ## Multi-threaded Architecture
 

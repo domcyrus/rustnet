@@ -14,12 +14,6 @@ mod types;
 
 pub use state::App;
 pub(crate) use types::ConnectionCounts;
-#[cfg(any(
-    target_os = "linux",
-    target_os = "windows",
-    all(target_os = "macos", feature = "macos-sandbox")
-))]
-pub use types::SandboxInfo;
 pub use types::{
     AppOutputHandles, AppStats, Config, ConnRateHistory, ConnRateHistorySnapshot,
     ProcessDetectionStatus,

@@ -35,8 +35,9 @@
 //!   connection state and packet pipelines.
 //! - `ring` and `aes` for TLS SNI parsing and QUIC Initial decryption.
 //! - `maxminddb` for GeoLite2 country/city lookups.
-//! - `landlock` and `caps` for Linux capability-based sandboxing;
-//!   macOS Seatbelt is invoked via `sandbox_init` directly.
+//! - `rustnet-sandbox` for the security sandboxing: `landlock` and `caps`
+//!   on Linux, Seatbelt via `sandbox_init` on macOS, a restricted token and
+//!   job object on Windows, plus the shared root uid drop.
 //!
 //! ## Modules
 //!

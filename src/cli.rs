@@ -167,11 +167,9 @@ pub fn build_cli() -> Command {
             .required(false),
     );
 
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "windows",
-        all(target_os = "macos", feature = "macos-sandbox")
-    ))]
+    // Sandbox flags exist on every platform: rustnet-sandbox has a backend
+    // for each (Linux Landlock/caps, macOS Seatbelt, Windows restricted
+    // token/job object, and the uid-drop-only FreeBSD backend).
     let cmd = cmd
         .arg(
             Arg::new("no-sandbox")
@@ -187,39 +185,29 @@ pub fn build_cli() -> Command {
                 .conflicts_with("no-sandbox"),
         );
 
+    // Which fallback attribution loses cross-user visibility after the drop
+    // differs per platform; only the help text changes.
     #[cfg(target_os = "linux")]
-    let cmd = cmd.arg(
-        Arg::new("no-uid-drop")
-            .long("no-uid-drop")
-            .help(
-                "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
-                 after initialization. Keeping root lets the procfs fallback attribute \
-                 other users' processes when eBPF is unavailable",
-            )
-            .action(clap::ArgAction::SetTrue),
-    );
-
+    const NO_UID_DROP_HELP: &str =
+        "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
+         after initialization. Keeping root lets the procfs fallback attribute \
+         other users' processes when eBPF is unavailable";
     #[cfg(target_os = "macos")]
-    let cmd = cmd.arg(
-        Arg::new("no-uid-drop")
-            .long("no-uid-drop")
-            .help(
-                "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
-                 after initialization. Keeping root lets the lsof fallback attribute other \
-                 users' processes when PKTAP is unavailable",
-            )
-            .action(clap::ArgAction::SetTrue),
-    );
-
+    const NO_UID_DROP_HELP: &str =
+        "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
+         after initialization. Keeping root lets the lsof fallback attribute other \
+         users' processes when PKTAP is unavailable";
     #[cfg(target_os = "freebsd")]
+    const NO_UID_DROP_HELP: &str =
+        "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
+         after initialization. Keeping root lets sockstat attribute other users' \
+         processes";
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
     let cmd = cmd.arg(
         Arg::new("no-uid-drop")
             .long("no-uid-drop")
-            .help(
-                "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
-                 after initialization. Keeping root lets sockstat attribute other users' \
-                 processes",
-            )
+            .help(NO_UID_DROP_HELP)
             .action(clap::ArgAction::SetTrue),
     );
 
