@@ -1,0 +1,351 @@
+//! Plain data shared across the `app` module: configuration, output handles,
+//! statistics, sandbox/process-detection status, and per-connection rate
+//! history.
+
+use std::collections::{HashSet, VecDeque};
+use std::fs::File;
+use std::sync::RwLock;
+use std::sync::atomic::AtomicU64;
+use std::time::{Instant, SystemTime};
+
+use crate::network::types::{Connection, GraphScale, Protocol};
+
+/// Sandbox status information for UI display
+#[cfg(any(
+    target_os = "linux",
+    target_os = "windows",
+    all(target_os = "macos", feature = "macos-sandbox")
+))]
+#[derive(Debug, Clone, Default)]
+pub struct SandboxInfo {
+    /// Overall status description
+    pub status: String,
+    /// Whether network connections are blocked
+    #[cfg(any(
+        target_os = "linux",
+        all(target_os = "macos", feature = "macos-sandbox")
+    ))]
+    pub net_restricted: bool,
+    // Linux-specific fields (Landlock + capabilities)
+    /// Whether CAP_NET_RAW was dropped
+    #[cfg(target_os = "linux")]
+    pub cap_dropped: bool,
+    /// Whether CAP_BPF/CAP_PERFMON were dropped
+    #[cfg(target_os = "linux")]
+    pub ebpf_caps_dropped: bool,
+    /// Whether the root uid/gid were dropped (setresuid to the sudo user or nobody)
+    #[cfg(target_os = "linux")]
+    pub uid_dropped: bool,
+    /// Whether Landlock is available on this kernel
+    #[cfg(target_os = "linux")]
+    pub landlock_available: bool,
+    /// Whether Landlock filesystem restrictions are applied
+    #[cfg(target_os = "linux")]
+    pub fs_restricted: bool,
+    /// Whether Landlock scope restrictions (abstract UNIX sockets + signals) are applied
+    #[cfg(target_os = "linux")]
+    pub scope_restricted: bool,
+    /// Effective Landlock ABI negotiated with the kernel (e.g. `Some(6)`), or `None`
+    #[cfg(target_os = "linux")]
+    pub landlock_abi: Option<u8>,
+    /// Whether PR_SET_NO_NEW_PRIVS is set (applied even with `--no-sandbox`)
+    #[cfg(target_os = "linux")]
+    pub no_new_privs: bool,
+    // macOS-specific fields (Seatbelt)
+    /// Whether Seatbelt sandbox was applied
+    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+    pub seatbelt_applied: bool,
+    /// Whether the root uid/gid were dropped (setuid to the sudo user or nobody)
+    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+    pub uid_dropped: bool,
+    /// Whether filesystem write restrictions are applied
+    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
+    pub fs_restricted: bool,
+    // Windows-specific fields (Restricted token + Job Object)
+    /// Whether dangerous privileges were removed
+    #[cfg(target_os = "windows")]
+    pub privileges_removed: bool,
+    /// Number of privileges removed
+    #[cfg(target_os = "windows")]
+    pub privileges_removed_count: u32,
+    /// Whether job object was applied
+    #[cfg(target_os = "windows")]
+    pub job_object_applied: bool,
+}
+
+/// Process detection status information for UI display
+#[derive(Debug, Clone, Default)]
+pub struct ProcessDetectionStatus {
+    /// The active detection method (e.g., "eBPF + procfs", "pktap", "lsof")
+    pub method: String,
+    /// Whether the detection is degraded from optimal
+    pub is_degraded: bool,
+    /// Human-readable reason for degradation (if any)
+    pub degradation_reason: Option<String>,
+    /// What feature is unavailable (e.g., "eBPF", "PKTAP")
+    pub unavailable_feature: Option<String>,
+}
+
+impl ProcessDetectionStatus {
+    /// Create a new status with just a method (no degradation)
+    pub fn with_method(method: impl Into<String>) -> Self {
+        Self {
+            method: method.into(),
+            is_degraded: false,
+            degradation_reason: None,
+            unavailable_feature: None,
+        }
+    }
+
+    /// Create a new degraded status
+    pub fn degraded(
+        method: impl Into<String>,
+        unavailable_feature: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            method: method.into(),
+            is_degraded: true,
+            degradation_reason: Some(reason.into()),
+            unavailable_feature: Some(unavailable_feature.into()),
+        }
+    }
+}
+
+/// Application configuration
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// Network interface to capture from (None for default)
+    pub interface: Option<String>,
+    /// Filter localhost connections
+    pub filter_localhost: bool,
+    /// UI refresh interval in milliseconds
+    pub refresh_interval: u64,
+    /// Enable deep packet inspection
+    pub enable_dpi: bool,
+    /// BPF filter for packet capture
+    pub bpf_filter: Option<String>,
+    /// JSON log file path for connection events
+    pub json_log_file: Option<String>,
+    /// PCAP export file path for Wireshark analysis
+    pub pcap_export_file: Option<String>,
+    /// Annotated PCAPNG export file path for Wireshark analysis
+    pub pcapng_export_file: Option<String>,
+    /// Enable reverse DNS resolution for IP addresses
+    pub resolve_dns: bool,
+    /// Show PTR lookup connections in UI (when DNS resolution is enabled)
+    pub show_ptr_lookups: bool,
+    /// Path to GeoLite2-Country.mmdb database (None for auto-discovery)
+    pub geoip_country_path: Option<String>,
+    /// Path to GeoLite2-ASN.mmdb database (None for auto-discovery)
+    pub geoip_asn_path: Option<String>,
+    /// Path to GeoLite2-City.mmdb database (None for auto-discovery)
+    pub geoip_city_path: Option<String>,
+    /// Disable GeoIP lookups entirely
+    pub disable_geoip: bool,
+    /// Kubernetes pod/container attribution mode
+    #[cfg(feature = "kubernetes")]
+    pub kubernetes_mode: crate::network::kubernetes::KubernetesMode,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            interface: None,
+            filter_localhost: true,
+            refresh_interval: 500,
+            enable_dpi: true,
+            bpf_filter: None, // No filter by default to see all packets
+            json_log_file: None,
+            pcap_export_file: None,
+            pcapng_export_file: None,
+            resolve_dns: true,
+            show_ptr_lookups: false,
+            geoip_country_path: None,
+            geoip_asn_path: None,
+            geoip_city_path: None,
+            disable_geoip: false,
+            #[cfg(feature = "kubernetes")]
+            kubernetes_mode: crate::network::kubernetes::KubernetesMode::default(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct AppOutputHandles {
+    pub json_log: Option<File>,
+    pub pcap_sidecar: Option<File>,
+    pub pcapng_export: Option<File>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ConnectionCounts {
+    pub tcp: usize,
+    pub udp: usize,
+    pub active: usize,
+    pub historic: usize,
+    pub processes: usize,
+    pub tcp_retransmits: u64,
+    pub tcp_out_of_order: u64,
+    pub tcp_fast_retransmits: u64,
+    pub tcp_flows_with_analytics: usize,
+}
+
+impl ConnectionCounts {
+    pub(crate) fn from_connections<'a>(
+        connections: impl IntoIterator<Item = &'a Connection>,
+    ) -> Self {
+        let mut counts = Self::default();
+        let mut processes: HashSet<&str> = HashSet::new();
+
+        for connection in connections {
+            if let Some(analytics) = &connection.tcp_analytics {
+                counts.tcp_retransmits += analytics.retransmit_count;
+                counts.tcp_out_of_order += analytics.out_of_order_count;
+                counts.tcp_fast_retransmits += analytics.fast_retransmit_count;
+                counts.tcp_flows_with_analytics += 1;
+            }
+
+            if connection.is_historic {
+                counts.historic += 1;
+                continue;
+            }
+
+            counts.active += 1;
+            match connection.protocol {
+                Protocol::Tcp => counts.tcp += 1,
+                Protocol::Udp => counts.udp += 1,
+                _ => {}
+            }
+            processes.insert(crate::ui::process_group_label(connection));
+        }
+
+        counts.processes = processes.len();
+        counts
+    }
+}
+
+/// Application statistics
+#[derive(Debug)]
+pub struct AppStats {
+    pub packets_processed: AtomicU64,
+    pub packets_dropped: AtomicU64,
+    pub connections_tracked: AtomicU64,
+    pub total_connections_created: AtomicU64,
+    pub total_connections_archived: AtomicU64,
+    pub last_update: RwLock<Instant>,
+    // TCP analytics totals (since program start)
+    pub total_tcp_retransmits: AtomicU64,
+    pub total_tcp_out_of_order: AtomicU64,
+    pub total_tcp_fast_retransmits: AtomicU64,
+    pub pcap_records_written: AtomicU64,
+    pub pcapng_records_queued: AtomicU64,
+    pub pcapng_records_written: AtomicU64,
+    pub pcapng_records_annotated: AtomicU64,
+    pub pcapng_records_unannotated: AtomicU64,
+    pub pcapng_records_dropped: AtomicU64,
+    pub pcapng_export_errors: AtomicU64,
+}
+
+impl Default for AppStats {
+    fn default() -> Self {
+        Self {
+            packets_processed: AtomicU64::new(0),
+            packets_dropped: AtomicU64::new(0),
+            connections_tracked: AtomicU64::new(0),
+            total_connections_created: AtomicU64::new(0),
+            total_connections_archived: AtomicU64::new(0),
+            last_update: RwLock::new(Instant::now()),
+            total_tcp_retransmits: AtomicU64::new(0),
+            total_tcp_out_of_order: AtomicU64::new(0),
+            total_tcp_fast_retransmits: AtomicU64::new(0),
+            pcap_records_written: AtomicU64::new(0),
+            pcapng_records_queued: AtomicU64::new(0),
+            pcapng_records_written: AtomicU64::new(0),
+            pcapng_records_annotated: AtomicU64::new(0),
+            pcapng_records_unannotated: AtomicU64::new(0),
+            pcapng_records_dropped: AtomicU64::new(0),
+            pcapng_export_errors: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Ring buffers of per-connection RX/TX rates (bytes/sec), capped at
+/// the same 60-second window as [`TrafficHistory`](crate::network::types::TrafficHistory).
+#[derive(Debug, Clone, Default)]
+pub struct ConnRateHistory {
+    pub rx: VecDeque<u64>,
+    pub tx: VecDeque<u64>,
+    pub(super) rx_scale: GraphScale,
+    pub(super) tx_scale: GraphScale,
+    generation: Option<SystemTime>,
+}
+
+impl ConnRateHistory {
+    /// Push one sample for the connection generation stamped `created_at`.
+    /// Live connection keys are tuple-only, so a replacement generation reuses
+    /// its predecessor's map entry; a new generation resets the rings — and
+    /// the sticky graph scales — instead of inheriting the old connection's
+    /// graph and ceiling.
+    pub(super) fn push_for_generation(
+        &mut self,
+        created_at: SystemTime,
+        rx: u64,
+        tx: u64,
+        cap: usize,
+    ) {
+        if self.generation != Some(created_at) {
+            *self = Self {
+                generation: Some(created_at),
+                ..Self::default()
+            };
+        }
+        self.push(rx, tx, cap);
+    }
+
+    pub(super) fn push(&mut self, rx: u64, tx: u64, cap: usize) {
+        if self.rx.len() >= cap {
+            self.rx.pop_front();
+        }
+        if self.tx.len() >= cap {
+            self.tx.pop_front();
+        }
+        self.rx.push_back(rx);
+        self.tx.push_back(tx);
+        self.rx_scale
+            .update_peak(self.rx.iter().copied().max().unwrap_or(0));
+        self.tx_scale
+            .update_peak(self.tx.iter().copied().max().unwrap_or(0));
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ConnRateHistorySnapshot {
+    pub rx: Vec<u64>,
+    pub tx: Vec<u64>,
+    pub rx_graph_ceiling: f64,
+    pub tx_graph_ceiling: f64,
+}
+
+#[cfg(test)]
+mod conn_rate_history_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Live connection keys are tuple-only, so a replacement generation lands
+    /// on its predecessor's map entry; it must start with a fresh graph
+    /// instead of inheriting the old connection's history.
+    #[test]
+    fn replacement_generation_starts_with_fresh_rate_history() {
+        let mut history = ConnRateHistory::default();
+        let first_generation = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        history.push_for_generation(first_generation, 1_000_000, 2_000_000, 10);
+        history.push_for_generation(first_generation, 1_000_000, 2_000_000, 10);
+        assert_eq!(history.rx.len(), 2);
+
+        let second_generation = first_generation + Duration::from_secs(5);
+        history.push_for_generation(second_generation, 10, 20, 10);
+        assert_eq!(history.rx, [10]);
+        assert_eq!(history.tx, [20]);
+    }
+}

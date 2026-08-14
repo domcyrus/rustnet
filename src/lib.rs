@@ -42,7 +42,6 @@
 //!
 //! - [`app`] — application orchestration, packet pipeline, and shared
 //!   state.
-//! - [`config`] — command-line and runtime configuration.
 //! - [`filter`] — vim/fzf-style connection filter parser and matcher.
 //! - [`network`] — packet capture, parsers, DPI, DNS, GeoIP, interface
 //!   stats, and platform-specific process lookup.
@@ -57,7 +56,6 @@
 
 pub mod app;
 pub mod cli;
-pub mod config;
 pub mod export;
 pub mod filter;
 pub mod network;
