@@ -204,6 +204,29 @@ impl ProcessAttribution {
         self
     }
 
+    /// Attach everything a platform's per-process details lookup resolved in
+    /// one step: parent pid, credentials, executable path, and lineage.
+    /// Credentials and executable are left untouched when the lookup does not
+    /// resolve them.
+    pub fn with_details(
+        mut self,
+        ppid: u32,
+        credentials: Option<(u32, u32)>,
+        executable: Option<PathBuf>,
+        lineage: Option<ProcessLineage>,
+    ) -> Self {
+        self.ppid = Some(ppid);
+        if let Some((uid, gid)) = credentials {
+            self.uid = Some(uid);
+            self.gid = Some(gid);
+        }
+        if let Some(executable) = executable {
+            self.executable = Some(executable);
+        }
+        self.lineage = lineage;
+        self
+    }
+
     /// Reduce to the legacy `(pid, process_name)` pair.
     pub fn into_pid_name(self) -> (u32, String) {
         (self.tgid, self.name)
@@ -254,6 +277,96 @@ where
         ancestors,
         truncated,
     })
+}
+
+/// Decode a NUL-terminated C char array (`ki_comm`, `pbi_comm`, ...) into a
+/// process name. `None` when the array is empty.
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+pub(crate) fn decode_process_name(chars: &[libc::c_char]) -> Option<String> {
+    let bytes: Vec<u8> = chars
+        .iter()
+        .copied()
+        .take_while(|value| *value != 0)
+        .map(|value| value as u8)
+        .collect();
+    (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Display name for a lineage ancestor: the OS-reported name, else the
+/// executable's file name, else a `PID <n>` placeholder.
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+pub(crate) fn ancestor_display_name(
+    name: String,
+    executable: Option<&std::path::Path>,
+    pid: u32,
+) -> String {
+    if name.is_empty() {
+        executable
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| format!("PID {pid}"))
+    } else {
+        name
+    }
+}
+
+/// Return the cached value for `key`, computing and caching it on a miss.
+/// Caches misses too when `V` is an `Option`. `poisoned` is the lock's
+/// expect message.
+#[cfg(any(target_os = "freebsd", target_os = "linux"))]
+pub(crate) fn memoized<K, V>(
+    cache: &std::sync::RwLock<HashMap<K, V>>,
+    key: K,
+    poisoned: &str,
+    compute: impl FnOnce() -> V,
+) -> V
+where
+    K: Eq + std::hash::Hash,
+    V: Clone,
+{
+    if let Some(value) = cache.read().expect(poisoned).get(&key) {
+        return value.clone();
+    }
+
+    let value = compute();
+    cache.write().expect(poisoned).insert(key, value.clone());
+    value
+}
+
+/// Parse a socket address as printed by OS socket-table tools (`sockstat`,
+/// `lsof`): `ip:port`, `*:port` (wildcard), `[ipv6]:port`, or bracketless
+/// IPv6 like `::1:8080` (the last colon splits off the port).
+pub fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
+    // Handle wildcard addresses
+    if addr_str.starts_with("*:") {
+        let port = addr_str.strip_prefix("*:")?.parse::<u16>().ok()?;
+        // Use unspecified address for wildcards
+        return Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
+    }
+
+    // Handle IPv6 with brackets: [::1]:8080. Std parsing also accepts scope
+    // ids like [fe80::1%1]:22, which Ipv6Addr alone would reject.
+    if addr_str.starts_with('[') {
+        return addr_str.parse().ok();
+    }
+
+    // Split by last colon to handle addresses
+    let last_colon = addr_str.rfind(':')?;
+    let (ip_str, port_str) = addr_str.split_at(last_colon);
+    let port_str = &port_str[1..]; // Remove the colon
+
+    let port = port_str.parse::<u16>().ok()?;
+
+    // Detect IPv6 (contains colons) vs IPv4
+    let ip = if ip_str.contains(':') {
+        // IPv6 address without brackets (e.g., "::1" or "fe80::1")
+        IpAddr::V6(ip_str.parse().ok()?)
+    } else {
+        // IPv4 address
+        IpAddr::V4(ip_str.parse().ok()?)
+    };
+
+    Some(SocketAddr::new(ip, port))
 }
 
 impl From<ProcessAttribution> for (u32, String) {
@@ -663,6 +776,36 @@ mod tests {
         assert_eq!(attribution.lineage, None);
     }
 
+    #[test]
+    fn with_details_leaves_unresolved_credentials_and_executable_untouched() {
+        let base = || {
+            ProcessAttribution::new(
+                7,
+                "sshd",
+                AttributionBackend::PlatformNative,
+                MatchQuality::Unspecified,
+            )
+        };
+
+        let full = base().with_details(
+            1,
+            Some((1000, 100)),
+            Some(PathBuf::from("/usr/sbin/sshd")),
+            None,
+        );
+        assert_eq!(full.ppid, Some(1));
+        assert_eq!((full.uid, full.gid), (Some(1000), Some(100)));
+        assert_eq!(full.executable, Some(PathBuf::from("/usr/sbin/sshd")));
+
+        let sparse = base()
+            .with_credentials(500, 50)
+            .with_executable(Some(PathBuf::from("/usr/sbin/sshd")))
+            .with_details(1, None, None, None);
+        assert_eq!(sparse.ppid, Some(1));
+        assert_eq!((sparse.uid, sparse.gid), (Some(500), Some(50)));
+        assert_eq!(sparse.executable, Some(PathBuf::from("/usr/sbin/sshd")));
+    }
+
     fn ancestor(pid: u32) -> ProcessAncestor {
         ProcessAncestor {
             pid,
@@ -858,6 +1001,91 @@ mod tests {
         assert!(
             relaxed_lookup(&map, &key(Protocol::Icmp, "192.168.1.10:0", "8.8.8.8:0")).is_none()
         );
+    }
+
+    #[test]
+    fn socket_addr_text_parses_ipv4() {
+        assert_eq!(
+            parse_socket_addr_text("192.168.1.1:8080"),
+            Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+                8080
+            ))
+        );
+        assert_eq!(
+            parse_socket_addr_text("127.0.0.1:80"),
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80))
+        );
+    }
+
+    #[test]
+    fn socket_addr_text_parses_ipv6_with_brackets() {
+        assert_eq!(
+            parse_socket_addr_text("[::1]:8080"),
+            Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8080))
+        );
+        assert_eq!(
+            parse_socket_addr_text("[2001:db8::1]:443"),
+            Some(SocketAddr::new(
+                IpAddr::V6("2001:db8::1".parse().unwrap()),
+                443
+            ))
+        );
+        assert_eq!(
+            parse_socket_addr_text("[fe80::1]:22"),
+            Some(SocketAddr::new(IpAddr::V6("fe80::1".parse().unwrap()), 22))
+        );
+        // Numeric scope id, accepted by the old macOS parser
+        assert_eq!(
+            parse_socket_addr_text("[fe80::1%1]:22"),
+            Some("[fe80::1%1]:22".parse().unwrap())
+        );
+    }
+
+    #[test]
+    fn socket_addr_text_parses_ipv4_mapped_ipv6() {
+        assert_eq!(
+            parse_socket_addr_text("[::ffff:192.168.1.1]:80"),
+            Some(SocketAddr::new(
+                IpAddr::V6("::ffff:192.168.1.1".parse().unwrap()),
+                80
+            ))
+        );
+    }
+
+    #[test]
+    fn socket_addr_text_parses_bare_ipv6_without_brackets() {
+        // Occurs in some sockstat outputs. Ambiguous, but multiple colons
+        // are treated as IPv6 with the last colon splitting off the port.
+        assert_eq!(
+            parse_socket_addr_text("::1:8080"),
+            Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8080))
+        );
+    }
+
+    #[test]
+    fn socket_addr_text_parses_wildcards_as_unspecified() {
+        assert_eq!(
+            parse_socket_addr_text("*:80"),
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 80))
+        );
+        assert_eq!(
+            parse_socket_addr_text("*:65535"),
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 65535))
+        );
+    }
+
+    #[test]
+    fn socket_addr_text_rejects_malformed_input() {
+        // Missing port
+        assert_eq!(parse_socket_addr_text("192.168.1.1"), None);
+        // Missing closing bracket
+        assert_eq!(parse_socket_addr_text("[::1:8080"), None);
+        // Missing ':' after the closing bracket
+        assert_eq!(parse_socket_addr_text("[::1]x80"), None);
+        // Port out of range
+        assert_eq!(parse_socket_addr_text("192.168.1.1:99999"), None);
+        assert_eq!(parse_socket_addr_text(""), None);
     }
 
     #[test]

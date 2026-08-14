@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **macOS lsof Attribution UID**: When libproc details resolve, lsof-based
+  attribution now reports the process's live effective UID from libproc
+  instead of the UID captured in the earlier lsof scan, matching the other
+  platforms (#545)
 - **Broadcast/Multicast Endpoint Display**: A broadcast or multicast datagram
   sent by a peer (e.g. NetBIOS to 192.168.0.255) used to render its
   destination as a normal-looking Local address. Such endpoints now render as
