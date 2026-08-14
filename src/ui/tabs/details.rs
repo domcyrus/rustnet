@@ -1075,6 +1075,39 @@ pub(in crate::ui) fn draw_connection_details(
         label_style,
         theme::fg(theme::field_remote_addr()),
     );
+    // Hostname inferred from a DNS response observed on the wire, with
+    // its provenance and age so it reads as an inference, not a lookup.
+    // Conditional like the MAC rows: a permanent placeholder would push
+    // the Attribution card below the fold for the many connections that
+    // can never be attributed.
+    if let Some(att) = &conn.attributed_hostname {
+        let source = match att.source {
+            crate::network::types::AttributionSource::CapturedDns => "Captured DNS",
+        };
+        let age = att
+            .observed_at
+            .elapsed()
+            .ok()
+            .map(|d| {
+                let s = d.as_secs();
+                if s < 60 {
+                    format!("{}s ago", s)
+                } else if s < 3600 {
+                    format!("{}m ago", s / 60)
+                } else {
+                    format!("{}h ago", s / 3600)
+                }
+            })
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Attributed Name",
+            format!("~{} ({}, {})", att.name, source, age),
+            label_style,
+            theme::fg(theme::field_attributed_hostname()),
+        );
+    }
     if let Some(entry) = remote_mac {
         push_detail_field_styled(
             &mut details_text,

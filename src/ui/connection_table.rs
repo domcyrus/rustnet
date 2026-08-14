@@ -273,35 +273,56 @@ fn endpoint_display(
 /// ("host…:443"); raw addresses only ellipsize as a last resort at
 /// very narrow widths. Broadcast/multicast endpoints render as labels
 /// and skip hostname resolution.
+///
+/// The bool is true when the name was attributed from an observed DNS
+/// response (rendered as `~name:port` and dimmed) rather than resolved
+/// via reverse DNS. Attribution takes priority over reverse DNS and
+/// needs no resolver; an authoritative SNI / Host header suppresses it
+/// (that name already shows in the App column).
 fn remote_display(
     conn: &Connection,
     ui_state: &UIState,
     dns_resolver: Option<&DnsResolver>,
     max_width: usize,
-) -> String {
+) -> (String, bool) {
     if ui_state.show_hostnames
         && conn.protocol != Protocol::Arp
         && conn.remote_addr_kind == AddrKind::Unicast
-        && let Some(resolver) = dns_resolver
-        && let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip())
     {
         let port = conn.remote_addr.port();
-        let full = format!("{hostname}:{port}");
-        if full.chars().count() > max_width {
-            let port_str = format!(":{port}");
-            let budget = max_width.saturating_sub(port_str.chars().count());
-            format!("{}{}", truncate_with_ellipsis(&hostname, budget), port_str)
-        } else {
-            full
+        let fit = |name: &str, prefix: &str| -> String {
+            let full = format!("{prefix}{name}:{port}");
+            if full.chars().count() > max_width {
+                let port_str = format!(":{port}");
+                let budget = max_width
+                    .saturating_sub(port_str.chars().count())
+                    .saturating_sub(prefix.chars().count());
+                format!("{prefix}{}{port_str}", truncate_with_ellipsis(name, budget))
+            } else {
+                full
+            }
+        };
+
+        if conn.authoritative_hostname().is_none()
+            && let Some(att) = &conn.attributed_hostname
+        {
+            return (fit(&att.name, "~"), true);
         }
-    } else {
+        if let Some(resolver) = dns_resolver
+            && let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip())
+        {
+            return (fit(&hostname, ""), false);
+        }
+    }
+    (
         endpoint_display(
             conn.remote_addr,
             conn.remote_addr_kind,
             conn.remote_is_gateway,
             max_width,
-        )
-    }
+        ),
+        false,
+    )
 }
 
 /// Header label for a column. Short on purpose — no " Address" suffixes.
@@ -428,13 +449,15 @@ pub(in crate::ui) fn connection_row<'a>(
                 Cell::from(truncate_with_ellipsis(&full, col.width as usize))
                     .style(style_if_colored(theme::field_process()))
             }
-            ColumnId::Remote => Cell::from(remote_display(
-                conn,
-                ui_state,
-                dns_resolver,
-                col.width as usize,
-            ))
-            .style(style_if_colored(theme::field_remote_addr())),
+            ColumnId::Remote => {
+                let (display, attributed) =
+                    remote_display(conn, ui_state, dns_resolver, col.width as usize);
+                Cell::from(display).style(style_if_colored(if attributed {
+                    theme::field_attributed_hostname()
+                } else {
+                    theme::field_remote_addr()
+                }))
+            }
             ColumnId::Local => Cell::from(endpoint_display(
                 conn.local_addr,
                 conn.local_addr_kind,
@@ -837,14 +860,14 @@ mod tests {
         let full_len = full.chars().count();
 
         // Enough width: the raw address is shown verbatim.
-        assert_eq!(remote_display(&conn, &ui_state, None, full_len), full);
+        assert_eq!(remote_display(&conn, &ui_state, None, full_len).0, full);
         // On a wide terminal the weighted Remote share covers a full
         // IPv6 address (40 spare cells at FULL_WIDTH+100 -> width 61).
         let cols = select_columns(FULL_WIDTH + 100, true);
         assert!(width_of(&cols, ColumnId::Remote) as usize >= full_len);
 
         // Last resort at narrow widths: ellipsized, never wider than asked.
-        let narrow = remote_display(&conn, &ui_state, None, REMOTE_MIN_WIDTH as usize);
+        let narrow = remote_display(&conn, &ui_state, None, REMOTE_MIN_WIDTH as usize).0;
         assert_eq!(narrow.chars().count(), REMOTE_MIN_WIDTH as usize);
         assert!(narrow.ends_with('\u{2026}'));
     }
@@ -891,6 +914,65 @@ mod tests {
     }
 
     #[test]
+    fn remote_display_prefers_attribution_unless_sni_is_authoritative() {
+        use crate::network::types::{
+            ApplicationProtocol, AttributedHostname, AttributionSource, DpiInfo, HttpsInfo, TlsInfo,
+        };
+
+        let mut conn = Connection::new(
+            Protocol::Udp,
+            "192.168.0.132:50000".parse().unwrap(),
+            "142.250.74.36:443".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        conn.attributed_hostname = Some(AttributedHostname {
+            name: "example.com".to_string(),
+            source: AttributionSource::CapturedDns,
+            observed_at: std::time::SystemTime::now(),
+        });
+        let ui_state = UIState::default();
+
+        // No authoritative name: the attributed hostname renders with a
+        // `~` prefix and flags the cell, without needing a resolver.
+        assert_eq!(
+            remote_display(&conn, &ui_state, None, 24),
+            ("~example.com:443".to_string(), true)
+        );
+
+        // The prefix costs one cell of the hostname budget when cut.
+        let (narrow, attributed) = remote_display(&conn, &ui_state, None, 12);
+        assert_eq!(narrow, "~exampl\u{2026}:443");
+        assert!(attributed);
+
+        // A later-arriving authoritative SNI suppresses the inferred
+        // name (it already shows in the App column).
+        conn.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Https(HttpsInfo {
+                tls_info: Some(TlsInfo {
+                    sni: Some("example.com".to_string()),
+                    ..TlsInfo::new()
+                }),
+            }),
+            last_update_time: std::time::Instant::now(),
+        });
+        assert_eq!(
+            remote_display(&conn, &ui_state, None, 24),
+            ("142.250.74.36:443".to_string(), false)
+        );
+
+        // Hostnames toggled off: plain IP even with an attribution.
+        conn.dpi_info = None;
+        let hostnames_off = UIState {
+            show_hostnames: false,
+            ..Default::default()
+        };
+        assert_eq!(
+            remote_display(&conn, &hostnames_off, None, 24),
+            ("142.250.74.36:443".to_string(), false)
+        );
+    }
+
+    #[test]
     fn remote_display_labels_multicast_instead_of_resolving_hostnames() {
         let mut conn = Connection::new(
             Protocol::Udp,
@@ -901,7 +983,7 @@ mod tests {
         conn.remote_addr_kind = AddrKind::Multicast;
         let ui_state = UIState::default();
 
-        assert_eq!(remote_display(&conn, &ui_state, None, 24), "mcast:5353");
+        assert_eq!(remote_display(&conn, &ui_state, None, 24).0, "mcast:5353");
     }
 
     #[test]

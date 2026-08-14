@@ -143,7 +143,45 @@ Creates consistent snapshots of connection data for the UI at regular intervals 
 - Create immutable snapshot for UI rendering
 - Provide RwLock-protected Vec<Connection> for UI thread
 
-### 5. Cleanup Thread
+### 5. DNS Attribution Cache
+
+`network::dns_attribution::DnsAttributionCache` in `rustnet-core` is an `IpAddr -> recent domains` map populated from DNS responses observed on the wire, owned by the `ConnectionTracker` (toggle via `TrackerConfig::dns_attribution`, on by default). When a connection has no SNI / Host header to identify it (encrypted QUIC after the handshake, plain TCP, fragmented ClientHello), the cache provides a hostname inferred from a DNS resolution the user just performed.
+
+The design is **event-driven**: connections that can't be attributed at creation time (no fresh DNS yet) are enrolled into a side index keyed by their remote IP, and the eventual matching DNS response drains the waiters. There is no per-packet polling and no timer.
+
+**Data flow:**
+
+```
+1. DNS response ──record──► IP→domains cache      IP→[ConnectionKey]
+                                 ▲    │            pending waiters
+                                 │    │                ▲    │
+2. New connection ──attribute────┘    │                │    │ 3. drain on
+      │  hit: tag attributed_hostname ◄────────────────┼──────  DNS arrival
+      └─ miss: enroll ─────────────────────────────────┘
+
+4. Cleanup thread (every sweep): cleanup_tick(now)
+    ├─ prune cache entries past retention (10 min)
+    └─ prune pending enrollments past the 10s freshness window
+
+5. Connection removal: forget_pending(remote_ip, key)
+```
+
+Cache properties:
+
+- **Freshness window**: 10s, applied symmetrically to cached `IP -> domain` entries (a connection is only attributed when the DNS response for its remote IP was observed within this window) and to pending enrollments (a new DNS resolution only attributes connections opened within this window). Matches Little Snitch's `MAX_QUERY_AGE`.
+- **Retention** (cache entries): 10 minutes. Older entries are pruned but never used for attribution.
+- **Cap**: 8192 IPs in the cache, up to 4 recent domains per IP, up to 256 pending waiters per IP.
+- **First-write-wins** per connection: once tagged, not retagged from a later resolution to the same IP.
+
+**Hot-path cost**: zero per-packet DNS lookups for established connections. Attribution is attempted once per connection (at creation), and again at most once per matching DNS response. Connections that already carry a hostname in the payload (checked via the unified `ApplicationProtocol::hostname()` accessor, so TLS SNI for HTTPS and QUIC plus the HTTP `Host:` header) and protocols where attribution is meaningless (DNS, mDNS, LLMNR, DHCP, SSDP, NetBIOS, ARP) short-circuit before any cache touch.
+
+**Race safety**: `attribute()` enrolls the connection in the pending index, then re-checks the cache. If a concurrent `record_and_drain_pending()` for the same IP landed between the lookup and the enrollment, the re-check tags the connection; the now-stale enrollment is harmless and is removed by `forget_pending` when the connection is cleaned up or by the pending prune after the freshness window.
+
+**Distinct from `network::dns::DnsResolver`**: that component performs *reverse* DNS (IP to PTR) via the system resolver; the attribution cache is *forward* DNS (domain to IPs) harvested from observed packets. The two are complementary and the UI prefers the attribution cache when both have a name.
+
+CNAME chains need no separate map: the DNS DPI parser records the original *question* name, and the answer's A/AAAA records map directly to it. Capturing at the wire sees fewer signals than an eBPF socket-level approach (no app-to-stub traffic on `lo` unless captured, no D-Bus resolutions, no DoH/DoT plaintext); this is a known limitation.
+
+### 6. Cleanup Thread
 
 Removes inactive connections using smart, protocol-aware timeouts. This prevents memory leaks and keeps the connection list relevant. When `--pcap-export` is enabled, also streams connection metadata (PID, process name, timestamps) to a JSONL sidecar file as connections close.
 
@@ -184,7 +222,7 @@ Connections change color based on proximity to timeout:
 - **Yellow**: 75-90% of timeout (warning)
 - **Red**: > 90% of timeout (critical)
 
-### 6. Rate Refresh Thread
+### 7. Rate Refresh Thread
 
 Updates bandwidth calculations every 500ms with gentle decay. This provides smooth bandwidth visualization without abrupt changes.
 
@@ -194,7 +232,7 @@ Updates bandwidth calculations every 500ms with gentle decay. This provides smoo
 - Update visual bandwidth indicators
 - Maintain rolling window of packet rates
 
-### 7. DashMap
+### 8. DashMap
 
 Concurrent hashmap (`DashMap<ConnectionKey, Connection>`) for storing connection state. This lock-free data structure enables efficient concurrent access from multiple threads.
 

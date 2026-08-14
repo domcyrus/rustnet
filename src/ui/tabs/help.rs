@@ -240,6 +240,21 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
     ));
 
     help_text.push(Line::from(""));
+    help_text.push(section_title("Hostname Display:"));
+    help_text.push(Line::from(
+        "  Names in the Remote column come from a recently observed DNS",
+    ));
+    help_text.push(Line::from(
+        "  resolution (shown as ~name, dimmed) or reverse DNS; SNI and",
+    ));
+    help_text.push(Line::from("  HTTP Host appear in the App column."));
+    help_text.push(Line::from(vec![
+        Span::styled("  ~name ", theme::fg(theme::field_attributed_hostname())),
+        Span::raw("Hostname inferred from a DNS response, not extracted"),
+    ]));
+    help_text.push(Line::from("  from the connection itself"));
+
+    help_text.push(Line::from(""));
     help_text.push(section_title("Filter Examples:"));
     help_text.extend(
         FILTER_EXAMPLES

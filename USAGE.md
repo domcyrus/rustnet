@@ -412,7 +412,7 @@ Use keyword filters for targeted searches:
 | `src:` | `source:` | Source IPs/hostnames | `src:192.168` matches 192.168.x.x |
 | `dst:` | `dest:`, `destination:` | Destinations | `dst:github.com` matches github.com |
 | `process:` | `proc:` | Process names | `process:ssh` matches ssh, sshd |
-| `sni:` | `host:`, `hostname:` | SNI hostnames (HTTPS) | `sni:api` matches api.example.com |
+| `sni:` | `host:`, `hostname:` | SNI hostnames (HTTPS) and DNS-attributed hostnames | `sni:api` matches api.example.com |
 | `service:` | `svc:` | Service names | `service:https` matches HTTPS service |
 | `app:` | `application:` | Detected application protocol | `app:ssh` matches SSH connections |
 | `state:` | | Protocol states | `state:established` matches established connections |
@@ -898,6 +898,23 @@ On systems with multiple network interfaces:
 ## Connection Lifecycle & Visual Indicators
 
 RustNet uses intelligent timeout management to automatically clean up inactive connections while providing visual warnings before removal.
+
+### Hostname Display
+
+Hostnames extracted from the connection itself (TLS SNI from HTTPS or QUIC, the HTTP `Host:` header) are shown in the **App** column. The name in the **Remote** column is chosen by priority (toggle hostnames with the `d` key):
+
+1. **DNS-attributed hostname**: rendered as `~name:port` in a dim color when the connection carries no SNI / Host header but a DNS resolution to this IP was observed within the last **10 seconds**
+2. **Reverse DNS** (system resolver, unless disabled with `--no-resolve-dns`)
+3. **Raw IP address**
+
+The leading `~` glyph signals that the hostname was *inferred* from a DNS response seen on the wire, not extracted from the connection. This is most useful for QUIC sessions after the handshake (where SNI is encrypted) and for plain TCP/UDP connections that carry no hostname-bearing payload. Attribution needs no active lookups, so it works even with `--no-resolve-dns`. The Details tab shows a separate **Attributed Name** row with the source and observation age (`~name (Captured DNS, 5s ago)`) so the provenance is explicit. Attributed names are searchable like any other hostname: both the `sni:` / `host:` / `hostname:` keyword filter and the free-text search match them.
+
+**Caveats** (RustNet learns names by sniffing DNS on the wire):
+
+- **DoH / DoT** (encrypted DNS): no plaintext to observe, no attribution.
+- **`/etc/hosts`, NSCD cache, `systemd-resolved` D-Bus API** (`org.freedesktop.resolve1`): no DNS packet is emitted, so attribution is impossible regardless of capture method.
+- **Local stub resolvers** (e.g. `systemd-resolved` on `127.0.0.53`): if you only capture a physical interface, you see the stub's upstream queries but not which app talked to the stub. Capture on `lo` as well to see the application side.
+- **VPN/WireGuard tunnels**: capture on the tunnel interface (e.g. `utun0`, `wg0`) rather than the underlay so you see plaintext DNS.
 
 ### Visual Staleness Indicators
 
