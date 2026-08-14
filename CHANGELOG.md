@@ -229,6 +229,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of aborting the sweep and letting the map fill (#498)
 
 ### Documentation
+- **Roadmap Audit**: Synced completed capabilities and clarified remaining DPI,
+  platform, and analysis work (#547)
 - **eBPF Install and Troubleshooting**: Documented the fentry/kprobe/procfs backend
   order, BTF and `RLIMIT_MEMLOCK` requirements, and reworked the BPF-denied
   troubleshooting steps now that `perf_event_paranoid` affects only the legacy
