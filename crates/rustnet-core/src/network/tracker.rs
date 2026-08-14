@@ -4,9 +4,9 @@
 //! managed table of [`Connection`]s. It owns everything needed to turn a stream
 //! of [`ParsedPacket`]s into the same connection view the `rustnet` TUI shows —
 //! the active table, an archive of recently-closed ("historic") connections,
-//! RTT estimation from TCP, QUIC handshakes, and ICMP echo, plus DNS response
-//! timing, QUIC connection-ID coalescing, and timeout-based cleanup, all
-//! without any UI, capture, or process-lookup
+//! RTT estimation from TCP, QUIC handshakes, and ICMP echo, plus DNS-shaped
+//! response timing, QUIC connection-ID coalescing, and timeout-based cleanup,
+//! all without any UI, capture, or process-lookup
 //! dependency.
 //!
 //! This is the piece that makes headless tools easy: pair a capture source with
@@ -91,6 +91,7 @@ fn udp_application_is_timed(application: &ApplicationProtocol) -> bool {
     match application {
         ApplicationProtocol::Quic(quic) => is_quic_handshake_packet(quic.packet_type),
         ApplicationProtocol::Dns(_)
+        | ApplicationProtocol::Llmnr(_)
         | ApplicationProtocol::NetBios(_)
         | ApplicationProtocol::Stun(_)
         | ApplicationProtocol::Ntp(_) => true,
@@ -191,6 +192,9 @@ pub struct IngestOutcome {
     /// The latest completed DNS query→response round trip, if this packet was
     /// a response matching a pending query by transaction ID.
     pub dns_response_time: Option<Duration>,
+    /// The first completed LLMNR query-to-response round trip, if this packet
+    /// was a response matching a pending multicast query by transaction ID.
+    pub llmnr_response_time: Option<Duration>,
     /// The latest completed NetBIOS request-to-response round trip, if this
     /// packet matched a pending request by transaction ID.
     pub netbios_response_time: Option<Duration>,
@@ -211,6 +215,7 @@ pub struct IngestOutcome {
 struct PacketTimings {
     measured_rtt: Option<Duration>,
     dns_response_time: Option<Duration>,
+    llmnr_response_time: Option<Duration>,
     netbios_response_time: Option<Duration>,
     icmp_echo_rtt: Option<Duration>,
     stun_rtt: Option<Duration>,
@@ -232,6 +237,7 @@ impl PacketTimings {
             fast_retransmits: 0,
             measured_rtt: self.measured_rtt,
             dns_response_time: self.dns_response_time,
+            llmnr_response_time: self.llmnr_response_time,
             netbios_response_time: self.netbios_response_time,
             icmp_echo_rtt: self.icmp_echo_rtt,
             stun_rtt: self.stun_rtt,
@@ -251,6 +257,9 @@ fn apply_timings(conn: &mut Connection, timings: &PacketTimings) {
     // displayed response time.
     if let Some(rtt) = timings.dns_response_time {
         conn.dns_response_time = Some(rtt);
+    }
+    if let Some(rtt) = timings.llmnr_response_time {
+        conn.llmnr_response_time = Some(rtt);
     }
     if let Some(rtt) = timings.netbios_response_time {
         conn.netbios_response_time = Some(rtt);
@@ -385,6 +394,7 @@ impl ConnectionTracker {
         // the only round trip an on-path observer can time.
         let mut measured_rtt: Option<Duration> = None;
         let mut dns_response_time: Option<Duration> = None;
+        let mut llmnr_response_time: Option<Duration> = None;
         let mut netbios_response_time: Option<Duration> = None;
         let mut stun_rtt: Option<Duration> = None;
         let mut ntp_rtt: Option<Duration> = None;
@@ -425,6 +435,20 @@ impl ConnectionTracker {
                         now,
                     );
                 }
+                // LLMNR uses the DNS transaction ID, but sends the query to a
+                // multicast address and receives each response from a unicast
+                // address. The RTT tracker returns the multicast request row
+                // so both views can carry the first response time.
+                ApplicationProtocol::Llmnr(llmnr) => {
+                    let completed =
+                        tracker.record_llmnr_packet(base_key, llmnr, parsed.is_outgoing, now);
+                    if let Some((rtt, request_key)) = completed {
+                        llmnr_response_time = Some(rtt);
+                        self.stamp_request_row_timing(request_key, base_key, |conn| {
+                            conn.llmnr_response_time = Some(rtt);
+                        });
+                    }
+                }
                 // NetBIOS Name Service broadcasts are answered from a host's
                 // unicast address, so the RTT tracker pairs on local socket,
                 // service, and transaction ID rather than the full connection
@@ -434,16 +458,9 @@ impl ConnectionTracker {
                         tracker.record_netbios_packet(base_key, netbios, parsed.is_outgoing, now);
                     if let Some((rtt, request_key)) = completed {
                         netbios_response_time = Some(rtt);
-                        // A broadcast request and its unicast reply live under
-                        // different keys. Stamp the requesting connection too,
-                        // so the row showing the query also shows its round
-                        // trip; this packet's own connection is updated in the
-                        // ingest path below.
-                        if request_key != base_key
-                            && let Some(mut conn) = self.connections.get_mut(&request_key)
-                        {
+                        self.stamp_request_row_timing(request_key, base_key, |conn| {
                             conn.netbios_response_time = Some(rtt);
-                        }
+                        });
                     }
                 }
                 // STUN requests and responses share a 96-bit transaction ID
@@ -505,10 +522,26 @@ impl ConnectionTracker {
         PacketTimings {
             measured_rtt,
             dns_response_time,
+            llmnr_response_time,
             netbios_response_time,
             icmp_echo_rtt,
             stun_rtt,
             ntp_rtt,
+        }
+    }
+
+    /// Stamp a completed broadcast or multicast exchange on its request row.
+    /// The response packet's own row is updated later through `PacketTimings`.
+    fn stamp_request_row_timing(
+        &self,
+        request_key: ConnectionKey,
+        response_key: ConnectionKey,
+        stamp: impl FnOnce(&mut Connection),
+    ) {
+        if request_key != response_key
+            && let Some(mut conn) = self.connections.get_mut(&request_key)
+        {
+            stamp(&mut conn);
         }
     }
 
@@ -1082,6 +1115,34 @@ mod tests {
         packet
     }
 
+    fn llmnr_packet(
+        txid: u16,
+        is_outgoing: bool,
+        is_response: bool,
+        remote_ip: [u8; 4],
+    ) -> ParsedPacket {
+        use crate::network::types::{AddrKind, DnsQueryType, LlmnrInfo};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let mut packet = ParsedPacket::test_udp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::from(remote_ip)), 5355),
+            ApplicationProtocol::Llmnr(LlmnrInfo {
+                query_name: Some("workstation".to_string()),
+                query_type: Some(DnsQueryType::A),
+                is_response,
+                response_ips: Vec::new(),
+                txid,
+            }),
+        );
+        if remote_ip == [224, 0, 0, 252] {
+            packet.remote_addr_kind = AddrKind::Multicast;
+        }
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 80;
+        packet
+    }
+
     fn netbios_packet(
         transaction_id: u16,
         is_outgoing: bool,
@@ -1453,6 +1514,70 @@ mod tests {
         tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
         let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 2), capture_time(40));
         assert_eq!(response.dns_response_time, Some(Duration::from_millis(40)));
+    }
+
+    /// LLMNR sends a query to the link-local multicast group, then each
+    /// responder replies via unicast. The first reply should time the lookup
+    /// even though it belongs to a different connection-table key, and that
+    /// timing should be visible from both rows.
+    #[test]
+    fn llmnr_multicast_query_measures_first_unicast_response_time() {
+        let tracker = ConnectionTracker::new();
+        let query = tracker.ingest_at(
+            &llmnr_packet(0x1234, true, false, [224, 0, 0, 252]),
+            capture_time(0),
+        );
+        assert!(query.llmnr_response_time.is_none());
+
+        let response = tracker.ingest_at(
+            &llmnr_packet(0x1234, false, true, [192, 168, 0, 20]),
+            capture_time(27),
+        );
+        assert_ne!(query.key, response.key);
+        assert_eq!(
+            response.llmnr_response_time,
+            Some(Duration::from_millis(27))
+        );
+
+        let response_conn = tracker.connections().get(&response.key).unwrap().clone();
+        assert_eq!(
+            response_conn.llmnr_response_time,
+            Some(Duration::from_millis(27))
+        );
+        assert!(response_conn.initial_rtt.is_none());
+
+        let query_conn = tracker.connections().get(&query.key).unwrap().clone();
+        assert_eq!(
+            query_conn.llmnr_response_time,
+            Some(Duration::from_millis(27))
+        );
+
+        let second_response = tracker.ingest_at(
+            &llmnr_packet(0x1234, false, true, [192, 168, 0, 21]),
+            capture_time(35),
+        );
+        assert!(second_response.llmnr_response_time.is_none());
+        assert!(
+            tracker
+                .connections()
+                .get(&second_response.key)
+                .and_then(|conn| conn.llmnr_response_time)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn llmnr_response_with_unknown_transaction_id_measures_nothing() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &llmnr_packet(0x1234, true, false, [224, 0, 0, 252]),
+            capture_time(0),
+        );
+        let response = tracker.ingest_at(
+            &llmnr_packet(0x9999, false, true, [192, 168, 0, 20]),
+            capture_time(27),
+        );
+        assert!(response.llmnr_response_time.is_none());
     }
 
     /// Name Service requests are normally broadcast, then answered from a

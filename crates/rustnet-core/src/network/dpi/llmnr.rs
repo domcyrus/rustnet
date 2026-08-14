@@ -38,6 +38,7 @@ mod tests {
         assert_eq!(info.query_name, Some("workstation".to_string()));
         assert_eq!(info.query_type, Some(DnsQueryType::A));
         assert!(!info.is_response);
+        assert_eq!(info.txid, 0x0001);
     }
 
     #[test]
@@ -46,6 +47,7 @@ mod tests {
         let info = analyze_llmnr(&packet).expect("should parse");
         assert_eq!(info.query_name, Some("fileserver".to_string()));
         assert!(info.is_response);
+        assert_eq!(info.txid, 0x0001);
     }
 
     #[test]

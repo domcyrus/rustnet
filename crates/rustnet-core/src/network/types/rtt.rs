@@ -3,7 +3,9 @@ use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
 
 use super::identity::ConnectionKey;
-use super::protocol_info::{NetBiosInfo, NetBiosService, NtpInfo, NtpMode, StunMessageClass};
+use super::protocol_info::{
+    LlmnrInfo, NetBiosInfo, NetBiosService, NtpInfo, NtpMode, StunMessageClass,
+};
 
 // ============================================================================
 // RTT Tracking Types (for latency measurement)
@@ -89,6 +91,45 @@ impl<K: Eq + std::hash::Hash, V: PendingStamp> PendingTable<K, V> {
     }
 }
 
+impl<K: Eq + std::hash::Hash> PendingTable<K, (SystemTime, ConnectionKey)> {
+    /// Record the client side of a request/response exchange, or complete it
+    /// when the matching response arrives. The connection key is retained so
+    /// multicast or broadcast requests can be updated when their unicast
+    /// response is stored under a different connection.
+    fn record_exchange(
+        &mut self,
+        pending_key: K,
+        connection_key: ConnectionKey,
+        is_outgoing: bool,
+        is_request: bool,
+        is_response: bool,
+        at: SystemTime,
+    ) -> Option<(Duration, ConnectionKey)> {
+        self.prune(at);
+        if is_outgoing && is_request {
+            self.start(pending_key, (at, connection_key));
+            return None;
+        }
+        if !is_outgoing && is_response {
+            let (sent_at, request_key) = self.complete(&pending_key)?;
+            return Some((at.duration_since(sent_at).unwrap_or_default(), request_key));
+        }
+        None
+    }
+}
+
+/// Correlation scope for protocols that use the DNS transaction ID.
+///
+/// Unicast DNS can pair on the full connection. LLMNR queries are multicast
+/// and their responses are unicast, so they pair on the local socket instead.
+/// Keeping both variants in one table shares bounds and expiry while avoiding
+/// cross-protocol collisions when the same socket and ID happen to be reused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DnsTransactionKey {
+    Unicast(ConnectionKey, u16),
+    Llmnr(SocketAddr, u16),
+}
+
 /// Tracks pending handshake packets and recent RTT measurements.
 ///
 /// Every pending timestamp here is the packet's **capture** time, supplied by
@@ -105,9 +146,10 @@ pub struct RttTracker {
     /// Outbound QUIC handshake packets awaiting a reply from the peer:
     /// (connection_key -> capture time)
     pending_quic_handshakes: PendingTable<ConnectionKey>,
-    /// Outbound DNS queries awaiting their response, keyed by connection and
-    /// transaction ID (stub resolvers reuse one socket for many queries).
-    pending_dns: PendingTable<(ConnectionKey, u16)>,
+    /// Outbound DNS and LLMNR queries awaiting their response. Both use the
+    /// DNS transaction ID, but LLMNR uses a local-socket scope because its
+    /// multicast query and unicast response have different remote endpoints.
+    pending_dns: PendingTable<DnsTransactionKey, (SystemTime, ConnectionKey)>,
     /// Outbound NetBIOS requests awaiting a response. The remote endpoint is
     /// intentionally absent from the map key because Name Service requests are
     /// commonly sent to a broadcast address and answered by an individual
@@ -222,18 +264,41 @@ impl RttTracker {
         is_response: bool,
         at: SystemTime,
     ) -> Option<Duration> {
-        self.pending_dns.prune(at);
-        match (is_outgoing, is_response) {
-            (true, false) => {
-                self.pending_dns.start((key, txid), at);
-                None
-            }
-            (false, true) => {
-                let sent_at = self.pending_dns.complete(&(key, txid))?;
-                Some(at.duration_since(sent_at).unwrap_or_default())
-            }
-            _ => None,
-        }
+        self.pending_dns
+            .record_exchange(
+                DnsTransactionKey::Unicast(key, txid),
+                key,
+                is_outgoing,
+                !is_response,
+                is_response,
+                at,
+            )
+            .map(|(rtt, _)| rtt)
+    }
+
+    /// Record an LLMNR packet and return the first response time together with
+    /// the multicast query's connection key.
+    ///
+    /// RFC 4795 responses copy the query's 16-bit ID, but a multicast query is
+    /// answered via unicast. Pairing on the local socket and ID bridges those
+    /// different connection keys. Only the first response completes the
+    /// pending query, which is the useful resolver latency for a multi-responder
+    /// exchange.
+    pub fn record_llmnr_packet(
+        &mut self,
+        key: ConnectionKey,
+        info: &LlmnrInfo,
+        is_outgoing: bool,
+        at: SystemTime,
+    ) -> Option<(Duration, ConnectionKey)> {
+        self.pending_dns.record_exchange(
+            DnsTransactionKey::Llmnr(key.local_addr, info.txid),
+            key,
+            is_outgoing,
+            !info.is_response,
+            info.is_response,
+            at,
+        )
     }
 
     /// Record a NetBIOS packet and, when an incoming final response matches an
@@ -254,17 +319,15 @@ impl RttTracker {
         is_outgoing: bool,
         at: SystemTime,
     ) -> Option<(Duration, ConnectionKey)> {
-        self.pending_netbios.prune(at);
         let pending_key = (key.local_addr, info.service, info.transaction_id);
-        if is_outgoing && info.is_request() {
-            self.pending_netbios.start(pending_key, (at, key));
-            return None;
-        }
-        if !is_outgoing && info.is_response {
-            let (sent_at, request_key) = self.pending_netbios.complete(&pending_key)?;
-            return Some((at.duration_since(sent_at).unwrap_or_default(), request_key));
-        }
-        None
+        self.pending_netbios.record_exchange(
+            pending_key,
+            key,
+            is_outgoing,
+            info.is_request(),
+            info.is_response,
+            at,
+        )
     }
 
     /// Record an ICMP echo packet, returning the RTT when an incoming reply
@@ -416,7 +479,9 @@ impl Default for RttTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::types::{NetBiosOpcode, NetBiosResponseStatus, Protocol};
+    use crate::network::types::{
+        DnsQueryType, LlmnrInfo, NetBiosOpcode, NetBiosResponseStatus, Protocol,
+    };
     use std::net::{IpAddr, Ipv4Addr};
 
     // ========================================================================
@@ -446,6 +511,16 @@ mod tests {
             transaction_id,
             is_response,
             response_status: is_response.then_some(NetBiosResponseStatus::NameService(0)),
+        }
+    }
+
+    fn llmnr_test_info(txid: u16, is_response: bool) -> LlmnrInfo {
+        LlmnrInfo {
+            query_name: Some("workstation".to_string()),
+            query_type: Some(DnsQueryType::A),
+            is_response,
+            response_ips: Vec::new(),
+            txid,
         }
     }
 
@@ -648,6 +723,77 @@ mod tests {
         tracker.record_dns_packet(key, 42, true, false, rtt_capture_time(1_000));
         let rtt = tracker.record_dns_packet(key, 42, false, true, rtt_capture_time(1_015));
         assert_eq!(rtt, Some(Duration::from_millis(15)));
+    }
+
+    #[test]
+    fn test_rtt_tracker_llmnr_pairs_first_unicast_response() {
+        let mut tracker = RttTracker::new();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 40_000);
+        let query_key = ConnectionKey::new(
+            Protocol::Udp,
+            local,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 252)), 5355),
+        );
+        let first_response_key = ConnectionKey::new(
+            Protocol::Udp,
+            local,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 5355),
+        );
+        let second_response_key = ConnectionKey::new(
+            Protocol::Udp,
+            local,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 21)), 5355),
+        );
+        let query = llmnr_test_info(0x1234, false);
+        let response = llmnr_test_info(0x1234, true);
+
+        tracker.record_llmnr_packet(query_key, &query, true, rtt_capture_time(0));
+        let first =
+            tracker.record_llmnr_packet(first_response_key, &response, false, rtt_capture_time(17));
+        assert_eq!(first, Some((Duration::from_millis(17), query_key)));
+
+        let second = tracker.record_llmnr_packet(
+            second_response_key,
+            &response,
+            false,
+            rtt_capture_time(24),
+        );
+        assert!(
+            second.is_none(),
+            "only the first response completes the query"
+        );
+        assert!(tracker.pending_dns.is_empty());
+    }
+
+    #[test]
+    fn test_rtt_tracker_pending_llmnr_expires() {
+        let mut tracker = RttTracker::new();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 40_000);
+        let query_key = ConnectionKey::new(
+            Protocol::Udp,
+            local,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 252)), 5355),
+        );
+        let response_key = ConnectionKey::new(
+            Protocol::Udp,
+            local,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 5355),
+        );
+
+        tracker.record_llmnr_packet(
+            query_key,
+            &llmnr_test_info(0x1234, false),
+            true,
+            rtt_capture_time(0),
+        );
+        let rtt = tracker.record_llmnr_packet(
+            response_key,
+            &llmnr_test_info(0x1234, true),
+            false,
+            rtt_capture_time(11_000),
+        );
+        assert!(rtt.is_none(), "the pending query expired after 10s");
+        assert!(tracker.pending_dns.is_empty());
     }
 
     #[test]

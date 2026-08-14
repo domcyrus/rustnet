@@ -198,6 +198,10 @@ pub struct Connection {
     // separate from the transport-level `initial_rtt`.
     pub dns_response_time: Option<std::time::Duration>,
 
+    // Latest LLMNR query-to-first-response time, paired by transaction ID and
+    // local socket across the multicast query and unicast response rows.
+    pub llmnr_response_time: Option<std::time::Duration>,
+
     // Latest NetBIOS request-to-response time, paired by transaction ID.
     // Kept separate from transport RTT because it includes service processing.
     pub netbios_response_time: Option<std::time::Duration>,
@@ -274,6 +278,7 @@ impl Connection {
             tcp_analytics,
             initial_rtt: None,
             dns_response_time: None,
+            llmnr_response_time: None,
             netbios_response_time: None,
             icmp_echo_rtt: None,
             stun_rtt: None,

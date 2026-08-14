@@ -1373,6 +1373,40 @@ mod snapshot_tests {
         );
     }
 
+    /// LLMNR lookup latency is measured to the first unicast response, and is
+    /// shown on the multicast query row that a user naturally inspects.
+    #[test]
+    fn details_tab_llmnr_shows_response_time_in_transport_health() {
+        use crate::network::types::{
+            ApplicationProtocol, DnsQueryType, DpiInfo, LlmnrInfo, ProtocolState,
+        };
+
+        let app = test_app();
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 40_000);
+        let multicast = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 252)), 5355);
+        let mut llmnr = Connection::new(Protocol::Udp, local, multicast, ProtocolState::Udp);
+        llmnr.llmnr_response_time = Some(Duration::from_micros(14_800));
+        llmnr.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Llmnr(LlmnrInfo {
+                query_name: Some("fileserver".to_string()),
+                query_type: Some(DnsQueryType::A),
+                is_response: false,
+                response_ips: Vec::new(),
+                txid: 0x1234,
+            }),
+            last_update_time: std::time::Instant::now(),
+        });
+        let connections = vec![llmnr];
+
+        app.set_connections_snapshot_for_test(connections.clone());
+        let output = render_details(&app, &connections, 0);
+
+        assert!(output.contains("LLMNR Response Time") && output.contains("14.8ms"));
+        assert!(output.contains("First response paired by transaction ID"));
+        assert!(output.contains("Query Name") && output.contains("fileserver"));
+        assert!(!output.contains("No transport metrics for this protocol"));
+    }
+
     #[test]
     fn details_tab_netbios_shows_response_time_in_transport_health() {
         use crate::network::types::{

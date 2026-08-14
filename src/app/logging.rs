@@ -163,7 +163,7 @@ fn kubernetes_json(conn: &Connection) -> Option<Value> {
     if let Some(v) = &k8s.cgroup_path {
         obj.insert("cgroup_path".into(), json!(v));
     }
-    (!obj.is_empty()).then(|| Value::Object(obj))
+    (!obj.is_empty()).then_some(Value::Object(obj))
 }
 
 /// GeoIP fields, added only when they have actual values.
