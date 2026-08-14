@@ -165,7 +165,7 @@ impl App {
 
                     // Drop CAP_NET_RAW now that the socket is open (Linux only)
                     #[cfg(all(target_os = "linux", feature = "landlock"))]
-                    crate::network::platform::sandbox::capabilities::drop_unused_thread_caps(
+                    rustnet_sandbox::capabilities::drop_unused_thread_caps(
                         "capture thread",
                     );
 
@@ -431,7 +431,7 @@ impl App {
                 // This thread only parses captured bytes; it needs neither raw
                 // sockets nor bpf(2) (Linux only).
                 #[cfg(all(target_os = "linux", feature = "landlock"))]
-                crate::network::platform::sandbox::capabilities::drop_unused_thread_caps(&format!(
+                rustnet_sandbox::capabilities::drop_unused_thread_caps(&format!(
                     "processor thread {id}"
                 ));
 

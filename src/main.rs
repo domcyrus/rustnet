@@ -145,7 +145,7 @@ fn main() -> Result<()> {
         info!("Root uid drop disabled by --no-uid-drop");
         None
     } else {
-        network::platform::privdrop::resolve_drop_target()
+        rustnet_sandbox::privdrop::resolve_drop_target()
     };
 
     let mut output_handles = app::AppOutputHandles::default();
@@ -245,49 +245,41 @@ fn main() -> Result<()> {
         }
     }
 
-    // Apply Landlock sandbox (Linux only)
-    // This must be done AFTER process detection is initialized because:
+    // Apply the sandbox (rustnet-sandbox crate: Landlock + capability drops
+    // on Linux, uid drop + Seatbelt on macOS, restricted token + job object
+    // on Windows, uid drop on FreeBSD).
+    // This must be done AFTER process detection and capture init because:
     // - eBPF programs need to be loaded first (requires CAP_BPF + CAP_PERFMON)
-    // - Packet capture handles need to be opened first (access to /dev)
+    // - Packet capture handles need to be opened first (raw sockets, /dev/bpf*)
     // - Log files need to be created first
-    #[cfg(target_os = "linux")]
     {
-        use network::geoip::GeoIpResolver;
-        use network::platform::sandbox::{
-            SandboxConfig, SandboxMode, SandboxStatus, apply_sandbox,
-        };
+        use rustnet_sandbox::{SandboxConfig, SandboxMode, SandboxReport, apply_sandbox};
         use std::path::PathBuf;
 
-        let sandbox_mode = if matches.get_flag("no-sandbox") {
-            SandboxMode::Disabled
-        } else if matches.get_flag("sandbox-strict") {
-            SandboxMode::Strict
-        } else {
-            SandboxMode::BestEffort
-        };
+        let sandbox_mode = SandboxMode::from_flags(
+            matches.get_flag("no-sandbox"),
+            matches.get_flag("sandbox-strict"),
+        );
 
         // Collect read paths (GeoIP databases). Exclude the bare current-directory
         // entry: a Landlock PathBeneath rule on "." grants recursive read access to
         // the entire CWD subtree (e.g. all of $HOME when rustnet is launched from
         // there), which defeats the point of the read-path whitelist. The concrete
         // GeoIP locations (resources/geoip2, XDG/system dirs) stay covered.
-        #[cfg(not(feature = "kubernetes"))]
-        let read_paths: Vec<PathBuf> = GeoIpResolver::get_search_paths()
-            .into_iter()
-            .filter(|p| p.exists() && p.as_os_str() != ".")
-            .collect();
-
-        // When Kubernetes attribution is enabled, the resolver also reads pod
-        // and container names from the kubelet log directories. /proc is
-        // already granted below for process lookup; these need explicit read
-        // access or the periodic metadata refresh would be denied once Landlock
-        // applies.
-        #[cfg(feature = "kubernetes")]
+        //
+        // When Kubernetes attribution is enabled (Linux), the resolver also reads
+        // pod and container names from the kubelet log directories; these need
+        // explicit read access or the periodic metadata refresh would be denied
+        // once Landlock applies.
+        #[cfg(target_os = "linux")]
         let read_paths: Vec<PathBuf> = {
+            use network::geoip::GeoIpResolver;
+            #[allow(unused_mut)]
             let mut paths: Vec<PathBuf> = GeoIpResolver::get_search_paths()
                 .into_iter()
                 .filter(|p| p.exists() && p.as_os_str() != ".")
                 .collect();
+            #[cfg(feature = "kubernetes")]
             if config.kubernetes_mode.enabled() {
                 for dir in ["/var/log/containers", "/var/log/pods"] {
                     let pb = PathBuf::from(dir);
@@ -299,292 +291,74 @@ fn main() -> Result<()> {
             paths
         };
 
-        let mut write_paths = Vec::new();
-
-        // Add logs directory if logging is enabled
-        if matches.get_one::<String>("log-level").is_some() {
-            write_paths.push(PathBuf::from("logs"));
-        }
-
-        // Add JSON log path if specified
-        if let Some(json_log_path) = &config.json_log_file {
-            write_paths.push(PathBuf::from(json_log_path));
-        }
-
-        // Add PCAP export paths if specified (both .pcap and .pcap.connections.jsonl)
-        if let Some(pcap_path) = &config.pcap_export_file {
-            write_paths.push(PathBuf::from(pcap_path));
-            write_paths.push(PathBuf::from(format!("{}.connections.jsonl", pcap_path)));
-        }
-
-        if let Some(pcapng_path) = &config.pcapng_export_file {
-            write_paths.push(PathBuf::from(pcapng_path));
-        }
-
-        let sandbox_config = SandboxConfig {
-            mode: sandbox_mode,
-            block_network: true, // RustNet is passive, doesn't need TCP
-            read_paths,
-            write_paths,
-            drop_uid: uid_drop_target,
-        };
-
-        match apply_sandbox(&sandbox_config) {
-            Ok(result) => {
-                // Update UI with sandbox status
-                let status_str = match result.status {
-                    SandboxStatus::FullyEnforced => "Fully enforced",
-                    SandboxStatus::PartiallyEnforced => "Partially enforced",
-                    SandboxStatus::NotApplied => "Not applied",
-                };
-
-                app.set_sandbox_info(app::SandboxInfo {
-                    status: status_str.to_string(),
-                    cap_dropped: result.cap_net_raw_dropped,
-                    ebpf_caps_dropped: result.ebpf_caps_dropped,
-                    uid_dropped: result.uid_dropped,
-                    landlock_available: result.landlock_available,
-                    fs_restricted: result.landlock_fs_applied,
-                    net_restricted: result.landlock_net_applied,
-                    scope_restricted: result.landlock_scope_applied,
-                    landlock_abi: result.landlock_effective_abi,
-                    no_new_privs: result.no_new_privs,
-                });
-            }
-            Err(e) => {
-                if sandbox_mode == SandboxMode::Strict {
-                    return Err(e.context("Sandbox enforcement required but failed"));
-                }
-                warn!("Sandbox application error (non-strict mode): {}", e);
-                app.set_sandbox_info(app::SandboxInfo {
-                    status: "Error".to_string(),
-                    cap_dropped: false,
-                    ebpf_caps_dropped: false,
-                    uid_dropped: false,
-                    landlock_available: false,
-                    fs_restricted: false,
-                    net_restricted: false,
-                    scope_restricted: false,
-                    landlock_abi: None,
-                    no_new_privs: false,
-                });
-            }
-        }
-    }
-
-    // Drop root privileges (macOS only). Done after process detection init
-    // (capture fds are open, PKTAP is set up) and BEFORE Seatbelt, so the
-    // profile does not need to allow the setuid/setgid syscalls. Compiled
-    // without the macos-sandbox feature too; only the flag lookups depend on
-    // the feature (the flags do not exist in non-sandbox builds).
-    #[cfg(target_os = "macos")]
-    let uid_dropped = {
-        #[cfg(feature = "macos-sandbox")]
-        let (skip, strict) = (
-            matches.get_flag("no-sandbox"),
-            matches.get_flag("sandbox-strict"),
-        );
-        #[cfg(not(feature = "macos-sandbox"))]
-        let (skip, strict) = (false, false);
-
-        match uid_drop_target {
-            Some(target) if !skip => match network::platform::privdrop::drop_to(target) {
-                Ok(()) => {
-                    info!(
-                        "Dropped root privileges to uid {} gid {} (verified); lsof-fallback \
-                         process attribution is now limited to that user's processes (PKTAP \
-                         attribution unaffected)",
-                        target.uid, target.gid
-                    );
-                    true
-                }
-                Err(e) => {
-                    if strict {
-                        return Err(e.context("Strict mode requires the root uid drop to succeed"));
-                    }
-                    warn!("Failed to drop root uid/gid: {}", e);
-                    false
-                }
-            },
-            Some(_) => {
-                info!("Root uid drop skipped (--no-sandbox)");
-                false
-            }
-            None => false,
-        }
-    };
-    #[cfg(all(target_os = "macos", not(feature = "macos-sandbox")))]
-    let _ = uid_dropped;
-
-    // Drop root privileges (FreeBSD only). Done after process detection init,
-    // when the BPF capture fds are open and nothing needs root anymore. There
-    // is no sandbox on FreeBSD yet (Capsicum is planned), so until then this
-    // is the primary containment.
-    #[cfg(target_os = "freebsd")]
-    if let Some(target) = uid_drop_target {
-        match network::platform::privdrop::drop_to(target) {
-            Ok(()) => info!(
-                "Dropped root privileges to uid {} gid {} (verified); sockstat process \
-                 attribution is now limited to that user's processes",
-                target.uid, target.gid
-            ),
-            Err(e) => warn!("Failed to drop root uid/gid: {}", e),
-        }
-    }
-
-    // Apply Seatbelt sandbox (macOS only)
-    // This must be done AFTER app.start() because:
-    // - Packet capture handles need to be opened first (BPF/PKTAP fds survive the sandbox)
-    // - Log files need to be created first
-    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
-    {
-        use network::platform::sandbox::{
-            SandboxConfig, SandboxMode, SandboxStatus, apply_sandbox,
-        };
-
-        let sandbox_mode = if matches.get_flag("no-sandbox") {
-            SandboxMode::Disabled
-        } else if matches.get_flag("sandbox-strict") {
-            SandboxMode::Strict
-        } else {
-            SandboxMode::BestEffort
-        };
-
-        let log_dir = if matches.get_one::<String>("log-level").is_some() {
-            Some("logs".to_string())
-        } else {
-            None
-        };
-
-        // Collect GeoIP paths that may need read access through the sandbox.
-        // User-specified paths take priority; otherwise include auto-discovery
-        // search paths so the file-read deny on /Users doesn't block them.
-        let geoip_paths: Vec<String> = {
+        // On macOS user-specified GeoIP paths take priority; otherwise include
+        // auto-discovery search paths so the file-read deny on /Users doesn't
+        // block them.
+        #[cfg(target_os = "macos")]
+        let read_paths: Vec<PathBuf> = {
             use network::geoip::GeoIpResolver;
-            let mut paths = Vec::new();
-            if let Some(ref p) = config.geoip_country_path {
-                paths.push(p.clone());
-            }
-            if let Some(ref p) = config.geoip_asn_path {
-                paths.push(p.clone());
-            }
-            if let Some(ref p) = config.geoip_city_path {
-                paths.push(p.clone());
-            }
+            let mut paths: Vec<PathBuf> = [
+                &config.geoip_country_path,
+                &config.geoip_asn_path,
+                &config.geoip_city_path,
+            ]
+            .into_iter()
+            .flatten()
+            .map(PathBuf::from)
+            .collect();
             if paths.is_empty() && !config.disable_geoip {
                 // Use auto-discovery search paths (directories, not individual files)
                 paths.extend(
                     GeoIpResolver::get_search_paths()
                         .into_iter()
-                        .filter(|p| p.exists())
-                        .map(|p| p.to_string_lossy().into_owned()),
+                        .filter(|p| p.exists()),
                 );
             }
             paths
         };
 
-        let sandbox_config = SandboxConfig {
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let read_paths: Vec<PathBuf> = Vec::new();
+
+        // Collect write paths: the logs directory when logging is enabled, plus
+        // every configured output file (JSON log, PCAP export + its sidecar
+        // JSONL, PCAPNG export). Ignored by backends without filesystem rules.
+        let mut write_paths: Vec<PathBuf> = Vec::new();
+        if matches.get_one::<String>("log-level").is_some() {
+            write_paths.push(PathBuf::from("logs"));
+        }
+        if let Some(json_log_path) = &config.json_log_file {
+            write_paths.push(PathBuf::from(json_log_path));
+        }
+        if let Some(pcap_path) = &config.pcap_export_file {
+            write_paths.push(PathBuf::from(pcap_path));
+            write_paths.push(PathBuf::from(format!("{}.connections.jsonl", pcap_path)));
+        }
+        if let Some(pcapng_path) = &config.pcapng_export_file {
+            write_paths.push(PathBuf::from(pcapng_path));
+        }
+
+        #[allow(unused_mut)]
+        let mut sandbox_config = SandboxConfig {
             mode: sandbox_mode,
             block_network: true, // RustNet is passive, doesn't need TCP
-            log_dir,
-            json_log_path: config.json_log_file,
-            pcap_export_path: config.pcap_export_file,
-            pcapng_export_path: config.pcapng_export_file,
-            geoip_paths,
+            read_paths,
+            write_paths,
+            ..SandboxConfig::default()
         };
-
-        match apply_sandbox(&sandbox_config) {
-            Ok(result) => {
-                let status_str = match result.status {
-                    SandboxStatus::FullyEnforced => {
-                        info!("Seatbelt sandbox fully enforced: {}", result.message);
-                        "Fully enforced"
-                    }
-                    SandboxStatus::NotApplied => {
-                        warn!("Seatbelt sandbox not applied: {}", result.message);
-                        "Not applied"
-                    }
-                };
-
-                app.set_sandbox_info(app::SandboxInfo {
-                    status: status_str.to_string(),
-                    seatbelt_applied: result.seatbelt_applied,
-                    fs_restricted: result.fs_restricted,
-                    net_restricted: result.net_blocked,
-                    uid_dropped,
-                });
-            }
-            Err(e) => {
-                if sandbox_mode == SandboxMode::Strict {
-                    return Err(e.context("Seatbelt sandbox enforcement required but failed"));
-                }
-                info!("Seatbelt sandbox error (non-strict mode): {}", e);
-                app.set_sandbox_info(app::SandboxInfo {
-                    status: "Error".to_string(),
-                    seatbelt_applied: false,
-                    fs_restricted: false,
-                    net_restricted: false,
-                    uid_dropped,
-                });
-            }
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+        {
+            sandbox_config.drop_uid = uid_drop_target;
         }
-    }
-
-    // Apply restricted token sandbox (Windows only)
-    // This must be done AFTER app.start() because:
-    // - Npcap handles need to be opened first
-    // - Log files need to be created first
-    #[cfg(target_os = "windows")]
-    {
-        use network::platform::sandbox::{
-            SandboxConfig, SandboxMode, SandboxStatus, apply_sandbox,
-        };
-
-        let sandbox_mode = if matches.get_flag("no-sandbox") {
-            SandboxMode::Disabled
-        } else if matches.get_flag("sandbox-strict") {
-            SandboxMode::Strict
-        } else {
-            SandboxMode::BestEffort
-        };
-
-        let sandbox_config = SandboxConfig { mode: sandbox_mode };
 
         match apply_sandbox(&sandbox_config) {
-            Ok(result) => {
-                let status_str = match result.status {
-                    SandboxStatus::FullyEnforced => {
-                        info!("Windows sandbox fully enforced: {}", result.message);
-                        "Fully enforced"
-                    }
-                    SandboxStatus::PartiallyEnforced => {
-                        warn!("Windows sandbox partially enforced: {}", result.message);
-                        "Partially enforced"
-                    }
-                    SandboxStatus::NotApplied => {
-                        warn!("Windows sandbox not applied: {}", result.message);
-                        "Not applied"
-                    }
-                };
-
-                app.set_sandbox_info(app::SandboxInfo {
-                    status: status_str.to_string(),
-                    privileges_removed: result.privileges_removed,
-                    privileges_removed_count: result.privileges_removed_count,
-                    job_object_applied: result.job_object_applied,
-                });
-            }
+            Ok(report) => app.set_sandbox_info(report),
             Err(e) => {
                 if sandbox_mode == SandboxMode::Strict {
-                    return Err(e.context("Windows sandbox enforcement required but failed"));
+                    return Err(e.context("Sandbox enforcement required but failed"));
                 }
-                warn!("Windows sandbox error (non-strict mode): {}", e);
-                app.set_sandbox_info(app::SandboxInfo {
-                    status: "Error".to_string(),
-                    privileges_removed: false,
-                    privileges_removed_count: 0,
-                    job_object_applied: false,
-                });
+                warn!("Sandbox application error (non-strict mode): {}", e);
+                app.set_sandbox_info(SandboxReport::from_error(&e));
             }
         }
     }
@@ -697,12 +471,12 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn chown_to_uid_drop_target(
     file: &fs::File,
-    target: Option<network::platform::privdrop::DropTarget>,
+    target: Option<rustnet_sandbox::privdrop::DropTarget>,
     label: &str,
     path: &str,
 ) {
     if let Some(target) = target
-        && let Err(e) = network::platform::privdrop::chown_to_target(file, target)
+        && let Err(e) = rustnet_sandbox::privdrop::chown_to_target(file, target)
     {
         warn!(
             "Failed to chown {} file '{}' to uid {}: {} (the file may not be writable after the root uid drop)",

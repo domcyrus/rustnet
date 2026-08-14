@@ -16,8 +16,8 @@
 //!   (kernel 6.12+, ABI v6)
 //! - Capabilities: CAP_NET_RAW, CAP_BPF, CAP_PERFMON dropped
 //! - Identity: when started as root (e.g. `sudo rustnet`), euid/egid drop to
-//!   the invoking user (SUDO_UID/SUDO_GID) or `nobody`, see [`privdrop`].
-//!   Disable with `--no-uid-drop`.
+//!   the invoking user (SUDO_UID/SUDO_GID) or `nobody`, see
+//!   [`privdrop`](crate::privdrop). Disable with `--no-uid-drop`.
 //! - Privileges: PR_SET_NO_NEW_PRIVS set by rustnet itself (no privilege
 //!   escalation via execve). This is applied unconditionally — even with
 //!   `--no-sandbox` or when Landlock is unavailable — since it is privilege
@@ -42,84 +42,8 @@
 pub mod capabilities;
 #[cfg(feature = "landlock")]
 mod landlock;
-// Not gated on `landlock`: the uid drop only needs libc, and matters most on
-// exactly the kernels/builds where Landlock is unavailable.
-pub mod privdrop;
-use std::path::PathBuf;
 
-/// Sandbox enforcement mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SandboxMode {
-    /// Apply sandbox with best-effort (graceful degradation on older kernels)
-    #[default]
-    BestEffort,
-    /// Require full sandbox enforcement or fail
-    Strict,
-    /// Disable sandboxing entirely
-    Disabled,
-}
-
-/// Configuration for the sandbox
-// Without the landlock feature only the stub apply_sandbox() exists, which
-// reads just `mode` and `drop_uid`; the remaining fields are part of the
-// shared API.
-#[cfg_attr(not(feature = "landlock"), allow(dead_code))]
-#[derive(Debug, Clone, Default)]
-pub struct SandboxConfig {
-    /// Sandbox enforcement mode
-    pub mode: SandboxMode,
-    /// Block TCP bind/connect (recommended for passive monitors)
-    pub block_network: bool,
-    /// Paths that need read access (e.g., GeoIP databases)
-    pub read_paths: Vec<PathBuf>,
-    /// Paths that need write access (e.g., log files)
-    pub write_paths: Vec<PathBuf>,
-    /// When running as root: the identity to drop to after initialization
-    /// (`None` = not root, or drop disabled via `--no-uid-drop`)
-    pub drop_uid: Option<privdrop::DropTarget>,
-}
-
-/// Result of sandbox application
-#[cfg_attr(not(feature = "landlock"), allow(dead_code))]
-#[derive(Debug, Clone)]
-pub struct SandboxResult {
-    /// Overall status
-    pub status: SandboxStatus,
-    /// Human-readable message
-    pub message: String,
-    /// Whether CAP_NET_RAW was dropped
-    pub cap_net_raw_dropped: bool,
-    /// Whether CAP_BPF/CAP_PERFMON were dropped
-    pub ebpf_caps_dropped: bool,
-    /// Whether the root uid/gid were dropped (setresuid to the sudo user or nobody)
-    pub uid_dropped: bool,
-    /// Whether Landlock is available on this kernel
-    pub landlock_available: bool,
-    /// Whether Landlock filesystem restrictions were applied
-    pub landlock_fs_applied: bool,
-    /// Whether Landlock network restrictions were applied
-    pub landlock_net_applied: bool,
-    /// Whether Landlock scope restrictions (abstract UNIX sockets + signals) were applied
-    pub landlock_scope_applied: bool,
-    /// Effective Landlock ABI negotiated with the kernel (e.g. `Some(6)`), or
-    /// `None` when Landlock is unavailable / not enforced
-    pub landlock_effective_abi: Option<u8>,
-    /// Whether PR_SET_NO_NEW_PRIVS is set (applied even when the sandbox is
-    /// disabled)
-    pub no_new_privs: bool,
-}
-
-/// Status of sandbox application
-#[cfg_attr(not(feature = "landlock"), allow(dead_code))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SandboxStatus {
-    /// Sandbox fully enforced (all requested restrictions applied)
-    FullyEnforced,
-    /// Sandbox partially enforced (some features unavailable on this kernel)
-    PartiallyEnforced,
-    /// Sandbox not applied (disabled, or kernel doesn't support)
-    NotApplied,
-}
+use crate::{SandboxConfig, SandboxMode, SandboxReport, SandboxStatus, privdrop};
 
 /// Set PR_SET_NO_NEW_PRIVS: execve() can never grant new privileges
 /// (setuid/setgid bits, file capabilities). Irreversible and inherited by
@@ -135,19 +59,10 @@ fn set_no_new_privs() -> std::io::Result<()> {
     }
 }
 
-/// Apply the sandbox with the given configuration
-///
-/// This should be called AFTER:
-/// - eBPF programs are loaded
-/// - Packet capture handles are opened
-/// - Log files are created
-///
-/// # Returns
-///
-/// Returns `Ok(SandboxResult)` with details about what was applied.
-/// In `Strict` mode, returns `Err` if full sandboxing cannot be achieved.
+/// Apply the sandbox with the given configuration (see crate docs for the
+/// required application order).
 #[cfg(feature = "landlock")]
-pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
+pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     use anyhow::Context;
 
     // Set PR_SET_NO_NEW_PRIVS first, regardless of sandbox mode. This is
@@ -181,33 +96,19 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         } else {
             "Sandbox disabled by configuration"
         };
-        return Ok(SandboxResult {
-            status: SandboxStatus::NotApplied,
+        return Ok(SandboxReport {
             message: message.to_string(),
-            cap_net_raw_dropped: false,
-            ebpf_caps_dropped: false,
-            uid_dropped: false,
             landlock_available,
-            landlock_fs_applied: false,
-            landlock_net_applied: false,
-            landlock_scope_applied: false,
-            landlock_effective_abi: None,
             no_new_privs,
+            ..SandboxReport::default()
         });
     }
 
-    let mut result = SandboxResult {
+    let mut result = SandboxReport {
         status: SandboxStatus::FullyEnforced,
-        message: String::new(),
-        cap_net_raw_dropped: false,
-        ebpf_caps_dropped: false,
-        uid_dropped: false,
         landlock_available,
-        landlock_fs_applied: false,
-        landlock_net_applied: false,
-        landlock_scope_applied: false,
-        landlock_effective_abi: None,
         no_new_privs,
+        ..SandboxReport::default()
     };
 
     let mut messages = Vec::new();
@@ -315,10 +216,10 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
     // Step 4: Apply Landlock restrictions
     match landlock::apply_landlock(config) {
         Ok(ll_result) => {
-            result.landlock_fs_applied = ll_result.fs_applied;
-            result.landlock_net_applied = ll_result.net_applied;
-            result.landlock_scope_applied = ll_result.scope_applied;
-            result.landlock_effective_abi = ll_result.effective_abi;
+            result.fs_restricted = ll_result.fs_applied;
+            result.net_restricted = ll_result.net_applied;
+            result.scope_restricted = ll_result.scope_applied;
+            result.landlock_abi = ll_result.effective_abi;
 
             if ll_result.fs_applied {
                 messages.push("Landlock filesystem restrictions applied".to_string());
@@ -361,8 +262,8 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
     // Determine final status
     if !result.cap_net_raw_dropped
         && !result.uid_dropped
-        && !result.landlock_fs_applied
-        && !result.landlock_net_applied
+        && !result.fs_restricted
+        && !result.net_restricted
     {
         result.status = SandboxStatus::NotApplied;
     }
@@ -375,7 +276,7 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
         SandboxStatus::PartiallyEnforced => {
             log::warn!("Sandbox partially enforced: {}", messages.join("; "));
         }
-        SandboxStatus::NotApplied => {
+        _ => {
             log::warn!("Sandbox not applied: {}", messages.join("; "));
         }
     }
@@ -385,9 +286,9 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
     Ok(result)
 }
 
-/// Stub implementation when Landlock feature is disabled
+/// Stub implementation when the Landlock feature is disabled
 #[cfg(not(feature = "landlock"))]
-pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
+pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     // PR_SET_NO_NEW_PRIVS is independent of Landlock support, so non-landlock
     // builds still get the execve privilege lock.
     let no_new_privs = match set_no_new_privs() {
@@ -441,22 +342,16 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxResult> {
     } else {
         "Landlock feature not compiled in"
     };
-    Ok(SandboxResult {
+    Ok(SandboxReport {
         status: if uid_dropped {
             SandboxStatus::PartiallyEnforced
         } else {
             SandboxStatus::NotApplied
         },
         message: format!("{}{}", message, drop_message),
-        cap_net_raw_dropped: false,
-        ebpf_caps_dropped: false,
         uid_dropped,
-        landlock_available: false,
-        landlock_fs_applied: false,
-        landlock_net_applied: false,
-        landlock_scope_applied: false,
-        landlock_effective_abi: None,
         no_new_privs,
+        ..SandboxReport::default()
     })
 }
 

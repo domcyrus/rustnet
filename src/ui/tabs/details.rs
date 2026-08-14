@@ -2780,7 +2780,7 @@ mod path_shortening_tests {
     #[cfg(all(target_os = "linux", feature = "landlock"))]
     #[test]
     fn current_account_ids_resolve_with_landlock_enforced() {
-        use crate::network::platform::sandbox::{SandboxConfig, SandboxMode, apply_sandbox};
+        use rustnet_sandbox::{SandboxConfig, SandboxMode, apply_sandbox};
 
         let result = apply_sandbox(&SandboxConfig {
             mode: SandboxMode::BestEffort,
@@ -2790,7 +2790,7 @@ mod path_shortening_tests {
             drop_uid: None,
         })
         .expect("best-effort sandbox must apply without error");
-        if !result.landlock_fs_applied {
+        if !result.fs_restricted {
             return;
         }
 

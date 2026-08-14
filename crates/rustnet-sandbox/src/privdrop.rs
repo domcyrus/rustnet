@@ -1,14 +1,14 @@
-//! Root privilege drop (setuid) for Linux
+//! Root privilege drop (setuid) for Linux, macOS, and FreeBSD
 //!
 //! When rustnet is started via `sudo` it keeps euid 0 for its whole lifetime,
 //! even though root is only needed during initialization: opening the raw
-//! capture socket (CAP_NET_RAW) and loading eBPF programs (CAP_BPF +
-//! CAP_PERFMON). Dropping capabilities alone still leaves euid 0, and on
-//! kernels without Landlock (< 5.13) that means a compromise of the DPI code
-//! runs as unconstrained root.
+//! capture socket or BPF devices and (on Linux) loading eBPF programs.
+//! Dropping capabilities alone still leaves euid 0, and on kernels without
+//! Landlock that means a compromise of the DPI code runs as unconstrained
+//! root.
 //!
 //! This module drops the process to the invoking sudo user (`SUDO_UID` /
-//! `SUDO_GID`), or to `nobody` (65534) when started as plain root, after all
+//! `SUDO_GID`), or to `nobody` when started as plain root, after all
 //! privileged initialization is complete. Already-open file descriptors (the
 //! capture socket, eBPF map/program fds, log and export files) remain valid
 //! across the drop.
@@ -22,11 +22,13 @@
 //!
 //! # Trade-offs
 //!
-//! After the drop, the procfs fallback for process attribution can only scan
-//! `/proc/<pid>/fd` of processes owned by the target user; the eBPF fast path
-//! is unaffected (it reads already-open map fds). Kubernetes log-directory
-//! metadata under `/var/log/pods` may also become unreadable. `--no-uid-drop`
-//! keeps the old keep-root behavior.
+//! After the drop, the per-platform process-attribution fallbacks can only see
+//! the target user's processes: the procfs `/proc/<pid>/fd` scan on Linux
+//! (the eBPF fast path is unaffected — it reads already-open map fds), the
+//! lsof fallback on macOS (PKTAP attribution unaffected), and sockstat on
+//! FreeBSD. Kubernetes log-directory metadata under `/var/log/pods` may also
+//! become unreadable on Linux. `--no-uid-drop` keeps the old keep-root
+//! behavior.
 
 use anyhow::{Result, anyhow};
 
@@ -37,8 +39,16 @@ pub struct DropTarget {
     pub gid: libc::gid_t,
 }
 
-/// Overflow uid/gid, `nobody`/`nogroup` on all mainstream distros. Used when
-/// rustnet runs as plain root (no sudo) or SUDO_UID/SUDO_GID are unusable.
+/// The `nobody` identity, used when rustnet runs as plain root (no sudo) or
+/// SUDO_UID/SUDO_GID are unusable. Linux and FreeBSD use the overflow id
+/// 65534 (`nobody`/`nogroup` on all mainstream distros); macOS defines
+/// `nobody` as -2.
+#[cfg(target_os = "macos")]
+const NOBODY: DropTarget = DropTarget {
+    uid: 0xFFFF_FFFE,
+    gid: 0xFFFF_FFFE,
+};
+#[cfg(not(target_os = "macos"))]
 const NOBODY: DropTarget = DropTarget {
     uid: 65534,
     gid: 65534,
@@ -87,15 +97,17 @@ pub fn chown_to_target(file: &std::fs::File, target: DropTarget) -> std::io::Res
 }
 
 /// Irreversibly drop root to `target`: supplementary groups first, then gid,
-/// then uid (all three of real/effective/saved so root cannot be regained).
+/// then uid. On Linux and FreeBSD all three of real/effective/saved ids are
+/// set (`setresgid`/`setresuid`) so root cannot be regained; macOS has no
+/// setres*id, so `setgid`/`setuid` are used, which as root set all ids too.
 ///
 /// Must be called while euid is 0. Uses the libc wrappers (not raw syscalls):
-/// glibc and musl broadcast set*id() to every thread of the process, so
-/// threads spawned before the drop (capture, enrichment) are covered too.
+/// libc broadcasts set*id() to every thread of the process, so threads
+/// spawned before the drop (capture, enrichment) are covered too.
 ///
-/// Side effect: transitioning all three uids away from 0 clears the effective
-/// and permitted capability sets, which subsumes the explicit capability
-/// drops that run before this.
+/// Side effect on Linux: transitioning all three uids away from 0 clears the
+/// effective and permitted capability sets, which subsumes the explicit
+/// capability drops that run before this.
 pub fn drop_to(target: DropTarget) -> Result<()> {
     if target.uid == 0 || target.gid == 0 {
         return Err(anyhow!("refusing to 'drop' to uid 0 / gid 0"));
@@ -111,38 +123,70 @@ pub fn drop_to(target: DropTarget) -> Result<()> {
         ));
     }
 
-    // gid before uid: once uid 0 is gone, setresgid would fail.
-    // SAFETY: setresgid/setresuid take plain integers.
-    if unsafe { libc::setresgid(target.gid, target.gid, target.gid) } != 0 {
-        return Err(anyhow!(
-            "setresgid({}) failed: {}",
-            target.gid,
-            std::io::Error::last_os_error()
-        ));
+    // gid before uid: once uid 0 is gone, changing the gid would fail.
+    #[cfg(not(target_os = "macos"))]
+    {
+        // SAFETY: setresgid/setresuid take plain integers.
+        if unsafe { libc::setresgid(target.gid, target.gid, target.gid) } != 0 {
+            return Err(anyhow!(
+                "setresgid({}) failed: {}",
+                target.gid,
+                std::io::Error::last_os_error()
+            ));
+        }
+        if unsafe { libc::setresuid(target.uid, target.uid, target.uid) } != 0 {
+            return Err(anyhow!(
+                "setresuid({}) failed: {}",
+                target.uid,
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        // Verify the drop stuck and root cannot be regained.
+        let (mut ruid, mut euid, mut suid) = (0, 0, 0);
+        let (mut rgid, mut egid, mut sgid) = (0, 0, 0);
+        // SAFETY: getresuid/getresgid write to the three provided out-pointers.
+        unsafe {
+            libc::getresuid(&mut ruid, &mut euid, &mut suid);
+            libc::getresgid(&mut rgid, &mut egid, &mut sgid);
+        }
+        if [ruid, euid, suid] != [target.uid; 3] || [rgid, egid, sgid] != [target.gid; 3] {
+            return Err(anyhow!(
+                "uid/gid drop verification failed (uids {ruid}/{euid}/{suid}, gids {rgid}/{egid}/{sgid})"
+            ));
+        }
     }
-    if unsafe { libc::setresuid(target.uid, target.uid, target.uid) } != 0 {
-        return Err(anyhow!(
-            "setresuid({}) failed: {}",
-            target.uid,
-            std::io::Error::last_os_error()
-        ));
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: setgid/setuid take plain integers.
+        if unsafe { libc::setgid(target.gid) } != 0 {
+            return Err(anyhow!(
+                "setgid({}) failed: {}",
+                target.gid,
+                std::io::Error::last_os_error()
+            ));
+        }
+        if unsafe { libc::setuid(target.uid) } != 0 {
+            return Err(anyhow!(
+                "setuid({}) failed: {}",
+                target.uid,
+                std::io::Error::last_os_error()
+            ));
+        }
+
+        // Verify the drop stuck. macOS has no getresuid; check real+effective.
+        // SAFETY: get*id() have no failure modes.
+        let (ruid, euid) = unsafe { (libc::getuid(), libc::geteuid()) };
+        let (rgid, egid) = unsafe { (libc::getgid(), libc::getegid()) };
+        if [ruid, euid] != [target.uid; 2] || [rgid, egid] != [target.gid; 2] {
+            return Err(anyhow!(
+                "uid/gid drop verification failed (uids {ruid}/{euid}, gids {rgid}/{egid})"
+            ));
+        }
     }
 
-    // Verify the drop stuck and root cannot be regained.
-    let (mut ruid, mut euid, mut suid) = (0, 0, 0);
-    let (mut rgid, mut egid, mut sgid) = (0, 0, 0);
-    // SAFETY: getresuid/getresgid write to the three provided out-pointers.
-    unsafe {
-        libc::getresuid(&mut ruid, &mut euid, &mut suid);
-        libc::getresgid(&mut rgid, &mut egid, &mut sgid);
-    }
-    if [ruid, euid, suid] != [target.uid; 3] || [rgid, egid, sgid] != [target.gid; 3] {
-        return Err(anyhow!(
-            "uid/gid drop verification failed (uids {ruid}/{euid}/{suid}, gids {rgid}/{egid}/{sgid})"
-        ));
-    }
-    // SAFETY: setuid takes a plain integer. With ruid/euid/suid all nonzero
-    // and no CAP_SETUID this must fail; success means the drop is unsound.
+    // SAFETY: setuid takes a plain integer. With every uid nonzero (and, on
+    // Linux, no CAP_SETUID) this must fail; success means the drop is unsound.
     if unsafe { libc::setuid(0) } == 0 {
         return Err(anyhow!("uid drop verification failed: setuid(0) succeeded"));
     }
@@ -156,12 +200,10 @@ mod tests {
 
     #[test]
     fn test_target_from_env_uses_sudo_ids() {
+        // A uid != gid pair must survive as-is (e.g. macOS's 501/20).
         assert_eq!(
-            target_from_env(Some("1000"), Some("1000")),
-            DropTarget {
-                uid: 1000,
-                gid: 1000
-            }
+            target_from_env(Some("501"), Some("20")),
+            DropTarget { uid: 501, gid: 20 }
         );
     }
 

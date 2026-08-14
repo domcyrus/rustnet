@@ -161,6 +161,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Helper on Windows) moved from the binary into `rustnet-core` behind a new
   `interface_stats::create_stats_provider()` composition point, and the
   macOS/FreeBSD getifaddrs walkers now share one implementation (#549)
+- **Sandboxing Moved to rustnet-sandbox**: Sandboxing and the root uid drop
+  now live in the new dependency-free `rustnet-sandbox` crate with one
+  `apply_sandbox` entry point per platform. `--no-sandbox` and
+  `--sandbox-strict` now exist on all platforms: FreeBSD honors them for the
+  uid drop (previously ignored), macOS builds without Seatbelt honor them
+  too, and macOS now reports partial enforcement (e.g. Seatbelt applied but
+  uid drop failed) instead of only fully-enforced/not-applied (#548)
 - **Unified TLS Handshake Parser**: The HTTPS (TCP) and QUIC DPI paths now
   share one TLS handshake parser. TCP SNI values are validated with the same
   strict hostname rules as QUIC (values containing characters like `/ @ : ?`

@@ -2688,7 +2688,6 @@ version = "1.5.0"
 dependencies = [
  "anyhow",
  "arboard",
- "caps",
  "chrono",
  "clap",
  "clap_complete",
@@ -2699,7 +2698,6 @@ dependencies = [
  "dashmap",
  "http_req",
  "insta",
- "landlock",
  "libc",
  "log",
  "pcap",
@@ -2709,12 +2707,25 @@ dependencies = [
  "rustnet-capture",
  "rustnet-core",
  "rustnet-host",
+ "rustnet-sandbox",
  "serde",
  "serde_json",
  "sha2 0.11.0",
  "simplelog",
  "windows 0.62.2",
  "zip",
+]
+
+[[package]]
+name = "rustnet-sandbox"
+version = "0.4.0"
+dependencies = [
+ "anyhow",
+ "caps",
+ "landlock",
+ "libc",
+ "log",
+ "windows 0.62.2",
 ]
 
 [[package]]

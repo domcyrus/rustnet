@@ -1,5 +1,11 @@
 [workspace]
-members = [".", "crates/rustnet-core", "crates/rustnet-capture", "crates/rustnet-host"]
+members = [
+    ".",
+    "crates/rustnet-core",
+    "crates/rustnet-capture",
+    "crates/rustnet-host",
+    "crates/rustnet-sandbox",
+]
 resolver = "3"
 
 # Shared metadata for every crate in the workspace. Members opt in with
@@ -22,6 +28,7 @@ license = "Apache-2.0"
 rustnet-core = { version = "0.4.0", path = "crates/rustnet-core" }
 rustnet-capture = { version = "0.4.0", path = "crates/rustnet-capture" }
 rustnet-host = { version = "0.4.0", path = "crates/rustnet-host" }
+rustnet-sandbox = { version = "0.4.0", path = "crates/rustnet-sandbox" }
 anyhow = "1.0"
 log = "0.4"
 
@@ -63,6 +70,7 @@ test = false
 rustnet-core.workspace = true
 rustnet-capture.workspace = true
 rustnet-host.workspace = true
+rustnet-sandbox.workspace = true
 anyhow.workspace = true
 libc = "0.2"
 arboard = { version = "3.6", features = ["wayland-data-control"] }
@@ -82,10 +90,8 @@ regex-lite = "0.1"
 # which is the only place they are used. They are re-exported transitively
 # through the `crate::network` facade in src/network/mod.rs.
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# procfs + libbpf-rs moved to the rustnet-host crate (process attribution).
-landlock = { version = "0.4", optional = true }
-caps = { version = "0.5", optional = true }
+# procfs + libbpf-rs moved to the rustnet-host crate (process attribution);
+# landlock + caps moved to the rustnet-sandbox crate (sandboxing).
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -134,8 +140,12 @@ linux-default = ["ebpf"]  # Deprecated: kept for backwards compatibility
 # eBPF now lives in the rustnet-host crate; this is a passthrough so
 # `--features ebpf` (and the default) keep enabling it as before.
 ebpf = ["rustnet-host/ebpf"]
-landlock = ["dep:landlock", "dep:caps"]
-macos-sandbox = []
+# Sandboxing now lives in the rustnet-sandbox crate; these are passthroughs so
+# the existing feature names keep working. The names must stay `landlock` and
+# `macos-sandbox`: cfg(feature = "landlock") gates the per-thread capability
+# drops in src/app/{capture,enrichment}.rs.
+landlock = ["rustnet-sandbox/landlock"]
+macos-sandbox = ["rustnet-sandbox/macos-sandbox"]
 # Kubernetes pod and container resolution from cgroup paths and (Phase 2) the
 # on-disk kubelet pods directory. Linux-only at runtime; no extra dependencies.
 kubernetes = ["rustnet-core/kubernetes"]

@@ -1,0 +1,51 @@
+[package]
+name = "rustnet-sandbox"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Post-initialization sandboxing and root privilege dropping for rustnet: Landlock + capability drops on Linux, Seatbelt on macOS, restricted token + job object on Windows, and a shared uid drop on Linux/macOS/FreeBSD"
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/rustnet-sandbox"
+readme = "README.md"
+license.workspace = true
+keywords = ["sandbox", "landlock", "seatbelt", "privilege", "security"]
+categories = ["os", "network-programming"]
+
+[lib]
+name = "rustnet_sandbox"
+path = "src/lib.rs"
+
+# Deliberately dependency-free towards the rest of the workspace: the sandbox
+# needs only already-open file descriptors and paths from its caller, so both
+# the TUI binary and headless front-ends can link it without pulling in
+# capture, parsing, or attribution code.
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { version = "0.4", optional = true }
+caps = { version = "0.5", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[features]
+default = []
+# Landlock filesystem/network/scope sandboxing and capability drops on Linux.
+# Without it the Linux backend still sets PR_SET_NO_NEW_PRIVS and drops the
+# root uid.
+landlock = ["dep:landlock", "dep:caps"]
+# Seatbelt (sandbox_init) sandboxing on macOS. Without it the macOS backend
+# still drops the root uid.
+macos-sandbox = []
