@@ -1,12 +1,12 @@
 // network/platform/mod.rs - re-export shim for host-tied functionality.
 //
-// Per-connection process attribution lives in the `rustnet-host` crate; its
+// Per-connection process attribution moved to the `rustnet-host` crate; its
 // public API (`ProcessLookup`, `DegradationReason`, `ConnectionKey`, and the
 // `create_process_lookup` factory) is re-exported here so the rest of the
 // binary keeps using `crate::network::platform::*` unchanged. Interface
-// statistics live in rustnet-core (`interface_stats::create_stats_provider`),
-// and sandboxing plus the root uid drop live in the `rustnet-sandbox` crate
-// (used directly as `rustnet_sandbox`).
+// statistics live in rustnet-core (`interface_stats::create_stats_provider`);
+// sandboxing and the root uid drop live in the `rustnet-sandbox` crate (used
+// directly as `rustnet_sandbox`).
 
 // Process attribution lives in the rustnet-host crate. Re-export the bits the
 // binary uses; the full API (ProcessLookup, ConnectionKey, ...) is available

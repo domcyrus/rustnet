@@ -161,6 +161,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Interface Stats Moved to rustnet-core**: The per-platform interface
+  statistics providers (sysfs on Linux, getifaddrs on macOS/FreeBSD, IP
+  Helper on Windows) moved from the binary into `rustnet-core` behind a new
+  `interface_stats::create_stats_provider()` composition point, and the
+  macOS/FreeBSD getifaddrs walkers now share one implementation (#549)
 - **Sandboxing Moved to rustnet-sandbox**: Sandboxing and the root uid drop
   now live in the new dependency-free `rustnet-sandbox` crate with one
   `apply_sandbox` entry point per platform. `--no-sandbox` and
@@ -168,11 +173,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uid drop (previously ignored), macOS builds without Seatbelt honor them
   too, and macOS now reports partial enforcement (e.g. Seatbelt applied but
   uid drop failed) instead of only fully-enforced/not-applied (#548)
-- **Interface Stats Moved to rustnet-core**: The per-platform interface
-  statistics providers (sysfs on Linux, getifaddrs on macOS/FreeBSD, IP
-  Helper on Windows) moved from the binary into `rustnet-core` behind a new
-  `interface_stats::create_stats_provider()` composition point, and the
-  macOS/FreeBSD getifaddrs walkers now share one implementation (#549)
+- **Unified TLS Handshake Parser**: The HTTPS (TCP) and QUIC DPI paths now
+  share one TLS handshake parser. TCP SNI values are validated with the same
+  strict hostname rules as QUIC (values containing characters like `/ @ : ?`
+  or single-label names are no longer shown), ClientHellos larger than 16 KB
+  (e.g. post-quantum key shares) are now parsed on TCP, and the 100-extension
+  parsing cap now also applies to QUIC. Invalid older supported-version values
+  cannot cause QUIC handshakes to be reported below TLS 1.3 (#546)
 - **Shared OUI Database**: The OUI vendor table is now shared between
   packet-processor threads via `Arc` instead of being cloned per thread,
   saving roughly 10 MB of memory
@@ -246,6 +253,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of aborting the sweep and letting the map fill (#498)
 
 ### Documentation
+- **Roadmap Audit**: Synced completed capabilities and clarified remaining DPI,
+  platform, and analysis work (#547)
 - **eBPF Install and Troubleshooting**: Documented the fentry/kprobe/procfs backend
   order, BTF and `RLIMIT_MEMLOCK` requirements, and reworked the BPF-denied
   troubleshooting steps now that `perf_event_paranoid` affects only the legacy

@@ -47,7 +47,10 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         } else {
             SandboxStatus::NotApplied
         },
-        message: format!("No sandbox on FreeBSD yet (Capsicum planned){}", drop_message),
+        message: format!(
+            "No sandbox on FreeBSD yet (Capsicum planned){}",
+            drop_message
+        ),
         uid_dropped,
         ..SandboxReport::default()
     })
