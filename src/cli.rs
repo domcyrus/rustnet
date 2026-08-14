@@ -188,18 +188,15 @@ pub fn build_cli() -> Command {
     // Which fallback attribution loses cross-user visibility after the drop
     // differs per platform; only the help text changes.
     #[cfg(target_os = "linux")]
-    const NO_UID_DROP_HELP: &str =
-        "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
+    const NO_UID_DROP_HELP: &str = "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
          after initialization. Keeping root lets the procfs fallback attribute \
          other users' processes when eBPF is unavailable";
     #[cfg(target_os = "macos")]
-    const NO_UID_DROP_HELP: &str =
-        "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
+    const NO_UID_DROP_HELP: &str = "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
          after initialization. Keeping root lets the lsof fallback attribute other \
          users' processes when PKTAP is unavailable";
     #[cfg(target_os = "freebsd")]
-    const NO_UID_DROP_HELP: &str =
-        "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
+    const NO_UID_DROP_HELP: &str = "Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) \
          after initialization. Keeping root lets sockstat attribute other users' \
          processes";
 

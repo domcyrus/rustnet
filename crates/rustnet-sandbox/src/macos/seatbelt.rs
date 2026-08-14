@@ -354,11 +354,8 @@ mod tests {
 
     #[test]
     fn test_profile_is_valid_cstring_and_escaped() {
-        let profile = build_sbpl_profile(&config(
-            &[],
-            &[r#"/private/tmp/path"with\special"#],
-            true,
-        ));
+        let profile =
+            build_sbpl_profile(&config(&[], &[r#"/private/tmp/path"with\special"#], true));
         CString::new(profile.clone()).expect("profile must not contain null bytes");
         assert!(profile.contains(r#"/private/tmp/path\"with\\special"#));
     }

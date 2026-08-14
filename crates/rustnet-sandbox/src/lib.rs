@@ -229,7 +229,10 @@ mod tests {
 
     #[test]
     fn test_mode_from_flags() {
-        assert_eq!(SandboxMode::from_flags(false, false), SandboxMode::BestEffort);
+        assert_eq!(
+            SandboxMode::from_flags(false, false),
+            SandboxMode::BestEffort
+        );
         assert_eq!(SandboxMode::from_flags(false, true), SandboxMode::Strict);
         assert_eq!(SandboxMode::from_flags(true, false), SandboxMode::Disabled);
     }
