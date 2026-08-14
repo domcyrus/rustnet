@@ -163,6 +163,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   uid drop (previously ignored), macOS builds without Seatbelt honor them
   too, and macOS now reports partial enforcement (e.g. Seatbelt applied but
   uid drop failed) instead of only fully-enforced/not-applied (#548)
+- **Interface Stats Moved to rustnet-core**: The per-platform interface
+  statistics providers (sysfs on Linux, getifaddrs on macOS/FreeBSD, IP
+  Helper on Windows) moved from the binary into `rustnet-core` behind a new
+  `interface_stats::create_stats_provider()` composition point, and the
+  macOS/FreeBSD getifaddrs walkers now share one implementation (#549)
 - **Shared OUI Database**: The OUI vendor table is now shared between
   packet-processor threads via `Arc` instead of being cloned per thread,
   saving roughly 10 MB of memory

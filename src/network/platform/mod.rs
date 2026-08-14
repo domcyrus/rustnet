@@ -1,12 +1,12 @@
-// network/platform/mod.rs - Platform-specific interface stats.
+// network/platform/mod.rs - re-export shim for host-tied functionality.
 //
-// Per-connection process attribution moved to the `rustnet-host` crate; its
+// Per-connection process attribution lives in the `rustnet-host` crate; its
 // public API (`ProcessLookup`, `DegradationReason`, `ConnectionKey`, and the
 // `create_process_lookup` factory) is re-exported here so the rest of the
-// binary keeps using `crate::network::platform::*` unchanged. Sandboxing and
-// the root uid drop moved to the `rustnet-sandbox` crate (used directly as
-// `rustnet_sandbox`). What remains in the binary is the per-platform
-// interface-statistics providers.
+// binary keeps using `crate::network::platform::*` unchanged. Interface
+// statistics live in rustnet-core (`interface_stats::create_stats_provider`),
+// and sandboxing plus the root uid drop live in the `rustnet-sandbox` crate
+// (used directly as `rustnet_sandbox`).
 
 // Process attribution lives in the rustnet-host crate. Re-export the bits the
 // binary uses; the full API (ProcessLookup, ConnectionKey, ...) is available
@@ -16,23 +16,3 @@ pub use rustnet_host::{DegradationReason, create_process_lookup};
 // host crate need not depend on rustnet-capture.
 #[cfg(target_os = "macos")]
 pub use rustnet_host::report_pktap_degradation;
-
-// Platform-specific modules (interface stats + sandbox)
-#[cfg(target_os = "freebsd")]
-mod freebsd;
-#[cfg(target_os = "linux")]
-mod linux;
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "windows")]
-mod windows;
-
-// Re-export the interface-stats providers.
-#[cfg(target_os = "freebsd")]
-pub use freebsd::FreeBSDStatsProvider;
-#[cfg(target_os = "linux")]
-pub use linux::LinuxStatsProvider;
-#[cfg(target_os = "macos")]
-pub use macos::MacOSStatsProvider;
-#[cfg(target_os = "windows")]
-pub use windows::WindowsStatsProvider;

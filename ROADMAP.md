@@ -205,8 +205,9 @@ The experimental eBPF support provides efficient process identification but has 
 Restructure the single crate into a Cargo workspace (same GitHub repo) with clear separation of concerns:
 
 - [x] **rustnet-monitor** (binary, bin name `rustnet`): CLI, TUI, app event
-  loop, sandboxing (Landlock/Seatbelt), and interface statistics -- the
-  user-facing application; process attribution is delegated to `rustnet-host`.
+  loop, and sandboxing (Landlock/Seatbelt) -- the user-facing application;
+  process attribution is delegated to `rustnet-host` and interface statistics
+  to `rustnet-core`.
   (Package stays `rustnet-monitor` because the `rustnet` crate name is taken on
   crates.io; the installed binary is `rustnet`.)
 - [x] **rustnet-core** (library): Packet parsing, protocol types, DPI,
