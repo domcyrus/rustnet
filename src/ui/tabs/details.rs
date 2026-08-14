@@ -1099,11 +1099,22 @@ pub(in crate::ui) fn draw_connection_details(
                 }
             })
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+        // Name and provenance on separate rows: a combined value clips at
+        // the card boundary for hostnames of ordinary length, hiding the
+        // provenance entirely.
         push_detail_field_styled(
             &mut details_text,
             &mut detail_fields,
             "Attributed Name",
-            format!("~{} ({}, {})", att.name, source, age),
+            format!("~{}", att.name),
+            label_style,
+            theme::fg(theme::field_attributed_hostname()),
+        );
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Attributed Via",
+            format!("{}, {}", source, age),
             label_style,
             theme::fg(theme::field_attributed_hostname()),
         );
