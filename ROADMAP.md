@@ -325,8 +325,52 @@ and `landlock` / `caps` plus Seatbelt and the uid drop live in
 `rustnet-sandbox`.
 `rustnet-core` also exposes a `ConnectionTracker` so headless tools can fold
 captured packets into a live, lifecycle-managed connection table without the
-TUI. Remaining work: the `rustnet-helper` macOS pktap suid helper (needs real
-hardware).
+TUI. Remaining work: the headless workstream below and the `rustnet-helper`
+macOS pktap suid helper (needs real hardware).
+
+### Headless Front-End Workstream
+
+The library crates now cover the whole privileged pipeline: capture
+(`rustnet-capture`), parsing + connection tracking + interface stats
+(`rustnet-core`), process attribution (`rustnet-host`), and sandboxing +
+uid drop (`rustnet-sandbox`). `examples/headless.rs` is a compiling,
+runnable proof of that pairing. What a full headless front-end (Prometheus
+exporter, JSON streamer) still cannot get from the crates, from an audit of
+the binary:
+
+Code that could move into a crate:
+
+- [ ] `ConnectionFilter` (the vim/fzf-style filter language, `src/filter`)
+  into `rustnet-core`, so headless tools can reuse the same query syntax.
+- [ ] Kubernetes pod/container resolution (`src/network/kubernetes`, ~1000
+  lines) into `rustnet-host` next to the rest of attribution.
+- [ ] Process-grouping aggregation (currently in `src/ui/state.rs`) into
+  `rustnet-core`, since per-process rollups are exporter material.
+- [ ] Optional `serde` derives for `Connection` and the DPI types behind a
+  `rustnet-core` feature; today JSON output is hand-built in
+  `src/app/logging.rs` and unavailable to library consumers.
+- [ ] The capture-privileges preflight check (`src/network/privileges.rs`)
+  into `rustnet-capture` (its Windows probe already uses the pcap crate).
+
+Composition APIs that exist only as binary wiring:
+
+- [ ] An engine/runtime handle for the thread topology (capture thread,
+  DPI workers, batching, backpressure, `catch_unwind`) that `src/app`
+  hand-builds.
+- [ ] The two-phase privileged start contract (open capture + load eBPF,
+  wait for readiness, sandbox, then spawn workers) as an API instead of
+  main.rs choreography; the ordering is documented in `rustnet-sandbox` but
+  each front-end still re-implements the sequence.
+- [ ] A published-snapshot policy layer (service-name enrichment, localhost
+  and PTR-lookup filtering, historic merge, sorting) over
+  `ConnectionTracker::snapshot`.
+- [ ] Aggregate counters: an `AppStats`-shaped struct plus the
+  `IngestOutcome`-to-counter folding, which is exactly the metric set an
+  exporter would publish.
+- [ ] The enrichment driver loops (process attribution cadence and
+  write-once policy, GeoIP refresh) as reusable helpers.
+- [ ] Health/degradation status types (capture failure retention, PKTAP
+  degradation mapping) shared between front-ends.
 
 ### macOS Privilege Separation (pktap without root)
 

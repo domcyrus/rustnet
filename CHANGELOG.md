@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **Headless Example**: `examples/headless.rs` shows the library-crate
+  pairing without the TUI: capture, parsing, connection tracking, process
+  attribution, interface stats, and sandboxing, printing connection
+  summaries to stdout. ROADMAP.md documents the remaining headless
+  workstream (#550)
 - **NetBIOS Response Time**: UDP Name Service and Datagram Service requests now
   show response time and the latest response status in Details. Pairing uses the
   16-bit transaction ID plus the local socket and service, so broadcast requests

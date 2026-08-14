@@ -46,7 +46,7 @@ flowchart TD
     HOST --> CORE
 ```
 
-The graph is acyclic: `rustnet-core` has no workspace dependencies, `rustnet-capture` and `rustnet-host` depend only on it, and `rustnet-sandbox` depends on no workspace crate at all. Keeping `rustnet-core` a leaf lets it be published and reused independently -- a headless front-end (e.g. a Prometheus exporter) can pair `rustnet-capture` + `rustnet-core` without the TUI.
+The graph is acyclic: `rustnet-core` has no workspace dependencies, `rustnet-capture` and `rustnet-host` depend only on it, and `rustnet-sandbox` depends on no workspace crate at all. Keeping `rustnet-core` a leaf lets it be published and reused independently -- a headless front-end (e.g. a Prometheus exporter) can pair `rustnet-capture` + `rustnet-core` without the TUI; [`examples/headless.rs`](examples/headless.rs) shows the full pairing including `rustnet-host` and `rustnet-sandbox`.
 
 ### Re-export Facade
 

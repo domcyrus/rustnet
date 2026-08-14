@@ -46,7 +46,7 @@ flowchart TD
     HOST --> CORE
 ```
 
-依赖关系是无环的：`rustnet-core` 没有任何工作区内依赖，`rustnet-capture` 和 `rustnet-host` 都仅依赖它，而 `rustnet-sandbox` 不依赖任何工作区 crate。让 `rustnet-core` 保持为叶子节点，使其可以独立发布和复用 —— 无界面的前端（例如 Prometheus 导出器）可以仅组合 `rustnet-capture` + `rustnet-core` 而无需 TUI。
+依赖关系是无环的：`rustnet-core` 没有任何工作区内依赖，`rustnet-capture` 和 `rustnet-host` 都仅依赖它，而 `rustnet-sandbox` 不依赖任何工作区 crate。让 `rustnet-core` 保持为叶子节点，使其可以独立发布和复用 —— 无界面的前端（例如 Prometheus 导出器）可以仅组合 `rustnet-capture` + `rustnet-core` 而无需 TUI；[`examples/headless.rs`](examples/headless.rs) 展示了包含 `rustnet-host` 与 `rustnet-sandbox` 的完整组合。
 
 ### 重导出门面
 
