@@ -808,7 +808,6 @@ fn draw_interface_pulse(f: &mut Frame, app: &App, direction: ActivityDirection, 
 mod tests {
     use super::*;
     use crate::network::process_activity::ProcessIdentity;
-    use std::time::SystemTime;
 
     fn activity(name: &str, tx: u64, rx: u64, connections: u64) -> ProcessActivity {
         ProcessActivity {
@@ -831,14 +830,10 @@ mod tests {
             destinations_truncated: false,
             top_tx_destination: None,
             top_rx_destination: None,
-            current_tx_share: 0.0,
-            current_rx_share: 0.0,
             window_tx_share: 0.0,
             window_rx_share: 0.0,
             retained_tx_share: 0.0,
             retained_rx_share: 0.0,
-            first_seen: SystemTime::UNIX_EPOCH,
-            last_seen: SystemTime::UNIX_EPOCH,
         }
     }
 

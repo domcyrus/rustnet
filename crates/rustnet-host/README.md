@@ -46,11 +46,10 @@ if let Some(attribution) = lookup.get_process_attribution(&conn) {
 `MatchQuality` records how the connection was matched, so a relaxed
 wildcard/listener guess is never mistaken for a proven 4-tuple hit; use
 `quality.is_exact()` to tell them apart. Linux resolves PPID from procfs for
-both socket-table and eBPF matches. The eBPF backends also fill in the thread
-id, effective UID/GID, and an observation timestamp taken from a **monotonic**
-clock (`bpf_ktime_get_ns`), which is not wall-clock time. The executable path is
-resolved once from `/proc/<tgid>/exe`; an unreadable link yields
-`executable: None` and never fails the attribution.
+both socket-table and eBPF matches. The eBPF backends also fill in the
+effective UID/GID. The executable path is resolved once from
+`/proc/<tgid>/exe`; an unreadable link yields `executable: None` and never
+fails the attribution.
 
 Every platform also resolves up to four parent processes, ordered from the
 oldest retained ancestor to the direct parent. Each entry includes its PID,
@@ -76,9 +75,8 @@ When a platform can't use its optimal method, `ProcessLookup::get_degradation_re
 reports why (e.g. missing `CAP_BPF`, no root for PKTAP) via `DegradationReason`,
 which front-ends can surface to the user.
 
-Linux callers can inspect `ProcessLookup::get_attribution_backend()` and
-`ProcessLookup::get_attribution_capabilities()` to distinguish fentry/fexit,
-legacy kprobes, procfs, and partial protocol coverage.
+Linux callers can inspect `ProcessLookup::get_attribution_backend()` to
+distinguish fentry/fexit, legacy kprobes, and procfs.
 
 Both Linux BPF objects use CO-RE for safe socket field access and therefore
 require usable target BTF. A compatible target-BTF kernel tries fentry/fexit

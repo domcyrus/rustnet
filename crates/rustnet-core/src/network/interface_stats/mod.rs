@@ -1,5 +1,5 @@
 use std::io;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 #[cfg(any(target_os = "macos", target_os = "freebsd"))]
 mod bsd;
@@ -68,7 +68,6 @@ impl InterfaceStats {
         InterfaceTrafficWindow {
             rx_bytes: self.rx_bytes.saturating_sub(previous.rx_bytes),
             tx_bytes: self.tx_bytes.saturating_sub(previous.tx_bytes),
-            sampled_for,
         }
     }
 }
@@ -85,7 +84,6 @@ pub struct InterfaceRates {
 pub struct InterfaceTrafficWindow {
     pub rx_bytes: u64,
     pub tx_bytes: u64,
-    pub sampled_for: Duration,
 }
 
 /// Trait for platform-specific interface statistics providers
@@ -258,6 +256,5 @@ mod tests {
         let window = second.traffic_since(&first);
         assert_eq!(window.rx_bytes, 8_000);
         assert_eq!(window.tx_bytes, 2_000);
-        assert_eq!(window.sampled_for, Duration::from_secs(60));
     }
 }

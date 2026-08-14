@@ -10,20 +10,15 @@ use std::net::SocketAddr;
 const TCP_FIN: u8 = 0x01;
 const TCP_SYN: u8 = 0x02;
 const TCP_RST: u8 = 0x04;
-const TCP_PSH: u8 = 0x08;
 const TCP_ACK: u8 = 0x10;
-const TCP_URG: u8 = 0x20;
 
 /// TCP flags from the TCP header
-/// All flags are public fields as they represent the actual TCP flags
 #[derive(Debug, Clone, Copy)]
 pub struct TcpFlags {
     pub fin: bool,
     pub syn: bool,
     pub rst: bool,
-    pub psh: bool,
     pub ack: bool,
-    pub urg: bool,
 }
 
 /// TCP header information extracted from the packet
@@ -42,9 +37,7 @@ pub fn parse_tcp_flags(flags: u8) -> TcpFlags {
         fin: (flags & TCP_FIN) != 0,
         syn: (flags & TCP_SYN) != 0,
         rst: (flags & TCP_RST) != 0,
-        psh: (flags & TCP_PSH) != 0,
         ack: (flags & TCP_ACK) != 0,
-        urg: (flags & TCP_URG) != 0,
     }
 }
 
@@ -99,13 +92,11 @@ pub fn parse(
 
     // Log TCP flags for debugging
     log::trace!(
-        "TCP flags: FIN={} SYN={} RST={} PSH={} ACK={} URG={}",
+        "TCP flags: FIN={} SYN={} RST={} ACK={}",
         tcp_flags.fin,
         tcp_flags.syn,
         tcp_flags.rst,
-        tcp_flags.psh,
-        tcp_flags.ack,
-        tcp_flags.urg
+        tcp_flags.ack
     );
 
     // Determine direction based on local IPs

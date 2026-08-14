@@ -768,8 +768,6 @@ mod connection_lifecycle_tests {
             rst,
             ack: false,
             fin: false,
-            psh: false,
-            urg: false,
         }
     }
 

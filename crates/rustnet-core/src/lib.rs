@@ -24,16 +24,6 @@
 //!
 //! ## Layout
 //!
-//! All modules live under [`network`]. They are also re-exported at the crate
-//! root for convenience, so both `rustnet_core::network::types` and
-//! `rustnet_core::types` resolve to the same module.
+//! All modules live under [`network`].
 
 pub mod network;
-
-// Flat re-exports so external users can write `rustnet_core::types` instead of
-// `rustnet_core::network::types`. The `network` module remains the canonical
-// home and keeps internal `crate::network::*` paths working unchanged.
-pub use network::{
-    bogon, dns, dpi, geoip, interface_stats, link_layer, merge, neighbors, oui, parser,
-    process_activity, protocol, services, tracker, types, util,
-};

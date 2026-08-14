@@ -1818,7 +1818,6 @@ mod snapshot_tests {
             InterfaceTrafficWindow {
                 rx_bytes: 4_194_304,
                 tx_bytes: 8_388_608,
-                sampled_for: Duration::from_secs(2),
             },
         );
         app

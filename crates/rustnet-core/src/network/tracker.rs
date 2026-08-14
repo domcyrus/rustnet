@@ -945,11 +945,6 @@ impl ConnectionTracker {
         self.neighbors.clear();
     }
 
-    /// The tracker's configuration.
-    pub fn config(&self) -> &TrackerConfig {
-        &self.config
-    }
-
     /// Direct access to the active connection table.
     ///
     /// Use this for in-place enrichment (e.g. attaching process, DNS, or GeoIP
@@ -1039,14 +1034,7 @@ mod tests {
                 seq: 1_000,
                 ack: 2_000,
                 window: 65_535,
-                flags: TcpFlags {
-                    syn,
-                    ack,
-                    fin,
-                    rst,
-                    psh: false,
-                    urg: false,
-                },
+                flags: TcpFlags { syn, ack, fin, rst },
                 payload_len: 0,
             },
         );

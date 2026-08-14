@@ -898,7 +898,6 @@ mod activity_reset_tests {
             InterfaceTrafficWindow {
                 rx_bytes: 4_000,
                 tx_bytes: 2_000,
-                sampled_for: Duration::from_secs(30),
             },
         );
 

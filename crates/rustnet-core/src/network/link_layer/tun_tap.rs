@@ -28,11 +28,6 @@ pub fn is_tap_interface(name: &str) -> bool {
     name.starts_with("tap")
 }
 
-/// Detect if an interface name is any tunnel interface (TUN or TAP)
-pub fn is_tunnel_interface(name: &str) -> bool {
-    is_tun_interface(name) || is_tap_interface(name)
-}
-
 /// Parse a TUN packet (raw IP, no link-layer header)
 ///
 /// TUN devices operate at the network layer (Layer 3) and carry raw IP packets.
@@ -136,16 +131,6 @@ mod tests {
         assert!(!is_tap_interface("tun0"));
         assert!(!is_tap_interface("eth0"));
         assert!(!is_tap_interface("wlan0"));
-    }
-
-    #[test]
-    fn test_tunnel_interface_detection() {
-        assert!(is_tunnel_interface("tun0"));
-        assert!(is_tunnel_interface("tap0"));
-        assert!(is_tunnel_interface("utun0"));
-        assert!(!is_tunnel_interface("eth0"));
-        assert!(!is_tunnel_interface("wlan0"));
-        assert!(!is_tunnel_interface("lo"));
     }
 
     #[test]

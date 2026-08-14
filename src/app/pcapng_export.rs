@@ -469,8 +469,6 @@ mod pcapng_export_tests {
                     ack: false,
                     fin: false,
                     rst: false,
-                    psh: false,
-                    urg: false,
                 },
                 payload_len: 0,
             }),

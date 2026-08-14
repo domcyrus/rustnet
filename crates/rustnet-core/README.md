@@ -24,9 +24,7 @@ to analyze.
 
 ## Layout
 
-Everything lives under the [`network`] module and is re-exported at the crate
-root, so both `rustnet_core::network::types` and `rustnet_core::types` resolve
-to the same place.
+Everything lives under the [`network`] module.
 
 ## Status
 

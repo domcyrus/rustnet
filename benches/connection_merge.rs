@@ -46,8 +46,6 @@ fn make_parsed_packet() -> rustnet_monitor::network::parser::ParsedPacket {
                 ack: true,
                 fin: false,
                 rst: false,
-                psh: true,
-                urg: false,
             },
             payload_len: 1400,
         }),
