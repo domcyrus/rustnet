@@ -679,6 +679,18 @@ pub struct MdnsInfo {
     pub response_ips: Vec<std::net::IpAddr>,
 }
 
+/// mDNS shares the DNS wire format; keep only the fields the mDNS view uses.
+impl From<DnsInfo> for MdnsInfo {
+    fn from(dns: DnsInfo) -> Self {
+        Self {
+            query_name: dns.query_name,
+            query_type: dns.query_type,
+            is_response: dns.is_response,
+            response_ips: dns.response_ips,
+        }
+    }
+}
+
 // LLMNR-specific types
 #[derive(Debug, Clone)]
 pub struct LlmnrInfo {
@@ -686,6 +698,18 @@ pub struct LlmnrInfo {
     pub query_type: Option<DnsQueryType>,
     pub is_response: bool,
     pub response_ips: Vec<std::net::IpAddr>,
+}
+
+/// LLMNR shares the DNS wire format; keep only the fields the LLMNR view uses.
+impl From<DnsInfo> for LlmnrInfo {
+    fn from(dns: DnsInfo) -> Self {
+        Self {
+            query_name: dns.query_name,
+            query_type: dns.query_type,
+            is_response: dns.is_response,
+            response_ips: dns.response_ips,
+        }
+    }
 }
 
 // DHCP-specific types

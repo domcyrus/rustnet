@@ -1013,15 +1013,10 @@ mod tests {
     fn create_test_packet(is_outgoing: bool, fin: bool) -> ParsedPacket {
         use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
 
-        ParsedPacket {
-            protocol: Protocol::Tcp,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            protocol_state: ProtocolState::Tcp(TcpState::Unknown),
-            tcp_header: Some(TcpHeaderInfo {
+        let mut packet = ParsedPacket::test_tcp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            TcpHeaderInfo {
                 seq: 1000,
                 ack: 2000,
                 window: 65535,
@@ -1034,13 +1029,11 @@ mod tests {
                     urg: false,
                 },
                 payload_len: 60, // Simulated payload length
-            }),
-            is_outgoing,
-            packet_len: 100,
-            dpi_result: None,
-            process_name: None,
-            process_id: None,
-        }
+            },
+        );
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 100;
+        packet
     }
 
     #[test]

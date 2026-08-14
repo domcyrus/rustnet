@@ -51,6 +51,64 @@ impl ParsedPacket {
     }
 }
 
+/// Shared test constructors so each test module builds only the fields its
+/// scenario exercises instead of repeating the full struct literal.
+#[cfg(test)]
+impl ParsedPacket {
+    /// Baseline test packet: unicast endpoints, no TCP header, no DPI result,
+    /// no process attribution. Callers override the fields they care about.
+    pub(crate) fn test_base(
+        protocol: Protocol,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+        protocol_state: ProtocolState,
+    ) -> Self {
+        Self {
+            protocol,
+            local_addr,
+            remote_addr,
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
+            tcp_header: None,
+            protocol_state,
+            is_outgoing: false,
+            packet_len: 0,
+            dpi_result: None,
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// TCP test packet carrying the given header.
+    pub(crate) fn test_tcp(
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+        tcp_header: TcpHeaderInfo,
+    ) -> Self {
+        let mut packet = Self::test_base(
+            Protocol::Tcp,
+            local_addr,
+            remote_addr,
+            ProtocolState::Tcp(TcpState::Unknown),
+        );
+        packet.tcp_header = Some(tcp_header);
+        packet
+    }
+
+    /// UDP test packet classified by DPI as `application`.
+    pub(crate) fn test_udp(
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+        application: ApplicationProtocol,
+    ) -> Self {
+        let mut packet =
+            Self::test_base(Protocol::Udp, local_addr, remote_addr, ProtocolState::Udp);
+        packet.dpi_result = Some(DpiResult { application });
+        packet
+    }
+}
+
 /// Configuration for packet parsing
 ///
 /// # Example

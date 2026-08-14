@@ -84,6 +84,20 @@ fn is_quic_handshake_packet(packet_type: QuicPacketType) -> bool {
     )
 }
 
+/// Whether a UDP packet's DPI classification is one the RTT tracker times.
+/// Gates the rtt lock in `measure_timings` so untimed UDP traffic (QUIC 1-RTT
+/// bulk data, SSDP, mDNS, ...) never touches the mutex on the packet path.
+fn udp_application_is_timed(application: &ApplicationProtocol) -> bool {
+    match application {
+        ApplicationProtocol::Quic(quic) => is_quic_handshake_packet(quic.packet_type),
+        ApplicationProtocol::Dns(_)
+        | ApplicationProtocol::NetBios(_)
+        | ApplicationProtocol::Stun(_)
+        | ApplicationProtocol::Ntp(_) => true,
+        _ => false,
+    }
+}
+
 /// The active connection table: flow key -> connection.
 ///
 /// Keys are compact `Copy` structs, and the map uses FxHash — with a small
@@ -370,6 +384,10 @@ impl ConnectionTracker {
         // the handshake is behind header protection, so this initial flight is
         // the only round trip an on-path observer can time.
         let mut measured_rtt: Option<Duration> = None;
+        let mut dns_response_time: Option<Duration> = None;
+        let mut netbios_response_time: Option<Duration> = None;
+        let mut stun_rtt: Option<Duration> = None;
+        let mut ntp_rtt: Option<Duration> = None;
         let base_key = parsed.connection_key();
         if parsed.protocol == Protocol::Tcp
             && let Some(tcp_header) = &parsed.tcp_header
@@ -386,56 +404,66 @@ impl ConnectionTracker {
             }
         } else if parsed.protocol == Protocol::Udp
             && let Some(dpi) = &parsed.dpi_result
-            && let ApplicationProtocol::Quic(quic) = &dpi.application
-            && is_quic_handshake_packet(quic.packet_type)
+            && udp_application_is_timed(&dpi.application)
             && let Ok(mut tracker) = self.rtt.lock()
         {
-            measured_rtt = tracker.record_quic_handshake(base_key, parsed.is_outgoing, now);
-        }
-
-        // Time DNS query→response pairs by transaction ID. Port-53 gating
-        // already happened in DPI dispatch, so any Dns result here is unicast
-        // DNS (mDNS/LLMNR map to their own variants).
-        let mut dns_response_time: Option<Duration> = None;
-        if parsed.protocol == Protocol::Udp
-            && let Some(dpi) = &parsed.dpi_result
-            && let ApplicationProtocol::Dns(dns) = &dpi.application
-            && let Ok(mut tracker) = self.rtt.lock()
-        {
-            dns_response_time = tracker.record_dns_packet(
-                base_key,
-                dns.txid,
-                parsed.is_outgoing,
-                dns.is_response,
-                now,
-            );
-        }
-
-        // NetBIOS Name Service broadcasts are answered from a host's unicast
-        // address, so the RTT tracker pairs on local socket, service, and
-        // transaction ID rather than the full connection key.
-        let mut netbios_response_time: Option<Duration> = None;
-        if parsed.protocol == Protocol::Udp
-            && let Some(dpi) = &parsed.dpi_result
-            && let ApplicationProtocol::NetBios(netbios) = &dpi.application
-        {
-            let completed = match self.rtt.lock() {
-                Ok(mut tracker) => {
-                    tracker.record_netbios_packet(base_key, netbios, parsed.is_outgoing, now)
+            // One lock acquisition covers every timed UDP application; a
+            // packet carries one DPI result, so at most one arm runs.
+            match &dpi.application {
+                ApplicationProtocol::Quic(_) => {
+                    measured_rtt = tracker.record_quic_handshake(base_key, parsed.is_outgoing, now);
                 }
-                Err(_) => None,
-            };
-            if let Some((rtt, request_key)) = completed {
-                netbios_response_time = Some(rtt);
-                // A broadcast request and its unicast reply live under
-                // different keys. Stamp the requesting connection too, so the
-                // row showing the query also shows its round trip; this
-                // packet's own connection is updated in the ingest path below.
-                if request_key != base_key
-                    && let Some(mut conn) = self.connections.get_mut(&request_key)
-                {
-                    conn.netbios_response_time = Some(rtt);
+                // Time DNS query→response pairs by transaction ID. Port-53
+                // gating already happened in DPI dispatch, so any Dns result
+                // here is unicast DNS (mDNS/LLMNR map to their own variants).
+                ApplicationProtocol::Dns(dns) => {
+                    dns_response_time = tracker.record_dns_packet(
+                        base_key,
+                        dns.txid,
+                        parsed.is_outgoing,
+                        dns.is_response,
+                        now,
+                    );
                 }
+                // NetBIOS Name Service broadcasts are answered from a host's
+                // unicast address, so the RTT tracker pairs on local socket,
+                // service, and transaction ID rather than the full connection
+                // key.
+                ApplicationProtocol::NetBios(netbios) => {
+                    let completed =
+                        tracker.record_netbios_packet(base_key, netbios, parsed.is_outgoing, now);
+                    if let Some((rtt, request_key)) = completed {
+                        netbios_response_time = Some(rtt);
+                        // A broadcast request and its unicast reply live under
+                        // different keys. Stamp the requesting connection too,
+                        // so the row showing the query also shows its round
+                        // trip; this packet's own connection is updated in the
+                        // ingest path below.
+                        if request_key != base_key
+                            && let Some(mut conn) = self.connections.get_mut(&request_key)
+                        {
+                            conn.netbios_response_time = Some(rtt);
+                        }
+                    }
+                }
+                // STUN requests and responses share a 96-bit transaction ID
+                // that retransmits reuse, so request→response pairing is
+                // exact.
+                ApplicationProtocol::Stun(stun) => {
+                    stun_rtt = tracker.record_stun(
+                        base_key,
+                        stun.transaction_id,
+                        parsed.is_outgoing,
+                        stun.message_class,
+                        now,
+                    );
+                }
+                // NTP servers echo the client's transmit timestamp as the
+                // originate timestamp, pairing each poll with its response.
+                ApplicationProtocol::Ntp(ntp) => {
+                    ntp_rtt = tracker.record_ntp(base_key, ntp, parsed.is_outgoing, now);
+                }
+                _ => {}
             }
         }
 
@@ -472,34 +500,6 @@ impl ConnectionTracker {
                 is_reply,
                 now,
             );
-        }
-
-        // STUN requests and responses share a 96-bit transaction ID that
-        // retransmits reuse, so request→response pairing is exact.
-        let mut stun_rtt: Option<Duration> = None;
-        if parsed.protocol == Protocol::Udp
-            && let Some(dpi) = &parsed.dpi_result
-            && let ApplicationProtocol::Stun(stun) = &dpi.application
-            && let Ok(mut tracker) = self.rtt.lock()
-        {
-            stun_rtt = tracker.record_stun(
-                base_key,
-                stun.transaction_id,
-                parsed.is_outgoing,
-                stun.message_class,
-                now,
-            );
-        }
-
-        // NTP servers echo the client's transmit timestamp as the originate
-        // timestamp, pairing each poll with its response.
-        let mut ntp_rtt: Option<Duration> = None;
-        if parsed.protocol == Protocol::Udp
-            && let Some(dpi) = &parsed.dpi_result
-            && let ApplicationProtocol::Ntp(ntp) = &dpi.application
-            && let Ok(mut tracker) = self.rtt.lock()
-        {
-            ntp_rtt = tracker.record_ntp(base_key, ntp, parsed.is_outgoing, now);
         }
 
         PacketTimings {
@@ -1030,18 +1030,12 @@ mod tests {
 
     fn tcp_packet(syn: bool, ack: bool, fin: bool, rst: bool, is_outgoing: bool) -> ParsedPacket {
         use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
-        use crate::network::types::{AddrKind, ProtocolState, TcpState};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        ParsedPacket {
-            protocol: Protocol::Tcp,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            protocol_state: ProtocolState::Tcp(TcpState::Unknown),
-            tcp_header: Some(TcpHeaderInfo {
+        let mut packet = ParsedPacket::test_tcp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
+            TcpHeaderInfo {
                 seq: 1_000,
                 ack: 2_000,
                 window: 65_535,
@@ -1054,72 +1048,50 @@ mod tests {
                     urg: false,
                 },
                 payload_len: 0,
-            }),
-            is_outgoing,
-            packet_len: 60,
-            dpi_result: None,
-            process_name: None,
-            process_id: None,
-        }
+            },
+        );
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 60;
+        packet
     }
 
     fn quic_packet(packet_type: QuicPacketType, is_outgoing: bool) -> ParsedPacket {
-        use crate::network::dpi::DpiResult;
-        use crate::network::types::{AddrKind, ProtocolState, QuicInfo};
+        use crate::network::types::QuicInfo;
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
         let mut quic = QuicInfo::new(1);
         quic.packet_type = packet_type;
 
-        ParsedPacket {
-            protocol: Protocol::Udp,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            protocol_state: ProtocolState::Udp,
-            tcp_header: None,
-            is_outgoing,
-            packet_len: 1_200,
-            dpi_result: Some(DpiResult {
-                application: ApplicationProtocol::Quic(Box::new(quic)),
-            }),
-            process_name: None,
-            process_id: None,
-        }
+        let mut packet = ParsedPacket::test_udp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 443),
+            ApplicationProtocol::Quic(Box::new(quic)),
+        );
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 1_200;
+        packet
     }
 
     fn dns_packet(txid: u16, is_outgoing: bool, is_response: bool, rcode: u8) -> ParsedPacket {
-        use crate::network::dpi::DpiResult;
-        use crate::network::types::{AddrKind, DnsInfo, DnsQueryType, ProtocolState};
+        use crate::network::types::{DnsInfo, DnsQueryType};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        ParsedPacket {
-            protocol: Protocol::Udp,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 53),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            protocol_state: ProtocolState::Udp,
-            tcp_header: None,
-            is_outgoing,
-            packet_len: 80,
-            dpi_result: Some(DpiResult {
-                application: ApplicationProtocol::Dns(DnsInfo {
-                    query_name: Some("example.com".to_string()),
-                    query_type: Some(DnsQueryType::A),
-                    response_ips: Vec::new(),
-                    is_response,
-                    txid,
-                    rcode: is_response.then_some(rcode),
-                    nodata: None,
-                }),
+        let mut packet = ParsedPacket::test_udp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 53),
+            ApplicationProtocol::Dns(DnsInfo {
+                query_name: Some("example.com".to_string()),
+                query_type: Some(DnsQueryType::A),
+                response_ips: Vec::new(),
+                is_response,
+                txid,
+                rcode: is_response.then_some(rcode),
+                nodata: None,
             }),
-            process_name: None,
-            process_id: None,
-        }
+        );
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 80;
+        packet
     }
 
     fn netbios_packet(
@@ -1129,40 +1101,27 @@ mod tests {
         is_response: bool,
         remote_ip: [u8; 4],
     ) -> ParsedPacket {
-        use crate::network::dpi::DpiResult;
-        use crate::network::types::{
-            AddrKind, NetBiosInfo, NetBiosResponseStatus, NetBiosService, ProtocolState,
-        };
+        use crate::network::types::{AddrKind, NetBiosInfo, NetBiosResponseStatus, NetBiosService};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        ParsedPacket {
-            protocol: Protocol::Udp,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 137),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::from(remote_ip)), 137),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: if remote_ip == [255, 255, 255, 255] {
-                AddrKind::Broadcast
-            } else {
-                AddrKind::Unicast
-            },
-            remote_is_gateway: false,
-            protocol_state: ProtocolState::Udp,
-            tcp_header: None,
-            is_outgoing,
-            packet_len: 80,
-            dpi_result: Some(DpiResult {
-                application: ApplicationProtocol::NetBios(NetBiosInfo {
-                    service: NetBiosService::NameService,
-                    opcode,
-                    name: Some("FILESERVER".to_string()),
-                    transaction_id,
-                    is_response,
-                    response_status: is_response.then_some(NetBiosResponseStatus::NameService(0)),
-                }),
+        let mut packet = ParsedPacket::test_udp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 137),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::from(remote_ip)), 137),
+            ApplicationProtocol::NetBios(NetBiosInfo {
+                service: NetBiosService::NameService,
+                opcode,
+                name: Some("FILESERVER".to_string()),
+                transaction_id,
+                is_response,
+                response_status: is_response.then_some(NetBiosResponseStatus::NameService(0)),
             }),
-            process_name: None,
-            process_id: None,
+        );
+        if remote_ip == [255, 255, 255, 255] {
+            packet.remote_addr_kind = AddrKind::Broadcast;
         }
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 80;
+        packet
     }
 
     fn icmp_echo_packet(
@@ -1171,29 +1130,23 @@ mod tests {
         is_outgoing: bool,
         is_reply: bool,
     ) -> ParsedPacket {
-        use crate::network::types::{AddrKind, ProtocolState};
+        use crate::network::types::ProtocolState;
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        ParsedPacket {
-            protocol: Protocol::Icmp,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 0),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            protocol_state: ProtocolState::Icmp {
+        let mut packet = ParsedPacket::test_base(
+            Protocol::Icmp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 0),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+            ProtocolState::Icmp {
                 icmp_type: if is_reply { 0 } else { 8 },
                 icmp_id: Some(identifier),
                 icmp_sequence: Some(sequence),
                 ndp_neighbor: None,
             },
-            tcp_header: None,
-            is_outgoing,
-            packet_len: 84,
-            dpi_result: None,
-            process_name: None,
-            process_id: None,
-        }
+        );
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 84;
+        packet
     }
 
     /// Capture time for a packet `millis` into a synthetic trace. Tests drive
@@ -1204,17 +1157,14 @@ mod tests {
     }
 
     fn arp_packet(operation: crate::network::types::ArpOperation) -> ParsedPacket {
-        use crate::network::types::{AddrKind, ArpInfo, ProtocolState};
+        use crate::network::types::{ArpInfo, ProtocolState};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        ParsedPacket {
-            protocol: Protocol::Arp,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 132)), 0),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 0),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            protocol_state: ProtocolState::Arp(ArpInfo {
+        let mut packet = ParsedPacket::test_base(
+            Protocol::Arp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 132)), 0),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 0),
+            ProtocolState::Arp(ArpInfo {
                 operation,
                 sender_mac: "04:d9:f5:c5:ed:e8".to_string(),
                 sender_ip: IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)),
@@ -1223,13 +1173,9 @@ mod tests {
                 sender_vendor: Some("ASUSTek COMPUTER INC.".to_string()),
                 target_vendor: Some("Apple, Inc.".to_string()),
             }),
-            tcp_header: None,
-            is_outgoing: false,
-            packet_len: 42,
-            dpi_result: None,
-            process_name: None,
-            process_id: None,
-        }
+        );
+        packet.packet_len = 42;
+        packet
     }
 
     /// Ingesting an ARP reply must populate the neighbor cache for both the
@@ -1733,32 +1679,22 @@ mod tests {
         is_outgoing: bool,
         class: crate::network::types::StunMessageClass,
     ) -> ParsedPacket {
-        use crate::network::dpi::DpiResult;
-        use crate::network::types::{AddrKind, ProtocolState, StunInfo, StunMethod};
+        use crate::network::types::{StunInfo, StunMethod};
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        ParsedPacket {
-            protocol: Protocol::Udp,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 54_000),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            protocol_state: ProtocolState::Udp,
-            tcp_header: None,
-            is_outgoing,
-            packet_len: 48,
-            dpi_result: Some(DpiResult {
-                application: ApplicationProtocol::Stun(StunInfo {
-                    message_class: class,
-                    method: StunMethod::Binding,
-                    transaction_id,
-                    software: None,
-                }),
+        let mut packet = ParsedPacket::test_udp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 54_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478),
+            ApplicationProtocol::Stun(StunInfo {
+                message_class: class,
+                method: StunMethod::Binding,
+                transaction_id,
+                software: None,
             }),
-            process_name: None,
-            process_id: None,
-        }
+        );
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 48;
+        packet
     }
 
     /// STUN binding requests and responses pair by transaction ID, giving a
@@ -1793,33 +1729,23 @@ mod tests {
         origin_timestamp: u64,
         transmit_timestamp: u64,
     ) -> ParsedPacket {
-        use crate::network::dpi::DpiResult;
-        use crate::network::types::{AddrKind, NtpInfo, ProtocolState};
+        use crate::network::types::NtpInfo;
         use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-        ParsedPacket {
-            protocol: Protocol::Udp,
-            local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 47_000),
-            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            protocol_state: ProtocolState::Udp,
-            tcp_header: None,
-            is_outgoing,
-            packet_len: 90,
-            dpi_result: Some(DpiResult {
-                application: ApplicationProtocol::Ntp(NtpInfo {
-                    version: 4,
-                    mode,
-                    stratum: 2,
-                    origin_timestamp,
-                    transmit_timestamp,
-                }),
+        let mut packet = ParsedPacket::test_udp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 47_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123),
+            ApplicationProtocol::Ntp(NtpInfo {
+                version: 4,
+                mode,
+                stratum: 2,
+                origin_timestamp,
+                transmit_timestamp,
             }),
-            process_name: None,
-            process_id: None,
-        }
+        );
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 90;
+        packet
     }
 
     /// An NTP poll pairs with its response through the originate timestamp
