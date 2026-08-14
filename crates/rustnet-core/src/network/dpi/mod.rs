@@ -18,9 +18,11 @@ mod snmp;
 mod ssdp;
 mod ssh;
 mod stun;
+mod tls_common;
 
 pub use cipher_suites::{format_cipher_suite, is_secure_cipher_suite};
-pub use quic::{is_partial_sni, try_extract_tls_from_reassembler};
+pub use quic::try_extract_tls_from_reassembler;
+pub use tls_common::is_partial_sni;
 
 // Well-known port numbers used for DPI protocol detection.
 const PORT_SSH: u16 = 22;

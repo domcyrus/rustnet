@@ -4,7 +4,8 @@ use crate::network::util::hex_encode;
 use log::{debug, warn};
 
 use super::crypto::decrypt_client_initial_packet;
-use super::tls::{is_partial_sni, try_extract_tls_from_reassembler};
+use super::tls::try_extract_tls_from_reassembler;
+use crate::network::dpi::tls_common::is_partial_sni;
 
 // QUIC v1 Initial salt (from RFC 9001)
 pub(super) const INITIAL_SALT_V1: &[u8] = &[
