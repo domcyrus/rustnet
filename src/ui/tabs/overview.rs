@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Cell, Padding, Paragraph, Row, Wrap},
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
@@ -19,18 +19,17 @@ use crate::app::{App, AppStats, ConnectionCounts};
 use crate::network::dns::DnsResolver;
 use crate::network::types::Connection;
 use crate::ui::{
-    ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
+    ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER, SortColumn, UIState, clear_all_with_confirmation,
     connection_table::{
-        Column, ColumnId, bandwidth_cell, build_header, column_constraints, connection_row,
-        select_columns,
+        Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
+        connection_row, render_row_table, select_columns, visible_window,
     },
     format::format_bytes,
     section_header,
     state::ProcessGroupStats,
     theme, try_handle_connection_nav,
     widgets::braille_graph,
-    widgets::scrollbar::draw_scrollbar,
 };
 
 /// Overview tab — connection list + stats sidebar. Reads every
@@ -458,8 +457,7 @@ fn draw_connections_list(
     // column set is chosen.
     let scroll_offset = ui_state.scroll_offset;
     let visible_rows = ui_state.visible_rows.max(1);
-    let window_end = (scroll_offset + visible_rows + 1).min(connections.len());
-    let visible_connections = &connections[scroll_offset.min(connections.len())..window_end];
+    let visible_connections = visible_window(connections, scroll_offset, visible_rows);
 
     // Reserve the two rightmost columns: a blank gap, then the scrollbar.
     let columns = select_columns(area.width.saturating_sub(2), show_location);
@@ -471,44 +469,20 @@ fn draw_connections_list(
         .map(|conn| connection_row(conn, &columns, ui_state, dns_resolver, None))
         .collect();
 
-    // Create table state with selection adjusted to windowed slice
-    let mut state = ratatui::widgets::TableState::default();
-    if let Some(selected_index) = ui_state.get_selected_index(connections) {
-        state.select(Some(selected_index.saturating_sub(scroll_offset)));
-    }
-
-    let connections_table = Table::new(rows, &widths)
-        .header(header)
-        .row_highlight_style(theme::row_highlight())
-        .highlight_symbol("> ");
-
-    let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
-    f.render_stateful_widget(connections_table, table_area, &mut state);
-
-    // Scrollbar tracks the row region (below header + margin).
-    let header_height = 2_u16; // header row (1) + bottom_margin (1)
-    let rows_area = Rect::new(
-        area.x,
-        area.y + header_height,
-        area.width,
-        area.height.saturating_sub(header_height),
+    render_row_table(
+        f,
+        area,
+        header,
+        rows,
+        &widths,
+        RowWindow {
+            selected: ui_state.get_selected_index(connections),
+            scroll_offset,
+            total_rows: connections.len(),
+            visible_rows,
+        },
+        click_regions,
     );
-    draw_scrollbar(f, rows_area, connections.len(), scroll_offset, visible_rows);
-
-    // Register click regions for visible connection rows
-    click_regions.scroll_area = Some(area);
-    let visible_start_y = area.y + header_height;
-    let max_visible_rows = area.height.saturating_sub(header_height) as usize;
-
-    for i in 0..max_visible_rows {
-        let conn_idx = scroll_offset + i;
-        if conn_idx >= connections.len() {
-            break;
-        }
-        let row_y = visible_start_y + i as u16;
-        let row_rect = Rect::new(area.x, row_y, area.width, 1);
-        click_regions.register(row_rect, ClickAction::SelectConnection(conn_idx));
-    }
 }
 
 /// Shared section title for the flat and grouped connection tables. The
@@ -579,8 +553,7 @@ fn draw_grouped_connections_list(
     // Virtualization: only build Row objects for the visible window
     let scroll_offset = ui_state.grouped_scroll_offset;
     let visible_rows = ui_state.visible_rows.max(1);
-    let window_end = (scroll_offset + visible_rows + 1).min(grouped_rows.len());
-    let visible_grouped = &grouped_rows[scroll_offset.min(grouped_rows.len())..window_end];
+    let visible_grouped = visible_window(grouped_rows, scroll_offset, visible_rows);
 
     // Reserve the two rightmost columns: a blank gap, then the scrollbar.
     let columns = select_columns(area.width.saturating_sub(2), show_location);
@@ -626,50 +599,20 @@ fn draw_grouped_connections_list(
         })
         .collect();
 
-    // Create table state with selection adjusted to windowed slice
-    let mut state = ratatui::widgets::TableState::default();
-    if let Some(selected_index) = ui_state.get_selected_grouped_index(grouped_rows) {
-        state.select(Some(selected_index.saturating_sub(scroll_offset)));
-    }
-
-    let connections_table = Table::new(rows, &widths)
-        .header(header)
-        .row_highlight_style(theme::row_highlight())
-        .highlight_symbol("> ");
-
-    let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
-    f.render_stateful_widget(connections_table, table_area, &mut state);
-
-    // Scrollbar tracks the row region (below header + margin).
-    let header_height = 2_u16;
-    let rows_area = Rect::new(
-        area.x,
-        area.y + header_height,
-        area.width,
-        area.height.saturating_sub(header_height),
-    );
-    draw_scrollbar(
+    render_row_table(
         f,
-        rows_area,
-        grouped_rows.len(),
-        scroll_offset,
-        visible_rows,
+        area,
+        header,
+        rows,
+        &widths,
+        RowWindow {
+            selected: ui_state.get_selected_grouped_index(grouped_rows),
+            scroll_offset,
+            total_rows: grouped_rows.len(),
+            visible_rows,
+        },
+        click_regions,
     );
-
-    // Register click regions for visible grouped rows
-    click_regions.scroll_area = Some(area);
-    let visible_start_y = area.y + header_height;
-    let max_visible_rows = area.height.saturating_sub(header_height) as usize;
-
-    for i in 0..max_visible_rows {
-        let row_idx = scroll_offset + i;
-        if row_idx >= grouped_rows.len() {
-            break;
-        }
-        let row_y = visible_start_y + i as u16;
-        let row_rect = Rect::new(area.x, row_y, area.width, 1);
-        click_regions.register(row_rect, ClickAction::SelectConnection(row_idx));
-    }
 }
 
 /// A process-group header row rendered on the shared grid: name and count in
@@ -744,6 +687,56 @@ fn render_section_separator(f: &mut Frame, area: Rect) {
     f.render_widget(para, area);
 }
 
+/// Effective-UID privilege line shared by the Linux and macOS Security
+/// sections. (Windows reports Administrator status instead.)
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "macos-sandbox")
+))]
+fn privilege_line() -> Line<'static> {
+    let uid = crate::network::privileges::effective_uid();
+    let (priv_label, priv_style) = if uid == 0 {
+        (
+            "Process: running as root".to_string(),
+            theme::fg(theme::warn()),
+        )
+    } else {
+        (format!("Process: UID {uid}"), theme::fg(theme::ok()))
+    };
+    Line::from(Span::styled(priv_label, priv_style))
+}
+
+/// Shared tail of the Security section: the platform-specific `head`
+/// lines, the feature bullets (or the "no restrictions" warning), and
+/// the privilege line.
+#[cfg(any(
+    target_os = "linux",
+    all(target_os = "macos", feature = "macos-sandbox"),
+    target_os = "windows"
+))]
+fn sandbox_lines<'a, S: AsRef<str>>(
+    head: Vec<Line<'a>>,
+    features: &[S],
+    privilege: Line<'a>,
+) -> Vec<Line<'a>> {
+    let mut lines = head;
+    if features.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No restrictions active",
+            theme::fg(theme::warn()),
+        )));
+    } else {
+        for f in features {
+            lines.push(Line::from(Span::styled(
+                format!("• {}", f.as_ref()),
+                theme::fg(theme::muted()),
+            )));
+        }
+    }
+    lines.push(privilege);
+    lines
+}
+
 fn draw_stats_panel(
     f: &mut Frame,
     connection_counts: ConnectionCounts,
@@ -814,38 +807,17 @@ fn draw_stats_panel(
             Span::styled("Landlock: kernel unsupported", theme::fg(theme::muted()))
         };
 
-        let uid = crate::network::privileges::effective_uid();
-        let (priv_label, priv_style) = if uid == 0 {
-            (
-                "Process: running as root".to_string(),
-                theme::fg(theme::warn()),
-            )
-        } else {
-            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
-        };
-
-        let mut lines = vec![
-            Line::from(vec![
-                Span::raw("Sandbox: "),
-                Span::styled(sandbox_info.status, status_style),
-            ]),
-            Line::from(available_indicator),
-        ];
-        if features.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No restrictions active",
-                theme::fg(theme::warn()),
-            )));
-        } else {
-            for f in &features {
-                lines.push(Line::from(Span::styled(
-                    format!("• {f}"),
-                    theme::fg(theme::muted()),
-                )));
-            }
-        }
-        lines.push(Line::from(Span::styled(priv_label, priv_style)));
-        lines
+        sandbox_lines(
+            vec![
+                Line::from(vec![
+                    Span::raw("Sandbox: "),
+                    Span::styled(sandbox_info.status, status_style),
+                ]),
+                Line::from(available_indicator),
+            ],
+            &features,
+            privilege_line(),
+        )
     };
 
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
@@ -872,35 +844,14 @@ fn draw_stats_panel(
             features.push("Net blocked");
         }
 
-        let uid = crate::network::privileges::effective_uid();
-        let (priv_label, priv_style) = if uid == 0 {
-            (
-                "Process: running as root".to_string(),
-                theme::fg(theme::warn()),
-            )
-        } else {
-            (format!("Process: UID {uid}"), theme::fg(theme::ok()))
-        };
-
-        let mut lines = vec![Line::from(vec![
-            Span::raw("Seatbelt: "),
-            Span::styled(sandbox_info.status, status_style),
-        ])];
-        if features.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No restrictions active",
-                theme::fg(theme::warn()),
-            )));
-        } else {
-            for f in &features {
-                lines.push(Line::from(Span::styled(
-                    format!("• {f}"),
-                    theme::fg(theme::muted()),
-                )));
-            }
-        }
-        lines.push(Line::from(Span::styled(priv_label, priv_style)));
-        lines
+        sandbox_lines(
+            vec![Line::from(vec![
+                Span::raw("Seatbelt: "),
+                Span::styled(sandbox_info.status, status_style),
+            ])],
+            &features,
+            privilege_line(),
+        )
     };
 
     #[cfg(all(
@@ -956,25 +907,14 @@ fn draw_stats_panel(
             ("Process: standard user".to_string(), theme::fg(theme::ok()))
         };
 
-        let mut lines = vec![Line::from(vec![
-            Span::raw("Sandbox: "),
-            Span::styled(sandbox_info.status, status_style),
-        ])];
-        if features.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No restrictions active",
-                theme::fg(theme::warn()),
-            )));
-        } else {
-            for f in &features {
-                lines.push(Line::from(Span::styled(
-                    format!("• {f}"),
-                    theme::fg(theme::muted()),
-                )));
-            }
-        }
-        lines.push(Line::from(Span::styled(priv_label, priv_style)));
-        lines
+        sandbox_lines(
+            vec![Line::from(vec![
+                Span::raw("Sandbox: "),
+                Span::styled(sandbox_info.status, status_style),
+            ])],
+            &features,
+            Line::from(Span::styled(priv_label, priv_style)),
+        )
     };
 
     // 1 line for the "Security" heading + one line per content line.
@@ -1302,6 +1242,33 @@ fn mini_wave(
     )
 }
 
+/// One sidebar sparkline row: the colored RX/TX label, then the
+/// smoothed mini wave. Both traffic rows differ only in label, rate
+/// source, and color ramp.
+fn draw_mini_wave_row(
+    f: &mut Frame,
+    area: Rect,
+    label: &'static str,
+    rates: &[u64],
+    frac: f64,
+    window: usize,
+    wave: fn(f64) -> Color,
+) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+
+    let label = Paragraph::new(label).style(theme::fg(wave(MINI_WAVE_INTENSITY)));
+    f.render_widget(label, cols[0]);
+
+    let data = smooth_mini_wave(rates);
+    f.render_widget(
+        Paragraph::new(mini_wave(&data, cols[1].width, frac, window, wave)),
+        cols[1],
+    );
+}
+
 /// Draw interface stats section with embedded traffic sparklines
 fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
     // Heading + sparklines (3 lines) + interface details (remaining).
@@ -1338,48 +1305,26 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         ])
         .split(sections[0]);
 
-    // RX row: label + wave
-    let rx_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(sparkline_rows[0]);
-
-    let rx_label = Paragraph::new("RX").style(theme::fg(theme::rx_wave(MINI_WAVE_INTENSITY)));
-    f.render_widget(rx_label, rx_cols[0]);
-
     let rx_rates = traffic_history.get_rx_sparkline_data(usize::MAX);
-    let rx_data = smooth_mini_wave(&rx_rates);
-    f.render_widget(
-        Paragraph::new(mini_wave(
-            &rx_data,
-            rx_cols[1].width,
-            frac,
-            window,
-            theme::rx_wave,
-        )),
-        rx_cols[1],
+    draw_mini_wave_row(
+        f,
+        sparkline_rows[0],
+        "RX",
+        &rx_rates,
+        frac,
+        window,
+        theme::rx_wave,
     );
 
-    // TX row: label + wave
-    let tx_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(sparkline_rows[1]);
-
-    let tx_label = Paragraph::new("TX").style(theme::fg(theme::tx_wave(MINI_WAVE_INTENSITY)));
-    f.render_widget(tx_label, tx_cols[0]);
-
     let tx_rates = traffic_history.get_tx_sparkline_data(usize::MAX);
-    let tx_data = smooth_mini_wave(&tx_rates);
-    f.render_widget(
-        Paragraph::new(mini_wave(
-            &tx_data,
-            tx_cols[1].width,
-            frac,
-            window,
-            theme::tx_wave,
-        )),
-        tx_cols[1],
+    draw_mini_wave_row(
+        f,
+        sparkline_rows[1],
+        "TX",
+        &tx_rates,
+        frac,
+        window,
+        theme::tx_wave,
     );
 
     // Current rates row

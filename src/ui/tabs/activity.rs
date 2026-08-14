@@ -155,6 +155,65 @@ fn title(text: impl Into<String>) -> Span<'static> {
     Span::styled(text.into(), Style::default().add_modifier(Modifier::BOLD))
 }
 
+/// The "now / 60s captured" summary line and the coverage bar for one
+/// direction. The TX and RX rows differ only in labels, colors, and
+/// which counters they read, so both come from here.
+fn pulse_lines(
+    snapshot: &ProcessActivitySnapshot,
+    basis: &InterfaceBasis,
+    direction: ActivityDirection,
+    bar_width: usize,
+) -> [Line<'static>; 2] {
+    let fraction = coverage_fraction(
+        snapshot_window_bytes(snapshot, direction),
+        interface_window_bytes(basis, direction),
+    );
+    let basis_marker = if basis.exact { "" } else { "~" };
+    let label = direction.rate_label();
+
+    let summary = Line::from(vec![
+        Span::styled(format!("{label} now "), theme::fg(theme::muted())),
+        Span::styled(
+            format_rate(snapshot_current_bps(snapshot, direction)),
+            theme::bold_fg(direction_ramp(direction)(1.0)),
+        ),
+        Span::styled("   60s captured ", theme::fg(theme::muted())),
+        Span::styled(
+            format_bytes(snapshot_window_bytes(snapshot, direction)),
+            theme::bold_fg(direction_color(direction)),
+        ),
+        Span::styled(" / ", theme::fg(theme::muted())),
+        Span::styled(
+            format!(
+                "{} {}",
+                basis.label,
+                format_bytes(interface_window_bytes(basis, direction))
+            ),
+            theme::fg(theme::accent()),
+        ),
+        Span::styled(
+            coverage_label(fraction, basis_marker),
+            theme::fg(if fraction.is_some_and(|fraction| fraction > 1.05) {
+                theme::warn()
+            } else {
+                theme::muted()
+            }),
+        ),
+    ]);
+
+    let mut spans = vec![Span::styled(
+        format!("{label} 60s coverage "),
+        theme::fg(theme::muted()),
+    )];
+    spans.extend(glow_bar::spans(
+        fraction.unwrap_or_default(),
+        bar_width,
+        direction_ramp(direction),
+    ));
+
+    [summary, Line::from(spans)]
+}
+
 fn draw_traffic_pulse(
     f: &mut Frame,
     snapshot: &ProcessActivitySnapshot,
@@ -166,9 +225,6 @@ fn draw_traffic_pulse(
         return;
     }
 
-    let tx_fraction = coverage_fraction(snapshot.window_tx_bytes, basis.tx_window_bytes);
-    let rx_fraction = coverage_fraction(snapshot.window_rx_bytes, basis.rx_window_bytes);
-    let basis_marker = if basis.exact { "" } else { "~" };
     let unknown_tx = snapshot
         .retained_tx_bytes
         .saturating_sub(snapshot.attributed_tx_bytes);
@@ -176,76 +232,23 @@ fn draw_traffic_pulse(
         .retained_rx_bytes
         .saturating_sub(snapshot.attributed_rx_bytes);
 
-    let tx_line = Line::from(vec![
-        Span::styled("TX now ", theme::fg(theme::muted())),
-        Span::styled(
-            format_rate(snapshot.current_tx_bps),
-            theme::bold_fg(theme::tx_wave(1.0)),
-        ),
-        Span::styled("   60s captured ", theme::fg(theme::muted())),
-        Span::styled(
-            format_bytes(snapshot.window_tx_bytes),
-            theme::bold_fg(theme::tx()),
-        ),
-        Span::styled(" / ", theme::fg(theme::muted())),
-        Span::styled(
-            format!("{} {}", basis.label, format_bytes(basis.tx_window_bytes)),
-            theme::fg(theme::accent()),
-        ),
-        Span::styled(
-            coverage_label(tx_fraction, basis_marker),
-            theme::fg(if tx_fraction.is_some_and(|fraction| fraction > 1.05) {
-                theme::warn()
-            } else {
-                theme::muted()
-            }),
-        ),
-    ]);
+    let bar_width = inner.width.saturating_sub(20) as usize;
+    let [tx_line, tx_bar] = pulse_lines(snapshot, basis, ActivityDirection::Egress, bar_width);
+    let [rx_line, rx_bar] = pulse_lines(snapshot, basis, ActivityDirection::Ingress, bar_width);
+
     f.render_widget(
         Paragraph::new(tx_line),
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
 
     if inner.height > 1 {
-        let bar_width = inner.width.saturating_sub(20) as usize;
-        let mut spans = vec![Span::styled("TX 60s coverage ", theme::fg(theme::muted()))];
-        spans.extend(glow_bar::spans(
-            tx_fraction.unwrap_or_default(),
-            bar_width,
-            theme::tx_wave,
-        ));
         f.render_widget(
-            Paragraph::new(Line::from(spans)),
+            Paragraph::new(tx_bar),
             Rect::new(inner.x, inner.y + 1, inner.width, 1),
         );
     }
 
     if inner.height > 2 {
-        let rx_line = Line::from(vec![
-            Span::styled("RX now ", theme::fg(theme::muted())),
-            Span::styled(
-                format_rate(snapshot.current_rx_bps),
-                theme::bold_fg(theme::rx_wave(1.0)),
-            ),
-            Span::styled("   60s captured ", theme::fg(theme::muted())),
-            Span::styled(
-                format_bytes(snapshot.window_rx_bytes),
-                theme::bold_fg(theme::rx()),
-            ),
-            Span::styled(" / ", theme::fg(theme::muted())),
-            Span::styled(
-                format!("{} {}", basis.label, format_bytes(basis.rx_window_bytes)),
-                theme::fg(theme::accent()),
-            ),
-            Span::styled(
-                coverage_label(rx_fraction, basis_marker),
-                theme::fg(if rx_fraction.is_some_and(|fraction| fraction > 1.05) {
-                    theme::warn()
-                } else {
-                    theme::muted()
-                }),
-            ),
-        ]);
         f.render_widget(
             Paragraph::new(rx_line),
             Rect::new(inner.x, inner.y + 2, inner.width, 1),
@@ -253,15 +256,8 @@ fn draw_traffic_pulse(
     }
 
     if inner.height > 3 {
-        let bar_width = inner.width.saturating_sub(20) as usize;
-        let mut spans = vec![Span::styled("RX 60s coverage ", theme::fg(theme::muted()))];
-        spans.extend(glow_bar::spans(
-            rx_fraction.unwrap_or_default(),
-            bar_width,
-            theme::rx_wave,
-        ));
         f.render_widget(
-            Paragraph::new(Line::from(spans)),
+            Paragraph::new(rx_bar),
             Rect::new(inner.x, inner.y + 3, inner.width, 1),
         );
     }
@@ -415,6 +411,13 @@ fn snapshot_window_bytes(snapshot: &ProcessActivitySnapshot, direction: Activity
     match direction {
         ActivityDirection::Egress => snapshot.window_tx_bytes,
         ActivityDirection::Ingress => snapshot.window_rx_bytes,
+    }
+}
+
+fn snapshot_current_bps(snapshot: &ProcessActivitySnapshot, direction: ActivityDirection) -> f64 {
+    match direction {
+        ActivityDirection::Egress => snapshot.current_tx_bps,
+        ActivityDirection::Ingress => snapshot.current_rx_bps,
     }
 }
 
