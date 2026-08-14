@@ -20,7 +20,8 @@ It is intentionally decoupled from the analysis core (`rustnet-core`) and the
 `rustnet` application so you can compose them differently:
 
 - pair `rustnet-capture` + `rustnet-core` to build a **headless** tool (e.g. a
-  Prometheus exporter) with no terminal UI;
+  Prometheus exporter) with no terminal UI (see `examples/headless.rs` in the
+  repository for a runnable pairing);
 - or swap `rustnet-capture` out for a **bespoke capture path** (for example a
   root-free macOS pktap helper) while still using `rustnet-core` for parsing.
 
