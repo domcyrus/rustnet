@@ -138,14 +138,7 @@ fn push_detail_field<'a>(
     value: String,
     label_style: Style,
 ) {
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("{:<width$}", label, width = DETAIL_LABEL_WIDTH),
-            label_style,
-        ),
-        Span::raw(value.clone()),
-    ]));
-    fields.push(Some((label.to_string(), value)));
+    push_detail_field_styled(lines, fields, label, value, label_style, Style::default());
 }
 
 /// Push a label-value line with a custom-styled value span.
@@ -157,14 +150,15 @@ fn push_detail_field_styled<'a>(
     label_style: Style,
     value_style: Style,
 ) {
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("{:<width$}", label, width = DETAIL_LABEL_WIDTH),
-            label_style,
-        ),
-        Span::styled(value.clone(), value_style),
-    ]));
-    fields.push(Some((label.to_string(), value)));
+    push_detail_field_with_copy(
+        lines,
+        fields,
+        label,
+        value.clone(),
+        value,
+        label_style,
+        value_style,
+    );
 }
 
 /// Push a label-value line whose rendered value differs from what

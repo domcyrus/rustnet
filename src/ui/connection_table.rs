@@ -18,19 +18,21 @@
 
 use std::borrow::Cow;
 
-use ratatui::layout::Constraint;
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Row};
+use ratatui::widgets::{Cell, Row, Table};
 
 use std::net::SocketAddr;
 
 use crate::network::dns::DnsResolver;
 use crate::network::types::{AddrKind, Connection, Protocol};
 use crate::ui::{
-    NONE_PLACEHOLDER, SortColumn, UIState, dpi_color,
+    ClickAction, ClickableRegions, NONE_PLACEHOLDER, SortColumn, UIState, dpi_color,
     format::{format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
     state_color, theme,
+    widgets::scrollbar::draw_scrollbar,
 };
 
 // --- Column floors (cells). Flexible columns grow beyond their floor
@@ -579,6 +581,85 @@ pub(in crate::ui) fn bandwidth_cell<'a>(rx_bps: f64, tx_bps: f64, color_cells: b
         ])
     };
     Cell::from(line.right_aligned())
+}
+
+/// Virtualization window over `items`: the rows at `scroll_offset`
+/// that fit `visible_rows`, plus one extra for a partial bottom row.
+pub(in crate::ui) fn visible_window<T>(
+    items: &[T],
+    scroll_offset: usize,
+    visible_rows: usize,
+) -> &[T] {
+    let window_end = (scroll_offset + visible_rows + 1).min(items.len());
+    &items[scroll_offset.min(items.len())..window_end]
+}
+
+/// How a windowed table maps onto its full row list: which rows are on
+/// screen and which one is selected. Indices are into the full list.
+pub(in crate::ui) struct RowWindow {
+    pub selected: Option<usize>,
+    pub scroll_offset: usize,
+    pub total_rows: usize,
+    pub visible_rows: usize,
+}
+
+/// Render a windowed connection table plus its scrollbar and click
+/// regions: the shared back half of the flat and grouped Overview
+/// lists. `rows` holds only the visible window described by `window`.
+pub(in crate::ui) fn render_row_table(
+    f: &mut Frame,
+    area: Rect,
+    header: Row<'_>,
+    rows: Vec<Row<'_>>,
+    widths: &[Constraint],
+    window: RowWindow,
+    click_regions: &mut ClickableRegions,
+) {
+    let RowWindow {
+        selected,
+        scroll_offset,
+        total_rows,
+        visible_rows,
+    } = window;
+
+    // Create table state with selection adjusted to windowed slice
+    let mut state = ratatui::widgets::TableState::default();
+    if let Some(selected_index) = selected {
+        state.select(Some(selected_index.saturating_sub(scroll_offset)));
+    }
+
+    let connections_table = Table::new(rows, widths)
+        .header(header)
+        .row_highlight_style(theme::row_highlight())
+        .highlight_symbol("> ");
+
+    let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
+    f.render_stateful_widget(connections_table, table_area, &mut state);
+
+    // Scrollbar tracks the row region (below header + margin).
+    let header_height = 2_u16; // header row (1) + bottom_margin (1)
+    let rows_area = Rect::new(
+        area.x,
+        area.y + header_height,
+        area.width,
+        area.height.saturating_sub(header_height),
+    );
+    draw_scrollbar(f, rows_area, total_rows, scroll_offset, visible_rows);
+
+    // Register click regions for visible rows
+    click_regions.scroll_area = Some(area);
+    let visible_start_y = area.y + header_height;
+    let max_visible_rows = area.height.saturating_sub(header_height) as usize;
+
+    for i in 0..max_visible_rows {
+        let row_idx = scroll_offset + i;
+        if row_idx >= total_rows {
+            break;
+        }
+        let row_y = visible_start_y + i as u16;
+        let row_rect = Rect::new(area.x, row_y, area.width, 1);
+        click_regions.register(row_rect, ClickAction::SelectConnection(row_idx));
+    }
 }
 
 #[cfg(test)]

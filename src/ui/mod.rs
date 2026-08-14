@@ -1181,6 +1181,51 @@ mod snapshot_tests {
         }
     }
 
+    /// Details render of `connections[selected]` through the full-page
+    /// `draw`, returning the text dump plus the click regions the frame
+    /// registered. `height` varies per test (40 covers the dashboard;
+    /// the attribution tests need 52 for the lineage rows).
+    fn render_details_frame(
+        app: &App,
+        connections: &[Connection],
+        selected: usize,
+        height: u16,
+    ) -> (String, ClickableRegions) {
+        let ui_state = UIState {
+            selected_tab: 1, // Details
+            selected_connection_key: Some(connections[selected].key()),
+            ..Default::default()
+        };
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+        let output = render(140, height, |f| {
+            draw(
+                f,
+                app,
+                &ui_state,
+                connections,
+                None,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw details");
+        });
+        (output, click_regions)
+    }
+
+    /// Standard Details render at the 140x40 reference size.
+    fn render_details(app: &App, connections: &[Connection], selected: usize) -> String {
+        render_details_frame(app, connections, selected, 40).0
+    }
+
+    /// Row index of the first rendered line containing `heading`.
+    fn heading_row(render: &str, heading: &str) -> usize {
+        render
+            .lines()
+            .position(|line| line.contains(heading))
+            .unwrap_or_else(|| panic!("missing {heading}"))
+    }
+
     #[test]
     fn details_tab_tcp_https() {
         let app = test_app();
@@ -1188,26 +1233,7 @@ mod snapshot_tests {
         let connections = sample_connections();
         app.set_connections_snapshot_for_test(connections.clone());
 
-        let ui_state = UIState {
-            selected_tab: 1, // Details
-            selected_connection_key: Some(connections[0].key()),
-            ..Default::default()
-        };
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw details");
-        });
+        let output = render_details(&app, &connections, 0);
 
         insta::with_settings!({
             filters => time_filters(),
@@ -1249,25 +1275,7 @@ mod snapshot_tests {
         });
 
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
-        let ui_state = UIState {
-            selected_tab: 1, // Details
-            selected_connection_key: Some(connections[1].key()),
-            ..Default::default()
-        };
-        let mut click_regions = ClickableRegions::default();
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw details");
-        });
+        let output = render_details(&app, &connections, 1);
 
         for tcp_only in [
             "TCP Retransmits",
@@ -1295,29 +1303,7 @@ mod snapshot_tests {
         // The card must not resize between protocols: Traffic Statistics is
         // anchored below Transport Health, so a shorter QUIC card would pull
         // the whole lower half of the dashboard upward.
-        let tcp_state = UIState {
-            selected_tab: 1,
-            selected_connection_key: Some(connections[0].key()),
-            ..Default::default()
-        };
-        let tcp_output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &tcp_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw details");
-        });
-        let heading_row = |render: &str, heading: &str| {
-            render
-                .lines()
-                .position(|line| line.contains(heading))
-                .unwrap_or_else(|| panic!("missing {heading}"))
-        };
+        let tcp_output = render_details(&app, &connections, 0);
         assert_eq!(
             heading_row(&output, "Traffic Statistics"),
             heading_row(&tcp_output, "Traffic Statistics"),
@@ -1351,25 +1337,7 @@ mod snapshot_tests {
         });
 
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
-        let ui_state = UIState {
-            selected_tab: 1, // Details
-            selected_connection_key: Some(connections[1].key()),
-            ..Default::default()
-        };
-        let mut click_regions = ClickableRegions::default();
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw details");
-        });
+        let output = render_details(&app, &connections, 1);
 
         assert!(
             output.contains("DNS Response Time") && output.contains("12.3ms"),
@@ -1397,29 +1365,7 @@ mod snapshot_tests {
 
         // Same geometry invariant as the QUIC card: Traffic Statistics must
         // not move when flipping between a DNS and a TCP connection.
-        let tcp_state = UIState {
-            selected_tab: 1,
-            selected_connection_key: Some(connections[0].key()),
-            ..Default::default()
-        };
-        let tcp_output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &tcp_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw details");
-        });
-        let heading_row = |render: &str, heading: &str| {
-            render
-                .lines()
-                .position(|line| line.contains(heading))
-                .unwrap_or_else(|| panic!("missing {heading}"))
-        };
+        let tcp_output = render_details(&app, &connections, 0);
         assert_eq!(
             heading_row(&output, "Traffic Statistics"),
             heading_row(&tcp_output, "Traffic Statistics"),
@@ -1451,25 +1397,7 @@ mod snapshot_tests {
         });
 
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
-        let ui_state = UIState {
-            selected_tab: 1,
-            selected_connection_key: Some(connections[1].key()),
-            ..Default::default()
-        };
-        let mut click_regions = ClickableRegions::default();
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw details");
-        });
+        let output = render_details(&app, &connections, 1);
 
         assert!(output.contains("NetBIOS Response Time") && output.contains("18.7ms"));
         assert!(output.contains("Last Response Status") && output.contains("NAM_ERR"));
@@ -1500,25 +1428,7 @@ mod snapshot_tests {
         let connections = vec![ping];
 
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
-        let ui_state = UIState {
-            selected_tab: 1,
-            selected_connection_key: Some(connections[0].key()),
-            ..Default::default()
-        };
-        let mut click_regions = ClickableRegions::default();
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw ping details");
-        });
+        let output = render_details(&app, &connections, 0);
 
         assert!(output.contains("Ping RTT") && output.contains("8.7ms"));
         assert!(output.contains("Last Sequence") && output.contains("42"));
@@ -1549,25 +1459,7 @@ mod snapshot_tests {
         let connections = vec![ping];
 
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
-        let ui_state = UIState {
-            selected_tab: 1,
-            selected_connection_key: Some(connections[0].key()),
-            ..Default::default()
-        };
-        let mut click_regions = ClickableRegions::default();
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw inbound ping details");
-        });
+        let output = render_details(&app, &connections, 0);
 
         assert!(!output.contains("Ping RTT"));
         assert!(output.contains("Last Sequence") && output.contains("4242"));
@@ -1599,25 +1491,7 @@ mod snapshot_tests {
         let connections = vec![stun];
 
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
-        let ui_state = UIState {
-            selected_tab: 1,
-            selected_connection_key: Some(connections[0].key()),
-            ..Default::default()
-        };
-        let mut click_regions = ClickableRegions::default();
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw stun details");
-        });
+        let output = render_details(&app, &connections, 0);
 
         assert!(output.contains("STUN RTT") && output.contains("23.4ms"));
         assert!(output.contains("Last Message") && output.contains("Binding Success"));
@@ -1649,25 +1523,7 @@ mod snapshot_tests {
         let connections = vec![ntp];
 
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
-        let ui_state = UIState {
-            selected_tab: 1,
-            selected_connection_key: Some(connections[0].key()),
-            ..Default::default()
-        };
-        let mut click_regions = ClickableRegions::default();
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw ntp details");
-        });
+        let output = render_details(&app, &connections, 0);
 
         assert!(output.contains("NTP RTT") && output.contains("6.5ms"));
         assert!(output.contains("Stratum"));
@@ -1686,28 +1542,10 @@ mod snapshot_tests {
         let app = test_app();
         let mut connections = sample_connections();
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
 
-        let render_connections = |connections: &[Connection]| {
-            let ui_state = UIState {
-                selected_tab: 1,
-                selected_connection_key: Some(connections[0].key()),
-                ..Default::default()
-            };
-            let mut click_regions = ClickableRegions::default();
-            render(140, 52, |f| {
-                draw(
-                    f,
-                    &app,
-                    &ui_state,
-                    connections,
-                    None,
-                    &stats,
-                    &mut click_regions,
-                )
-                .expect("draw details");
-            })
-        };
+        // 52 rows so the lineage rows fit below the dashboard.
+        let render_connections =
+            |connections: &[Connection]| render_details_frame(&app, connections, 0, 52).0;
 
         connections[0].pid = None;
         let unattributed = render_connections(&connections);
@@ -1760,29 +1598,11 @@ mod snapshot_tests {
         let mut connections = sample_connections();
         connections[0].attribution_quality = Some(MatchQuality::ListenerSocket);
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
 
-        let ui_state = UIState {
-            selected_tab: 1,
-            selected_connection_key: Some(connections[0].key()),
-            ..Default::default()
-        };
-        let mut click_regions = ClickableRegions::default();
         // 40 rows: the Attribution card must stay visible on a 40-row
         // terminal — unresolved MAC rows are omitted, not rendered as
         // placeholders, precisely so the dashboard column does not grow.
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw details");
-        });
+        let output = render_details(&app, &connections, 0);
 
         assert!(output.contains("Attribution"));
         assert!(output.contains("listener socket"));
@@ -1809,27 +1629,9 @@ mod snapshot_tests {
         connections[0].executable = Some(Arc::from(Path::new(full)));
         connections[0].attribution_quality = Some(MatchQuality::ExactTuple);
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
 
-        let ui_state = UIState {
-            selected_tab: 1,
-            selected_connection_key: Some(connections[0].key()),
-            ..Default::default()
-        };
-        let mut click_regions = ClickableRegions::default();
         // 40 rows for the same reason as the partial-attribution test above.
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw details");
-        });
+        let (output, click_regions) = render_details_frame(&app, &connections, 0, 40);
 
         assert!(
             output.contains("/nix/store/"),
@@ -1867,28 +1669,8 @@ mod snapshot_tests {
             as_org: Some("Hetzner Online GmbH".to_string()),
         });
         app.set_connections_snapshot_for_test(connections.clone());
-        let stats = app.get_stats();
 
-        let render_selected = |selected: usize| {
-            let ui_state = UIState {
-                selected_tab: 1,
-                selected_connection_key: Some(connections[selected].key()),
-                ..Default::default()
-            };
-            let mut click_regions = ClickableRegions::default();
-            render(140, 40, |f| {
-                draw(
-                    f,
-                    &app,
-                    &ui_state,
-                    &connections,
-                    None,
-                    &stats,
-                    &mut click_regions,
-                )
-                .expect("draw details");
-            })
-        };
+        let render_selected = |selected: usize| render_details(&app, &connections, selected);
 
         let enriched_tcp = render_selected(0);
         let plain_udp = render_selected(1);
