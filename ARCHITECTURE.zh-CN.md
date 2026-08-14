@@ -16,14 +16,15 @@
 
 ## Crate 结构<a id="crate-structure"></a>
 
-RustNet 是一个由四个 crate 组成的 Cargo 工作区。分析逻辑、捕获后端和进程归属各自位于独立的可复用库 crate 中；二进制 crate 将它们组合成 TUI 应用。
+RustNet 是一个由五个 crate 组成的 Cargo 工作区。分析逻辑、捕获后端、进程归属和沙箱各自位于独立的可复用库 crate 中；二进制 crate 将它们组合成 TUI 应用。
 
 | Crate | 类型 | 职责 |
 | --- | --- | --- |
 | [`rustnet-core`](crates/rustnet-core) | 库 | 与平台和捕获无关的分析核心：数据包解析、协议/连接类型、深度包检测、链路层解析器、连接合并、DNS/GeoIP/OUI 查找、可复用的 `ConnectionTracker`，以及有界的保留进程活动计量。仅操作字节切片和已解析的结构，不依赖 libpcap、原始套接字或操作系统进程表。 |
 | [`rustnet-capture`](crates/rustnet-capture) | 库 | 基于 libpcap/Npcap 的数据包捕获后端：设备选择、BPF 过滤器、macOS PKTAP、TUN/TAP，以及原始帧 `PacketReader`。 |
 | [`rustnet-host`](crates/rustnet-host) | 库 | 单一 `ProcessLookup` trait 背后的按连接进程归属：Linux 上的 eBPF/procfs、macOS 上的 PKTAP/lsof、Windows 上的 ETW/IP Helper，以及 FreeBSD 上的 `sockstat`。负责 eBPF 构建工具链及内置的 `vmlinux.h`。 |
-| `rustnet-monitor`（二进制 `rustnet`） | 二进制 | 面向用户的应用：CLI、TUI、应用事件循环、沙箱（Landlock/Seatbelt）和接口统计。以 `ConnectionTracker` 作为唯一数据来源（dogfooding）。 |
+| [`rustnet-sandbox`](crates/rustnet-sandbox) | 库 | 初始化完成后的沙箱与 root 权限降级，统一入口 `apply_sandbox`：Linux 上的 Landlock + 能力降级、macOS 上的 Seatbelt、Windows 上的受限令牌 + 作业对象，以及 Linux/macOS/FreeBSD 共享的 uid 降级。不依赖任何其他工作区 crate。 |
+| `rustnet-monitor`（二进制 `rustnet`） | 二进制 | 面向用户的应用：CLI、TUI、应用事件循环和接口统计。以 `ConnectionTracker` 作为唯一数据来源（dogfooding）。 |
 
 包名为 `rustnet-monitor`，因为 `rustnet` 这个 crate 名称在 crates.io 上已被占用；安装后的二进制文件名为 `rustnet`。
 
@@ -34,20 +35,22 @@ flowchart TD
     BIN[rustnet-monitor<br/>二进制: rustnet]
     CAP[rustnet-capture]
     HOST[rustnet-host]
+    SBX[rustnet-sandbox]
     CORE[rustnet-core]
 
     BIN --> CAP
     BIN --> HOST
+    BIN --> SBX
     BIN --> CORE
     CAP --> CORE
     HOST --> CORE
 ```
 
-依赖关系是无环的：`rustnet-core` 没有任何工作区内依赖，`rustnet-capture` 和 `rustnet-host` 都仅依赖它。让 `rustnet-core` 保持为叶子节点，使其可以独立发布和复用 —— 无界面的前端（例如 Prometheus 导出器）可以仅组合 `rustnet-capture` + `rustnet-core` 而无需 TUI。
+依赖关系是无环的：`rustnet-core` 没有任何工作区内依赖，`rustnet-capture` 和 `rustnet-host` 都仅依赖它，而 `rustnet-sandbox` 不依赖任何工作区 crate。让 `rustnet-core` 保持为叶子节点，使其可以独立发布和复用 —— 无界面的前端（例如 Prometheus 导出器）可以仅组合 `rustnet-capture` + `rustnet-core` 而无需 TUI。
 
 ### 重导出门面
 
-为了将拆分对二进制内部保持透明，`src/network/mod.rs` 重导出 `rustnet_core::network::*` 和 `rustnet_capture`（作为 `capture`），因此现有的 `crate::network::*` 路径、集成测试和基准测试无需改动即可编译。`src/network/platform` 模块仍承载操作系统沙箱（Landlock/Seatbelt）和接口统计采集器，并接入 `rustnet-host` 的进程查找。
+为了将拆分对二进制内部保持透明，`src/network/mod.rs` 重导出 `rustnet_core::network::*` 和 `rustnet_capture`（作为 `capture`），因此现有的 `crate::network::*` 路径、集成测试和基准测试无需改动即可编译。`src/network/platform` 模块仍承载接口统计采集器，并接入 `rustnet-host` 的进程查找；沙箱与 root uid 降级位于 `rustnet-sandbox`，二进制直接使用该 crate。
 
 ## 多线程架构<a id="multi-threaded-architecture"></a>
 

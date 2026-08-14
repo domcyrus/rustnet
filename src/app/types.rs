@@ -1,6 +1,6 @@
 //! Plain data shared across the `app` module: configuration, output handles,
-//! statistics, sandbox/process-detection status, and per-connection rate
-//! history.
+//! statistics, process-detection status, and per-connection rate history.
+//! Sandbox status is `rustnet_sandbox::SandboxReport`.
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::File;
@@ -9,69 +9,6 @@ use std::sync::atomic::AtomicU64;
 use std::time::{Instant, SystemTime};
 
 use crate::network::types::{Connection, GraphScale, Protocol};
-
-/// Sandbox status information for UI display
-#[cfg(any(
-    target_os = "linux",
-    target_os = "windows",
-    all(target_os = "macos", feature = "macos-sandbox")
-))]
-#[derive(Debug, Clone, Default)]
-pub struct SandboxInfo {
-    /// Overall status description
-    pub status: String,
-    /// Whether network connections are blocked
-    #[cfg(any(
-        target_os = "linux",
-        all(target_os = "macos", feature = "macos-sandbox")
-    ))]
-    pub net_restricted: bool,
-    // Linux-specific fields (Landlock + capabilities)
-    /// Whether CAP_NET_RAW was dropped
-    #[cfg(target_os = "linux")]
-    pub cap_dropped: bool,
-    /// Whether CAP_BPF/CAP_PERFMON were dropped
-    #[cfg(target_os = "linux")]
-    pub ebpf_caps_dropped: bool,
-    /// Whether the root uid/gid were dropped (setresuid to the sudo user or nobody)
-    #[cfg(target_os = "linux")]
-    pub uid_dropped: bool,
-    /// Whether Landlock is available on this kernel
-    #[cfg(target_os = "linux")]
-    pub landlock_available: bool,
-    /// Whether Landlock filesystem restrictions are applied
-    #[cfg(target_os = "linux")]
-    pub fs_restricted: bool,
-    /// Whether Landlock scope restrictions (abstract UNIX sockets + signals) are applied
-    #[cfg(target_os = "linux")]
-    pub scope_restricted: bool,
-    /// Effective Landlock ABI negotiated with the kernel (e.g. `Some(6)`), or `None`
-    #[cfg(target_os = "linux")]
-    pub landlock_abi: Option<u8>,
-    /// Whether PR_SET_NO_NEW_PRIVS is set (applied even with `--no-sandbox`)
-    #[cfg(target_os = "linux")]
-    pub no_new_privs: bool,
-    // macOS-specific fields (Seatbelt)
-    /// Whether Seatbelt sandbox was applied
-    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
-    pub seatbelt_applied: bool,
-    /// Whether the root uid/gid were dropped (setuid to the sudo user or nobody)
-    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
-    pub uid_dropped: bool,
-    /// Whether filesystem write restrictions are applied
-    #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
-    pub fs_restricted: bool,
-    // Windows-specific fields (Restricted token + Job Object)
-    /// Whether dangerous privileges were removed
-    #[cfg(target_os = "windows")]
-    pub privileges_removed: bool,
-    /// Number of privileges removed
-    #[cfg(target_os = "windows")]
-    pub privileges_removed_count: u32,
-    /// Whether job object was applied
-    #[cfg(target_os = "windows")]
-    pub job_object_applied: bool,
-}
 
 /// Process detection status information for UI display
 #[derive(Debug, Clone, Default)]

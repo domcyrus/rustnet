@@ -38,7 +38,7 @@ use landlock::{
 };
 use std::path::Path;
 
-use super::{SandboxConfig, SandboxMode};
+use crate::{SandboxConfig, SandboxMode};
 
 /// Highest ABI whose *filesystem* rights we handle.
 ///

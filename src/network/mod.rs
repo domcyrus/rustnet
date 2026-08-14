@@ -6,10 +6,12 @@
 //! so existing `crate::network::*` paths keep resolving unchanged.
 //!
 //! The modules that remain in the binary are the ones tied to the running host:
-//! platform-specific process attribution and sandboxing ([`platform`]) and the
-//! [`privileges`] preflight check. libpcap-based packet capture now lives in the
-//! [`rustnet_capture`] crate and is re-exported here as [`capture`] so existing
-//! `crate::network::capture::*` paths keep resolving.
+//! platform-specific interface statistics and the `rustnet-host` process-lookup
+//! wiring ([`platform`]) and the [`privileges`] preflight check. libpcap-based
+//! packet capture now lives in the [`rustnet_capture`] crate and is re-exported
+//! here as [`capture`] so existing `crate::network::capture::*` paths keep
+//! resolving; sandboxing and the root uid drop live in the `rustnet-sandbox`
+//! crate.
 
 #[cfg(feature = "kubernetes")]
 pub mod kubernetes;

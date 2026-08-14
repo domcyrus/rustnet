@@ -118,9 +118,7 @@ impl App {
         // kernel.unprivileged_bpf_disabled set every bpf(2) call — map lookups
         // included — is rejected without CAP_BPF.
         #[cfg(all(target_os = "linux", feature = "landlock"))]
-        crate::network::platform::sandbox::capabilities::drop_thread_cap_net_raw(
-            "process enrichment thread",
-        );
+        rustnet_sandbox::capabilities::drop_thread_cap_net_raw("process enrichment thread");
 
         // Kubernetes pod/container attribution. `auto` enables only when rustnet
         // is itself running inside a pod, so the resolver and the cross-namespace

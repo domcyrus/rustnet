@@ -32,17 +32,12 @@ use crate::network::{
 
 use super::capture::CaptureStatus;
 use super::logging::{JsonLineWriter, log_pcap_connection};
-#[cfg(any(
-    target_os = "linux",
-    target_os = "windows",
-    all(target_os = "macos", feature = "macos-sandbox")
-))]
-use super::types::SandboxInfo;
 use super::types::{
     AppOutputHandles, AppStats, Config, ConnRateHistory, ConnRateHistorySnapshot, ConnectionCounts,
     ProcessDetectionStatus,
 };
 use super::{STARTUP_SPLASH_DURATION, TRAFFIC_HISTORY_CAPACITY};
+use rustnet_sandbox::SandboxReport;
 
 fn is_ptr_lookup(connection: &Connection) -> bool {
     matches!(
@@ -157,12 +152,7 @@ pub struct App {
     pub(super) pcapng_export_file: Option<File>,
 
     /// Sandbox status (Linux Landlock / macOS Seatbelt / Windows restricted token)
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "windows",
-        all(target_os = "macos", feature = "macos-sandbox")
-    ))]
-    pub(super) sandbox_info: Arc<RwLock<SandboxInfo>>,
+    pub(super) sandbox_info: Arc<RwLock<SandboxReport>>,
 }
 
 impl App {
@@ -307,12 +297,7 @@ impl App {
             json_log_file,
             pcap_sidecar_file,
             pcapng_export_file: output_handles.pcapng_export.take(),
-            #[cfg(any(
-                target_os = "linux",
-                target_os = "windows",
-                all(target_os = "macos", feature = "macos-sandbox")
-            ))]
-            sandbox_info: Arc::new(RwLock::new(SandboxInfo::default())),
+            sandbox_info: Arc::new(RwLock::new(SandboxReport::default())),
         })
     }
 
@@ -601,12 +586,7 @@ impl App {
     }
 
     /// Get sandbox status information
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "windows",
-        all(target_os = "macos", feature = "macos-sandbox")
-    ))]
-    pub fn get_sandbox_info(&self) -> SandboxInfo {
+    pub fn get_sandbox_info(&self) -> SandboxReport {
         self.sandbox_info
             .read()
             .map(|s| s.clone())
@@ -614,12 +594,7 @@ impl App {
     }
 
     /// Set sandbox status information
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "windows",
-        all(target_os = "macos", feature = "macos-sandbox")
-    ))]
-    pub fn set_sandbox_info(&self, info: SandboxInfo) {
+    pub fn set_sandbox_info(&self, info: SandboxReport) {
         if let Ok(mut guard) = self.sandbox_info.write() {
             *guard = info;
         }

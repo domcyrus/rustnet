@@ -764,16 +764,17 @@ fn draw_stats_panel(
     // its content. Otherwise long feature lists get clipped on narrow columns.
     #[cfg(target_os = "linux")]
     let security_text: Vec<Line> = {
+        use rustnet_sandbox::SandboxStatus;
+
         let sandbox_info = app.get_sandbox_info();
-        let status_style = match sandbox_info.status.as_str() {
-            "Fully enforced" => theme::fg(theme::ok()),
-            "Partially enforced" => theme::fg(theme::warn()),
-            "Not applied" | "Error" => theme::fg(theme::err()),
-            _ => Style::default(),
+        let status_style = match sandbox_info.status {
+            SandboxStatus::FullyEnforced => theme::fg(theme::ok()),
+            SandboxStatus::PartiallyEnforced => theme::fg(theme::warn()),
+            _ => theme::fg(theme::err()),
         };
 
         let mut features: Vec<&'static str> = Vec::new();
-        if sandbox_info.cap_dropped {
+        if sandbox_info.cap_net_raw_dropped {
             features.push("CAP_NET_RAW dropped");
         }
         if sandbox_info.ebpf_caps_dropped {
@@ -811,7 +812,7 @@ fn draw_stats_panel(
             vec![
                 Line::from(vec![
                     Span::raw("Sandbox: "),
-                    Span::styled(sandbox_info.status, status_style),
+                    Span::styled(sandbox_info.status.label(), status_style),
                 ]),
                 Line::from(available_indicator),
             ],
@@ -822,12 +823,13 @@ fn draw_stats_panel(
 
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
     let security_text: Vec<Line> = {
+        use rustnet_sandbox::SandboxStatus;
+
         let sandbox_info = app.get_sandbox_info();
-        let is_enforced = sandbox_info.status.as_str() == "Fully enforced";
-        let status_style = if is_enforced {
-            theme::fg(theme::ok())
-        } else {
-            theme::fg(theme::err())
+        let status_style = match sandbox_info.status {
+            SandboxStatus::FullyEnforced => theme::fg(theme::ok()),
+            SandboxStatus::PartiallyEnforced => theme::fg(theme::warn()),
+            _ => theme::fg(theme::err()),
         };
 
         let mut features: Vec<&'static str> = Vec::new();
@@ -847,7 +849,7 @@ fn draw_stats_panel(
         sandbox_lines(
             vec![Line::from(vec![
                 Span::raw("Seatbelt: "),
-                Span::styled(sandbox_info.status, status_style),
+                Span::styled(sandbox_info.status.label(), status_style),
             ])],
             &features,
             privilege_line(),
@@ -876,12 +878,13 @@ fn draw_stats_panel(
 
     #[cfg(target_os = "windows")]
     let security_text: Vec<Line> = {
+        use rustnet_sandbox::SandboxStatus;
+
         let sandbox_info = app.get_sandbox_info();
-        let status_style = match sandbox_info.status.as_str() {
-            "Fully enforced" => theme::fg(theme::ok()),
-            "Partially enforced" => theme::fg(theme::warn()),
-            "Not applied" | "Error" => theme::fg(theme::err()),
-            _ => Style::default(),
+        let status_style = match sandbox_info.status {
+            SandboxStatus::FullyEnforced => theme::fg(theme::ok()),
+            SandboxStatus::PartiallyEnforced => theme::fg(theme::warn()),
+            _ => theme::fg(theme::err()),
         };
 
         let mut features: Vec<String> = Vec::new();
@@ -910,7 +913,7 @@ fn draw_stats_panel(
         sandbox_lines(
             vec![Line::from(vec![
                 Span::raw("Sandbox: "),
-                Span::styled(sandbox_info.status, status_style),
+                Span::styled(sandbox_info.status.label(), status_style),
             ])],
             &features,
             Line::from(Span::styled(priv_label, priv_style)),
