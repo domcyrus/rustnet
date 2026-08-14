@@ -161,6 +161,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Dead Library-Crate API Removed**: The workspace crates dropped public API
+  nothing in the workspace uses: a never-compiling procfs-only module and
+  write-only lookup statistics in `rustnet-host`, the unused thread-id and
+  monotonic-timestamp attribution fields, and assorted unused methods and
+  write-only fields in `rustnet-core` (including the crate-root flat
+  re-exports and the `psh`/`urg` TCP flags) (#551)
 - **Interface Stats Moved to rustnet-core**: The per-platform interface
   statistics providers (sysfs on Linux, getifaddrs on macOS/FreeBSD, IP
   Helper on Windows) moved from the binary into `rustnet-core` behind a new

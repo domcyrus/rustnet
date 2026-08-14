@@ -117,20 +117,15 @@ pub struct ProcessActivity {
     pub destinations_truncated: bool,
     pub top_tx_destination: Option<DestinationActivity>,
     pub top_rx_destination: Option<DestinationActivity>,
-    pub current_tx_share: f64,
-    pub current_rx_share: f64,
     pub window_tx_share: f64,
     pub window_rx_share: f64,
     pub retained_tx_share: f64,
     pub retained_rx_share: f64,
-    pub first_seen: SystemTime,
-    pub last_seen: SystemTime,
 }
 
 /// Immutable point-in-time process activity view.
 #[derive(Debug, Clone)]
 pub struct ProcessActivitySnapshot {
-    pub generated_at: SystemTime,
     pub processes: Vec<ProcessActivity>,
     pub current_tx_bps: f64,
     pub current_rx_bps: f64,
@@ -145,7 +140,6 @@ pub struct ProcessActivitySnapshot {
 impl Default for ProcessActivitySnapshot {
     fn default() -> Self {
         Self {
-            generated_at: SystemTime::UNIX_EPOCH,
             processes: Vec::new(),
             current_tx_bps: 0.0,
             current_rx_bps: 0.0,
@@ -182,8 +176,6 @@ struct FlowActivity {
     bytes_received: u64,
     remote_addr: SocketAddr,
     remote_label: Option<String>,
-    created_at: SystemTime,
-    last_activity: SystemTime,
 }
 
 impl FlowActivity {
@@ -194,8 +186,6 @@ impl FlowActivity {
             bytes_received: conn.bytes_received,
             remote_addr: conn.remote_addr,
             remote_label: destination_label(conn),
-            created_at: conn.created_at,
-            last_activity: conn.last_activity,
         }
     }
 }
@@ -249,20 +239,16 @@ struct ProcessAccumulator {
     active_connections: usize,
     completed_connections: u64,
     destinations: HashMap<SocketAddr, DestinationActivity>,
-    first_seen: SystemTime,
-    last_seen: SystemTime,
 }
 
 impl ProcessAccumulator {
-    fn new(first_seen: SystemTime) -> Self {
+    fn new() -> Self {
         Self {
             tx_bytes: 0,
             rx_bytes: 0,
             active_connections: 0,
             completed_connections: 0,
             destinations: HashMap::new(),
-            first_seen,
-            last_seen: first_seen,
         }
     }
 
@@ -274,8 +260,6 @@ impl ProcessAccumulator {
         } else {
             self.active_connections = self.active_connections.saturating_add(1);
         }
-        self.first_seen = self.first_seen.min(flow.created_at);
-        self.last_seen = self.last_seen.max(flow.last_activity);
         self.add_destination(flow);
     }
 
@@ -522,7 +506,7 @@ impl ProcessActivityTracker {
                 let identity = flow.identity.clone();
                 sample
                     .entry(identity.clone())
-                    .or_insert_with(|| ProcessAccumulator::new(flow.created_at))
+                    .or_insert_with(ProcessAccumulator::new)
                     .add_flow(&flow, false);
                 traffic_deltas
                     .entry(identity)
@@ -562,7 +546,7 @@ impl ProcessActivityTracker {
                 };
                 sample
                     .entry(identity.clone())
-                    .or_insert_with(|| ProcessAccumulator::new(flow.created_at))
+                    .or_insert_with(ProcessAccumulator::new)
                     .add_flow(&flow, true);
                 traffic_deltas
                     .entry(identity)
@@ -658,14 +642,10 @@ impl ProcessActivityTracker {
                     > self.config.max_destinations_per_process,
                 top_tx_destination,
                 top_rx_destination,
-                current_tx_share: 0.0,
-                current_rx_share: 0.0,
                 window_tx_share: 0.0,
                 window_rx_share: 0.0,
                 retained_tx_share: 0.0,
                 retained_rx_share: 0.0,
-                first_seen: aggregate.first_seen,
-                last_seen: aggregate.last_seen,
             });
         }
 
@@ -687,8 +667,6 @@ impl ProcessActivityTracker {
             .sum();
 
         for process in &mut processes {
-            process.current_tx_share = percentage(process.current_tx_bps, current_tx_bps);
-            process.current_rx_share = percentage(process.current_rx_bps, current_rx_bps);
             process.window_tx_share =
                 percentage(process.window_tx_bytes as f64, window_tx_bytes as f64);
             process.window_rx_share =
@@ -706,7 +684,6 @@ impl ProcessActivityTracker {
         });
 
         self.snapshot = ProcessActivitySnapshot {
-            generated_at: now,
             processes,
             current_tx_bps,
             current_rx_bps,

@@ -303,13 +303,6 @@ impl LibbpfSocketTracker {
         }
     }
 
-    /// Check if the tracker is healthy and operational
-    pub fn is_healthy(&self) -> bool {
-        // Simple health check - in a real implementation you might
-        // check if programs are still attached, etc.
-        true
-    }
-
     /// Clean up stale entries from the eBPF map
     /// Returns the number of entries cleaned up
     pub fn cleanup_stale_entries(&mut self, stale_threshold_secs: u64) -> u32 {

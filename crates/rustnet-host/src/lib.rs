@@ -15,11 +15,11 @@
 //! - **FreeBSD**: `sockstat` enriched with native `sysctl` process metadata.
 //!
 //! [`ProcessLookup::get_process_attribution`] returns the richer
-//! [`ProcessAttribution`]: parent and thread ids, effective UID/GID, executable
-//! path, process lineage, the producing [`AttributionBackend`], a
-//! [`MatchQuality`] saying how the connection was matched, and a monotonic
-//! observation time. Platforms that only implement the tuple API are bridged
-//! automatically, so `get_process_for_connection` keeps working everywhere.
+//! [`ProcessAttribution`]: parent process id, effective UID/GID, executable
+//! path, process lineage, the producing [`AttributionBackend`], and a
+//! [`MatchQuality`] saying how the connection was matched. Platforms that only
+//! implement the tuple API are bridged automatically, so
+//! `get_process_for_connection` keeps working everywhere.
 //!
 //! When a platform can't use its optimal method, [`ProcessLookup::get_degradation_reason`]
 //! reports why via [`DegradationReason`] (e.g. missing `CAP_BPF`, no root for
@@ -73,7 +73,7 @@ impl std::fmt::Display for AttributionBackend {
 bitflags::bitflags! {
     /// Connection operations covered by the active Linux eBPF backend.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-    pub struct AttributionCapabilities: u32 {
+    pub(crate) struct AttributionCapabilities: u32 {
         const TCP_V4_CONNECT = 1 << 0;
         const TCP_V6_CONNECT = 1 << 1;
         const TCP_ACCEPT     = 1 << 2;
@@ -101,11 +101,9 @@ pub use rustnet_core::network::types::{
 /// A rich process-attribution result.
 ///
 /// Everything past `tgid`/`name` is best effort: a backend fills in what it
-/// actually observed and leaves the rest `None` rather than guessing. Only the
-/// Linux eBPF backends currently report thread ids and an observation
-/// timestamp. Every supported platform can report parent process ids,
-/// executable paths, and a capped parent chain. Linux, macOS, and FreeBSD can
-/// report credentials.
+/// actually observed and leaves the rest `None` rather than guessing. Every
+/// supported platform can report parent process ids, executable paths, and a
+/// capped parent chain. Linux, macOS, and FreeBSD can report credentials.
 ///
 /// Marked `#[non_exhaustive]` because cgroup and container fields are expected
 /// to land here later. Build values with [`ProcessAttribution::new`] plus the
@@ -117,10 +115,6 @@ pub struct ProcessAttribution {
     pub tgid: u32,
     /// Parent process id, resolved from the live process when available.
     pub ppid: Option<u32>,
-    /// Kernel thread id that performed the operation, when the backend sees
-    /// per-thread identity. `None` for socket-table backends, and equal to
-    /// `tgid` when the main thread did the work.
-    pub tid: Option<u32>,
     /// Process name: `/proc/<tgid>/comm` on Linux, the OS-reported name elsewhere.
     pub name: String,
     /// Effective user id of the owning process.
@@ -134,11 +128,6 @@ pub struct ProcessAttribution {
     pub backend: AttributionBackend,
     /// How the connection key matched the backend's records.
     pub quality: MatchQuality,
-    /// Observation time in nanoseconds on a **monotonic** clock
-    /// (`CLOCK_MONOTONIC` on Linux). This is not wall-clock time: it is only
-    /// meaningful relative to other monotonic readings from the same boot, and
-    /// must never be formatted as a date.
-    pub observed_at_ns: Option<u64>,
     /// Best-effort parent chain, ordered oldest retained ancestor first.
     pub lineage: Option<ProcessLineage>,
 }
@@ -154,14 +143,12 @@ impl ProcessAttribution {
         Self {
             tgid,
             ppid: None,
-            tid: None,
             name: name.into(),
             uid: None,
             gid: None,
             executable: None,
             backend,
             quality,
-            observed_at_ns: None,
             lineage: None,
         }
     }
@@ -169,12 +156,6 @@ impl ProcessAttribution {
     /// Attach the parent process id.
     pub fn with_parent_pid(mut self, ppid: u32) -> Self {
         self.ppid = Some(ppid);
-        self
-    }
-
-    /// Attach the kernel thread id that performed the operation.
-    pub fn with_tid(mut self, tid: u32) -> Self {
-        self.tid = Some(tid);
         self
     }
 
@@ -189,12 +170,6 @@ impl ProcessAttribution {
     /// stored as such: failing to read the path never fails the attribution.
     pub fn with_executable(mut self, executable: Option<PathBuf>) -> Self {
         self.executable = executable;
-        self
-    }
-
-    /// Attach a **monotonic** observation timestamp in nanoseconds.
-    pub fn with_observed_at_ns(mut self, observed_at_ns: u64) -> Self {
-        self.observed_at_ns = Some(observed_at_ns);
         self
     }
 
@@ -225,11 +200,6 @@ impl ProcessAttribution {
         }
         self.lineage = lineage;
         self
-    }
-
-    /// Reduce to the legacy `(pid, process_name)` pair.
-    pub fn into_pid_name(self) -> (u32, String) {
-        (self.tgid, self.name)
     }
 }
 
@@ -369,12 +339,6 @@ pub fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
     Some(SocketAddr::new(ip, port))
 }
 
-impl From<ProcessAttribution> for (u32, String) {
-    fn from(attribution: ProcessAttribution) -> Self {
-        attribution.into_pid_name()
-    }
-}
-
 /// Reasons why process detection may be degraded from optimal
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum DegradationReason {
@@ -391,9 +355,6 @@ pub enum DegradationReason {
     /// Missing both CAP_BPF and CAP_PERFMON
     #[cfg(target_os = "linux")]
     MissingBpfCapabilities,
-    /// eBPF feature not compiled in
-    #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
-    EbpfFeatureDisabled,
     /// Kernel doesn't support required eBPF features (e.g. ENOSYS from bpf(2))
     #[cfg(target_os = "linux")]
     KernelUnsupported,
@@ -446,8 +407,6 @@ impl DegradationReason {
             Self::MissingCapPerfmon => Cow::Borrowed("needs CAP_PERFMON"),
             #[cfg(target_os = "linux")]
             Self::MissingBpfCapabilities => Cow::Borrowed("needs CAP_BPF+CAP_PERFMON"),
-            #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
-            Self::EbpfFeatureDisabled => Cow::Borrowed("eBPF feature disabled"),
             #[cfg(target_os = "linux")]
             Self::KernelUnsupported => Cow::Borrowed("kernel unsupported"),
             #[cfg(target_os = "linux")]
@@ -497,8 +456,6 @@ impl DegradationReason {
             | Self::BtfUnavailable
             | Self::EbpfLoadFailed(_)
             | Self::BinaryOnNosuidMount => Some("eBPF"),
-            #[cfg(all(target_os = "linux", not(feature = "ebpf")))]
-            Self::EbpfFeatureDisabled => Some("eBPF"),
             #[cfg(target_os = "macos")]
             Self::MissingRootPrivileges
             | Self::NoBpfDeviceAccess
@@ -576,13 +533,6 @@ pub trait ProcessLookup: Send + Sync {
     /// Return the active attribution backend.
     fn get_attribution_backend(&self) -> AttributionBackend {
         AttributionBackend::PlatformNative
-    }
-
-    /// Return the connection operations covered by the active eBPF backend.
-    ///
-    /// Non-eBPF backends return an empty set.
-    fn get_attribution_capabilities(&self) -> AttributionCapabilities {
-        AttributionCapabilities::empty()
     }
 
     /// Fallback lookup that relaxes the connection key to handle sockets stored
@@ -736,25 +686,17 @@ mod tests {
             MatchQuality::ExactTuple,
         )
         .with_parent_pid(1)
-        .with_tid(43)
         .with_credentials(1000, 100)
-        .with_executable(Some(PathBuf::from("/usr/bin/curl")))
-        .with_observed_at_ns(9_000);
+        .with_executable(Some(PathBuf::from("/usr/bin/curl")));
 
         assert_eq!(attribution.ppid, Some(1));
-        assert_eq!(attribution.tid, Some(43));
         assert_eq!(attribution.uid, Some(1000));
         assert_eq!(attribution.gid, Some(100));
         assert_eq!(
             attribution.executable.as_deref(),
             Some(Path::new("/usr/bin/curl"))
         );
-        assert_eq!(attribution.observed_at_ns, Some(9_000));
         assert_eq!(attribution.lineage, None);
-
-        let (pid, name) = <(u32, String)>::from(attribution);
-        assert_eq!(pid, 42);
-        assert_eq!(name, "curl");
     }
 
     #[test]
@@ -768,11 +710,9 @@ mod tests {
         .with_executable(None);
 
         assert_eq!(attribution.ppid, None);
-        assert_eq!(attribution.tid, None);
         assert_eq!(attribution.uid, None);
         assert_eq!(attribution.gid, None);
         assert_eq!(attribution.executable, None);
-        assert_eq!(attribution.observed_at_ns, None);
         assert_eq!(attribution.lineage, None);
     }
 
@@ -878,7 +818,6 @@ mod tests {
         // the exact 4-tuple was proven.
         assert_eq!(attribution.quality, MatchQuality::Unspecified);
         assert!(!attribution.quality.is_exact());
-        assert_eq!(attribution.tid, None);
         assert_eq!(attribution.executable, None);
     }
 

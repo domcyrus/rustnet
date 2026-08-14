@@ -28,8 +28,6 @@ fn make_packet(flow: u16, seq: u32) -> ParsedPacket {
                 ack: true,
                 fin: false,
                 rst: false,
-                psh: true,
-                urg: false,
             },
             payload_len: 1400,
         }),

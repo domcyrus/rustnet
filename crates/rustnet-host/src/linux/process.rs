@@ -719,9 +719,6 @@ mod tests {
                 .map(|ancestor| ancestor.pid),
             attribution.ppid
         );
-        // procfs is a socket-table snapshot: no thread id, no observation time.
-        assert_eq!(attribution.tid, None);
-        assert_eq!(attribution.observed_at_ns, None);
     }
 
     #[test]

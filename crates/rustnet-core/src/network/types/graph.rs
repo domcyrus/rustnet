@@ -393,17 +393,6 @@ impl TrafficHistory {
             .collect()
     }
 
-    /// Get data for Chart widget: (time_offset, rate) pairs, smoothed with moving average
-    /// Time offset is negative seconds from now
-    pub fn get_chart_data(&self) -> (ChartData, ChartData) {
-        let now = Instant::now();
-        // Apply smoothing with window of 3
-        let window = 3;
-        let rx = self.windowed_series(now, window, |s| s.rx_bytes_per_sec as f64);
-        let tx = self.windowed_series(now, window, |s| s.tx_bytes_per_sec as f64);
-        (rx, tx)
-    }
-
     /// Get network health chart data: (packet_loss_pct, rtt_ms) as ChartData pairs
     /// Time offset is negative seconds from now
     pub fn get_health_chart_data(&self) -> (ChartData, ChartData) {

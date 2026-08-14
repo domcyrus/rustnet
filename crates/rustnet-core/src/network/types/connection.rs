@@ -320,12 +320,6 @@ impl Connection {
         }
     }
 
-    /// Check whether this is a live connection that has not reached its
-    /// protocol-aware cleanup deadline.
-    pub fn is_active(&self) -> bool {
-        !self.is_historic && !self.should_cleanup(SystemTime::now())
-    }
-
     /// Get time since last activity
     pub fn idle_time(&self) -> Duration {
         self.last_activity.elapsed().unwrap_or_default()

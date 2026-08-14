@@ -1025,8 +1025,6 @@ mod tests {
                     ack: false,
                     fin,
                     rst: false,
-                    psh: false,
-                    urg: false,
                 },
                 payload_len: 60, // Simulated payload length
             },
@@ -1298,8 +1296,6 @@ mod tests {
             ack: false,
             fin: false,
             rst: false,
-            psh: false,
-            urg: false,
         };
         let new_state = update_tcp_state(TcpState::Unknown, &flags, true);
         assert_eq!(new_state, TcpState::SynSent);
@@ -1310,8 +1306,6 @@ mod tests {
             ack: true,
             fin: false,
             rst: false,
-            psh: false,
-            urg: false,
         };
         let new_state = update_tcp_state(TcpState::SynSent, &flags, false);
         assert_eq!(new_state, TcpState::Established);
@@ -1322,8 +1316,6 @@ mod tests {
             ack: false,
             fin: true,
             rst: false,
-            psh: false,
-            urg: false,
         };
         let new_state = update_tcp_state(TcpState::Established, &flags, true);
         assert_eq!(new_state, TcpState::FinWait1);
@@ -1334,8 +1326,6 @@ mod tests {
             ack: false,
             fin: false,
             rst: true,
-            psh: false,
-            urg: false,
         };
         let new_state = update_tcp_state(TcpState::Established, &flags, true);
         assert_eq!(new_state, TcpState::Closed);
