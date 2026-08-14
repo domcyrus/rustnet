@@ -156,6 +156,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Sandboxing Moved to rustnet-sandbox**: Sandboxing and the root uid drop
+  now live in the new dependency-free `rustnet-sandbox` crate with one
+  `apply_sandbox` entry point per platform. `--no-sandbox` and
+  `--sandbox-strict` now exist on all platforms: FreeBSD honors them for the
+  uid drop (previously ignored), macOS builds without Seatbelt honor them
+  too, and macOS now reports partial enforcement (e.g. Seatbelt applied but
+  uid drop failed) instead of only fully-enforced/not-applied (#548)
 - **Shared OUI Database**: The OUI vendor table is now shared between
   packet-processor threads via `Arc` instead of being cloned per thread,
   saving roughly 10 MB of memory
