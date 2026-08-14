@@ -156,6 +156,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Interface Stats Moved to rustnet-core**: The per-platform interface
+  statistics providers (sysfs on Linux, getifaddrs on macOS/FreeBSD, IP
+  Helper on Windows) moved from the binary into `rustnet-core` behind a new
+  `interface_stats::create_stats_provider()` composition point, and the
+  macOS/FreeBSD getifaddrs walkers now share one implementation (#549)
 - **Sandboxing Moved to rustnet-sandbox**: Sandboxing and the root uid drop
   now live in the new dependency-free `rustnet-sandbox` crate with one
   `apply_sandbox` entry point per platform. `--no-sandbox` and

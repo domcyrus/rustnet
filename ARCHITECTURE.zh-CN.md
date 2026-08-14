@@ -24,7 +24,7 @@ RustNet 是一个由五个 crate 组成的 Cargo 工作区。分析逻辑、捕�
 | [`rustnet-capture`](crates/rustnet-capture) | 库 | 基于 libpcap/Npcap 的数据包捕获后端：设备选择、BPF 过滤器、macOS PKTAP、TUN/TAP，以及原始帧 `PacketReader`。 |
 | [`rustnet-host`](crates/rustnet-host) | 库 | 单一 `ProcessLookup` trait 背后的按连接进程归属：Linux 上的 eBPF/procfs、macOS 上的 PKTAP/lsof、Windows 上的 ETW/IP Helper，以及 FreeBSD 上的 `sockstat`。负责 eBPF 构建工具链及内置的 `vmlinux.h`。 |
 | [`rustnet-sandbox`](crates/rustnet-sandbox) | 库 | 初始化完成后的沙箱与 root 权限降级，统一入口 `apply_sandbox`：Linux 上的 Landlock + 能力降级、macOS 上的 Seatbelt、Windows 上的受限令牌 + 作业对象，以及 Linux/macOS/FreeBSD 共享的 uid 降级。不依赖任何其他工作区 crate。 |
-| `rustnet-monitor`（二进制 `rustnet`） | 二进制 | 面向用户的应用：CLI、TUI、应用事件循环和接口统计。以 `ConnectionTracker` 作为唯一数据来源（dogfooding）。 |
+| `rustnet-monitor`（二进制 `rustnet`） | 二进制 | 面向用户的应用：CLI、TUI 和应用事件循环。以 `ConnectionTracker` 作为唯一数据来源（dogfooding）。 |
 
 包名为 `rustnet-monitor`，因为 `rustnet` 这个 crate 名称在 crates.io 上已被占用；安装后的二进制文件名为 `rustnet`。
 
@@ -50,7 +50,7 @@ flowchart TD
 
 ### 重导出门面
 
-为了将拆分对二进制内部保持透明，`src/network/mod.rs` 重导出 `rustnet_core::network::*` 和 `rustnet_capture`（作为 `capture`），因此现有的 `crate::network::*` 路径、集成测试和基准测试无需改动即可编译。`src/network/platform` 模块仍承载接口统计采集器，并接入 `rustnet-host` 的进程查找；沙箱与 root uid 降级位于 `rustnet-sandbox`，二进制直接使用该 crate。
+为了将拆分对二进制内部保持透明，`src/network/mod.rs` 重导出 `rustnet_core::network::*` 和 `rustnet_capture`（作为 `capture`），因此现有的 `crate::network::*` 路径、集成测试和基准测试无需改动即可编译。`src/network/platform` 模块如今只是接入 `rustnet-host` 进程查找的一层薄壳；各平台的接口统计提供者位于 `rustnet-core`（入口 `interface_stats::create_stats_provider`），沙箱与 root uid 降级位于 `rustnet-sandbox`，二进制直接使用这些 crate。
 
 ## 多线程架构<a id="multi-threaded-architecture"></a>
 

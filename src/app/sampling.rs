@@ -11,21 +11,11 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::{
-    interface_stats::{InterfaceStats, InterfaceStatsProvider},
+    interface_stats::InterfaceStats,
     services::ServiceLookup,
     tracker::ConnectionTracker,
     types::{Connection, ConnectionLifecycleSample},
 };
-
-// Platform-specific interface stats provider
-#[cfg(target_os = "freebsd")]
-use crate::network::platform::FreeBSDStatsProvider as PlatformStatsProvider;
-#[cfg(target_os = "linux")]
-use crate::network::platform::LinuxStatsProvider as PlatformStatsProvider;
-#[cfg(target_os = "macos")]
-use crate::network::platform::MacOSStatsProvider as PlatformStatsProvider;
-#[cfg(target_os = "windows")]
-use crate::network::platform::WindowsStatsProvider as PlatformStatsProvider;
 
 use super::logging::{log_connection_event, log_pcap_connection};
 use super::state::App;
@@ -246,7 +236,7 @@ impl App {
         let interface_traffic_windows = Arc::clone(&self.interface_traffic_windows);
         let interface_traffic_history = Arc::clone(&self.interface_traffic_history);
 
-        let provider = PlatformStatsProvider;
+        let provider = crate::network::interface_stats::create_stats_provider();
         let mut previous_stats: HashMap<String, InterfaceStats> = HashMap::new();
         // Warn once if stat collection ever fails so a permission/sandbox
         // regression (e.g. Landlock denying /sys) is visible at the

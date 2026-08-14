@@ -24,7 +24,7 @@ RustNet is a Cargo workspace of five crates. The analysis logic, capture backend
 | [`rustnet-capture`](crates/rustnet-capture) | library | libpcap/Npcap packet-capture backend: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame `PacketReader`. |
 | [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution behind one `ProcessLookup` trait: eBPF/procfs on Linux, PKTAP/lsof on macOS, ETW/IP Helper on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
 | [`rustnet-sandbox`](crates/rustnet-sandbox) | library | Post-initialization sandboxing and root privilege dropping behind one `apply_sandbox` entry point: Landlock + capability drops on Linux, Seatbelt on macOS, restricted token + job object on Windows, and the shared uid drop on Linux/macOS/FreeBSD. Depends on no other workspace crate. |
-| `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, app event loop, and interface statistics. Dogfoods `ConnectionTracker` as the single source of truth. |
+| `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, and the app event loop. Dogfoods `ConnectionTracker` as the single source of truth. |
 
 The package is named `rustnet-monitor` because the `rustnet` crate name is taken on crates.io; the installed binary is `rustnet`.
 
@@ -50,7 +50,7 @@ The graph is acyclic: `rustnet-core` has no workspace dependencies, `rustnet-cap
 
 ### Re-export Facade
 
-To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. The `src/network/platform` module still hosts the interface-stats collectors and wires in `rustnet-host`'s process lookup; sandboxing and the root uid drop live in `rustnet-sandbox`, which the binary uses directly.
+To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. The `src/network/platform` module is now just the shim wiring in `rustnet-host`'s process lookup; the per-platform interface-stats providers live in `rustnet-core` behind `interface_stats::create_stats_provider`, and sandboxing plus the root uid drop live in `rustnet-sandbox`, which the binary uses directly.
 
 ## Multi-threaded Architecture
 

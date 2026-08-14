@@ -1,6 +1,6 @@
-// network/platform/linux/interface_stats.rs - Linux sysfs-based interface stats
+// interface_stats/linux.rs - Linux sysfs-based interface stats
 
-use crate::network::interface_stats::{InterfaceStats, InterfaceStatsProvider};
+use super::{InterfaceStats, InterfaceStatsProvider};
 use std::fs;
 use std::io;
 use std::time::SystemTime;

@@ -1,17 +1,14 @@
 //! Networking layer for the `rustnet` binary.
 //!
-//! The platform-independent analysis core — parsers, DPI, protocol/connection
-//! types, connection merging, GeoIP/DNS/OUI lookups, and interface-stats
-//! traits — lives in the [`rustnet_core`] library crate and is re-exported here
-//! so existing `crate::network::*` paths keep resolving unchanged.
+//! The analysis core, including parsers, DPI, protocol/connection types,
+//! connection merging, GeoIP/DNS/OUI lookups, and interface-stats providers,
+//! lives in the [`rustnet_core`] library crate and is re-exported here so
+//! existing `crate::network::*` paths keep resolving unchanged.
 //!
-//! The modules that remain in the binary are the ones tied to the running host:
-//! platform-specific interface statistics and the `rustnet-host` process-lookup
-//! wiring ([`platform`]) and the [`privileges`] preflight check. libpcap-based
-//! packet capture now lives in the [`rustnet_capture`] crate and is re-exported
-//! here as [`capture`] so existing `crate::network::capture::*` paths keep
-//! resolving; sandboxing and the root uid drop live in the `rustnet-sandbox`
-//! crate.
+//! The host-tied binary modules are the `rustnet-host` process-lookup wiring
+//! ([`platform`]) and the [`privileges`] preflight check. libpcap-based packet
+//! capture lives in the [`rustnet_capture`] crate and is re-exported here as
+//! [`capture`]; sandboxing and the root uid drop live in `rustnet-sandbox`.
 
 #[cfg(feature = "kubernetes")]
 pub mod kubernetes;
