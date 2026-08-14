@@ -16,7 +16,7 @@ This document describes the technical architecture and implementation details of
 
 ## Crate Structure
 
-RustNet is a Cargo workspace of four crates. The analysis logic, capture backend, and process attribution each live in their own reusable library crate; the binary composes them into the TUI application.
+RustNet is a Cargo workspace of five crates. The analysis logic, capture backend, process attribution, and sandboxing each live in their own reusable library crate; the binary composes them into the TUI application.
 
 | Crate | Type | Responsibility |
 | --- | --- | --- |

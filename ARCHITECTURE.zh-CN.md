@@ -16,7 +16,7 @@
 
 ## Crate 结构<a id="crate-structure"></a>
 
-RustNet 是一个由四个 crate 组成的 Cargo 工作区。分析逻辑、捕获后端和进程归属各自位于独立的可复用库 crate 中；二进制 crate 将它们组合成 TUI 应用。
+RustNet 是一个由五个 crate 组成的 Cargo 工作区。分析逻辑、捕获后端、进程归属和沙箱各自位于独立的可复用库 crate 中；二进制 crate 将它们组合成 TUI 应用。
 
 | Crate | 类型 | 职责 |
 | --- | --- | --- |
