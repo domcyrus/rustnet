@@ -26,8 +26,10 @@ fn main() -> anyhow::Result<()> {
     //    that needs root or capabilities happens before the sandbox.
     let (capture, device, linktype) = setup_packet_capture(CaptureConfig::default())?;
     let mut reader = PacketReader::new(capture);
-    let parser = PacketParser::new().with_linktype(linktype);
-    let process_lookup = rustnet_host::create_process_lookup(false)?;
+    let mut parser = PacketParser::new().with_linktype(linktype);
+    // On macOS the flag selects the PKTAP-metadata lookup over lsof; the
+    // capture setup reports whether PKTAP is the active device.
+    let process_lookup = rustnet_host::create_process_lookup(device == "pktap")?;
 
     // 2. Apply the sandbox. The already-open capture and eBPF descriptors
     //    survive it; see the rustnet-sandbox crate docs for the ordering
@@ -57,7 +59,7 @@ fn main() -> anyhow::Result<()> {
 
     loop {
         if let Some(packet) = reader.next_packet()?
-            && let Some(parsed) = parser.parse_packet(&packet.data)
+            && let Some(parsed) = parser.parse_packet_with_refresh(&packet.data)
         {
             tracker.ingest_at(&parsed, packet.timestamp);
         }
@@ -66,6 +68,12 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
         last_print = Instant::now();
+
+        // Cache-based lookups (procfs, lsof, sockstat) only learn about new
+        // processes on refresh; the binary does the same every few seconds.
+        if let Err(e) = process_lookup.refresh() {
+            eprintln!("process lookup refresh failed: {e}");
+        }
 
         tracker.cleanup(SystemTime::now());
         let mut connections = tracker.snapshot();
@@ -80,6 +88,19 @@ fn main() -> anyhow::Result<()> {
             connections.len(),
             interfaces
         );
+        // IPv6 "[addr]:port" endpoints outgrow IPv4 widths; size the address
+        // columns to the widest endpoint in this snapshot.
+        let addr_width = connections
+            .iter()
+            .take(10)
+            .flat_map(|c| {
+                [
+                    c.local_addr.to_string().len(),
+                    c.remote_addr.to_string().len(),
+                ]
+            })
+            .max()
+            .unwrap_or(21);
         for conn in connections.iter().take(10) {
             let process = conn
                 .process_name
@@ -91,10 +112,10 @@ fn main() -> anyhow::Result<()> {
                 })
                 .unwrap_or_else(|| "-".to_string());
             println!(
-                "   {:<8} {:>21} -> {:<21} tx {:>10} rx {:>10}  {}",
+                "   {:<8} {:>addr_width$} -> {:<addr_width$} tx {:>10} rx {:>10}  {}",
                 conn.protocol.to_string(),
-                conn.local_addr,
-                conn.remote_addr,
+                conn.local_addr.to_string(),
+                conn.remote_addr.to_string(),
                 conn.bytes_sent,
                 conn.bytes_received,
                 process
