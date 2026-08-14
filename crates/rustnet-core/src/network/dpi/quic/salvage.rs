@@ -2,9 +2,10 @@ use crate::network::types::{CryptoFrameReassembler, TlsInfo};
 use log::debug;
 
 use super::tls::{
-    SniScanStrictness, is_partial_sni, is_valid_hostname, match_sni_extension_at,
-    parse_alpn_extension, parse_partial_tls_handshake, scan_for_sni_extension,
+    SniScanStrictness, match_sni_extension_at, parse_partial_tls_handshake,
+    scan_for_sni_extension,
 };
+use crate::network::dpi::tls_common::{is_partial_sni, is_valid_hostname, parse_alpn_extension};
 
 /// Try to extract TLS information from unencrypted parts of QUIC packets
 /// Some QUIC implementations may have plaintext or partially encrypted data
@@ -102,7 +103,7 @@ pub(super) fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsI
             let ext_len = u16::from_be_bytes([payload[offset + 2], payload[offset + 3]]) as usize;
             if ext_len > 2 && offset + 4 + ext_len <= payload.len() {
                 let ext_data = &payload[offset + 4..offset + 4 + ext_len];
-                if let Some(alpn) = parse_alpn_extension(ext_data) {
+                if let Some(alpn) = parse_alpn_extension(ext_data, false) {
                     debug!("QUIC: Found ALPN directly in packet: {:?}", alpn);
                     let mut tls_info = TlsInfo::new();
                     tls_info.alpn = alpn;
