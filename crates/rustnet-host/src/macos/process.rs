@@ -2,7 +2,8 @@
 
 use crate::{
     AttributionBackend, ConnectionKey, DegradationReason, MatchQuality, ProcessAncestor,
-    ProcessAttribution, ProcessLineage, ProcessLookup, collect_process_lineage, relaxed_lookup,
+    ProcessAttribution, ProcessLineage, ProcessLookup, ancestor_display_name,
+    collect_process_lineage, decode_process_name, parse_socket_addr_text, relaxed_lookup,
 };
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -126,29 +127,11 @@ fn resolve_short_process_details(pid: libc::c_int) -> Option<ProcessDetails> {
     })
 }
 
-fn decode_process_name(chars: &[libc::c_char]) -> Option<String> {
-    let bytes: Vec<u8> = chars
-        .iter()
-        .copied()
-        .take_while(|value| *value != 0)
-        .map(|value| value as u8)
-        .collect();
-    (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
-}
-
 pub(super) fn resolve_process_lineage(pid: u32, ppid: u32) -> Option<ProcessLineage> {
     collect_process_lineage(pid, ppid, |ancestor_pid| {
         let details = resolve_process_details(ancestor_pid)?;
         let executable = resolve_executable(ancestor_pid);
-        let name = if details.name.is_empty() {
-            executable
-                .as_deref()
-                .and_then(|path| path.file_name())
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| format!("PID {ancestor_pid}"))
-        } else {
-            details.name
-        };
+        let name = ancestor_display_name(details.name, executable.as_deref(), ancestor_pid);
         Some((
             ProcessAncestor {
                 pid: ancestor_pid,
@@ -356,10 +339,12 @@ impl ProcessLookup for MacOSProcessLookup {
                 .with_executable(resolve_executable(process.pid));
         attribution.uid = Some(process.uid);
         if let Some(details) = resolve_process_details(process.pid) {
-            attribution = attribution
-                .with_parent_pid(details.ppid)
-                .with_credentials(process.uid, details.gid)
-                .with_lineage(resolve_process_lineage(process.pid, details.ppid));
+            attribution = attribution.with_details(
+                details.ppid,
+                Some((details.uid, details.gid)),
+                None,
+                resolve_process_lineage(process.pid, details.ppid),
+            );
         }
         Some(attribution)
     }
@@ -414,8 +399,8 @@ fn parse_lsof_connection_with_hint(
             "    Parsing arrow connection: '{}' -> '{}'",
             parts[0], parts[1]
         );
-        let local = parse_socket_addr(parts[0])?;
-        let remote = parse_socket_addr(parts[1])?;
+        let local = parse_socket_addr_text(parts[0])?;
+        let remote = parse_socket_addr_text(parts[1])?;
 
         // Use hint if available, otherwise assume TCP for established connections
         let protocol = protocol_hint.unwrap_or(Protocol::Tcp);
@@ -431,7 +416,7 @@ fn parse_lsof_connection_with_hint(
     } else if name.contains(":") {
         // UDP or listening socket
         debug!("    Parsing single address: '{}'", name);
-        let local = parse_socket_addr(name)?;
+        let local = parse_socket_addr_text(name)?;
 
         // For UDP or listening, we create a dummy remote address
         let remote = match local {
@@ -451,28 +436,6 @@ fn parse_lsof_connection_with_hint(
     } else {
         debug!("    Failed: no recognizable connection format");
         None
-    }
-}
-
-fn parse_socket_addr(addr_str: &str) -> Option<SocketAddr> {
-    debug!("      Parsing socket address: '{}'", addr_str);
-
-    // Handle IPv6 addresses in brackets
-    if addr_str.starts_with('[') {
-        let result = addr_str.parse().ok();
-        debug!("      IPv6 parse result: {:?}", result);
-        result
-    } else if addr_str.starts_with('*') {
-        // Listening on all interfaces
-        let port_str = addr_str.strip_prefix("*:")?;
-        let port = port_str.parse().ok()?;
-        let result = Some(SocketAddr::new("0.0.0.0".parse().ok()?, port));
-        debug!("      Wildcard parse result: {:?}", result);
-        result
-    } else {
-        let result = addr_str.parse().ok();
-        debug!("      Regular parse result: {:?}", result);
-        result
     }
 }
 

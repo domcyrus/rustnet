@@ -2,7 +2,7 @@
 
 use crate::{
     AttributionBackend, ConnectionKey, MatchQuality, ProcessAncestor, ProcessAttribution,
-    ProcessLineage, ProcessLookup, collect_process_lineage, relaxed_lookup,
+    ProcessLineage, ProcessLookup, collect_process_lineage, memoized, relaxed_lookup,
 };
 use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};
@@ -259,21 +259,9 @@ impl LinuxProcessLookup {
     /// Resolve a process's parent chain, memoized per TGID until the next
     /// socket-table refresh bounds PID-reuse staleness.
     pub(crate) fn lineage_for(&self, tgid: u32, ppid: u32) -> Option<ProcessLineage> {
-        if let Some(lineage) = self
-            .lineages
-            .read()
-            .expect("lineages lock poisoned")
-            .get(&tgid)
-        {
-            return lineage.clone();
-        }
-
-        let lineage = resolve_process_lineage(tgid, ppid);
-        self.lineages
-            .write()
-            .expect("lineages lock poisoned")
-            .insert(tgid, lineage.clone());
-        lineage
+        memoized(&self.lineages, tgid, "lineages lock poisoned", || {
+            resolve_process_lineage(tgid, ppid)
+        })
     }
 
     /// Turn a procfs socket-table match into a rich attribution by reading the

@@ -747,10 +747,7 @@ impl ProcessLookup for WindowsProcessLookup {
         );
         if let Some(details) = self.process_details(pid) {
             let lineage = self.process_lineage(pid, details.ppid);
-            attribution = attribution
-                .with_parent_pid(details.ppid)
-                .with_executable(details.executable)
-                .with_lineage(lineage);
+            attribution = attribution.with_details(details.ppid, None, details.executable, lineage);
         }
         Some(attribution)
     }

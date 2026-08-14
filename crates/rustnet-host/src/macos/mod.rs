@@ -55,10 +55,12 @@ impl ProcessLookup for PktapProcessLookup {
         )
         .with_executable(process::resolve_executable(pid));
         if let Some(details) = process::resolve_process_details(pid) {
-            attribution = attribution
-                .with_parent_pid(details.ppid)
-                .with_credentials(details.uid, details.gid)
-                .with_lineage(process::resolve_process_lineage(pid, details.ppid));
+            attribution = attribution.with_details(
+                details.ppid,
+                Some((details.uid, details.gid)),
+                None,
+                process::resolve_process_lineage(pid, details.ppid),
+            );
         }
         Some(attribution)
     }

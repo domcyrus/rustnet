@@ -2,14 +2,14 @@
 
 use crate::{
     AttributionBackend, ConnectionKey, MatchQuality, ProcessAncestor, ProcessAttribution,
-    ProcessLineage, ProcessLookup, collect_process_lineage, relaxed_lookup,
+    ProcessLineage, ProcessLookup, ancestor_display_name, collect_process_lineage,
+    decode_process_name, memoized, parse_socket_addr_text, relaxed_lookup,
 };
 use anyhow::{Context, Result};
 use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::mem::{MaybeUninit, size_of};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::ptr;
@@ -152,7 +152,7 @@ impl FreeBSDProcessLookup {
             ppid: u32::try_from(info.ki_ppid).ok()?,
             uid: info.ki_uid,
             gid,
-            name: Self::decode_process_name(&info.ki_comm),
+            name: decode_process_name(&info.ki_comm).unwrap_or_default(),
             executable: Self::resolve_executable(pid),
             started_at_unix_ms: Self::timeval_unix_ms(&info.ki_start),
         })
@@ -164,48 +164,21 @@ impl FreeBSDProcessLookup {
         seconds.checked_mul(1_000)?.checked_add(micros / 1_000)
     }
 
-    fn decode_process_name(chars: &[libc::c_char]) -> String {
-        let bytes: Vec<u8> = chars
-            .iter()
-            .copied()
-            .take_while(|value| *value != 0)
-            .map(|value| value as u8)
-            .collect();
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-
     fn process_details(&self, pid: u32) -> Option<FreeBsdProcessDetails> {
-        if let Some(details) = self
-            .process_details
-            .read()
-            .expect("process details cache lock poisoned")
-            .get(&pid)
-        {
-            return details.clone();
-        }
-
-        let details = Self::read_process_details(pid);
-        self.process_details
-            .write()
-            .expect("process details cache lock poisoned")
-            .insert(pid, details.clone());
-        details
+        memoized(
+            &self.process_details,
+            pid,
+            "process details cache lock poisoned",
+            || Self::read_process_details(pid),
+        )
     }
 
     fn process_lineage(&self, pid: u32, ppid: u32) -> Option<ProcessLineage> {
         collect_process_lineage(pid, ppid, |ancestor_pid| {
             let details = self.process_details(ancestor_pid)?;
             let parent_pid = details.ppid;
-            let name = if details.name.is_empty() {
-                details
-                    .executable
-                    .as_deref()
-                    .and_then(|path| path.file_name())
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| format!("PID {ancestor_pid}"))
-            } else {
-                details.name
-            };
+            let name =
+                ancestor_display_name(details.name, details.executable.as_deref(), ancestor_pid);
             Some((
                 ProcessAncestor {
                     pid: ancestor_pid,
@@ -311,13 +284,13 @@ impl FreeBSDProcessLookup {
             };
 
             // Parse local address (index 5)
-            let local_addr = match Self::parse_address(parts[5]) {
+            let local_addr = match parse_socket_addr_text(parts[5]) {
                 Some(addr) => addr,
                 None => continue,
             };
 
             // Parse foreign address (index 6)
-            let foreign_addr = match Self::parse_address(parts[6]) {
+            let foreign_addr = match parse_socket_addr_text(parts[6]) {
                 Some(addr) => addr,
                 None => continue,
             };
@@ -340,44 +313,6 @@ impl FreeBSDProcessLookup {
 
         result
     }
-
-    /// Parse address in format "ip:port", "*:port", or "[ipv6]:port"
-    fn parse_address(addr_str: &str) -> Option<SocketAddr> {
-        // Handle wildcard addresses
-        if addr_str.starts_with("*:") {
-            let port = addr_str.strip_prefix("*:")?.parse::<u16>().ok()?;
-            // Use unspecified address for wildcards
-            return Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
-        }
-
-        // Handle IPv6 with brackets: [::1]:8080
-        if addr_str.starts_with('[') {
-            let closing_bracket = addr_str.find(']')?;
-            let ip_str = &addr_str[1..closing_bracket];
-            let port_str = addr_str.get(closing_bracket + 2..)?; // Skip "]:"
-            let port = port_str.parse::<u16>().ok()?;
-            let ip = IpAddr::V6(ip_str.parse().ok()?);
-            return Some(SocketAddr::new(ip, port));
-        }
-
-        // Split by last colon to handle addresses
-        let last_colon = addr_str.rfind(':')?;
-        let (ip_str, port_str) = addr_str.split_at(last_colon);
-        let port_str = &port_str[1..]; // Remove the colon
-
-        let port = port_str.parse::<u16>().ok()?;
-
-        // Detect IPv6 (contains colons) vs IPv4
-        let ip = if ip_str.contains(':') {
-            // IPv6 address without brackets (e.g., "::1" or "fe80::1")
-            IpAddr::V6(ip_str.parse().ok()?)
-        } else {
-            // IPv4 address
-            IpAddr::V4(ip_str.parse().ok()?)
-        };
-
-        Some(SocketAddr::new(ip, port))
-    }
 }
 
 impl ProcessLookup for FreeBSDProcessLookup {
@@ -397,11 +332,12 @@ impl ProcessLookup for FreeBSDProcessLookup {
         attribution.uid = Some(process.uid);
         if let Some(details) = self.process_details(process.pid) {
             let lineage = self.process_lineage(process.pid, details.ppid);
-            attribution = attribution
-                .with_parent_pid(details.ppid)
-                .with_credentials(details.uid, details.gid)
-                .with_executable(details.executable)
-                .with_lineage(lineage);
+            attribution = attribution.with_details(
+                details.ppid,
+                Some((details.uid, details.gid)),
+                details.executable,
+                lineage,
+            );
         }
         Some(attribution)
     }
@@ -429,7 +365,6 @@ impl ProcessLookup for FreeBSDProcessLookup {
 mod tests {
     use super::*;
     use rustnet_core::network::types::{ProtocolState, TcpState};
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
     fn tcp_connection(local: &str, remote: &str) -> Connection {
         Connection::new(
@@ -479,113 +414,6 @@ root server 42 3 tcp4 127.0.0.1:8080 0.0.0.0:0
     }
 
     #[test]
-    fn test_parse_ipv4_address() {
-        let addr = FreeBSDProcessLookup::parse_address("192.168.1.1:8080");
-        assert_eq!(
-            addr,
-            Some(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
-                8080
-            ))
-        );
-    }
-
-    #[test]
-    fn test_parse_ipv4_loopback() {
-        let addr = FreeBSDProcessLookup::parse_address("127.0.0.1:80");
-        assert_eq!(
-            addr,
-            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 80))
-        );
-    }
-
-    #[test]
-    fn test_parse_ipv6_with_brackets() {
-        let addr = FreeBSDProcessLookup::parse_address("[::1]:8080");
-        assert_eq!(
-            addr,
-            Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8080))
-        );
-    }
-
-    #[test]
-    fn test_parse_ipv6_full_address_with_brackets() {
-        let addr = FreeBSDProcessLookup::parse_address("[2001:db8::1]:443");
-        assert_eq!(
-            addr,
-            Some(SocketAddr::new(
-                IpAddr::V6("2001:db8::1".parse().unwrap()),
-                443
-            ))
-        );
-    }
-
-    #[test]
-    fn test_parse_ipv6_link_local_with_brackets() {
-        let addr = FreeBSDProcessLookup::parse_address("[fe80::1]:22");
-        assert_eq!(
-            addr,
-            Some(SocketAddr::new(IpAddr::V6("fe80::1".parse().unwrap()), 22))
-        );
-    }
-
-    #[test]
-    fn test_parse_ipv6_without_brackets() {
-        // This may occur in some sockstat outputs
-        let addr = FreeBSDProcessLookup::parse_address("::1:8080");
-        // This should parse as IPv6 ::1 with port 8080
-        // Note: This is ambiguous, but our logic treats multiple colons as IPv6
-        assert!(addr.is_some());
-        if let Some(socket_addr) = addr {
-            assert_eq!(socket_addr.port(), 8080);
-        }
-    }
-
-    #[test]
-    fn test_parse_wildcard_address() {
-        let addr = FreeBSDProcessLookup::parse_address("*:80");
-        assert_eq!(
-            addr,
-            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 80))
-        );
-    }
-
-    #[test]
-    fn test_parse_wildcard_high_port() {
-        let addr = FreeBSDProcessLookup::parse_address("*:65535");
-        assert_eq!(
-            addr,
-            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 65535))
-        );
-    }
-
-    #[test]
-    fn test_parse_invalid_address() {
-        // Missing port
-        assert_eq!(FreeBSDProcessLookup::parse_address("192.168.1.1"), None);
-    }
-
-    #[test]
-    fn test_parse_invalid_ipv6_brackets() {
-        // Missing closing bracket
-        assert_eq!(FreeBSDProcessLookup::parse_address("[::1:8080"), None);
-    }
-
-    #[test]
-    fn test_parse_invalid_port() {
-        // Port out of range
-        assert_eq!(
-            FreeBSDProcessLookup::parse_address("192.168.1.1:99999"),
-            None
-        );
-    }
-
-    #[test]
-    fn test_parse_empty_string() {
-        assert_eq!(FreeBSDProcessLookup::parse_address(""), None);
-    }
-
-    #[test]
     fn test_current_process_details() {
         let details = FreeBSDProcessLookup::read_process_details(std::process::id())
             .expect("current process details must resolve");
@@ -610,18 +438,5 @@ root server 42 3 tcp4 127.0.0.1:8080 0.0.0.0:0
     #[test]
     fn test_missing_process_has_no_details() {
         assert!(FreeBSDProcessLookup::read_process_details(u32::MAX).is_none());
-    }
-
-    #[test]
-    fn test_parse_ipv4_mapped_ipv6() {
-        // IPv4-mapped IPv6 address
-        let addr = FreeBSDProcessLookup::parse_address("[::ffff:192.168.1.1]:80");
-        assert_eq!(
-            addr,
-            Some(SocketAddr::new(
-                IpAddr::V6("::ffff:192.168.1.1".parse().unwrap()),
-                80
-            ))
-        );
     }
 }
