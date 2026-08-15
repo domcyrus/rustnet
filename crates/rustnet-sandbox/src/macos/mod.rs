@@ -93,7 +93,6 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
                     fs_restricted: result.fs_restricted,
                     net_restricted: result.net_blocked,
                     uid_dropped,
-                    ..SandboxReport::default()
                 })
             }
             Err(e) => {
