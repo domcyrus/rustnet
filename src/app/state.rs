@@ -588,13 +588,13 @@ impl App {
     }
 
     /// Get sandbox status information. Rendered by the Linux, Windows, and
-    /// macOS (with `macos-sandbox`) UIs, including the external GUI crate.
+    /// macOS (with `macos-sandbox`) UIs.
     #[cfg(any(
         target_os = "linux",
         target_os = "windows",
         all(target_os = "macos", feature = "macos-sandbox")
     ))]
-    pub fn get_sandbox_info(&self) -> SandboxReport {
+    pub(crate) fn get_sandbox_info(&self) -> SandboxReport {
         self.sandbox_info
             .read()
             .map(|s| s.clone())
