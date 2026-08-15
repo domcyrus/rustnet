@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   whole Attribution card, so Traffic Statistics and the cards below jumped
   when moving between ARP and non-ARP entries. ARP now renders the same
   left-column row set with `-` placeholders, and its MAC rows resolve from
-  the neighbor cache like any other on-link connection (#555)
+  the neighbor cache like any other on-link connection. The Status and
+  Attributed Via ages now share one formatter, so connections closed or idle
+  for over an hour show `2h ago` instead of a large minute count (#555)
 - **Details Tab Layout Stability**: rows in the Details tab no longer appear
   or disappear with data availability. MAC, Attributed Name/Via, the
   Attribution card's process fields, the Kubernetes card's fields, and the

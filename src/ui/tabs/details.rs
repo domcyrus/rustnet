@@ -385,6 +385,18 @@ fn shorten_executable_path(
     fit_path_middle(&display, max_width)
 }
 
+/// Compact elapsed-time display: "5s ago", "3m ago", "2h ago".
+fn format_age(elapsed: std::time::Duration) -> String {
+    let s = elapsed.as_secs();
+    if s < 60 {
+        format!("{}s ago", s)
+    } else if s < 3600 {
+        format!("{}m ago", s / 60)
+    } else {
+        format!("{}h ago", s / 3600)
+    }
+}
+
 fn process_tree_value(lineage: &ProcessLineage, owner_name: &str, max_width: usize) -> String {
     let mut names: Vec<&str> = lineage
         .ancestors
@@ -864,12 +876,10 @@ pub(in crate::ui) fn draw_connection_details(
     );
     if conn.is_historic {
         let closed_display = if let Some(closed_at) = conn.closed_at {
-            let ago = closed_at.elapsed().unwrap_or_default();
-            if ago.as_secs() < 60 {
-                format!("Closed ({}s ago)", ago.as_secs())
-            } else {
-                format!("Closed ({}m ago)", ago.as_secs() / 60)
-            }
+            format!(
+                "Closed ({})",
+                format_age(closed_at.elapsed().unwrap_or_default())
+            )
         } else {
             "Closed".to_string()
         };
@@ -886,12 +896,10 @@ pub(in crate::ui) fn draw_connection_details(
         // user can see how recently traffic moved on this connection.
         // Color follows the same staleness progression as the Overview row
         // styling so the cue is consistent across views.
-        let ago = conn.last_activity.elapsed().unwrap_or_default();
-        let active_display = if ago.as_secs() < 60 {
-            format!("Active (last seen {}s ago)", ago.as_secs())
-        } else {
-            format!("Active (last seen {}m ago)", ago.as_secs() / 60)
-        };
+        let active_display = format!(
+            "Active (last seen {})",
+            format_age(conn.last_activity.elapsed().unwrap_or_default())
+        );
         let staleness = conn.staleness_ratio();
         let active_color = theme::expiry_glow_intensity(staleness)
             .map(theme::expiry_glow)
@@ -1082,16 +1090,7 @@ pub(in crate::ui) fn draw_connection_details(
                 .observed_at
                 .elapsed()
                 .ok()
-                .map(|d| {
-                    let s = d.as_secs();
-                    if s < 60 {
-                        format!("{}s ago", s)
-                    } else if s < 3600 {
-                        format!("{}m ago", s / 60)
-                    } else {
-                        format!("{}h ago", s / 3600)
-                    }
-                })
+                .map(format_age)
                 .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
             (format!("~{}", att.name), format!("{}, {}", source, age))
         }
