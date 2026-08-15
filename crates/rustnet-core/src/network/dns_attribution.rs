@@ -718,6 +718,7 @@ mod tests {
                     query_type: None,
                     is_response: false,
                     response_ips: vec![],
+                    txid: 0,
                 }),
             ),
             (

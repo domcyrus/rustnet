@@ -698,9 +698,12 @@ pub struct LlmnrInfo {
     pub query_type: Option<DnsQueryType>,
     pub is_response: bool,
     pub response_ips: Vec<std::net::IpAddr>,
+    /// 16-bit identifier copied from a query into each response.
+    pub txid: u16,
 }
 
-/// LLMNR shares the DNS wire format; keep only the fields the LLMNR view uses.
+/// LLMNR shares the DNS wire format; retain its transaction ID for response
+/// timing in addition to the fields used by the protocol view.
 impl From<DnsInfo> for LlmnrInfo {
     fn from(dns: DnsInfo) -> Self {
         Self {
@@ -708,6 +711,7 @@ impl From<DnsInfo> for LlmnrInfo {
             query_type: dns.query_type,
             is_response: dns.is_response,
             response_ips: dns.response_ips,
+            txid: dns.txid,
         }
     }
 }

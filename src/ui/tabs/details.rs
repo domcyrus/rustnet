@@ -2031,6 +2031,19 @@ pub(in crate::ui) fn draw_connection_details(
                 })
         })
         .flatten();
+    // LLMNR multicast queries and unicast responses share a transaction ID,
+    // so the first response provides a resolver timing despite using another
+    // connection row.
+    let llmnr_info = (conn.protocol == Protocol::Udp)
+        .then(|| {
+            conn.dpi_info
+                .as_ref()
+                .and_then(|dpi| match &dpi.application {
+                    crate::network::types::ApplicationProtocol::Llmnr(info) => Some(info),
+                    _ => None,
+                })
+        })
+        .flatten();
     // NetBIOS requests and responses pair by transaction ID, including
     // broadcast requests answered from a host's unicast address.
     let netbios_info = (conn.protocol == Protocol::Udp)
@@ -2110,6 +2123,21 @@ pub(in crate::ui) fn draw_connection_details(
             &mut details_text,
             &mut detail_fields,
             "Timed by pairing query and response IDs",
+        );
+    } else if llmnr_info.is_some() {
+        push_rtt_field(
+            &mut details_text,
+            &mut detail_fields,
+            "LLMNR Response Time",
+            conn.llmnr_response_time,
+            label_style,
+        );
+        details_text.push(Line::from(""));
+        detail_fields.push(None);
+        push_detail_note(
+            &mut details_text,
+            &mut detail_fields,
+            "First response paired by transaction ID",
         );
     } else if let Some(netbios) = netbios_info {
         push_rtt_field(
