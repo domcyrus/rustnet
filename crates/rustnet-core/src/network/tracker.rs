@@ -41,14 +41,15 @@
 //! single tracker can be wrapped in an [`std::sync::Arc`] and shared across a
 //! capture thread, a cleanup thread, and a reader thread.
 
+use crate::network::dns_attribution::DnsAttributionCache;
 use crate::network::merge::{
     TcpMergeEvents, create_connection_from_packet, merge_packet_into_connection,
 };
 use crate::network::neighbors::{NeighborCache, NeighborEntry};
 use crate::network::parser::ParsedPacket;
 use crate::network::types::{
-    ApplicationProtocol, Connection, ConnectionKey, Protocol, ProtocolState, QuicPacketType,
-    RttTracker,
+    ApplicationProtocol, AttributionSource, Connection, ConnectionKey, Protocol, ProtocolState,
+    QuicPacketType, RttTracker,
 };
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
@@ -144,6 +145,11 @@ pub struct TrackerConfig {
     /// the historic table. Headless tools that don't need a closed-connection
     /// view can set this to `false` to save memory.
     pub keep_historic: bool,
+    /// Whether connections without an authoritative hostname (TLS SNI or HTTP
+    /// `Host:`) are tagged with the name from a DNS response observed on the
+    /// wire shortly before the connection appeared. Purely passive; consumers
+    /// that don't display hostnames can set this to `false`.
+    pub dns_attribution: bool,
 }
 
 impl Default for TrackerConfig {
@@ -153,6 +159,7 @@ impl Default for TrackerConfig {
             max_historic: 5_000,
             max_quic_mappings: 10_000,
             keep_historic: true,
+            dns_attribution: true,
         }
     }
 }
@@ -298,6 +305,10 @@ pub struct ConnectionTracker {
     /// and NDP (IPv6) packets. Outlives the connections themselves, so LAN
     /// peers stay identified after their ARP/NDP rows are cleaned up.
     neighbors: NeighborCache,
+    /// IP -> domain mappings learned passively from ingested DNS responses,
+    /// used to tag SNI-less connections with a hostname. Fed and drained by
+    /// `ingest_at`, pruned by `cleanup`.
+    dns_attribution: DnsAttributionCache,
 }
 
 impl ConnectionTracker {
@@ -318,6 +329,7 @@ impl ConnectionTracker {
             config,
             active_count: AtomicUsize::new(0),
             neighbors: NeighborCache::default(),
+            dns_attribution: DnsAttributionCache::default(),
         }
     }
 
@@ -357,6 +369,46 @@ impl ConnectionTracker {
 
         let timings = self.measure_timings(parsed, now);
 
+        // Passive DNS attribution: record answered A/AAAA mappings and collect
+        // the connections that were waiting on one of the answered IPs.
+        let waiters = if self.config.dns_attribution
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::Dns(dns) = &dpi.application
+            && dns.is_response
+            && !dns.response_ips.is_empty()
+            && let Some(query_name) = &dns.query_name
+        {
+            self.dns_attribution.record_and_drain_pending(
+                query_name,
+                &dns.response_ips,
+                AttributionSource::CapturedDns,
+            )
+        } else {
+            Vec::new()
+        };
+
+        let outcome = self.ingest_update(parsed, now, timings);
+
+        // Tag drained waiters after the table update so the DNS packet's own
+        // row never holds an entry lock while a waiter's row is taken.
+        for waiter_key in waiters {
+            if let Some(mut conn) = self.connections.get_mut(&waiter_key) {
+                self.dns_attribution.attribute(&mut conn, waiter_key);
+            }
+        }
+
+        outcome
+    }
+
+    /// The connection-table update half of [`ingest_at`](Self::ingest_at):
+    /// resolve the key and fold the packet into the active table, splitting
+    /// off a new generation or ignoring a late teardown packet as needed.
+    fn ingest_update(
+        &self,
+        parsed: &ParsedPacket,
+        now: SystemTime,
+        timings: PacketTimings,
+    ) -> IngestOutcome {
         // A read guard makes ordinary packet updates atomic with cleanup. The
         // uncommon generation-split path drops it and reacquires a write guard
         // so retained-source readers also see one consistent move.
@@ -579,6 +631,12 @@ impl ConnectionTracker {
                 created = true;
                 let mut conn = create_connection_from_packet(parsed, now);
                 apply_timings(&mut conn, &timings);
+                // Attribute a hostname (or enroll for a later DNS response)
+                // at creation. The cache only touches its own maps, so this
+                // is safe under the entry's shard lock.
+                if self.config.dns_attribution {
+                    self.dns_attribution.attribute(&mut conn, key);
+                }
                 conn
             });
         if created {
@@ -635,6 +693,10 @@ impl ConnectionTracker {
                 self.archive_snapshot(key, &conn, now);
                 self.record_recently_closed(key, &conn, now);
                 self.remove_quic_mappings_for_key(key);
+                // Forget the archived generation's pending enrollment so the
+                // replacement enrolls with a fresh timestamp.
+                self.dns_attribution
+                    .forget_pending(conn.remote_addr.ip(), key);
                 conn
             })
         } else {
@@ -878,6 +940,10 @@ impl ConnectionTracker {
                 .fetch_sub(removed.len(), Ordering::Relaxed);
             for (key, conn) in removed_keys.iter().zip(&removed) {
                 self.record_recently_closed(*key, conn, now);
+                // Drop any pending DNS-attribution enrollment so a later
+                // response cannot surface a dead key.
+                self.dns_attribution
+                    .forget_pending(conn.remote_addr.ip(), *key);
             }
         }
 
@@ -896,6 +962,7 @@ impl ConnectionTracker {
             mapping.retain(|_, conn_key| !removed_keys.contains(conn_key));
         }
         self.prune_recently_closed(now);
+        self.dns_attribution.cleanup_tick(std::time::Instant::now());
 
         removed
     }
@@ -976,6 +1043,7 @@ impl ConnectionTracker {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.neighbors.clear();
+        self.dns_attribution.clear();
     }
 
     /// Direct access to the active connection table.
@@ -1140,6 +1208,50 @@ mod tests {
         }
         packet.is_outgoing = is_outgoing;
         packet.packet_len = 80;
+        packet
+    }
+
+    /// An outgoing plain UDP packet (no DPI classification) to
+    /// 203.0.113.80:9999, the flow the attribution tests try to name.
+    fn plain_udp_packet() -> ParsedPacket {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let mut packet = ParsedPacket::test_base(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 80)), 9_999),
+            ProtocolState::Udp,
+        );
+        packet.is_outgoing = true;
+        packet.packet_len = 60;
+        packet
+    }
+
+    /// An incoming DNS response answering `query_name` with `response_ips`,
+    /// as the passive attribution path sees it.
+    fn dns_answer_packet(
+        txid: u16,
+        query_name: &str,
+        response_ips: &[std::net::IpAddr],
+    ) -> ParsedPacket {
+        use crate::network::types::{DnsInfo, DnsQueryType};
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let mut packet = ParsedPacket::test_udp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 1)), 40_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 2)), 53),
+            ApplicationProtocol::Dns(DnsInfo {
+                query_name: Some(query_name.to_string()),
+                query_type: Some(DnsQueryType::A),
+                response_ips: response_ips.to_vec(),
+                is_response: true,
+                txid,
+                rcode: Some(0),
+                nodata: Some(false),
+            }),
+        );
+        packet.is_outgoing = false;
+        packet.packet_len = 120;
         packet
     }
 
@@ -2329,6 +2441,104 @@ mod tests {
             "flow stamped at capture time should expire"
         );
         assert_eq!(tracker.len(), 0);
+    }
+
+    /// A connection opened right after a captured DNS response to one of the
+    /// answered IPs must be tagged with the query name at creation. With
+    /// `dns_attribution` disabled, the same traffic must stay untagged.
+    #[test]
+    fn dns_response_attributes_a_following_connection() {
+        let answered_ip: std::net::IpAddr = "203.0.113.80".parse().unwrap();
+
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &dns_answer_packet(1, "cdn.example", &[answered_ip]),
+            capture_time(0),
+        );
+        let outcome = tracker.ingest_at(&plain_udp_packet(), capture_time(50));
+        assert_eq!(
+            tracker
+                .connections()
+                .get(&outcome.key)
+                .and_then(|conn| conn.attributed_hostname.as_ref().map(|a| a.name.clone())),
+            Some("cdn.example".to_string())
+        );
+
+        let disabled = ConnectionTracker::with_config(TrackerConfig {
+            dns_attribution: false,
+            ..TrackerConfig::default()
+        });
+        disabled.ingest_at(
+            &dns_answer_packet(1, "cdn.example", &[answered_ip]),
+            capture_time(0),
+        );
+        let outcome = disabled.ingest_at(&plain_udp_packet(), capture_time(50));
+        assert!(
+            disabled
+                .connections()
+                .get(&outcome.key)
+                .unwrap()
+                .attributed_hostname
+                .is_none(),
+            "the config flag must disable attribution"
+        );
+    }
+
+    /// A connection observed before any matching DNS waits in the pending
+    /// index; the DNS response that later answers its remote IP tags it.
+    #[test]
+    fn late_dns_response_attributes_a_pending_connection() {
+        let tracker = ConnectionTracker::new();
+        let outcome = tracker.ingest_at(&plain_udp_packet(), capture_time(0));
+        assert!(
+            tracker
+                .connections()
+                .get(&outcome.key)
+                .unwrap()
+                .attributed_hostname
+                .is_none()
+        );
+
+        let answered_ip: std::net::IpAddr = "203.0.113.80".parse().unwrap();
+        tracker.ingest_at(
+            &dns_answer_packet(1, "late.example", &[answered_ip]),
+            capture_time(200),
+        );
+        assert_eq!(
+            tracker
+                .connections()
+                .get(&outcome.key)
+                .and_then(|conn| conn.attributed_hostname.as_ref().map(|a| a.name.clone())),
+            Some("late.example".to_string())
+        );
+    }
+
+    /// Cleaning up a still-pending connection must drop its enrollment, so a
+    /// DNS response arriving after its death finds no waiter and the archived
+    /// record stays unattributed.
+    #[test]
+    fn cleanup_forgets_pending_attribution_enrollments() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest(&plain_udp_packet());
+        assert_eq!(tracker.dns_attribution.pending_len(), 1);
+
+        let removed = tracker.cleanup(SystemTime::now() + Duration::from_secs(86_400));
+        assert_eq!(removed.len(), 1);
+        assert_eq!(
+            tracker.dns_attribution.pending_len(),
+            0,
+            "cleanup must forget the dead connection's enrollment"
+        );
+
+        let answered_ip: std::net::IpAddr = "203.0.113.80".parse().unwrap();
+        tracker.ingest(&dns_answer_packet(1, "posthumous.example", &[answered_ip]));
+        assert!(
+            tracker
+                .historic_snapshot()
+                .iter()
+                .all(|conn| conn.attributed_hostname.is_none()),
+            "a response after death must not label the archived record"
+        );
     }
 
     #[test]

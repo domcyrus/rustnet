@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **Passive DNS Attribution**: connections without an SNI or HTTP Host header
+  (encrypted QUIC, plain TCP/UDP) are now tagged with a hostname inferred from
+  DNS responses observed on the wire within the last 10 seconds, shown as a
+  dimmed `~name` in the Remote column and as an Attributed Name row with source
+  and age in the Details tab; attributed names match the hostname filters and
+  free-text search. Event-driven cache in `rustnet-core`, no per-packet
+  lookups; works without reverse DNS (#553)
 - **LLMNR Response Time**: UDP LLMNR lookups now show their query-to-first-
   response time in the Details Transport Health card. Pairing reuses the DNS
   transaction tracker, scoped to the local socket so multicast queries match
