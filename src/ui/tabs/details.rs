@@ -41,7 +41,7 @@ use crate::ui::{
 /// Padded width for detail labels so values line up vertically.
 /// Sized for the longest expected label ("Out-of-Order Packets" = 20 chars)
 /// plus 2 chars of breathing room before the value column.
-const DETAIL_LABEL_WIDTH: usize = 22;
+pub(in crate::ui) const DETAIL_LABEL_WIDTH: usize = 22;
 
 /// Below this terminal width the Details info panes collapse back to a
 /// single column. With label width 22 plus reasonable values, ~50 cells
@@ -846,8 +846,9 @@ pub(in crate::ui) fn draw_connection_details(
     let mut right_ranges: Vec<std::ops::Range<usize>> = Vec::new();
 
     // Unlike regular sections, the first card starts without a blank separator.
-    // Together with the Network Context card below this gives the left
-    // dashboard column a 17-row footprint, plus one row per resolved MAC.
+    // Together with the fixed nine-row Network Context card below this gives
+    // the left dashboard column a 21-row footprint (17 for ARP, which has no
+    // MAC or attribution rows), so the cards below never move.
     details_text.push(Line::from(Span::styled(
         "Connection",
         theme::bold_fg(theme::heading()),
@@ -1052,17 +1053,19 @@ pub(in crate::ui) fn draw_connection_details(
         label_style,
         theme::fg(theme::field_local_addr()),
     );
-    // MAC rows appear only once the neighbor cache actually resolved the
-    // address (like the Attribution card's fields): most connections —
-    // every public remote, for one — can never resolve, and a permanent
-    // placeholder row would push the Attribution card below the fold on
-    // shorter terminals.
-    if let Some(entry) = local_mac {
+    // MAC and attribution rows depend on the connection class, never on data
+    // availability: they always render for non-ARP connections, with a
+    // placeholder when unresolved, so the cards below keep static positions
+    // while navigating. The details pane scrolls, so the fixed rows cannot
+    // make content unreachable on short terminals.
+    if conn.protocol != Protocol::Arp {
         push_detail_field_styled(
             &mut details_text,
             &mut detail_fields,
             "Local MAC",
-            format_mac(entry),
+            local_mac
+                .map(format_mac)
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
             label_style,
             theme::fg(theme::field_local_addr()),
         );
@@ -1077,36 +1080,39 @@ pub(in crate::ui) fn draw_connection_details(
     );
     // Hostname inferred from a DNS response observed on the wire, with
     // its provenance and age so it reads as an inference, not a lookup.
-    // Conditional like the MAC rows: a permanent placeholder would push
-    // the Attribution card below the fold for the many connections that
-    // can never be attributed.
-    if let Some(att) = &conn.attributed_hostname {
-        let source = match att.source {
-            crate::network::types::AttributionSource::CapturedDns => "Captured DNS",
+    // Name and provenance on separate rows: a combined value clips at
+    // the card boundary for hostnames of ordinary length, hiding the
+    // provenance entirely.
+    if conn.protocol != Protocol::Arp {
+        let (attributed_name, attributed_via) = match &conn.attributed_hostname {
+            Some(att) => {
+                let source = match att.source {
+                    crate::network::types::AttributionSource::CapturedDns => "Captured DNS",
+                };
+                let age = att
+                    .observed_at
+                    .elapsed()
+                    .ok()
+                    .map(|d| {
+                        let s = d.as_secs();
+                        if s < 60 {
+                            format!("{}s ago", s)
+                        } else if s < 3600 {
+                            format!("{}m ago", s / 60)
+                        } else {
+                            format!("{}h ago", s / 3600)
+                        }
+                    })
+                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+                (format!("~{}", att.name), format!("{}, {}", source, age))
+            }
+            None => (NONE_PLACEHOLDER.to_string(), NONE_PLACEHOLDER.to_string()),
         };
-        let age = att
-            .observed_at
-            .elapsed()
-            .ok()
-            .map(|d| {
-                let s = d.as_secs();
-                if s < 60 {
-                    format!("{}s ago", s)
-                } else if s < 3600 {
-                    format!("{}m ago", s / 60)
-                } else {
-                    format!("{}h ago", s / 3600)
-                }
-            })
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
-        // Name and provenance on separate rows: a combined value clips at
-        // the card boundary for hostnames of ordinary length, hiding the
-        // provenance entirely.
         push_detail_field_styled(
             &mut details_text,
             &mut detail_fields,
             "Attributed Name",
-            format!("~{}", att.name),
+            attributed_name,
             label_style,
             theme::fg(theme::field_attributed_hostname()),
         );
@@ -1114,17 +1120,17 @@ pub(in crate::ui) fn draw_connection_details(
             &mut details_text,
             &mut detail_fields,
             "Attributed Via",
-            format!("{}, {}", source, age),
+            attributed_via,
             label_style,
             theme::fg(theme::field_attributed_hostname()),
         );
-    }
-    if let Some(entry) = remote_mac {
         push_detail_field_styled(
             &mut details_text,
             &mut detail_fields,
             "Remote MAC",
-            format_mac(entry),
+            remote_mac
+                .map(format_mac)
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
             label_style,
             theme::fg(theme::field_remote_addr()),
         );
@@ -1155,43 +1161,36 @@ pub(in crate::ui) fn draw_connection_details(
         location_value_style,
     );
 
-    // Richer process attribution, when the platform's lookup could resolve it.
-    // Rendered like the Kubernetes block below: each row appears only when the
-    // backend actually observed that field, and the whole section disappears
-    // when none of them did. That keeps platforms which structurally cannot
-    // supply a field (no executable path, no uid) from showing a permanent
-    // placeholder, and keeps this section out of the fixed-height card
-    // geometry that `APPLICATION_CARD_ROWS` anchors.
-    let has_attribution = conn.pid.is_some()
-        || conn.process_ppid.is_some()
-        || conn.executable.is_some()
-        || conn.process_uid.is_some()
-        || conn.attribution_quality.is_some()
-        || conn.process_lineage.is_some();
-    if has_attribution {
+    // Richer process attribution. The row set depends on the connection class,
+    // never on data availability: every row renders with a placeholder when
+    // the platform's lookup could not resolve it, so the cards below keep
+    // static positions while navigating. ARP has no owning process, so it
+    // skips the card entirely. The Kubernetes block below stays conditional:
+    // being a k8s workload is a class distinction, not missing data.
+    if conn.protocol != Protocol::Arp {
         let process_value_style = theme::fg(theme::field_process());
         push_detail_section(&mut details_text, &mut detail_fields, "Attribution");
 
-        if let Some(pid) = conn.pid {
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "PID",
-                pid.to_string(),
-                label_style,
-                process_value_style,
-            );
-        }
-        if let Some(ppid) = conn.process_ppid {
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "PPID",
-                ppid.to_string(),
-                label_style,
-                process_value_style,
-            );
-        }
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "PID",
+            conn.pid
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            label_style,
+            process_value_style,
+        );
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "PPID",
+            conn.process_ppid
+                .map(|ppid| ppid.to_string())
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            label_style,
+            process_value_style,
+        );
         if let (Some(lineage), Some(owner_name)) =
             (&conn.process_lineage, conn.process_name.as_deref())
         {
@@ -1201,6 +1200,15 @@ pub(in crate::ui) fn draw_connection_details(
                 "Process Tree",
                 process_tree_value(lineage, owner_name, value_width),
                 process_tree_value(lineage, owner_name, usize::MAX),
+                label_style,
+                process_value_style,
+            );
+        } else {
+            push_detail_field_styled(
+                &mut details_text,
+                &mut detail_fields,
+                "Process Tree",
+                NONE_PLACEHOLDER.to_string(),
                 label_style,
                 process_value_style,
             );
@@ -1216,102 +1224,116 @@ pub(in crate::ui) fn draw_connection_details(
                 label_style,
                 process_value_style,
             );
-        }
-        if let Some(uid) = conn.process_uid {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "User",
-                format_user_group(uid, conn.process_gid),
-                label_style,
-            );
-        }
-        if let Some(quality) = conn.attribution_quality {
-            // A relaxed match is a plausible owner, not a proven one, so it
-            // reads as a warning rather than as confirmed fact.
-            let quality_color = if quality.is_exact() {
-                theme::ok()
-            } else if quality == MatchQuality::Unspecified {
-                theme::muted()
-            } else {
-                theme::warn()
-            };
+        } else {
             push_detail_field_styled(
                 &mut details_text,
                 &mut detail_fields,
-                "Match",
-                quality.to_string(),
+                "Executable",
+                NONE_PLACEHOLDER.to_string(),
                 label_style,
-                theme::fg(quality_color),
+                process_value_style,
             );
         }
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "User",
+            conn.process_uid
+                .map(|uid| format_user_group(uid, conn.process_gid))
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            label_style,
+        );
+        // A relaxed match is a plausible owner, not a proven one, so it
+        // reads as a warning rather than as confirmed fact.
+        let quality_color = match conn.attribution_quality {
+            Some(quality) if quality.is_exact() => theme::ok(),
+            Some(MatchQuality::Unspecified) | None => theme::muted(),
+            Some(_) => theme::warn(),
+        };
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Match",
+            conn.attribution_quality
+                .map(|quality| quality.to_string())
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            label_style,
+            theme::fg(quality_color),
+        );
     }
 
     // Kubernetes attribution (pod / container) when the owning process is in
-    // a kubepods cgroup. Only rendered when the resolver populated `k8s_info`.
+    // a kubepods cgroup. The card's presence is the class distinction (being
+    // a k8s workload); once present, every row renders with a placeholder
+    // when unresolved, so the cards below keep static positions while the
+    // enrichment thread fills fields in.
     #[cfg(feature = "kubernetes")]
     if let Some(ref k8s) = conn.k8s_info {
         let k8s_value_style = theme::fg(theme::field_process());
         push_detail_section(&mut details_text, &mut detail_fields, "Kubernetes");
         // Prefer the human-readable pod name over the raw UID; show both when
         // both are present.
-        if let Some(ref name) = k8s.pod_name {
-            let pod_display = if let Some(ref ns) = k8s.pod_namespace {
-                format!("{}/{}", ns, name)
-            } else {
-                name.clone()
-            };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Pod",
-                pod_display,
-                label_style,
-                k8s_value_style,
-            );
-        }
-        if let Some(ref uid) = k8s.pod_uid {
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Pod UID",
-                uid.clone(),
-                label_style,
-                k8s_value_style,
-            );
-        }
-        if let Some(ref cname) = k8s.container_name {
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Container",
-                cname.clone(),
-                label_style,
-                k8s_value_style,
-            );
-        }
-        if let Some(ref cid) = k8s.container_id {
-            // Container IDs are 64 hex chars; truncate to the short form
-            // typically shown by `kubectl get pod ... -o wide`.
-            let short = if cid.len() >= 12 { &cid[..12] } else { cid };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Container ID",
-                short.to_string(),
-                label_style,
-                k8s_value_style,
-            );
-        }
-        if let Some(ref path) = k8s.cgroup_path {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Cgroup",
-                path.clone(),
-                label_style,
-            );
-        }
+        let pod_display = match (&k8s.pod_name, &k8s.pod_namespace) {
+            (Some(name), Some(ns)) => format!("{}/{}", ns, name),
+            (Some(name), None) => name.clone(),
+            (None, _) => NONE_PLACEHOLDER.to_string(),
+        };
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Pod",
+            pod_display,
+            label_style,
+            k8s_value_style,
+        );
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Pod UID",
+            k8s.pod_uid
+                .clone()
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            label_style,
+            k8s_value_style,
+        );
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Container",
+            k8s.container_name
+                .clone()
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            label_style,
+            k8s_value_style,
+        );
+        // Container IDs are 64 hex chars; truncate to the short form
+        // typically shown by `kubectl get pod ... -o wide`.
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Container ID",
+            k8s.container_id
+                .as_deref()
+                .map(|cid| {
+                    if cid.len() >= 12 {
+                        cid[..12].to_string()
+                    } else {
+                        cid.to_string()
+                    }
+                })
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            label_style,
+            k8s_value_style,
+        );
+        push_detail_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Cgroup",
+            k8s.cgroup_path
+                .clone()
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            label_style,
+        );
     }
 
     // Add DPI / application protocol information. Section heading carries
@@ -2198,18 +2220,18 @@ pub(in crate::ui) fn draw_connection_details(
             "Paired by originate timestamp echo",
         );
     } else if let Some(sequence) = icmp_echo_sequence {
-        // A flow the remote side initiated is only ever answered here, so
-        // there is no round trip to measure and no point in a placeholder.
+        // The row set depends only on the class (an echo flow), never on
+        // direction or measurement, which both resolve asynchronously. An
+        // inbound echo keeps the row as a placeholder; the footnote explains
+        // that the remote sender is the one timing it.
         let is_responder = conn.connection_direction == Some(false);
-        if conn.icmp_echo_rtt.is_some() || !is_responder {
-            push_rtt_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Ping RTT",
-                conn.icmp_echo_rtt,
-                label_style,
-            );
-        }
+        push_rtt_field(
+            &mut details_text,
+            &mut detail_fields,
+            "Ping RTT",
+            conn.icmp_echo_rtt,
+            label_style,
+        );
         push_detail_field(
             &mut details_text,
             &mut detail_fields,
