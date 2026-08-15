@@ -1950,12 +1950,13 @@ mod snapshot_tests {
         );
     }
 
-    /// The one class distinction in the Details row set: ARP has no owning
-    /// process, and its MACs already live in the Application card as
-    /// Sender/Target MAC, so it renders neither the Attribution card nor the
-    /// Network Context MAC and attributed-hostname rows.
+    /// ARP is not exempt from the fixed row layout: it renders the same
+    /// Network Context rows and the same Attribution card (all placeholders,
+    /// there is no owning process), so the cards below sit on the same rows
+    /// as for any other connection while the selection moves through a mixed
+    /// list of ARP and non-ARP entries.
     #[test]
-    fn details_tab_arp_connection_skips_mac_and_attribution_rows() {
+    fn details_tab_arp_uses_the_same_row_layout() {
         use crate::network::types::{ArpInfo, ArpOperation};
 
         let app = test_app();
@@ -1976,34 +1977,53 @@ mod snapshot_tests {
                 target_vendor: Some("Apple, Inc.".to_string()),
             }),
         );
-        let connections = vec![arp];
+        let mut connections = sample_connections();
+        connections.push(arp);
+        let arp_index = connections.len() - 1;
         app.set_connections_snapshot_for_test(connections.clone());
 
-        let output = render_details_frame(&app, &connections, 0, 52).0;
+        let arp_render = render_details_frame(&app, &connections, arp_index, 52).0;
+        let tcp_render = render_details_frame(&app, &connections, 0, 52).0;
 
-        assert!(output.contains("Network Context"));
-        assert!(output.contains("Application: ARP"));
-        assert!(output.contains("Sender MAC") && output.contains("Target MAC"));
-        assert!(
-            !output.contains("Attribution"),
-            "ARP must not render the Attribution card:\n{output}"
-        );
-        // Both endpoints are in the neighbor cache (the ingested reply seeds
-        // them), so these rows would resolve if the ARP guard regressed.
-        for label in [
+        assert!(arp_render.contains("Application: ARP"));
+        assert!(arp_render.contains("Sender MAC") && arp_render.contains("Target MAC"));
+
+        // Every shared card heading and left-column label sits on the same
+        // row for the ARP record as for the TCP record; only the Application
+        // card content is allowed to differ between classes.
+        for needle in [
+            "Network Context",
             "Local MAC",
-            "Remote MAC",
             "Attributed Name",
             "Attributed Via",
+            "Remote MAC",
+            "Attribution",
             "PPID",
             "Process Tree",
             "Executable",
             "User ",
             "Match ",
+            "Transport Health",
+            "Traffic Statistics",
         ] {
+            assert_eq!(
+                heading_row(&arp_render, needle),
+                heading_row(&tcp_render, needle),
+                "{needle} moved between the ARP and the TCP record"
+            );
+        }
+
+        // The ingested reply seeds both endpoints in the neighbor cache, so
+        // the ARP record's MAC rows resolve like any other on-link
+        // connection instead of pinning dead placeholders.
+        for (label, mac) in [
+            ("Remote MAC", "04:d9:f5:c5:ed:e8"),
+            ("Local MAC", "68:5e:dd:09:15:5e"),
+        ] {
+            let row = heading_row(&arp_render, label);
             assert!(
-                !output.contains(label),
-                "ARP must not render a {label} row:\n{output}"
+                arp_render.lines().nth(row).expect("MAC row").contains(mac),
+                "ARP must resolve its on-link {label}:\n{arp_render}"
             );
         }
     }

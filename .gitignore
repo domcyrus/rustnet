@@ -22,3 +22,9 @@ target/
 .aider*
 /logs
 .venv
+
+# Local GeoIP databases and packet captures used for manual testing
+*.mmdb
+*.pcap
+*.pcapng
+*.pcap.connections.jsonl
