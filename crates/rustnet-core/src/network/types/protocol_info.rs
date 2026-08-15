@@ -11,6 +11,18 @@ pub enum SshConnectionState {
     Established,
 }
 
+impl fmt::Display for SshConnectionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            SshConnectionState::Banner => "Banner",
+            SshConnectionState::KeyExchange => "Key Exchange",
+            SshConnectionState::Authentication => "Authentication",
+            SshConnectionState::Established => "Established",
+        };
+        f.write_str(name)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SshInfo {
     pub version: Option<SshVersion>,
@@ -25,6 +37,16 @@ pub struct SshInfo {
 pub enum SshVersion {
     V1,
     V2,
+}
+
+impl fmt::Display for SshVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            SshVersion::V1 => "SSH-1",
+            SshVersion::V2 => "SSH-2",
+        };
+        f.write_str(name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -395,6 +417,17 @@ pub enum HttpVersion {
     Http10,
     Http11,
     Http2,
+}
+
+impl fmt::Display for HttpVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            HttpVersion::Http10 => "HTTP/1.0",
+            HttpVersion::Http11 => "HTTP/1.1",
+            HttpVersion::Http2 => "HTTP/2",
+        };
+        f.write_str(name)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1272,6 +1305,27 @@ pub struct DpiInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Details tab renders these values directly; pinning them here keeps
+    /// the debug-formatting leaks (`V2`, `KeyExchange`, `Http11`) from coming
+    /// back.
+    #[test]
+    fn ssh_and_http_display_forms_are_human_readable() {
+        assert_eq!(SshVersion::V1.to_string(), "SSH-1");
+        assert_eq!(SshVersion::V2.to_string(), "SSH-2");
+
+        assert_eq!(SshConnectionState::Banner.to_string(), "Banner");
+        assert_eq!(SshConnectionState::KeyExchange.to_string(), "Key Exchange");
+        assert_eq!(
+            SshConnectionState::Authentication.to_string(),
+            "Authentication"
+        );
+        assert_eq!(SshConnectionState::Established.to_string(), "Established");
+
+        assert_eq!(HttpVersion::Http10.to_string(), "HTTP/1.0");
+        assert_eq!(HttpVersion::Http11.to_string(), "HTTP/1.1");
+        assert_eq!(HttpVersion::Http2.to_string(), "HTTP/2");
+    }
 
     #[test]
     fn quic_version_string_known_versions_are_borrowed() {

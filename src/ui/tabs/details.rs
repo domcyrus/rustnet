@@ -33,7 +33,8 @@ use crate::ui::{
     connection_table::{build_header, column_constraints, connection_row, select_columns},
     dpi_color,
     format::{format_bytes, format_rate},
-    section_header, state_color, theme, try_handle_connection_nav, try_handle_pane_wheel,
+    non_dpi_app_color, section_header, state_color, theme, try_handle_connection_nav,
+    try_handle_pane_wheel,
     widgets::braille_graph,
     widgets::scrollbar::draw_scrollbar,
 };
@@ -62,7 +63,7 @@ const DETAILS_SCROLL_STEP: u16 = 5;
 const DETAILS_MAX_CONTENT_WIDTH: u16 = 140;
 
 /// Rows reserved for the Application card before the Transport Health card.
-/// The current protocol decoders expose at most eight application fields. The
+/// The current protocol decoders expose at most seven application fields. The
 /// right pane trims the first separator, so eleven buffered rows leave ten
 /// visible rows and align Transport Health with Network Context on the left.
 const APPLICATION_CARD_ROWS: usize = 11;
@@ -182,6 +183,21 @@ impl<'a> DetailsBuilder<'a> {
             Span::styled(display, value_style),
         ]));
         self.fields.push(Some((label.to_string(), copy)));
+    }
+
+    /// Push a fixed set of Application-card rows. Every row renders, absent
+    /// data as [`NONE_PLACEHOLDER`], so the card's row set is a function of
+    /// the protocol class alone and never grows or shrinks with data
+    /// availability.
+    fn app_rows(&mut self, rows: &[(&str, Option<String>)]) {
+        for (label, value) in rows {
+            self.field(
+                label,
+                value
+                    .clone()
+                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            );
+        }
     }
 
     /// Push an RTT field with the value colored by latency (green < 50ms,
@@ -526,6 +542,33 @@ fn format_quic_close(close: &crate::network::types::QuicCloseInfo) -> String {
         "transport"
     };
     format!("{} 0x{:x}", origin, close.error_code)
+}
+
+/// Comma-joined display form of a response-IP list, `None` when empty so the
+/// Application card renders its placeholder instead of `[]`-style debug
+/// output.
+fn join_ips(ips: &[std::net::IpAddr]) -> Option<String> {
+    (!ips.is_empty()).then(|| {
+        ips.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
+/// Shared Application-card row set for the name-service protocols whose info
+/// structs carry identical fields (mDNS and LLMNR are distinct types with the
+/// same query/response shape).
+fn name_service_rows(
+    query_name: Option<&String>,
+    query_type: Option<&crate::network::types::DnsQueryType>,
+    response_ips: &[std::net::IpAddr],
+) -> [(&'static str, Option<String>); 3] {
+    [
+        ("Query Name", query_name.cloned()),
+        ("Query Type", query_type.map(|t| t.to_string())),
+        ("Response IPs", join_ips(response_ips)),
+    ]
 }
 
 /// Endpoint address with a broadcast/multicast annotation when the address
@@ -1169,243 +1212,272 @@ pub(in crate::ui) fn draw_connection_details(
             theme::bold_fg(dpi_color(&dpi.application)),
         );
 
-        // Add protocol-specific details
+        // Protocol-specific details. Each protocol class renders a fixed row
+        // set: absent data shows the placeholder instead of dropping the row,
+        // so labels never move while navigating between connections of the
+        // same class (and the card's height never depends on the data).
         match &dpi.application {
             crate::network::types::ApplicationProtocol::Http(info) => {
-                if let Some(method) = &info.method {
-                    details.field("HTTP Method", method.clone());
-                }
-                if let Some(path) = &info.path {
-                    details.field("HTTP Path", path.clone());
-                }
-                if let Some(status) = info.status_code {
-                    details.field("HTTP Status", status.to_string());
-                }
+                details.app_rows(&[
+                    ("HTTP Version", Some(info.version.to_string())),
+                    ("HTTP Method", info.method.clone()),
+                    ("HTTP Host", info.host.clone()),
+                    ("HTTP Path", info.path.clone()),
+                    ("HTTP Status", info.status_code.map(|s| s.to_string())),
+                    ("User-Agent", info.user_agent.clone()),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Https(info) => {
-                if let Some(tls_info) = &info.tls_info {
-                    if let Some(sni) = &tls_info.sni {
-                        details.field("SNI", sni.clone());
-                    }
-                    if !tls_info.alpn.is_empty() {
-                        details.field("ALPN", tls_info.alpn.join(", "));
-                    }
-                    if let Some(version) = &tls_info.version {
-                        details.field("TLS Version", version.to_string());
-                    }
-                    if let Some(formatted_cipher) = tls_info.format_cipher_suite() {
-                        let cipher_color = if tls_info.is_cipher_suite_secure().unwrap_or(false) {
+                // The full row set renders even before the handshake is
+                // parsed (tls_info still None): a heading-only card would
+                // read as a rendering glitch rather than as pending data.
+                let tls = info.tls_info.as_ref();
+                details.app_rows(&[
+                    ("SNI", tls.and_then(|t| t.sni.clone())),
+                    (
+                        "ALPN",
+                        tls.and_then(|t| (!t.alpn.is_empty()).then(|| t.alpn.join(", "))),
+                    ),
+                    (
+                        "TLS Version",
+                        tls.and_then(|t| t.version.map(|v| v.to_string())),
+                    ),
+                ]);
+                // Escape hatch from app_rows: the cipher keeps its ok/warn
+                // color so a weak suite still stands out.
+                match tls.and_then(|t| t.format_cipher_suite()) {
+                    Some(cipher) => {
+                        let cipher_color = if tls
+                            .and_then(|t| t.is_cipher_suite_secure())
+                            .unwrap_or(false)
+                        {
                             theme::ok()
                         } else {
                             theme::warn()
                         };
-                        details.field_styled(
-                            "Cipher Suite",
-                            formatted_cipher,
-                            theme::fg(cipher_color),
-                        );
+                        details.field_styled("Cipher Suite", cipher, theme::fg(cipher_color));
                     }
+                    None => details.field("Cipher Suite", NONE_PLACEHOLDER.to_string()),
                 }
             }
             crate::network::types::ApplicationProtocol::Dns(info) => {
-                if let Some(query_name) = &info.query_name {
-                    details.field("DNS Query", query_name.clone());
-                }
-                if let Some(query_type) = &info.query_type {
-                    details.field("DNS Type", format!("{}", query_type));
-                }
-                if !info.response_ips.is_empty() {
-                    details.field("DNS Response IPs", format!("{:?}", info.response_ips));
-                }
-                // Disambiguate "record doesn't exist" from "answer not
-                // parsed": a NOERROR response whose answer section held no
-                // record of the queried type is a deliberate empty answer.
-                if info.nodata == Some(true) {
-                    details.field(
+                // The Answer row disambiguates "record doesn't exist" from
+                // "answer not parsed": a NOERROR response whose answer
+                // section held no record of the queried type is a deliberate
+                // empty answer (NODATA).
+                details.app_rows(&[
+                    ("DNS Query", info.query_name.clone()),
+                    ("DNS Type", info.query_type.map(|t| t.to_string())),
+                    ("DNS Response IPs", join_ips(&info.response_ips)),
+                    (
                         "DNS Answer",
-                        "no data (name exists, no record of this type)".to_string(),
-                    );
-                }
+                        (info.nodata == Some(true))
+                            .then(|| "no data (name exists, no record of this type)".to_string()),
+                    ),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Quic(info) => {
-                if let Some(tls_info) = &info.tls_info {
-                    let sni = tls_info
-                        .sni
-                        .clone()
-                        .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
-                    details.field("QUIC SNI", sni);
-                    let alpn = tls_info.alpn.join(", ");
-                    details.field("QUIC ALPN", alpn);
-                }
-                if let Some(version) = info.version_string.as_deref() {
-                    details.field("QUIC Version", version.to_owned());
-                }
-                if let Some(connection_id) = &info.connection_id_hex {
-                    details.field("Connection ID", connection_id.clone());
-                }
-                details.field("Packet Type", info.packet_type.to_string());
-                details.field("Connection State", info.connection_state.to_string());
+                let tls = info.tls_info.as_ref();
+                details.app_rows(&[
+                    ("QUIC SNI", tls.and_then(|t| t.sni.clone())),
+                    (
+                        "QUIC ALPN",
+                        tls.and_then(|t| (!t.alpn.is_empty()).then(|| t.alpn.join(", "))),
+                    ),
+                    (
+                        "QUIC Version",
+                        info.version_string.as_deref().map(str::to_owned),
+                    ),
+                    ("Connection ID", info.connection_id_hex.clone()),
+                    ("Packet Type", Some(info.packet_type.to_string())),
+                    ("Connection State", Some(info.connection_state.to_string())),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Ssh(info) => {
-                if let Some(version) = &info.version {
-                    details.field("SSH Version", format!("{:?}", version));
-                }
-                if let Some(server_software) = &info.server_software {
-                    details.field("Server Software", server_software.clone());
-                }
-                if let Some(client_software) = &info.client_software {
-                    details.field("Client Software", client_software.clone());
-                }
-                details.field("Connection State", format!("{:?}", info.connection_state));
-                if !info.algorithms.is_empty() {
-                    details.field("Algorithms", info.algorithms.join(", "));
-                }
-                if let Some(auth_method) = &info.auth_method {
-                    details.field("Auth Method", auth_method.clone());
-                }
+                details.app_rows(&[
+                    ("SSH Version", info.version.as_ref().map(|v| v.to_string())),
+                    ("Connection State", Some(info.connection_state.to_string())),
+                    ("Server Software", info.server_software.clone()),
+                    ("Client Software", info.client_software.clone()),
+                    (
+                        "Algorithms",
+                        (!info.algorithms.is_empty()).then(|| info.algorithms.join(", ")),
+                    ),
+                    ("Auth Method", info.auth_method.clone()),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Ntp(info) => {
-                details.field("NTP Version", format!("{}", info.version));
-                details.field("NTP Mode", info.mode.to_string());
-                details.field("Stratum", format!("{}", info.stratum));
+                // Stratum 0 marks an unspecified/invalid stratum (RFC 5905),
+                // so it renders as the placeholder rather than a value.
+                details.app_rows(&[
+                    ("NTP Version", Some(info.version.to_string())),
+                    ("NTP Mode", Some(info.mode.to_string())),
+                    (
+                        "Stratum",
+                        (info.stratum != 0).then(|| info.stratum.to_string()),
+                    ),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Mdns(info) => {
-                if let Some(query_name) = &info.query_name {
-                    details.field("Query Name", query_name.clone());
-                }
-                if let Some(query_type) = &info.query_type {
-                    details.field("Query Type", format!("{}", query_type));
-                }
-                if !info.response_ips.is_empty() {
-                    details.field("Response IPs", format!("{:?}", info.response_ips));
-                }
+                details.app_rows(&name_service_rows(
+                    info.query_name.as_ref(),
+                    info.query_type.as_ref(),
+                    &info.response_ips,
+                ));
             }
             crate::network::types::ApplicationProtocol::Llmnr(info) => {
-                if let Some(query_name) = &info.query_name {
-                    details.field("Query Name", query_name.clone());
-                }
-                if let Some(query_type) = &info.query_type {
-                    details.field("Query Type", format!("{}", query_type));
-                }
-                if !info.response_ips.is_empty() {
-                    details.field("Response IPs", format!("{:?}", info.response_ips));
-                }
+                details.app_rows(&name_service_rows(
+                    info.query_name.as_ref(),
+                    info.query_type.as_ref(),
+                    &info.response_ips,
+                ));
             }
             crate::network::types::ApplicationProtocol::Dhcp(info) => {
-                details.field("Message Type", info.message_type.to_string());
-                if let Some(hostname) = &info.hostname {
-                    details.field("Hostname", hostname.clone());
-                }
-                if let Some(client_mac) = &info.client_mac {
-                    details.field("Client MAC", client_mac.clone());
-                }
+                details.app_rows(&[
+                    ("Message Type", Some(info.message_type.to_string())),
+                    ("Hostname", info.hostname.clone()),
+                    ("Client MAC", info.client_mac.clone()),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Snmp(info) => {
-                details.field("SNMP Version", info.version.to_string());
-                details.field("PDU Type", info.pdu_type.to_string());
-                if let Some(community) = &info.community {
-                    details.field("Community", community.clone());
-                }
+                details.app_rows(&[
+                    ("SNMP Version", Some(info.version.to_string())),
+                    ("PDU Type", Some(info.pdu_type.to_string())),
+                    ("Community", info.community.clone()),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Ssdp(info) => {
-                details.field("Method", info.method.to_string());
-                if let Some(service_type) = &info.service_type {
-                    details.field("Service Type", service_type.clone());
-                }
+                details.app_rows(&[
+                    ("Method", Some(info.method.to_string())),
+                    ("Service Type", info.service_type.clone()),
+                ]);
             }
             crate::network::types::ApplicationProtocol::NetBios(info) => {
-                details.field("Service", info.service.to_string());
-                details.field("Opcode", info.opcode.to_string());
-                if let Some(name) = &info.name {
-                    details.field("Name", name.clone());
-                }
+                details.app_rows(&[
+                    ("Service", Some(info.service.to_string())),
+                    ("Opcode", Some(info.opcode.to_string())),
+                    ("Name", info.name.clone()),
+                ]);
             }
             crate::network::types::ApplicationProtocol::BitTorrent(info) => {
-                details.field("Type", info.protocol_type.to_string());
-                if let Some(client) = &info.client {
-                    details.field("Client", client.clone());
-                }
-                if let Some(info_hash) = &info.info_hash {
-                    details.field("Info Hash", info_hash.clone());
-                }
-                if let Some(method) = &info.dht_method {
-                    details.field("DHT Method", method.clone());
-                }
-                let mut extensions = Vec::new();
-                if info.supports_dht {
-                    extensions.push("DHT");
-                }
-                if info.supports_extension {
-                    extensions.push("Extension Protocol");
-                }
-                if info.supports_fast {
-                    extensions.push("Fast");
-                }
-                if !extensions.is_empty() {
-                    details.field("Extensions", extensions.join(", "));
-                }
+                let extensions: Vec<&str> = [
+                    (info.supports_dht, "DHT"),
+                    (info.supports_extension, "Extension Protocol"),
+                    (info.supports_fast, "Fast"),
+                ]
+                .into_iter()
+                .filter_map(|(supported, name)| supported.then_some(name))
+                .collect();
+                details.app_rows(&[
+                    ("Type", Some(info.protocol_type.to_string())),
+                    ("Client", info.client.clone()),
+                    ("Info Hash", info.info_hash.clone()),
+                    ("DHT Method", info.dht_method.clone()),
+                    (
+                        "Extensions",
+                        (!extensions.is_empty()).then(|| extensions.join(", ")),
+                    ),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Stun(info) => {
-                details.field("Method", info.method.to_string());
-                details.field("Class", info.message_class.to_string());
-                let txn_id = crate::network::util::hex_encode(&info.transaction_id, "");
-                details.field("Transaction ID", txn_id);
-                if let Some(software) = &info.software {
-                    details.field("Software", software.clone());
-                }
+                details.app_rows(&[
+                    ("Method", Some(info.method.to_string())),
+                    ("Class", Some(info.message_class.to_string())),
+                    (
+                        "Transaction ID",
+                        Some(crate::network::util::hex_encode(&info.transaction_id, "")),
+                    ),
+                    ("Software", info.software.clone()),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Ftp(info) => {
-                details.field("Message Type", info.message_type.to_string());
-                if let Some(cmd) = &info.command {
-                    details.field("Command", cmd.clone());
-                }
-                if let Some(args) = &info.args {
-                    details.field("Arguments", args.clone());
-                }
-                if let Some(code) = info.response_code {
-                    details.field("Response Code", code.to_string());
-                }
-                if let Some(message) = &info.response_message {
-                    details.field("Response", message.clone());
-                }
-                if let Some(user) = &info.username {
-                    details.field("Username", user.clone());
-                }
-                if let Some(sw) = &info.server_software {
-                    details.field("Server Software", sw.clone());
-                }
-                if let Some(sys) = &info.system_type {
-                    details.field("System Type", sys.clone());
-                }
+                // Code and message describe one server reply; a merged row
+                // keeps the seven-row FTP card inside the shared budget.
+                let response = match (info.response_code, &info.response_message) {
+                    (Some(code), Some(message)) => Some(format!("{} {}", code, message)),
+                    (Some(code), None) => Some(code.to_string()),
+                    (None, Some(message)) => Some(message.clone()),
+                    (None, None) => None,
+                };
+                details.app_rows(&[
+                    ("Message Type", Some(info.message_type.to_string())),
+                    ("Command", info.command.clone()),
+                    ("Arguments", info.args.clone()),
+                    ("Response", response),
+                    ("Username", info.username.clone()),
+                    ("Server Software", info.server_software.clone()),
+                    ("System Type", info.system_type.clone()),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Mqtt(info) => {
-                details.field("Packet Type", info.packet_type.to_string());
-                if let Some(version) = &info.version {
-                    details.field("Version", version.to_string());
-                }
-                if let Some(client_id) = &info.client_id {
-                    details.field("Client ID", client_id.clone());
-                }
-                if let Some(topic) = &info.topic {
-                    details.field("Topic", topic.clone());
-                }
-                if let Some(qos) = info.qos {
-                    details.field("QoS", qos.to_string());
-                }
+                details.app_rows(&[
+                    ("Packet Type", Some(info.packet_type.to_string())),
+                    ("Version", info.version.map(|v| v.to_string())),
+                    ("Client ID", info.client_id.clone()),
+                    ("Topic", info.topic.clone()),
+                    ("QoS", info.qos.map(|q| q.to_string())),
+                ]);
             }
         }
     } else if let ProtocolState::Arp(arp_info) = &conn.protocol_state {
-        details.section("Application: ARP");
-        details.field("Sender MAC", arp_info.sender_mac.clone());
-        if let Some(ref vendor) = arp_info.sender_vendor {
-            details.field("Sender Vendor", vendor.clone());
-        }
-        details.field("Sender IP", arp_info.sender_ip.to_string());
-        details.field("Target MAC", arp_info.target_mac.clone());
-        if let Some(ref vendor) = arp_info.target_vendor {
-            details.field("Target Vendor", vendor.clone());
-        }
-        details.field("Target IP", arp_info.target_ip.to_string());
+        details.section_styled("Application: ARP", theme::bold_fg(non_dpi_app_color()));
+        let operation = match arp_info.operation {
+            crate::network::types::ArpOperation::Request => "Request",
+            crate::network::types::ArpOperation::Reply => "Reply",
+        };
+        details.app_rows(&[
+            ("Operation", Some(operation.to_string())),
+            ("Sender MAC", Some(arp_info.sender_mac.clone())),
+            ("Sender Vendor", arp_info.sender_vendor.clone()),
+            ("Sender IP", Some(arp_info.sender_ip.to_string())),
+            ("Target MAC", Some(arp_info.target_mac.clone())),
+            ("Target Vendor", arp_info.target_vendor.clone()),
+            ("Target IP", Some(arp_info.target_ip.to_string())),
+        ]);
+    } else if let ProtocolState::Icmp {
+        icmp_type,
+        icmp_id,
+        icmp_sequence,
+        ndp_neighbor,
+    } = &conn.protocol_state
+    {
+        let is_ipv6 = conn.local_addr.is_ipv6();
+        details.section_styled(
+            if is_ipv6 {
+                "Application: ICMPv6"
+            } else {
+                "Application: ICMP"
+            },
+            theme::bold_fg(non_dpi_app_color()),
+        );
+        // "ip at mac (vendor)" mirrors what the ARP card spells out over
+        // separate rows: NDP messages carry a single IP-to-MAC mapping.
+        let neighbor = ndp_neighbor.as_ref().map(|n| match &n.vendor {
+            Some(vendor) => format!("{} at {} ({})", n.ip, n.mac, vendor),
+            None => format!("{} at {}", n.ip, n.mac),
+        });
+        details.app_rows(&[
+            (
+                "Message",
+                Some(crate::network::types::icmp_message_name(*icmp_type, is_ipv6).into_owned()),
+            ),
+            ("Echo ID", icmp_id.map(|id| id.to_string())),
+            ("Sequence", icmp_sequence.map(|seq| seq.to_string())),
+            ("NDP Neighbor", neighbor),
+        ]);
+    } else if let ProtocolState::Igmp {
+        igmp_type,
+        group_addr,
+    } = &conn.protocol_state
+    {
+        details.section_styled("Application: IGMP", theme::bold_fg(non_dpi_app_color()));
+        details.app_rows(&[
+            (
+                "Message",
+                Some(crate::network::types::igmp_message_name(*igmp_type).into_owned()),
+            ),
+            ("Group Address", group_addr.map(|addr| addr.to_string())),
+        ]);
     } else {
         details.section("Application");
         details.field("Detected", NONE_PLACEHOLDER.to_string());
@@ -1413,7 +1485,13 @@ pub(in crate::ui) fn draw_connection_details(
 
     // Short application records keep their whitespace inside the card instead
     // of pulling Transport Health and Traffic Statistics upward. All current
-    // decoders fit within this budget, including FTP's eight detail fields.
+    // row sets fit within this budget, including FTP's and ARP's seven rows.
+    debug_assert!(
+        details.rows() - application_start <= APPLICATION_CARD_ROWS,
+        "Application card overflowed its {APPLICATION_CARD_ROWS}-row budget \
+         ({} rows): grow the budget or trim the row set",
+        details.rows() - application_start,
+    );
     details.pad_section(application_start, APPLICATION_CARD_ROWS);
     right_ranges.push(application_start..details.rows());
 
@@ -1538,24 +1616,16 @@ pub(in crate::ui) fn draw_connection_details(
         }
         details.plain_line(Line::from(""));
         details.note("Timed by pairing request and response IDs");
-    } else if let Some(stun) = stun_info {
+    } else if stun_info.is_some() {
+        // Method and class live in the Application card; this card keeps
+        // only the measured outcome.
         details.rtt_field("STUN RTT", conn.stun_rtt);
-        details.field(
-            "Last Message",
-            format!("{} {}", stun.method, stun.message_class),
-        );
         details.plain_line(Line::from(""));
         details.note("Paired by 96-bit transaction ID");
-    } else if let Some(ntp) = ntp_info {
+    } else if ntp_info.is_some() {
+        // Stratum lives in the Application card; this card keeps only the
+        // measured outcome.
         details.rtt_field("NTP RTT", conn.ntp_rtt);
-        details.field(
-            "Stratum",
-            if ntp.stratum == 0 {
-                NONE_PLACEHOLDER.to_string()
-            } else {
-                ntp.stratum.to_string()
-            },
-        );
         details.plain_line(Line::from(""));
         details.note("Paired by originate timestamp echo");
     } else if let Some(sequence) = icmp_echo_sequence {
