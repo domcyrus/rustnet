@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Details Tab ARP Layout**: ARP connections were exempt from the fixed
+  Details layout and dropped the Network Context MAC/attribution rows and the
+  whole Attribution card, so Traffic Statistics and the cards below jumped
+  when moving between ARP and non-ARP entries. ARP now renders the same
+  left-column row set with `-` placeholders, and its MAC rows resolve from
+  the neighbor cache like any other on-link connection (#555)
 - **Details Tab Layout Stability**: rows in the Details tab no longer appear
   or disappear with data availability. MAC, Attributed Name/Via, the
   Attribution card's process fields, the Kubernetes card's fields, and the

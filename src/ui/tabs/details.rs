@@ -847,8 +847,8 @@ pub(in crate::ui) fn draw_connection_details(
 
     // Unlike regular sections, the first card starts without a blank separator.
     // Together with the fixed nine-row Network Context card below this gives
-    // the left dashboard column a 21-row footprint (17 for ARP, which has no
-    // MAC or attribution rows), so the cards below never move.
+    // the left dashboard column a 21-row footprint for every protocol, ARP
+    // included, so the cards below never move.
     details_text.push(Line::from(Span::styled(
         "Connection",
         theme::bold_fg(theme::heading()),
@@ -975,7 +975,6 @@ pub(in crate::ui) fn draw_connection_details(
     // while asynchronous DNS and GeoIP data arrives, which prevents the lower
     // dashboard and traffic section from jumping during connection navigation.
     let (local_hostname, remote_hostname) = dns_resolver
-        .filter(|_| conn.protocol != Protocol::Arp)
         .map(|resolver| {
             (
                 resolver.get_hostname(&conn.local_addr.ip()),
@@ -986,17 +985,11 @@ pub(in crate::ui) fn draw_connection_details(
 
     // MAC + vendor from the neighbor cache (learned from ARP and NDP).
     // Present only for on-link addresses that appeared in such an exchange,
-    // so a public remote can never show the router's identity. ARP
-    // connections never show the rows; their Application card already
-    // shows both MACs.
-    let (local_mac, remote_mac) = if conn.protocol == Protocol::Arp {
-        (None, None)
-    } else {
-        (
-            ctx.app.lookup_neighbor(conn.local_addr.ip()),
-            ctx.app.lookup_neighbor(conn.remote_addr.ip()),
-        )
-    };
+    // so a public remote can never show the router's identity.
+    let (local_mac, remote_mac) = (
+        ctx.app.lookup_neighbor(conn.local_addr.ip()),
+        ctx.app.lookup_neighbor(conn.remote_addr.ip()),
+    );
     let format_mac = |entry: crate::network::neighbors::NeighborEntry| {
         if let Some(vendor) = entry.vendor {
             format!("{} ({})", entry.mac, vendor)
@@ -1053,23 +1046,20 @@ pub(in crate::ui) fn draw_connection_details(
         label_style,
         theme::fg(theme::field_local_addr()),
     );
-    // MAC and attribution rows depend on the connection class, never on data
-    // availability: they always render for non-ARP connections, with a
-    // placeholder when unresolved, so the cards below keep static positions
-    // while navigating. The details pane scrolls, so the fixed rows cannot
-    // make content unreachable on short terminals.
-    if conn.protocol != Protocol::Arp {
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
-            "Local MAC",
-            local_mac
-                .map(format_mac)
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            label_style,
-            theme::fg(theme::field_local_addr()),
-        );
-    }
+    // MAC and attribution rows always render, with a placeholder when
+    // unresolved, so the cards below keep static positions while navigating,
+    // for every protocol including ARP. The details pane scrolls, so the
+    // fixed rows cannot make content unreachable on short terminals.
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "Local MAC",
+        local_mac
+            .map(format_mac)
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+        theme::fg(theme::field_local_addr()),
+    );
     push_detail_field_styled(
         &mut details_text,
         &mut detail_fields,
@@ -1083,58 +1073,56 @@ pub(in crate::ui) fn draw_connection_details(
     // Name and provenance on separate rows: a combined value clips at
     // the card boundary for hostnames of ordinary length, hiding the
     // provenance entirely.
-    if conn.protocol != Protocol::Arp {
-        let (attributed_name, attributed_via) = match &conn.attributed_hostname {
-            Some(att) => {
-                let source = match att.source {
-                    crate::network::types::AttributionSource::CapturedDns => "Captured DNS",
-                };
-                let age = att
-                    .observed_at
-                    .elapsed()
-                    .ok()
-                    .map(|d| {
-                        let s = d.as_secs();
-                        if s < 60 {
-                            format!("{}s ago", s)
-                        } else if s < 3600 {
-                            format!("{}m ago", s / 60)
-                        } else {
-                            format!("{}h ago", s / 3600)
-                        }
-                    })
-                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
-                (format!("~{}", att.name), format!("{}, {}", source, age))
-            }
-            None => (NONE_PLACEHOLDER.to_string(), NONE_PLACEHOLDER.to_string()),
-        };
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
-            "Attributed Name",
-            attributed_name,
-            label_style,
-            theme::fg(theme::field_attributed_hostname()),
-        );
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
-            "Attributed Via",
-            attributed_via,
-            label_style,
-            theme::fg(theme::field_attributed_hostname()),
-        );
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
-            "Remote MAC",
-            remote_mac
-                .map(format_mac)
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            label_style,
-            theme::fg(theme::field_remote_addr()),
-        );
-    }
+    let (attributed_name, attributed_via) = match &conn.attributed_hostname {
+        Some(att) => {
+            let source = match att.source {
+                crate::network::types::AttributionSource::CapturedDns => "Captured DNS",
+            };
+            let age = att
+                .observed_at
+                .elapsed()
+                .ok()
+                .map(|d| {
+                    let s = d.as_secs();
+                    if s < 60 {
+                        format!("{}s ago", s)
+                    } else if s < 3600 {
+                        format!("{}m ago", s / 60)
+                    } else {
+                        format!("{}h ago", s / 3600)
+                    }
+                })
+                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+            (format!("~{}", att.name), format!("{}, {}", source, age))
+        }
+        None => (NONE_PLACEHOLDER.to_string(), NONE_PLACEHOLDER.to_string()),
+    };
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "Attributed Name",
+        attributed_name,
+        label_style,
+        theme::fg(theme::field_attributed_hostname()),
+    );
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "Attributed Via",
+        attributed_via,
+        label_style,
+        theme::fg(theme::field_attributed_hostname()),
+    );
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "Remote MAC",
+        remote_mac
+            .map(format_mac)
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+        theme::fg(theme::field_remote_addr()),
+    );
     let location_value_style = theme::fg(theme::field_location());
     push_detail_field_styled(
         &mut details_text,
@@ -1161,106 +1149,104 @@ pub(in crate::ui) fn draw_connection_details(
         location_value_style,
     );
 
-    // Richer process attribution. The row set depends on the connection class,
-    // never on data availability: every row renders with a placeholder when
+    // Richer process attribution. Every row renders with a placeholder when
     // the platform's lookup could not resolve it, so the cards below keep
-    // static positions while navigating. ARP has no owning process, so it
-    // skips the card entirely. The Kubernetes block below stays conditional:
-    // being a k8s workload is a class distinction, not missing data.
-    if conn.protocol != Protocol::Arp {
-        let process_value_style = theme::fg(theme::field_process());
-        push_detail_section(&mut details_text, &mut detail_fields, "Attribution");
+    // static positions while navigating. ARP has no owning process and shows
+    // all placeholders, which keeps Traffic Statistics from jumping when the
+    // selection moves between an ARP entry and its neighbors in the list.
+    // The Kubernetes block below stays conditional: being a k8s workload is
+    // a class distinction, not missing data.
+    let process_value_style = theme::fg(theme::field_process());
+    push_detail_section(&mut details_text, &mut detail_fields, "Attribution");
 
-        push_detail_field_styled(
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "PID",
+        conn.pid
+            .map(|pid| pid.to_string())
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+        process_value_style,
+    );
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "PPID",
+        conn.process_ppid
+            .map(|ppid| ppid.to_string())
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+        process_value_style,
+    );
+    if let (Some(lineage), Some(owner_name)) = (&conn.process_lineage, conn.process_name.as_deref())
+    {
+        push_detail_field_with_copy(
             &mut details_text,
             &mut detail_fields,
-            "PID",
-            conn.pid
-                .map(|pid| pid.to_string())
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            "Process Tree",
+            process_tree_value(lineage, owner_name, value_width),
+            process_tree_value(lineage, owner_name, usize::MAX),
             label_style,
             process_value_style,
         );
+    } else {
         push_detail_field_styled(
             &mut details_text,
             &mut detail_fields,
-            "PPID",
-            conn.process_ppid
-                .map(|ppid| ppid.to_string())
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            "Process Tree",
+            NONE_PLACEHOLDER.to_string(),
             label_style,
             process_value_style,
-        );
-        if let (Some(lineage), Some(owner_name)) =
-            (&conn.process_lineage, conn.process_name.as_deref())
-        {
-            push_detail_field_with_copy(
-                &mut details_text,
-                &mut detail_fields,
-                "Process Tree",
-                process_tree_value(lineage, owner_name, value_width),
-                process_tree_value(lineage, owner_name, usize::MAX),
-                label_style,
-                process_value_style,
-            );
-        } else {
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Process Tree",
-                NONE_PLACEHOLDER.to_string(),
-                label_style,
-                process_value_style,
-            );
-        }
-        if let Some(ref executable) = conn.executable {
-            let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-            push_detail_field_with_copy(
-                &mut details_text,
-                &mut detail_fields,
-                "Executable",
-                shorten_executable_path(executable, home.as_deref(), value_width),
-                executable.display().to_string(),
-                label_style,
-                process_value_style,
-            );
-        } else {
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
-                "Executable",
-                NONE_PLACEHOLDER.to_string(),
-                label_style,
-                process_value_style,
-            );
-        }
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
-            "User",
-            conn.process_uid
-                .map(|uid| format_user_group(uid, conn.process_gid))
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            label_style,
-        );
-        // A relaxed match is a plausible owner, not a proven one, so it
-        // reads as a warning rather than as confirmed fact.
-        let quality_color = match conn.attribution_quality {
-            Some(quality) if quality.is_exact() => theme::ok(),
-            Some(MatchQuality::Unspecified) | None => theme::muted(),
-            Some(_) => theme::warn(),
-        };
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
-            "Match",
-            conn.attribution_quality
-                .map(|quality| quality.to_string())
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            label_style,
-            theme::fg(quality_color),
         );
     }
+    if let Some(ref executable) = conn.executable {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        push_detail_field_with_copy(
+            &mut details_text,
+            &mut detail_fields,
+            "Executable",
+            shorten_executable_path(executable, home.as_deref(), value_width),
+            executable.display().to_string(),
+            label_style,
+            process_value_style,
+        );
+    } else {
+        push_detail_field_styled(
+            &mut details_text,
+            &mut detail_fields,
+            "Executable",
+            NONE_PLACEHOLDER.to_string(),
+            label_style,
+            process_value_style,
+        );
+    }
+    push_detail_field(
+        &mut details_text,
+        &mut detail_fields,
+        "User",
+        conn.process_uid
+            .map(|uid| format_user_group(uid, conn.process_gid))
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+    );
+    // A relaxed match is a plausible owner, not a proven one, so it
+    // reads as a warning rather than as confirmed fact.
+    let quality_color = match conn.attribution_quality {
+        Some(quality) if quality.is_exact() => theme::ok(),
+        Some(MatchQuality::Unspecified) | None => theme::muted(),
+        Some(_) => theme::warn(),
+    };
+    push_detail_field_styled(
+        &mut details_text,
+        &mut detail_fields,
+        "Match",
+        conn.attribution_quality
+            .map(|quality| quality.to_string())
+            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        label_style,
+        theme::fg(quality_color),
+    );
 
     // Kubernetes attribution (pod / container) when the owning process is in
     // a kubepods cgroup. The card's presence is the class distinction (being
