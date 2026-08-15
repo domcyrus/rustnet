@@ -428,7 +428,7 @@ fn sanitize_comment_value(value: &str) -> String {
 mod pcapng_export_tests {
     use super::*;
     use crate::network::parser::ParsedPacket;
-    use crate::network::types::{AddrKind, Protocol};
+    use crate::network::types::Protocol;
     use std::net::SocketAddr;
 
     fn record(data: u8, key: Option<ConnectionKey>, deadline: Instant) -> PcapngRecord {
@@ -447,38 +447,33 @@ mod pcapng_export_tests {
     /// generation must not claim it.
     #[test]
     fn annotation_requires_matching_connection_generation() {
-        use crate::network::{
-            protocol::tcp::{TcpFlags, TcpHeaderInfo},
-            types::{ProtocolState, TcpState},
-        };
+        use crate::network::types::{ProtocolState, TcpState};
+        use rustnet_core::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
 
         let tracker = ConnectionTracker::new();
-        let outcome = tracker.ingest(&ParsedPacket {
-            protocol: Protocol::Tcp,
-            local_addr: SocketAddr::from(([192, 0, 2, 9], 41_000)),
-            remote_addr: SocketAddr::from(([198, 51, 100, 9], 443)),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            tcp_header: Some(TcpHeaderInfo {
-                seq: 1,
-                ack: 0,
-                window: 65_535,
-                flags: TcpFlags {
-                    syn: true,
-                    ack: false,
-                    fin: false,
-                    rst: false,
-                },
-                payload_len: 0,
-            }),
-            protocol_state: ProtocolState::Tcp(TcpState::Unknown),
-            is_outgoing: true,
-            packet_len: 60,
-            dpi_result: None,
-            process_name: None,
-            process_id: None,
+        let mut packet = ParsedPacket::new(
+            Protocol::Tcp,
+            SocketAddr::from(([192, 0, 2, 9], 41_000)),
+            SocketAddr::from(([198, 51, 100, 9], 443)),
+            ProtocolState::Tcp(TcpState::Unknown),
+            true,
+            60,
+            None,
+            None,
+        );
+        packet.tcp_header = Some(TcpHeaderInfo {
+            seq: 1,
+            ack: 0,
+            window: 65_535,
+            flags: TcpFlags {
+                syn: true,
+                ack: false,
+                fin: false,
+                rst: false,
+            },
+            payload_len: 0,
         });
+        let outcome = tracker.ingest_at(&packet, std::time::SystemTime::now());
         let key = outcome.key;
         tracker.connections().get_mut(&key).unwrap().process_name = Some("nginx".to_string());
         let created_at = tracker.connections().get(&key).unwrap().created_at;

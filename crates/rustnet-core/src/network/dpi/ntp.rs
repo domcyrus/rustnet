@@ -11,7 +11,7 @@ const MIN_NTP_PACKET_SIZE: usize = 48;
 /// Analyze an NTP packet and extract key information.
 ///
 /// Returns `None` if the packet is too small or has invalid version.
-pub fn analyze_ntp(payload: &[u8]) -> Option<NtpInfo> {
+pub(super) fn analyze_ntp(payload: &[u8]) -> Option<NtpInfo> {
     // Early size check - NTP packets are at least 48 bytes
     if payload.len() < MIN_NTP_PACKET_SIZE {
         return None;

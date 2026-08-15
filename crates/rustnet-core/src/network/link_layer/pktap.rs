@@ -11,7 +11,7 @@ const DARWIN_PID_MAX: u32 = 99_999;
 /// Based on the LINKTYPE_PKTAP specification and Apple's pktap.h
 #[repr(C)]
 #[derive(Debug, Clone)]
-pub struct PktapHeader {
+pub(crate) struct PktapHeader {
     pub pth_length: u32,            // Total header length (minimum 108 bytes)
     pub pth_type_next: u32,         // Type of next header
     pub pth_dlt: u32,               // DLT type of actual packet (e.g., DLT_EN10MB)
@@ -34,7 +34,7 @@ pub struct PktapHeader {
 
 impl PktapHeader {
     /// Parse PKTAP header from raw packet data
-    pub fn from_bytes(data: &[u8]) -> Option<Self> {
+    pub(crate) fn from_bytes(data: &[u8]) -> Option<Self> {
         // Check minimum size
         if data.len() < mem::size_of::<PktapHeader>() {
             debug!("Packet too small for PKTAP header: {} bytes", data.len());
@@ -68,7 +68,7 @@ impl PktapHeader {
 
     /// Extract process information from the header using the correct offsets
     /// Based on our successful test: process name at offset 56, PID at offset 52
-    pub fn get_process_info(&self) -> (Option<String>, Option<u32>) {
+    pub(crate) fn get_process_info(&self) -> (Option<String>, Option<u32>) {
         // Extract process name from pth_comm (offset 56, length 20)
         let process_name = extract_process_name_from_bytes(&self.pth_comm);
 
@@ -102,7 +102,7 @@ impl PktapHeader {
     }
 
     /// Get the interface name
-    pub fn get_interface(&self) -> String {
+    pub(crate) fn get_interface(&self) -> String {
         std::str::from_utf8(&self.pth_ifname)
             .unwrap_or("")
             .trim_end_matches('\0')
@@ -111,23 +111,42 @@ impl PktapHeader {
     }
 
     /// Get the offset where the actual packet data starts
-    pub fn payload_offset(&self) -> usize {
+    pub(crate) fn payload_offset(&self) -> usize {
         self.pth_length as usize
     }
 
     /// Get the DLT type of the inner packet
-    pub fn inner_dlt(&self) -> u32 {
+    pub(crate) fn inner_dlt(&self) -> u32 {
         self.pth_dlt
     }
 
     /// Check if this PKTAP header looks valid
-    pub fn is_valid(&self) -> bool {
+    pub(crate) fn is_valid(&self) -> bool {
         // Basic sanity checks
         self.pth_length >= 108 &&
         self.pth_length <= 4096 && // Reasonable upper bound
         self.pth_dlt > 0 &&
         self.pth_dlt < 1000 // Reasonable DLT range
     }
+}
+
+/// Normalize a process name by collapsing whitespace and control characters
+/// into single spaces. Used for PKTAP-extracted names and by the macOS lsof
+/// lookup in rustnet-host; the two sides must normalize identically or
+/// attribution matching by name breaks.
+pub fn normalize_process_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_whitespace() || c.is_control() {
+                ' ' // Convert whitespace and control characters to space
+            } else {
+                c
+            }
+        })
+        .collect::<String>()
+        .split_whitespace() // Split on any whitespace
+        .collect::<Vec<&str>>()
+        .join(" ") // Join with single spaces
 }
 
 /// Extract and normalize process name from raw PKTAP bytes
@@ -146,19 +165,7 @@ fn extract_process_name_from_bytes(bytes: &[u8; 20]) -> Option<String> {
     let raw_str = std::str::from_utf8(&bytes[..end_pos]).ok()?;
 
     // Apply aggressive normalization
-    let normalized = raw_str
-        .chars()
-        .map(|c| {
-            if c.is_whitespace() || c.is_control() {
-                ' ' // Convert whitespace and control characters to space
-            } else {
-                c
-            }
-        })
-        .collect::<String>()
-        .split_whitespace() // Split on any whitespace
-        .collect::<Vec<&str>>()
-        .join(" "); // Join with single spaces
+    let normalized = normalize_process_name(raw_str);
 
     if normalized.is_empty() || !normalized.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
         debug!(
@@ -185,7 +192,7 @@ pub fn is_pktap_linktype(linktype: i32) -> bool {
 }
 
 /// Try to extract PKTAP metadata and payload from a packet
-pub fn parse_pktap_packet(data: &[u8]) -> Option<(PktapHeader, &[u8])> {
+pub(crate) fn parse_pktap_packet(data: &[u8]) -> Option<(PktapHeader, &[u8])> {
     let header = PktapHeader::from_bytes(data)?;
 
     if !header.is_valid() {

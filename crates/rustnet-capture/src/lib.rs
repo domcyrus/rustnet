@@ -565,12 +565,12 @@ pub struct CaptureStats {
     pub received: u32,
     pub dropped: u32,
     /// Interface-level dropped packets (platform-specific)
-    pub if_dropped: u32,
+    pub(crate) if_dropped: u32,
 }
 
 impl CaptureStats {
     /// Get total packets dropped (both kernel and interface level)
-    pub fn total_dropped(&self) -> u32 {
+    pub(crate) fn total_dropped(&self) -> u32 {
         self.dropped.saturating_add(self.if_dropped)
     }
 }
@@ -584,24 +584,5 @@ mod tests {
         let config = CaptureConfig::default();
         assert_eq!(config.snaplen, 1514);
         assert!(config.filter.is_none()); // Default starts without filter
-    }
-
-    #[test]
-    fn test_udp_routing_resolution_can_execute() {
-        // Sanity-check test to ensure the OS handles UDP metric routing cleanly.
-        // It's perfectly fine if this fails in hermetic CI environments without outbound routes.
-        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0")
-            && socket.connect("8.8.8.8:53").is_ok()
-            && let Ok(addr) = socket.local_addr()
-        {
-            assert!(
-                !addr.ip().is_loopback(),
-                "Active routed IP should not be loopback"
-            );
-            assert!(
-                !addr.ip().is_unspecified(),
-                "Active routed IP should not be unspecified"
-            );
-        }
     }
 }

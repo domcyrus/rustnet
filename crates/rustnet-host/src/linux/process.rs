@@ -1,8 +1,8 @@
 // network/platform/linux/process.rs - Linux procfs-based process lookup
 
 use crate::{
-    AttributionBackend, ConnectionKey, MatchQuality, ProcessAncestor, ProcessAttribution,
-    ProcessLineage, ProcessLookup, collect_process_lineage, memoized, relaxed_lookup,
+    ConnectionKey, MatchQuality, ProcessAncestor, ProcessAttribution, ProcessLineage,
+    ProcessLookup, collect_process_lineage, memoized, relaxed_lookup,
 };
 use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};
@@ -12,7 +12,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
-use std::time::Instant;
 
 /// Resolve the executable path of a TGID from `/proc/<tgid>/exe`.
 ///
@@ -148,37 +147,34 @@ fn resolve_process_lineage(tgid: u32, ppid: u32) -> Option<ProcessLineage> {
 /// Map of socket inode to (PID, process name)
 type InodeProcessMap = HashMap<u64, (u32, String)>;
 /// Map of PID to process name
+#[cfg(feature = "ebpf")]
 type PidNameMap = HashMap<u32, String>;
+#[cfg(not(feature = "ebpf"))]
+type PidNameMap = ();
 /// Map of connection key to (PID, process name)
 type ConnectionProcessMap = HashMap<ConnectionKey, (u32, String)>;
 
-pub struct LinuxProcessLookup {
+pub(super) struct LinuxProcessLookup {
     // Cache: ConnectionKey -> (pid, process_name)
-    cache: RwLock<ProcessCache>,
+    cache: RwLock<ConnectionProcessMap>,
     // Cache: PID -> process_name (for resolving eBPF thread names to main process names)
+    #[cfg(feature = "ebpf")]
     pid_names: RwLock<HashMap<u32, String>>,
     // Memo: TGID -> lineage, so many connections of one process walk /proc
     // once per refresh instead of once each. Failures are memoized too.
     lineages: RwLock<HashMap<u32, Option<ProcessLineage>>>,
 }
 
-struct ProcessCache {
-    lookup: HashMap<ConnectionKey, (u32, String)>,
-    last_refresh: Instant,
-}
-
 impl LinuxProcessLookup {
-    pub fn new() -> Result<Self> {
+    pub(super) fn new() -> Result<Self> {
         // Populate the cache immediately so early connections have process names available.
         // This ensures the PID→name cache is ready before packet capture starts.
-        let (process_map, pid_names) = Self::build_process_map()?;
+        let (process_map, _pid_names) = Self::build_process_map()?;
 
         Ok(Self {
-            cache: RwLock::new(ProcessCache {
-                lookup: process_map,
-                last_refresh: Instant::now(),
-            }),
-            pid_names: RwLock::new(pid_names),
+            cache: RwLock::new(process_map),
+            #[cfg(feature = "ebpf")]
+            pid_names: RwLock::new(_pid_names),
             lineages: RwLock::new(HashMap::new()),
         })
     }
@@ -188,10 +184,8 @@ impl LinuxProcessLookup {
     #[cfg(test)]
     fn with_socket_table(lookup: ConnectionProcessMap) -> Self {
         Self {
-            cache: RwLock::new(ProcessCache {
-                lookup,
-                last_refresh: Instant::now(),
-            }),
+            cache: RwLock::new(lookup),
+            #[cfg(feature = "ebpf")]
             pid_names: RwLock::new(HashMap::new()),
             lineages: RwLock::new(HashMap::new()),
         }
@@ -204,7 +198,8 @@ impl LinuxProcessLookup {
     /// from it while still being perfectly readable from /proc. One tiny
     /// file read; the result is cached so repeated lookups stay cheap.
     /// Returns None if the process has already exited and was never scanned.
-    pub fn get_process_name_by_pid(&self, pid: u32) -> Option<String> {
+    #[cfg(feature = "ebpf")]
+    pub(super) fn get_process_name_by_pid(&self, pid: u32) -> Option<String> {
         if let Some(name) = self
             .pid_names
             .read()
@@ -243,7 +238,7 @@ impl LinuxProcessLookup {
         let cache = self.cache.read().expect("process cache lock poisoned");
 
         // Fast path: exact 4-tuple match (always works for TCP).
-        if let Some((pid, name)) = cache.lookup.get(&key) {
+        if let Some((pid, name)) = cache.get(&key) {
             return Some((*pid, name.clone(), MatchQuality::ProcfsExact));
         }
 
@@ -252,7 +247,7 @@ impl LinuxProcessLookup {
         // shape is deliberately collapsed into a single `ProcfsRelaxed`: what
         // matters downstream is that procfs needed to guess, not which of the
         // three wildcard shapes it guessed with.
-        let ((pid, name), _shape) = relaxed_lookup(&cache.lookup, &key)?;
+        let ((pid, name), _shape) = relaxed_lookup(&cache, &key)?;
         Some((*pid, name.clone(), MatchQuality::ProcfsRelaxed))
     }
 
@@ -278,8 +273,7 @@ impl LinuxProcessLookup {
         let executable = resolve_executable(tgid);
         let name = refine_truncated_name(name, executable.as_deref());
         let mut attribution =
-            ProcessAttribution::new(tgid, name, AttributionBackend::Procfs, quality)
-                .with_executable(executable);
+            ProcessAttribution::new(tgid, name, quality).with_executable(executable);
         if let Some(ppid) = resolve_parent_pid(tgid) {
             attribution = attribution
                 .with_parent_pid(ppid)
@@ -331,7 +325,10 @@ impl LinuxProcessLookup {
     /// Build inode -> (pid, process_name) mapping and PID -> process_name mapping
     fn build_inode_map() -> Result<(InodeProcessMap, PidNameMap)> {
         let mut inode_map = HashMap::new();
+        #[cfg(feature = "ebpf")]
         let mut pid_names = HashMap::new();
+        #[cfg(not(feature = "ebpf"))]
+        let pid_names = ();
 
         for entry in fs::read_dir("/proc")? {
             let entry = entry?;
@@ -352,6 +349,7 @@ impl LinuxProcessLookup {
                     .to_string();
 
                 // Store PID -> name mapping for all processes
+                #[cfg(feature = "ebpf")]
                 pid_names.insert(pid, process_name.clone());
 
                 // Check file descriptors for socket inodes
@@ -461,26 +459,20 @@ impl LinuxProcessLookup {
 }
 
 impl ProcessLookup for LinuxProcessLookup {
-    fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
-        // Deliberately not routed through `get_process_attribution`: the tuple
-        // API has no use for the executable path or credentials, and resolving
-        // them costs two syscalls per hit.
-        self.lookup_match(conn).map(|(pid, name, _)| (pid, name))
-    }
-
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let (tgid, name, quality) = self.lookup_match(conn)?;
         Some(self.build_attribution(tgid, name, quality))
     }
 
     fn refresh(&self) -> Result<()> {
-        let (process_map, pid_names) = Self::build_process_map()?;
+        let (process_map, _pid_names) = Self::build_process_map()?;
 
-        let mut cache = self.cache.write().expect("process cache lock poisoned");
-        cache.lookup = process_map;
-        cache.last_refresh = Instant::now();
+        *self.cache.write().expect("process cache lock poisoned") = process_map;
 
-        *self.pid_names.write().expect("pid_names lock poisoned") = pid_names;
+        #[cfg(feature = "ebpf")]
+        {
+            *self.pid_names.write().expect("pid_names lock poisoned") = _pid_names;
+        }
         self.lineages
             .write()
             .expect("lineages lock poisoned")
@@ -491,10 +483,6 @@ impl ProcessLookup for LinuxProcessLookup {
 
     fn get_detection_method(&self) -> &str {
         "procfs"
-    }
-
-    fn get_attribution_backend(&self) -> AttributionBackend {
-        AttributionBackend::Procfs
     }
 }
 
@@ -703,7 +691,6 @@ mod tests {
         assert_eq!(attribution.tgid, own_pid());
         assert_eq!(attribution.name, "scanned-name");
         assert_eq!(attribution.quality, MatchQuality::ProcfsExact);
-        assert_eq!(attribution.backend, AttributionBackend::Procfs);
         assert_eq!(attribution.executable, std::env::current_exe().ok());
         assert_eq!(
             attribution.ppid,
@@ -754,7 +741,6 @@ mod tests {
 
         let conn = connection("192.168.1.10:8080", "203.0.113.5:44321");
         assert!(lookup.get_process_attribution(&conn).is_none());
-        assert!(lookup.get_process_for_connection(&conn).is_none());
     }
 
     /// End-to-end against the real `/proc/net/tcp` table rather than an
@@ -786,7 +772,6 @@ mod tests {
 
         assert_eq!(attribution.tgid, own_pid());
         assert_eq!(attribution.quality, MatchQuality::ProcfsExact);
-        assert_eq!(attribution.backend, AttributionBackend::Procfs);
         assert_eq!(attribution.executable, std::env::current_exe().ok());
         assert_eq!(
             attribution.ppid,
@@ -795,32 +780,5 @@ mod tests {
         assert_eq!(attribution.uid, Some(unsafe { libc::geteuid() }));
         assert_eq!(attribution.gid, Some(unsafe { libc::getegid() }));
         assert!(!attribution.name.is_empty());
-    }
-
-    #[test]
-    fn the_tuple_api_agrees_with_the_rich_api() {
-        let mut table = HashMap::new();
-        table.insert(
-            key("192.168.1.10:5000", "1.1.1.1:443"),
-            (own_pid(), "scanned-name".to_string()),
-        );
-        table.insert(
-            key("0.0.0.0:8080", "0.0.0.0:0"),
-            (own_pid(), "listener".to_string()),
-        );
-        let lookup = LinuxProcessLookup::with_socket_table(table);
-
-        for (local, remote) in [
-            ("192.168.1.10:5000", "1.1.1.1:443"),
-            ("192.168.1.10:8080", "203.0.113.5:44321"),
-        ] {
-            let conn = connection(local, remote);
-            let tuple = lookup
-                .get_process_for_connection(&conn)
-                .expect("tuple API must keep working");
-            let attribution = lookup.get_process_attribution(&conn).unwrap();
-
-            assert_eq!(tuple, (attribution.tgid, attribution.name));
-        }
     }
 }

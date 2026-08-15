@@ -274,20 +274,23 @@ fn main() -> Result<()> {
         #[cfg(target_os = "linux")]
         let read_paths: Vec<PathBuf> = {
             use network::geoip::GeoIpResolver;
-            #[allow(unused_mut)]
-            let mut paths: Vec<PathBuf> = GeoIpResolver::get_search_paths()
+            let paths: Vec<PathBuf> = GeoIpResolver::get_search_paths()
                 .into_iter()
                 .filter(|p| p.exists() && p.as_os_str() != ".")
                 .collect();
             #[cfg(feature = "kubernetes")]
-            if config.kubernetes_mode.enabled() {
-                for dir in ["/var/log/containers", "/var/log/pods"] {
-                    let pb = PathBuf::from(dir);
-                    if pb.exists() {
-                        paths.push(pb);
+            let paths = {
+                let mut paths = paths;
+                if config.kubernetes_mode.enabled() {
+                    for dir in ["/var/log/containers", "/var/log/pods"] {
+                        let pb = PathBuf::from(dir);
+                        if pb.exists() {
+                            paths.push(pb);
+                        }
                     }
                 }
-            }
+                paths
+            };
             paths
         };
 
@@ -338,8 +341,7 @@ fn main() -> Result<()> {
             write_paths.push(PathBuf::from(pcapng_path));
         }
 
-        #[allow(unused_mut)]
-        let mut sandbox_config = SandboxConfig {
+        let sandbox_config = SandboxConfig {
             mode: sandbox_mode,
             block_network: true, // RustNet is passive, doesn't need TCP
             read_paths,
@@ -347,9 +349,10 @@ fn main() -> Result<()> {
             ..SandboxConfig::default()
         };
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-        {
-            sandbox_config.drop_uid = uid_drop_target;
-        }
+        let sandbox_config = SandboxConfig {
+            drop_uid: uid_drop_target,
+            ..sandbox_config
+        };
 
         match apply_sandbox(&sandbox_config) {
             Ok(report) => app.set_sandbox_info(report),

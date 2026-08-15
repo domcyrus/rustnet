@@ -4,6 +4,7 @@
 use anyhow::Result;
 use crossbeam::channel::{self, Receiver, Sender};
 use log::{debug, error, info, warn};
+use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
@@ -246,6 +247,34 @@ impl App {
                         }
                     };
 
+                    // Hand the current batch to the processors and reset the
+                    // deadline. Returns `Break` when the receiving side is gone
+                    // and the capture loop must exit.
+                    let send_batch = |batch: &mut Vec<CapturedPacket>,
+                                      batch_deadline: &mut Instant,
+                                      what: &str|
+                     -> ControlFlow<()> {
+                        let to_send = std::mem::replace(batch, Vec::with_capacity(100));
+                        let batch_size = to_send.len() as u64;
+                        debug!("try_send: {} batch of {} packets", what, batch_size);
+                        match packet_tx.try_send(to_send) {
+                            Ok(()) => {}
+                            Err(crossbeam::channel::TrySendError::Full(_)) => {
+                                stats.packets_dropped.fetch_add(batch_size, Ordering::Relaxed);
+                            }
+                            Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
+                                warn!("Packet channel closed");
+                                record_failure(capture_failure_message(
+                                    "Capture stopped",
+                                    &"the packet processing threads exited",
+                                ));
+                                return ControlFlow::Break(());
+                            }
+                        }
+                        *batch_deadline = Instant::now() + Duration::from_millis(100);
+                        ControlFlow::Continue(())
+                    };
+
                     loop {
                         if should_stop.load(Ordering::Relaxed) {
                             info!("Capture thread stopping");
@@ -290,48 +319,21 @@ impl App {
                                 batch.push(packet);
 
                                 // Send batch when full or deadline reached
-                                if batch.len() >= 100 || Instant::now() >= batch_deadline {
-                                    let to_send = std::mem::replace(&mut batch, Vec::with_capacity(100));
-                                    let batch_size = to_send.len() as u64;
-                                    debug!("try_send: sending batch of {} packets", batch_size);
-                                    match packet_tx.try_send(to_send) {
-                                        Ok(()) => {}
-                                        Err(crossbeam::channel::TrySendError::Full(_)) => {
-                                            stats.packets_dropped.fetch_add(batch_size, Ordering::Relaxed);
-                                        }
-                                        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
-                                            warn!("Packet channel closed");
-                                            record_failure(capture_failure_message(
-                                                "Capture stopped",
-                                                &"the packet processing threads exited",
-                                            ));
-                                            break;
-                                        }
-                                    }
-                                    batch_deadline = Instant::now() + Duration::from_millis(100);
+                                if (batch.len() >= 100 || Instant::now() >= batch_deadline)
+                                    && send_batch(&mut batch, &mut batch_deadline, "sending")
+                                        .is_break()
+                                {
+                                    break;
                                 }
                             }
                             Ok(None) => {
                                 // Timeout - flush partial batch if deadline reached
-                                if !batch.is_empty() && Instant::now() >= batch_deadline {
-                                    let to_send = std::mem::replace(&mut batch, Vec::with_capacity(100));
-                                    let batch_size = to_send.len() as u64;
-                                    debug!("try_send: flushing partial batch of {} packets", batch_size);
-                                    match packet_tx.try_send(to_send) {
-                                        Ok(()) => {}
-                                        Err(crossbeam::channel::TrySendError::Full(_)) => {
-                                            stats.packets_dropped.fetch_add(batch_size, Ordering::Relaxed);
-                                        }
-                                        Err(crossbeam::channel::TrySendError::Disconnected(_)) => {
-                                            warn!("Packet channel closed");
-                                            record_failure(capture_failure_message(
-                                                "Capture stopped",
-                                                &"the packet processing threads exited",
-                                            ));
-                                            break;
-                                        }
-                                    }
-                                    batch_deadline = Instant::now() + Duration::from_millis(100);
+                                if !batch.is_empty()
+                                    && Instant::now() >= batch_deadline
+                                    && send_batch(&mut batch, &mut batch_deadline, "flushing partial")
+                                        .is_break()
+                                {
+                                    break;
                                 }
 
                                 // Check stats every second
@@ -706,10 +708,8 @@ mod capture_failure_message_tests {
 #[cfg(test)]
 mod connection_lifecycle_tests {
     use super::*;
-    use crate::network::{
-        protocol::tcp::{TcpFlags, TcpHeaderInfo},
-        types::{AddrKind, Protocol, ProtocolState, TcpState},
-    };
+    use crate::network::types::{Protocol, ProtocolState, TcpState};
+    use rustnet_core::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
     use std::net::SocketAddr;
     use std::path::{Path, PathBuf};
 
@@ -739,27 +739,24 @@ mod connection_lifecycle_tests {
     }
 
     fn tcp_packet(flags: TcpFlags) -> ParsedPacket {
-        ParsedPacket {
-            protocol: Protocol::Tcp,
-            local_addr: SocketAddr::from(([192, 0, 2, 1], 40_000)),
-            remote_addr: SocketAddr::from(([198, 51, 100, 1], 443)),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            tcp_header: Some(TcpHeaderInfo {
-                seq: 1_000,
-                ack: 0,
-                window: 65_535,
-                flags,
-                payload_len: 0,
-            }),
-            protocol_state: ProtocolState::Tcp(TcpState::Unknown),
-            is_outgoing: true,
-            packet_len: 60,
-            dpi_result: None,
-            process_name: None,
-            process_id: None,
-        }
+        let mut packet = ParsedPacket::new(
+            Protocol::Tcp,
+            SocketAddr::from(([192, 0, 2, 1], 40_000)),
+            SocketAddr::from(([198, 51, 100, 1], 443)),
+            ProtocolState::Tcp(TcpState::Unknown),
+            true,
+            60,
+            None,
+            None,
+        );
+        packet.tcp_header = Some(TcpHeaderInfo {
+            seq: 1_000,
+            ack: 0,
+            window: 65_535,
+            flags,
+            payload_len: 0,
+        });
+        packet
     }
 
     fn flags(syn: bool, rst: bool) -> TcpFlags {

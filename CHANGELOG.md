@@ -153,15 +153,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guidance, instead of the TUI running on silently after capture stopped. The status
   bar grows a second row when the message and hint do not fit on one (#497)
 - **Rich Process Attribution**: `ProcessLookup::get_process_attribution()` returns a
-  `ProcessAttribution` carrying TGID, PPID, thread ID, effective UID/GID, executable
-  path, the producing backend, and a monotonic observation timestamp instead of
-  only `(pid, name)`. The new `MatchQuality` records how a connection was matched,
-  so a relaxed wildcard or listener guess is no longer indistinguishable from a proven
-  4-tuple hit. On Linux the eBPF backends carry the kernel-recorded identity through
-  unchanged and resolve `/proc/<tgid>/exe` in user space; the enhanced cache stores
-  the full result, so metadata and match quality survive the first lookup. Platforms
-  that only implement the legacy tuple API are bridged automatically, so
-  `get_process_for_connection()` keeps working everywhere (#505, #513)
+  `ProcessAttribution` carrying TGID, PPID, effective UID/GID, executable path,
+  process lineage, and match quality instead of only `(pid, name)`. `MatchQuality`
+  records how a connection was matched, so a relaxed wildcard or listener guess is
+  no longer indistinguishable from a proven 4-tuple hit. On Linux the eBPF backends
+  carry the kernel-recorded identity through unchanged and resolve process metadata
+  in user space; the enhanced cache stores the full result, so metadata and match
+  quality survive the first lookup. Every platform implements the rich lookup
+  directly (#505, #513)
 - **Process Identity, User, and Match Quality in the UI and Exports**: Connections now
   carry the owning process's PPID, executable path, effective UID/GID, and how
   confidently the attribution matched. The Attribution card in the Details pane
@@ -190,6 +189,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Library Internals Deduplicated and Narrowed**: Removed remaining dead code
+  and test-only public API from the workspace crates, narrowed public items
+  with no external consumers to crate or module visibility (including
+  cfg-gated macOS and Windows internals the Linux lint pass could not see),
+  and deduplicated repeated logic: the four Windows socket-table refreshes,
+  the macOS/FreeBSD BPF privilege probe, PKTAP and lsof process-name
+  normalization, `ParsedPacket` construction, and the Details tab field
+  rendering (#556)
 - **Dead Library-Crate API Removed**: The workspace crates dropped public API
   nothing in the workspace uses: a never-compiling procfs-only module and
   write-only lookup statistics in `rustnet-host`, the unused thread-id and

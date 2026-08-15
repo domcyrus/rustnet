@@ -7,16 +7,16 @@
 //! - TUN/TAP interfaces
 //! - PKTAP (macOS process metadata)
 
-pub mod ethernet;
-pub mod linux_sll;
+pub(crate) mod ethernet;
+pub(crate) mod linux_sll;
 #[cfg(target_os = "macos")]
 pub mod pktap;
-pub mod raw_ip;
-pub mod tun_tap;
+pub(crate) mod raw_ip;
+pub(crate) mod tun_tap;
 
 /// Data Link Type (DLT) constants
 /// These match the values from libpcap
-pub mod dlt {
+pub(crate) mod dlt {
     pub const EN10MB: i32 = 1; // Ethernet
     pub const RAW: i32 = 12; // Raw IP (no link layer)
     pub const NULL: i32 = 0; // BSD loopback (sometimes used by TUN)

@@ -1267,7 +1267,6 @@ impl CryptoFrameReassembler {
 #[derive(Debug, Clone)]
 pub struct DpiInfo {
     pub application: ApplicationProtocol,
-    pub last_update_time: Instant,
 }
 
 #[cfg(test)]

@@ -412,22 +412,7 @@ impl Connection {
     /// Get display state with enhanced UDP/QUIC visibility
     pub fn state(&self) -> Cow<'_, str> {
         match &self.protocol_state {
-            ProtocolState::Tcp(tcp_state) => {
-                let name = match tcp_state {
-                    TcpState::SynSent => "SYN_SENT",
-                    TcpState::SynReceived => "SYN_RECV",
-                    TcpState::Established => "ESTABLISHED",
-                    TcpState::FinWait1 => "FIN_WAIT1",
-                    TcpState::FinWait2 => "FIN_WAIT2",
-                    TcpState::CloseWait => "CLOSE_WAIT",
-                    TcpState::LastAck => "LAST_ACK",
-                    TcpState::TimeWait => "TIME_WAIT",
-                    TcpState::Closing => "CLOSING",
-                    TcpState::Closed => "CLOSED",
-                    TcpState::Unknown => "TCP_UNKNOWN",
-                };
-                Cow::Borrowed(name)
-            }
+            ProtocolState::Tcp(tcp_state) => Cow::Borrowed(tcp_state.as_str()),
             ProtocolState::Udp => {
                 // Check if it's a DPI-identified protocol
                 if let Some(dpi_info) = &self.dpi_info {
@@ -733,7 +718,6 @@ mod tests {
     };
     use std::net::{IpAddr, Ipv4Addr};
     use std::path::PathBuf;
-    use std::time::Instant;
 
     fn create_test_connection() -> Connection {
         Connection::new(
@@ -842,97 +826,6 @@ mod tests {
     }
 
     #[test]
-    fn test_connection_rate_integration() {
-        let mut conn = create_test_connection();
-        let start = Instant::now();
-
-        // Simulate receiving packets - use internal rate_tracker directly for deterministic timing
-        conn.bytes_sent = 1000;
-        conn.bytes_received = 500;
-        conn.rate_tracker
-            .update_at_time(start, conn.bytes_sent, conn.bytes_received);
-
-        conn.bytes_sent = 3000;
-        conn.bytes_received = 1500;
-        conn.rate_tracker.update_at_time(
-            start + Duration::from_secs(1),
-            conn.bytes_sent,
-            conn.bytes_received,
-        );
-
-        // Update cached rate values
-        conn.current_outgoing_rate_bps = conn
-            .rate_tracker
-            .get_outgoing_rate_at(start + Duration::from_secs(1));
-        conn.current_incoming_rate_bps = conn
-            .rate_tracker
-            .get_incoming_rate_at(start + Duration::from_secs(1));
-
-        // Verify backward compatibility fields are updated
-        assert!(conn.current_outgoing_rate_bps >= 0.0);
-        assert!(conn.current_incoming_rate_bps >= 0.0);
-    }
-
-    #[test]
-    fn test_connection_refresh_rates() {
-        // Test that refresh_rates() properly updates cached rate values
-        let mut conn = create_test_connection();
-        let start = Instant::now();
-
-        // Initialize the rate tracker properly
-        conn.rate_tracker.initialize_with_counts(0, 0);
-
-        // Simulate first packet
-        conn.bytes_sent = 50_000;
-        conn.bytes_received = 25_000;
-        conn.rate_tracker
-            .update_at_time(start, conn.bytes_sent, conn.bytes_received);
-
-        // Simulate more traffic after 1 second
-        conn.bytes_sent = 100_000;
-        conn.bytes_received = 50_000;
-        conn.rate_tracker.update_at_time(
-            start + Duration::from_secs(1),
-            conn.bytes_sent,
-            conn.bytes_received,
-        );
-
-        // Update cached rates at the 1-second mark
-        let check_time = start + Duration::from_secs(1);
-        conn.current_outgoing_rate_bps = conn.rate_tracker.get_outgoing_rate_at(check_time);
-        conn.current_incoming_rate_bps = conn.rate_tracker.get_incoming_rate_at(check_time);
-
-        // Should have non-zero rates after recent traffic (>= 1 second of data)
-        assert!(
-            conn.current_outgoing_rate_bps > 0.0,
-            "Should have outgoing rate: {}",
-            conn.current_outgoing_rate_bps
-        );
-        assert!(
-            conn.current_incoming_rate_bps > 0.0,
-            "Should have incoming rate: {}",
-            conn.current_incoming_rate_bps
-        );
-
-        // Check rates at a time after samples become stale
-        // Newest sample is at start+1s, window is 10s, threshold is 1.1x
-        // So need to check at > start + 1s + 11s = start + 12.1s
-        let idle_time = start + Duration::from_millis(12200);
-        conn.current_outgoing_rate_bps = conn.rate_tracker.get_outgoing_rate_at(idle_time);
-        conn.current_incoming_rate_bps = conn.rate_tracker.get_incoming_rate_at(idle_time);
-
-        // Rates should be zero after long idle
-        assert_eq!(
-            conn.current_outgoing_rate_bps, 0.0,
-            "Should be zero after 10+ seconds idle"
-        );
-        assert_eq!(
-            conn.current_incoming_rate_bps, 0.0,
-            "Should be zero after 10+ seconds idle"
-        );
-    }
-
-    #[test]
     fn test_enhanced_state_display_tcp() {
         let mut conn = create_test_connection();
 
@@ -966,7 +859,6 @@ mod tests {
 
         let dpi_info = DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic_info.clone())),
-            last_update_time: Instant::now(),
         };
         conn.dpi_info = Some(dpi_info);
 
@@ -977,7 +869,6 @@ mod tests {
         quic_connected.connection_state = QuicConnectionState::Connected;
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic_connected)),
-            last_update_time: Instant::now(),
         });
         assert_eq!(conn.state(), "QUIC_CONNECTED");
 
@@ -986,7 +877,6 @@ mod tests {
         quic_draining.connection_state = QuicConnectionState::Draining;
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic_draining)),
-            last_update_time: Instant::now(),
         });
         assert_eq!(conn.state(), "QUIC_DRAINING");
     }
@@ -1013,7 +903,6 @@ mod tests {
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_query),
-            last_update_time: Instant::now(),
         });
         assert_eq!(conn.state(), "DNS_QUERY");
 
@@ -1030,7 +919,6 @@ mod tests {
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_response),
-            last_update_time: Instant::now(),
         });
         assert_eq!(conn.state(), "DNS_RESPONSE");
     }
@@ -1094,7 +982,6 @@ mod tests {
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic_info)),
-            last_update_time: Instant::now(),
         });
 
         assert_eq!(conn.get_timeout(), Duration::from_secs(15));
@@ -1108,7 +995,6 @@ mod tests {
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic_app_close)),
-            last_update_time: Instant::now(),
         });
 
         assert_eq!(conn.get_timeout(), Duration::from_secs(15));
@@ -1135,7 +1021,6 @@ mod tests {
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_info),
-            last_update_time: Instant::now(),
         });
 
         assert_eq!(conn.get_timeout(), Duration::from_secs(30)); // Short timeout for DNS

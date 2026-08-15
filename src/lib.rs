@@ -43,7 +43,7 @@
 //!
 //! - [`app`] — application orchestration, packet pipeline, and shared
 //!   state.
-//! - [`filter`] — vim/fzf-style connection filter parser and matcher.
+//! - `filter` — vim/fzf-style connection filter parser and matcher.
 //! - [`network`] — packet capture, parsers, DPI, DNS, GeoIP, interface
 //!   stats, and platform-specific process lookup.
 //! - [`ui`] — ratatui rendering, tabs, tables, and keyboard handling.
@@ -57,8 +57,8 @@
 
 pub mod app;
 pub mod cli;
-pub mod export;
-pub mod filter;
+pub(crate) mod export;
+pub(crate) mod filter;
 pub mod network;
 pub mod ui;
 

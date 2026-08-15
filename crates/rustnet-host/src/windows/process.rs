@@ -2,8 +2,8 @@
 
 use super::etw::{EtwAttribution, EtwProcessCache};
 use crate::{
-    AttributionBackend, ConnectionKey, DegradationReason, MatchQuality, ProcessAncestor,
-    ProcessAttribution, ProcessLineage, ProcessLookup, collect_process_lineage,
+    ConnectionKey, DegradationReason, MatchQuality, ProcessAncestor, ProcessAttribution,
+    ProcessLineage, ProcessLookup, collect_process_lineage, relaxed_lookup,
 };
 use anyhow::{Context, Result};
 use rustnet_core::network::types::{Connection, Protocol};
@@ -59,7 +59,7 @@ fn table_buffer_len(table: &[u32]) -> usize {
     std::mem::size_of_val(table)
 }
 
-pub struct WindowsProcessLookup {
+pub(super) struct WindowsProcessLookup {
     cache: RwLock<ProcessCache>,
     process_details: RwLock<HashMap<u32, WindowsProcessDetails>>,
     etw_cache: Arc<EtwProcessCache>,
@@ -86,8 +86,115 @@ struct WindowsRuntimeDetails {
     started_at_unix_ms: Option<u64>,
 }
 
+// The four IP Helper table refreshes share the same unsafe two-call dance:
+// size probe, ERROR_INSUFFICIENT_BUFFER check, size sanity check, allocate,
+// fetch, header and entry bounds checks, then a row loop ending in
+// cache_process. A macro rather than a generic function keeps the exact
+// Windows API types of each expansion intact; only the API function, address
+// family, table class, table and row types, log labels, and per-row key
+// construction vary.
+macro_rules! refresh_table {
+    (
+        $fn_name:ident,
+        $api:ident,
+        $family:expr,
+        $table_class:expr,
+        $table_ty:ty,
+        $row_ty:ty,
+        $api_label:literal,
+        $table_label:literal,
+        $processing_label:literal,
+        |$row:ident| $key:expr $(,)?
+    ) => {
+        fn $fn_name(
+            &self,
+            cache: &mut ProcessMap,
+            process_names: &mut ProcessNameCache,
+        ) -> Result<()> {
+            unsafe {
+                let mut size: u32 = 0;
+
+                // First call to get buffer size
+                let result = $api(None, &mut size, false, $family, $table_class, 0);
+
+                if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
+                    log::debug!(
+                        concat!($api_label, " returned no data or error: {}"),
+                        result
+                    );
+                    return Ok(()); // No connections or error
+                }
+
+                if size == 0 || size > 100_000_000 {
+                    // Sanity check: reject unreasonably large sizes (100MB limit)
+                    log::warn!(concat!($api_label, " returned invalid size: {}"), size);
+                    return Ok(());
+                }
+
+                // Allocate buffer and get actual data
+                let mut table = allocate_table_buffer(size);
+                let result = $api(
+                    Some(table.as_mut_ptr() as *mut _),
+                    &mut size,
+                    false,
+                    $family,
+                    $table_class,
+                    0,
+                );
+
+                if result != 0 {
+                    log::debug!(concat!($api_label, " second call failed: {}"), result);
+                    return Ok(()); // Error getting table
+                }
+
+                // Verify we have enough data for the header
+                if table_buffer_len(&table) < std::mem::size_of::<u32>() {
+                    log::warn!(concat!($table_label, " table buffer too small for header"));
+                    return Ok(());
+                }
+
+                // Parse the table
+                let parsed_table = &*(table.as_ptr() as *const $table_ty);
+                let num_entries = parsed_table.dwNumEntries as usize;
+
+                // Bounds check: ensure we have enough space for all entries
+                let required_size =
+                    std::mem::size_of::<u32>() + num_entries * std::mem::size_of::<$row_ty>();
+                if table_buffer_len(&table) < required_size {
+                    log::warn!(
+                        concat!(
+                            $table_label,
+                            " table buffer too small: got {} bytes, need {} for {} entries"
+                        ),
+                        table_buffer_len(&table),
+                        required_size,
+                        num_entries
+                    );
+                    return Ok(());
+                }
+
+                log::debug!(
+                    concat!("Processing {} ", $processing_label, " connections"),
+                    num_entries
+                );
+
+                // Get pointer to the first entry
+                let rows_ptr = &parsed_table.table[0] as *const $row_ty;
+
+                for i in 0..num_entries {
+                    let $row = &*rows_ptr.add(i);
+                    let key = $key;
+                    cache_process(cache, process_names, key, $row.dwOwningPid);
+                }
+            }
+
+            Ok(())
+        }
+    };
+}
+
 impl WindowsProcessLookup {
-    pub fn new() -> Result<Self> {
+    pub(super) fn new() -> Result<Self> {
         // Use a very old timestamp that's guaranteed to be before now
         // by using checked_sub and falling back to epoch
         let now = Instant::now();
@@ -238,211 +345,51 @@ impl WindowsProcessLookup {
         Ok(())
     }
 
-    fn refresh_tcp_table_v4(
-        &self,
-        cache: &mut ProcessMap,
-        process_names: &mut ProcessNameCache,
-    ) -> Result<()> {
-        unsafe {
-            let mut size: u32 = 0;
-            let mut table: Vec<u32>;
-
-            // First call to get buffer size
-            let result = GetExtendedTcpTable(
-                None,
-                &mut size,
-                false,
-                AF_INET.0 as u32,
-                TCP_TABLE_OWNER_PID_ALL,
-                0,
-            );
-
-            if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
-                log::debug!(
-                    "GetExtendedTcpTable (IPv4) returned no data or error: {}",
-                    result
-                );
-                return Ok(()); // No connections or error
-            }
-
-            if size == 0 || size > 100_000_000 {
-                // Sanity check: reject unreasonably large sizes (100MB limit)
-                log::warn!("GetExtendedTcpTable (IPv4) returned invalid size: {}", size);
-                return Ok(());
-            }
-
-            // Allocate buffer and get actual data
-            table = allocate_table_buffer(size);
-            let result = GetExtendedTcpTable(
-                Some(table.as_mut_ptr() as *mut _),
-                &mut size,
-                false,
-                AF_INET.0 as u32,
-                TCP_TABLE_OWNER_PID_ALL,
-                0,
-            );
-
-            if result != 0 {
-                log::debug!("GetExtendedTcpTable (IPv4) second call failed: {}", result);
-                return Ok(()); // Error getting table
-            }
-
-            // Verify we have enough data for the header
-            if table_buffer_len(&table) < std::mem::size_of::<u32>() {
-                log::warn!("TCP table buffer too small for header");
-                return Ok(());
-            }
-
-            // Parse the table
-            let tcp_table = &*(table.as_ptr() as *const MIB_TCPTABLE_OWNER_PID);
-            let num_entries = tcp_table.dwNumEntries as usize;
-
-            // Bounds check: ensure we have enough space for all entries
-            let required_size = std::mem::size_of::<u32>()
-                + num_entries * std::mem::size_of::<MIB_TCPROW_OWNER_PID>();
-            if table_buffer_len(&table) < required_size {
-                log::warn!(
-                    "TCP table buffer too small: got {} bytes, need {} for {} entries",
-                    table_buffer_len(&table),
-                    required_size,
-                    num_entries
-                );
-                return Ok(());
-            }
-
-            log::debug!("Processing {} TCP IPv4 connections", num_entries);
-
-            // Get pointer to the first entry
-            let rows_ptr = &tcp_table.table[0] as *const MIB_TCPROW_OWNER_PID;
-
-            for i in 0..num_entries {
-                let row = &*rows_ptr.add(i);
-
-                let local_addr = SocketAddr::new(
-                    IpAddr::V4(Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes())),
-                    u16::from_be(row.dwLocalPort as u16),
-                );
-
-                let remote_addr = SocketAddr::new(
-                    IpAddr::V4(Ipv4Addr::from(row.dwRemoteAddr.to_ne_bytes())),
-                    u16::from_be(row.dwRemotePort as u16),
-                );
-
-                let key = ConnectionKey {
-                    protocol: Protocol::Tcp,
-                    local_addr,
-                    remote_addr,
-                };
-
-                cache_process(cache, process_names, key, row.dwOwningPid);
-            }
+    refresh_table!(
+        refresh_tcp_table_v4,
+        GetExtendedTcpTable,
+        AF_INET.0 as u32,
+        TCP_TABLE_OWNER_PID_ALL,
+        MIB_TCPTABLE_OWNER_PID,
+        MIB_TCPROW_OWNER_PID,
+        "GetExtendedTcpTable (IPv4)",
+        "TCP",
+        "TCP IPv4",
+        |row| ConnectionKey {
+            protocol: Protocol::Tcp,
+            local_addr: SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes())),
+                u16::from_be(row.dwLocalPort as u16),
+            ),
+            remote_addr: SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::from(row.dwRemoteAddr.to_ne_bytes())),
+                u16::from_be(row.dwRemotePort as u16),
+            ),
         }
+    );
 
-        Ok(())
-    }
-
-    fn refresh_tcp_table_v6(
-        &self,
-        cache: &mut ProcessMap,
-        process_names: &mut ProcessNameCache,
-    ) -> Result<()> {
-        unsafe {
-            let mut size: u32 = 0;
-            let mut table: Vec<u32>;
-
-            // First call to get buffer size
-            let result = GetExtendedTcpTable(
-                None,
-                &mut size,
-                false,
-                AF_INET6.0 as u32,
-                TCP_TABLE_OWNER_PID_ALL,
-                0,
-            );
-
-            if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
-                log::debug!(
-                    "GetExtendedTcpTable (IPv6) returned no data or error: {}",
-                    result
-                );
-                return Ok(()); // No connections or error
-            }
-
-            if size == 0 || size > 100_000_000 {
-                // Sanity check: reject unreasonably large sizes (100MB limit)
-                log::warn!("GetExtendedTcpTable (IPv6) returned invalid size: {}", size);
-                return Ok(());
-            }
-
-            // Allocate buffer and get actual data
-            table = allocate_table_buffer(size);
-            let result = GetExtendedTcpTable(
-                Some(table.as_mut_ptr() as *mut _),
-                &mut size,
-                false,
-                AF_INET6.0 as u32,
-                TCP_TABLE_OWNER_PID_ALL,
-                0,
-            );
-
-            if result != 0 {
-                log::debug!("GetExtendedTcpTable (IPv6) second call failed: {}", result);
-                return Ok(()); // Error getting table
-            }
-
-            // Verify we have enough data for the header
-            if table_buffer_len(&table) < std::mem::size_of::<u32>() {
-                log::warn!("TCP IPv6 table buffer too small for header");
-                return Ok(());
-            }
-
-            // Parse the table
-            let tcp_table = &*(table.as_ptr() as *const MIB_TCP6TABLE_OWNER_PID);
-            let num_entries = tcp_table.dwNumEntries as usize;
-
-            // Bounds check: ensure we have enough space for all entries
-            let required_size = std::mem::size_of::<u32>()
-                + num_entries * std::mem::size_of::<MIB_TCP6ROW_OWNER_PID>();
-            if table_buffer_len(&table) < required_size {
-                log::warn!(
-                    "TCP IPv6 table buffer too small: got {} bytes, need {} for {} entries",
-                    table_buffer_len(&table),
-                    required_size,
-                    num_entries
-                );
-                return Ok(());
-            }
-
-            log::debug!("Processing {} TCP IPv6 connections", num_entries);
-
-            // Get pointer to the first entry
-            let rows_ptr = &tcp_table.table[0] as *const MIB_TCP6ROW_OWNER_PID;
-
-            for i in 0..num_entries {
-                let row = &*rows_ptr.add(i);
-
-                let local_addr = SocketAddr::new(
-                    IpAddr::V6(Ipv6Addr::from(row.ucLocalAddr)),
-                    u16::from_be(row.dwLocalPort as u16),
-                );
-
-                let remote_addr = SocketAddr::new(
-                    IpAddr::V6(Ipv6Addr::from(row.ucRemoteAddr)),
-                    u16::from_be(row.dwRemotePort as u16),
-                );
-
-                let key = ConnectionKey {
-                    protocol: Protocol::Tcp,
-                    local_addr,
-                    remote_addr,
-                };
-
-                cache_process(cache, process_names, key, row.dwOwningPid);
-            }
+    refresh_table!(
+        refresh_tcp_table_v6,
+        GetExtendedTcpTable,
+        AF_INET6.0 as u32,
+        TCP_TABLE_OWNER_PID_ALL,
+        MIB_TCP6TABLE_OWNER_PID,
+        MIB_TCP6ROW_OWNER_PID,
+        "GetExtendedTcpTable (IPv6)",
+        "TCP IPv6",
+        "TCP IPv6",
+        |row| ConnectionKey {
+            protocol: Protocol::Tcp,
+            local_addr: SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::from(row.ucLocalAddr)),
+                u16::from_be(row.dwLocalPort as u16),
+            ),
+            remote_addr: SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::from(row.ucRemoteAddr)),
+                u16::from_be(row.dwRemotePort as u16),
+            ),
         }
-
-        Ok(())
-    }
+    );
 
     fn refresh_udp_processes(
         &self,
@@ -456,197 +403,51 @@ impl WindowsProcessLookup {
         Ok(())
     }
 
-    fn refresh_udp_table_v4(
-        &self,
-        cache: &mut ProcessMap,
-        process_names: &mut ProcessNameCache,
-    ) -> Result<()> {
-        unsafe {
-            let mut size: u32 = 0;
-            let mut table: Vec<u32>;
-
-            // First call to get buffer size
-            let result = GetExtendedUdpTable(
-                None,
-                &mut size,
-                false,
-                AF_INET.0 as u32,
-                UDP_TABLE_OWNER_PID,
-                0,
-            );
-
-            if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
-                log::debug!(
-                    "GetExtendedUdpTable (IPv4) returned no data or error: {}",
-                    result
-                );
-                return Ok(()); // No connections or error
-            }
-
-            if size == 0 || size > 100_000_000 {
-                // Sanity check: reject unreasonably large sizes (100MB limit)
-                log::warn!("GetExtendedUdpTable (IPv4) returned invalid size: {}", size);
-                return Ok(());
-            }
-
-            // Allocate buffer and get actual data
-            table = allocate_table_buffer(size);
-            let result = GetExtendedUdpTable(
-                Some(table.as_mut_ptr() as *mut _),
-                &mut size,
-                false,
-                AF_INET.0 as u32,
-                UDP_TABLE_OWNER_PID,
-                0,
-            );
-
-            if result != 0 {
-                log::debug!("GetExtendedUdpTable (IPv4) second call failed: {}", result);
-                return Ok(()); // Error getting table
-            }
-
-            // Verify we have enough data for the header
-            if table_buffer_len(&table) < std::mem::size_of::<u32>() {
-                log::warn!("UDP table buffer too small for header");
-                return Ok(());
-            }
-
-            // Parse the table
-            let udp_table = &*(table.as_ptr() as *const MIB_UDPTABLE_OWNER_PID);
-            let num_entries = udp_table.dwNumEntries as usize;
-
-            // Bounds check: ensure we have enough space for all entries
-            let required_size = std::mem::size_of::<u32>()
-                + num_entries * std::mem::size_of::<MIB_UDPROW_OWNER_PID>();
-            if table_buffer_len(&table) < required_size {
-                log::warn!(
-                    "UDP table buffer too small: got {} bytes, need {} for {} entries",
-                    table_buffer_len(&table),
-                    required_size,
-                    num_entries
-                );
-                return Ok(());
-            }
-
-            log::debug!("Processing {} UDP IPv4 connections", num_entries);
-
-            // Get pointer to the first entry
-            let rows_ptr = &udp_table.table[0] as *const MIB_UDPROW_OWNER_PID;
-
-            for i in 0..num_entries {
-                let row = &*rows_ptr.add(i);
-
-                let local_addr = SocketAddr::new(
-                    IpAddr::V4(Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes())),
-                    u16::from_be(row.dwLocalPort as u16),
-                );
-
-                // UDP doesn't have remote address in the table
-                let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0);
-
-                let key = ConnectionKey {
-                    protocol: Protocol::Udp,
-                    local_addr,
-                    remote_addr,
-                };
-
-                cache_process(cache, process_names, key, row.dwOwningPid);
-            }
+    refresh_table!(
+        refresh_udp_table_v4,
+        GetExtendedUdpTable,
+        AF_INET.0 as u32,
+        UDP_TABLE_OWNER_PID,
+        MIB_UDPTABLE_OWNER_PID,
+        MIB_UDPROW_OWNER_PID,
+        "GetExtendedUdpTable (IPv4)",
+        "UDP",
+        "UDP IPv4",
+        |row| ConnectionKey {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::from(row.dwLocalAddr.to_ne_bytes())),
+                u16::from_be(row.dwLocalPort as u16),
+            ),
+            // UDP doesn't have remote address in the table
+            remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
         }
+    );
 
-        Ok(())
-    }
-
-    fn refresh_udp_table_v6(
-        &self,
-        cache: &mut ProcessMap,
-        process_names: &mut ProcessNameCache,
-    ) -> Result<()> {
-        unsafe {
-            let mut size: u32 = 0;
-
-            let result = GetExtendedUdpTable(
-                None,
-                &mut size,
-                false,
-                AF_INET6.0 as u32,
-                UDP_TABLE_OWNER_PID,
-                0,
-            );
-
-            if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
-                log::debug!(
-                    "GetExtendedUdpTable (IPv6) returned no data or error: {}",
-                    result
-                );
-                return Ok(());
-            }
-
-            if size == 0 || size > 100_000_000 {
-                log::warn!("GetExtendedUdpTable (IPv6) returned invalid size: {}", size);
-                return Ok(());
-            }
-
-            let mut table = allocate_table_buffer(size);
-            let result = GetExtendedUdpTable(
-                Some(table.as_mut_ptr() as *mut _),
-                &mut size,
-                false,
-                AF_INET6.0 as u32,
-                UDP_TABLE_OWNER_PID,
-                0,
-            );
-
-            if result != 0 {
-                log::debug!("GetExtendedUdpTable (IPv6) second call failed: {}", result);
-                return Ok(());
-            }
-
-            if table_buffer_len(&table) < std::mem::size_of::<u32>() {
-                log::warn!("UDP IPv6 table buffer too small for header");
-                return Ok(());
-            }
-
-            let udp_table = &*(table.as_ptr() as *const MIB_UDP6TABLE_OWNER_PID);
-            let num_entries = udp_table.dwNumEntries as usize;
-            let required_size = std::mem::size_of::<u32>()
-                + num_entries * std::mem::size_of::<MIB_UDP6ROW_OWNER_PID>();
-            if table_buffer_len(&table) < required_size {
-                log::warn!(
-                    "UDP IPv6 table buffer too small: got {} bytes, need {} for {} entries",
-                    table_buffer_len(&table),
-                    required_size,
-                    num_entries
-                );
-                return Ok(());
-            }
-
-            log::debug!("Processing {} UDP IPv6 connections", num_entries);
-
-            let rows_ptr = &udp_table.table[0] as *const MIB_UDP6ROW_OWNER_PID;
-            for i in 0..num_entries {
-                let row = &*rows_ptr.add(i);
-                let local_addr = SocketAddr::new(
-                    IpAddr::V6(Ipv6Addr::from(row.ucLocalAddr)),
-                    u16::from_be(row.dwLocalPort as u16),
-                );
-                let remote_addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0);
-                let key = ConnectionKey {
-                    protocol: Protocol::Udp,
-                    local_addr,
-                    remote_addr,
-                };
-
-                cache_process(cache, process_names, key, row.dwOwningPid);
-            }
+    refresh_table!(
+        refresh_udp_table_v6,
+        GetExtendedUdpTable,
+        AF_INET6.0 as u32,
+        UDP_TABLE_OWNER_PID,
+        MIB_UDP6TABLE_OWNER_PID,
+        MIB_UDP6ROW_OWNER_PID,
+        "GetExtendedUdpTable (IPv6)",
+        "UDP IPv6",
+        "UDP IPv6",
+        |row| ConnectionKey {
+            protocol: Protocol::Udp,
+            local_addr: SocketAddr::new(
+                IpAddr::V6(Ipv6Addr::from(row.ucLocalAddr)),
+                u16::from_be(row.dwLocalPort as u16),
+            ),
+            // UDP doesn't have remote address in the table
+            remote_addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
         }
-
-        Ok(())
-    }
+    );
 }
 
-impl ProcessLookup for WindowsProcessLookup {
-    fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
+impl WindowsProcessLookup {
+    fn lookup_process(&self, conn: &Connection) -> Option<(u32, String)> {
         let key = ConnectionKey::from_connection(conn);
 
         // A fresh IP Helper snapshot reflects the kernel's current socket
@@ -676,7 +477,9 @@ impl ProcessLookup for WindowsProcessLookup {
                     return Some(process_info.clone());
                 }
                 // Exact match missed — try wildcard fallback before declaring a miss
-                if let Some(result) = Self::fallback_lookup(&cache.lookup, &key) {
+                if let Some(result) =
+                    relaxed_lookup(&cache.lookup, &key).map(|(process, _quality)| process.clone())
+                {
                     log::trace!("✓ Fallback hit (cache): {:?} => {:?}", key, result);
                     return Some(result);
                 }
@@ -716,11 +519,9 @@ impl ProcessLookup for WindowsProcessLookup {
                     poisoned.into_inner()
                 }
             };
-            let result = cache
-                .lookup
-                .get(&key)
-                .cloned()
-                .or_else(|| Self::fallback_lookup(&cache.lookup, &key));
+            let result = cache.lookup.get(&key).cloned().or_else(|| {
+                relaxed_lookup(&cache.lookup, &key).map(|(process, _quality)| process.clone())
+            });
             if result.is_some() {
                 log::trace!("✓ Found after refresh: {:?} => {:?}", key, result);
             } else {
@@ -736,15 +537,12 @@ impl ProcessLookup for WindowsProcessLookup {
             etw_process
         }
     }
+}
 
+impl ProcessLookup for WindowsProcessLookup {
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
-        let (pid, name) = self.get_process_for_connection(conn)?;
-        let mut attribution = ProcessAttribution::new(
-            pid,
-            name,
-            AttributionBackend::PlatformNative,
-            MatchQuality::Unspecified,
-        );
+        let (pid, name) = self.lookup_process(conn)?;
+        let mut attribution = ProcessAttribution::new(pid, name, MatchQuality::Unspecified);
         if let Some(details) = self.process_details(pid) {
             let lineage = self.process_lineage(pid, details.ppid);
             attribution = attribution.with_details(details.ppid, None, details.executable, lineage);
@@ -1009,7 +807,6 @@ mod tests {
 
         assert_eq!(attribution.tgid, std::process::id());
         assert_ne!(attribution.name, UNKNOWN_PROCESS_NAME);
-        assert_eq!(attribution.backend, AttributionBackend::PlatformNative);
         assert!(attribution.executable.is_some());
         assert_eq!(
             attribution

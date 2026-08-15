@@ -108,7 +108,7 @@ pub fn chown_to_target(file: &std::fs::File, target: DropTarget) -> std::io::Res
 /// Side effect on Linux: transitioning all three uids away from 0 clears the
 /// effective and permitted capability sets, which subsumes the explicit
 /// capability drops that run before this.
-pub fn drop_to(target: DropTarget) -> Result<()> {
+pub(crate) fn drop_to(target: DropTarget) -> Result<()> {
     if target.uid == 0 || target.gid == 0 {
         return Err(anyhow!("refusing to 'drop' to uid 0 / gid 0"));
     }

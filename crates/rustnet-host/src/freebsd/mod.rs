@@ -2,7 +2,7 @@
 
 mod process;
 
-pub use process::FreeBSDProcessLookup;
+use process::FreeBSDProcessLookup;
 
 use crate::ProcessLookup;
 use anyhow::Result;

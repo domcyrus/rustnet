@@ -1,29 +1,12 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use rustnet_monitor::network::types::*;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use rustnet_monitor::network::types::Connection;
 
-/// Create a Connection with a RateTracker filled to `n_samples` entries.
+mod common;
+
+/// Create a Connection with `n` rate samples, pruning periodically to keep
+/// the tracker realistic.
 fn make_connection_with_samples(n_samples: usize) -> Connection {
-    let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321);
-    let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
-    let mut conn = Connection::new(
-        Protocol::Tcp,
-        local,
-        remote,
-        ProtocolState::Tcp(TcpState::Established),
-    );
-
-    for i in 0..n_samples {
-        conn.bytes_sent += 100;
-        conn.bytes_received += 200;
-        conn.rate_tracker
-            .update(conn.bytes_sent, conn.bytes_received);
-        // Sprinkle in some pruning to keep the tracker realistic
-        if i % 500 == 0 {
-            conn.rate_tracker.prune();
-        }
-    }
-    conn
+    common::make_connection_with_samples(n_samples, Some(500))
 }
 
 /// Benchmark the per-packet `update()` call on RateTracker.

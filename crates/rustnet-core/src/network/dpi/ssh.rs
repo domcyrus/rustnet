@@ -3,7 +3,7 @@ use log::debug;
 
 /// Analyze payload for SSH protocol
 /// is_outgoing: true if this packet is from client to server
-pub fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
+pub(super) fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
     if !is_likely_ssh(payload) {
         return None;
     }
@@ -121,7 +121,7 @@ pub fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> {
 }
 
 /// Check if payload might be SSH
-pub fn is_likely_ssh(payload: &[u8]) -> bool {
+pub(super) fn is_likely_ssh(payload: &[u8]) -> bool {
     if payload.len() < 4 {
         return false;
     }

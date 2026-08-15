@@ -1,6 +1,6 @@
 //! Details tab — full record for the selected connection: protocol
 //! header, TCP analytics, traffic stats, and protocol-specific DPI
-//! info. Also owns the push_detail_field / register_detail_clicks
+//! info. Also owns the DetailsBuilder / register_detail_clicks
 //! helpers that build the label/value lines and the click-to-copy
 //! registry.
 
@@ -131,91 +131,107 @@ impl Component for DetailsTab {
     }
 }
 
-fn push_detail_field<'a>(
-    lines: &mut Vec<Line<'a>>,
-    fields: &mut Vec<Option<(String, String)>>,
-    label: &str,
-    value: String,
+/// Builder for one Details pane: the rendered lines and the parallel
+/// click-to-copy field entries, sharing a single label style. The two
+/// vectors stay index-aligned so `register_detail_clicks` can map an
+/// on-screen row back to its copyable value.
+struct DetailsBuilder<'a> {
+    lines: Vec<Line<'a>>,
+    fields: Vec<Option<(String, String)>>,
     label_style: Style,
-) {
-    push_detail_field_styled(lines, fields, label, value, label_style, Style::default());
 }
 
-/// Push a label-value line with a custom-styled value span.
-fn push_detail_field_styled<'a>(
-    lines: &mut Vec<Line<'a>>,
-    fields: &mut Vec<Option<(String, String)>>,
-    label: &str,
-    value: String,
-    label_style: Style,
-    value_style: Style,
-) {
-    push_detail_field_with_copy(
-        lines,
-        fields,
-        label,
-        value.clone(),
-        value,
-        label_style,
-        value_style,
-    );
-}
-
-/// Push a label-value line whose rendered value differs from what
-/// click-to-copy yields (a shortened path, say).
-fn push_detail_field_with_copy<'a>(
-    lines: &mut Vec<Line<'a>>,
-    fields: &mut Vec<Option<(String, String)>>,
-    label: &str,
-    display: String,
-    copy: String,
-    label_style: Style,
-    value_style: Style,
-) {
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("{:<width$}", label, width = DETAIL_LABEL_WIDTH),
+impl<'a> DetailsBuilder<'a> {
+    fn new(label_style: Style) -> Self {
+        Self {
+            lines: Vec::new(),
+            fields: Vec::new(),
             label_style,
-        ),
-        Span::styled(display, value_style),
-    ]));
-    fields.push(Some((label.to_string(), copy)));
-}
+        }
+    }
 
-/// Push an RTT field with the value colored by latency (green < 50ms,
-/// yellow < 150ms, red above), or the "-" placeholder when unmeasured.
-fn push_rtt_field<'a>(
-    lines: &mut Vec<Line<'a>>,
-    fields: &mut Vec<Option<(String, String)>>,
-    label: &str,
-    rtt: Option<std::time::Duration>,
-    label_style: Style,
-) {
-    if let Some(rtt) = rtt {
-        let rtt_ms = rtt.as_secs_f64() * 1000.0;
-        let rtt_color = if rtt_ms < 50.0 {
-            theme::ok()
-        } else if rtt_ms < 150.0 {
-            theme::warn()
+    /// Number of rows pushed so far; anchors section ranges and padding.
+    fn rows(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Push a line with no click-to-copy target (custom headings, blank
+    /// separators).
+    fn plain_line(&mut self, line: Line<'a>) {
+        self.lines.push(line);
+        self.fields.push(None);
+    }
+
+    fn field(&mut self, label: &str, value: String) {
+        self.field_styled(label, value, Style::default());
+    }
+
+    /// Push a label-value line with a custom-styled value span.
+    fn field_styled(&mut self, label: &str, value: String, value_style: Style) {
+        self.field_with_copy(label, value.clone(), value, value_style);
+    }
+
+    /// Push a label-value line whose rendered value differs from what
+    /// click-to-copy yields (a shortened path, say).
+    fn field_with_copy(&mut self, label: &str, display: String, copy: String, value_style: Style) {
+        self.lines.push(Line::from(vec![
+            Span::styled(
+                format!("{:<width$}", label, width = DETAIL_LABEL_WIDTH),
+                self.label_style,
+            ),
+            Span::styled(display, value_style),
+        ]));
+        self.fields.push(Some((label.to_string(), copy)));
+    }
+
+    /// Push an RTT field with the value colored by latency (green < 50ms,
+    /// yellow < 150ms, red above), or the "-" placeholder when unmeasured.
+    fn rtt_field(&mut self, label: &str, rtt: Option<std::time::Duration>) {
+        if let Some(rtt) = rtt {
+            let rtt_ms = rtt.as_secs_f64() * 1000.0;
+            let rtt_color = if rtt_ms < 50.0 {
+                theme::ok()
+            } else if rtt_ms < 150.0 {
+                theme::warn()
+            } else {
+                theme::err()
+            };
+            self.field_styled(label, format!("{:.1}ms", rtt_ms), theme::fg(rtt_color));
         } else {
-            theme::err()
-        };
-        push_detail_field_styled(
-            lines,
-            fields,
-            label,
-            format!("{:.1}ms", rtt_ms),
-            label_style,
-            theme::fg(rtt_color),
-        );
-    } else {
-        push_detail_field(
-            lines,
-            fields,
-            label,
-            NONE_PLACEHOLDER.to_string(),
-            label_style,
-        );
+            self.field(label, NONE_PLACEHOLDER.to_string());
+        }
+    }
+
+    /// Push a muted explanatory line into a card. Unlike a field row this
+    /// carries no label/value pair, so it registers no click-to-copy target.
+    fn note(&mut self, note: &'a str) {
+        self.plain_line(Line::from(Span::styled(note, theme::fg(theme::muted()))));
+    }
+
+    /// Push a bold section heading, used to group fields under a common label
+    /// (e.g. "Geolocation", "Application: HTTPS"). Headings carry no
+    /// click-to-copy target.
+    fn section(&mut self, title: impl Into<String>) {
+        self.section_styled(title, theme::bold_fg(theme::heading()));
+    }
+
+    /// Variant of [`Self::section`] that lets the caller pick the heading
+    /// style. Used by the Application section so its title takes the
+    /// protocol's own color (HTTPS green, QUIC cyan, etc.) and visually links
+    /// to the matching Application cell in the Overview table.
+    fn section_styled(&mut self, title: impl Into<String>, style: Style) {
+        self.plain_line(Line::from(""));
+        self.plain_line(Line::from(Span::styled(title.into(), style)));
+    }
+
+    /// Pad a detail section to a stable height. Padding rows deliberately
+    /// have no click target and render as whitespace in the borderless card
+    /// layout.
+    fn pad_section(&mut self, section_start: usize, target_rows: usize) {
+        let missing = target_rows.saturating_sub(self.rows().saturating_sub(section_start));
+        for _ in 0..missing {
+            self.plain_line(Line::from(""));
+        }
     }
 }
 
@@ -542,32 +558,6 @@ fn remote_scope(conn: &Connection) -> crate::network::bogon::Scope {
     }
 }
 
-/// Push a muted explanatory line into a card. Unlike a field row this carries
-/// no label/value pair, so it registers no click-to-copy target.
-fn push_detail_note<'a>(
-    lines: &mut Vec<Line<'a>>,
-    fields: &mut Vec<Option<(String, String)>>,
-    note: &'a str,
-) {
-    lines.push(Line::from(Span::styled(note, theme::fg(theme::muted()))));
-    fields.push(None);
-}
-
-/// Pad a detail section to a stable height. Padding rows deliberately have no
-/// click target and render as whitespace in the borderless card layout.
-fn pad_detail_section<'a>(
-    lines: &mut Vec<Line<'a>>,
-    fields: &mut Vec<Option<(String, String)>>,
-    section_start: usize,
-    target_rows: usize,
-) {
-    let missing = target_rows.saturating_sub(lines.len().saturating_sub(section_start));
-    for _ in 0..missing {
-        lines.push(Line::from(""));
-        fields.push(None);
-    }
-}
-
 /// True when a line is empty (used to trim leading separator on the right pane).
 fn line_is_blank(line: &Line<'_>) -> bool {
     line.spans.iter().all(|s| s.content.is_empty())
@@ -610,33 +600,6 @@ fn register_detail_clicks(
             );
         }
     }
-}
-
-/// Push a bold section heading, used to group fields under a common label
-/// (e.g. "Geolocation", "Application: HTTPS"). Pushes a `None` field entry
-/// so click-to-copy hit-testing skips this row.
-fn push_detail_section<'a>(
-    lines: &mut Vec<Line<'a>>,
-    fields: &mut Vec<Option<(String, String)>>,
-    title: impl Into<String>,
-) {
-    push_detail_section_styled(lines, fields, title, theme::bold_fg(theme::heading()));
-}
-
-/// Variant of `push_detail_section` that lets the caller pick the heading
-/// style. Used by the Application section so its title takes the protocol's
-/// own color (HTTPS green, QUIC cyan, etc.) and visually links to the
-/// matching Application cell in the Overview table.
-fn push_detail_section_styled<'a>(
-    lines: &mut Vec<Line<'a>>,
-    fields: &mut Vec<Option<(String, String)>>,
-    title: impl Into<String>,
-    style: Style,
-) {
-    lines.push(Line::from(""));
-    fields.push(None);
-    lines.push(Line::from(Span::styled(title.into(), style)));
-    fields.push(None);
 }
 
 /// Height of the continuity strip: column header (1) + header margin (1)
@@ -848,11 +811,10 @@ pub(in crate::ui) fn draw_connection_details(
 
     // Connection details - build lines and field entries in parallel for click-to-copy.
     // All sections share a single label_style (muted gray); visual grouping comes
-    // from the bold section headings inserted by push_detail_section.
+    // from the bold section headings inserted by DetailsBuilder::section.
     let label_style = theme::fg(theme::label());
-    let mut details_text: Vec<Line> = Vec::new();
-    let mut detail_fields: Vec<Option<(String, String)>> = Vec::new();
-    // Index ranges in details_text/detail_fields that should move to the
+    let mut details = DetailsBuilder::new(label_style);
+    // Index ranges in the details builder that should move to the
     // right pane when the layout splits horizontally (Application fields and
     // Transport Health). Pushed in source order; drained in reverse later.
     let mut right_ranges: Vec<std::ops::Range<usize>> = Vec::new();
@@ -861,19 +823,12 @@ pub(in crate::ui) fn draw_connection_details(
     // Together with the fixed nine-row Network Context card below this gives
     // the left dashboard column a 21-row footprint for every protocol, ARP
     // included, so the cards below never move.
-    details_text.push(Line::from(Span::styled(
+    details.plain_line(Line::from(Span::styled(
         "Connection",
         theme::bold_fg(theme::heading()),
     )));
-    detail_fields.push(None);
 
-    push_detail_field(
-        &mut details_text,
-        &mut detail_fields,
-        "Protocol",
-        conn.protocol.to_string(),
-        label_style,
-    );
+    details.field("Protocol", conn.protocol.to_string());
     if conn.is_historic {
         let closed_display = if let Some(closed_at) = conn.closed_at {
             format!(
@@ -883,14 +838,7 @@ pub(in crate::ui) fn draw_connection_details(
         } else {
             "Closed".to_string()
         };
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
-            "Status",
-            closed_display,
-            label_style,
-            theme::fg(theme::muted()),
-        );
+        details.field_styled("Status", closed_display, theme::fg(theme::muted()));
     } else {
         // Mirror the historic Status line for active connections so the
         // user can see how recently traffic moved on this connection.
@@ -904,78 +852,50 @@ pub(in crate::ui) fn draw_connection_details(
         let active_color = theme::expiry_glow_intensity(staleness)
             .map(theme::expiry_glow)
             .unwrap_or_else(theme::ok);
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
-            "Status",
-            active_display,
-            label_style,
-            theme::fg(active_color),
-        );
+        details.field_styled("Status", active_display, theme::fg(active_color));
     }
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Local Address",
         annotated_addr(conn.local_addr, conn.local_addr_kind),
-        label_style,
         theme::fg(theme::field_local_addr()),
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Remote Address",
         annotated_remote_addr(
             conn.remote_addr,
             conn.remote_addr_kind,
             conn.remote_is_gateway,
         ),
-        label_style,
         theme::fg(theme::field_remote_addr()),
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Scope",
         remote_scope(conn).label().to_string(),
-        label_style,
         theme::fg(theme::field_remote_addr()),
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "State",
         conn.state().into_owned(),
-        label_style,
         theme::fg(state_color(conn)),
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Process",
         conn.process_name
             .clone()
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
         theme::fg(theme::field_process()),
     );
-    push_detail_field(
-        &mut details_text,
-        &mut detail_fields,
+    details.field(
         "PID",
         conn.pid
             .map(|p| p.to_string())
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Service",
         conn.service_name
             .clone()
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
         theme::fg(theme::field_service()),
     );
 
@@ -1045,35 +965,26 @@ pub(in crate::ui) fn draw_connection_details(
         })
         .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
 
-    push_detail_section(&mut details_text, &mut detail_fields, "Network Context");
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.section("Network Context");
+    details.field_styled(
         "Local Hostname",
         local_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
         theme::fg(theme::field_local_addr()),
     );
     // MAC and attribution rows always render, with a placeholder when
     // unresolved, so the cards below keep static positions while navigating,
     // for every protocol including ARP. The details pane scrolls, so the
     // fixed rows cannot make content unreachable on short terminals.
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Local MAC",
         local_mac
             .map(format_mac)
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
         theme::fg(theme::field_local_addr()),
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Remote Hostname",
         remote_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
         theme::fg(theme::field_remote_addr()),
     );
     // Hostname inferred from a DNS response observed on the wire, with
@@ -1096,57 +1007,27 @@ pub(in crate::ui) fn draw_connection_details(
         }
         None => (NONE_PLACEHOLDER.to_string(), NONE_PLACEHOLDER.to_string()),
     };
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Attributed Name",
         attributed_name,
-        label_style,
         theme::fg(theme::field_attributed_hostname()),
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Attributed Via",
         attributed_via,
-        label_style,
         theme::fg(theme::field_attributed_hostname()),
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Remote MAC",
         remote_mac
             .map(format_mac)
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
         theme::fg(theme::field_remote_addr()),
     );
     let location_value_style = theme::fg(theme::field_location());
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
-        "Country",
-        country,
-        label_style,
-        location_value_style,
-    );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
-        "City",
-        city,
-        label_style,
-        location_value_style,
-    );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
-        "ASN",
-        asn,
-        label_style,
-        location_value_style,
-    );
+    details.field_styled("Country", country, location_value_style);
+    details.field_styled("City", city, location_value_style);
+    details.field_styled("ASN", asn, location_value_style);
 
     // Richer process attribution. Every row renders with a placeholder when
     // the platform's lookup could not resolve it, so the cards below keep
@@ -1156,78 +1037,57 @@ pub(in crate::ui) fn draw_connection_details(
     // The Kubernetes block below stays conditional: being a k8s workload is
     // a class distinction, not missing data.
     let process_value_style = theme::fg(theme::field_process());
-    push_detail_section(&mut details_text, &mut detail_fields, "Attribution");
+    details.section("Attribution");
 
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "PID",
         conn.pid
             .map(|pid| pid.to_string())
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
         process_value_style,
     );
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "PPID",
         conn.process_ppid
             .map(|ppid| ppid.to_string())
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
         process_value_style,
     );
     if let (Some(lineage), Some(owner_name)) = (&conn.process_lineage, conn.process_name.as_deref())
     {
-        push_detail_field_with_copy(
-            &mut details_text,
-            &mut detail_fields,
+        details.field_with_copy(
             "Process Tree",
             process_tree_value(lineage, owner_name, value_width),
             process_tree_value(lineage, owner_name, usize::MAX),
-            label_style,
             process_value_style,
         );
     } else {
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
+        details.field_styled(
             "Process Tree",
             NONE_PLACEHOLDER.to_string(),
-            label_style,
             process_value_style,
         );
     }
     if let Some(ref executable) = conn.executable {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        push_detail_field_with_copy(
-            &mut details_text,
-            &mut detail_fields,
+        details.field_with_copy(
             "Executable",
             shorten_executable_path(executable, home.as_deref(), value_width),
             executable.display().to_string(),
-            label_style,
             process_value_style,
         );
     } else {
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
+        details.field_styled(
             "Executable",
             NONE_PLACEHOLDER.to_string(),
-            label_style,
             process_value_style,
         );
     }
-    push_detail_field(
-        &mut details_text,
-        &mut detail_fields,
+    details.field(
         "User",
         conn.process_uid
             .map(|uid| format_user_group(uid, conn.process_gid))
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
     );
     // A relaxed match is a plausible owner, not a proven one, so it
     // reads as a warning rather than as confirmed fact.
@@ -1236,14 +1096,11 @@ pub(in crate::ui) fn draw_connection_details(
         Some(MatchQuality::Unspecified) | None => theme::muted(),
         Some(_) => theme::warn(),
     };
-    push_detail_field_styled(
-        &mut details_text,
-        &mut detail_fields,
+    details.field_styled(
         "Match",
         conn.attribution_quality
             .map(|quality| quality.to_string())
             .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        label_style,
         theme::fg(quality_color),
     );
 
@@ -1255,7 +1112,7 @@ pub(in crate::ui) fn draw_connection_details(
     #[cfg(feature = "kubernetes")]
     if let Some(ref k8s) = conn.k8s_info {
         let k8s_value_style = theme::fg(theme::field_process());
-        push_detail_section(&mut details_text, &mut detail_fields, "Kubernetes");
+        details.section("Kubernetes");
         // Prefer the human-readable pod name over the raw UID; show both when
         // both are present.
         let pod_display = match (&k8s.pod_name, &k8s.pod_namespace) {
@@ -1263,39 +1120,24 @@ pub(in crate::ui) fn draw_connection_details(
             (Some(name), None) => name.clone(),
             (None, _) => NONE_PLACEHOLDER.to_string(),
         };
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
-            "Pod",
-            pod_display,
-            label_style,
-            k8s_value_style,
-        );
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
+        details.field_styled("Pod", pod_display, k8s_value_style);
+        details.field_styled(
             "Pod UID",
             k8s.pod_uid
                 .clone()
                 .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            label_style,
             k8s_value_style,
         );
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
+        details.field_styled(
             "Container",
             k8s.container_name
                 .clone()
                 .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            label_style,
             k8s_value_style,
         );
         // Container IDs are 64 hex chars; truncate to the short form
         // typically shown by `kubectl get pod ... -o wide`.
-        push_detail_field_styled(
-            &mut details_text,
-            &mut detail_fields,
+        details.field_styled(
             "Container ID",
             k8s.container_id
                 .as_deref()
@@ -1307,28 +1149,22 @@ pub(in crate::ui) fn draw_connection_details(
                     }
                 })
                 .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            label_style,
             k8s_value_style,
         );
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
+        details.field(
             "Cgroup",
             k8s.cgroup_path
                 .clone()
                 .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            label_style,
         );
     }
 
     // Add DPI / application protocol information. Section heading carries
     // both the label and the protocol so we don't need a redundant
     // "Application: <proto>" field below.
-    let application_start = details_text.len();
+    let application_start = details.rows();
     if let Some(dpi) = &conn.dpi_info {
-        push_detail_section_styled(
-            &mut details_text,
-            &mut detail_fields,
+        details.section_styled(
             format!("Application: {}", dpi.application.sort_key()),
             theme::bold_fg(dpi_color(&dpi.application)),
         );
@@ -1337,61 +1173,25 @@ pub(in crate::ui) fn draw_connection_details(
         match &dpi.application {
             crate::network::types::ApplicationProtocol::Http(info) => {
                 if let Some(method) = &info.method {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "HTTP Method",
-                        method.clone(),
-                        label_style,
-                    );
+                    details.field("HTTP Method", method.clone());
                 }
                 if let Some(path) = &info.path {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "HTTP Path",
-                        path.clone(),
-                        label_style,
-                    );
+                    details.field("HTTP Path", path.clone());
                 }
                 if let Some(status) = info.status_code {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "HTTP Status",
-                        status.to_string(),
-                        label_style,
-                    );
+                    details.field("HTTP Status", status.to_string());
                 }
             }
             crate::network::types::ApplicationProtocol::Https(info) => {
                 if let Some(tls_info) = &info.tls_info {
                     if let Some(sni) = &tls_info.sni {
-                        push_detail_field(
-                            &mut details_text,
-                            &mut detail_fields,
-                            "SNI",
-                            sni.clone(),
-                            label_style,
-                        );
+                        details.field("SNI", sni.clone());
                     }
                     if !tls_info.alpn.is_empty() {
-                        push_detail_field(
-                            &mut details_text,
-                            &mut detail_fields,
-                            "ALPN",
-                            tls_info.alpn.join(", "),
-                            label_style,
-                        );
+                        details.field("ALPN", tls_info.alpn.join(", "));
                     }
                     if let Some(version) = &tls_info.version {
-                        push_detail_field(
-                            &mut details_text,
-                            &mut detail_fields,
-                            "TLS Version",
-                            version.to_string(),
-                            label_style,
-                        );
+                        details.field("TLS Version", version.to_string());
                     }
                     if let Some(formatted_cipher) = tls_info.format_cipher_suite() {
                         let cipher_color = if tls_info.is_cipher_suite_secure().unwrap_or(false) {
@@ -1399,12 +1199,9 @@ pub(in crate::ui) fn draw_connection_details(
                         } else {
                             theme::warn()
                         };
-                        push_detail_field_styled(
-                            &mut details_text,
-                            &mut detail_fields,
+                        details.field_styled(
                             "Cipher Suite",
                             formatted_cipher,
-                            label_style,
                             theme::fg(cipher_color),
                         );
                     }
@@ -1412,42 +1209,21 @@ pub(in crate::ui) fn draw_connection_details(
             }
             crate::network::types::ApplicationProtocol::Dns(info) => {
                 if let Some(query_name) = &info.query_name {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "DNS Query",
-                        query_name.clone(),
-                        label_style,
-                    );
+                    details.field("DNS Query", query_name.clone());
                 }
                 if let Some(query_type) = &info.query_type {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "DNS Type",
-                        format!("{}", query_type),
-                        label_style,
-                    );
+                    details.field("DNS Type", format!("{}", query_type));
                 }
                 if !info.response_ips.is_empty() {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "DNS Response IPs",
-                        format!("{:?}", info.response_ips),
-                        label_style,
-                    );
+                    details.field("DNS Response IPs", format!("{:?}", info.response_ips));
                 }
                 // Disambiguate "record doesn't exist" from "answer not
                 // parsed": a NOERROR response whose answer section held no
                 // record of the queried type is a deliberate empty answer.
                 if info.nodata == Some(true) {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
+                    details.field(
                         "DNS Answer",
                         "no data (name exists, no record of this type)".to_string(),
-                        label_style,
                     );
                 }
             }
@@ -1457,319 +1233,103 @@ pub(in crate::ui) fn draw_connection_details(
                         .sni
                         .clone()
                         .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "QUIC SNI",
-                        sni,
-                        label_style,
-                    );
+                    details.field("QUIC SNI", sni);
                     let alpn = tls_info.alpn.join(", ");
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "QUIC ALPN",
-                        alpn,
-                        label_style,
-                    );
+                    details.field("QUIC ALPN", alpn);
                 }
                 if let Some(version) = info.version_string.as_deref() {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "QUIC Version",
-                        version.to_owned(),
-                        label_style,
-                    );
+                    details.field("QUIC Version", version.to_owned());
                 }
                 if let Some(connection_id) = &info.connection_id_hex {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Connection ID",
-                        connection_id.clone(),
-                        label_style,
-                    );
+                    details.field("Connection ID", connection_id.clone());
                 }
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Packet Type",
-                    info.packet_type.to_string(),
-                    label_style,
-                );
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Connection State",
-                    info.connection_state.to_string(),
-                    label_style,
-                );
+                details.field("Packet Type", info.packet_type.to_string());
+                details.field("Connection State", info.connection_state.to_string());
             }
             crate::network::types::ApplicationProtocol::Ssh(info) => {
                 if let Some(version) = &info.version {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "SSH Version",
-                        format!("{:?}", version),
-                        label_style,
-                    );
+                    details.field("SSH Version", format!("{:?}", version));
                 }
                 if let Some(server_software) = &info.server_software {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Server Software",
-                        server_software.clone(),
-                        label_style,
-                    );
+                    details.field("Server Software", server_software.clone());
                 }
                 if let Some(client_software) = &info.client_software {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Client Software",
-                        client_software.clone(),
-                        label_style,
-                    );
+                    details.field("Client Software", client_software.clone());
                 }
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Connection State",
-                    format!("{:?}", info.connection_state),
-                    label_style,
-                );
+                details.field("Connection State", format!("{:?}", info.connection_state));
                 if !info.algorithms.is_empty() {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Algorithms",
-                        info.algorithms.join(", "),
-                        label_style,
-                    );
+                    details.field("Algorithms", info.algorithms.join(", "));
                 }
                 if let Some(auth_method) = &info.auth_method {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Auth Method",
-                        auth_method.clone(),
-                        label_style,
-                    );
+                    details.field("Auth Method", auth_method.clone());
                 }
             }
             crate::network::types::ApplicationProtocol::Ntp(info) => {
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "NTP Version",
-                    format!("{}", info.version),
-                    label_style,
-                );
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "NTP Mode",
-                    info.mode.to_string(),
-                    label_style,
-                );
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Stratum",
-                    format!("{}", info.stratum),
-                    label_style,
-                );
+                details.field("NTP Version", format!("{}", info.version));
+                details.field("NTP Mode", info.mode.to_string());
+                details.field("Stratum", format!("{}", info.stratum));
             }
             crate::network::types::ApplicationProtocol::Mdns(info) => {
                 if let Some(query_name) = &info.query_name {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Query Name",
-                        query_name.clone(),
-                        label_style,
-                    );
+                    details.field("Query Name", query_name.clone());
                 }
                 if let Some(query_type) = &info.query_type {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Query Type",
-                        format!("{}", query_type),
-                        label_style,
-                    );
+                    details.field("Query Type", format!("{}", query_type));
                 }
                 if !info.response_ips.is_empty() {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Response IPs",
-                        format!("{:?}", info.response_ips),
-                        label_style,
-                    );
+                    details.field("Response IPs", format!("{:?}", info.response_ips));
                 }
             }
             crate::network::types::ApplicationProtocol::Llmnr(info) => {
                 if let Some(query_name) = &info.query_name {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Query Name",
-                        query_name.clone(),
-                        label_style,
-                    );
+                    details.field("Query Name", query_name.clone());
                 }
                 if let Some(query_type) = &info.query_type {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Query Type",
-                        format!("{}", query_type),
-                        label_style,
-                    );
+                    details.field("Query Type", format!("{}", query_type));
                 }
                 if !info.response_ips.is_empty() {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Response IPs",
-                        format!("{:?}", info.response_ips),
-                        label_style,
-                    );
+                    details.field("Response IPs", format!("{:?}", info.response_ips));
                 }
             }
             crate::network::types::ApplicationProtocol::Dhcp(info) => {
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Message Type",
-                    info.message_type.to_string(),
-                    label_style,
-                );
+                details.field("Message Type", info.message_type.to_string());
                 if let Some(hostname) = &info.hostname {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Hostname",
-                        hostname.clone(),
-                        label_style,
-                    );
+                    details.field("Hostname", hostname.clone());
                 }
                 if let Some(client_mac) = &info.client_mac {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Client MAC",
-                        client_mac.clone(),
-                        label_style,
-                    );
+                    details.field("Client MAC", client_mac.clone());
                 }
             }
             crate::network::types::ApplicationProtocol::Snmp(info) => {
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "SNMP Version",
-                    info.version.to_string(),
-                    label_style,
-                );
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "PDU Type",
-                    info.pdu_type.to_string(),
-                    label_style,
-                );
+                details.field("SNMP Version", info.version.to_string());
+                details.field("PDU Type", info.pdu_type.to_string());
                 if let Some(community) = &info.community {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Community",
-                        community.clone(),
-                        label_style,
-                    );
+                    details.field("Community", community.clone());
                 }
             }
             crate::network::types::ApplicationProtocol::Ssdp(info) => {
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Method",
-                    info.method.to_string(),
-                    label_style,
-                );
+                details.field("Method", info.method.to_string());
                 if let Some(service_type) = &info.service_type {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Service Type",
-                        service_type.clone(),
-                        label_style,
-                    );
+                    details.field("Service Type", service_type.clone());
                 }
             }
             crate::network::types::ApplicationProtocol::NetBios(info) => {
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Service",
-                    info.service.to_string(),
-                    label_style,
-                );
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Opcode",
-                    info.opcode.to_string(),
-                    label_style,
-                );
+                details.field("Service", info.service.to_string());
+                details.field("Opcode", info.opcode.to_string());
                 if let Some(name) = &info.name {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Name",
-                        name.clone(),
-                        label_style,
-                    );
+                    details.field("Name", name.clone());
                 }
             }
             crate::network::types::ApplicationProtocol::BitTorrent(info) => {
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Type",
-                    info.protocol_type.to_string(),
-                    label_style,
-                );
+                details.field("Type", info.protocol_type.to_string());
                 if let Some(client) = &info.client {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Client",
-                        client.clone(),
-                        label_style,
-                    );
+                    details.field("Client", client.clone());
                 }
                 if let Some(info_hash) = &info.info_hash {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Info Hash",
-                        info_hash.clone(),
-                        label_style,
-                    );
+                    details.field("Info Hash", info_hash.clone());
                 }
                 if let Some(method) = &info.dht_method {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "DHT Method",
-                        method.clone(),
-                        label_style,
-                    );
+                    details.field("DHT Method", method.clone());
                 }
                 let mut extensions = Vec::new();
                 if info.supports_dht {
@@ -1782,235 +1342,80 @@ pub(in crate::ui) fn draw_connection_details(
                     extensions.push("Fast");
                 }
                 if !extensions.is_empty() {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Extensions",
-                        extensions.join(", "),
-                        label_style,
-                    );
+                    details.field("Extensions", extensions.join(", "));
                 }
             }
             crate::network::types::ApplicationProtocol::Stun(info) => {
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Method",
-                    info.method.to_string(),
-                    label_style,
-                );
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Class",
-                    info.message_class.to_string(),
-                    label_style,
-                );
+                details.field("Method", info.method.to_string());
+                details.field("Class", info.message_class.to_string());
                 let txn_id = crate::network::util::hex_encode(&info.transaction_id, "");
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Transaction ID",
-                    txn_id,
-                    label_style,
-                );
+                details.field("Transaction ID", txn_id);
                 if let Some(software) = &info.software {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Software",
-                        software.clone(),
-                        label_style,
-                    );
+                    details.field("Software", software.clone());
                 }
             }
             crate::network::types::ApplicationProtocol::Ftp(info) => {
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Message Type",
-                    info.message_type.to_string(),
-                    label_style,
-                );
+                details.field("Message Type", info.message_type.to_string());
                 if let Some(cmd) = &info.command {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Command",
-                        cmd.clone(),
-                        label_style,
-                    );
+                    details.field("Command", cmd.clone());
                 }
                 if let Some(args) = &info.args {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Arguments",
-                        args.clone(),
-                        label_style,
-                    );
+                    details.field("Arguments", args.clone());
                 }
                 if let Some(code) = info.response_code {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Response Code",
-                        code.to_string(),
-                        label_style,
-                    );
+                    details.field("Response Code", code.to_string());
                 }
                 if let Some(message) = &info.response_message {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Response",
-                        message.clone(),
-                        label_style,
-                    );
+                    details.field("Response", message.clone());
                 }
                 if let Some(user) = &info.username {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Username",
-                        user.clone(),
-                        label_style,
-                    );
+                    details.field("Username", user.clone());
                 }
                 if let Some(sw) = &info.server_software {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Server Software",
-                        sw.clone(),
-                        label_style,
-                    );
+                    details.field("Server Software", sw.clone());
                 }
                 if let Some(sys) = &info.system_type {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "System Type",
-                        sys.clone(),
-                        label_style,
-                    );
+                    details.field("System Type", sys.clone());
                 }
             }
             crate::network::types::ApplicationProtocol::Mqtt(info) => {
-                push_detail_field(
-                    &mut details_text,
-                    &mut detail_fields,
-                    "Packet Type",
-                    info.packet_type.to_string(),
-                    label_style,
-                );
+                details.field("Packet Type", info.packet_type.to_string());
                 if let Some(version) = &info.version {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Version",
-                        version.to_string(),
-                        label_style,
-                    );
+                    details.field("Version", version.to_string());
                 }
                 if let Some(client_id) = &info.client_id {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Client ID",
-                        client_id.clone(),
-                        label_style,
-                    );
+                    details.field("Client ID", client_id.clone());
                 }
                 if let Some(topic) = &info.topic {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "Topic",
-                        topic.clone(),
-                        label_style,
-                    );
+                    details.field("Topic", topic.clone());
                 }
                 if let Some(qos) = info.qos {
-                    push_detail_field(
-                        &mut details_text,
-                        &mut detail_fields,
-                        "QoS",
-                        qos.to_string(),
-                        label_style,
-                    );
+                    details.field("QoS", qos.to_string());
                 }
             }
         }
     } else if let ProtocolState::Arp(arp_info) = &conn.protocol_state {
-        push_detail_section(&mut details_text, &mut detail_fields, "Application: ARP");
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Sender MAC",
-            arp_info.sender_mac.clone(),
-            label_style,
-        );
+        details.section("Application: ARP");
+        details.field("Sender MAC", arp_info.sender_mac.clone());
         if let Some(ref vendor) = arp_info.sender_vendor {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Sender Vendor",
-                vendor.clone(),
-                label_style,
-            );
+            details.field("Sender Vendor", vendor.clone());
         }
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Sender IP",
-            arp_info.sender_ip.to_string(),
-            label_style,
-        );
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Target MAC",
-            arp_info.target_mac.clone(),
-            label_style,
-        );
+        details.field("Sender IP", arp_info.sender_ip.to_string());
+        details.field("Target MAC", arp_info.target_mac.clone());
         if let Some(ref vendor) = arp_info.target_vendor {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Target Vendor",
-                vendor.clone(),
-                label_style,
-            );
+            details.field("Target Vendor", vendor.clone());
         }
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Target IP",
-            arp_info.target_ip.to_string(),
-            label_style,
-        );
+        details.field("Target IP", arp_info.target_ip.to_string());
     } else {
-        push_detail_section(&mut details_text, &mut detail_fields, "Application");
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Detected",
-            NONE_PLACEHOLDER.to_string(),
-            label_style,
-        );
+        details.section("Application");
+        details.field("Detected", NONE_PLACEHOLDER.to_string());
     }
 
     // Short application records keep their whitespace inside the card instead
     // of pulling Transport Health and Traffic Statistics upward. All current
     // decoders fit within this budget, including FTP's eight detail fields.
-    pad_detail_section(
-        &mut details_text,
-        &mut detail_fields,
-        application_start,
-        APPLICATION_CARD_ROWS,
-    );
-    right_ranges.push(application_start..details_text.len());
+    details.pad_section(application_start, APPLICATION_CARD_ROWS);
+    right_ranges.push(application_start..details.rows());
 
     // Transport Health is also a fixed card, but its rows are protocol
     // specific. QUIC has no equivalent of the TCP loss counters: packet numbers
@@ -2089,237 +1494,114 @@ pub(in crate::ui) fn draw_connection_details(
         } => *icmp_sequence,
         _ => None,
     };
-    let metrics_start = details_text.len();
-    push_detail_section(&mut details_text, &mut detail_fields, "Transport Health");
+    let metrics_start = details.rows();
+    details.section("Transport Health");
     let show_rtt = conn.protocol == Protocol::Tcp || quic_info.is_some();
     if let Some(dns) = dns_info {
-        push_rtt_field(
-            &mut details_text,
-            &mut detail_fields,
-            "DNS Response Time",
-            conn.dns_response_time,
-            label_style,
-        );
+        details.rtt_field("DNS Response Time", conn.dns_response_time);
         if let Some(rcode) = dns.rcode {
             let rcode_color = if rcode == 0 {
                 theme::ok()
             } else {
                 theme::err()
             };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
+            details.field_styled(
                 "Last Response Code",
                 crate::network::types::dns_rcode_name(rcode).into_owned(),
-                label_style,
                 theme::fg(rcode_color),
             );
         } else {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Last Response Code",
-                NONE_PLACEHOLDER.to_string(),
-                label_style,
-            );
+            details.field("Last Response Code", NONE_PLACEHOLDER.to_string());
         }
         // Footnote style matching the QUIC branch below.
-        details_text.push(Line::from(""));
-        detail_fields.push(None);
-        push_detail_note(
-            &mut details_text,
-            &mut detail_fields,
-            "Timed by pairing query and response IDs",
-        );
+        details.plain_line(Line::from(""));
+        details.note("Timed by pairing query and response IDs");
     } else if llmnr_info.is_some() {
-        push_rtt_field(
-            &mut details_text,
-            &mut detail_fields,
-            "LLMNR Response Time",
-            conn.llmnr_response_time,
-            label_style,
-        );
-        details_text.push(Line::from(""));
-        detail_fields.push(None);
-        push_detail_note(
-            &mut details_text,
-            &mut detail_fields,
-            "First response paired by transaction ID",
-        );
+        details.rtt_field("LLMNR Response Time", conn.llmnr_response_time);
+        details.plain_line(Line::from(""));
+        details.note("First response paired by transaction ID");
     } else if let Some(netbios) = netbios_info {
-        push_rtt_field(
-            &mut details_text,
-            &mut detail_fields,
-            "NetBIOS Response Time",
-            conn.netbios_response_time,
-            label_style,
-        );
+        details.rtt_field("NetBIOS Response Time", conn.netbios_response_time);
         if let Some(status) = netbios.response_status {
             let status_color = if status.is_success() {
                 theme::ok()
             } else {
                 theme::err()
             };
-            push_detail_field_styled(
-                &mut details_text,
-                &mut detail_fields,
+            details.field_styled(
                 "Last Response Status",
                 status.to_string(),
-                label_style,
                 theme::fg(status_color),
             );
         } else {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
-                "Last Response Status",
-                NONE_PLACEHOLDER.to_string(),
-                label_style,
-            );
+            details.field("Last Response Status", NONE_PLACEHOLDER.to_string());
         }
-        details_text.push(Line::from(""));
-        detail_fields.push(None);
-        push_detail_note(
-            &mut details_text,
-            &mut detail_fields,
-            "Timed by pairing request and response IDs",
-        );
+        details.plain_line(Line::from(""));
+        details.note("Timed by pairing request and response IDs");
     } else if let Some(stun) = stun_info {
-        push_rtt_field(
-            &mut details_text,
-            &mut detail_fields,
-            "STUN RTT",
-            conn.stun_rtt,
-            label_style,
-        );
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
+        details.rtt_field("STUN RTT", conn.stun_rtt);
+        details.field(
             "Last Message",
             format!("{} {}", stun.method, stun.message_class),
-            label_style,
         );
-        details_text.push(Line::from(""));
-        detail_fields.push(None);
-        push_detail_note(
-            &mut details_text,
-            &mut detail_fields,
-            "Paired by 96-bit transaction ID",
-        );
+        details.plain_line(Line::from(""));
+        details.note("Paired by 96-bit transaction ID");
     } else if let Some(ntp) = ntp_info {
-        push_rtt_field(
-            &mut details_text,
-            &mut detail_fields,
-            "NTP RTT",
-            conn.ntp_rtt,
-            label_style,
-        );
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
+        details.rtt_field("NTP RTT", conn.ntp_rtt);
+        details.field(
             "Stratum",
             if ntp.stratum == 0 {
                 NONE_PLACEHOLDER.to_string()
             } else {
                 ntp.stratum.to_string()
             },
-            label_style,
         );
-        details_text.push(Line::from(""));
-        detail_fields.push(None);
-        push_detail_note(
-            &mut details_text,
-            &mut detail_fields,
-            "Paired by originate timestamp echo",
-        );
+        details.plain_line(Line::from(""));
+        details.note("Paired by originate timestamp echo");
     } else if let Some(sequence) = icmp_echo_sequence {
         // The row set depends only on the class (an echo flow), never on
         // direction or measurement, which both resolve asynchronously. An
         // inbound echo keeps the row as a placeholder; the footnote explains
         // that the remote sender is the one timing it.
         let is_responder = conn.connection_direction == Some(false);
-        push_rtt_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Ping RTT",
-            conn.icmp_echo_rtt,
-            label_style,
-        );
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Last Sequence",
-            sequence.to_string(),
-            label_style,
-        );
-        details_text.push(Line::from(""));
-        detail_fields.push(None);
-        push_detail_note(
-            &mut details_text,
-            &mut detail_fields,
-            if is_responder {
-                "Inbound echo: RTT is timed by the remote sender"
-            } else {
-                "Paired by echo ID and sequence"
-            },
-        );
+        details.rtt_field("Ping RTT", conn.icmp_echo_rtt);
+        details.field("Last Sequence", sequence.to_string());
+        details.plain_line(Line::from(""));
+        details.note(if is_responder {
+            "Inbound echo: RTT is timed by the remote sender"
+        } else {
+            "Paired by echo ID and sequence"
+        });
     } else if !show_rtt {
         // Nothing on a bare UDP or non-echo ICMP flow is timeable or
         // countable: there is no handshake or request/reply ID to pair.
-        push_detail_note(
-            &mut details_text,
-            &mut detail_fields,
-            "No transport metrics for this protocol",
-        );
+        details.note("No transport metrics for this protocol");
     } else {
-        push_rtt_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Initial RTT",
-            conn.initial_rtt,
-            label_style,
-        );
+        details.rtt_field("Initial RTT", conn.initial_rtt);
     }
     if let Some(quic) = quic_info {
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
+        details.field(
             "Idle Timeout",
             quic.idle_timeout
                 .map(format_idle_timeout)
                 .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            label_style,
         );
-        push_detail_field(
-            &mut details_text,
-            &mut detail_fields,
+        details.field(
             "Connection Close",
             quic.connection_close
                 .as_ref()
                 .map(format_quic_close)
                 .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            label_style,
         );
         // Separated from the fields above so it reads as a footnote on the
         // card rather than another value that failed to resolve.
-        details_text.push(Line::from(""));
-        detail_fields.push(None);
-        push_detail_note(
-            &mut details_text,
-            &mut detail_fields,
-            "Loss counters are encrypted in QUIC",
-        );
+        details.plain_line(Line::from(""));
+        details.note("Loss counters are encrypted in QUIC");
     } else if conn.protocol == Protocol::Tcp {
         let counters = conn.tcp_analytics.as_ref();
         // Live RTT: EWMA over data-segment round trips, updated for the whole
         // life of the connection (unlike the one-shot handshake RTT above).
-        push_rtt_field(
-            &mut details_text,
-            &mut detail_fields,
-            "Live RTT",
-            counters.and_then(|a| a.smoothed_rtt),
-            label_style,
-        );
+        details.rtt_field("Live RTT", counters.and_then(|a| a.smoothed_rtt));
         for (label, value) in [
             ("TCP Retransmits", counters.map(|a| a.retransmit_count)),
             (
@@ -2333,24 +1615,16 @@ pub(in crate::ui) fn draw_connection_details(
             ),
             ("Window Size", counters.map(|a| a.last_window_size as u64)),
         ] {
-            push_detail_field(
-                &mut details_text,
-                &mut detail_fields,
+            details.field(
                 label,
                 value
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-                label_style,
             );
         }
     }
-    pad_detail_section(
-        &mut details_text,
-        &mut detail_fields,
-        metrics_start,
-        TRANSPORT_CARD_ROWS,
-    );
-    right_ranges.push(metrics_start..details_text.len());
+    details.pad_section(metrics_start, TRANSPORT_CARD_ROWS);
+    right_ranges.push(metrics_start..details.rows());
 
     // Continuity: the header band echoes the selected row so users feel
     // like they zoomed into the Overview entry rather than landed on a
@@ -2408,6 +1682,12 @@ pub(in crate::ui) fn draw_connection_details(
     // readable. The right pane needs no title of its own — its content
     // starts with the bold Application and Transport Health headings.
     let split_horizontally = info_area.width >= DETAILS_SPLIT_MIN_WIDTH;
+    // The builder is done; the drain below reshuffles raw lines and fields.
+    let DetailsBuilder {
+        lines: mut details_text,
+        fields: mut detail_fields,
+        ..
+    } = details;
     let mut right_text: Vec<Line> = Vec::new();
     let mut right_fields: Vec<Option<(String, String)>> = Vec::new();
     if split_horizontally {
@@ -2493,8 +1773,7 @@ pub(in crate::ui) fn draw_connection_details(
     );
 
     // Traffic details - also track fields for click-to-copy
-    let mut traffic_text: Vec<Line> = Vec::new();
-    let mut traffic_fields: Vec<Option<(String, String)>> = Vec::new();
+    let mut traffic = DetailsBuilder::new(label_style);
 
     let rx_value_style = theme::fg(theme::rx());
     let tx_value_style = theme::fg(theme::tx());
@@ -2508,54 +1787,33 @@ pub(in crate::ui) fn draw_connection_details(
     } else {
         format_rate(conn.current_outgoing_rate_bps)
     };
-    push_detail_field_styled(
-        &mut traffic_text,
-        &mut traffic_fields,
-        "Bytes Sent",
-        format_bytes(conn.bytes_sent),
-        label_style,
-        tx_value_style,
-    );
-    push_detail_field_styled(
-        &mut traffic_text,
-        &mut traffic_fields,
+    traffic.field_styled("Bytes Sent", format_bytes(conn.bytes_sent), tx_value_style);
+    traffic.field_styled(
         "Bytes Received",
         format_bytes(conn.bytes_received),
-        label_style,
         rx_value_style,
     );
-    push_detail_field_styled(
-        &mut traffic_text,
-        &mut traffic_fields,
+    traffic.field_styled(
         "Packets Sent",
         conn.packets_sent.to_string(),
-        label_style,
         tx_value_style,
     );
-    push_detail_field_styled(
-        &mut traffic_text,
-        &mut traffic_fields,
+    traffic.field_styled(
         "Packets Received",
         conn.packets_received.to_string(),
-        label_style,
         rx_value_style,
     );
-    push_detail_field_styled(
-        &mut traffic_text,
-        &mut traffic_fields,
-        "Current Rate (In)",
-        current_in_rate.clone(),
-        label_style,
-        rx_value_style,
-    );
-    push_detail_field_styled(
-        &mut traffic_text,
-        &mut traffic_fields,
+    traffic.field_styled("Current Rate (In)", current_in_rate.clone(), rx_value_style);
+    traffic.field_styled(
         "Current Rate (Out)",
         current_out_rate.clone(),
-        label_style,
         tx_value_style,
     );
+    let DetailsBuilder {
+        lines: traffic_text,
+        fields: traffic_fields,
+        ..
+    } = traffic;
 
     // Traffic section directly under the info panes: one blank spacer
     // row, the section header, then the stat fields with per-connection

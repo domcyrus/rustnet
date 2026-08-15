@@ -42,6 +42,39 @@ pub struct ParsedPacket {
 }
 
 impl ParsedPacket {
+    /// Packet with the given flow fields and process attribution. The address
+    /// kinds and gateway flag start at their unicast/false defaults (they are
+    /// overwritten centrally in `PacketParser::parse_packet`), and
+    /// `tcp_header`/`dpi_result` start as `None` for the caller to fill in
+    /// where applicable.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        protocol: Protocol,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+        protocol_state: ProtocolState,
+        is_outgoing: bool,
+        packet_len: usize,
+        process_name: Option<String>,
+        process_id: Option<u32>,
+    ) -> Self {
+        Self {
+            protocol,
+            local_addr,
+            remote_addr,
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
+            tcp_header: None,
+            protocol_state,
+            is_outgoing,
+            packet_len,
+            dpi_result: None,
+            process_name,
+            process_id,
+        }
+    }
+
     /// The flow identity this packet belongs to, derived from protocol and
     /// addresses. `ConnectionKey` is `Copy`, so this costs nothing on the
     /// per-packet path (no allocation, unlike the former `String` key field).
@@ -63,21 +96,16 @@ impl ParsedPacket {
         remote_addr: SocketAddr,
         protocol_state: ProtocolState,
     ) -> Self {
-        Self {
+        Self::new(
             protocol,
             local_addr,
             remote_addr,
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            tcp_header: None,
             protocol_state,
-            is_outgoing: false,
-            packet_len: 0,
-            dpi_result: None,
-            process_name: None,
-            process_id: None,
-        }
+            false,
+            0,
+            None,
+            None,
+        )
     }
 
     /// TCP test packet carrying the given header.
@@ -746,22 +774,16 @@ impl PacketParser {
             (SocketAddr::new(target_ip, 0), SocketAddr::new(sender_ip, 0))
         };
 
-        Some(ParsedPacket {
-            protocol: Protocol::Arp,
+        Some(ParsedPacket::new(
+            Protocol::Arp,
             local_addr,
             remote_addr,
-            // Overwritten centrally in PacketParser::parse_packet
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            tcp_header: None,
-            protocol_state: ProtocolState::Arp(arp_info),
+            ProtocolState::Arp(arp_info),
             is_outgoing,
-            packet_len: data.len(),
-            dpi_result: None,
+            data.len(),
             process_name,
             process_id,
-        })
+        ))
     }
 
     /// Parse a raw IPv4 packet (no link-layer header)
@@ -859,6 +881,23 @@ impl PacketParser {
 mod tests {
     use super::*;
     use std::net::IpAddr;
+
+    fn local_addresses(ips: impl IntoIterator<Item = IpAddr>) -> LocalAddresses {
+        LocalAddresses {
+            ips: ips.into_iter().collect(),
+            ..LocalAddresses::default()
+        }
+    }
+
+    fn local_addresses_with_gateways(
+        ips: impl IntoIterator<Item = IpAddr>,
+        gateways: impl IntoIterator<Item = IpAddr>,
+    ) -> LocalAddresses {
+        LocalAddresses {
+            gateways: gateways.into_iter().collect(),
+            ..local_addresses(ips)
+        }
+    }
 
     /// Helper to create a parser with a specific linktype and controlled local IPs
     /// This adds 192.168.1.100 to the local_ips set so test packets are correctly identified
@@ -1296,7 +1335,7 @@ mod tests {
         parser.gateways.clear();
         let gateway = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let collector =
-            || LocalAddresses::from_ips([IpAddr::V4(Ipv4Addr::LOCALHOST)]).with_gateways([gateway]);
+            || local_addresses_with_gateways([IpAddr::V4(Ipv4Addr::LOCALHOST)], [gateway]);
 
         assert!(
             parser.refresh_local_ips_with(collector),
@@ -1324,7 +1363,7 @@ mod tests {
         let new_local = IpAddr::V6("2001:db8::1".parse().expect("valid fixture address"));
         let corrected = parser
             .parse_packet_with_local_ip_collector(&packet, || {
-                LocalAddresses::from_ips([
+                local_addresses([
                     IpAddr::V4(Ipv4Addr::LOCALHOST),
                     IpAddr::V6(Ipv6Addr::LOCALHOST),
                     new_local,
@@ -1345,7 +1384,7 @@ mod tests {
         let new = IpAddr::V6("2001:db8::2".parse().expect("valid new address"));
         parser.local_ips = [old].into_iter().collect();
 
-        assert!(parser.refresh_local_ips_with(|| LocalAddresses::from_ips([new])));
+        assert!(parser.refresh_local_ips_with(|| local_addresses([new])));
         assert!(!parser.local_ips.contains(&old));
         assert!(parser.local_ips.contains(&new));
     }
@@ -1361,7 +1400,7 @@ mod tests {
         let collector_calls = Cell::new(0u32);
         let unchanged_collector = || {
             collector_calls.set(collector_calls.get() + 1);
-            LocalAddresses::from_ips([IpAddr::V4(Ipv4Addr::LOCALHOST)])
+            local_addresses([IpAddr::V4(Ipv4Addr::LOCALHOST)])
         };
 
         parser
@@ -1393,7 +1432,7 @@ mod tests {
         );
 
         let new = IpAddr::V6("2001:db8::99".parse().expect("valid address"));
-        assert!(parser.refresh_local_ips_with(|| LocalAddresses::from_ips([new])));
+        assert!(parser.refresh_local_ips_with(|| local_addresses([new])));
         assert_eq!(
             parser.unchanged_ambiguous_refreshes, 0,
             "a refresh that observes a change must reset the backoff"

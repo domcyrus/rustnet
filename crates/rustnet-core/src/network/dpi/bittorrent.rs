@@ -22,12 +22,12 @@ const MAX_DHT_METHOD_LEN: usize = 64;
 // --- TCP: Peer Handshake ---
 
 /// Check if the payload starts with a BitTorrent peer handshake.
-pub fn is_bittorrent_handshake(payload: &[u8]) -> bool {
+pub(super) fn is_bittorrent_handshake(payload: &[u8]) -> bool {
     payload.starts_with(BT_HANDSHAKE_PREFIX)
 }
 
 /// Analyze a BitTorrent TCP handshake payload and extract protocol details.
-pub fn analyze_bittorrent(payload: &[u8]) -> Option<BitTorrentInfo> {
+pub(super) fn analyze_bittorrent(payload: &[u8]) -> Option<BitTorrentInfo> {
     if !is_bittorrent_handshake(payload) {
         return None;
     }
@@ -71,7 +71,7 @@ pub fn analyze_bittorrent(payload: &[u8]) -> Option<BitTorrentInfo> {
 
 /// Analyze a UDP payload for BitTorrent DHT or uTP traffic.
 /// Tries DHT first (higher confidence), then uTP.
-pub fn analyze_udp_bittorrent(payload: &[u8]) -> Option<BitTorrentInfo> {
+pub(super) fn analyze_udp_bittorrent(payload: &[u8]) -> Option<BitTorrentInfo> {
     if let Some(info) = analyze_dht(payload) {
         return Some(info);
     }

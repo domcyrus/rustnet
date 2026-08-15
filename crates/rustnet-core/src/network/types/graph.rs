@@ -147,29 +147,6 @@ impl TrafficHistory {
         }
     }
 
-    /// Add a new sample
-    pub fn add_sample(
-        &mut self,
-        rx_bytes_per_sec: u64,
-        tx_bytes_per_sec: u64,
-        connection_count: usize,
-        packets_per_sec: u64,
-        retransmits_per_sec: u64,
-        avg_rtt_ms: Option<f64>,
-    ) {
-        self.add_sample_with_lifecycle(
-            rx_bytes_per_sec,
-            tx_bytes_per_sec,
-            ConnectionLifecycleSample {
-                active: connection_count,
-                ..ConnectionLifecycleSample::default()
-            },
-            packets_per_sec,
-            retransmits_per_sec,
-            avg_rtt_ms,
-        );
-    }
-
     /// Add a traffic sample with connection lifecycle activity.
     pub fn add_sample_with_lifecycle(
         &mut self,
@@ -334,11 +311,6 @@ impl TrafficHistory {
         self.sparkline(count, |s| s.smoothed_tx_bytes_per_sec)
     }
 
-    /// Get active connection count values for sparkline (newest last)
-    pub fn get_connection_sparkline_data(&self, count: usize) -> Vec<u64> {
-        self.sparkline(count, |s| s.connection_count as u64)
-    }
-
     pub fn get_opened_sparkline_data(&self, count: usize) -> Vec<u64> {
         self.sparkline(count, |s| s.smoothed_opened_connections_per_sec_tenths)
     }
@@ -457,35 +429,55 @@ impl Default for TrafficHistory {
 mod tests {
     use super::*;
 
+    fn add_sample(
+        history: &mut TrafficHistory,
+        rx_bytes_per_sec: u64,
+        tx_bytes_per_sec: u64,
+        connection_count: usize,
+        packets_per_sec: u64,
+        retransmits_per_sec: u64,
+        avg_rtt_ms: Option<f64>,
+    ) {
+        history.add_sample_with_lifecycle(
+            rx_bytes_per_sec,
+            tx_bytes_per_sec,
+            ConnectionLifecycleSample {
+                active: connection_count,
+                ..ConnectionLifecycleSample::default()
+            },
+            packets_per_sec,
+            retransmits_per_sec,
+            avg_rtt_ms,
+        );
+    }
+
     #[test]
-    fn sparkline_getters_return_last_count_oldest_first() {
+    fn rate_sparklines_return_last_count_oldest_first() {
         // Distinct rx/tx/conn values per sample so ordering bugs are visible.
         let mut hist = TrafficHistory::new(100);
         for i in 1u64..=5 {
-            hist.add_sample(i * 10, i * 100, i as usize, 0, 0, None);
+            add_sample(&mut hist, i * 10, i * 100, i as usize, 0, 0, None);
         }
 
         // Fewer than available: keep the N newest stored samples in order.
         assert_eq!(hist.get_rx_sparkline_data(2), vec![30, 40]);
         assert_eq!(hist.get_tx_sparkline_data(2), vec![300, 400]);
-        assert_eq!(hist.get_connection_sparkline_data(3), vec![3, 4, 5]);
-
-        // count exceeds sample count: return everything, oldest→newest.
-        assert_eq!(hist.get_connection_sparkline_data(99), vec![1, 2, 3, 4, 5]);
+        // count exceeds sample count: return everything, oldest to newest.
+        assert_eq!(hist.get_rx_sparkline_data(99), vec![10, 15, 20, 30, 40]);
 
         // count == 0: empty.
-        assert!(hist.get_connection_sparkline_data(0).is_empty());
+        assert!(hist.get_rx_sparkline_data(0).is_empty());
 
         // Empty history: empty out, no panic.
         let empty = TrafficHistory::new(10);
-        assert!(empty.get_connection_sparkline_data(5).is_empty());
+        assert!(empty.get_rx_sparkline_data(5).is_empty());
     }
 
     #[test]
     fn sparkline_smoothing_preserves_the_full_history_window() {
         let mut history = TrafficHistory::new(5);
         for i in 1u64..=5 {
-            history.add_sample(i * 10, i * 100, 1, 0, 0, None);
+            add_sample(&mut history, i * 10, i * 100, 1, 0, 0, None);
         }
 
         let rx = history.get_rx_sparkline_data(usize::MAX);
@@ -539,11 +531,11 @@ mod tests {
     fn trimming_history_does_not_resmooth_the_left_edge() {
         let mut history = TrafficHistory::new(3);
         for value in [100, 200, 300] {
-            history.add_sample(value, value, 1, 0, 0, None);
+            add_sample(&mut history, value, value, 1, 0, 0, None);
         }
         assert_eq!(history.get_rx_sparkline_data(usize::MAX), [100, 150, 200]);
 
-        history.add_sample(400, 400, 1, 0, 0, None);
+        add_sample(&mut history, 400, 400, 1, 0, 0, None);
 
         assert_eq!(history.get_rx_sparkline_data(usize::MAX), [150, 200, 300]);
     }
@@ -586,11 +578,11 @@ mod tests {
     #[test]
     fn traffic_scale_forgets_peaks_after_they_leave_the_window() {
         let mut history = TrafficHistory::new(3);
-        history.add_sample(10_000, 10_000, 1, 0, 0, None);
+        add_sample(&mut history, 10_000, 10_000, 1, 0, 0, None);
         assert_eq!(history.rx_scale.target, 16_384);
 
         for _ in 0..5 {
-            history.add_sample(1_000, 1_000, 1, 0, 0, None);
+            add_sample(&mut history, 1_000, 1_000, 1, 0, 0, None);
         }
 
         assert_eq!(history.get_rx_sparkline_data(usize::MAX), [1_000; 3]);
@@ -607,7 +599,7 @@ mod tests {
         let mut history = TrafficHistory::new(60);
 
         // Add sample with 100 packets and 5 retransmits (5% loss)
-        history.add_sample(1000, 500, 10, 100, 5, Some(25.0));
+        add_sample(&mut history, 1000, 500, 10, 100, 5, Some(25.0));
 
         let (loss_data, rtt_data) = history.get_health_chart_data();
 
@@ -627,7 +619,7 @@ mod tests {
         let mut history = TrafficHistory::new(60);
 
         // Add sample with 0 packets (no loss calculation possible)
-        history.add_sample(1000, 500, 10, 0, 0, None);
+        add_sample(&mut history, 1000, 500, 10, 0, 0, None);
 
         let (loss_data, rtt_data) = history.get_health_chart_data();
 
@@ -645,7 +637,15 @@ mod tests {
 
         // Add multiple samples
         for i in 0..5 {
-            history.add_sample(1000, 500, 10, 100, i * 2, Some((i * 10) as f64));
+            add_sample(
+                &mut history,
+                1000,
+                500,
+                10,
+                100,
+                i * 2,
+                Some((i * 10) as f64),
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
 

@@ -6,13 +6,13 @@ use libbpf_rs::MapCore;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 const TASK_COMM_LEN: usize = 16;
-pub const CONN_KEY_SIZE: usize = 40;
-pub const CONN_INFO_SIZE: usize = 40;
+pub(super) const CONN_KEY_SIZE: usize = 40;
+pub(super) const CONN_INFO_SIZE: usize = 40;
 
 /// Connection key matching `socket_tracker_types.h`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConnKey {
+pub(super) struct ConnKey {
     pub saddr: [u32; 4],
     pub daddr: [u32; 4],
     pub sport: u16,
@@ -25,7 +25,7 @@ pub struct ConnKey {
 /// Raw process identity matching `socket_tracker_types.h`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConnInfo {
+struct ConnInfo {
     pub tgid: u32,
     pub tid: u32,
     pub uid: u32,
@@ -85,7 +85,7 @@ impl ConnKey {
         }
     }
 
-    pub fn new_v4(
+    pub(super) fn new_v4(
         src_ip: Ipv4Addr,
         dst_ip: Ipv4Addr,
         src_port: u16,
@@ -98,7 +98,7 @@ impl ConnKey {
         key
     }
 
-    pub(crate) fn new_v6(
+    pub(super) fn new_v6(
         src_ip: Ipv6Addr,
         dst_ip: Ipv6Addr,
         src_port: u16,
@@ -111,20 +111,20 @@ impl ConnKey {
         key
     }
 
-    pub fn new_icmp_v4(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, icmp_id: u16) -> Self {
+    pub(super) fn new_icmp_v4(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, icmp_id: u16) -> Self {
         let mut key = Self::empty_v4(icmp_id, 0, IPPROTO_ICMP);
         key.fill_v4(src_ip, dst_ip);
         key
     }
 
-    pub fn new_icmp_v6(src_ip: Ipv6Addr, dst_ip: Ipv6Addr, icmp_id: u16) -> Self {
+    pub(super) fn new_icmp_v6(src_ip: Ipv6Addr, dst_ip: Ipv6Addr, icmp_id: u16) -> Self {
         let mut key = Self::empty_v6(icmp_id, 0, IPPROTO_ICMPV6);
         key.fill_v6(src_ip, dst_ip);
         key
     }
 
     /// Return the exact C ABI bytes used as the BPF map key.
-    pub fn as_bytes(&self) -> [u8; CONN_KEY_SIZE] {
+    pub(super) fn as_bytes(&self) -> [u8; CONN_KEY_SIZE] {
         let mut bytes = [0; CONN_KEY_SIZE];
         // SAFETY: ConnKey has a compile-time checked size, contains explicit
         // initialized padding, and bytes accepts every bit pattern.
@@ -191,10 +191,13 @@ fn monotonic_time_ns() -> Result<u64> {
     Ok(timestamp.tv_sec as u64 * 1_000_000_000 + timestamp.tv_nsec as u64)
 }
 
-pub struct MapReader;
+pub(super) struct MapReader;
 
 impl MapReader {
-    pub fn lookup_connection(map: &libbpf_rs::Map, key: ConnKey) -> Result<Option<ProcessInfo>> {
+    pub(super) fn lookup_connection(
+        map: &libbpf_rs::Map,
+        key: ConnKey,
+    ) -> Result<Option<ProcessInfo>> {
         let key_bytes = key.as_bytes();
 
         match map.lookup(&key_bytes, libbpf_rs::MapFlags::empty()) {
@@ -210,7 +213,10 @@ impl MapReader {
         }
     }
 
-    pub fn cleanup_stale_entries(map: &libbpf_rs::Map, stale_threshold_ns: u64) -> Result<u32> {
+    pub(super) fn cleanup_stale_entries(
+        map: &libbpf_rs::Map,
+        stale_threshold_ns: u64,
+    ) -> Result<u32> {
         let current_time_ns = monotonic_time_ns()?;
         let mut keys_to_delete = Vec::new();
 
@@ -245,7 +251,7 @@ impl MapReader {
         Ok(cleanup_count)
     }
 
-    pub fn debug_lookup_miss(map: &libbpf_rs::Map, lookup_key: &ConnKey) -> Result<()> {
+    pub(super) fn debug_lookup_miss(map: &libbpf_rs::Map, lookup_key: &ConnKey) -> Result<()> {
         log::debug!(
             "eBPF map miss: key={:02x?}, source={:08x}, destination={:08x}, sport={}, dport={}, proto={}, family={}",
             lookup_key.as_bytes(),

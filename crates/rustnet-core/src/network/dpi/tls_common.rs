@@ -46,14 +46,14 @@ pub(in crate::network::dpi) struct TlsParseOptions {
 }
 
 impl TlsParseOptions {
-    pub fn tcp() -> Self {
+    pub(super) fn tcp() -> Self {
         Self {
             transport: TlsTransport::Tcp,
             allow_partial: true,
         }
     }
 
-    pub fn quic(allow_partial: bool) -> Self {
+    pub(super) fn quic(allow_partial: bool) -> Self {
         Self {
             transport: TlsTransport::Quic,
             allow_partial,
@@ -584,8 +584,28 @@ fn parse_supported_versions(data: &[u8], is_client: bool) -> Option<TlsVersion> 
     }
 }
 
+/// TLS wire-format builders shared by the TLS-family DPI tests: the QUIC
+/// parser reuses the SNI extension layout, so its tests encode it here.
+#[cfg(test)]
+pub(crate) mod test_fixtures {
+    /// Build a minimal SNI extension structure for `hostname`.
+    pub(crate) fn build_sni_extension(hostname: &str) -> Vec<u8> {
+        let name_len = hostname.len() as u16;
+        let list_len = name_len + 3;
+        let mut ext = Vec::new();
+        ext.extend_from_slice(&0x0000u16.to_be_bytes()); // type: SNI
+        ext.extend_from_slice(&(list_len + 2).to_be_bytes()); // extension length
+        ext.extend_from_slice(&list_len.to_be_bytes());
+        ext.push(0x00); // name type
+        ext.extend_from_slice(&name_len.to_be_bytes());
+        ext.extend_from_slice(hostname.as_bytes());
+        ext
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_fixtures::build_sni_extension;
     use super::*;
 
     #[test]
@@ -727,19 +747,6 @@ mod tests {
         msg.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
         msg.extend_from_slice(&body);
         msg
-    }
-
-    fn build_sni_extension(hostname: &str) -> Vec<u8> {
-        let name_len = hostname.len() as u16;
-        let list_len = name_len + 3;
-        let mut ext = Vec::new();
-        ext.extend_from_slice(&0x0000u16.to_be_bytes()); // type: SNI
-        ext.extend_from_slice(&(list_len + 2).to_be_bytes()); // extension length
-        ext.extend_from_slice(&list_len.to_be_bytes());
-        ext.push(0x00); // name type
-        ext.extend_from_slice(&name_len.to_be_bytes());
-        ext.extend_from_slice(hostname.as_bytes());
-        ext
     }
 
     #[test]

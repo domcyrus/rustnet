@@ -12,32 +12,29 @@ use std::time::SystemTime;
 fn make_packet(flow: u16, seq: u32) -> ParsedPacket {
     let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 10000 + flow);
     let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
-    ParsedPacket {
-        protocol: Protocol::Tcp,
+    let mut packet = ParsedPacket::new(
+        Protocol::Tcp,
         local_addr,
         remote_addr,
-        local_addr_kind: AddrKind::Unicast,
-        remote_addr_kind: AddrKind::Unicast,
-        remote_is_gateway: false,
-        tcp_header: Some(TcpHeaderInfo {
-            seq,
-            ack: seq.wrapping_add(1),
-            window: 65535,
-            flags: TcpFlags {
-                syn: false,
-                ack: true,
-                fin: false,
-                rst: false,
-            },
-            payload_len: 1400,
-        }),
-        protocol_state: ProtocolState::Tcp(TcpState::Established),
-        is_outgoing: true,
-        packet_len: 1400,
-        dpi_result: None,
-        process_name: None,
-        process_id: None,
-    }
+        ProtocolState::Tcp(TcpState::Established),
+        true,
+        1400,
+        None,
+        None,
+    );
+    packet.tcp_header = Some(TcpHeaderInfo {
+        seq,
+        ack: seq.wrapping_add(1),
+        window: 65535,
+        flags: TcpFlags {
+            syn: false,
+            ack: true,
+            fin: false,
+            rst: false,
+        },
+        payload_len: 1400,
+    });
+    packet
 }
 
 /// Interleaved packet stream: `flows` connections sending `packets_per_flow`

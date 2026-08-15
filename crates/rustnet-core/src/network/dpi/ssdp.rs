@@ -12,7 +12,7 @@ const MIN_SSDP_SIZE: usize = 10;
 ///
 /// SSDP uses HTTP-like text format with methods like M-SEARCH and NOTIFY.
 /// Returns `None` if the packet is not valid SSDP.
-pub fn analyze_ssdp(payload: &[u8]) -> Option<SsdpInfo> {
+pub(super) fn analyze_ssdp(payload: &[u8]) -> Option<SsdpInfo> {
     if payload.len() < MIN_SSDP_SIZE {
         return None;
     }

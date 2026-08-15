@@ -1,7 +1,7 @@
 // src/network/merge.rs - Connection merging and update utilities
 
 use log::{debug, info, warn};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reassembler};
 use crate::network::parser::{ParsedPacket, TcpFlags};
@@ -176,13 +176,11 @@ fn analyze_tcp_segment(
             // Err means the ACK's capture time precedes the send: clocks or
             // packet order went backwards, so no sample either way.
             if let Ok(rtt) = at.duration_since(sent_at) {
-                analytics.last_rtt = Some(rtt);
                 analytics.smoothed_rtt = Some(match analytics.smoothed_rtt {
                     // RFC 6298 smoothing: 7/8 previous + 1/8 new sample.
                     Some(srtt) => (srtt * 7 + rtt) / 8,
                     None => rtt,
                 });
-                analytics.rtt_samples += 1;
                 events.rtt_sample = Some(rtt);
             }
             analytics.rtt_probe = None;
@@ -447,7 +445,7 @@ fn icmp_echo_direction(parsed: &ParsedPacket) -> Option<bool> {
 }
 
 /// Create a new connection from a parsed packet
-pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> Connection {
+pub(crate) fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> Connection {
     let mut conn = Connection::new(
         parsed.protocol,
         parsed.local_addr,
@@ -514,7 +512,6 @@ pub fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTime) -> 
     if let Some(dpi_result) = &parsed.dpi_result {
         conn.dpi_info = Some(DpiInfo {
             application: dpi_result.application.clone(),
-            last_update_time: Instant::now(),
         });
 
         debug!(
@@ -561,7 +558,6 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
             // No existing DPI info, use the new one
             conn.dpi_info = Some(DpiInfo {
                 application: dpi_result.application.clone(),
-                last_update_time: Instant::now(),
             });
 
             debug!(
@@ -571,9 +567,6 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
             );
         }
         Some(dpi_info) => {
-            // Update the last update time
-            dpi_info.last_update_time = Instant::now();
-
             // Match on both the existing and new application protocols
             match (&mut dpi_info.application, &dpi_result.application) {
                 // HTTP merging
@@ -1475,8 +1468,6 @@ mod tests {
 
         assert_eq!(events.rtt_sample, Some(Duration::from_millis(40)));
         assert_eq!(a.smoothed_rtt, Some(Duration::from_millis(40)));
-        assert_eq!(a.last_rtt, Some(Duration::from_millis(40)));
-        assert_eq!(a.rtt_samples, 1);
         assert_eq!(a.rtt_probe, None, "a completed probe must not re-fire");
     }
 
@@ -1506,7 +1497,6 @@ mod tests {
 
         let events = recv_at(&mut a, 0, 100, 0, t0() + Duration::from_millis(50));
         assert_eq!(events.rtt_sample, None);
-        assert_eq!(a.rtt_samples, 0);
     }
 
     #[test]
@@ -1522,8 +1512,6 @@ mod tests {
         send_at(&mut a, 100, 100, sent);
         recv_at(&mut a, 0, 200, 0, sent + Duration::from_millis(16));
         assert_eq!(a.smoothed_rtt, Some(Duration::from_millis(72)));
-        assert_eq!(a.last_rtt, Some(Duration::from_millis(16)));
-        assert_eq!(a.rtt_samples, 2);
     }
 
     #[test]

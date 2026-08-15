@@ -156,8 +156,10 @@ pub struct App {
 }
 
 impl App {
-    /// Create a new application instance
-    pub fn new(config: Config) -> Result<Self> {
+    /// Create an application instance with default output handles. Tests only:
+    /// production goes through [`new_with_output_handles`](Self::new_with_output_handles).
+    #[cfg(test)]
+    pub(crate) fn new(config: Config) -> Result<Self> {
         Self::new_with_output_handles(config, AppOutputHandles::default())
     }
 
@@ -437,7 +439,7 @@ impl App {
     }
 
     /// Get interface statistics
-    pub fn get_interface_stats(&self) -> Vec<InterfaceStats> {
+    pub(crate) fn get_interface_stats(&self) -> Vec<InterfaceStats> {
         self.interface_stats
             .iter()
             .map(|entry| entry.value().clone())
@@ -445,7 +447,7 @@ impl App {
     }
 
     /// Get interface rates (bytes/sec)
-    pub fn get_interface_rates(&self) -> HashMap<String, InterfaceRates> {
+    pub(crate) fn get_interface_rates(&self) -> HashMap<String, InterfaceRates> {
         self.interface_rates
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
@@ -453,7 +455,7 @@ impl App {
     }
 
     /// Get traffic transferred over each interface's rolling 60-second window.
-    pub fn get_interface_traffic_windows(&self) -> HashMap<String, InterfaceTrafficWindow> {
+    pub(crate) fn get_interface_traffic_windows(&self) -> HashMap<String, InterfaceTrafficWindow> {
         self.interface_traffic_windows
             .iter()
             .map(|entry| (entry.key().clone(), entry.value().clone()))
@@ -461,7 +463,7 @@ impl App {
     }
 
     /// Get the latest retained process traffic snapshot.
-    pub fn get_process_activity_snapshot(&self) -> ProcessActivitySnapshot {
+    pub(crate) fn get_process_activity_snapshot(&self) -> ProcessActivitySnapshot {
         self.process_activity
             .read()
             .map(|activity| activity.snapshot())
@@ -472,7 +474,7 @@ impl App {
     /// RX/TX rate history for one connection (by `Connection::key()`),
     /// as (rx, tx) bytes/sec vectors oldest→newest. None until the
     /// traffic-history thread has sampled the connection at least once.
-    pub fn get_connection_rate_history(&self, key: &str) -> Option<ConnRateHistorySnapshot> {
+    pub(crate) fn get_connection_rate_history(&self, key: &str) -> Option<ConnRateHistorySnapshot> {
         self.conn_rate_history
             .read()
             .ok()?
@@ -485,7 +487,7 @@ impl App {
             })
     }
 
-    pub fn get_traffic_history(&self) -> TrafficHistory {
+    pub(crate) fn get_traffic_history(&self) -> TrafficHistory {
         self.traffic_history
             .read()
             .map(|h| h.clone())
@@ -547,12 +549,12 @@ impl App {
     }
 
     /// Whether annotated PCAPNG export is active for this run.
-    pub fn is_pcapng_export_enabled(&self) -> bool {
+    pub(crate) fn is_pcapng_export_enabled(&self) -> bool {
         self.config.pcapng_export_file.is_some()
     }
 
     /// Whether classic PCAP export is active for this run.
-    pub fn is_pcap_export_enabled(&self) -> bool {
+    pub(crate) fn is_pcap_export_enabled(&self) -> bool {
         self.config.pcap_export_file.is_some()
     }
 
@@ -562,12 +564,12 @@ impl App {
     }
 
     /// Get the current network interface name
-    pub fn get_current_interface(&self) -> Option<String> {
+    pub(crate) fn get_current_interface(&self) -> Option<String> {
         self.current_interface.read().unwrap().clone()
     }
 
     /// Get the persistent packet-capture failure shown by the TUI.
-    pub fn get_capture_error(&self) -> Option<String> {
+    pub(crate) fn get_capture_error(&self) -> Option<String> {
         self.capture_status
             .read()
             .ok()
@@ -578,15 +580,21 @@ impl App {
     }
 
     /// Get the current process detection status (method and degradation info)
-    pub fn get_process_detection_status(&self) -> ProcessDetectionStatus {
+    pub(crate) fn get_process_detection_status(&self) -> ProcessDetectionStatus {
         self.process_detection_status
             .read()
             .map(|s| s.clone())
             .unwrap_or_default()
     }
 
-    /// Get sandbox status information
-    pub fn get_sandbox_info(&self) -> SandboxReport {
+    /// Get sandbox status information. Rendered by the Linux, Windows, and
+    /// macOS (with `macos-sandbox`) UIs.
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "windows",
+        all(target_os = "macos", feature = "macos-sandbox")
+    ))]
+    pub(crate) fn get_sandbox_info(&self) -> SandboxReport {
         self.sandbox_info
             .read()
             .map(|s| s.clone())
@@ -602,7 +610,7 @@ impl App {
 
     /// Get link layer information for the current interface
     /// Returns (link_layer_type_name, is_tunnel)
-    pub fn get_link_layer_info(&self) -> (String, bool) {
+    pub(crate) fn get_link_layer_info(&self) -> (String, bool) {
         use crate::network::link_layer::LinkLayerType;
 
         if let Ok(linktype_opt) = self.linktype.read()
@@ -625,18 +633,18 @@ impl App {
     }
 
     /// Get the DNS resolver if enabled
-    pub fn get_dns_resolver(&self) -> Option<Arc<DnsResolver>> {
+    pub(crate) fn get_dns_resolver(&self) -> Option<Arc<DnsResolver>> {
         self.dns_resolver.clone()
     }
 
     /// Check if DNS resolution is enabled
-    pub fn is_dns_resolution_enabled(&self) -> bool {
+    pub(crate) fn is_dns_resolution_enabled(&self) -> bool {
         self.dns_resolver.is_some()
     }
 
     /// The ARP/NDP-learned MAC/vendor mapping for `ip`, if one has been
     /// observed.
-    pub fn lookup_neighbor(&self, ip: std::net::IpAddr) -> Option<NeighborEntry> {
+    pub(crate) fn lookup_neighbor(&self, ip: std::net::IpAddr) -> Option<NeighborEntry> {
         self.tracker.neighbor(&ip)
     }
 
@@ -651,13 +659,13 @@ impl App {
     }
 
     /// Toggle the show_historic flag
-    pub fn toggle_show_historic(&self) {
+    pub(crate) fn toggle_show_historic(&self) {
         let prev = self.show_historic.load(Ordering::Relaxed);
         self.show_historic.store(!prev, Ordering::Relaxed);
     }
 
     /// Set the show_historic flag directly
-    pub fn set_show_historic(&self, value: bool) {
+    pub(crate) fn set_show_historic(&self, value: bool) {
         self.show_historic.store(value, Ordering::Relaxed);
     }
 
@@ -677,7 +685,7 @@ impl App {
     /// Seed the tracker's neighbor cache through a real ARP ingest. Tests only.
     #[cfg(test)]
     pub(crate) fn ingest_packet_for_test(&self, parsed: &ParsedPacket) {
-        self.tracker.ingest(parsed);
+        self.tracker.ingest_at(parsed, SystemTime::now());
     }
 
     /// Override the current interface label. Tests only.
@@ -731,10 +739,19 @@ impl App {
         connections: &[Connection],
         now: SystemTime,
     ) {
-        self.process_activity
-            .write()
-            .unwrap()
-            .observe_connections(connections, now);
+        self.process_activity.write().unwrap().observe_sources(
+            now,
+            |observe| {
+                for connection in connections.iter().filter(|conn| !conn.is_historic) {
+                    observe(connection);
+                }
+            },
+            |observe| {
+                for connection in connections.iter().filter(|conn| conn.is_historic) {
+                    observe(connection);
+                }
+            },
+        );
     }
 
     /// Clear all connections and related data, starting fresh
@@ -744,7 +761,7 @@ impl App {
     /// - RTT measurements
     /// - QUIC connection mappings
     /// - Resets statistics counters
-    pub fn clear_all_connections(&self) {
+    pub(crate) fn clear_all_connections(&self) {
         info!("Clearing all connections and resetting statistics");
 
         // Clear the tracker (active + historic tables, RTT, and QUIC mappings)

@@ -12,7 +12,6 @@ use std::path::PathBuf;
 /// Defined here rather than in `rustnet-host` because
 /// [`Connection`](crate::network::types::Connection) carries it
 /// and `rustnet-host` depends on this crate, not the other way round.
-/// `rustnet-host` re-exports it.
 ///
 /// Marked `#[non_exhaustive]` so new relaxation shapes can be added without
 /// breaking downstream `match` arms.
@@ -31,9 +30,7 @@ pub enum MatchQuality {
     ProcfsExact,
     /// procfs match that needed a relaxed key.
     ProcfsRelaxed,
-    /// The backend reported an owner but not how it matched. Produced by the
-    /// compatibility bridge for platforms that still only implement the
-    /// `(pid, name)` tuple API.
+    /// The backend reported an owner but could not report match provenance.
     Unspecified,
 }
 
@@ -149,22 +146,27 @@ pub enum TcpState {
     Unknown,
 }
 
+impl TcpState {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::SynSent => "SYN_SENT",
+            Self::SynReceived => "SYN_RECV",
+            Self::Established => "ESTABLISHED",
+            Self::FinWait1 => "FIN_WAIT1",
+            Self::FinWait2 => "FIN_WAIT2",
+            Self::CloseWait => "CLOSE_WAIT",
+            Self::LastAck => "LAST_ACK",
+            Self::TimeWait => "TIME_WAIT",
+            Self::Closing => "CLOSING",
+            Self::Closed => "CLOSED",
+            Self::Unknown => "TCP_UNKNOWN",
+        }
+    }
+}
+
 impl fmt::Display for TcpState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            TcpState::SynSent => "SYN_SENT",
-            TcpState::SynReceived => "SYN_RECV",
-            TcpState::Established => "ESTABLISHED",
-            TcpState::FinWait1 => "FIN_WAIT1",
-            TcpState::FinWait2 => "FIN_WAIT2",
-            TcpState::CloseWait => "CLOSE_WAIT",
-            TcpState::LastAck => "LAST_ACK",
-            TcpState::TimeWait => "TIME_WAIT",
-            TcpState::Closing => "CLOSING",
-            TcpState::Closed => "CLOSED",
-            TcpState::Unknown => "TCP_UNKNOWN",
-        };
-        write!(f, "{}", name)
+        f.write_str(self.as_str())
     }
 }
 

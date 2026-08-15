@@ -3,11 +3,11 @@
 mod process;
 
 #[cfg(feature = "ebpf")]
-pub mod ebpf;
+mod ebpf;
 #[cfg(feature = "ebpf")]
 mod enhanced;
 
-pub use process::LinuxProcessLookup;
+use process::LinuxProcessLookup;
 
 use crate::ProcessLookup;
 use anyhow::Result;

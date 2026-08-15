@@ -37,7 +37,7 @@ use std::path::Path;
 use crate::SandboxConfig;
 
 /// Result of Seatbelt application
-pub struct SeatbeltResult {
+pub(super) struct SeatbeltResult {
     /// Whether the sandbox was applied
     pub applied: bool,
     /// Human-readable message
@@ -186,7 +186,7 @@ fn build_sbpl_profile(config: &SandboxConfig) -> String {
 ///
 /// The caller (`apply` in mod.rs) handles the `Disabled` mode check, so this
 /// function assumes sandboxing is requested.
-pub fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
+pub(super) fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
     let profile = build_sbpl_profile(config);
     let profile_cstr = CString::new(profile).context("Profile contains null byte")?;
 

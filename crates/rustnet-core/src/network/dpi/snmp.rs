@@ -27,7 +27,7 @@ const PDU_REPORT: u8 = 0xA8;
 /// Analyze an SNMP packet and extract key information.
 ///
 /// Returns `None` if the packet is not valid SNMP.
-pub fn analyze_snmp(payload: &[u8]) -> Option<SnmpInfo> {
+pub(super) fn analyze_snmp(payload: &[u8]) -> Option<SnmpInfo> {
     if payload.len() < MIN_SNMP_SIZE {
         return None;
     }

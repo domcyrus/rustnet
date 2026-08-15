@@ -64,7 +64,7 @@ const ABI_SCOPE: ABI = ABI::V6;
 const ACCOUNT_DATABASE_PATHS: [&str; 3] = ["/etc/passwd", "/etc/group", "/etc/nsswitch.conf"];
 
 /// Result of Landlock application
-pub struct LandlockResult {
+pub(super) struct LandlockResult {
     /// Whether filesystem restrictions were applied
     pub fs_applied: bool,
     /// Whether network restrictions were applied
@@ -100,7 +100,7 @@ fn abi_version(abi: ABI) -> u8 {
 
 /// Check if Landlock is available by attempting a test restriction
 /// Note: This actually attempts to create a minimal ruleset to check
-pub fn is_available() -> bool {
+pub(super) fn is_available() -> bool {
     // Try to create a minimal ruleset - this will fail if Landlock isn't available
     Ruleset::default()
         .handle_access(AccessFs::Execute)
@@ -109,7 +109,7 @@ pub fn is_available() -> bool {
 }
 
 /// Apply Landlock restrictions based on configuration
-pub fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
+pub(super) fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
     // Check if disabled
     if config.mode == SandboxMode::Disabled {
         return Ok(LandlockResult {

@@ -92,9 +92,10 @@ pub fn set_no_color(enabled: bool) {
 }
 
 mod state;
+pub(crate) use state::process_group_label;
 pub use state::{
     ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, PaneScroll,
-    SortColumn, UIState, compute_grouped_rows, compute_scroll_offset, process_group_label,
+    SortColumn, UIState, compute_grouped_rows, compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::{HELP_TAB_INDEX, TAB_COUNT};
 
@@ -107,9 +108,9 @@ mod clipboard;
 pub use clipboard::copy_to_clipboard;
 
 mod actions;
-pub use actions::{
-    clear_all_with_confirmation, try_handle_connection_nav, try_handle_pane_scroll,
-    try_handle_pane_wheel,
+pub use actions::clear_all_with_confirmation;
+pub(crate) use actions::{
+    try_handle_connection_nav, try_handle_pane_scroll, try_handle_pane_wheel,
 };
 
 mod component;
@@ -875,6 +876,46 @@ mod snapshot_tests {
         app
     }
 
+    /// Full-page render of `app` through `draw`, owning the stats /
+    /// click-regions boilerplate every such test repeats. Returns the text
+    /// dump plus the click regions the frame registered.
+    fn render_app_frame(
+        app: &App,
+        ui_state: &UIState,
+        connections: &[Connection],
+        grouped: Option<&[GroupedRow]>,
+        width: u16,
+        height: u16,
+    ) -> (String, ClickableRegions) {
+        let stats = app.get_stats();
+        let mut click_regions = ClickableRegions::default();
+        let output = render(width, height, |f| {
+            draw(
+                f,
+                app,
+                ui_state,
+                connections,
+                grouped,
+                &stats,
+                &mut click_regions,
+            )
+            .expect("draw full page");
+        });
+        (output, click_regions)
+    }
+
+    /// [`render_app_frame`] for the tests that only need the text dump.
+    fn render_app(
+        app: &App,
+        ui_state: &UIState,
+        connections: &[Connection],
+        grouped: Option<&[GroupedRow]>,
+        width: u16,
+        height: u16,
+    ) -> String {
+        render_app_frame(app, ui_state, connections, grouped, width, height).0
+    }
+
     #[test]
     fn full_page_shows_capture_error() {
         let app = test_app();
@@ -883,13 +924,7 @@ mod snapshot_tests {
             show_system_panel: false,
             ..Default::default()
         };
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(100, 16, |f| {
-            draw(f, &app, &ui_state, &[], None, &stats, &mut click_regions)
-                .expect("draw Overview with capture error");
-        });
+        let output = render_app(&app, &ui_state, &[], None, 100, 16);
 
         assert!(
             output
@@ -910,13 +945,7 @@ mod snapshot_tests {
             show_system_panel: false,
             ..Default::default()
         };
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(80, 16, |f| {
-            draw(f, &app, &ui_state, &[], None, &stats, &mut click_regions)
-                .expect("draw Overview with a long capture error");
-        });
+        let output = render_app(&app, &ui_state, &[], None, 80, 16);
 
         let rows: Vec<&str> = output.lines().collect();
         let hint_row = rows
@@ -1063,21 +1092,14 @@ mod snapshot_tests {
         };
         let grouped_rows =
             grouped.then(|| compute_grouped_rows(&connections, &ui_state.expanded_groups));
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        render(140, 26, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                grouped_rows.as_deref(),
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw overview");
-        })
+        render_app(
+            &app,
+            &ui_state,
+            &connections,
+            grouped_rows.as_deref(),
+            140,
+            26,
+        )
     }
 
     #[test]
@@ -1097,21 +1119,7 @@ mod snapshot_tests {
         connections[3].process_name = Some("firefox".to_string());
         app.set_connections_snapshot_for_test(connections.clone());
         let ui_state = UIState::default();
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw overview statistics");
-        });
+        let output = render_app(&app, &ui_state, &connections, None, 140, 40);
 
         assert!(output.contains("Processes: 3"));
     }
@@ -1126,21 +1134,7 @@ mod snapshot_tests {
             filter_query: "process:firefox".to_string(),
             ..Default::default()
         };
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &filtered,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw filtered overview statistics");
-        });
+        let output = render_app(&app, &ui_state, &filtered, None, 140, 40);
 
         assert!(output.contains("Live Connections · 1 shown"));
         assert!(output.contains("Processes: 4"));
@@ -1152,19 +1146,15 @@ mod snapshot_tests {
     /// MAC + vendor. The fixture's remote (140.82.121.4) is public and never
     /// ARPs, so its "Remote MAC" row renders the placeholder.
     fn gateway_arp_reply() -> crate::network::parser::ParsedPacket {
-        use crate::network::types::{AddrKind, ArpInfo, ArpOperation};
+        use crate::network::types::{ArpInfo, ArpOperation};
 
         let gateway = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
         let host = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
-        crate::network::parser::ParsedPacket {
-            protocol: Protocol::Arp,
-            local_addr: SocketAddr::new(host, 0),
-            remote_addr: SocketAddr::new(gateway, 0),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            tcp_header: None,
-            protocol_state: ProtocolState::Arp(ArpInfo {
+        crate::network::parser::ParsedPacket::new(
+            Protocol::Arp,
+            SocketAddr::new(host, 0),
+            SocketAddr::new(gateway, 0),
+            ProtocolState::Arp(ArpInfo {
                 operation: ArpOperation::Reply,
                 sender_mac: "04:d9:f5:c5:ed:e8".to_string(),
                 sender_ip: gateway,
@@ -1173,31 +1163,26 @@ mod snapshot_tests {
                 sender_vendor: Some("ASUSTek COMPUTER INC.".to_string()),
                 target_vendor: Some("Apple, Inc.".to_string()),
             }),
-            is_outgoing: false,
-            packet_len: 42,
-            dpi_result: None,
-            process_name: None,
-            process_id: None,
-        }
+            false,
+            42,
+            None,
+            None,
+        )
     }
 
     /// An ARP reply from the sshd fixture's on-link peer (10.0.0.5). Seeds
     /// the neighbor cache so a Details render of that connection resolves
     /// its "Remote MAC" row to an actual address.
     fn sshd_peer_arp_reply() -> crate::network::parser::ParsedPacket {
-        use crate::network::types::{AddrKind, ArpInfo, ArpOperation};
+        use crate::network::types::{ArpInfo, ArpOperation};
 
         let peer = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5));
         let host = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
-        crate::network::parser::ParsedPacket {
-            protocol: Protocol::Arp,
-            local_addr: SocketAddr::new(host, 0),
-            remote_addr: SocketAddr::new(peer, 0),
-            local_addr_kind: AddrKind::Unicast,
-            remote_addr_kind: AddrKind::Unicast,
-            remote_is_gateway: false,
-            tcp_header: None,
-            protocol_state: ProtocolState::Arp(ArpInfo {
+        crate::network::parser::ParsedPacket::new(
+            Protocol::Arp,
+            SocketAddr::new(host, 0),
+            SocketAddr::new(peer, 0),
+            ProtocolState::Arp(ArpInfo {
                 operation: ArpOperation::Reply,
                 sender_mac: "b8:27:eb:12:34:56".to_string(),
                 sender_ip: peer,
@@ -1206,12 +1191,11 @@ mod snapshot_tests {
                 sender_vendor: Some("Raspberry Pi Foundation".to_string()),
                 target_vendor: Some("Apple, Inc.".to_string()),
             }),
-            is_outgoing: false,
-            packet_len: 42,
-            dpi_result: None,
-            process_name: None,
-            process_id: None,
-        }
+            false,
+            42,
+            None,
+            None,
+        )
     }
 
     /// Details render of `connections[selected]` through the full-page
@@ -1229,21 +1213,7 @@ mod snapshot_tests {
             selected_connection_key: Some(connections[selected].key()),
             ..Default::default()
         };
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-        let output = render(140, height, |f| {
-            draw(
-                f,
-                app,
-                &ui_state,
-                connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw details");
-        });
-        (output, click_regions)
+        render_app_frame(app, &ui_state, connections, None, 140, height)
     }
 
     /// Standard Details render at the 140x40 reference size.
@@ -1304,7 +1274,6 @@ mod snapshot_tests {
         quic_conn.initial_rtt = Some(Duration::from_micros(23_400));
         quic_conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic)),
-            last_update_time: std::time::Instant::now(),
         });
 
         app.set_connections_snapshot_for_test(connections.clone());
@@ -1366,7 +1335,6 @@ mod snapshot_tests {
                 rcode: Some(0),
                 nodata: Some(false),
             }),
-            last_update_time: std::time::Instant::now(),
         });
 
         app.set_connections_snapshot_for_test(connections.clone());
@@ -1427,7 +1395,6 @@ mod snapshot_tests {
                 response_ips: Vec::new(),
                 txid: 0x1234,
             }),
-            last_update_time: std::time::Instant::now(),
         });
         let connections = vec![llmnr];
 
@@ -1460,7 +1427,6 @@ mod snapshot_tests {
                 is_response: true,
                 response_status: Some(NetBiosResponseStatus::NameService(3)),
             }),
-            last_update_time: std::time::Instant::now(),
         });
 
         app.set_connections_snapshot_for_test(connections.clone());
@@ -1564,7 +1530,6 @@ mod snapshot_tests {
                 transaction_id: [7u8; 12],
                 software: None,
             }),
-            last_update_time: std::time::Instant::now(),
         });
         let connections = vec![stun];
 
@@ -1596,7 +1561,6 @@ mod snapshot_tests {
                 origin_timestamp: 0xAABB,
                 transmit_timestamp: 0xCCDD,
             }),
-            last_update_time: std::time::Instant::now(),
         });
         let connections = vec![ntp];
 
@@ -2062,21 +2026,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let connections = app.get_connections();
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(140, 30, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw Activity interface details");
-        });
+        let output = render_app(&app, &ui_state, &connections, None, 140, 30);
 
         insta::with_settings!({
             filters => time_filters(),
@@ -2122,21 +2072,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let connections = app.get_connections();
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        render(150, 40, |f| {
-            draw(
-                f,
-                app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw process Activity");
-        })
+        render_app(app, &ui_state, &connections, None, 150, 40)
     }
 
     #[test]
@@ -2162,21 +2098,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let connections = app.get_connections();
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(140, 40, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw graph");
-        });
+        let output = render_app(&app, &ui_state, &connections, None, 140, 40);
 
         insta::with_settings!({
             filters => time_filters(),
@@ -2189,23 +2111,8 @@ mod snapshot_tests {
     fn loading_screen_via_app() {
         let app = App::new(test_config()).expect("App::new");
         // Leave is_loading=true so draw() takes the loading branch.
-        let connections: Vec<Connection> = Vec::new();
         let ui_state = UIState::default();
-        let stats = app.get_stats();
-        let mut click_regions = ClickableRegions::default();
-
-        let output = render(80, 20, |f| {
-            draw(
-                f,
-                &app,
-                &ui_state,
-                &connections,
-                None,
-                &stats,
-                &mut click_regions,
-            )
-            .expect("draw loading");
-        });
+        let output = render_app(&app, &ui_state, &[], None, 80, 20);
 
         insta::assert_snapshot!(output);
     }

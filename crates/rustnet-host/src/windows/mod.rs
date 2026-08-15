@@ -3,7 +3,7 @@
 mod etw;
 mod process;
 
-pub use process::WindowsProcessLookup;
+use process::WindowsProcessLookup;
 
 use crate::ProcessLookup;
 use anyhow::Result;

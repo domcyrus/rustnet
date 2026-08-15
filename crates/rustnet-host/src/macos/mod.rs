@@ -2,11 +2,9 @@
 
 mod process;
 
-pub use process::MacOSProcessLookup;
+use process::MacOSProcessLookup;
 
-use crate::{
-    AttributionBackend, DegradationReason, MatchQuality, ProcessAttribution, ProcessLookup,
-};
+use crate::{DegradationReason, MatchQuality, ProcessAttribution, ProcessLookup};
 use anyhow::Result;
 use rustnet_core::network::types::Connection;
 use std::sync::OnceLock;
@@ -37,23 +35,14 @@ pub(crate) fn pktap_degradation() -> DegradationReason {
 }
 
 /// Enrich process identity carried directly in PKTAP packet metadata.
-pub struct PktapProcessLookup;
+struct PktapProcessLookup;
 
 impl ProcessLookup for PktapProcessLookup {
-    fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
-        Some((conn.pid?, conn.process_name.clone()?))
-    }
-
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let pid = conn.pid?;
         let name = conn.process_name.clone()?;
-        let mut attribution = ProcessAttribution::new(
-            pid,
-            name,
-            AttributionBackend::Pktap,
-            MatchQuality::ExactTuple,
-        )
-        .with_executable(process::resolve_executable(pid));
+        let mut attribution = ProcessAttribution::new(pid, name, MatchQuality::ExactTuple)
+            .with_executable(process::resolve_executable(pid));
         if let Some(details) = process::resolve_process_details(pid) {
             attribution = attribution.with_details(
                 details.ppid,
@@ -71,10 +60,6 @@ impl ProcessLookup for PktapProcessLookup {
 
     fn get_detection_method(&self) -> &str {
         "pktap"
-    }
-
-    fn get_attribution_backend(&self) -> AttributionBackend {
-        AttributionBackend::Pktap
     }
 }
 
@@ -115,7 +100,6 @@ mod tests {
 
         assert_eq!(attribution.tgid, std::process::id());
         assert_eq!(attribution.name, "rustnet-host-test");
-        assert_eq!(attribution.backend, AttributionBackend::Pktap);
         assert_eq!(attribution.quality, MatchQuality::ExactTuple);
         assert_eq!(attribution.executable, std::env::current_exe().ok());
         assert_eq!(
@@ -149,9 +133,8 @@ mod tests {
     }
 
     #[test]
-    fn pktap_factory_reports_its_backend() {
+    fn pktap_factory_reports_its_detection_method() {
         let lookup = create_process_lookup(true).unwrap();
         assert_eq!(lookup.get_detection_method(), "pktap");
-        assert_eq!(lookup.get_attribution_backend(), AttributionBackend::Pktap);
     }
 }

@@ -35,16 +35,16 @@ fn main() -> anyhow::Result<()> {
     //    survive it; see the rustnet-sandbox crate docs for the ordering
     //    contract. On Linux/macOS/FreeBSD also drop root to the invoking
     //    sudo user.
-    #[allow(unused_mut)]
-    let mut sandbox_config = SandboxConfig {
+    let sandbox_config = SandboxConfig {
         mode: SandboxMode::BestEffort,
         block_network: true, // passive monitor: no outbound TCP needed
         ..SandboxConfig::default()
     };
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-    {
-        sandbox_config.drop_uid = rustnet_sandbox::privdrop::resolve_drop_target();
-    }
+    let sandbox_config = SandboxConfig {
+        drop_uid: rustnet_sandbox::privdrop::resolve_drop_target(),
+        ..sandbox_config
+    };
     let report = apply_sandbox(&sandbox_config)?;
     println!("sandbox: {} ({})", report.status.label(), report.message);
 
@@ -107,8 +107,8 @@ fn main() -> anyhow::Result<()> {
                 .clone()
                 .or_else(|| {
                     process_lookup
-                        .get_process_for_connection(conn)
-                        .map(|(_, name)| name)
+                        .get_process_attribution(conn)
+                        .map(|attribution| attribution.name)
                 })
                 .unwrap_or_else(|| "-".to_string());
             println!(

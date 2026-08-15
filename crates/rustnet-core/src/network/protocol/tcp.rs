@@ -2,9 +2,8 @@
 
 use crate::network::dpi;
 use crate::network::parser::{ParsedPacket, ParserConfig};
-use crate::network::protocol::TransportParams;
-use crate::network::types::{AddrKind, Protocol, ProtocolState, TcpState};
-use std::net::SocketAddr;
+use crate::network::protocol::{TransportParams, orient_endpoints};
+use crate::network::types::{Protocol, ProtocolState, TcpState};
 
 // Define TCP flags as bit masks
 const TCP_FIN: u8 = 0x01;
@@ -32,7 +31,7 @@ pub struct TcpHeaderInfo {
 }
 
 /// Parse TCP flags from the flags byte
-pub fn parse_tcp_flags(flags: u8) -> TcpFlags {
+pub(crate) fn parse_tcp_flags(flags: u8) -> TcpFlags {
     TcpFlags {
         fin: (flags & TCP_FIN) != 0,
         syn: (flags & TCP_SYN) != 0,
@@ -42,7 +41,7 @@ pub fn parse_tcp_flags(flags: u8) -> TcpFlags {
 }
 
 /// Parse a TCP packet
-pub fn parse(
+pub(crate) fn parse(
     transport_data: &[u8],
     params: TransportParams,
     config: &ParserConfig,
@@ -99,20 +98,8 @@ pub fn parse(
         tcp_flags.ack
     );
 
-    // Determine direction based on local IPs
-    let is_outgoing = local_ips.contains(&params.src_ip);
-
-    let (local_addr, remote_addr) = if is_outgoing {
-        (
-            SocketAddr::new(params.src_ip, src_port),
-            SocketAddr::new(params.dst_ip, dst_port),
-        )
-    } else {
-        (
-            SocketAddr::new(params.dst_ip, dst_port),
-            SocketAddr::new(params.src_ip, src_port),
-        )
-    };
+    let (local_addr, remote_addr, is_outgoing) =
+        orient_endpoints(&params, src_port, dst_port, local_ips);
 
     // Perform DPI if enabled and there's payload
     let dpi_result = if config.enable_dpi {
@@ -126,22 +113,19 @@ pub fn parse(
         None
     };
 
-    Some(ParsedPacket {
-        protocol: Protocol::Tcp,
+    let mut packet = ParsedPacket::new(
+        Protocol::Tcp,
         local_addr,
         remote_addr,
-        // Overwritten centrally in PacketParser::parse_packet
-        local_addr_kind: AddrKind::Unicast,
-        remote_addr_kind: AddrKind::Unicast,
-        remote_is_gateway: false,
-        tcp_header: Some(tcp_header),
-        protocol_state: ProtocolState::Tcp(TcpState::Unknown),
+        ProtocolState::Tcp(TcpState::Unknown),
         is_outgoing,
-        packet_len: params.packet_len,
-        dpi_result,
-        process_name: params.process_name,
-        process_id: params.process_id,
-    })
+        params.packet_len,
+        params.process_name,
+        params.process_id,
+    );
+    packet.tcp_header = Some(tcp_header);
+    packet.dpi_result = dpi_result;
+    Some(packet)
 }
 
 #[cfg(test)]

@@ -21,7 +21,7 @@ const MAX_SOFTWARE_LEN: usize = 128;
 ///
 /// Returns `None` if the packet is too small, lacks the magic cookie,
 /// or has invalid structural properties.
-pub fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
+pub(super) fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
     if payload.len() < STUN_HEADER_SIZE {
         return None;
     }
@@ -94,7 +94,7 @@ pub fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
 
 /// Check if a packet looks like STUN without full parsing.
 /// Used for non-standard port detection where we want a quick probe.
-pub fn is_likely_stun(payload: &[u8]) -> bool {
+pub(super) fn is_likely_stun(payload: &[u8]) -> bool {
     if payload.len() < STUN_HEADER_SIZE {
         return false;
     }
