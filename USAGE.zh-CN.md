@@ -409,7 +409,7 @@ RustNet 具有完整的鼠标支持。鼠标捕获自动启用 —— 以下描�
 | `src:` | `source:` | 源 IP/主机名 | `src:192.168` 匹配 192.168.x.x |
 | `dst:` | `dest:`、`destination:` | 目的地址 | `dst:github.com` 匹配 github.com |
 | `process:` | `proc:` | 进程名 | `process:ssh` 匹配 ssh、sshd |
-| `sni:` | `host:`、`hostname:` | SNI 主机名（HTTPS） | `sni:api` 匹配 api.example.com |
+| `sni:` | `host:`、`hostname:` | SNI 主机名（HTTPS）及 DNS 归因主机名 | `sni:api` 匹配 api.example.com |
 | `service:` | `svc:` | 服务名 | `service:https` 匹配 HTTPS 服务 |
 | `app:` | `application:` | 检测到的应用协议 | `app:ssh` 匹配 SSH 连接 |
 | `state:` | | 协议状态 | `state:established` 匹配已建立的连接 |
@@ -895,6 +895,23 @@ WiFi: 150 KB/s ↓ / 45 KB/s ↑
 ## 连接生命周期与视觉指示器<a id="connection-lifecycle--visual-indicators"></a>
 
 RustNet 使用智能超时管理自动清理不活跃的连接，同时在移除前提供视觉警告。
+
+### 主机名显示
+
+从连接本身提取的主机名（HTTPS 或 QUIC 的 TLS SNI、HTTP `Host:` 头）显示在 **App** 列中。**Remote** 列中的名称按以下优先级选择（用 `d` 键切换主机名显示）：
+
+1. **DNS 归因主机名**：当连接不携带 SNI / Host 头，但在最近 **10 秒**内观测到了指向该 IP 的 DNS 解析时，以暗色的 `~name:port` 形式渲染
+2. **反向 DNS**（系统解析器，除非用 `--no-resolve-dns` 禁用）
+3. **原始 IP 地址**
+
+前缀 `~` 表示该主机名是从 DNS 响应*推断*出来的，而非从连接本身提取。这对握手后的 QUIC 会话（SNI 已加密）以及不携带主机名载荷的纯 TCP/UDP 连接最有用。归因不需要主动查询，因此即使使用 `--no-resolve-dns` 也能工作。详情标签页会单独显示一行 **Attributed Name**（完整的推断主机名），以及一行 **Attributed Via**（来源和观测时间，如 `Captured DNS, 5s ago`），使来源一目了然。归因主机名可以像其他主机名一样搜索：`sni:` / `host:` / `hostname:` 关键字过滤器和自由文本搜索都能匹配它们。
+
+**注意事项**（RustNet 通过嗅探线上的 DNS 学习名称）：
+
+- **DoH / DoT**（加密 DNS）：没有可观测的明文，无法归因。
+- **`/etc/hosts`、NSCD 缓存、`systemd-resolved` D-Bus API**（`org.freedesktop.resolve1`）：不会发出 DNS 数据包，因此无论采用何种捕获方式都无法归因。
+- **本地 stub 解析器**（例如 `127.0.0.53` 上的 `systemd-resolved`）：如果只捕获物理接口，你会看到 stub 的上游查询，但看不到是哪个应用与 stub 通信。同时捕获 `lo` 才能看到应用侧。
+- **VPN/WireGuard 隧道**：在隧道接口（如 `utun0`、`wg0`）而非底层接口上捕获，才能看到明文 DNS。
 
 ### 视觉陈旧度指示器<a id="visual-staleness-indicators"></a>
 

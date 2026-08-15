@@ -217,9 +217,30 @@ pub struct Connection {
     // GeoIP information for remote address
     pub geoip_info: Option<crate::network::geoip::GeoIpInfo>,
 
+    // Hostname inferred from a recently observed DNS resolution, populated
+    // when no authoritative source like SNI/Host is available.
+    pub attributed_hostname: Option<AttributedHostname>,
+
     // Historic connection tracking
     pub is_historic: bool,
     pub closed_at: Option<SystemTime>,
+}
+
+/// Source of an attributed hostname.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttributionSource {
+    /// Learned from a DNS response captured on the wire.
+    CapturedDns,
+}
+
+/// Hostname attributed to a connection from a separate signal (e.g. an
+/// observed DNS response), as opposed to extracted from the connection
+/// itself (SNI / Host header / reverse DNS).
+#[derive(Debug, Clone)]
+pub struct AttributedHostname {
+    pub name: String,
+    pub source: AttributionSource,
+    pub observed_at: SystemTime,
 }
 
 impl Connection {
@@ -279,6 +300,7 @@ impl Connection {
             stun_rtt: None,
             ntp_rtt: None,
             geoip_info: None,
+            attributed_hostname: None,
             is_historic: false,
             closed_at: None,
         }
@@ -680,6 +702,19 @@ impl Connection {
             .and_then(|a| a.smoothed_rtt)
             .or(self.initial_rtt)
             .or(self.icmp_echo_rtt)
+    }
+
+    /// Hostname the connection itself vouches for: the TLS SNI (HTTPS /
+    /// QUIC) or the HTTP `Host:` header, excluding SNI truncated during
+    /// ClientHello parsing (`[PARTIAL]`). Shared by DNS attribution
+    /// (which short-circuits when this is set) and the UI (which shows
+    /// attributed names only in its absence) so the two predicates
+    /// cannot drift.
+    pub fn authoritative_hostname(&self) -> Option<&str> {
+        self.dpi_info
+            .as_ref()
+            .and_then(|dpi| dpi.application.hostname())
+            .filter(|name| !crate::network::dpi::is_partial_sni(name))
     }
 }
 

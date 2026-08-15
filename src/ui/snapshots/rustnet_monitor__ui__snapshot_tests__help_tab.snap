@@ -35,10 +35,10 @@ expression: output
 │Overview Connection list with mini traffic graph                                                 █│
 │Details Full details for selected connection                                                     █│
 │Activity Process egress/ingress, bandwidth shares, connections, and interface pulse              █│
-│Graph Traffic charts and protocol distribution                                                   █│
-│Help This help screen                                                                            █│
-│                                                                                                 █│
-│Activity concepts:                                                                               █│
+│Graph Traffic charts and protocol distribution                                                   ║│
+│Help This help screen                                                                            ║│
+│                                                                                                 ║│
+│Activity concepts:                                                                               ║│
 │Egress (TX) / Ingress (RX) Traffic sent from or received by the local process                    ║│
 │60s coverage Captured connection traffic divided by interface traffic                            ║│
 │Retained Active traffic plus up to 5,000 recently closed connections                             ║│

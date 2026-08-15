@@ -290,6 +290,13 @@ impl ConnectionFilter {
             return true;
         }
 
+        // Check DNS-attributed hostname
+        if let Some(ref att) = connection.attributed_hostname
+            && match_text(&att.name, fv)
+        {
+            return true;
+        }
+
         // Check ARP vendor names
         if let ProtocolState::Arp(ref arp_info) = connection.protocol_state {
             if let Some(ref vendor) = arp_info.sender_vendor
@@ -307,15 +314,20 @@ impl ConnectionFilter {
         false
     }
 
-    /// Check if SNI matches the filter value (DNS query names are not
-    /// considered; use the DNS-aware filters for those)
+    /// Check if SNI or a DNS-attributed hostname matches the filter
+    /// value (DNS query names are not considered; use the DNS-aware
+    /// filters for those)
     fn matches_sni(&self, connection: &Connection, fv: &FilterValue) -> bool {
         if let Some(ref dpi_info) = connection.dpi_info
             && let Some(hostname) = dpi_info.application.hostname()
+            && match_text(hostname, fv)
         {
-            return match_text(hostname, fv);
+            return true;
         }
-        false
+        connection
+            .attributed_hostname
+            .as_ref()
+            .is_some_and(|att| match_text(&att.name, fv))
     }
 
     /// Check if application protocol matches the filter value
@@ -778,6 +790,31 @@ mod tests {
             ProtocolState::Tcp(TcpState::Established),
         );
         assert!(!filter.matches(&conn2));
+    }
+
+    #[test]
+    fn test_attributed_hostname_matches_hostname_and_general_filters() {
+        use crate::network::types::*;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        use std::time::SystemTime;
+
+        let mut conn = Connection::new(
+            Protocol::Tcp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(142, 250, 1, 1)), 443),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        conn.attributed_hostname = Some(AttributedHostname {
+            name: "youtube.com".to_string(),
+            source: AttributionSource::CapturedDns,
+            observed_at: SystemTime::now(),
+        });
+
+        // The attributed name has no SNI/Host backing, but a row shown
+        // as ~youtube.com must still be findable by name.
+        assert!(ConnectionFilter::parse("hostname:youtube.com").matches(&conn));
+        assert!(ConnectionFilter::parse("youtube").matches(&conn));
+        assert!(!ConnectionFilter::parse("hostname:example.org").matches(&conn));
     }
 
     #[test]

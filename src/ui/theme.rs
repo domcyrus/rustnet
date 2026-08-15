@@ -298,6 +298,12 @@ pub fn field_process() -> Color {
 pub fn field_application() -> Color {
     if is_classic() { warn() } else { muted() }
 }
+/// Color for hostnames inferred from a recently observed DNS resolution
+/// (shown with a `~` prefix). Dimmer than `field_remote_addr` so the
+/// inference is visually distinct from authoritative SNI / Host data.
+pub fn field_attributed_hostname() -> Color {
+    muted()
+}
 
 // --- Historic (closed) connection rows ---
 // Whole-row override; per-cell colors are dropped so the uniform gray
