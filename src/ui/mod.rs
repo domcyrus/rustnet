@@ -1150,7 +1150,7 @@ mod snapshot_tests {
     /// One observed ARP reply between the gateway and this host. Seeds the
     /// tracker's neighbor cache so Details can label on-link addresses with
     /// MAC + vendor. The fixture's remote (140.82.121.4) is public and never
-    /// ARPs, so no "Remote MAC" row is rendered for it.
+    /// ARPs, so its "Remote MAC" row renders the placeholder.
     fn gateway_arp_reply() -> crate::network::parser::ParsedPacket {
         use crate::network::types::{AddrKind, ArpInfo, ArpOperation};
 
@@ -1171,6 +1171,39 @@ mod snapshot_tests {
                 target_mac: "68:5e:dd:09:15:5e".to_string(),
                 target_ip: host,
                 sender_vendor: Some("ASUSTek COMPUTER INC.".to_string()),
+                target_vendor: Some("Apple, Inc.".to_string()),
+            }),
+            is_outgoing: false,
+            packet_len: 42,
+            dpi_result: None,
+            process_name: None,
+            process_id: None,
+        }
+    }
+
+    /// An ARP reply from the sshd fixture's on-link peer (10.0.0.5). Seeds
+    /// the neighbor cache so a Details render of that connection resolves
+    /// its "Remote MAC" row to an actual address.
+    fn sshd_peer_arp_reply() -> crate::network::parser::ParsedPacket {
+        use crate::network::types::{AddrKind, ArpInfo, ArpOperation};
+
+        let peer = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5));
+        let host = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        crate::network::parser::ParsedPacket {
+            protocol: Protocol::Arp,
+            local_addr: SocketAddr::new(host, 0),
+            remote_addr: SocketAddr::new(peer, 0),
+            local_addr_kind: AddrKind::Unicast,
+            remote_addr_kind: AddrKind::Unicast,
+            remote_is_gateway: false,
+            tcp_header: None,
+            protocol_state: ProtocolState::Arp(ArpInfo {
+                operation: ArpOperation::Reply,
+                sender_mac: "b8:27:eb:12:34:56".to_string(),
+                sender_ip: peer,
+                target_mac: "68:5e:dd:09:15:5e".to_string(),
+                target_ip: host,
+                sender_vendor: Some("Raspberry Pi Foundation".to_string()),
                 target_vendor: Some("Apple, Inc.".to_string()),
             }),
             is_outgoing: false,
@@ -1470,11 +1503,12 @@ mod snapshot_tests {
         assert!(!output.contains("No transport metrics for this protocol"));
     }
 
-    /// Inbound pings are answered here but timed by the remote sender, so the
-    /// responder view drops the Ping RTT row instead of showing a permanent
-    /// placeholder.
+    /// Inbound pings are answered here but timed by the remote sender: the
+    /// Ping RTT row keeps its place with a placeholder (the row set depends
+    /// on the class, not on direction, which resolves asynchronously) and
+    /// the footnote explains who measures it.
     #[test]
-    fn details_tab_inbound_ping_hides_rtt_row() {
+    fn details_tab_inbound_ping_keeps_rtt_placeholder_row() {
         let app = test_app();
         let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 0);
         let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 0);
@@ -1495,7 +1529,17 @@ mod snapshot_tests {
         app.set_connections_snapshot_for_test(connections.clone());
         let output = render_details(&app, &connections, 0);
 
-        assert!(!output.contains("Ping RTT"));
+        let rtt_row = output
+            .lines()
+            .find(|line| line.contains("Ping RTT"))
+            .expect("inbound echo must keep the Ping RTT row");
+        let rtt_value = rtt_row
+            .split_once("Ping RTT")
+            .and_then(|(_, rest)| rest.split_whitespace().next());
+        assert!(
+            rtt_value == Some(NONE_PLACEHOLDER),
+            "an unmeasured inbound Ping RTT must render the placeholder, got: {rtt_row}"
+        );
         assert!(output.contains("Last Sequence") && output.contains("4242"));
         assert!(output.contains("RTT is timed by the remote sender"));
     }
@@ -1584,8 +1628,8 @@ mod snapshot_tests {
         connections[0].pid = None;
         let unattributed = render_connections(&connections);
         assert!(
-            !unattributed.contains("Attribution"),
-            "an unattributed connection must not render an empty Attribution card"
+            unattributed.contains("Attribution"),
+            "the Attribution card renders placeholders even when nothing resolved"
         );
 
         connections[0].pid = Some(2001);
@@ -1622,8 +1666,10 @@ mod snapshot_tests {
         assert!(attributed.contains("exact tuple"));
     }
 
-    /// Partial attribution is the common case off Linux: render the fields that
-    /// resolved and leave the rest out entirely.
+    /// Partial attribution is the common case off Linux: resolved fields carry
+    /// values while unresolved ones keep their rows with a placeholder, so the
+    /// card never changes height. Placeholder rows must not register a
+    /// click-to-copy target.
     #[test]
     fn details_tab_renders_partial_attribution() {
         use crate::network::types::MatchQuality;
@@ -1633,18 +1679,35 @@ mod snapshot_tests {
         connections[0].attribution_quality = Some(MatchQuality::ListenerSocket);
         app.set_connections_snapshot_for_test(connections.clone());
 
-        // 40 rows: the Attribution card must stay visible on a 40-row
-        // terminal — unresolved MAC rows are omitted, not rendered as
-        // placeholders, precisely so the dashboard column does not grow.
-        let output = render_details(&app, &connections, 0);
+        // 52 rows so the Attribution card rows sit above the fold.
+        let (output, click_regions) = render_details_frame(&app, &connections, 0, 52);
 
         assert!(output.contains("Attribution"));
         assert!(output.contains("listener socket"));
-        assert!(
-            !output.contains("Executable"),
-            "an unresolved executable must not leave a labelled blank row"
-        );
-        assert!(!output.contains("User "));
+        for label in ["Executable", "User"] {
+            let row = output
+                .lines()
+                .find(|line| line.trim_start().starts_with(label))
+                .unwrap_or_else(|| panic!("missing {label} row"));
+            assert!(
+                row.split_whitespace().nth(1) == Some(NONE_PLACEHOLDER),
+                "an unresolved {label} must keep its row with a placeholder, got: {row}"
+            );
+        }
+        let copyable_labels: Vec<String> = (0..52u16)
+            .flat_map(|row| (0..140u16).map(move |col| (col, row)))
+            .filter_map(|(col, row)| click_regions.hit_test(col, row).cloned())
+            .filter_map(|action| match action {
+                ClickAction::CopyField { label, .. } => Some(label),
+                _ => None,
+            })
+            .collect();
+        for placeholder_label in ["Executable", "User"] {
+            assert!(
+                !copyable_labels.iter().any(|l| l == placeholder_label),
+                "placeholder {placeholder_label} row must not be clickable"
+            );
+        }
     }
 
     /// Long executable paths shorten from the middle so the location prefix
@@ -1664,8 +1727,8 @@ mod snapshot_tests {
         connections[0].attribution_quality = Some(MatchQuality::ExactTuple);
         app.set_connections_snapshot_for_test(connections.clone());
 
-        // 40 rows for the same reason as the partial-attribution test above.
-        let (output, click_regions) = render_details_frame(&app, &connections, 0, 40);
+        // 52 rows so the Attribution card rows sit above the fold.
+        let (output, click_regions) = render_details_frame(&app, &connections, 0, 52);
 
         assert!(
             output.contains("/nix/store/"),
@@ -1680,7 +1743,7 @@ mod snapshot_tests {
 
         // The shortening is display-only: hit-test every cell and confirm the
         // Executable copy region still carries the unshortened path.
-        let copied = (0..40u16)
+        let copied = (0..52u16)
             .flat_map(|row| (0..140u16).map(move |col| (col, row)))
             .filter_map(|(col, row)| click_regions.hit_test(col, row).cloned())
             .find_map(|action| match action {
@@ -1766,6 +1829,181 @@ mod snapshot_tests {
             assert_eq!(
                 enriched_row, plain_row,
                 "{heading} moved between enriched TCP and plain UDP records"
+            );
+        }
+    }
+
+    /// The Details row set depends only on the connection class, never on
+    /// data availability: a fully enriched record and a bare one must render
+    /// the same labels at the same vertical positions, so a hovered
+    /// click-to-copy row never turns into a different field while navigating.
+    #[test]
+    fn details_tab_row_positions_do_not_depend_on_data_availability() {
+        use crate::network::types::{
+            AttributedHostname, AttributionSource, MatchQuality, ProcessAncestor, ProcessLineage,
+        };
+        use std::path::{Path, PathBuf};
+        use std::sync::Arc;
+
+        // Enriched: neighbor cache seeded, DNS attribution, full process
+        // attribution. Bare: the same TCP connection with none of it.
+        let rich_app = test_app();
+        rich_app.ingest_packet_for_test(&gateway_arp_reply());
+        let mut rich_connections = sample_connections();
+        rich_connections[0].attributed_hostname = Some(AttributedHostname {
+            name: "lb-140-82-121-4.github.com".to_string(),
+            source: AttributionSource::CapturedDns,
+            observed_at: SystemTime::now(),
+        });
+        rich_connections[0].process_ppid = Some(1900);
+        rich_connections[0].executable = Some(Arc::from(Path::new("/usr/lib/firefox/firefox")));
+        rich_connections[0].process_uid = Some(1000);
+        rich_connections[0].process_gid = Some(1000);
+        rich_connections[0].attribution_quality = Some(MatchQuality::ExactTuple);
+        rich_connections[0].process_lineage = Some(Arc::new(ProcessLineage {
+            ancestors: vec![ProcessAncestor {
+                pid: 1900,
+                name: "bash".to_string(),
+                executable: Some(PathBuf::from("/usr/bin/bash")),
+                started_at_unix_ms: Some(1_700_000_010_000),
+            }],
+            truncated: false,
+        }));
+        rich_app.set_connections_snapshot_for_test(rich_connections.clone());
+        let rich = render_details_frame(&rich_app, &rich_connections, 0, 52).0;
+
+        let bare_app = test_app();
+        let mut bare_connections = sample_connections();
+        bare_connections[0].pid = None;
+        bare_app.set_connections_snapshot_for_test(bare_connections.clone());
+        let bare = render_details_frame(&bare_app, &bare_connections, 0, 52).0;
+
+        // Every card heading and every conditional-looking label must sit on
+        // the same row in both renders.
+        for needle in [
+            "Network Context",
+            "Local MAC",
+            "Attributed Name",
+            "Attributed Via",
+            "Remote MAC",
+            "Attribution",
+            "PPID",
+            "Process Tree",
+            "Executable",
+            "User",
+            "Match",
+            "Transport Health",
+            "Traffic Statistics",
+        ] {
+            assert_eq!(
+                heading_row(&rich, needle),
+                heading_row(&bare, needle),
+                "{needle} moved between the enriched and the bare record"
+            );
+        }
+
+        // Stronger form: the whole label column of the details body is
+        // identical, only values differ. The body starts at the dashboard
+        // card header; the continuity strip above legitimately differs
+        // (the bare record has no PID to show there).
+        let label_column = |render: &str| -> Vec<String> {
+            let body_start = heading_row(render, "Protocol");
+            render
+                .lines()
+                .skip(body_start)
+                .map(|line| {
+                    line.chars()
+                        .take(tabs::details::DETAIL_LABEL_WIDTH)
+                        .collect::<String>()
+                        .trim_end()
+                        .to_string()
+                })
+                .collect()
+        };
+        assert_eq!(
+            label_column(&rich),
+            label_column(&bare),
+            "the label column must not depend on data availability"
+        );
+
+        // The resolved direction of the Remote MAC row: the sshd remote
+        // (10.0.0.5) is on-link and seeded in the neighbor cache, so its row
+        // must carry the actual MAC while sitting exactly where the
+        // placeholder sits for the off-link remote above. This is the
+        // scroll-between-on-link-and-off-link case the fixed row set exists
+        // for.
+        rich_app.ingest_packet_for_test(&sshd_peer_arp_reply());
+        let on_link = render_details_frame(&rich_app, &rich_connections, 2, 52).0;
+        let remote_mac_row = heading_row(&on_link, "Remote MAC");
+        assert_eq!(
+            remote_mac_row,
+            heading_row(&rich, "Remote MAC"),
+            "Remote MAC must sit on the same row for on-link and off-link remotes"
+        );
+        assert!(
+            on_link
+                .lines()
+                .nth(remote_mac_row)
+                .expect("Remote MAC row")
+                .contains("b8:27:eb:12:34:56"),
+            "an on-link remote must render its resolved MAC on the Remote MAC row"
+        );
+    }
+
+    /// The one class distinction in the Details row set: ARP has no owning
+    /// process, and its MACs already live in the Application card as
+    /// Sender/Target MAC, so it renders neither the Attribution card nor the
+    /// Network Context MAC and attributed-hostname rows.
+    #[test]
+    fn details_tab_arp_connection_skips_mac_and_attribution_rows() {
+        use crate::network::types::{ArpInfo, ArpOperation};
+
+        let app = test_app();
+        app.ingest_packet_for_test(&gateway_arp_reply());
+        let gateway = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let host = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        let arp = Connection::new(
+            Protocol::Arp,
+            SocketAddr::new(host, 0),
+            SocketAddr::new(gateway, 0),
+            ProtocolState::Arp(ArpInfo {
+                operation: ArpOperation::Reply,
+                sender_mac: "04:d9:f5:c5:ed:e8".to_string(),
+                sender_ip: gateway,
+                target_mac: "68:5e:dd:09:15:5e".to_string(),
+                target_ip: host,
+                sender_vendor: Some("ASUSTek COMPUTER INC.".to_string()),
+                target_vendor: Some("Apple, Inc.".to_string()),
+            }),
+        );
+        let connections = vec![arp];
+        app.set_connections_snapshot_for_test(connections.clone());
+
+        let output = render_details_frame(&app, &connections, 0, 52).0;
+
+        assert!(output.contains("Network Context"));
+        assert!(output.contains("Application: ARP"));
+        assert!(output.contains("Sender MAC") && output.contains("Target MAC"));
+        assert!(
+            !output.contains("Attribution"),
+            "ARP must not render the Attribution card:\n{output}"
+        );
+        // Both endpoints are in the neighbor cache (the ingested reply seeds
+        // them), so these rows would resolve if the ARP guard regressed.
+        for label in [
+            "Local MAC",
+            "Remote MAC",
+            "Attributed Name",
+            "Attributed Via",
+            "PPID",
+            "Process Tree",
+            "Executable",
+            "User ",
+            "Match ",
+        ] {
+            assert!(
+                !output.contains(label),
+                "ARP must not render a {label} row:\n{output}"
             );
         }
     }

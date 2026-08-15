@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Details Tab Layout Stability**: rows in the Details tab no longer appear
+  or disappear with data availability. MAC, Attributed Name/Via, the
+  Attribution card's process fields, the Kubernetes card's fields, and the
+  inbound Ping RTT row now always render for their connection class, showing
+  `-` when unresolved, so labels and the cards below keep fixed positions
+  while navigating between connections. Placeholder rows are not
+  click-to-copy targets (#554)
 - **macOS lsof Attribution UID**: When libproc details resolve, lsof-based
   attribution now reports the process's live effective UID from libproc
   instead of the UID captured in the earlier lsof scan, matching the other
