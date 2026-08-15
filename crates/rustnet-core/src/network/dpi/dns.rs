@@ -305,12 +305,11 @@ pub(super) fn parse_questions_starting_at_header(
     (query_name, query_type, offset)
 }
 
-pub fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
+fn parse_dns_base(payload: &[u8]) -> Option<(DnsHeaderCounts, DnsInfo, usize)> {
     let header = dns_header_counts(payload)?;
-    let (query_name, query_type, mut offset) =
+    let (query_name, query_type, offset) =
         parse_questions_starting_at_header(payload, header.qdcount);
-
-    let mut info = DnsInfo {
+    let info = DnsInfo {
         query_name,
         query_type,
         response_ips: Vec::new(),
@@ -319,6 +318,11 @@ pub fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
         rcode: header.is_response.then_some(header.rcode),
         nodata: None,
     };
+    Some((header, info, offset))
+}
+
+pub(super) fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
+    let (header, mut info, mut offset) = parse_dns_base(payload)?;
 
     // Answer-section walk for A / AAAA records. Only runs on responses
     // (QR bit set), since `DnsInfo.response_ips` is only meaningful for
@@ -366,22 +370,11 @@ pub fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
 /// answers / additionals, no questions). The DNS / LLMNR path keeps the
 /// stricter behaviour because their responses always echo the question.
 pub(super) fn analyze_dns_for_mdns(payload: &[u8]) -> Option<DnsInfo> {
-    let header = dns_header_counts(payload)?;
-    let (query_name, query_type, mut offset) =
-        parse_questions_starting_at_header(payload, header.qdcount);
+    let (header, mut info, mut offset) = parse_dns_base(payload)?;
 
-    let mut info = DnsInfo {
-        query_name,
-        query_type,
-        response_ips: Vec::new(),
-        is_response: header.is_response,
-        txid: header.txid,
-        rcode: header.is_response.then_some(header.rcode),
-        // NODATA is a unicast-DNS concept; mDNS negative responses use NSEC
-        // (RFC 6762 §6.1) and announcements carry no question to compare
-        // against, so the flag stays unset on this path.
-        nodata: None,
-    };
+    // NODATA is a unicast-DNS concept; mDNS negative responses use NSEC
+    // (RFC 6762 §6.1) and announcements carry no question to compare
+    // against, so the flag stays unset on this path.
 
     if header.is_response {
         let mut matched = 0;

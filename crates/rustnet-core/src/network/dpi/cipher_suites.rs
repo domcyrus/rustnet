@@ -105,7 +105,7 @@ static CIPHER_SUITE_MAP: LazyLock<HashMap<u16, &'static str>> = LazyLock::new(||
 /// # Returns
 /// * Some(name) if the cipher suite is known
 /// * None if the cipher suite is not in our mapping
-pub fn get_cipher_suite_name(code: u16) -> Option<&'static str> {
+pub(super) fn get_cipher_suite_name(code: u16) -> Option<&'static str> {
     CIPHER_SUITE_MAP.get(&code).copied()
 }
 

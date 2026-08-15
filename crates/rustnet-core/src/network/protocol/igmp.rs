@@ -1,9 +1,9 @@
 //! IGMP (Internet Group Management Protocol) parsing
 
 use crate::network::parser::ParsedPacket;
-use crate::network::protocol::TransportParams;
-use crate::network::types::{AddrKind, Protocol, ProtocolState};
-use std::net::{Ipv4Addr, SocketAddr};
+use crate::network::protocol::{TransportParams, orient_endpoints};
+use crate::network::types::{Protocol, ProtocolState};
+use std::net::Ipv4Addr;
 
 /// Parse an IGMP packet
 ///
@@ -44,39 +44,21 @@ pub fn parse(
         None
     };
 
-    let is_outgoing = local_ips.contains(&params.src_ip);
+    let (local_addr, remote_addr, is_outgoing) = orient_endpoints(&params, 0, 0, local_ips);
 
-    let (local_addr, remote_addr) = if is_outgoing {
-        (
-            SocketAddr::new(params.src_ip, 0),
-            SocketAddr::new(params.dst_ip, 0),
-        )
-    } else {
-        (
-            SocketAddr::new(params.dst_ip, 0),
-            SocketAddr::new(params.src_ip, 0),
-        )
-    };
-
-    Some(ParsedPacket {
-        protocol: Protocol::Igmp,
+    Some(ParsedPacket::new(
+        Protocol::Igmp,
         local_addr,
         remote_addr,
-        // Overwritten centrally in PacketParser::parse_packet
-        local_addr_kind: AddrKind::Unicast,
-        remote_addr_kind: AddrKind::Unicast,
-        remote_is_gateway: false,
-        tcp_header: None,
-        protocol_state: ProtocolState::Igmp {
+        ProtocolState::Igmp {
             igmp_type,
             group_addr,
         },
         is_outgoing,
-        packet_len: params.packet_len,
-        dpi_result: None,
-        process_name: params.process_name,
-        process_id: params.process_id,
-    })
+        params.packet_len,
+        params.process_name,
+        params.process_id,
+    ))
 }
 
 #[cfg(test)]

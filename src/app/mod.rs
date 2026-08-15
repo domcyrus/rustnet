@@ -14,10 +14,7 @@ mod types;
 
 pub use state::App;
 pub(crate) use types::ConnectionCounts;
-pub use types::{
-    AppOutputHandles, AppStats, Config, ConnRateHistory, ConnRateHistorySnapshot,
-    ProcessDetectionStatus,
-};
+pub use types::{AppOutputHandles, AppStats, Config};
 
 use std::time::Duration;
 

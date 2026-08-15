@@ -9,7 +9,7 @@ use crate::{AttributionBackend, AttributionCapabilities, DegradationReason, Matc
 use anyhow::Result;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-pub struct LibbpfSocketTracker {
+pub(crate) struct LibbpfSocketTracker {
     loader: EbpfLoader,
 }
 
@@ -19,7 +19,7 @@ unsafe impl Sync for LibbpfSocketTracker {}
 impl LibbpfSocketTracker {
     /// Create a new eBPF socket tracker
     /// Returns (Option<Self>, DegradationReason) - the reason explains why eBPF is unavailable
-    pub fn new() -> Result<(Option<Self>, DegradationReason)> {
+    pub(crate) fn new() -> Result<(Option<Self>, DegradationReason)> {
         let (loader_opt, reason) = EbpfLoader::try_load()?;
         match loader_opt {
             Some(loader) => Ok((Some(Self { loader }), reason)),
@@ -27,11 +27,11 @@ impl LibbpfSocketTracker {
         }
     }
 
-    pub fn backend(&self) -> AttributionBackend {
+    pub(crate) fn backend(&self) -> AttributionBackend {
         self.loader.backend()
     }
 
-    pub fn capabilities(&self) -> AttributionCapabilities {
+    fn capabilities(&self) -> AttributionCapabilities {
         self.loader.capabilities()
     }
 
@@ -43,7 +43,7 @@ impl LibbpfSocketTracker {
     }
 
     /// Look up process information for a connection (IPv4)
-    pub fn lookup_v4(
+    fn lookup_v4(
         &mut self,
         src_ip: Ipv4Addr,
         dst_ip: Ipv4Addr,
@@ -114,7 +114,7 @@ impl LibbpfSocketTracker {
     }
 
     /// Look up process information for a connection (IPv6)
-    pub fn lookup_v6(
+    fn lookup_v6(
         &mut self,
         src_ip: Ipv6Addr,
         dst_ip: Ipv6Addr,
@@ -165,7 +165,7 @@ impl LibbpfSocketTracker {
     }
 
     /// Look up process information for a connection (generic)
-    pub fn lookup(
+    pub(crate) fn lookup(
         &mut self,
         src_ip: IpAddr,
         dst_ip: IpAddr,
@@ -188,7 +188,7 @@ impl LibbpfSocketTracker {
     }
 
     /// Look up process information for an ICMP connection
-    pub fn lookup_icmp(
+    pub(crate) fn lookup_icmp(
         &mut self,
         src_ip: IpAddr,
         dst_ip: IpAddr,
@@ -200,14 +200,22 @@ impl LibbpfSocketTracker {
                     .capabilities()
                     .contains(AttributionCapabilities::ICMP_V4_SEND) =>
             {
-                self.lookup_icmp_v4(src, dst, icmp_id)
+                self.lookup_icmp_keys(
+                    ConnKey::new_icmp_v4(src, dst, icmp_id),
+                    ConnKey::new_icmp_v4(Ipv4Addr::UNSPECIFIED, dst, icmp_id),
+                    icmp_id,
+                )
             }
             (IpAddr::V6(src), IpAddr::V6(dst))
                 if self
                     .capabilities()
                     .contains(AttributionCapabilities::ICMP_V6_SEND) =>
             {
-                self.lookup_icmp_v6(src, dst, icmp_id)
+                self.lookup_icmp_keys(
+                    ConnKey::new_icmp_v6(src, dst, icmp_id),
+                    ConnKey::new_icmp_v6(Ipv6Addr::UNSPECIFIED, dst, icmp_id),
+                    icmp_id,
+                )
             }
             (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_)) => None,
             _ => {
@@ -217,17 +225,16 @@ impl LibbpfSocketTracker {
         }
     }
 
-    fn lookup_icmp_v4(
-        &mut self,
-        src_ip: Ipv4Addr,
-        dst_ip: Ipv4Addr,
+    fn lookup_icmp_keys(
+        &self,
+        exact_key: ConnKey,
+        zero_src_key: ConnKey,
         icmp_id: u16,
     ) -> Option<SocketMatch> {
         let socket_map = self.loader.socket_map();
 
         // Try exact match first
-        let key = ConnKey::new_icmp_v4(src_ip, dst_ip, icmp_id);
-        match MapReader::lookup_connection(socket_map, key) {
+        match MapReader::lookup_connection(socket_map, exact_key) {
             Ok(Some(result)) => return Some(SocketMatch::new(result, MatchQuality::ExactTuple)),
             Ok(None) => {
                 log::debug!("eBPF ICMP exact lookup miss, trying with zero source address");
@@ -237,52 +244,8 @@ impl LibbpfSocketTracker {
             }
         }
 
-        // Try with zero source address (common for ICMP - socket not bound to specific IP)
-        let zero_src_key = ConnKey::new_icmp_v4(Ipv4Addr::new(0, 0, 0, 0), dst_ip, icmp_id);
-
-        match MapReader::lookup_connection(socket_map, zero_src_key) {
-            Ok(Some(result)) => {
-                log::debug!(
-                    "eBPF ICMP lookup succeeded with zero source address! PID: {}, comm: {}",
-                    result.pid,
-                    result.comm
-                );
-                Some(SocketMatch::new(result, MatchQuality::WildcardLocalAddress))
-            }
-            Ok(None) => {
-                log::debug!("eBPF ICMP lookup miss for ID: {}", icmp_id);
-                None
-            }
-            Err(e) => {
-                log::debug!("eBPF ICMP zero-source lookup failed: {}", e);
-                None
-            }
-        }
-    }
-
-    fn lookup_icmp_v6(
-        &mut self,
-        src_ip: Ipv6Addr,
-        dst_ip: Ipv6Addr,
-        icmp_id: u16,
-    ) -> Option<SocketMatch> {
-        let socket_map = self.loader.socket_map();
-
-        // Try exact match first
-        let key = ConnKey::new_icmp_v6(src_ip, dst_ip, icmp_id);
-        match MapReader::lookup_connection(socket_map, key) {
-            Ok(Some(result)) => return Some(SocketMatch::new(result, MatchQuality::ExactTuple)),
-            Ok(None) => {
-                log::debug!("eBPF ICMP exact lookup miss, trying with zero source address");
-            }
-            Err(e) => {
-                log::debug!("eBPF ICMP lookup failed: {}", e);
-            }
-        }
-
-        // Try with zero source address (common for ICMP - socket not bound to specific IP)
-        let zero_src_key = ConnKey::new_icmp_v6(Ipv6Addr::UNSPECIFIED, dst_ip, icmp_id);
-
+        // Try with a zero source address, as unbound ICMP sockets commonly
+        // appear in the map this way.
         match MapReader::lookup_connection(socket_map, zero_src_key) {
             Ok(Some(result)) => {
                 log::debug!(
@@ -305,7 +268,7 @@ impl LibbpfSocketTracker {
 
     /// Clean up stale entries from the eBPF map
     /// Returns the number of entries cleaned up
-    pub fn cleanup_stale_entries(&mut self, stale_threshold_secs: u64) -> u32 {
+    pub(crate) fn cleanup_stale_entries(&mut self, stale_threshold_secs: u64) -> u32 {
         let socket_map = self.loader.socket_map();
         let stale_threshold_ns = stale_threshold_secs * 1_000_000_000;
 
@@ -409,8 +372,8 @@ mod integration_tests {
         );
     }
 
-    fn test_tcp_v4(tracker: &mut LibbpfSocketTracker) {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    fn test_tcp(tracker: &mut LibbpfSocketTracker, loopback: IpAddr, check_accept_tid: bool) {
+        let listener = TcpListener::bind((loopback, 0)).unwrap();
         let server = listener.local_addr().unwrap();
         let client = TcpStream::connect(server).unwrap();
         let (accepted, _) = listener.accept().unwrap();
@@ -438,7 +401,7 @@ mod integration_tests {
 
         // accept() ran on this thread, so the accepted socket must be recorded
         // against it rather than against some other task in the process.
-        if ids_are_comparable(&accept_info.info) {
+        if check_accept_tid && ids_are_comparable(&accept_info.info) {
             assert_eq!(accept_info.info.tid, current_tid());
         }
     }
@@ -480,39 +443,15 @@ mod integration_tests {
         }
     }
 
-    fn test_tcp_v6(tracker: &mut LibbpfSocketTracker) {
-        let listener = TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).unwrap();
-        let server = listener.local_addr().unwrap();
-        let client = TcpStream::connect(server).unwrap();
-        let (accepted, _) = listener.accept().unwrap();
-        let client_local = client.local_addr().unwrap();
-
-        let connect_info = lookup_with_retry(
-            tracker,
-            client_local.ip(),
-            server.ip(),
-            client_local.port(),
-            server.port(),
-            true,
-        );
-        assert_current_identity(&connect_info);
-
-        let accept_info = lookup_with_retry(
-            tracker,
-            accepted.local_addr().unwrap().ip(),
-            accepted.peer_addr().unwrap().ip(),
-            accepted.local_addr().unwrap().port(),
-            accepted.peer_addr().unwrap().port(),
-            true,
-        );
-        assert_current_identity(&accept_info);
-    }
-
-    fn test_udp_v4(tracker: &mut LibbpfSocketTracker) {
-        let receiver = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    fn test_udp(tracker: &mut LibbpfSocketTracker, loopback: IpAddr) {
+        let unspecified: IpAddr = match loopback {
+            IpAddr::V4(_) => Ipv4Addr::UNSPECIFIED.into(),
+            IpAddr::V6(_) => Ipv6Addr::UNSPECIFIED.into(),
+        };
+        let receiver = UdpSocket::bind((loopback, 0)).unwrap();
         let destination = receiver.local_addr().unwrap();
 
-        let connected = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let connected = UdpSocket::bind((unspecified, 0)).unwrap();
         connected.connect(destination).unwrap();
         connected.send(b"connected").unwrap();
         let source = connected.local_addr().unwrap();
@@ -525,42 +464,12 @@ mod integration_tests {
             false,
         ));
 
-        let unconnected = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).unwrap();
+        let unconnected = UdpSocket::bind((unspecified, 0)).unwrap();
         unconnected.send_to(b"sendto", destination).unwrap();
         let source = unconnected.local_addr().unwrap();
         assert_current_identity(&lookup_with_retry(
             tracker,
-            IpAddr::V4(Ipv4Addr::LOCALHOST),
-            destination.ip(),
-            source.port(),
-            destination.port(),
-            false,
-        ));
-    }
-
-    fn test_udp_v6(tracker: &mut LibbpfSocketTracker) {
-        let receiver = UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).unwrap();
-        let destination = receiver.local_addr().unwrap();
-
-        let connected = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).unwrap();
-        connected.connect(destination).unwrap();
-        connected.send(b"connected").unwrap();
-        let source = connected.local_addr().unwrap();
-        assert_current_identity(&lookup_with_retry(
-            tracker,
-            source.ip(),
-            destination.ip(),
-            source.port(),
-            destination.port(),
-            false,
-        ));
-
-        let unconnected = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).unwrap();
-        unconnected.send_to(b"sendto", destination).unwrap();
-        let source = unconnected.local_addr().unwrap();
-        assert_current_identity(&lookup_with_retry(
-            tracker,
-            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            loopback,
             destination.ip(),
             source.port(),
             destination.port(),
@@ -580,10 +489,12 @@ mod integration_tests {
                 .contains(crate::linux::ebpf::loader::CORE_CAPABILITIES)
         );
 
-        test_tcp_v4(&mut tracker);
-        test_tcp_v6(&mut tracker);
-        test_udp_v4(&mut tracker);
-        test_udp_v6(&mut tracker);
+        // The v4-only accepted-socket TID assertion mirrors the original
+        // coverage; the v6 run keeps the rest of the scenario in sync.
+        test_tcp(&mut tracker, Ipv4Addr::LOCALHOST.into(), true);
+        test_tcp(&mut tracker, Ipv6Addr::LOCALHOST.into(), false);
+        test_udp(&mut tracker, Ipv4Addr::LOCALHOST.into());
+        test_udp(&mut tracker, Ipv6Addr::LOCALHOST.into());
         test_worker_thread_tid(&mut tracker);
     }
 

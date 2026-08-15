@@ -45,7 +45,7 @@ const PRIVILEGES_TO_REMOVE: &[&str] = &[
 ];
 
 /// Result of restricted token application
-pub struct RestrictedTokenResult {
+pub(super) struct RestrictedTokenResult {
     /// Whether at least one privilege was removed (count > 0).
     /// False for non-elevated processes that never held the privileges.
     pub privileges_removed: bool,
@@ -60,7 +60,7 @@ pub struct RestrictedTokenResult {
 }
 
 /// Result of job object application
-pub struct JobObjectResult {
+pub(super) struct JobObjectResult {
     /// Whether the job object was applied
     pub applied: bool,
     /// Human-readable message
@@ -71,7 +71,7 @@ pub struct JobObjectResult {
 ///
 /// Uses SE_PRIVILEGE_REMOVED which permanently removes privileges —
 /// they cannot be re-enabled, even by the process itself.
-pub fn remove_dangerous_privileges() -> Result<RestrictedTokenResult> {
+pub(super) fn remove_dangerous_privileges() -> Result<RestrictedTokenResult> {
     unsafe {
         let mut token_handle = HANDLE::default();
 
@@ -177,7 +177,7 @@ unsafe fn remove_single_privilege(token: HANDLE, privilege_name: &str) -> Result
 ///
 /// After this call, any attempt to create a child process will fail.
 /// This blocks reverse shells, data exfiltration via exec, etc.
-pub fn apply_job_object() -> Result<JobObjectResult> {
+pub(super) fn apply_job_object() -> Result<JobObjectResult> {
     unsafe {
         // Create an unnamed job object
         let job = CreateJobObjectW(None, None).context("Failed to create job object")?;

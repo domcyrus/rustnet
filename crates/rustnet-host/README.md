@@ -19,25 +19,15 @@ best strategy each platform offers, with graceful fallbacks:
 use rustnet_host::create_process_lookup;
 
 let lookup = create_process_lookup(/* use_pktap = */ false)?;
-if let Some((pid, name)) = lookup.get_process_for_connection(&conn) {
-    println!("{conn:?} owned by {name} ({pid})");
-}
-```
-
-Callers that want more than a pid and a name ask for a `ProcessAttribution`
-instead:
-
-```rust
 if let Some(attribution) = lookup.get_process_attribution(&conn) {
     println!(
-        "{} ({}) ppid={:?} uid={:?} exe={:?} lineage={:?} via {} ({} match)",
+        "{} ({}) ppid={:?} uid={:?} exe={:?} lineage={:?} ({} match)",
         attribution.name,
         attribution.tgid,
         attribution.ppid,
         attribution.uid,
         attribution.executable,
         attribution.lineage,
-        attribution.backend,
         attribution.quality,
     );
 }
@@ -59,9 +49,8 @@ truncation flag marks chains capped before another known parent.
 On macOS, PKTAP supplies an exact PID and process name with each packet. Libproc
 adds the PPID, executable path, and effective UID/GID. The fallback parses
 numeric UIDs from `lsof -l` and uses libproc for the other process details.
-PKTAP reports
-`AttributionBackend::Pktap` with `MatchQuality::ExactTuple`; lsof reports whether
-its socket-table match was exact, wildcard-bound, or a listener.
+PKTAP reports `MatchQuality::ExactTuple`; lsof reports whether its socket-table
+match was exact, wildcard-bound, or a listener.
 
 On FreeBSD, `sockstat` supplies the socket owner and native `sysctl` queries add
 the PPID, effective UID/GID, and executable path. Process details are cached by
@@ -74,9 +63,6 @@ creation times. Connection match quality remains `MatchQuality::Unspecified`.
 When a platform can't use its optimal method, `ProcessLookup::get_degradation_reason`
 reports why (e.g. missing `CAP_BPF`, no root for PKTAP) via `DegradationReason`,
 which front-ends can surface to the user.
-
-Linux callers can inspect `ProcessLookup::get_attribution_backend()` to
-distinguish fentry/fexit, legacy kprobes, and procfs.
 
 Both Linux BPF objects use CO-RE for safe socket field access and therefore
 require usable target BTF. A compatible target-BTF kernel tries fentry/fexit

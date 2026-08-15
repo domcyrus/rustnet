@@ -15,7 +15,7 @@ use super::dns;
 /// ADDITIONAL records, where mDNS frequently carries A / AAAA rdata.
 ///
 /// Returns `None` if the packet cannot be parsed as DNS.
-pub fn analyze_mdns(payload: &[u8]) -> Option<MdnsInfo> {
+pub(super) fn analyze_mdns(payload: &[u8]) -> Option<MdnsInfo> {
     dns::analyze_dns_for_mdns(payload).map(MdnsInfo::from)
 }
 

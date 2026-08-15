@@ -19,7 +19,7 @@ const DHCP_OPT_END: u8 = 255;
 /// Analyze a DHCP packet and extract key information.
 ///
 /// Returns `None` if the packet is too small or doesn't have the DHCP magic cookie.
-pub fn analyze_dhcp(payload: &[u8]) -> Option<DhcpInfo> {
+pub(super) fn analyze_dhcp(payload: &[u8]) -> Option<DhcpInfo> {
     // Early size check
     if payload.len() < MIN_DHCP_SIZE {
         return None;

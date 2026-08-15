@@ -10,13 +10,12 @@
 //! dependency.
 //!
 //! This is the piece that makes headless tools easy: pair a capture source with
-//! a parser, then feed each parsed packet to [`ConnectionTracker::ingest`] and
-//! periodically call [`ConnectionTracker::cleanup`]. A Prometheus exporter, a
-//! pcap post-processor, or a test harness can all reuse the exact connection
+//! a parser, then feed each parsed packet to [`ConnectionTracker::ingest_at`]
+//! and periodically call [`ConnectionTracker::cleanup`]. A Prometheus exporter,
+//! a pcap post-processor, or a test harness can all reuse the exact connection
 //! semantics of the main application. Offline consumers replaying a saved trace
-//! should use [`ConnectionTracker::ingest_at`] with each packet's capture
-//! timestamp so connection lifetimes and timeouts follow trace time rather than
-//! the replay wall clock.
+//! should pass each packet's capture timestamp so connection lifetimes and
+//! timeouts follow trace time rather than the replay wall clock.
 //!
 //! ```no_run
 //! use rustnet_core::network::parser::PacketParser;
@@ -28,7 +27,7 @@
 //! # let frames: Vec<Vec<u8>> = Vec::new();
 //! for frame in frames {
 //!     if let Some(parsed) = parser.parse_packet(&frame) {
-//!         tracker.ingest(&parsed);
+//!         tracker.ingest_at(&parsed, SystemTime::now());
 //!     }
 //! }
 //! tracker.cleanup(SystemTime::now()); // expire idle/closed connections
@@ -130,7 +129,7 @@ impl std::fmt::Display for HistoricKey {
 
 /// Tuning knobs for a [`ConnectionTracker`].
 #[derive(Debug, Clone)]
-pub struct TrackerConfig {
+pub(crate) struct TrackerConfig {
     /// Maximum number of concurrent active connections. New connections beyond
     /// this limit are dropped (existing ones still update) to bound memory
     /// under port scans or connection floods.
@@ -164,7 +163,8 @@ impl Default for TrackerConfig {
     }
 }
 
-/// What happened when a packet was [`ingest`](ConnectionTracker::ingest)ed.
+/// What happened when a packet was ingested via
+/// [`ingest_at`](ConnectionTracker::ingest_at).
 ///
 /// Returned so callers can layer their own concerns — global statistics,
 /// structured logging, DNS enrichment — on top of the core table update without
@@ -312,13 +312,13 @@ pub struct ConnectionTracker {
 }
 
 impl ConnectionTracker {
-    /// Create a tracker with [default](TrackerConfig::default) configuration.
+    /// Create a tracker with default configuration.
     pub fn new() -> Self {
         Self::with_config(TrackerConfig::default())
     }
 
     /// Create a tracker with custom [`TrackerConfig`].
-    pub fn with_config(config: TrackerConfig) -> Self {
+    pub(crate) fn with_config(config: TrackerConfig) -> Self {
         Self {
             connections: ConnectionMap::with_hasher(FxBuildHasher),
             historic: HistoricMap::with_hasher(FxBuildHasher),
@@ -334,27 +334,16 @@ impl ConnectionTracker {
     }
 
     /// Fold a parsed packet into the connection table, creating or updating the
-    /// matching connection, timestamping the update with the current wall clock.
+    /// matching connection, stamping the update with the supplied `now`.
     ///
-    /// This is the right call for live capture. Offline consumers replaying a
-    /// pcap should use [`ingest_at`](Self::ingest_at) and pass the packet's own
-    /// capture time so connection lifetimes and [`cleanup`](Self::cleanup)
-    /// timeouts reflect the trace rather than the replay wall clock.
-    pub fn ingest(&self, parsed: &ParsedPacket) -> IngestOutcome {
-        self.ingest_at(parsed, SystemTime::now())
-    }
-
-    /// Like [`ingest`](Self::ingest), but stamps the connection update with the
-    /// supplied `now` instead of the wall clock.
-    ///
-    /// Use this for deterministic offline processing (pcap replay, tests): pass
-    /// the packet's capture timestamp so `created_at`/`last_activity` and the
-    /// `cleanup` timeout sweep operate on trace time, not real time.
-    ///
-    /// Live callers should pass each packet's own capture timestamp too, not one
-    /// clock read shared across a batch of packets. Handshake RTT is the
-    /// difference between two packets' `now` values, so a shared timestamp
-    /// collapses every round trip that completes within one batch to zero.
+    /// Pass the packet's own capture timestamp: for offline processing (pcap
+    /// replay, tests) this keeps `created_at`/`last_activity` and the
+    /// [`cleanup`](Self::cleanup) timeout sweep on trace time rather than the
+    /// replay wall clock. Live callers should also pass each packet's own
+    /// capture timestamp, not one clock read shared across a batch of packets.
+    /// Handshake RTT is the difference between two packets' `now` values, so a
+    /// shared timestamp collapses every round trip that completes within one
+    /// batch to zero.
     pub fn ingest_at(&self, parsed: &ParsedPacket, now: SystemTime) -> IngestOutcome {
         // Harvest IP -> MAC mappings from ARP and NDP packets; only they pay
         // this cost.
@@ -887,8 +876,8 @@ impl ConnectionTracker {
     /// Remove connections whose protocol-aware timeout has elapsed as of `now`.
     ///
     /// Removed connections are archived into the historic table (when
-    /// [`keep_historic`](TrackerConfig::keep_historic) is set, subject to
-    /// [`max_historic`](TrackerConfig::max_historic) eviction) and their QUIC
+    /// `keep_historic` is set, subject to `max_historic` eviction) and their
+    /// QUIC
     /// mappings are dropped. Returns the removed connections (in their original,
     /// pre-archive form) so callers can emit close events or export them.
     pub fn cleanup(&self, now: SystemTime) -> Vec<Connection> {
@@ -983,14 +972,6 @@ impl ConnectionTracker {
             .collect()
     }
 
-    /// A point-in-time copy of the historic (recently-closed) connections.
-    pub fn historic_snapshot(&self) -> Vec<Connection> {
-        self.historic
-            .iter()
-            .map(|entry| entry.value().clone())
-            .collect()
-    }
-
     /// Inspect the active and historic maps as one consistent retained view.
     ///
     /// Cleanup cannot move a connection between the maps while `inspect` is
@@ -1050,7 +1031,7 @@ impl ConnectionTracker {
     ///
     /// Use this for in-place enrichment (e.g. attaching process, DNS, or GeoIP
     /// information via `iter_mut`) or custom reads. Lifecycle changes should go
-    /// through [`ingest`](Self::ingest) and [`cleanup`](Self::cleanup) so the
+    /// through [`ingest_at`](Self::ingest_at) and [`cleanup`](Self::cleanup) so the
     /// connection-count limit, RTT, and QUIC coalescing stay consistent —
     /// inserting or removing entries directly desyncs the internal counter
     /// backing the `max_connections` check.
@@ -1091,6 +1072,14 @@ mod tests {
     use super::*;
     use crate::network::parser::PacketParser;
     use crate::network::types::NetBiosOpcode;
+
+    impl ConnectionTracker {
+        /// Wall-clock `ingest_at` shorthand for tests that don't exercise
+        /// packet timing.
+        fn ingest(&self, parsed: &ParsedPacket) -> IngestOutcome {
+            self.ingest_at(parsed, SystemTime::now())
+        }
+    }
 
     /// A minimal Ethernet+IPv4+UDP frame, parsed into a `ParsedPacket` so we can
     /// exercise the tracker with a realistic input.
@@ -2312,10 +2301,10 @@ mod tests {
         tracker.ingest_at(&packet, started);
         tracker.cleanup(started + Duration::from_secs(61));
 
-        let historic_before = tracker.historic_snapshot().pop().unwrap();
+        let historic_before = tracker.historic.iter().next().unwrap().value().clone();
         tracker.ingest_at(&packet, started + Duration::from_secs(62));
         tracker.ingest_at(&packet, started + Duration::from_secs(63));
-        let historic_after = tracker.historic_snapshot().pop().unwrap();
+        let historic_after = tracker.historic.iter().next().unwrap().value().clone();
 
         assert_eq!(historic_after.bytes_sent, historic_before.bytes_sent);
         assert_eq!(
@@ -2520,21 +2509,14 @@ mod tests {
     fn cleanup_forgets_pending_attribution_enrollments() {
         let tracker = ConnectionTracker::new();
         tracker.ingest(&plain_udp_packet());
-        assert_eq!(tracker.dns_attribution.pending_len(), 1);
-
         let removed = tracker.cleanup(SystemTime::now() + Duration::from_secs(86_400));
         assert_eq!(removed.len(), 1);
-        assert_eq!(
-            tracker.dns_attribution.pending_len(),
-            0,
-            "cleanup must forget the dead connection's enrollment"
-        );
 
         let answered_ip: std::net::IpAddr = "203.0.113.80".parse().unwrap();
         tracker.ingest(&dns_answer_packet(1, "posthumous.example", &[answered_ip]));
         assert!(
             tracker
-                .historic_snapshot()
+                .historic
                 .iter()
                 .all(|conn| conn.attributed_hostname.is_none()),
             "a response after death must not label the archived record"

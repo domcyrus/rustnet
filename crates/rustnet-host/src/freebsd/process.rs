@@ -1,9 +1,9 @@
 // network/platform/freebsd/process.rs - FreeBSD sockstat-based process lookup
 
 use crate::{
-    AttributionBackend, ConnectionKey, MatchQuality, ProcessAncestor, ProcessAttribution,
-    ProcessLineage, ProcessLookup, ancestor_display_name, collect_process_lineage,
-    decode_process_name, memoized, parse_socket_addr_text, relaxed_lookup,
+    ConnectionKey, MatchQuality, ProcessAncestor, ProcessAttribution, ProcessLineage,
+    ProcessLookup, ancestor_display_name, collect_process_lineage, decode_process_name, memoized,
+    parse_socket_addr_text, relaxed_lookup,
 };
 use anyhow::{Context, Result};
 use rustnet_core::network::types::{Connection, Protocol};
@@ -14,21 +14,15 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::RwLock;
-use std::time::{Duration, Instant};
 
 const SOCKSTAT_PATH: &str = "/usr/bin/sockstat";
 
-pub struct FreeBSDProcessLookup {
+pub(super) struct FreeBSDProcessLookup {
     // Cache: ConnectionKey -> socket owner
-    cache: RwLock<ProcessCache>,
+    cache: RwLock<HashMap<ConnectionKey, FreeBsdProcessInfo>>,
     // A process may own many sockets. Resolve its metadata through sysctl once
     // per refresh generation rather than once per connection.
     process_details: RwLock<HashMap<u32, Option<FreeBsdProcessDetails>>>,
-}
-
-struct ProcessCache {
-    lookup: HashMap<ConnectionKey, FreeBsdProcessInfo>,
-    last_refresh: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,12 +43,9 @@ struct FreeBsdProcessDetails {
 }
 
 impl FreeBSDProcessLookup {
-    pub fn new() -> Result<Self> {
+    pub(super) fn new() -> Result<Self> {
         Ok(Self {
-            cache: RwLock::new(ProcessCache {
-                lookup: HashMap::new(),
-                last_refresh: Instant::now() - Duration::from_secs(3600),
-            }),
+            cache: RwLock::new(HashMap::new()),
             process_details: RwLock::new(HashMap::new()),
         })
     }
@@ -63,11 +54,11 @@ impl FreeBSDProcessLookup {
         let key = ConnectionKey::from_connection(conn);
         let cache = self.cache.read().expect("process cache lock poisoned");
 
-        if let Some(process) = cache.lookup.get(&key) {
+        if let Some(process) = cache.get(&key) {
             return Some((process.clone(), MatchQuality::ExactTuple));
         }
 
-        relaxed_lookup(&cache.lookup, &key).map(|(process, quality)| (process.clone(), quality))
+        relaxed_lookup(&cache, &key).map(|(process, quality)| (process.clone(), quality))
     }
 
     fn resolve_executable(pid: libc::pid_t) -> Option<PathBuf> {
@@ -316,19 +307,9 @@ impl FreeBSDProcessLookup {
 }
 
 impl ProcessLookup for FreeBSDProcessLookup {
-    fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
-        self.lookup_match(conn)
-            .map(|(process, _quality)| (process.pid, process.name))
-    }
-
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let (process, quality) = self.lookup_match(conn)?;
-        let mut attribution = ProcessAttribution::new(
-            process.pid,
-            process.name,
-            AttributionBackend::PlatformNative,
-            quality,
-        );
+        let mut attribution = ProcessAttribution::new(process.pid, process.name, quality);
         attribution.uid = Some(process.uid);
         if let Some(details) = self.process_details(process.pid) {
             let lineage = self.process_lineage(process.pid, details.ppid);
@@ -345,9 +326,7 @@ impl ProcessLookup for FreeBSDProcessLookup {
     fn refresh(&self) -> Result<()> {
         let process_map = Self::build_process_map()?;
 
-        let mut cache = self.cache.write().expect("cache lock poisoned");
-        cache.lookup = process_map;
-        cache.last_refresh = Instant::now();
+        *self.cache.write().expect("cache lock poisoned") = process_map;
         self.process_details
             .write()
             .expect("process details cache lock poisoned")
@@ -382,10 +361,10 @@ USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS
 1001 curl 4294967295 3 tcp4 127.0.0.1:5000 1.1.1.1:443
 ";
         let lookup = FreeBSDProcessLookup {
-            cache: RwLock::new(ProcessCache {
-                lookup: FreeBSDProcessLookup::parse_sockstat_rows(output, Protocol::Tcp),
-                last_refresh: Instant::now(),
-            }),
+            cache: RwLock::new(FreeBSDProcessLookup::parse_sockstat_rows(
+                output,
+                Protocol::Tcp,
+            )),
             process_details: RwLock::new(HashMap::new()),
         };
         let conn = tcp_connection("127.0.0.1:5000", "1.1.1.1:443");
@@ -397,10 +376,6 @@ USER COMMAND PID FD PROTO LOCAL ADDRESS FOREIGN ADDRESS
         assert_eq!(attribution.uid, Some(1001));
         assert_eq!(attribution.gid, None);
         assert_eq!(attribution.quality, MatchQuality::ExactTuple);
-        assert_eq!(
-            lookup.get_process_for_connection(&conn),
-            Some((u32::MAX, "curl".to_string()))
-        );
     }
 
     #[test]

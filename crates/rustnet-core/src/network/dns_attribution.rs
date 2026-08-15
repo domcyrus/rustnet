@@ -38,16 +38,16 @@ const MAX_DOMAINS_PER_IP: usize = 4;
 /// it waits for matching DNS for at most this long. 10s matches Little
 /// Snitch's `MAX_QUERY_AGE` and is tight enough to keep CDN-IP
 /// collisions rare.
-pub const DEFAULT_FRESH_WINDOW: Duration = Duration::from_secs(10);
+pub(crate) const DEFAULT_FRESH_WINDOW: Duration = Duration::from_secs(10);
 
 /// Default retention window: entries past this are eligible for
 /// pruning. Kept longer than `fresh_window` so debug accessors / detail
 /// views can show recently-seen-but-not-fresh names if we ever want
 /// them; lookups won't return these for attribution.
-pub const DEFAULT_RETENTION: Duration = Duration::from_secs(600);
+pub(crate) const DEFAULT_RETENTION: Duration = Duration::from_secs(600);
 
 /// Default cap on tracked IPs.
-pub const DEFAULT_MAX_ENTRIES: usize = 8192;
+pub(crate) const DEFAULT_MAX_ENTRIES: usize = 8192;
 
 /// Cap on the number of connection keys that may wait on the same IP
 /// for attribution. Bounds memory if many simultaneous connections to a
@@ -56,7 +56,7 @@ const MAX_PENDING_PER_IP: usize = 256;
 
 /// One observed (domain, when, source) tuple for an IP.
 #[derive(Debug, Clone)]
-pub struct AttributedDomain {
+pub(crate) struct AttributedDomain {
     pub domain: String,
     pub observed_at: Instant,
     pub source: AttributionSource,
@@ -80,7 +80,7 @@ struct PendingEntry {
 ///
 /// All access is concurrent (DashMap), no outer lock required.
 #[derive(Debug)]
-pub struct DnsAttributionCache {
+pub(crate) struct DnsAttributionCache {
     map: DashMap<IpAddr, Vec<AttributedDomain>>,
     /// IP -> connection keys waiting on a DNS resolution for that IP.
     /// Entries are added by `attribute()` on a cache miss and drained
@@ -104,7 +104,7 @@ impl Default for DnsAttributionCache {
 }
 
 impl DnsAttributionCache {
-    pub fn new(max_entries: usize, fresh_window: Duration, retention: Duration) -> Self {
+    pub(crate) fn new(max_entries: usize, fresh_window: Duration, retention: Duration) -> Self {
         Self {
             map: DashMap::new(),
             pending: DashMap::new(),
@@ -121,7 +121,7 @@ impl DnsAttributionCache {
     /// in place: if the same domain is already present its timestamp is
     /// refreshed, otherwise the new entry is pushed and the per-IP list
     /// is trimmed to `MAX_DOMAINS_PER_IP` keeping the most recent.
-    pub fn record(&self, query_name: &str, ips: &[IpAddr], source: AttributionSource) {
+    pub(crate) fn record(&self, query_name: &str, ips: &[IpAddr], source: AttributionSource) {
         let domain = query_name.trim().trim_end_matches('.');
         if domain.is_empty() || ips.is_empty() {
             return;
@@ -178,7 +178,7 @@ impl DnsAttributionCache {
     /// older than `retention`. The boolean is `true` when the freshest
     /// entry is within `fresh_window` (and therefore trustworthy enough
     /// to attribute a new connection to).
-    pub fn lookup(&self, ip: IpAddr) -> Option<(AttributedDomain, bool)> {
+    pub(crate) fn lookup(&self, ip: IpAddr) -> Option<(AttributedDomain, bool)> {
         let entries = self.map.get(&ip)?;
         let now = Instant::now();
         let freshest = entries
@@ -214,7 +214,7 @@ impl DnsAttributionCache {
     ///   / local-discovery protocol (DNS, mDNS, LLMNR, DHCP, SSDP,
     ///   NetBIOS). Attribution is either nonsensical (the protocol
     ///   *is* the name lookup) or useless (broadcast / multicast).
-    pub fn attribute(&self, conn: &mut Connection, key: ConnectionKey) {
+    pub(crate) fn attribute(&self, conn: &mut Connection, key: ConnectionKey) {
         if conn.protocol == Protocol::Arp || conn.attributed_hostname.is_some() {
             return;
         }
@@ -274,7 +274,7 @@ impl DnsAttributionCache {
     /// Remove a connection key from the pending index. Called on
     /// connection cleanup so dead keys don't linger when the connection
     /// dies before any DNS response arrives.
-    pub fn forget_pending(&self, ip: IpAddr, conn_key: ConnectionKey) {
+    pub(crate) fn forget_pending(&self, ip: IpAddr, conn_key: ConnectionKey) {
         let now_empty = self.pending.get_mut(&ip).map(|mut entry| {
             entry.retain(|e| e.conn_key != conn_key);
             entry.is_empty()
@@ -289,7 +289,7 @@ impl DnsAttributionCache {
     /// waiting on any of those IPs. Stale enrollments are dropped on
     /// the floor so a brand-new DNS resolution can't retroactively
     /// label a long-running connection.
-    pub fn record_and_drain_pending(
+    pub(crate) fn record_and_drain_pending(
         &self,
         query_name: &str,
         ips: &[IpAddr],
@@ -316,7 +316,7 @@ impl DnsAttributionCache {
     /// Drop pending enrollments older than `fresh_window`. Intended to
     /// be called from a periodic cleanup tick so memory doesn't
     /// accumulate when DNS for an enrolled IP never arrives.
-    pub fn prune_pending(&self, now: Instant) {
+    pub(crate) fn prune_pending(&self, now: Instant) {
         self.pending.retain(|_ip, entries| {
             entries.retain(|e| now.saturating_duration_since(e.enrolled_at) <= self.fresh_window);
             !entries.is_empty()
@@ -326,7 +326,7 @@ impl DnsAttributionCache {
     /// Combined periodic maintenance: prune the IP -> domain map and the
     /// pending index. Cheap; intended to be called once per cleanup
     /// thread tick.
-    pub fn cleanup_tick(&self, now: Instant) {
+    pub(crate) fn cleanup_tick(&self, now: Instant) {
         self.prune(now);
         self.prune_pending(now);
     }
@@ -336,7 +336,7 @@ impl DnsAttributionCache {
     /// watermark below the cap, leaving headroom so the emergency prune
     /// in `record()` doesn't re-run the full-map pass on every
     /// subsequent insertion.
-    pub fn prune(&self, now: Instant) {
+    pub(crate) fn prune(&self, now: Instant) {
         // First, drop expired domains within each IP, and IPs that end up empty.
         self.map.retain(|_ip, entries| {
             entries.retain(|d| now.saturating_duration_since(d.observed_at) <= self.retention);
@@ -375,17 +375,10 @@ impl DnsAttributionCache {
     }
 
     /// Drop everything: the IP -> domain map and the pending index.
-    pub fn clear(&self) {
+    pub(crate) fn clear(&self) {
         self.map.clear();
         self.pending.clear();
         self.map_len.store(0, Ordering::Relaxed);
-    }
-
-    /// Number of IPs with waiting enrollments; test-only visibility for
-    /// the tracker's pending-lifecycle tests.
-    #[cfg(test)]
-    pub(crate) fn pending_len(&self) -> usize {
-        self.pending.len()
     }
 }
 
@@ -427,7 +420,8 @@ fn to_attributed_hostname(att: AttributedDomain) -> AttributedHostname {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::Ipv4Addr;
+    use crate::network::types::{Protocol, ProtocolState, TcpState};
+    use std::net::{Ipv4Addr, SocketAddr};
     use std::thread::sleep;
 
     fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
@@ -436,6 +430,15 @@ mod tests {
 
     fn key_of(conn: &Connection) -> ConnectionKey {
         ConnectionKey::new(conn.protocol, conn.local_addr, conn.remote_addr)
+    }
+
+    fn tcp_connection() -> Connection {
+        Connection::new(
+            Protocol::Tcp,
+            "192.168.1.10:54321".parse().unwrap(),
+            "1.2.3.4:443".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        )
     }
 
     #[test]
@@ -565,9 +568,6 @@ mod tests {
 
     #[test]
     fn attribute_tags_fresh_connection() {
-        use crate::network::types::{Protocol, ProtocolState};
-        use std::net::SocketAddr;
-
         let cache = DnsAttributionCache::default();
         cache.record(
             "youtube.com",
@@ -588,9 +588,6 @@ mod tests {
 
     #[test]
     fn attribute_stamps_dns_observation_time() {
-        use crate::network::types::{Protocol, ProtocolState};
-        use std::net::SocketAddr;
-
         let cache = DnsAttributionCache::default();
         cache.record("foo.com", &[ip(1, 2, 3, 4)], AttributionSource::CapturedDns);
         sleep(Duration::from_millis(50));
@@ -610,20 +607,10 @@ mod tests {
 
     #[test]
     fn attribute_first_write_wins() {
-        use crate::network::types::{Protocol, ProtocolState};
-        use std::net::SocketAddr;
-
         let cache = DnsAttributionCache::default();
         cache.record("a.com", &[ip(1, 2, 3, 4)], AttributionSource::CapturedDns);
 
-        let local: SocketAddr = "192.168.1.10:54321".parse().unwrap();
-        let remote: SocketAddr = "1.2.3.4:443".parse().unwrap();
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            local,
-            remote,
-            ProtocolState::Tcp(crate::network::types::TcpState::Established),
-        );
+        let mut conn = tcp_connection();
 
         let key = key_of(&conn);
         cache.attribute(&mut conn, key);
@@ -636,11 +623,7 @@ mod tests {
 
     #[test]
     fn attribute_skips_dns_self_attribution() {
-        use crate::network::types::{
-            ApplicationProtocol, DnsInfo, DpiInfo, Protocol, ProtocolState,
-        };
-        use std::net::SocketAddr;
-        use std::time::Instant;
+        use crate::network::types::{ApplicationProtocol, DnsInfo, DpiInfo};
 
         let cache = DnsAttributionCache::default();
         cache.record(
@@ -662,7 +645,6 @@ mod tests {
                 rcode: None,
                 nodata: None,
             }),
-            last_update_time: Instant::now(),
         });
 
         let key = key_of(&conn);
@@ -677,11 +659,8 @@ mod tests {
     fn attribute_skips_local_discovery_protocols() {
         use crate::network::types::{
             ApplicationProtocol, DhcpInfo, DhcpMessageType, DpiInfo, LlmnrInfo, MdnsInfo,
-            NetBiosInfo, NetBiosOpcode, NetBiosService, Protocol, ProtocolState, SsdpInfo,
-            SsdpMethod,
+            NetBiosInfo, NetBiosOpcode, NetBiosService, SsdpInfo, SsdpMethod,
         };
-        use std::net::SocketAddr;
-        use std::time::Instant;
 
         let cache = DnsAttributionCache::default();
         cache.record(
@@ -694,10 +673,7 @@ mod tests {
         let remote: SocketAddr = "1.2.3.4:5353".parse().unwrap();
         let make_conn = |app: ApplicationProtocol| {
             let mut c = Connection::new(Protocol::Udp, local, remote, ProtocolState::Udp);
-            c.dpi_info = Some(DpiInfo {
-                application: app,
-                last_update_time: Instant::now(),
-            });
+            c.dpi_info = Some(DpiInfo { application: app });
             c
         };
 
@@ -763,11 +739,7 @@ mod tests {
 
     #[test]
     fn attribute_skips_when_sni_present() {
-        use crate::network::types::{
-            ApplicationProtocol, DpiInfo, HttpsInfo, Protocol, ProtocolState, TcpState, TlsInfo,
-        };
-        use std::net::SocketAddr;
-        use std::time::Instant;
+        use crate::network::types::{ApplicationProtocol, DpiInfo, HttpsInfo, TlsInfo};
 
         let cache = DnsAttributionCache::default();
         cache.record(
@@ -776,14 +748,7 @@ mod tests {
             AttributionSource::CapturedDns,
         );
 
-        let local: SocketAddr = "192.168.1.10:54321".parse().unwrap();
-        let remote: SocketAddr = "1.2.3.4:443".parse().unwrap();
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            local,
-            remote,
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = tcp_connection();
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Https(HttpsInfo {
                 tls_info: Some(TlsInfo {
@@ -793,7 +758,6 @@ mod tests {
                     cipher_suite: None,
                 }),
             }),
-            last_update_time: Instant::now(),
         });
 
         let key = key_of(&conn);
@@ -806,11 +770,7 @@ mod tests {
 
     #[test]
     fn attribute_proceeds_when_sni_partial() {
-        use crate::network::types::{
-            ApplicationProtocol, DpiInfo, HttpsInfo, Protocol, ProtocolState, TcpState, TlsInfo,
-        };
-        use std::net::SocketAddr;
-        use std::time::Instant;
+        use crate::network::types::{ApplicationProtocol, DpiInfo, HttpsInfo, TlsInfo};
 
         let cache = DnsAttributionCache::default();
         cache.record(
@@ -819,14 +779,7 @@ mod tests {
             AttributionSource::CapturedDns,
         );
 
-        let local: SocketAddr = "192.168.1.10:54321".parse().unwrap();
-        let remote: SocketAddr = "1.2.3.4:443".parse().unwrap();
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            local,
-            remote,
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = tcp_connection();
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Https(HttpsInfo {
                 tls_info: Some(TlsInfo {
@@ -836,7 +789,6 @@ mod tests {
                     cipher_suite: None,
                 }),
             }),
-            last_update_time: Instant::now(),
         });
 
         let key = key_of(&conn);
@@ -850,9 +802,6 @@ mod tests {
 
     #[test]
     fn attribute_skips_when_not_fresh() {
-        use crate::network::types::{Protocol, ProtocolState};
-        use std::net::SocketAddr;
-
         let cache = DnsAttributionCache::new(
             DEFAULT_MAX_ENTRIES,
             Duration::from_millis(10),
@@ -861,14 +810,7 @@ mod tests {
         cache.record("foo.com", &[ip(1, 2, 3, 4)], AttributionSource::CapturedDns);
         sleep(Duration::from_millis(40));
 
-        let local: SocketAddr = "192.168.1.10:54321".parse().unwrap();
-        let remote: SocketAddr = "1.2.3.4:443".parse().unwrap();
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            local,
-            remote,
-            ProtocolState::Tcp(crate::network::types::TcpState::Established),
-        );
+        let mut conn = tcp_connection();
 
         let key = key_of(&conn);
         cache.attribute(&mut conn, key);
@@ -880,20 +822,10 @@ mod tests {
 
     #[test]
     fn attribute_enrolls_on_miss_then_drain_attributes() {
-        use crate::network::types::{Protocol, ProtocolState, TcpState};
-        use std::net::SocketAddr;
-
         let cache = DnsAttributionCache::default();
 
         // Connection happens first; cache is empty, so enroll in pending.
-        let local: SocketAddr = "192.168.1.10:54321".parse().unwrap();
-        let remote: SocketAddr = "1.2.3.4:443".parse().unwrap();
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            local,
-            remote,
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = tcp_connection();
         let key = key_of(&conn);
         cache.attribute(&mut conn, key);
         assert!(conn.attributed_hostname.is_none());
@@ -923,18 +855,8 @@ mod tests {
 
     #[test]
     fn forget_pending_clears_dead_keys() {
-        use crate::network::types::{Protocol, ProtocolState, TcpState};
-        use std::net::SocketAddr;
-
         let cache = DnsAttributionCache::default();
-        let local: SocketAddr = "192.168.1.10:54321".parse().unwrap();
-        let remote: SocketAddr = "1.2.3.4:443".parse().unwrap();
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            local,
-            remote,
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = tcp_connection();
         let key = key_of(&conn);
         cache.attribute(&mut conn, key);
         assert_eq!(cache.pending.len(), 1);
@@ -956,20 +878,10 @@ mod tests {
 
     #[test]
     fn pending_ttl_drops_expired_enrollments_on_drain() {
-        use crate::network::types::{Protocol, ProtocolState, TcpState};
-        use std::net::SocketAddr;
-
         // Backdate the enrollment via direct field surgery so we don't
         // have to actually sleep for `fresh_window`.
         let cache = DnsAttributionCache::default();
-        let local: SocketAddr = "192.168.1.10:54321".parse().unwrap();
-        let remote: SocketAddr = "1.2.3.4:443".parse().unwrap();
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            local,
-            remote,
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = tcp_connection();
         let key = key_of(&conn);
         cache.attribute(&mut conn, key);
         // Backdate the enrollment past `fresh_window`.
@@ -989,18 +901,8 @@ mod tests {
 
     #[test]
     fn prune_pending_drops_expired_enrollments() {
-        use crate::network::types::{Protocol, ProtocolState, TcpState};
-        use std::net::SocketAddr;
-
         let cache = DnsAttributionCache::default();
-        let local: SocketAddr = "192.168.1.10:54321".parse().unwrap();
-        let remote: SocketAddr = "1.2.3.4:443".parse().unwrap();
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            local,
-            remote,
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = tcp_connection();
         let key = key_of(&conn);
         cache.attribute(&mut conn, key);
         assert_eq!(cache.pending.len(), 1);
@@ -1016,18 +918,8 @@ mod tests {
 
     #[test]
     fn enroll_pending_dedupes_same_key() {
-        use crate::network::types::{Protocol, ProtocolState, TcpState};
-        use std::net::SocketAddr;
-
         let cache = DnsAttributionCache::default();
-        let local: SocketAddr = "192.168.1.10:54321".parse().unwrap();
-        let remote: SocketAddr = "1.2.3.4:443".parse().unwrap();
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            local,
-            remote,
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = tcp_connection();
         let key = key_of(&conn);
         for _ in 0..5 {
             cache.attribute(&mut conn, key);

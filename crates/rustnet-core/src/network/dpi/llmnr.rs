@@ -11,7 +11,7 @@ use super::dns;
 ///
 /// LLMNR uses the same packet format as DNS, so we reuse the DNS parser.
 /// Returns `None` if the packet cannot be parsed as DNS.
-pub fn analyze_llmnr(payload: &[u8]) -> Option<LlmnrInfo> {
+pub(super) fn analyze_llmnr(payload: &[u8]) -> Option<LlmnrInfo> {
     // Reuse DNS parser - LLMNR has the same wire format
     dns::analyze_dns(payload).map(LlmnrInfo::from)
 }

@@ -2,7 +2,7 @@ use crate::network::types::{MqttInfo, MqttPacketType, MqttVersion};
 use log::debug;
 
 /// Quick check if payload looks like an MQTT packet.
-pub fn is_mqtt_packet(payload: &[u8]) -> bool {
+pub(super) fn is_mqtt_packet(payload: &[u8]) -> bool {
     if payload.len() < 2 {
         return false;
     }
@@ -51,7 +51,7 @@ pub fn is_mqtt_packet(payload: &[u8]) -> bool {
 }
 
 /// Full MQTT packet analysis.
-pub fn analyze_mqtt(payload: &[u8]) -> Option<MqttInfo> {
+pub(super) fn analyze_mqtt(payload: &[u8]) -> Option<MqttInfo> {
     if payload.len() < 2 {
         return None;
     }

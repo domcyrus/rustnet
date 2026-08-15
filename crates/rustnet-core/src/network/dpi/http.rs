@@ -1,7 +1,7 @@
 use crate::network::types::{HttpInfo, HttpVersion};
 
 /// Analyze payload for HTTP protocol
-pub fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
+pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
     if !is_likely_http(payload) {
         return None;
     }

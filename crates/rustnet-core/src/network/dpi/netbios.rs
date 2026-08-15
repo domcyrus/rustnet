@@ -19,7 +19,7 @@ const NBDGM_ERROR_SIZE: usize = 11;
 /// Analyze a NetBIOS Name Service packet (UDP port 137).
 ///
 /// Returns `None` if the packet is too small or invalid.
-pub fn analyze_netbios_ns(payload: &[u8]) -> Option<NetBiosInfo> {
+pub(super) fn analyze_netbios_ns(payload: &[u8]) -> Option<NetBiosInfo> {
     if payload.len() < MIN_NBNS_SIZE {
         return None;
     }
@@ -60,7 +60,7 @@ pub fn analyze_netbios_ns(payload: &[u8]) -> Option<NetBiosInfo> {
 /// Analyze a NetBIOS Datagram Service packet (UDP port 138).
 ///
 /// Returns `None` if the packet is too small or invalid.
-pub fn analyze_netbios_dgm(payload: &[u8]) -> Option<NetBiosInfo> {
+pub(super) fn analyze_netbios_dgm(payload: &[u8]) -> Option<NetBiosInfo> {
     // Message type at byte 0
     let msg_type = *payload.first()?;
 

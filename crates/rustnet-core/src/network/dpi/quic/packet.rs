@@ -46,7 +46,7 @@ pub(super) fn initial_salt_for_version(version: u32) -> &'static [u8] {
 
 /// Main entry point for QUIC packet parsing
 /// Handles coalesced packets - multiple QUIC packets in a single UDP datagram
-pub fn parse_quic_packet(payload: &[u8]) -> Option<QuicInfo> {
+pub(in crate::network::dpi) fn parse_quic_packet(payload: &[u8]) -> Option<QuicInfo> {
     if payload.is_empty() {
         debug!("QUIC: Empty payload");
         return None;
@@ -818,7 +818,7 @@ pub(super) fn is_quic_v2(version: u32) -> bool {
 }
 
 /// Check if a packet is likely a QUIC packet
-pub fn is_quic_packet(payload: &[u8]) -> bool {
+pub(in crate::network::dpi) fn is_quic_packet(payload: &[u8]) -> bool {
     if payload.len() < 5 {
         return false;
     }

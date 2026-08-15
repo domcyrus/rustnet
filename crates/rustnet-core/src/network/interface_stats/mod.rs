@@ -9,13 +9,13 @@ mod linux;
 mod windows;
 
 #[cfg(target_os = "freebsd")]
-pub use bsd::FreeBSDStatsProvider;
+use bsd::FreeBSDStatsProvider;
 #[cfg(target_os = "macos")]
-pub use bsd::MacOSStatsProvider;
+use bsd::MacOSStatsProvider;
 #[cfg(target_os = "linux")]
-pub use linux::LinuxStatsProvider;
+use linux::LinuxStatsProvider;
 #[cfg(target_os = "windows")]
-pub use windows::WindowsStatsProvider;
+use windows::WindowsStatsProvider;
 
 /// Statistics for a network interface
 #[derive(Debug, Clone)]
@@ -126,38 +126,36 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Snapshot with the given counters and timestamp, error fields zeroed.
+    fn stats(
+        rx_bytes: u64,
+        tx_bytes: u64,
+        rx_packets: u64,
+        tx_packets: u64,
+        timestamp: SystemTime,
+    ) -> InterfaceStats {
+        InterfaceStats {
+            interface_name: "test".to_string(),
+            rx_bytes,
+            tx_bytes,
+            rx_packets,
+            tx_packets,
+            rx_errors: 0,
+            tx_errors: 0,
+            rx_dropped: 0,
+            tx_dropped: 0,
+            collisions: 0,
+            timestamp,
+        }
+    }
+
     #[test]
     fn test_rate_calculation() {
         let t1 = SystemTime::now();
         let t2 = t1 + Duration::from_secs(1);
 
-        let stats1 = InterfaceStats {
-            interface_name: "test".to_string(),
-            rx_bytes: 1000,
-            tx_bytes: 500,
-            rx_packets: 10,
-            tx_packets: 5,
-            rx_errors: 0,
-            tx_errors: 0,
-            rx_dropped: 0,
-            tx_dropped: 0,
-            collisions: 0,
-            timestamp: t1,
-        };
-
-        let stats2 = InterfaceStats {
-            interface_name: "test".to_string(),
-            rx_bytes: 2000,
-            tx_bytes: 1000,
-            rx_packets: 20,
-            tx_packets: 10,
-            rx_errors: 0,
-            tx_errors: 0,
-            rx_dropped: 0,
-            tx_dropped: 0,
-            collisions: 0,
-            timestamp: t2,
-        };
+        let stats1 = stats(1000, 500, 10, 5, t1);
+        let stats2 = stats(2000, 1000, 20, 10, t2);
 
         let rates = stats2.calculate_rates(&stats1);
         assert_eq!(rates.rx_bytes_per_sec, 1000);
@@ -168,20 +166,7 @@ mod tests {
     fn test_rate_calculation_zero_duration() {
         let t = SystemTime::now();
 
-        let stats1 = InterfaceStats {
-            interface_name: "test".to_string(),
-            rx_bytes: 1000,
-            tx_bytes: 500,
-            rx_packets: 10,
-            tx_packets: 5,
-            rx_errors: 0,
-            tx_errors: 0,
-            rx_dropped: 0,
-            tx_dropped: 0,
-            collisions: 0,
-            timestamp: t,
-        };
-
+        let stats1 = stats(1000, 500, 10, 5, t);
         let stats2 = stats1.clone();
 
         let rates = stats2.calculate_rates(&stats1);
@@ -194,34 +179,11 @@ mod tests {
         let t1 = SystemTime::now();
         let t2 = t1 + Duration::from_secs(1);
 
-        let stats1 = InterfaceStats {
-            interface_name: "test".to_string(),
-            rx_bytes: 1000,
-            tx_bytes: 500,
-            rx_packets: 10,
-            tx_packets: 5,
-            rx_errors: 0,
-            tx_errors: 0,
-            rx_dropped: 0,
-            tx_dropped: 0,
-            collisions: 0,
-            timestamp: t1,
-        };
+        let stats1 = stats(1000, 500, 10, 5, t1);
 
-        // Simulate counter reset (should use saturating_sub to avoid panic)
-        let stats2 = InterfaceStats {
-            interface_name: "test".to_string(),
-            rx_bytes: 500, // Less than previous
-            tx_bytes: 250,
-            rx_packets: 5,
-            tx_packets: 2,
-            rx_errors: 0,
-            tx_errors: 0,
-            rx_dropped: 0,
-            tx_dropped: 0,
-            collisions: 0,
-            timestamp: t2,
-        };
+        // Simulate counter reset (should use saturating_sub to avoid panic):
+        // counters lower than the previous snapshot's.
+        let stats2 = stats(500, 250, 5, 2, t2);
 
         let rates = stats2.calculate_rates(&stats1);
         // Should result in 0 due to saturating_sub
@@ -233,19 +195,7 @@ mod tests {
     fn test_traffic_since() {
         let t1 = SystemTime::now();
         let t2 = t1 + Duration::from_secs(60);
-        let first = InterfaceStats {
-            interface_name: "test".to_string(),
-            rx_bytes: 1_000,
-            tx_bytes: 500,
-            rx_packets: 0,
-            tx_packets: 0,
-            rx_errors: 0,
-            tx_errors: 0,
-            rx_dropped: 0,
-            tx_dropped: 0,
-            collisions: 0,
-            timestamp: t1,
-        };
+        let first = stats(1_000, 500, 0, 0, t1);
         let second = InterfaceStats {
             rx_bytes: 9_000,
             tx_bytes: 2_500,

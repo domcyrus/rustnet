@@ -20,9 +20,9 @@ mod ssh;
 mod stun;
 mod tls_common;
 
-pub use cipher_suites::{format_cipher_suite, is_secure_cipher_suite};
-pub use quic::try_extract_tls_from_reassembler;
-pub use tls_common::is_partial_sni;
+pub(crate) use cipher_suites::{format_cipher_suite, is_secure_cipher_suite};
+pub(crate) use quic::try_extract_tls_from_reassembler;
+pub(crate) use tls_common::is_partial_sni;
 
 // Well-known port numbers used for DPI protocol detection.
 const PORT_SSH: u16 = 22;
@@ -50,7 +50,7 @@ pub struct DpiResult {
 }
 
 /// Analyze a TCP packet payload
-pub fn analyze_tcp_packet(
+pub(crate) fn analyze_tcp_packet(
     payload: &[u8],
     local_port: u16,
     remote_port: u16,
@@ -128,7 +128,7 @@ pub fn analyze_tcp_packet(
 }
 
 /// Analyze a UDP packet payload
-pub fn analyze_udp_packet(
+pub(crate) fn analyze_udp_packet(
     payload: &[u8],
     local_port: u16,
     remote_port: u16,

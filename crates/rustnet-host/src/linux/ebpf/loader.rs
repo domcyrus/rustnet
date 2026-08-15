@@ -39,7 +39,7 @@ enum BackendSelection<T, E> {
 }
 
 /// Loaded eBPF backend. Each object owns a private socket map.
-pub enum EbpfLoader {
+pub(super) enum EbpfLoader {
     Fentry(FentryLoader),
     Kprobe(KprobeLoader),
 }
@@ -51,7 +51,7 @@ impl EbpfLoader {
     /// CO-RE socket field reads, so missing target BTF falls safely to procfs.
     /// With BTF available, backend support is determined from actual program
     /// load and attachment results rather than uname.
-    pub fn try_load() -> Result<(Option<Self>, DegradationReason)> {
+    pub(super) fn try_load() -> Result<(Option<Self>, DegradationReason)> {
         let cap_result = check_capabilities_detailed();
         if cap_result != DegradationReason::None {
             if matches!(
@@ -133,21 +133,21 @@ impl EbpfLoader {
         }
     }
 
-    pub fn socket_map(&self) -> &libbpf_rs::Map<'_> {
+    pub(super) fn socket_map(&self) -> &libbpf_rs::Map<'_> {
         match self {
             Self::Fentry(loader) => loader.socket_map(),
             Self::Kprobe(loader) => loader.socket_map(),
         }
     }
 
-    pub fn backend(&self) -> AttributionBackend {
+    pub(super) fn backend(&self) -> AttributionBackend {
         match self {
             Self::Fentry(_) => AttributionBackend::EbpfFentry,
             Self::Kprobe(_) => AttributionBackend::EbpfKprobe,
         }
     }
 
-    pub fn capabilities(&self) -> AttributionCapabilities {
+    pub(super) fn capabilities(&self) -> AttributionCapabilities {
         match self {
             Self::Fentry(loader) => loader.capabilities,
             Self::Kprobe(loader) => loader.capabilities,
@@ -163,12 +163,11 @@ impl EbpfLoader {
                 FentryLoader::load_program(&kernel_btf).map(Self::Fentry)
             }
             AttributionBackend::EbpfKprobe => KprobeLoader::load_program().map(Self::Kprobe),
-            other => Err(anyhow::anyhow!("{other} is not an eBPF backend")),
         }
     }
 }
 
-pub struct FentryLoader {
+pub(super) struct FentryLoader {
     skel: Box<SocketTrackerFentrySkel<'static>>,
     _open_object: Box<std::mem::MaybeUninit<libbpf_rs::OpenObject>>,
     _links: Vec<libbpf_rs::Link>,
@@ -304,7 +303,7 @@ impl FentryLoader {
     }
 }
 
-pub struct KprobeLoader {
+pub(super) struct KprobeLoader {
     skel: Box<SocketTrackerKprobeSkel<'static>>,
     _open_object: Box<std::mem::MaybeUninit<libbpf_rs::OpenObject>>,
     _links: Vec<libbpf_rs::Link>,

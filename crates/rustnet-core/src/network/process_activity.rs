@@ -16,7 +16,7 @@ const OTHER_NAME: &str = "Other";
 
 /// Bounds for retained process accounting.
 #[derive(Debug, Clone)]
-pub struct ProcessActivityConfig {
+pub(crate) struct ProcessActivityConfig {
     /// Maximum number of historic process buckets represented in one sample.
     /// Additional identities are folded into attributed/unattributed `Other`
     /// buckets. Active identities are always represented individually.
@@ -446,7 +446,7 @@ impl ProcessActivityTracker {
         Self::with_config(ProcessActivityConfig::default())
     }
 
-    pub fn with_config(config: ProcessActivityConfig) -> Self {
+    pub(crate) fn with_config(config: ProcessActivityConfig) -> Self {
         Self {
             config,
             sample: HashMap::new(),
@@ -455,25 +455,6 @@ impl ProcessActivityTracker {
             histories: HashMap::new(),
             snapshot: ProcessActivitySnapshot::default(),
         }
-    }
-
-    /// Aggregate one complete active-plus-historic connection view.
-    /// Repeated observations are idempotent because compact per-flow counters
-    /// contribute only newly observed bytes.
-    pub fn observe_connections(&mut self, connections: &[Connection], now: SystemTime) {
-        self.observe_sources(
-            now,
-            |observe| {
-                for connection in connections.iter().filter(|conn| !conn.is_historic) {
-                    observe(connection);
-                }
-            },
-            |observe| {
-                for connection in connections.iter().filter(|conn| conn.is_historic) {
-                    observe(connection);
-                }
-            },
-        );
     }
 
     /// Stream active and historic sources into one sample without cloning
@@ -721,6 +702,26 @@ mod tests {
     use super::*;
     use crate::network::types::{Protocol, ProtocolState, TcpState};
     use std::net::{IpAddr, Ipv4Addr};
+
+    impl ProcessActivityTracker {
+        /// Test shorthand: feed one complete active-plus-historic connection
+        /// slice through [`observe_sources`](Self::observe_sources).
+        fn observe_connections(&mut self, connections: &[Connection], now: SystemTime) {
+            self.observe_sources(
+                now,
+                |observe| {
+                    for connection in connections.iter().filter(|conn| !conn.is_historic) {
+                        observe(connection);
+                    }
+                },
+                |observe| {
+                    for connection in connections.iter().filter(|conn| conn.is_historic) {
+                        observe(connection);
+                    }
+                },
+            );
+        }
+    }
 
     fn connection(pid: Option<u32>, name: Option<&str>, remote_port: u16) -> Connection {
         let mut conn = Connection::new(

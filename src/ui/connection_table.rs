@@ -953,7 +953,6 @@ mod tests {
                     ..TlsInfo::new()
                 }),
             }),
-            last_update_time: std::time::Instant::now(),
         });
         assert_eq!(
             remote_display(&conn, &ui_state, None, 24),

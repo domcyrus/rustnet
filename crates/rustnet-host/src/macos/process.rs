@@ -1,9 +1,9 @@
 // network/platform/macos/process.rs - macOS lsof-based process lookup
 
 use crate::{
-    AttributionBackend, ConnectionKey, DegradationReason, MatchQuality, ProcessAncestor,
-    ProcessAttribution, ProcessLineage, ProcessLookup, ancestor_display_name,
-    collect_process_lineage, decode_process_name, parse_socket_addr_text, relaxed_lookup,
+    ConnectionKey, DegradationReason, MatchQuality, ProcessAncestor, ProcessAttribution,
+    ProcessLineage, ProcessLookup, ancestor_display_name, collect_process_lineage,
+    decode_process_name, parse_socket_addr_text, relaxed_lookup,
 };
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -26,14 +26,14 @@ struct MacOSProcessInfo {
     uid: u32,
 }
 
-pub struct MacOSProcessLookup {
+pub(super) struct MacOSProcessLookup {
     cache: RwLock<HashMap<ConnectionKey, MacOSProcessInfo>>,
 }
 
 pub(super) struct ProcessDetails {
-    pub ppid: u32,
-    pub uid: u32,
-    pub gid: u32,
+    pub(super) ppid: u32,
+    pub(super) uid: u32,
+    pub(super) gid: u32,
     name: String,
     started_at_unix_ms: Option<u64>,
 }
@@ -145,7 +145,7 @@ pub(super) fn resolve_process_lineage(pid: u32, ppid: u32) -> Option<ProcessLine
 }
 
 impl MacOSProcessLookup {
-    pub fn new() -> Result<Self> {
+    pub(super) fn new() -> Result<Self> {
         Ok(Self {
             cache: RwLock::new(HashMap::new()),
         })
@@ -327,16 +327,10 @@ impl MacOSProcessLookup {
 }
 
 impl ProcessLookup for MacOSProcessLookup {
-    fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)> {
-        self.lookup_match(conn)
-            .map(|(process, _quality)| (process.pid, process.name))
-    }
-
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let (process, quality) = self.lookup_match(conn)?;
-        let mut attribution =
-            ProcessAttribution::new(process.pid, process.name, AttributionBackend::Lsof, quality)
-                .with_executable(resolve_executable(process.pid));
+        let mut attribution = ProcessAttribution::new(process.pid, process.name, quality)
+            .with_executable(resolve_executable(process.pid));
         attribution.uid = Some(process.uid);
         if let Some(details) = resolve_process_details(process.pid) {
             attribution = attribution.with_details(
@@ -366,10 +360,6 @@ impl ProcessLookup for MacOSProcessLookup {
         // The reason PKTAP wasn't used is injected by the application (which
         // learns it from the capture layer); see `super::report_pktap_degradation`.
         super::pktap_degradation()
-    }
-
-    fn get_attribution_backend(&self) -> AttributionBackend {
-        AttributionBackend::Lsof
     }
 }
 
@@ -440,21 +430,9 @@ fn parse_lsof_connection_with_hint(
 }
 
 /// Robust normalization of process names to match PKTAP normalization
-/// Handles all types of whitespace and control characters consistently
+/// (shared with rustnet-core so both sides stay identical)
 fn normalize_process_name_robust(name: &str) -> String {
-    let normalized = name
-        .chars()
-        .map(|c| {
-            if c.is_whitespace() || c.is_control() {
-                ' ' // Convert whitespace and control characters to space
-            } else {
-                c
-            }
-        })
-        .collect::<String>()
-        .split_whitespace() // Split on any whitespace
-        .collect::<Vec<&str>>()
-        .join(" "); // Join with single spaces
+    let normalized = rustnet_core::network::link_layer::pktap::normalize_process_name(name);
 
     debug!(
         "📝 Normalized lsof process name: '{}' -> '{}'",
@@ -527,12 +505,7 @@ curl\\x20helper 4294967295 501 9u IPv4 0x1 0t0 TCP 127.0.0.1:5000->1.1.1.1:443 (
         assert_eq!(attribution.uid, Some(501));
         assert_eq!(attribution.gid, None);
         assert_eq!(attribution.executable, None);
-        assert_eq!(attribution.backend, AttributionBackend::Lsof);
         assert_eq!(attribution.quality, MatchQuality::ExactTuple);
-        assert_eq!(
-            lookup.get_process_for_connection(&conn),
-            Some((u32::MAX, "curl helper".to_string()))
-        );
     }
 
     #[test]
@@ -614,7 +587,6 @@ server 42 root 3u IPv4 0x1 0t0 TCP 127.0.0.1:8080 (LISTEN)
         );
         assert_eq!(attribution.uid, Some(expected_uid));
         assert_eq!(attribution.executable, std::env::current_exe().ok());
-        assert_eq!(attribution.backend, AttributionBackend::Lsof);
         assert_eq!(attribution.quality, MatchQuality::ExactTuple);
     }
 

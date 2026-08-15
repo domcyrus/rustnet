@@ -2,7 +2,7 @@ use super::tls_common::{self, TlsParseOptions};
 use crate::network::types::{HttpsInfo, TlsInfo};
 use log::debug;
 
-pub fn is_tls_handshake(payload: &[u8]) -> bool {
+pub(super) fn is_tls_handshake(payload: &[u8]) -> bool {
     if payload.len() < 5 {
         return false;
     }
@@ -16,7 +16,7 @@ pub fn is_tls_handshake(payload: &[u8]) -> bool {
         (payload[2] >= 0x01 && payload[2] <= 0x04) // Minor version 1-4
 }
 
-pub fn analyze_https(payload: &[u8]) -> Option<HttpsInfo> {
+pub(super) fn analyze_https(payload: &[u8]) -> Option<HttpsInfo> {
     // Need at least 5 bytes for the TLS record header
     if payload.len() < 5 {
         return None;

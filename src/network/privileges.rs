@@ -199,22 +199,21 @@ fn is_running_in_container() -> bool {
     false
 }
 
-#[cfg(target_os = "macos")]
-fn check_macos_privileges() -> Result<PrivilegeStatus> {
+/// Shared macOS/FreeBSD check: root always suffices; otherwise packet capture
+/// requires access to BPF devices, so probe `/dev/bpf0..9` for open access.
+/// The platform-specific remediation instructions come from the caller.
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+fn check_bpf_privileges(instructions: Vec<String>) -> Result<PrivilegeStatus> {
     use std::fs;
 
     // Check if running as root by reading effective UID from process
-    let is_root = is_root_user();
-
-    if is_root {
+    if is_root_user() {
         info!("Running as root - all privileges available");
         return Ok(PrivilegeStatus::sufficient());
     }
 
     debug!("Not running as root, checking BPF device permissions");
 
-    // On macOS, packet capture requires access to BPF devices
-    // Try to open a BPF device to check permissions
     let bpf_devices = (0..10)
         .map(|i| format!("/dev/bpf{}", i))
         .collect::<Vec<_>>();
@@ -245,6 +244,11 @@ fn check_macos_privileges() -> Result<PrivilegeStatus> {
     // No BPF access - build error message
     let missing = vec!["Access to BPF devices (/dev/bpf*)".to_string()];
 
+    Ok(PrivilegeStatus::insufficient(missing, instructions))
+}
+
+#[cfg(target_os = "macos")]
+fn check_macos_privileges() -> Result<PrivilegeStatus> {
     let instructions = vec![
         "Run with sudo: sudo rustnet".to_string(),
         "Change BPF device permissions (temporary):\n  \
@@ -255,7 +259,7 @@ fn check_macos_privileges() -> Result<PrivilegeStatus> {
             .to_string(),
     ];
 
-    Ok(PrivilegeStatus::insufficient(missing, instructions))
+    check_bpf_privileges(instructions)
 }
 
 #[cfg(target_os = "windows")]
@@ -304,50 +308,6 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
 
 #[cfg(target_os = "freebsd")]
 fn check_freebsd_privileges() -> Result<PrivilegeStatus> {
-    use std::fs;
-
-    // Check if running as root by reading effective UID from process
-    let is_root = is_root_user();
-
-    if is_root {
-        info!("Running as root - all privileges available");
-        return Ok(PrivilegeStatus::sufficient());
-    }
-
-    debug!("Not running as root, checking BPF device permissions");
-
-    // On FreeBSD, packet capture requires access to BPF devices
-    // Try to open a BPF device to check permissions
-    let bpf_devices = (0..10)
-        .map(|i| format!("/dev/bpf{}", i))
-        .collect::<Vec<_>>();
-
-    let mut can_access_bpf = false;
-    for bpf_device in &bpf_devices {
-        if fs::metadata(bpf_device).is_ok() {
-            debug!("Checking BPF device: {}", bpf_device);
-
-            // Try to actually open it (this is the real test)
-            if std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(bpf_device)
-                .is_ok()
-            {
-                can_access_bpf = true;
-                debug!("Successfully opened BPF device: {}", bpf_device);
-                break;
-            }
-        }
-    }
-
-    if can_access_bpf {
-        return Ok(PrivilegeStatus::sufficient());
-    }
-
-    // No BPF access - build error message
-    let missing = vec!["Access to BPF devices (/dev/bpf*)".to_string()];
-
     let instructions = vec![
         "Run with sudo: sudo rustnet".to_string(),
         "Add your user to the bpf group:\n  \
@@ -359,7 +319,7 @@ fn check_freebsd_privileges() -> Result<PrivilegeStatus> {
             .to_string(),
     ];
 
-    Ok(PrivilegeStatus::insufficient(missing, instructions))
+    check_bpf_privileges(instructions)
 }
 
 /// Check if running as root user on Unix systems

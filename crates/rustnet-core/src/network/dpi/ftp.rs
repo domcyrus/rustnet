@@ -47,7 +47,7 @@ const FTP_DISTINCTIVE_COMMANDS: &[&str] = &[
 /// grammar is shared verbatim by SMTP, POP3-era protocols, and NNTP, so
 /// off port 21 a reply line carries no FTP signal. Replies are still parsed
 /// by [`analyze_ftp`] on the port-21 path.
-pub fn is_ftp(payload: &[u8]) -> bool {
+pub(super) fn is_ftp(payload: &[u8]) -> bool {
     let line = first_line(payload);
     if line.is_empty() {
         return false;
@@ -63,7 +63,7 @@ pub fn is_ftp(payload: &[u8]) -> bool {
 
 /// Parse an FTP control-channel payload. Returns `None` when the payload does
 /// not look like FTP.
-pub fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
+pub(super) fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
     let line = first_line(payload);
     if line.is_empty() {
         return None;

@@ -938,7 +938,7 @@ impl UIState {
 
 /// Compute grouped rows from a list of connections
 /// Group label shown for connections without a resolved process name.
-pub const UNKNOWN_PROCESS_GROUP: &str = "<unknown>";
+pub(super) const UNKNOWN_PROCESS_GROUP: &str = "<unknown>";
 
 /// The process-group label for a connection. Attribution can fail two ways:
 /// no owner found at all (`process_name` is `None`), or an owner PID whose

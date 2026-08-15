@@ -16,10 +16,8 @@
 //!
 //! [`ProcessLookup::get_process_attribution`] returns the richer
 //! [`ProcessAttribution`]: parent process id, effective UID/GID, executable
-//! path, process lineage, the producing [`AttributionBackend`], and a
-//! [`MatchQuality`] saying how the connection was matched. Platforms that only
-//! implement the tuple API are bridged automatically, so
-//! `get_process_for_connection` keeps working everywhere.
+//! path, process lineage, and a [`MatchQuality`] saying how the connection was
+//! matched.
 //!
 //! When a platform can't use its optimal method, [`ProcessLookup::get_degradation_reason`]
 //! reports why via [`DegradationReason`] (e.g. missing `CAP_BPF`, no root for
@@ -32,44 +30,36 @@
 //! tools can attribute processes the same way the `rustnet` TUI does.
 
 use anyhow::Result;
-use rustnet_core::network::types::{Connection, Protocol};
+use rustnet_core::network::types::{
+    Connection, MAX_PROCESS_ANCESTORS, MatchQuality, ProcessAncestor, ProcessLineage, Protocol,
+};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
 
 /// Active process-attribution backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AttributionBackend {
+#[cfg(all(target_os = "linux", feature = "ebpf"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttributionBackend {
     /// Linux BPF trampoline programs using fentry and fexit.
     EbpfFentry,
     /// Linux legacy kprobe and kretprobe programs.
     EbpfKprobe,
-    /// Linux procfs socket-table scanning.
-    Procfs,
-    /// macOS PKTAP packet metadata.
-    Pktap,
-    /// macOS `lsof` socket-table scanning.
-    Lsof,
-    /// A platform-native backend outside the Linux eBPF stack.
-    #[default]
-    PlatformNative,
 }
 
+#[cfg(all(target_os = "linux", feature = "ebpf"))]
 impl std::fmt::Display for AttributionBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let name = match self {
             Self::EbpfFentry => "eBPF fentry/fexit",
             Self::EbpfKprobe => "eBPF kprobe",
-            Self::Procfs => "procfs",
-            Self::Pktap => "PKTAP",
-            Self::Lsof => "lsof",
-            Self::PlatformNative => "platform native",
         };
         f.write_str(name)
     }
 }
 
+#[cfg(all(target_os = "linux", feature = "ebpf"))]
 bitflags::bitflags! {
     /// Connection operations covered by the active Linux eBPF backend.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -84,20 +74,6 @@ bitflags::bitflags! {
     }
 }
 
-/// How closely an attribution result matched the connection it was asked about.
-///
-/// Backends record sockets under the tuple they saw at creation time, which is
-/// not always the tuple the capture side observes on the wire. A lookup may
-/// therefore have to relax the key, and the caller deserves to know that it
-/// did: a relaxed hit is a plausible owner, not a proven one.
-///
-/// Defined in `rustnet-core` because [`Connection`] carries it and this crate
-/// depends on core, not the other way round. Re-exported here so attribution
-/// callers only need one import.
-pub use rustnet_core::network::types::{
-    MAX_PROCESS_ANCESTORS, MatchQuality, ProcessAncestor, ProcessLineage,
-};
-
 /// A rich process-attribution result.
 ///
 /// Everything past `tgid`/`name` is best effort: a backend fills in what it
@@ -106,8 +82,7 @@ pub use rustnet_core::network::types::{
 /// capped parent chain. Linux, macOS, and FreeBSD can report credentials.
 ///
 /// Marked `#[non_exhaustive]` because cgroup and container fields are expected
-/// to land here later. Build values with [`ProcessAttribution::new`] plus the
-/// `with_*` methods instead of a struct literal.
+/// to land here later.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ProcessAttribution {
@@ -124,8 +99,6 @@ pub struct ProcessAttribution {
     /// Absolute executable path, resolved once at attribution time. `None` when
     /// the process already exited or the path is unreadable.
     pub executable: Option<PathBuf>,
-    /// Backend that produced this result.
-    pub backend: AttributionBackend,
     /// How the connection key matched the backend's records.
     pub quality: MatchQuality,
     /// Best-effort parent chain, ordered oldest retained ancestor first.
@@ -134,12 +107,7 @@ pub struct ProcessAttribution {
 
 impl ProcessAttribution {
     /// Create an attribution with only the fields every backend can supply.
-    pub fn new(
-        tgid: u32,
-        name: impl Into<String>,
-        backend: AttributionBackend,
-        quality: MatchQuality,
-    ) -> Self {
+    pub(crate) fn new(tgid: u32, name: impl Into<String>, quality: MatchQuality) -> Self {
         Self {
             tgid,
             ppid: None,
@@ -147,20 +115,21 @@ impl ProcessAttribution {
             uid: None,
             gid: None,
             executable: None,
-            backend,
             quality,
             lineage: None,
         }
     }
 
     /// Attach the parent process id.
-    pub fn with_parent_pid(mut self, ppid: u32) -> Self {
+    #[cfg(any(test, target_os = "linux"))]
+    pub(crate) fn with_parent_pid(mut self, ppid: u32) -> Self {
         self.ppid = Some(ppid);
         self
     }
 
     /// Attach the effective user and group id.
-    pub fn with_credentials(mut self, uid: u32, gid: u32) -> Self {
+    #[cfg(any(test, target_os = "linux"))]
+    pub(crate) fn with_credentials(mut self, uid: u32, gid: u32) -> Self {
         self.uid = Some(uid);
         self.gid = Some(gid);
         self
@@ -168,13 +137,15 @@ impl ProcessAttribution {
 
     /// Attach the resolved executable path. `None` is a valid outcome and is
     /// stored as such: failing to read the path never fails the attribution.
-    pub fn with_executable(mut self, executable: Option<PathBuf>) -> Self {
+    #[cfg(any(test, target_os = "linux", target_os = "macos"))]
+    pub(crate) fn with_executable(mut self, executable: Option<PathBuf>) -> Self {
         self.executable = executable;
         self
     }
 
     /// Attach the owning process's best-effort parent chain.
-    pub fn with_lineage(mut self, lineage: Option<ProcessLineage>) -> Self {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_lineage(mut self, lineage: Option<ProcessLineage>) -> Self {
         self.lineage = lineage;
         self
     }
@@ -183,7 +154,13 @@ impl ProcessAttribution {
     /// one step: parent pid, credentials, executable path, and lineage.
     /// Credentials and executable are left untouched when the lookup does not
     /// resolve them.
-    pub fn with_details(
+    #[cfg(any(
+        test,
+        target_os = "freebsd",
+        target_os = "macos",
+        target_os = "windows"
+    ))]
+    pub(crate) fn with_details(
         mut self,
         ppid: u32,
         credentials: Option<(u32, u32)>,
@@ -306,7 +283,8 @@ where
 /// Parse a socket address as printed by OS socket-table tools (`sockstat`,
 /// `lsof`): `ip:port`, `*:port` (wildcard), `[ipv6]:port`, or bracketless
 /// IPv6 like `::1:8080` (the last colon splits off the port).
-pub fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
+#[cfg(any(test, target_os = "freebsd", target_os = "macos"))]
+pub(crate) fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
     // Handle wildcard addresses
     if addr_str.starts_with("*:") {
         let port = addr_str.strip_prefix("*:")?.parse::<u16>().ok()?;
@@ -489,32 +467,9 @@ pub use windows::create_process_lookup;
 
 /// Trait for platform-specific process lookup
 pub trait ProcessLookup: Send + Sync {
-    /// Look up process information for a connection
-    /// Returns (pid, process_name) if found
-    fn get_process_for_connection(&self, conn: &Connection) -> Option<(u32, String)>;
-
     /// Rich attribution for a connection: identity, credentials, executable
     /// path, and the provenance of the match.
-    ///
-    /// The default implementation bridges the legacy tuple returned by
-    /// [`ProcessLookup::get_process_for_connection`], so platforms that have
-    /// not been ported keep working unchanged. It reports
-    /// [`MatchQuality::Unspecified`] because the tuple API carries no
-    /// provenance, and never claims an exact match it cannot prove.
-    ///
-    /// Overriding is only half the contract: an implementation whose
-    /// `get_process_for_connection` delegates *to this method* **must** also
-    /// override this method, otherwise the two default paths call each other
-    /// forever.
-    fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
-        let (tgid, name) = self.get_process_for_connection(conn)?;
-        Some(ProcessAttribution::new(
-            tgid,
-            name,
-            self.get_attribution_backend(),
-            MatchQuality::Unspecified,
-        ))
-    }
+    fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution>;
 
     /// Refresh internal caches if any (best-effort)
     fn refresh(&self) -> Result<()> {
@@ -528,26 +483,6 @@ pub trait ProcessLookup: Send + Sync {
     /// Returns DegradationReason::None if using optimal detection method
     fn get_degradation_reason(&self) -> DegradationReason {
         DegradationReason::None // Default: no degradation
-    }
-
-    /// Return the active attribution backend.
-    fn get_attribution_backend(&self) -> AttributionBackend {
-        AttributionBackend::PlatformNative
-    }
-
-    /// Fallback lookup that relaxes the connection key to handle sockets stored
-    /// with wildcard addresses in OS-level tables.
-    ///
-    /// Thin wrapper over [`relaxed_lookup`] for callers that only want the
-    /// owner and not the match provenance.
-    fn fallback_lookup(
-        map: &HashMap<ConnectionKey, (u32, String)>,
-        key: &ConnectionKey,
-    ) -> Option<(u32, String)>
-    where
-        Self: Sized,
-    {
-        relaxed_lookup(map, key).map(|(entry, _quality)| entry.clone())
     }
 }
 
@@ -565,7 +500,7 @@ pub trait ProcessLookup: Send + Sync {
 /// Every candidate is still probed even after a hit: if two candidates resolve
 /// to *different* owners the answer is ambiguous and `None` is returned rather
 /// than a coin flip. Candidates that agree are not a conflict.
-pub fn relaxed_lookup<'map, V: PartialEq>(
+pub(crate) fn relaxed_lookup<'map, V: PartialEq>(
     map: &'map HashMap<ConnectionKey, V>,
     key: &ConnectionKey,
 ) -> Option<(&'map V, MatchQuality)> {
@@ -618,14 +553,14 @@ pub fn relaxed_lookup<'map, V: PartialEq>(
 
 /// Connection identifier for lookups
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct ConnectionKey {
-    pub protocol: Protocol,
-    pub local_addr: SocketAddr,
-    pub remote_addr: SocketAddr,
+pub(crate) struct ConnectionKey {
+    pub(crate) protocol: Protocol,
+    pub(crate) local_addr: SocketAddr,
+    pub(crate) remote_addr: SocketAddr,
 }
 
 impl ConnectionKey {
-    pub fn from_connection(conn: &Connection) -> Self {
+    pub(crate) fn from_connection(conn: &Connection) -> Self {
         Self {
             protocol: conn.protocol,
             local_addr: conn.local_addr,
@@ -637,17 +572,7 @@ impl ConnectionKey {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustnet_core::network::types::{ProtocolState, TcpState};
     use std::path::Path;
-
-    fn connection(local: &str, remote: &str) -> Connection {
-        Connection::new(
-            Protocol::Tcp,
-            local.parse().unwrap(),
-            remote.parse().unwrap(),
-            ProtocolState::Tcp(TcpState::Established),
-        )
-    }
 
     fn key(protocol: Protocol, local: &str, remote: &str) -> ConnectionKey {
         ConnectionKey {
@@ -661,33 +586,12 @@ mod tests {
         (pid, name.to_string())
     }
 
-    /// A platform that only implements the legacy tuple API, standing in for
-    /// the macOS/Windows/FreeBSD lookups.
-    struct LegacyOnlyLookup {
-        result: Option<(u32, String)>,
-    }
-
-    impl ProcessLookup for LegacyOnlyLookup {
-        fn get_process_for_connection(&self, _conn: &Connection) -> Option<(u32, String)> {
-            self.result.clone()
-        }
-
-        fn get_detection_method(&self) -> &str {
-            "legacy"
-        }
-    }
-
     #[test]
-    fn attribution_reduces_to_the_legacy_pid_and_name_pair() {
-        let attribution = ProcessAttribution::new(
-            42,
-            "curl",
-            AttributionBackend::EbpfFentry,
-            MatchQuality::ExactTuple,
-        )
-        .with_parent_pid(1)
-        .with_credentials(1000, 100)
-        .with_executable(Some(PathBuf::from("/usr/bin/curl")));
+    fn attribution_builders_preserve_rich_fields() {
+        let attribution = ProcessAttribution::new(42, "curl", MatchQuality::ExactTuple)
+            .with_parent_pid(1)
+            .with_credentials(1000, 100)
+            .with_executable(Some(PathBuf::from("/usr/bin/curl")));
 
         assert_eq!(attribution.ppid, Some(1));
         assert_eq!(attribution.uid, Some(1000));
@@ -701,13 +605,8 @@ mod tests {
 
     #[test]
     fn attribution_leaves_unobserved_fields_empty() {
-        let attribution = ProcessAttribution::new(
-            7,
-            "sshd",
-            AttributionBackend::Procfs,
-            MatchQuality::ProcfsExact,
-        )
-        .with_executable(None);
+        let attribution =
+            ProcessAttribution::new(7, "sshd", MatchQuality::ProcfsExact).with_executable(None);
 
         assert_eq!(attribution.ppid, None);
         assert_eq!(attribution.uid, None);
@@ -718,14 +617,7 @@ mod tests {
 
     #[test]
     fn with_details_leaves_unresolved_credentials_and_executable_untouched() {
-        let base = || {
-            ProcessAttribution::new(
-                7,
-                "sshd",
-                AttributionBackend::PlatformNative,
-                MatchQuality::Unspecified,
-            )
-        };
+        let base = || ProcessAttribution::new(7, "sshd", MatchQuality::Unspecified);
 
         let full = base().with_details(
             1,
@@ -799,36 +691,6 @@ mod tests {
         assert!(!MatchQuality::ListenerSocket.is_exact());
         assert!(!MatchQuality::ProcfsRelaxed.is_exact());
         assert!(!MatchQuality::Unspecified.is_exact());
-    }
-
-    #[test]
-    fn default_rich_lookup_bridges_the_legacy_tuple_without_claiming_an_exact_match() {
-        let lookup = LegacyOnlyLookup {
-            result: Some(owner(99, "Safari")),
-        };
-
-        let attribution = lookup
-            .get_process_attribution(&connection("192.168.1.10:5000", "1.1.1.1:443"))
-            .expect("legacy tuple must bridge to an attribution");
-
-        assert_eq!(attribution.tgid, 99);
-        assert_eq!(attribution.name, "Safari");
-        assert_eq!(attribution.backend, AttributionBackend::PlatformNative);
-        // The tuple API carries no provenance, so the bridge must not pretend
-        // the exact 4-tuple was proven.
-        assert_eq!(attribution.quality, MatchQuality::Unspecified);
-        assert!(!attribution.quality.is_exact());
-        assert_eq!(attribution.executable, None);
-    }
-
-    #[test]
-    fn default_rich_lookup_propagates_a_legacy_miss() {
-        let lookup = LegacyOnlyLookup { result: None };
-        assert!(
-            lookup
-                .get_process_attribution(&connection("192.168.1.10:5000", "1.1.1.1:443"))
-                .is_none()
-        );
     }
 
     #[test]
@@ -1025,22 +887,5 @@ mod tests {
         // Port out of range
         assert_eq!(parse_socket_addr_text("192.168.1.1:99999"), None);
         assert_eq!(parse_socket_addr_text(""), None);
-    }
-
-    #[test]
-    fn fallback_lookup_still_returns_the_plain_tuple() {
-        let mut map = HashMap::new();
-        map.insert(
-            key(Protocol::Tcp, "0.0.0.0:22", "0.0.0.0:0"),
-            owner(17, "sshd"),
-        );
-
-        assert_eq!(
-            LegacyOnlyLookup::fallback_lookup(
-                &map,
-                &key(Protocol::Tcp, "192.168.1.10:22", "203.0.113.5:51000")
-            ),
-            Some(owner(17, "sshd"))
-        );
     }
 }

@@ -74,21 +74,6 @@ impl<K: Eq + std::hash::Hash, V: PendingStamp> PendingTable<K, V> {
     fn clear(&mut self) {
         self.map.clear();
     }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.map.len()
-    }
-
-    #[cfg(test)]
-    fn is_empty(&self) -> bool {
-        self.map.is_empty()
-    }
-
-    #[cfg(test)]
-    fn contains_key(&self, key: &K) -> bool {
-        self.map.contains_key(key)
-    }
 }
 
 impl<K: Eq + std::hash::Hash> PendingTable<K, (SystemTime, ConnectionKey)> {
@@ -527,7 +512,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_new() {
         let tracker = RttTracker::new();
-        assert!(tracker.pending_syns.is_empty());
+        assert!(tracker.pending_syns.map.is_empty());
         assert!(tracker.recent_rtts.is_empty());
     }
 
@@ -541,8 +526,8 @@ mod tests {
         );
 
         tracker.record_syn(key, rtt_capture_time(0));
-        assert_eq!(tracker.pending_syns.len(), 1);
-        assert!(tracker.pending_syns.contains_key(&key));
+        assert_eq!(tracker.pending_syns.map.len(), 1);
+        assert!(tracker.pending_syns.map.contains_key(&key));
     }
 
     #[test]
@@ -575,7 +560,7 @@ mod tests {
         let rtt = tracker.record_syn_ack(&syn_ack_key, rtt_capture_time(10));
 
         assert_eq!(rtt, Some(Duration::from_millis(10)));
-        assert!(tracker.pending_syns.is_empty());
+        assert!(tracker.pending_syns.map.is_empty());
         assert_eq!(tracker.recent_rtts.len(), 1);
     }
 
@@ -595,7 +580,7 @@ mod tests {
             );
             tracker.record_syn(key, rtt_capture_time(0));
         }
-        assert_eq!(tracker.pending_syns.len(), MAX_PENDING);
+        assert_eq!(tracker.pending_syns.map.len(), MAX_PENDING);
 
         // One more distinct SYN is rejected...
         let overflow_key = ConnectionKey::new(
@@ -604,7 +589,7 @@ mod tests {
             remote,
         );
         tracker.record_syn(overflow_key, rtt_capture_time(1));
-        assert_eq!(tracker.pending_syns.len(), MAX_PENDING);
+        assert_eq!(tracker.pending_syns.map.len(), MAX_PENDING);
         let rtt = tracker.record_syn_ack(&overflow_key, rtt_capture_time(20));
         assert!(rtt.is_none(), "a rejected SYN has no pending timestamp");
 
@@ -632,7 +617,7 @@ mod tests {
             );
             tracker.record_quic_handshake(key, true, rtt_capture_time(0));
         }
-        assert_eq!(tracker.pending_quic_handshakes.len(), MAX_PENDING);
+        assert_eq!(tracker.pending_quic_handshakes.map.len(), MAX_PENDING);
 
         let overflow_key = ConnectionKey::new(
             Protocol::Udp,
@@ -640,7 +625,7 @@ mod tests {
             remote,
         );
         tracker.record_quic_handshake(overflow_key, true, rtt_capture_time(1));
-        assert_eq!(tracker.pending_quic_handshakes.len(), MAX_PENDING);
+        assert_eq!(tracker.pending_quic_handshakes.map.len(), MAX_PENDING);
         let rtt = tracker.record_quic_handshake(overflow_key, false, rtt_capture_time(20));
         assert!(
             rtt.is_none(),
@@ -693,7 +678,7 @@ mod tests {
         tracker.record_dns_packet(key, 0x1234, true, false, rtt_capture_time(0));
         let rtt = tracker.record_dns_packet(key, 0x1234, false, true, rtt_capture_time(11_000));
         assert!(rtt.is_none(), "the pending query expired after 10s");
-        assert!(tracker.pending_dns.is_empty());
+        assert!(tracker.pending_dns.map.is_empty());
     }
 
     /// At the hard cap, new pending queries are dropped (losing samples under
@@ -709,13 +694,13 @@ mod tests {
         for txid in 0..MAX_PENDING as u16 {
             tracker.record_dns_packet(key, txid, true, false, rtt_capture_time(0));
         }
-        assert_eq!(tracker.pending_dns.len(), MAX_PENDING);
+        assert_eq!(tracker.pending_dns.map.len(), MAX_PENDING);
 
         // One more distinct query is rejected...
         let overflow_key =
             ConnectionKey::new(Protocol::Udp, SocketAddr::new(local.ip(), 40_001), remote);
         tracker.record_dns_packet(overflow_key, 7, true, false, rtt_capture_time(1));
-        assert_eq!(tracker.pending_dns.len(), MAX_PENDING);
+        assert_eq!(tracker.pending_dns.map.len(), MAX_PENDING);
         let rtt = tracker.record_dns_packet(overflow_key, 7, false, true, rtt_capture_time(20));
         assert!(rtt.is_none(), "a rejected query has no pending timestamp");
 
@@ -762,7 +747,7 @@ mod tests {
             second.is_none(),
             "only the first response completes the query"
         );
-        assert!(tracker.pending_dns.is_empty());
+        assert!(tracker.pending_dns.map.is_empty());
     }
 
     #[test]
@@ -793,7 +778,7 @@ mod tests {
             rtt_capture_time(11_000),
         );
         assert!(rtt.is_none(), "the pending query expired after 10s");
-        assert!(tracker.pending_dns.is_empty());
+        assert!(tracker.pending_dns.map.is_empty());
     }
 
     #[test]
@@ -810,7 +795,7 @@ mod tests {
         tracker.record_netbios_packet(key, &request, true, rtt_capture_time(0));
         let rtt = tracker.record_netbios_packet(key, &response, false, rtt_capture_time(11_000));
         assert!(rtt.is_none(), "the pending request expired after 10s");
-        assert!(tracker.pending_netbios.is_empty());
+        assert!(tracker.pending_netbios.map.is_empty());
     }
 
     #[test]
@@ -824,7 +809,7 @@ mod tests {
             let request = netbios_test_info(NetBiosService::NameService, transaction_id, false);
             tracker.record_netbios_packet(key, &request, true, rtt_capture_time(0));
         }
-        assert_eq!(tracker.pending_netbios.len(), MAX_PENDING);
+        assert_eq!(tracker.pending_netbios.map.len(), MAX_PENDING);
 
         let overflow_key = ConnectionKey::new(
             Protocol::Udp,
@@ -834,7 +819,7 @@ mod tests {
         let overflow_request = netbios_test_info(NetBiosService::DatagramService, 7, false);
         let overflow_response = netbios_test_info(NetBiosService::DatagramService, 7, true);
         tracker.record_netbios_packet(overflow_key, &overflow_request, true, rtt_capture_time(1));
-        assert_eq!(tracker.pending_netbios.len(), MAX_PENDING);
+        assert_eq!(tracker.pending_netbios.map.len(), MAX_PENDING);
         let rtt = tracker.record_netbios_packet(
             overflow_key,
             &overflow_response,
@@ -866,7 +851,7 @@ mod tests {
         tracker.record_icmp_echo(key, (7, 1), true, false, rtt_capture_time(0));
         let rtt = tracker.record_icmp_echo(key, (7, 1), false, true, rtt_capture_time(11_000));
         assert!(rtt.is_none(), "the pending echo expired after 10s");
-        assert!(tracker.pending_icmp_echoes.is_empty());
+        assert!(tracker.pending_icmp_echoes.map.is_empty());
     }
 
     #[test]
@@ -881,7 +866,7 @@ mod tests {
         for sequence in 0..MAX_PENDING as u16 {
             tracker.record_icmp_echo(key, (7, sequence), true, false, rtt_capture_time(0));
         }
-        assert_eq!(tracker.pending_icmp_echoes.len(), MAX_PENDING);
+        assert_eq!(tracker.pending_icmp_echoes.map.len(), MAX_PENDING);
 
         let rejected_sequence = MAX_PENDING as u16;
         tracker.record_icmp_echo(
@@ -939,7 +924,7 @@ mod tests {
             StunMessageClass::Indication,
             rtt_capture_time(100),
         );
-        assert!(tracker.pending_stun.is_empty());
+        assert!(tracker.pending_stun.map.is_empty());
     }
 
     #[test]
@@ -967,7 +952,7 @@ mod tests {
             rtt_capture_time(11_000),
         );
         assert!(rtt.is_none(), "the pending request expired after 10s");
-        assert!(tracker.pending_stun.is_empty());
+        assert!(tracker.pending_stun.map.is_empty());
     }
 
     fn ntp_info(mode: NtpMode, origin_timestamp: u64, transmit_timestamp: u64) -> NtpInfo {
@@ -1036,6 +1021,6 @@ mod tests {
             rtt_capture_time(11_000),
         );
         assert!(rtt.is_none(), "the pending request expired after 10s");
-        assert!(tracker.pending_ntp.is_empty());
+        assert!(tracker.pending_ntp.map.is_empty());
     }
 }

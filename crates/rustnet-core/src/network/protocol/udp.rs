@@ -2,9 +2,8 @@
 
 use crate::network::dpi;
 use crate::network::parser::{ParsedPacket, ParserConfig};
-use crate::network::protocol::TransportParams;
-use crate::network::types::{AddrKind, Protocol, ProtocolState};
-use std::net::SocketAddr;
+use crate::network::protocol::{TransportParams, orient_endpoints};
+use crate::network::types::{Protocol, ProtocolState};
 
 /// Parse a UDP packet
 pub fn parse(
@@ -20,20 +19,8 @@ pub fn parse(
     let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
     let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
 
-    // Determine direction based on local IPs
-    let is_outgoing = local_ips.contains(&params.src_ip);
-
-    let (local_addr, remote_addr) = if is_outgoing {
-        (
-            SocketAddr::new(params.src_ip, src_port),
-            SocketAddr::new(params.dst_ip, dst_port),
-        )
-    } else {
-        (
-            SocketAddr::new(params.dst_ip, dst_port),
-            SocketAddr::new(params.src_ip, src_port),
-        )
-    };
+    let (local_addr, remote_addr, is_outgoing) =
+        orient_endpoints(&params, src_port, dst_port, local_ips);
 
     // Perform DPI if enabled and there's payload
     let dpi_result = if config.enable_dpi && transport_data.len() > 8 {
@@ -43,20 +30,16 @@ pub fn parse(
         None
     };
 
-    Some(ParsedPacket {
-        protocol: Protocol::Udp,
+    let mut packet = ParsedPacket::new(
+        Protocol::Udp,
         local_addr,
         remote_addr,
-        // Overwritten centrally in PacketParser::parse_packet
-        local_addr_kind: AddrKind::Unicast,
-        remote_addr_kind: AddrKind::Unicast,
-        remote_is_gateway: false,
-        tcp_header: None,
-        protocol_state: ProtocolState::Udp,
+        ProtocolState::Udp,
         is_outgoing,
-        packet_len: params.packet_len,
-        dpi_result,
-        process_name: params.process_name,
-        process_id: params.process_id,
-    })
+        params.packet_len,
+        params.process_name,
+        params.process_id,
+    );
+    packet.dpi_result = dpi_result;
+    Some(packet)
 }

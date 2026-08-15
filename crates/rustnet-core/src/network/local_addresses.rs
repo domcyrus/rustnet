@@ -6,32 +6,13 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 /// broadcast address of every assigned network (e.g. 192.168.0.255 for a /24).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct LocalAddresses {
-    pub ips: HashSet<IpAddr>,
+    pub(crate) ips: HashSet<IpAddr>,
     /// Subnet-directed broadcasts only; the limited broadcast
     /// (255.255.255.255) needs no prefix knowledge and is handled statelessly.
-    pub v4_broadcasts: HashSet<Ipv4Addr>,
+    pub(crate) v4_broadcasts: HashSet<Ipv4Addr>,
     /// Next-hop addresses of the host's default routes, refreshed together
     /// with the interface addresses.
-    pub gateways: HashSet<IpAddr>,
-}
-
-#[cfg(test)]
-impl LocalAddresses {
-    /// Test helper: a snapshot with the given addresses and no broadcast or
-    /// gateway sets.
-    pub(crate) fn from_ips(ips: impl IntoIterator<Item = IpAddr>) -> Self {
-        Self {
-            ips: ips.into_iter().collect(),
-            v4_broadcasts: HashSet::new(),
-            gateways: HashSet::new(),
-        }
-    }
-
-    /// Test helper: the snapshot with the given default-gateway addresses.
-    pub(crate) fn with_gateways(mut self, gateways: impl IntoIterator<Item = IpAddr>) -> Self {
-        self.gateways = gateways.into_iter().collect();
-        self
-    }
+    pub(crate) gateways: HashSet<IpAddr>,
 }
 
 /// Directed-broadcast address of `ip`'s subnet, or `None` when the prefix has

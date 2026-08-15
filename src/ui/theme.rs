@@ -41,30 +41,30 @@ pub fn set_preset(preset: ThemePreset) {
 }
 
 /// Whether the Classic (full-color) preset is active.
-pub fn is_classic() -> bool {
+pub(super) fn is_classic() -> bool {
     CLASSIC.load(Ordering::Relaxed)
 }
 
 // --- Base color accessors ---
-pub fn ok() -> Color {
+pub(super) fn ok() -> Color {
     OK
 }
-pub fn warn() -> Color {
+pub(super) fn warn() -> Color {
     WARN
 }
-pub fn err() -> Color {
+pub(super) fn err() -> Color {
     ERR
 }
-pub fn accent() -> Color {
+pub(super) fn accent() -> Color {
     ACCENT
 }
-pub fn muted() -> Color {
+pub(super) fn muted() -> Color {
     MUTED
 }
-pub fn info() -> Color {
+pub(super) fn info() -> Color {
     INFO
 }
-pub fn special() -> Color {
+pub(super) fn special() -> Color {
     SPECIAL
 }
 
@@ -79,24 +79,24 @@ pub fn special() -> Color {
 // `primary()` returns a full Style because it always pairs with BOLD;
 // the others return raw Colors so callers can compose with `fg()` /
 // `bold_fg()` as needed.
-pub fn primary() -> Style {
+pub(super) fn primary() -> Style {
     bold_fg(accent())
 }
-pub fn label() -> Color {
+pub(super) fn label() -> Color {
     muted()
 }
-pub fn heading() -> Color {
+pub(super) fn heading() -> Color {
     if is_classic() { warn() } else { muted() }
 }
-pub fn key() -> Color {
+pub(super) fn key() -> Color {
     if is_classic() { warn() } else { accent() }
 }
 
 // --- Network aliases ---
-pub fn rx() -> Color {
+pub(super) fn rx() -> Color {
     ok()
 }
-pub fn tx() -> Color {
+pub(super) fn tx() -> Color {
     info()
 }
 
@@ -185,47 +185,47 @@ fn five_stop(stops: &[(u8, u8, u8); 5], t: f64) -> Color {
 }
 
 /// RX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
-pub fn rx_wave(t: f64) -> Color {
+pub(super) fn rx_wave(t: f64) -> Color {
     five_stop(&RX_WAVE_STOPS, t)
 }
 /// TX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
-pub fn tx_wave(t: f64) -> Color {
+pub(super) fn tx_wave(t: f64) -> Color {
     five_stop(&TX_WAVE_STOPS, t)
 }
 /// Accent (cyan) wave gradient for non-directional graphs like the
 /// connection count, at intensity `t` (0 = dim base, 1 = crest).
-pub fn accent_wave(t: f64) -> Color {
+pub(super) fn accent_wave(t: f64) -> Color {
     five_stop(&ACCENT_WAVE_STOPS, t)
 }
 /// Green gradient for healthy/success bars (same ramp as RX).
-pub fn ok_wave(t: f64) -> Color {
+pub(super) fn ok_wave(t: f64) -> Color {
     five_stop(&RX_WAVE_STOPS, t)
 }
 /// Amber gradient for caution bars.
-pub fn warn_wave(t: f64) -> Color {
+pub(super) fn warn_wave(t: f64) -> Color {
     five_stop(&WARN_WAVE_STOPS, t)
 }
 /// Red gradient for critical bars.
-pub fn err_wave(t: f64) -> Color {
+pub(super) fn err_wave(t: f64) -> Color {
     five_stop(&ERR_WAVE_STOPS, t)
 }
 /// Fuchsia gradient for special/distinct bars (DNS).
-pub fn special_wave(t: f64) -> Color {
+pub(super) fn special_wave(t: f64) -> Color {
     five_stop(&SPECIAL_WAVE_STOPS, t)
 }
 /// Gray gradient for secondary/inactive bars.
-pub fn muted_wave(t: f64) -> Color {
+pub(super) fn muted_wave(t: f64) -> Color {
     five_stop(&MUTED_WAVE_STOPS, t)
 }
 /// Yellow-to-red glow for connections nearing their removal timeout.
-pub fn expiry_glow(t: f64) -> Color {
+pub(super) fn expiry_glow(t: f64) -> Color {
     five_stop(&EXPIRY_GLOW_STOPS, t)
 }
 
 /// Map connection staleness to the expiry glow. The row turns yellow at 75%
 /// of its timeout, stays yellow through the warning window, then intensifies
 /// toward red during the final 10% before removal.
-pub fn expiry_glow_intensity(staleness: f32) -> Option<f64> {
+pub(super) fn expiry_glow_intensity(staleness: f32) -> Option<f64> {
     (staleness >= EXPIRY_WARNING_START).then(|| {
         f64::from(
             ((staleness - EXPIRY_CRITICAL_START) / (1.0 - EXPIRY_CRITICAL_START)).clamp(0.0, 1.0),
@@ -234,41 +234,41 @@ pub fn expiry_glow_intensity(staleness: f32) -> Option<f64> {
 }
 
 // --- Protocol aliases ---
-pub fn proto_https() -> Color {
+pub(super) fn proto_https() -> Color {
     ok()
 }
-pub fn proto_quic() -> Color {
+pub(super) fn proto_quic() -> Color {
     accent()
 }
-pub fn proto_http() -> Color {
+pub(super) fn proto_http() -> Color {
     warn()
 }
-pub fn proto_dns() -> Color {
+pub(super) fn proto_dns() -> Color {
     special()
 }
-pub fn proto_ssh() -> Color {
+pub(super) fn proto_ssh() -> Color {
     info()
 }
-pub fn proto_other() -> Color {
+pub(super) fn proto_other() -> Color {
     muted()
 }
 
 // --- TCP state aliases ---
 // Muted preset: ESTABLISHED is the common case and reads as plain text;
 // only transitional states (a genuine signal) keep an attention color.
-pub fn tcp_established() -> Color {
+pub(super) fn tcp_established() -> Color {
     if is_classic() { ok() } else { Color::Reset }
 }
-pub fn tcp_opening() -> Color {
+pub(super) fn tcp_opening() -> Color {
     warn()
 }
-pub fn tcp_closing() -> Color {
+pub(super) fn tcp_closing() -> Color {
     if is_classic() { accent() } else { muted() }
 }
-pub fn tcp_waiting() -> Color {
+pub(super) fn tcp_waiting() -> Color {
     if is_classic() { special() } else { muted() }
 }
-pub fn tcp_closed() -> Color {
+pub(super) fn tcp_closed() -> Color {
     muted()
 }
 
@@ -277,31 +277,31 @@ pub fn tcp_closed() -> Color {
 // monitored), the other identifying fields render in the terminal's
 // default foreground (`Color::Reset`), supporting context fades to
 // gray. Same address colors in both presets.
-pub fn field_local_addr() -> Color {
+pub(super) fn field_local_addr() -> Color {
     accent()
 }
-pub fn field_remote_addr() -> Color {
+pub(super) fn field_remote_addr() -> Color {
     info()
 }
-pub fn field_state() -> Color {
+pub(super) fn field_state() -> Color {
     if is_classic() { ok() } else { Color::Reset }
 }
-pub fn field_service() -> Color {
+pub(super) fn field_service() -> Color {
     if is_classic() { warn() } else { muted() }
 }
-pub fn field_location() -> Color {
+pub(super) fn field_location() -> Color {
     if is_classic() { special() } else { muted() }
 }
-pub fn field_process() -> Color {
+pub(super) fn field_process() -> Color {
     if is_classic() { ok() } else { Color::Reset }
 }
-pub fn field_application() -> Color {
+pub(super) fn field_application() -> Color {
     if is_classic() { warn() } else { muted() }
 }
 /// Color for hostnames inferred from a recently observed DNS resolution
 /// (shown with a `~` prefix). Dimmer than `field_remote_addr` so the
 /// inference is visually distinct from authoritative SNI / Host data.
-pub fn field_attributed_hostname() -> Color {
+pub(super) fn field_attributed_hostname() -> Color {
     muted()
 }
 
@@ -312,7 +312,7 @@ pub fn field_attributed_hostname() -> Color {
 // are available: terminals disagree wildly on it (invisible on light
 // themes, barely-there in WezTerm dark). Under NO_COLOR it returns as
 // the only row-level cue, alongside the "closed" state text.
-pub fn historic_row() -> Style {
+pub(super) fn historic_row() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
         Style::default().add_modifier(Modifier::DIM)
     } else {
@@ -321,7 +321,7 @@ pub fn historic_row() -> Style {
 }
 
 // --- Panel border ---
-pub fn border() -> Color {
+pub(super) fn border() -> Color {
     if is_classic() {
         special()
     } else {
@@ -331,7 +331,7 @@ pub fn border() -> Color {
 
 // --- Status bar styles ---
 // Uses REVERSED modifier instead of fg(Black).bg(Color) which breaks on dark terminals
-pub fn status_bar_confirm() -> Style {
+pub(super) fn status_bar_confirm() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
         return Style::default().add_modifier(Modifier::REVERSED);
     }
@@ -339,7 +339,7 @@ pub fn status_bar_confirm() -> Style {
         .fg(warn())
         .add_modifier(Modifier::BOLD | Modifier::REVERSED)
 }
-pub fn status_bar_success() -> Style {
+pub(super) fn status_bar_success() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
         return Style::default().add_modifier(Modifier::REVERSED);
     }
@@ -347,7 +347,7 @@ pub fn status_bar_success() -> Style {
         .fg(ok())
         .add_modifier(Modifier::BOLD | Modifier::REVERSED)
 }
-pub fn status_bar_error() -> Style {
+pub(super) fn status_bar_error() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
         return Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED);
     }
@@ -355,14 +355,14 @@ pub fn status_bar_error() -> Style {
         .fg(err())
         .add_modifier(Modifier::BOLD | Modifier::REVERSED)
 }
-pub fn status_bar_default() -> Style {
+pub(super) fn status_bar_default() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) || !is_classic() {
         return Style::default().add_modifier(Modifier::REVERSED);
     }
     Style::default().fg(info()).add_modifier(Modifier::REVERSED)
 }
 
-pub fn row_highlight() -> Style {
+pub(super) fn row_highlight() -> Style {
     // No fg override: the highlight inherits the row's existing fg, so
     // when REVERSED swaps fg ↔ bg, a red staleness row gets a red
     // selection bar, a yellow row gets a yellow bar, and a default row
@@ -374,7 +374,7 @@ pub fn row_highlight() -> Style {
 // --- Style builders (NO_COLOR-aware) ---
 
 /// Apply a foreground color, respecting NO_COLOR.
-pub fn fg(color: Color) -> Style {
+pub(super) fn fg(color: Color) -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
         Style::default()
     } else {
@@ -383,7 +383,7 @@ pub fn fg(color: Color) -> Style {
 }
 
 /// Apply a foreground color with BOLD, respecting NO_COLOR.
-pub fn bold_fg(color: Color) -> Style {
+pub(super) fn bold_fg(color: Color) -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
         Style::default().add_modifier(Modifier::BOLD)
     } else {
@@ -392,7 +392,7 @@ pub fn bold_fg(color: Color) -> Style {
 }
 
 /// Apply a foreground color with BOLD + UNDERLINED, respecting NO_COLOR.
-pub fn bold_underline_fg(color: Color) -> Style {
+pub(super) fn bold_underline_fg(color: Color) -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
         Style::default().add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else {

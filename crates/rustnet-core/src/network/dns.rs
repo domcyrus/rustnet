@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 /// Resolution state for a cached entry
 #[derive(Debug, Clone, PartialEq)]
-pub enum ResolutionState {
+pub(crate) enum ResolutionState {
     /// Resolution is in progress
     Pending,
     /// Resolution succeeded
@@ -26,7 +26,7 @@ pub enum ResolutionState {
 
 /// Cached hostname entry
 #[derive(Debug, Clone)]
-pub struct CachedHostname {
+pub(crate) struct CachedHostname {
     /// The resolved hostname, if successful
     pub hostname: Option<String>,
     /// When this entry was resolved
@@ -63,7 +63,7 @@ impl CachedHostname {
 
 /// Configuration for DNS resolver
 #[derive(Debug, Clone)]
-pub struct DnsResolverConfig {
+pub(crate) struct DnsResolverConfig {
     /// Cache TTL for resolved hostnames (default: 5 minutes)
     pub cache_ttl: Duration,
     /// Cache TTL for failed lookups (default: 1 minute)
@@ -99,7 +99,7 @@ pub struct DnsResolver {
 
 impl DnsResolver {
     /// Create a new DNS resolver with the given configuration
-    pub fn new(config: DnsResolverConfig) -> Self {
+    pub(crate) fn new(config: DnsResolverConfig) -> Self {
         let cache = Arc::new(DashMap::new());
         let (request_tx, request_rx) = channel::unbounded();
         let should_stop = Arc::new(AtomicBool::new(false));

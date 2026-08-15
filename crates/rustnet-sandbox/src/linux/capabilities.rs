@@ -27,7 +27,7 @@ use caps::{CapSet, Capability};
 /// - `Ok(true)` if CAP_NET_RAW was dropped
 /// - `Ok(false)` if CAP_NET_RAW was not held (nothing to drop)
 /// - `Err` if dropping failed
-pub fn drop_cap_net_raw() -> Result<bool> {
+pub(crate) fn drop_cap_net_raw() -> Result<bool> {
     // Check if we have CAP_NET_RAW in the effective set
     let has_cap = caps::has_cap(None, CapSet::Effective, Capability::CAP_NET_RAW)
         .context("Failed to check CAP_NET_RAW in effective set")?;
@@ -58,7 +58,7 @@ pub fn drop_cap_net_raw() -> Result<bool> {
 }
 
 /// Check if CAP_NET_RAW is currently held in the effective set
-pub fn has_cap_net_raw() -> bool {
+pub(crate) fn has_cap_net_raw() -> bool {
     caps::has_cap(None, CapSet::Effective, Capability::CAP_NET_RAW).unwrap_or(false)
 }
 
@@ -72,7 +72,7 @@ pub fn has_cap_net_raw() -> bool {
 ///
 /// - `Ok(count)` where count is how many capabilities were dropped (0-2)
 /// - `Err` if dropping failed
-pub fn drop_ebpf_caps() -> Result<u32> {
+pub(crate) fn drop_ebpf_caps() -> Result<u32> {
     let mut dropped = 0;
 
     for cap in [Capability::CAP_BPF, Capability::CAP_PERFMON] {
@@ -132,7 +132,7 @@ pub fn drop_unused_thread_caps(thread: &str) {
 /// Clearing them prevents child processes from inheriting any capabilities
 /// that were held by the parent. This is standard practice in container
 /// runtimes (Docker, systemd) and security-sensitive daemons.
-pub fn clear_ambient_caps() -> Result<()> {
+pub(crate) fn clear_ambient_caps() -> Result<()> {
     caps::clear(None, CapSet::Ambient).context("Failed to clear ambient capability set")?;
     log::debug!("Cleared ambient capability set");
     Ok(())

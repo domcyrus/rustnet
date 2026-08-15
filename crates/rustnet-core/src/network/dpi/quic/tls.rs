@@ -327,31 +327,7 @@ pub(super) fn scan_for_sni_extension(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Build a minimal SNI extension structure
-    fn build_sni_extension(hostname: &str) -> Vec<u8> {
-        let name_bytes = hostname.as_bytes();
-        let name_len = name_bytes.len() as u16;
-        let list_len = name_len + 3; // name_type (1) + name_len (2)
-        let ext_len = list_len + 2; // list_len (2)
-
-        let mut data = Vec::new();
-        // Extension type: SNI (0x0000)
-        data.push(0x00);
-        data.push(0x00);
-        // Extension length
-        data.extend_from_slice(&ext_len.to_be_bytes());
-        // Server name list length
-        data.extend_from_slice(&list_len.to_be_bytes());
-        // Name type: hostname (0x00)
-        data.push(0x00);
-        // Name length
-        data.extend_from_slice(&name_len.to_be_bytes());
-        // Hostname
-        data.extend_from_slice(name_bytes);
-
-        data
-    }
+    use crate::network::dpi::tls_common::test_fixtures::build_sni_extension;
 
     #[test]
     fn test_greedy_sni_extraction_complete() {

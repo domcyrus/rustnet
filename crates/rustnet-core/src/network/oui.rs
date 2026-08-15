@@ -72,13 +72,13 @@ impl OuiLookup {
 /// # Panics
 ///
 /// Panics if `bytes` is shorter than 6 bytes.
-pub fn format_mac(bytes: &[u8]) -> String {
+pub(crate) fn format_mac(bytes: &[u8]) -> String {
     crate::network::util::hex_encode(&bytes[..6], ":")
 }
 
 /// Parse the first octet of a MAC address string.
 /// Supports the same formats as [`parse_mac_prefix`].
-pub fn mac_first_octet(mac: &str) -> Option<u8> {
+pub(crate) fn mac_first_octet(mac: &str) -> Option<u8> {
     parse_mac_prefix(mac).map(|prefix| prefix[0])
 }
 

@@ -34,7 +34,7 @@ pub struct CgroupInfo {
 /// kubepods-related info if any line refers to a Kubernetes pod. Returns
 /// `None` for processes that aren't part of a pod cgroup.
 #[cfg(any(test, target_os = "linux"))]
-pub fn parse_cgroup(contents: &str) -> Option<CgroupInfo> {
+pub(crate) fn parse_cgroup(contents: &str) -> Option<CgroupInfo> {
     let path = contents
         .lines()
         .map(extract_path)
@@ -98,7 +98,7 @@ impl KubernetesMode {
 /// (the same signal client-go uses for in-cluster detection). This is reliable
 /// regardless of cgroup namespacing, unlike inspecting `/proc/self/cgroup`,
 /// which a namespaced pod sees as just `/`.
-pub fn running_in_pod() -> bool {
+pub(crate) fn running_in_pod() -> bool {
     std::env::var_os("KUBERNETES_SERVICE_HOST").is_some()
 }
 
@@ -334,7 +334,7 @@ fn parse_pod_dir_name(name: &str) -> Option<(String, PodMeta)> {
 /// IP protocol distinction for the socket table key. We track TCP and UDP
 /// separately because the same 4-tuple can be reused across protocols.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum SocketProtocol {
+pub(crate) enum SocketProtocol {
     Tcp,
     Udp,
 }
@@ -342,7 +342,7 @@ pub enum SocketProtocol {
 /// Lookup key matching what `network::types::ConnectionKey` would produce:
 /// the connection's 4-tuple plus its transport protocol.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct SocketKey {
+pub(crate) struct SocketKey {
     pub protocol: SocketProtocol,
     pub local: std::net::SocketAddr,
     pub remote: std::net::SocketAddr,
@@ -401,7 +401,7 @@ impl KubernetesSocketTable {
 
     /// Look up a (pid, K8sInfo) for the given socket 4-tuple. Returns `None`
     /// when the tuple isn't owned by any kubepods PID.
-    pub fn lookup(&self, key: &SocketKey) -> Option<&(u32, crate::network::types::K8sInfo)> {
+    fn lookup(&self, key: &SocketKey) -> Option<&(u32, crate::network::types::K8sInfo)> {
         self.by_key.get(key)
     }
 
@@ -494,7 +494,11 @@ fn discover_kubepods_pids() -> Vec<u32> {
 /// little-endian boxes the byte order is reversed). IPv6 is 32 hex chars
 /// representing four u32s, each printed in host byte order.
 #[cfg(any(test, target_os = "linux"))]
-pub fn parse_proc_net_line(line: &str, protocol: SocketProtocol, is_v6: bool) -> Option<SocketKey> {
+pub(crate) fn parse_proc_net_line(
+    line: &str,
+    protocol: SocketProtocol,
+    is_v6: bool,
+) -> Option<SocketKey> {
     let mut fields = line.split_whitespace();
     // Skip the "sl" column.
     fields.next()?;

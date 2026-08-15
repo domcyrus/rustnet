@@ -10,7 +10,7 @@ use regex_lite::Regex;
 
 /// How to match a text field (case-insensitive for literals; regex handles its own flags)
 #[derive(Debug, Clone)]
-pub enum FilterValue {
+enum FilterValue {
     /// Case-insensitive substring match (existing default)
     Literal(String),
     /// Pre-compiled regex (compiled with (?i) prefix for case-insensitive matching)
@@ -19,7 +19,7 @@ pub enum FilterValue {
 
 /// How to match a port number
 #[derive(Debug, Clone)]
-pub enum PortMatch {
+enum PortMatch {
     /// Exact equality — default when the filter value is all digits
     Exact(u16),
     /// Substring match — fallback for non-numeric, non-regex values
@@ -29,7 +29,7 @@ pub enum PortMatch {
 }
 
 #[derive(Debug, Clone)]
-pub enum FilterCriteria {
+enum FilterCriteria {
     /// Match any field containing this text
     General(FilterValue),
     /// Match port number (local or remote)
@@ -66,7 +66,7 @@ pub enum FilterCriteria {
 }
 
 pub struct ConnectionFilter {
-    pub criteria: Vec<FilterCriteria>,
+    criteria: Vec<FilterCriteria>,
 }
 
 /// Parse a filter value string into a `PortMatch`.
@@ -538,6 +538,23 @@ impl ConnectionFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::types::{Protocol, TcpState};
+
+    /// Connection fixture: TCP flows come up `Established`, UDP flows in the
+    /// plain `Udp` state. Tests needing another state override
+    /// `protocol_state` after construction.
+    fn conn(protocol: Protocol, local: &str, remote: &str) -> Connection {
+        let state = match protocol {
+            Protocol::Udp => ProtocolState::Udp,
+            _ => ProtocolState::Tcp(TcpState::Established),
+        };
+        Connection::new(
+            protocol,
+            local.parse().unwrap(),
+            remote.parse().unwrap(),
+            state,
+        )
+    }
 
     #[test]
     fn test_parse_general_filter() {
@@ -609,28 +626,10 @@ mod tests {
 
     #[test]
     fn test_port_exact_no_partial_match() {
-        use crate::network::types::*;
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
         // port:22 should NOT match port 2223 or 5522
-        let conn_2223 = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 2223),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-            ProtocolState::Tcp(TcpState::Established),
-        );
-        let conn_5522 = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 5522),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-            ProtocolState::Tcp(TcpState::Established),
-        );
-        let conn_22 = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 22),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let conn_2223 = conn(Protocol::Tcp, "127.0.0.1:2223", "10.0.0.1:80");
+        let conn_5522 = conn(Protocol::Tcp, "127.0.0.1:5522", "10.0.0.1:80");
+        let conn_22 = conn(Protocol::Tcp, "127.0.0.1:22", "10.0.0.1:80");
 
         let filter = ConnectionFilter::parse("port:22");
         assert!(
@@ -646,16 +645,12 @@ mod tests {
 
     #[test]
     fn test_port_regex_partial_match() {
-        use crate::network::types::*;
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
         // port:/22/ should match 22, 220, 2200, 5522
         let make_conn = |local_port: u16| {
-            Connection::new(
+            conn(
                 Protocol::Tcp,
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), local_port),
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-                ProtocolState::Tcp(TcpState::Established),
+                &format!("127.0.0.1:{local_port}"),
+                "10.0.0.1:80",
             )
         };
 
@@ -669,15 +664,7 @@ mod tests {
 
     #[test]
     fn test_state_filter_tcp_states() {
-        use crate::network::types::*;
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = conn(Protocol::Tcp, "127.0.0.1:12345", "10.0.0.1:80");
 
         let established_filter = ConnectionFilter::parse("state:established");
         assert!(established_filter.matches(&conn));
@@ -698,15 +685,7 @@ mod tests {
 
     #[test]
     fn test_state_filter_udp_states() {
-        use crate::network::types::*;
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-        let conn = Connection::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
-            ProtocolState::Udp,
-        );
+        let conn = conn(Protocol::Udp, "127.0.0.1:12345", "8.8.8.8:53");
 
         let active_filter = ConnectionFilter::parse("state:udp_active");
         assert!(active_filter.matches(&conn));
@@ -717,15 +696,8 @@ mod tests {
 
     #[test]
     fn test_combined_state_and_port_filter() {
-        use crate::network::types::*;
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-        let conn = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 443),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321),
-            ProtocolState::Tcp(TcpState::SynReceived),
-        );
+        let mut conn = conn(Protocol::Tcp, "0.0.0.0:443", "192.168.1.100:54321");
+        conn.protocol_state = ProtocolState::Tcp(TcpState::SynReceived);
 
         let combined_filter = ConnectionFilter::parse("sport:443 state:syn_recv");
         assert!(combined_filter.matches(&conn));
@@ -739,15 +711,7 @@ mod tests {
 
     #[test]
     fn test_state_filter_case_insensitive() {
-        use crate::network::types::*;
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-        let conn = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let conn = conn(Protocol::Tcp, "127.0.0.1:12345", "10.0.0.1:80");
 
         let filters = vec![
             "state:established",
@@ -768,42 +732,23 @@ mod tests {
 
     #[test]
     fn test_regex_general_search() {
-        use crate::network::types::*;
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-        let conn = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let conn_private = conn(Protocol::Tcp, "192.168.1.100:12345", "10.0.0.1:443");
 
         // Regex matching IP pattern
         let filter = ConnectionFilter::parse("/192\\.168\\.[0-9]+/");
-        assert!(filter.matches(&conn));
+        assert!(filter.matches(&conn_private));
 
         // Should not match unrelated connection
-        let conn2 = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let conn2 = conn(Protocol::Tcp, "10.0.0.1:12345", "8.8.8.8:53");
         assert!(!filter.matches(&conn2));
     }
 
     #[test]
     fn test_attributed_hostname_matches_hostname_and_general_filters() {
-        use crate::network::types::*;
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        use crate::network::types::{AttributedHostname, AttributionSource};
         use std::time::SystemTime;
 
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(142, 250, 1, 1)), 443),
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = conn(Protocol::Tcp, "192.168.1.100:12345", "142.250.1.1:443");
         conn.attributed_hostname = Some(AttributedHostname {
             name: "youtube.com".to_string(),
             source: AttributionSource::CapturedDns,
@@ -831,15 +776,11 @@ mod tests {
     #[cfg(feature = "kubernetes")]
     #[test]
     fn test_kubernetes_filter_keywords() {
-        use crate::network::types::*;
-        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        use crate::network::types::K8sInfo;
 
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        // Built up front: `conn` below shadows the fixture fn.
+        let bare = conn(Protocol::Tcp, "127.0.0.1:12345", "10.0.0.1:80");
+        let mut conn = conn(Protocol::Tcp, "127.0.0.1:12345", "10.0.0.1:80");
         conn.k8s_info = Some(K8sInfo {
             pod_uid: Some("c3b4d893-473e-43c2-8013-8ee2955a4630".to_string()),
             pod_name: Some("nginx-86644db9cc-mf5lx".to_string()),
@@ -870,12 +811,6 @@ mod tests {
         assert!(ConnectionFilter::parse("ns:demo-traffic pod:nginx").matches(&conn));
 
         // Filter on connections without K8s info returns no match for any pod filter.
-        let bare = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
-            ProtocolState::Tcp(TcpState::Established),
-        );
         assert!(!ConnectionFilter::parse("pod:nginx").matches(&bare));
         assert!(!ConnectionFilter::parse("ns:demo").matches(&bare));
         assert!(!ConnectionFilter::parse("container:nginx").matches(&bare));

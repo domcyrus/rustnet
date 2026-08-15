@@ -1,61 +1,42 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use rustnet_monitor::network::merge::merge_packet_into_connection;
+use rustnet_core::network::merge::merge_packet_into_connection;
 use rustnet_monitor::network::parser::{TcpFlags, TcpHeaderInfo};
 use rustnet_monitor::network::types::*;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::SystemTime;
 
+mod common;
+
 /// Create a Connection with a RateTracker filled to `n_samples` entries.
 fn make_connection_with_samples(n_samples: usize) -> Connection {
-    let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321);
-    let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
-    let mut conn = Connection::new(
-        Protocol::Tcp,
-        local,
-        remote,
-        ProtocolState::Tcp(TcpState::Established),
-    );
-
-    // Simulate rate tracker updates to fill it with samples
-    for _ in 0..n_samples {
-        conn.bytes_sent += 100;
-        conn.bytes_received += 200;
-        conn.rate_tracker
-            .update(conn.bytes_sent, conn.bytes_received);
-        conn.packets_sent += 1;
-        conn.packets_received += 1;
-    }
-    conn
+    common::make_connection_with_samples(n_samples, None)
 }
 
 /// Create a minimal ParsedPacket for merge benchmarking.
 fn make_parsed_packet() -> rustnet_monitor::network::parser::ParsedPacket {
-    rustnet_monitor::network::parser::ParsedPacket {
-        protocol: Protocol::Tcp,
-        local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321),
-        remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
-        local_addr_kind: AddrKind::Unicast,
-        remote_addr_kind: AddrKind::Unicast,
-        remote_is_gateway: false,
-        tcp_header: Some(TcpHeaderInfo {
-            seq: 1000,
-            ack: 2000,
-            window: 65535,
-            flags: TcpFlags {
-                syn: false,
-                ack: true,
-                fin: false,
-                rst: false,
-            },
-            payload_len: 1400,
-        }),
-        protocol_state: ProtocolState::Tcp(TcpState::Established),
-        is_outgoing: true,
-        packet_len: 1400,
-        dpi_result: None,
-        process_name: None,
-        process_id: None,
-    }
+    let mut packet = rustnet_monitor::network::parser::ParsedPacket::new(
+        Protocol::Tcp,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321),
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
+        ProtocolState::Tcp(TcpState::Established),
+        true,
+        1400,
+        None,
+        None,
+    );
+    packet.tcp_header = Some(TcpHeaderInfo {
+        seq: 1000,
+        ack: 2000,
+        window: 65535,
+        flags: TcpFlags {
+            syn: false,
+            ack: true,
+            fin: false,
+            rst: false,
+        },
+        payload_len: 1400,
+    });
+    packet
 }
 
 fn bench_merge(c: &mut Criterion) {

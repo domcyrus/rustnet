@@ -44,7 +44,7 @@ const SWEEP_MIN_INTERVAL: Duration = Duration::from_secs(60);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NeighborEntry {
     /// Colon-separated lowercase MAC, as produced by
-    /// [`crate::network::oui::format_mac`].
+    /// `crate::network::oui::format_mac`.
     pub mac: String,
     /// OUI vendor, resolved by the parse path when the database is loaded.
     pub vendor: Option<String>,
@@ -56,7 +56,7 @@ pub struct NeighborEntry {
 /// IP -> [`NeighborEntry`] table with interior mutability, safe to share
 /// behind an `Arc` between packet-processor threads and UI readers.
 #[derive(Debug, Default)]
-pub struct NeighborCache {
+pub(crate) struct NeighborCache {
     entries: DashMap<IpAddr, NeighborEntry, FxBuildHasher>,
     /// Unix-epoch seconds of the last stale sweep; `0` means never swept.
     last_sweep_epoch_secs: AtomicU64,
@@ -70,7 +70,7 @@ impl NeighborCache {
     /// reply the sender is the answering host. A reply's target additionally
     /// echoes the original requester, so it is learned too; a request's
     /// target MAC is unspecified and ignored.
-    pub fn learn_from_arp(&self, arp: &ArpInfo, now: SystemTime) {
+    pub(crate) fn learn_from_arp(&self, arp: &ArpInfo, now: SystemTime) {
         self.learn(arp.sender_ip, &arp.sender_mac, &arp.sender_vendor, now);
         if arp.operation == ArpOperation::Reply {
             self.learn(arp.target_ip, &arp.target_mac, &arp.target_vendor, now);
@@ -80,18 +80,18 @@ impl NeighborCache {
     /// Fold one NDP-carried mapping into the table. The parser extracts these
     /// only from messages that passed the hop-limit-255 check (RFC 4861), the
     /// IPv6 equivalent of ARP's on-link guarantee.
-    pub fn learn_from_ndp(&self, neighbor: &NdpNeighbor, now: SystemTime) {
+    pub(crate) fn learn_from_ndp(&self, neighbor: &NdpNeighbor, now: SystemTime) {
         self.learn(neighbor.ip, &neighbor.mac, &neighbor.vendor, now);
     }
 
     /// The learned entry for `ip`, if any.
-    pub fn get(&self, ip: &IpAddr) -> Option<NeighborEntry> {
+    pub(crate) fn get(&self, ip: &IpAddr) -> Option<NeighborEntry> {
         self.entries.get(ip).map(|entry| entry.clone())
     }
 
     /// Forget every learned neighbor. Part of the tracker-wide clear, so the
     /// user-facing reset also recovers from a poisoned or flood-filled table.
-    pub fn clear(&self) {
+    pub(crate) fn clear(&self) {
         self.entries.clear();
     }
 
