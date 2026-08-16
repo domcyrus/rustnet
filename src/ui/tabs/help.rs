@@ -1,23 +1,24 @@
-//! Help/legend tab — a scrollable paragraph of keybinds, mouse
-//! controls, colors, and filter examples. Scroll position lives in
-//! `UIState::help_scroll`.
+//! Help/legend tab: a scrollable document of keybinds, mouse
+//! controls, colors, and filter examples, laid out as tick-marked
+//! sections of aligned key/description columns. Scroll position lives
+//! in `UIState::help_scroll`.
 
 use anyhow::Result;
 use crossterm::event::{KeyEvent, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Padding, Paragraph, Wrap},
+    widgets::{Block, Padding, Paragraph, Wrap},
 };
 
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, UIState, panel_block,
-    theme, try_handle_pane_scroll, widgets::scrollbar::draw_scrollbar,
+    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, UIState, theme,
+    try_handle_pane_scroll, widgets::scrollbar::draw_scrollbar,
 };
 
-/// Help tab. Zero-sized — the scroll offset it responds to lives in
+/// Help tab. Zero-sized: the scroll offset it responds to lives in
 /// `UIState`, not here.
 pub(in crate::ui) struct HelpTab;
 
@@ -59,208 +60,244 @@ impl Component for HelpTab {
     }
 }
 
-/// Key/description rows for the keybind list. The key half keeps its
-/// trailing space so the description starts one cell after it.
+/// Key/description rows for the keybind list. Keys carry no padding;
+/// each section pads its key column to the widest key at render time.
 const KEY_BINDINGS: &[(&str, &str)] = &[
-    ("q ", "Quit application (press twice to confirm)"),
-    ("Ctrl+C ", "Quit immediately"),
-    ("x ", "Clear all connections (press twice to confirm)"),
-    ("Tab, ] ", "Next tab"),
-    ("Shift+Tab, [ ", "Previous tab"),
+    ("q", "Quit application (press twice to confirm)"),
+    ("Ctrl+C", "Quit immediately"),
+    ("x", "Clear all connections (press twice to confirm)"),
+    ("Tab, ]", "Next tab"),
+    ("Shift+Tab, [", "Previous tab"),
     (
-        "1-5 ",
+        "1-5",
         "Jump directly to a tab (1=Overview, 2=Details, 3=Activity, 4=Graph, 5=Help)",
     ),
-    ("↑/k, ↓/j ", "Navigate connections (wraps around)"),
-    ("g, G ", "Jump to first/last connection (vim-style)"),
-    ("Page Up/Down, Ctrl+B/F ", "Navigate connections by page"),
-    ("Ctrl+D/U ", "Scroll the Details info panes"),
-    ("c ", "Copy remote address to clipboard"),
-    ("p ", "Toggle between service names and port numbers"),
+    ("↑/k, ↓/j", "Navigate connections (wraps around)"),
+    ("g, G", "Jump to first/last connection (vim-style)"),
+    ("Page Up/Down, Ctrl+B/F", "Navigate connections by page"),
+    ("Ctrl+D/U", "Scroll the Details info panes"),
+    ("c", "Copy remote address to clipboard"),
+    ("p", "Toggle between service names and port numbers"),
     (
-        "d ",
+        "d",
         "Toggle hostnames/IPs on Overview or Egress (TX)/Ingress (RX) on Activity",
     ),
+    ("s", "Cycle through sort columns (Bandwidth, Process, etc.)"),
+    ("S", "Toggle sort direction (ascending/descending)"),
+    ("a", "Toggle process grouping (aggregate by process)"),
+    ("Space", "Expand/collapse group (when grouping enabled)"),
+    ("←/→ or h/l", "Collapse/expand group"),
+    ("t", "Toggle display of historic (closed) connections"),
     (
-        "s ",
-        "Cycle through sort columns (Bandwidth, Process, etc.)",
-    ),
-    ("S ", "Toggle sort direction (ascending/descending)"),
-    ("a ", "Toggle process grouping (aggregate by process)"),
-    ("Space ", "Expand/collapse group (when grouping enabled)"),
-    ("←/→ or h/l ", "Collapse/expand group"),
-    ("t ", "Toggle display of historic (closed) connections"),
-    (
-        "i ",
+        "i",
         "Toggle System info on Overview or interface details on Activity",
     ),
-    ("r ", "Reset view (grouping, sort, filter)"),
-    ("Enter ", "View connection details"),
-    ("Esc ", "Return to overview"),
-    ("h ", "Toggle this help screen"),
+    ("r", "Reset view (grouping, sort, filter)"),
+    ("Enter", "View connection details"),
+    ("Esc", "Return to overview"),
+    ("h", "Toggle this help screen"),
     (
-        "/ ",
+        "/",
         "Enter filter mode on Overview (use \u{2191}/\u{2193} to navigate while typing)",
     ),
 ];
 
 const TAB_SUMMARIES: &[(&str, &str)] = &[
-    ("  Overview ", "Connection list with mini traffic graph"),
-    ("  Details ", "Full details for selected connection"),
+    ("Overview", "Connection list with mini traffic graph"),
+    ("Details", "Full details for selected connection"),
     (
-        "  Activity ",
+        "Activity",
         "Process egress/ingress, bandwidth shares, connections, and interface pulse",
     ),
-    ("  Graph ", "Traffic charts and protocol distribution"),
-    ("  Help ", "This help screen"),
+    ("Graph", "Traffic charts and protocol distribution"),
+    ("Help", "This help screen"),
 ];
 
 const ACTIVITY_CONCEPTS: &[(&str, &str)] = &[
     (
-        "  Egress (TX) / Ingress (RX) ",
+        "Egress (TX) / Ingress (RX)",
         "Traffic sent from or received by the local process",
     ),
     (
-        "  60s coverage ",
+        "60s coverage",
         "Captured connection traffic divided by interface traffic",
     ),
     (
-        "  Retained ",
+        "Retained",
         "Active traffic plus up to 5,000 recently closed connections",
     ),
     (
-        "  Process attribution ",
+        "Process attribution",
         "Traffic mapped to a PID or process name; unresolved bytes are Unknown",
     ),
     (
-        "  Top remote peer ",
+        "Top remote peer",
         "Highest-volume remote endpoint for the selected direction",
     ),
 ];
 
 const MOUSE_CONTROLS: &[(&str, &str)] = &[
-    ("  Click tab ", "Switch between tabs"),
-    ("  Click row ", "Select connection"),
+    ("Click tab", "Switch between tabs"),
+    ("Click row", "Select connection"),
     (
-        "  Scroll wheel ",
+        "Scroll wheel",
         "Navigate connection list / scroll Details, Activity interfaces, Help",
     ),
-    ("  Double-click row ", "Open connection details"),
-    ("  Double-click group ", "Expand/collapse process group"),
-    ("  Click field (Details) ", "Copy field value to clipboard"),
+    ("Double-click row", "Open connection details"),
+    ("Double-click group", "Expand/collapse process group"),
+    ("Click field (Details)", "Copy field value to clipboard"),
 ];
 
 const FILTER_EXAMPLES: &[(&str, &str)] = &[
-    ("  /google ", "Search for 'google' in all fields"),
+    ("/google", "Search for 'google' in all fields"),
     (
-        "  /port:22 ",
+        "/port:22",
         "Exact port match (only port 22, not 2223 or 5522)",
     ),
-    ("  /port:/22/ ", "Regex port match (22, 220, 5522, etc.)"),
-    ("  /src:192.168 ", "Filter by source IP prefix"),
-    ("  /dst:github.com ", "Filter by destination"),
+    ("/port:/22/", "Regex port match (22, 220, 5522, etc.)"),
+    ("/src:192.168", "Filter by source IP prefix"),
+    ("/dst:github.com", "Filter by destination"),
     (
-        "  /sni:/.*github.*/ ",
+        "/sni:/.*github.*/",
         "Regex SNI match (wrap value in /…/ for regex)",
     ),
-    ("  /process:firefox ", "Filter by process name"),
+    ("/process:firefox", "Filter by process name"),
 ];
 
-/// A key/description help row: the key span styled, the description raw.
-fn kv_line(key: &'static str, description: &'static str, key_style: Style) -> Line<'static> {
-    Line::from(vec![Span::styled(key, key_style), Span::raw(description)])
+/// Left indent for rows under a section tick line.
+const ROW_INDENT: &str = "  ";
+/// Gap between the padded key column and the description column.
+const COLUMN_GAP: &str = "  ";
+
+/// Widest key of a section in character cells (every glyph used in the
+/// help keys is single width, so `chars().count()` is the cell width).
+fn key_column_width(rows: &[(&str, &str)]) -> usize {
+    rows.iter()
+        .map(|(key, _)| key.chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
-/// A bold accent section title ("Tabs:", "Mouse Controls:", ...).
-fn section_title(title: &'static str) -> Line<'static> {
-    Line::from(vec![Span::styled(title, theme::bold_fg(theme::accent()))])
+/// Section title line matching the `section_header` chrome used by the
+/// other tabs: accent `▎` tick plus a bold title. Built as a paragraph
+/// line instead of calling `section_header` because the whole Help page
+/// scrolls as one paragraph, so the headers must scroll with it.
+fn tick_line(title: &'static str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled("▎", theme::fg(theme::accent())),
+        Span::styled(
+            format!(" {title}"),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+/// One aligned two-column row: the key padded to the section's key
+/// column width in the given style, the description in the hint label
+/// style.
+fn column_row(
+    key: &str,
+    key_style: Style,
+    description: &'static str,
+    width: usize,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(ROW_INDENT),
+        Span::styled(format!("{key:<width$}"), key_style),
+        Span::raw(COLUMN_GAP),
+        Span::styled(description, theme::key_hint_label()),
+    ])
+}
+
+/// A whole key/description section: blank separator, tick title, then
+/// one aligned row per entry with the keys in the keycap style.
+fn push_section(
+    out: &mut Vec<Line<'static>>,
+    title: &'static str,
+    rows: &'static [(&'static str, &'static str)],
+) {
+    out.push(Line::from(""));
+    out.push(tick_line(title));
+    let width = key_column_width(rows);
+    out.extend(
+        rows.iter()
+            .map(|&(key, desc)| column_row(key, theme::key_hint(), desc, width)),
+    );
 }
 
 pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) -> Result<()> {
-    let key_style = theme::fg(theme::key());
-    let example_style = theme::fg(theme::ok());
+    let mut help_text: Vec<Line> = vec![Line::from(vec![
+        Span::styled("RustNet Monitor ", theme::bold_fg(theme::ok())),
+        Span::raw("- Network Connection Monitor"),
+    ])];
 
-    let mut help_text: Vec<Line> = vec![
-        Line::from(vec![
-            Span::styled("RustNet Monitor ", theme::bold_fg(theme::ok())),
-            Span::raw("- Network Connection Monitor"),
-        ]),
-        Line::from(""),
-    ];
-    help_text.extend(
-        KEY_BINDINGS
-            .iter()
-            .map(|&(key, desc)| kv_line(key, desc, key_style)),
-    );
+    push_section(&mut help_text, "Key Bindings", KEY_BINDINGS);
+    push_section(&mut help_text, "Tabs", TAB_SUMMARIES);
+    push_section(&mut help_text, "Activity Concepts", ACTIVITY_CONCEPTS);
+    push_section(&mut help_text, "Mouse Controls", MOUSE_CONTROLS);
 
+    // Connection colors: the keys are color swatches, so each keeps its
+    // demo style instead of the keycap style, aligned to the same
+    // two-column grid as every other section.
     help_text.push(Line::from(""));
-    help_text.push(section_title("Tabs:"));
-    help_text.extend(
-        TAB_SUMMARIES
-            .iter()
-            .map(|&(key, desc)| kv_line(key, desc, example_style)),
-    );
-
-    help_text.push(Line::from(""));
-    help_text.push(section_title("Activity concepts:"));
-    help_text.extend(
-        ACTIVITY_CONCEPTS
-            .iter()
-            .map(|&(key, desc)| kv_line(key, desc, key_style)),
-    );
-
-    help_text.push(Line::from(""));
-    help_text.push(section_title("Mouse Controls:"));
-    help_text.extend(
-        MOUSE_CONTROLS
-            .iter()
-            .map(|&(key, desc)| kv_line(key, desc, key_style)),
-    );
-
-    help_text.push(Line::from(""));
-    help_text.push(section_title("Connection Colors:"));
-    help_text.push(kv_line(
-        "  White ",
-        "Active connection (< 75% of timeout)",
+    help_text.push(tick_line("Connection Colors"));
+    let gradient_key = "Yellow → Orange → Red";
+    let color_width = ["White", gradient_key, "Gray"]
+        .iter()
+        .map(|key| key.chars().count())
+        .max()
+        .unwrap_or(0);
+    help_text.push(column_row(
+        "White",
         Style::default(),
+        "Active connection (< 75% of timeout)",
+        color_width,
     ));
-    // The expiry gradient names three ramp stops, so it stays a literal.
+    // The expiry gradient names three ramp stops, so its key column is
+    // assembled span by span and padded by hand.
+    let gradient_pad = color_width.saturating_sub(gradient_key.chars().count());
     help_text.push(Line::from(vec![
-        Span::styled("  Yellow", theme::fg(theme::expiry_glow(0.0))),
+        Span::raw(ROW_INDENT),
+        Span::styled("Yellow", theme::fg(theme::expiry_glow(0.0))),
         Span::styled(" → ", theme::fg(theme::muted())),
         Span::styled("Orange", theme::fg(theme::expiry_glow(0.5))),
         Span::styled(" → ", theme::fg(theme::muted())),
-        Span::styled("Red ", theme::fg(theme::expiry_glow(1.0))),
-        Span::raw("Connection nearing timeout (75-100%; holds yellow to 90%, then intensifies)"),
+        Span::styled("Red", theme::fg(theme::expiry_glow(1.0))),
+        Span::raw(format!("{}{}", " ".repeat(gradient_pad), COLUMN_GAP)),
+        Span::styled(
+            "Connection nearing timeout (75-100%; holds yellow to 90%, then intensifies)",
+            theme::key_hint_label(),
+        ),
     ]));
-    help_text.push(kv_line(
-        "  Gray ",
-        "Historic (closed) connection",
+    help_text.push(column_row(
+        "Gray",
         theme::historic_row(),
+        "Historic (closed) connection",
+        color_width,
     ));
 
     help_text.push(Line::from(""));
-    help_text.push(section_title("Hostname Display:"));
-    help_text.push(Line::from(
+    help_text.push(tick_line("Hostname Display"));
+    help_text.push(Line::from(Span::styled(
         "  Names in the Remote column come from a recently observed DNS",
-    ));
-    help_text.push(Line::from(
+        theme::key_hint_label(),
+    )));
+    help_text.push(Line::from(Span::styled(
         "  resolution (shown as ~name, dimmed) or reverse DNS; SNI and",
+        theme::key_hint_label(),
+    )));
+    help_text.push(Line::from(Span::styled(
+        "  HTTP Host appear in the App column.",
+        theme::key_hint_label(),
+    )));
+    help_text.push(column_row(
+        "~name",
+        theme::fg(theme::field_attributed_hostname()),
+        "Hostname inferred from a DNS response, not extracted from the connection itself",
+        "~name".chars().count(),
     ));
-    help_text.push(Line::from("  HTTP Host appear in the App column."));
-    help_text.push(Line::from(vec![
-        Span::styled("  ~name ", theme::fg(theme::field_attributed_hostname())),
-        Span::raw("Hostname inferred from a DNS response, not extracted"),
-    ]));
-    help_text.push(Line::from("  from the connection itself"));
 
-    help_text.push(Line::from(""));
-    help_text.push(section_title("Filter Examples:"));
-    help_text.extend(
-        FILTER_EXAMPLES
-            .iter()
-            .map(|&(key, desc)| kv_line(key, desc, example_style)),
-    );
+    push_section(&mut help_text, "Filter Examples", FILTER_EXAMPLES);
     help_text.push(Line::from(""));
 
     // Scroll against the unwrapped line count. A handful of lines can
@@ -268,43 +305,32 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
     // larger, but staying off the unstable rendered-line-info APIs is
     // worth the last row or two of scroll range.
     let total_lines = help_text.len();
-    let inner_height = area.height.saturating_sub(2); // panel borders
+    let inner_height = area.height;
     let max_scroll = (total_lines as u16).saturating_sub(inner_height);
     let scroll = ui_state.help_scroll.clamp_for_render(max_scroll);
 
-    let title = if max_scroll > 0 {
-        "Help · ↑/↓ scroll"
-    } else {
-        "Help"
-    };
-    // Right padding keeps the text clear of the two rightmost inner
-    // columns: a blank gap and the scrollbar, same arrangement as the
-    // Overview table.
+    // The old panel border carried the scroll hint in its title; with
+    // the border gone it rides the intro line instead.
+    if max_scroll > 0 {
+        help_text[0]
+            .spans
+            .push(Span::styled(" · ↑/↓ scroll", theme::fg(theme::muted())));
+    }
+
+    // Right padding keeps the text clear of the two rightmost columns:
+    // a blank gap and the scrollbar, same arrangement as the Overview
+    // table. `trim: false` preserves the row indent and the padded key
+    // columns that align the descriptions.
     let help = Paragraph::new(help_text)
-        .block(panel_block(title).padding(Padding::right(2)))
+        .block(Block::default().padding(Padding::right(2)))
         .style(Style::default())
-        .wrap(Wrap { trim: true })
+        .wrap(Wrap { trim: false })
         .scroll((scroll, 0))
         .alignment(ratatui::layout::Alignment::Left);
 
     f.render_widget(help, area);
 
-    // Scrollbar one column inside the panel border so the border line
-    // stays intact, inset one row top and bottom to clear the title
-    // row and rounded corners.
-    let track = Rect::new(
-        area.x,
-        area.y + 1,
-        area.width.saturating_sub(1),
-        area.height.saturating_sub(2),
-    );
-    draw_scrollbar(
-        f,
-        track,
-        total_lines,
-        scroll as usize,
-        inner_height as usize,
-    );
+    draw_scrollbar(f, area, total_lines, scroll as usize, inner_height as usize);
 
     Ok(())
 }

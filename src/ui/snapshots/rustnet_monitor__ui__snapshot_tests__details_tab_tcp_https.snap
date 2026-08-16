@@ -28,11 +28,11 @@ Local MAC             68:5e:dd:09:15:5e (Apple, Inc.)                 Live RTT  
 Remote Hostname       -                                               TCP Retransmits       0                                              █
 Attributed Name       -                                               Out-of-Order Packets  0                                              █
 Attributed Via        -                                               Duplicate ACKs        0                                              █
-Remote MAC            -                                               Fast Retransmits      0                                              ║
-Country               -                                               Window Size           0                                              ║
-City                  -                                                                                                                    ║
-ASN                   -                                                                                                                    ║
-                                                                                                                                           ║
+Remote MAC            -                                               Fast Retransmits      0                                              │
+Country               -                                               Window Size           0                                              │
+City                  -                                                                                                                    │
+ASN                   -                                                                                                                    │
+                                                                                                                                           │
                                                                                                                                             
 ▎ Traffic Statistics                                                                                                                        
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
@@ -41,4 +41,4 @@ Total 234.38 KB  ·  234 packets                                       Total 12.
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
- 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | Ctrl-d/u scroll | 'c' copy remote addr | Esc back
+ h help  1-5 tabs  tab cycle  j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back  q quit

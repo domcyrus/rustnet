@@ -399,10 +399,18 @@ pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UIState) ->
 /// Row-level staleness styling shared by every connection row. Fresh rows
 /// keep per-cell colors. Historic rows turn gray, while expiring rows stay
 /// yellow through the warning window and intensify toward red near removal.
-fn staleness_style(conn: &Connection) -> (Option<Style>, bool) {
+///
+/// A selected historic row on a theme with a selection tint keeps its
+/// per-cell colors instead: the faint whole-row fg is unreadable against
+/// the selection band, and the "closed" state still marks the row.
+fn staleness_style(conn: &Connection, selected: bool) -> (Option<Style>, bool) {
     let staleness = conn.staleness_ratio();
     if conn.is_historic {
-        (Some(theme::historic_row()), false)
+        if selected && theme::selection_has_bg() {
+            (None, true)
+        } else {
+            (Some(theme::historic_row()), false)
+        }
     } else if let Some(intensity) = theme::expiry_glow_intensity(staleness) {
         let color = theme::expiry_glow(intensity);
         let style = if intensity >= 0.6 {
@@ -420,15 +428,17 @@ fn staleness_style(conn: &Connection) -> (Option<Style>, bool) {
 ///
 /// `process_override` replaces the Process cell content (the grouped
 /// view passes the tree connector + PID since the group header above
-/// already names the process).
+/// already names the process). `selected` marks the table's highlighted
+/// row so historic rows can stay readable on the selection band.
 pub(in crate::ui) fn connection_row<'a>(
     conn: &'a Connection,
     columns: &[Column],
     ui_state: &UIState,
     dns_resolver: Option<&DnsResolver>,
     process_override: Option<Line<'a>>,
+    selected: bool,
 ) -> Row<'a> {
-    let (row_override, color_cells) = staleness_style(conn);
+    let (row_override, color_cells) = staleness_style(conn, selected);
     let style_if_colored = |c: Color| {
         if color_cells {
             theme::fg(c)
@@ -713,9 +723,10 @@ mod tests {
         assert!((midpoint - 0.5).abs() < 0.000_001);
         assert_eq!(theme::expiry_glow_intensity(1.0), Some(1.0));
         assert_eq!(theme::expiry_glow_intensity(1.5), Some(1.0));
-        assert_eq!(theme::expiry_glow(0.0), Color::Rgb(0xFA, 0xCC, 0x15));
-        assert_eq!(theme::expiry_glow(0.5), Color::Rgb(0xFB, 0x92, 0x3C));
-        assert_eq!(theme::expiry_glow(1.0), Color::Rgb(0xFF, 0x2D, 0x55));
+        // Endpoints of the muted theme's derived warn-to-err expiry ramp.
+        assert_eq!(theme::expiry_glow(0.0), Color::Rgb(250, 164, 65));
+        assert_eq!(theme::expiry_glow(0.5), Color::Rgb(247, 108, 59));
+        assert_eq!(theme::expiry_glow(1.0), Color::Rgb(244, 52, 52));
     }
 
     // Width math for the full set with Location at floor widths:

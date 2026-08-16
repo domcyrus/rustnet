@@ -120,7 +120,7 @@ mod effects;
 pub use effects::apply_effects;
 
 mod theme;
-pub use theme::{ThemePreset, set_preset as set_theme_preset};
+pub use theme::{Theme, ThemePreset, ThemeSpec, TokenColor, detect_truecolor, set_theme};
 
 /// Standard panel chrome: rounded border + title. Kept for the few
 /// views that still frame themselves (Help reference card, loading

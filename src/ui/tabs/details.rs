@@ -8,7 +8,7 @@ use anyhow::Result;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
@@ -771,7 +771,17 @@ fn draw_connection_strip(
 
     let rows: Vec<ratatui::widgets::Row> = window
         .iter()
-        .map(|conn| connection_row(conn, &columns, ui_state, dns_resolver, None))
+        .enumerate()
+        .map(|(i, conn)| {
+            connection_row(
+                conn,
+                &columns,
+                ui_state,
+                dns_resolver,
+                None,
+                start + i == selected,
+            )
+        })
         .collect();
 
     let mut state = ratatui::widgets::TableState::default();
@@ -1726,9 +1736,7 @@ pub(in crate::ui) fn draw_connection_details(
     };
     let staleness = conn.staleness_ratio();
     let title_style = if conn.is_historic {
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM | Modifier::BOLD)
+        theme::fg(theme::faint()).add_modifier(Modifier::DIM | Modifier::BOLD)
     } else if let Some(intensity) = theme::expiry_glow_intensity(staleness) {
         theme::bold_fg(theme::expiry_glow(intensity))
     } else {

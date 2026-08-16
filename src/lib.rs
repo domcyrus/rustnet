@@ -57,6 +57,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod config;
 pub(crate) mod export;
 pub(crate) mod filter;
 pub mod network;

@@ -464,9 +464,14 @@ fn draw_connections_list(
     let widths = column_constraints(&columns);
     let header = build_header(&columns, ui_state);
 
+    let selected = ui_state.get_selected_index(connections);
     let rows: Vec<Row> = visible_connections
         .iter()
-        .map(|conn| connection_row(conn, &columns, ui_state, dns_resolver, None))
+        .enumerate()
+        .map(|(i, conn)| {
+            let is_selected = selected == Some(scroll_offset + i);
+            connection_row(conn, &columns, ui_state, dns_resolver, None, is_selected)
+        })
         .collect();
 
     render_row_table(
@@ -476,7 +481,7 @@ fn draw_connections_list(
         rows,
         &widths,
         RowWindow {
-            selected: ui_state.get_selected_index(connections),
+            selected,
             scroll_offset,
             total_rows: connections.len(),
             visible_rows,
@@ -560,9 +565,11 @@ fn draw_grouped_connections_list(
     let widths = column_constraints(&columns);
     let header = build_header(&columns, ui_state);
 
+    let selected = ui_state.get_selected_grouped_index(grouped_rows);
     let rows: Vec<Row> = visible_grouped
         .iter()
-        .map(|row| match row {
+        .enumerate()
+        .map(|(i, row)| match row {
             GroupedRow::Group {
                 process_name,
                 stats,
@@ -594,6 +601,7 @@ fn draw_grouped_connections_list(
                     ui_state,
                     dns_resolver,
                     Some(process_cell),
+                    selected == Some(scroll_offset + i),
                 )
             }
         })
@@ -606,7 +614,7 @@ fn draw_grouped_connections_list(
         rows,
         &widths,
         RowWindow {
-            selected: ui_state.get_selected_grouped_index(grouped_rows),
+            selected,
             scroll_offset,
             total_rows: grouped_rows.len(),
             visible_rows,
@@ -641,9 +649,7 @@ fn group_header_row<'a>(
                         ),
                         Span::styled(
                             stats.historic_count.to_string(),
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::DIM | Modifier::BOLD),
+                            theme::fg(theme::faint()).add_modifier(Modifier::DIM | Modifier::BOLD),
                         ),
                         Span::styled(")".to_string(), group_style),
                     ])
@@ -675,15 +681,14 @@ fn group_header_row<'a>(
 }
 
 /// Draw stats panel
-/// Render a single-row horizontal rule between sections. Uses the default
-/// terminal foreground so it matches the surrounding `Block` borders rather
-/// than rendering muted gray.
+/// Render a single-row horizontal rule between sections, styled with the
+/// theme border color so it matches every other rule in the chrome.
 fn render_section_separator(f: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let rule: String = "─".repeat(area.width as usize);
-    let para = Paragraph::new(Line::from(rule));
+    let para = Paragraph::new(Line::from(rule)).style(theme::fg(theme::border()));
     f.render_widget(para, area);
 }
 

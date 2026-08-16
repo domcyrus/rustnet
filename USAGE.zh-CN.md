@@ -63,8 +63,8 @@ rustnet --refresh-interval 2000
 # 禁用深度包检测
 rustnet --no-dpi
 
-# 恢复原始全彩调色板
-rustnet --theme classic
+# 选择颜色主题（muted、classic、catppuccin-mocha、tokyo-night、gruvbox、nord）
+rustnet --theme tokyo-night
 
 # 禁用反向 DNS 查找（默认启用）
 rustnet --no-resolve-dns
@@ -95,8 +95,9 @@ Options:
       --pcap-export <FILE>               将捕获的数据包导出到 PCAP 文件供 Wireshark 分析
       --pcapng-export <FILE>             将捕获的数据包导出为带注释的 PCAPNG 文件供 Wireshark 分析
       --no-color                         禁用 UI 中的所有颜色（同时尊重 NO_COLOR 环境变量）
-      --theme <PRESET>                   颜色主题预设："muted"（单一强调色，颜色仅用于信号，默认）
-                                         或 "classic"（原始全彩调色板）
+      --theme <PRESET>                   颜色主题：muted（默认）、classic、catppuccin-mocha、
+                                         tokyo-night、gruvbox、nord。优先于配置文件
+                                         （~/.config/rustnet/config.toml）中设置的主题
       --geoip-country <PATH>             GeoLite2-Country.mmdb 的路径（未指定时自动发现）
       --geoip-asn <PATH>                 GeoLite2-ASN.mmdb 的路径（未指定时自动发现）
       --geoip-city <PATH>                GeoLite2-City.mmdb 的路径（未指定时自动发现）
@@ -209,14 +210,43 @@ RustNet 自动检测 TUN/TAP 接口并相应调整数据包解析。接口类型
 选择颜色主题预设：
 
 - **`muted`**（默认）：克制的调色板，只有一个青色强调色。地址保留柔和的颜色
-  （远程 = 蓝色，本地 = 青色）；其他颜色仅用于*信号* —— 连接状态变化、
+  （远程 = 蓝色，本地 = 青色）；其他颜色仅用于*信号*：连接状态变化、
   过期状态（黄色/红色行）以及实时带宽。
 - **`classic`**：早期版本的原始全彩调色板，每列一种颜色。
+- **`catppuccin-mocha`**、**`tokyo-night`**、**`gruvbox`**、**`nord`**：
+  流行配色的真彩色（truecolor）版本。在不支持真彩色的终端上回退到最接近的
+  ANSI-16 颜色。
 
 ```bash
 # 恢复原始全彩外观
 rustnet --theme classic
+
+# 使用真彩色主题
+rustnet --theme tokyo-night
 ```
+
+主题也可以在可选的配置文件中设置，路径为 `~/.config/rustnet/config.toml`
+（设置了 `$XDG_CONFIG_HOME` 时为 `$XDG_CONFIG_HOME/rustnet/config.toml`；
+Windows 上为 `%APPDATA%\rustnet\config.toml`），这样无需每次运行都加此参数。
+可选的 `[theme.overrides]` 表可替换单个颜色：
+
+```toml
+[theme]
+name = "tokyo-night"
+
+[theme.overrides]
+accent = "#ff9e64"
+border = "darkgray"
+```
+
+覆盖值为 ANSI 颜色名（`red`、`lightblue`、`darkgray` 等）或 `#rrggbb`
+十六进制值。有效的键：`accent`、`ok`、`warn`、`err`、`info`、`special`、
+`muted`、`faint`、`text`、`heading`、`label`、`key`、`border`、`rx`、`tx`、
+`rx_wave`、`tx_wave`、`selection_bg`、`selection_fg`、`status_bg`。
+
+优先级：命令行的 `--theme` 优先于配置文件，配置文件优先于默认的 `muted`。
+配置文件缺失没有影响；文件不可读、无效或覆盖值错误时，启动时打印一条警告并
+回退到默认值。
 
 相关：`--no-color` 完全禁用所有颜色（同时尊重 `NO_COLOR` 环境变量）。
 

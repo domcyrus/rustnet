@@ -27,4 +27,4 @@ expression: render_overview(false)
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- 'h' help | 1-5 jump | Tab/[/] cycle | '/' filter | 'a' group | 't' history | 'i' info | 'c' copy
+ h help  1-5 tabs  tab cycle  ↑↓ select  / filter  a group  t history  i info  c copy  q quit

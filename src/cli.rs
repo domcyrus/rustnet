@@ -1,5 +1,18 @@
 use clap::{Arg, Command};
 
+/// Built-in theme preset names. Spelled out as literals because build.rs
+/// `include!`s this file and cannot reach `crate::ui`; a unit test in
+/// `ui::theme::definitions` asserts the list stays in sync with
+/// `ThemePreset::ALL`.
+pub const THEME_PRESETS: [&str; 6] = [
+    "muted",
+    "classic",
+    "catppuccin-mocha",
+    "tokyo-night",
+    "gruvbox",
+    "nord",
+];
+
 #[cfg(target_os = "linux")]
 const INTERFACE_HELP: &str = "Network interface to monitor (use \"any\" to capture all interfaces)";
 
@@ -113,9 +126,8 @@ pub fn build_cli() -> Command {
             Arg::new("theme")
                 .long("theme")
                 .value_name("PRESET")
-                .help("Color theme preset: \"muted\" (single accent, color reserved for signals) or \"classic\" (original full-color palette)")
-                .value_parser(["muted", "classic"])
-                .default_value("muted")
+                .help("Color theme: muted (default), classic, catppuccin-mocha, tokyo-night, gruvbox, nord. Overrides the theme set in the config file (~/.config/rustnet/config.toml)")
+                .value_parser(THEME_PRESETS)
                 .required(false),
         )
         .arg(
@@ -222,5 +234,30 @@ mod tests {
             .expect("default CLI arguments should parse");
 
         assert_eq!(matches.get_one::<u64>("refresh-interval"), Some(&500));
+    }
+
+    #[test]
+    fn theme_has_no_default_and_accepts_all_presets() {
+        // No default: an absent --theme must defer to the config file.
+        let matches = build_cli()
+            .try_get_matches_from(["rustnet"])
+            .expect("no --theme should parse");
+        assert_eq!(matches.get_one::<String>("theme"), None);
+
+        for name in THEME_PRESETS {
+            let matches = build_cli()
+                .try_get_matches_from(["rustnet", "--theme", name])
+                .unwrap_or_else(|e| panic!("--theme {name} should parse: {e}"));
+            assert_eq!(
+                matches.get_one::<String>("theme").map(String::as_str),
+                Some(name)
+            );
+        }
+
+        assert!(
+            build_cli()
+                .try_get_matches_from(["rustnet", "--theme", "bogus"])
+                .is_err()
+        );
     }
 }

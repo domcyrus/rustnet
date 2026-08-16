@@ -511,7 +511,7 @@ fn draw_process_table(
 
     if snapshot.processes.is_empty() {
         f.render_widget(
-            Paragraph::new("Listening for process traffic...").style(theme::fg(theme::muted())),
+            Paragraph::new("Waiting for process traffic...").style(theme::fg(theme::muted())),
             inner,
         );
         return;
@@ -733,7 +733,7 @@ fn draw_interface_pulse(f: &mut Frame, app: &App, direction: ActivityDirection, 
     let rates = app.get_interface_rates();
     if rates.is_empty() {
         f.render_widget(
-            Paragraph::new("Collecting interface counters...").style(theme::fg(theme::muted())),
+            Paragraph::new("Waiting for interface counters...").style(theme::fg(theme::muted())),
             inner,
         );
         return;

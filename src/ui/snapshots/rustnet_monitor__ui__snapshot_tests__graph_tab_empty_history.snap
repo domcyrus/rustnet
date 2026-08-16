@@ -5,7 +5,7 @@ expression: output
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                          
 ──────────────────────────────────────────────────━━━━━━━───────────────────────────────────────────────────────────────────────────────────
 ▎ Traffic Over Time (60s)                                                                         ▎ Connection Lifecycle                    
-Collecting data...                                                                                Collecting...                             
+Waiting for traffic data...                                                                       Waiting for connection data...            
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
@@ -19,7 +19,7 @@ Collecting data...                                                              
                                                                                                                                             
                                                                                                                                             
 ▎ Network Health                                 ▎ TCP Counters                                   ▎ TCP States                              
-Collecting data...                                 Retransmits         0                               ESTAB █████████████████████████    2 
+Waiting for health data...                         Retransmits         0                               ESTAB █████████████████████████    2 
                                                    Out of Order        0                           TIME_WAIT ████████████    1              
                                                    Fast Retrans        0                                                                    
                                                                                                                                             
@@ -41,4 +41,4 @@ Other  ████████████████████████�
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- 'h' help | 1-5 jump | Tab/[/] cycle | Esc back to Overview
+ h help  1-5 tabs  tab cycle  esc back  q quit

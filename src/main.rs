@@ -1,7 +1,7 @@
 use anyhow::Result;
 use log::{LevelFilter, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
-use rustnet_monitor::{app, cli, network, ui};
+use rustnet_monitor::{app, cli, config, network, ui};
 use simplelog::{ConfigBuilder, WriteLogger};
 use std::fs;
 use std::io;
@@ -96,13 +96,27 @@ fn main() -> Result<()> {
         ui::set_no_color(true);
     }
 
-    // Color theme preset
-    let theme_preset = match matches.get_one::<String>("theme").map(String::as_str) {
-        Some("classic") => ui::ThemePreset::Classic,
-        _ => ui::ThemePreset::Muted,
-    };
-    info!("Using {theme_preset:?} color theme");
-    ui::set_theme_preset(theme_preset);
+    // Color theme: CLI --theme > config file > muted default. Warnings go to
+    // stderr here, before the terminal enters raw mode.
+    let user_config = config::load();
+    let theme_name = matches
+        .get_one::<String>("theme")
+        .map(String::as_str)
+        .or(user_config.theme.as_deref())
+        .unwrap_or("muted");
+    let preset = ui::ThemePreset::from_name(theme_name).unwrap_or_else(|| {
+        // Only reachable via the config file; clap validates the CLI value.
+        eprintln!("rustnet: unknown theme {theme_name:?} in config, using \"muted\"");
+        ui::ThemePreset::Muted
+    });
+    let mut spec = ui::ThemeSpec::builtin(preset);
+    for (token, value) in &user_config.overrides {
+        if let Err(e) = spec.set_token(token, value) {
+            eprintln!("rustnet: ignoring theme override {token:?}: {e}");
+        }
+    }
+    info!("Using {preset:?} color theme");
+    ui::set_theme(ui::Theme::resolve(&spec, ui::detect_truecolor()));
 
     // GeoIP configuration
     if matches.get_flag("no-geoip") {

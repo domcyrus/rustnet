@@ -2,4 +2,4 @@
 source: src/ui/mod.rs
 expression: output
 ---
- 'h' help | 1-5 jump | Tab/[/] cycle | 'd' TX/RX | 's' sort | 'S' order | 'i' interfaces | Esc back
+ h help  1-5 tabs  tab cycle  d tx/rx  s sort  S order  i interfaces  esc back  q quit

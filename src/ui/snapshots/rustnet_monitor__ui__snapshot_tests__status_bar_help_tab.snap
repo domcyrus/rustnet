@@ -1,6 +1,5 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 707
 expression: output
 ---
- 'h' help | 1-5 jump | Tab/[/] cycle | j/k scroll | Esc back to Overview
+ h help  1-5 tabs  tab cycle  j/k scroll  esc back  q quit

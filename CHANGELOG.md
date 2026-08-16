@@ -45,6 +45,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **New Theme Presets**: `--theme` gains `catppuccin-mocha`, `tokyo-night`,
+  `gruvbox`, and `nord` truecolor themes with ANSI fallback (#XXX)
+- **Config File**: optional `~/.config/rustnet/config.toml` sets the theme and
+  per-color overrides; `--theme` takes precedence (#XXX)
 - **Passive DNS Attribution**: connections without an SNI or HTTP Host header
   (encrypted QUIC, plain TCP/UDP) are now tagged with a hostname inferred from
   DNS responses observed on the wire within the last 10 seconds, shown as a
@@ -193,6 +197,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **TUI Restyle**: keycap-style status bar, realigned Help tab, and refined
+  bar, scrollbar, and selection styling (#XXX)
 - **Details Tab Application Card Alignment**: every protocol's Application
   card now renders a fixed row set with `-` placeholders instead of rows that
   appear and disappear with data availability; HTTPS shows its four rows even
