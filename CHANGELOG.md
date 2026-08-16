@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Linux Aggregate Capture Recovery**: Capturing with `-i any` now retries
+  transient libpcap "interface disappeared" errors during VPN or other
+  interface removal instead of stopping immediately. Named-interface failures
+  and persistent errors remain fatal (#559)
 - **Details Tab ARP Layout**: ARP connections were exempt from the fixed
   Details layout and dropped the Network Context MAC/attribution rows and the
   whole Attribution card, so Traffic Statistics and the cards below jumped

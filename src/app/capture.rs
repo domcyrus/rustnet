@@ -23,6 +23,11 @@ use super::state::App;
 use super::types::AppStats;
 use super::{MAX_PACKET_QUEUE, PCAPNG_ATTRIBUTION_WAIT};
 
+#[cfg(target_os = "linux")]
+const ANY_INTERFACE_RETRY_DELAY: Duration = Duration::from_millis(100);
+#[cfg(target_os = "linux")]
+const ANY_INTERFACE_RETRY_WINDOW: Duration = Duration::from_secs(5);
+
 /// Current packet-capture health exposed to the UI.
 #[derive(Debug, Default)]
 pub(super) enum CaptureStatus {
@@ -55,6 +60,20 @@ fn capture_failure_message(context: &str, error: &impl std::fmt::Display) -> Str
         detail.push('.');
     }
     format!("{context}: {detail}")
+}
+
+/// Linux libpcap can briefly report that the pseudo-device disappeared while
+/// an underlying interface is removed. The aggregate `any` handle itself is
+/// still usable, so retry only that exact typed libpcap error. A named device
+/// with the same error has genuinely disappeared and must remain fatal.
+#[cfg(target_os = "linux")]
+fn is_recoverable_any_interface_error(device_name: &str, error: &anyhow::Error) -> bool {
+    device_name == "any"
+        && matches!(
+            error.downcast_ref::<pcap::Error>(),
+            Some(pcap::Error::PcapError(message))
+                if message == "The interface disappeared"
+        )
 }
 
 fn system_time_to_timeval(timestamp: SystemTime) -> libc::timeval {
@@ -237,6 +256,8 @@ impl App {
                     let mut last_stats_check = Instant::now();
                     let mut batch: Vec<CapturedPacket> = Vec::with_capacity(100);
                     let mut batch_deadline = Instant::now() + Duration::from_millis(100);
+                    #[cfg(target_os = "linux")]
+                    let mut interface_change_retry_started: Option<Instant> = None;
 
                     // Every path that ends capture for a reason other than
                     // shutdown has to record it, or the TUI keeps looking
@@ -283,6 +304,13 @@ impl App {
 
                         match reader.next_packet() {
                             Ok(Some(packet)) => {
+                                #[cfg(target_os = "linux")]
+                                if interface_change_retry_started.take().is_some() {
+                                    info!(
+                                        "Packet capture on 'any' resumed after an interface change"
+                                    );
+                                }
+
                                 packets_read += 1;
 
                                 // Log first packet immediately
@@ -327,6 +355,13 @@ impl App {
                                 }
                             }
                             Ok(None) => {
+                                #[cfg(target_os = "linux")]
+                                if interface_change_retry_started.take().is_some() {
+                                    info!(
+                                        "Packet capture on 'any' resumed after an interface change"
+                                    );
+                                }
+
                                 // Timeout - flush partial batch if deadline reached
                                 if !batch.is_empty()
                                     && Instant::now() >= batch_deadline
@@ -353,6 +388,32 @@ impl App {
                                 }
                             }
                             Err(e) => {
+                                #[cfg(target_os = "linux")]
+                                if is_recoverable_any_interface_error(&device_name, &e) {
+                                    let first_retry = interface_change_retry_started.is_none();
+                                    let retry_started = *interface_change_retry_started
+                                        .get_or_insert_with(Instant::now);
+                                    if retry_started.elapsed() < ANY_INTERFACE_RETRY_WINDOW {
+                                        if first_retry {
+                                            warn!(
+                                                "An interface changed while capturing on 'any'; retrying the existing capture handle"
+                                            );
+                                        }
+                                        if !batch.is_empty()
+                                            && send_batch(
+                                                &mut batch,
+                                                &mut batch_deadline,
+                                                "flushing before interface-change retry",
+                                            )
+                                            .is_break()
+                                        {
+                                            break;
+                                        }
+                                        thread::sleep(ANY_INTERFACE_RETRY_DELAY);
+                                        continue;
+                                    }
+                                }
+
                                 error!("Capture error: {}", e);
                                 record_failure(capture_failure_message("Capture stopped", &e));
                                 break;
@@ -674,6 +735,8 @@ fn update_connection(
 #[cfg(test)]
 mod capture_failure_message_tests {
     use super::capture_failure_message;
+    #[cfg(target_os = "linux")]
+    use super::is_recoverable_any_interface_error;
 
     #[test]
     fn collapses_multi_line_errors_and_terminates_the_sentence() {
@@ -702,6 +765,26 @@ mod capture_failure_message_tests {
             capture_failure_message("Capture stopped", &"  \n "),
             "Capture stopped: unknown error."
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retries_typed_interface_disappearance_only_for_linux_any() {
+        let disappeared: anyhow::Error =
+            pcap::Error::PcapError("The interface disappeared".to_string()).into();
+
+        assert!(is_recoverable_any_interface_error("any", &disappeared));
+        assert!(!is_recoverable_any_interface_error(
+            "nordlynx",
+            &disappeared
+        ));
+
+        let untyped = anyhow::anyhow!("The interface disappeared");
+        assert!(!is_recoverable_any_interface_error("any", &untyped));
+
+        let different: anyhow::Error =
+            pcap::Error::PcapError("The interface disappeared.".to_string()).into();
+        assert!(!is_recoverable_any_interface_error("any", &different));
     }
 }
 
