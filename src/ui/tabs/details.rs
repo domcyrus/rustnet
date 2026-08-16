@@ -1274,6 +1274,7 @@ pub(in crate::ui) fn draw_connection_details(
                         (info.nodata == Some(true))
                             .then(|| "no data (name exists, no record of this type)".to_string()),
                     ),
+                    ("Transaction ID", Some(format!("0x{:04x}", info.txid))),
                 ]);
             }
             crate::network::types::ApplicationProtocol::Quic(info) => {
@@ -1326,11 +1327,19 @@ pub(in crate::ui) fn draw_connection_details(
                 ));
             }
             crate::network::types::ApplicationProtocol::Llmnr(info) => {
-                details.app_rows(&name_service_rows(
+                // Unlike mDNS, LLMNR keeps its transaction ID (used for
+                // response timing), so its card carries one extra row.
+                let [name, query_type, ips] = name_service_rows(
                     info.query_name.as_ref(),
                     info.query_type.as_ref(),
                     &info.response_ips,
-                ));
+                );
+                details.app_rows(&[
+                    name,
+                    query_type,
+                    ips,
+                    ("Transaction ID", Some(format!("0x{:04x}", info.txid))),
+                ]);
             }
             crate::network::types::ApplicationProtocol::Dhcp(info) => {
                 details.app_rows(&[
@@ -1357,6 +1366,10 @@ pub(in crate::ui) fn draw_connection_details(
                     ("Service", Some(info.service.to_string())),
                     ("Opcode", Some(info.opcode.to_string())),
                     ("Name", info.name.clone()),
+                    (
+                        "Transaction ID",
+                        Some(format!("0x{:04x}", info.transaction_id)),
+                    ),
                 ]);
             }
             crate::network::types::ApplicationProtocol::BitTorrent(info) => {

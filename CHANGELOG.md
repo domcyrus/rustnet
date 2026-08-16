@@ -198,7 +198,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and User-Agent rows, and ARP gains an Operation row plus the same
   protocol-colored heading as DPI protocols. SSH version/state and DNS, mDNS,
   and LLMNR response IPs render human-readable instead of Rust debug output,
-  and FTP's response code and message merge into one row. Transport Health
+  and FTP's response code and message merge into one row. DNS, LLMNR, and
+  NetBIOS expose their transaction IDs like STUN already did. Transport Health
   drops its duplicate NTP Stratum and STUN Last Message rows; those now live
   only in the Application card (#557)
 - **Library Internals Deduplicated and Narrowed**: Removed remaining dead code

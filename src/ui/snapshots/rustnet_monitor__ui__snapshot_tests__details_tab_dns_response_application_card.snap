@@ -16,7 +16,7 @@ Protocol              UDP                                             DNS Query 
 Status                Active (last seen <T> ago)                       DNS Type              A                                              █
 Local Address         192.168.1.10:50000                              DNS Response IPs      93.184.216.34, 93.184.216.35                   █
 Remote Address        203.0.113.7:4433                                DNS Answer            -                                              █
-Scope                 DOCUMENTATION                                                                                                        █
+Scope                 DOCUMENTATION                                   Transaction ID        0x1234                                         █
 State                 DNS_RESPONSE                                                                                                         █
 Process               proc                                                                                                                 █
 PID                   4242                                                                                                                 █
