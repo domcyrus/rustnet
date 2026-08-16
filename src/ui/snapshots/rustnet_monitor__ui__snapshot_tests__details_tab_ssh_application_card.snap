@@ -1,0 +1,44 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                          
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Process                 Remote                    Local              Service    App                       State            RTT     Rx↓/Tx↑
+                                                                                                                                            
+> proc (4242)             203.0.113.7:4433          192.168.1.10:50000 -          TCP·SSH (OpenSSH)         ESTABLISHED        -         -/-
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+▎ proc → 203.0.113.7:4433 · click a field to copy                                                                                           
+Connection                                                            Application: SSH                                                     █
+Protocol              TCP                                             SSH Version           SSH-2                                          █
+Status                Active (last seen <T> ago)                       Connection State      Established                                    █
+Local Address         192.168.1.10:50000                              Server Software       OpenSSH_9.6p1                                  █
+Remote Address        203.0.113.7:4433                                Client Software       OpenSSH_9.8                                    █
+Scope                 DOCUMENTATION                                   Algorithms            curve25519-sha256, ssh-ed25519                 █
+State                 ESTABLISHED                                     Auth Method           publickey                                      █
+Process               proc                                                                                                                 █
+PID                   4242                                                                                                                 █
+Service               -                                                                                                                    █
+                                                                                                                                           █
+Network Context                                                       Transport Health                                                     █
+Local Hostname        -                                               Initial RTT           -                                              █
+Local MAC             -                                               Live RTT              -                                              █
+Remote Hostname       -                                               TCP Retransmits       0                                              █
+Attributed Name       -                                               Out-of-Order Packets  0                                              █
+Attributed Via        -                                               Duplicate ACKs        0                                              █
+Remote MAC            -                                               Fast Retransmits      0                                              ║
+Country               -                                               Window Size           0                                              ║
+City                  -                                                                                                                    ║
+ASN                   -                                                                                                                    ║
+                                                                                                                                           ║
+                                                                                                                                            
+▎ Traffic Statistics                                                                                                                        
+↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
+Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+ 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | Ctrl-d/u scroll | 'c' copy remote addr | Esc back

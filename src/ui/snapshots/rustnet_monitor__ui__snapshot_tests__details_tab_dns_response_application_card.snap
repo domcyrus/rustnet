@@ -1,0 +1,44 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                          
+─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Process                 Remote                    Local              Service    App                       State            RTT     Rx↓/Tx↑
+                                                                                                                                            
+> proc (4242)             203.0.113.7:4433          192.168.1.10:50000 -          UDP·DNS (example.com)     DNS_RESPONSE       -         -/-
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+▎ proc → 203.0.113.7:4433 · click a field to copy                                                                                           
+Connection                                                            Application: DNS                                                     █
+Protocol              UDP                                             DNS Query             example.com                                    █
+Status                Active (last seen <T> ago)                       DNS Type              A                                              █
+Local Address         192.168.1.10:50000                              DNS Response IPs      93.184.216.34, 93.184.216.35                   █
+Remote Address        203.0.113.7:4433                                DNS Answer            -                                              █
+Scope                 DOCUMENTATION                                   Transaction ID        0x1234                                         █
+State                 DNS_RESPONSE                                                                                                         █
+Process               proc                                                                                                                 █
+PID                   4242                                                                                                                 █
+Service               -                                                                                                                    █
+                                                                                                                                           █
+Network Context                                                       Transport Health                                                     █
+Local Hostname        -                                               DNS Response Time     -                                              █
+Local MAC             -                                               Last Response Code    NOERROR                                        █
+Remote Hostname       -                                                                                                                    █
+Attributed Name       -                                               Timed by pairing query and response IDs                              █
+Attributed Via        -                                                                                                                    █
+Remote MAC            -                                                                                                                    ║
+Country               -                                                                                                                    ║
+City                  -                                                                                                                    ║
+ASN                   -                                                                                                                    ║
+                                                                                                                                           ║
+                                                                                                                                            
+▎ Traffic Statistics                                                                                                                        
+↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
+Total 0 B  ·  0 packets                                               Total 0 B  ·  0 packets                                               
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
+ 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | Ctrl-d/u scroll | 'c' copy remote addr | Esc back

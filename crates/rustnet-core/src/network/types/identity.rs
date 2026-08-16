@@ -216,6 +216,61 @@ pub enum ArpOperation {
     Reply,
 }
 
+/// Human-readable name for an ICMP (or ICMPv6) message type, for display in
+/// the Details tab's Application card. Unknown types render as `Type N`.
+///
+/// This is a different display register from [`Connection::state`]'s compact
+/// codes (`ECHO_REQ(id)`, `DEST_UNREACH`); a unit test keeps the two
+/// special-cased type sets from drifting apart.
+///
+/// [`Connection::state`]: crate::network::types::Connection::state
+pub fn icmp_message_name(icmp_type: u8, is_ipv6: bool) -> std::borrow::Cow<'static, str> {
+    let name = if is_ipv6 {
+        match icmp_type {
+            128 => Some("Echo Request"),
+            129 => Some("Echo Reply"),
+            133 => Some("Router Solicitation"),
+            134 => Some("Router Advertisement"),
+            135 => Some("Neighbor Solicitation"),
+            136 => Some("Neighbor Advertisement"),
+            137 => Some("Redirect"),
+            _ => None,
+        }
+    } else {
+        match icmp_type {
+            0 => Some("Echo Reply"),
+            3 => Some("Destination Unreachable"),
+            5 => Some("Redirect"),
+            8 => Some("Echo Request"),
+            11 => Some("Time Exceeded"),
+            _ => None,
+        }
+    };
+    match name {
+        Some(name) => name.into(),
+        None => format!("Type {}", icmp_type).into(),
+    }
+}
+
+/// Human-readable name for an IGMP message type, for display in the Details
+/// tab's Application card. Unknown types render as `Type 0xNN`.
+///
+/// Same display-register note as [`icmp_message_name`]: the compact codes in
+/// [`Connection::state`] stay as they are, and a unit test keeps the two
+/// special-cased type sets in sync.
+///
+/// [`Connection::state`]: crate::network::types::Connection::state
+pub fn igmp_message_name(igmp_type: u8) -> std::borrow::Cow<'static, str> {
+    match igmp_type {
+        0x11 => "Membership Query".into(),
+        0x12 => "Membership Report v1".into(),
+        0x16 => "Membership Report v2".into(),
+        0x22 => "Membership Report v3".into(),
+        0x17 => "Leave Group".into(),
+        other => format!("Type 0x{:02x}", other).into(),
+    }
+}
+
 /// One IP-to-MAC mapping extracted from an NDP (IPv6 Neighbor Discovery,
 /// RFC 4861) message's link-layer address option — the IPv6 analogue of what
 /// [`ArpInfo`] carries for IPv4.
@@ -337,6 +392,88 @@ mod tests {
         assert!(MatchQuality::ProcfsExact.is_exact());
         assert!(!MatchQuality::ProcfsRelaxed.is_exact());
         assert!(!MatchQuality::Unspecified.is_exact());
+    }
+
+    #[test]
+    fn icmp_message_names_are_family_aware() {
+        assert_eq!(icmp_message_name(0, false), "Echo Reply");
+        assert_eq!(icmp_message_name(3, false), "Destination Unreachable");
+        assert_eq!(icmp_message_name(5, false), "Redirect");
+        assert_eq!(icmp_message_name(8, false), "Echo Request");
+        assert_eq!(icmp_message_name(11, false), "Time Exceeded");
+        assert_eq!(icmp_message_name(128, false), "Type 128");
+
+        assert_eq!(icmp_message_name(128, true), "Echo Request");
+        assert_eq!(icmp_message_name(129, true), "Echo Reply");
+        assert_eq!(icmp_message_name(133, true), "Router Solicitation");
+        assert_eq!(icmp_message_name(134, true), "Router Advertisement");
+        assert_eq!(icmp_message_name(135, true), "Neighbor Solicitation");
+        assert_eq!(icmp_message_name(136, true), "Neighbor Advertisement");
+        assert_eq!(icmp_message_name(137, true), "Redirect");
+        assert_eq!(icmp_message_name(8, true), "Type 8");
+    }
+
+    #[test]
+    fn igmp_message_names_cover_the_known_types() {
+        assert_eq!(igmp_message_name(0x11), "Membership Query");
+        assert_eq!(igmp_message_name(0x12), "Membership Report v1");
+        assert_eq!(igmp_message_name(0x16), "Membership Report v2");
+        assert_eq!(igmp_message_name(0x22), "Membership Report v3");
+        assert_eq!(igmp_message_name(0x17), "Leave Group");
+        assert_eq!(igmp_message_name(0x42), "Type 0x42");
+    }
+
+    /// `Connection::state()` renders compact codes (`ECHO_REQ`, `QUERY`) while
+    /// the `*_message_name` helpers render prose for the Details Application
+    /// card. The two must not drift: every type `state()` recognizes must
+    /// also get a friendly name from the helper, and for IGMP the two sets
+    /// are identical.
+    #[test]
+    fn message_name_helpers_cover_the_state_special_cases() {
+        use crate::network::types::Connection;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 0);
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 0);
+
+        for icmp_type in 0..=u8::MAX {
+            let conn = Connection::new(
+                Protocol::Icmp,
+                local,
+                remote,
+                ProtocolState::Icmp {
+                    icmp_type,
+                    icmp_id: None,
+                    icmp_sequence: None,
+                    ndp_neighbor: None,
+                },
+            );
+            let state_names_it = conn.state() != "ICMP_OTHER";
+            let helper_names_it = !icmp_message_name(icmp_type, false).starts_with("Type ")
+                || !icmp_message_name(icmp_type, true).starts_with("Type ");
+            assert!(
+                !state_names_it || helper_names_it,
+                "state() names ICMP type {icmp_type} but icmp_message_name does not"
+            );
+        }
+
+        for igmp_type in 0..=u8::MAX {
+            let conn = Connection::new(
+                Protocol::Igmp,
+                local,
+                remote,
+                ProtocolState::Igmp {
+                    igmp_type,
+                    group_addr: None,
+                },
+            );
+            let state_names_it = conn.state() != "IGMP_OTHER";
+            let helper_names_it = !igmp_message_name(igmp_type).starts_with("Type ");
+            assert_eq!(
+                state_names_it, helper_names_it,
+                "state() and igmp_message_name disagree on IGMP type 0x{igmp_type:02x}"
+            );
+        }
     }
 
     #[test]

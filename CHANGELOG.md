@@ -189,6 +189,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Details Tab Application Card Alignment**: every protocol's Application
+  card now renders a fixed row set with `-` placeholders instead of rows that
+  appear and disappear with data availability; HTTPS shows its four rows even
+  before the TLS handshake is parsed, and QUIC's SNI/ALPN rows are no longer
+  hidden behind it. ICMP/ICMPv6 and IGMP gain their own cards (message name,
+  echo ID/sequence, NDP neighbor, group address), HTTP gains Version, Host,
+  and User-Agent rows, and ARP gains an Operation row plus the same
+  protocol-colored heading as DPI protocols. SSH version/state and DNS, mDNS,
+  and LLMNR response IPs render human-readable instead of Rust debug output,
+  and FTP's response code and message merge into one row. DNS, LLMNR, and
+  NetBIOS expose their transaction IDs like STUN already did. Transport Health
+  drops its duplicate NTP Stratum and STUN Last Message rows; those now live
+  only in the Application card (#557)
 - **Library Internals Deduplicated and Narrowed**: Removed remaining dead code
   and test-only public API from the workspace crates, narrowed public items
   with no external consumers to crate or module visibility (including

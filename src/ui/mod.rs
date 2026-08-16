@@ -200,6 +200,19 @@ pub(crate) fn dpi_color(app: &crate::network::types::ApplicationProtocol) -> Col
     }
 }
 
+/// Color for the Details Application heading of the non-DPI protocol classes
+/// (ARP, ICMP, IGMP), which have no `ApplicationProtocol` value to feed
+/// [`dpi_color`]. Mirrors its theme fallback: the classic preset colors the
+/// heading like any other detected application, the muted preset renders it
+/// as plain content.
+pub(crate) fn non_dpi_app_color() -> Color {
+    if theme::is_classic() {
+        theme::field_application()
+    } else {
+        Color::Reset
+    }
+}
+
 /// Draw the UI
 pub fn draw(
     f: &mut Frame,
@@ -1537,9 +1550,12 @@ mod snapshot_tests {
         let output = render_details(&app, &connections, 0);
 
         assert!(output.contains("STUN RTT") && output.contains("23.4ms"));
-        assert!(output.contains("Last Message") && output.contains("Binding Success"));
         assert!(output.contains("Paired by 96-bit transaction ID"));
         assert!(!output.contains("No transport metrics for this protocol"));
+        // Method and class moved to the Application card; Transport Health
+        // must not repeat them as a Last Message row.
+        assert!(output.contains("Binding") && output.contains("Success"));
+        assert!(!output.contains("Last Message"));
     }
 
     /// An NTP poll is timeable through the originate timestamp echo, so its
@@ -1568,9 +1584,15 @@ mod snapshot_tests {
         let output = render_details(&app, &connections, 0);
 
         assert!(output.contains("NTP RTT") && output.contains("6.5ms"));
-        assert!(output.contains("Stratum"));
         assert!(output.contains("Paired by originate timestamp echo"));
         assert!(!output.contains("No transport metrics for this protocol"));
+        // Stratum's only home is the Application card now; the old Transport
+        // Health duplicate is gone.
+        assert_eq!(
+            output.matches("Stratum").count(),
+            1,
+            "Stratum must render exactly once:\n{output}"
+        );
     }
 
     /// The Attribution section repeats PID beside the richer process fields so
@@ -2115,5 +2137,558 @@ mod snapshot_tests {
         let output = render_app(&app, &ui_state, &[], None, 80, 20);
 
         insta::assert_snapshot!(output);
+    }
+
+    // --- Application card: fixed per-protocol row sets ---
+
+    /// One fully populated instance per `ApplicationProtocol` variant. The
+    /// match at the bottom is deliberately exhaustive so a new variant fails
+    /// compilation here until the fixture (and the fixed row-set spec in
+    /// details.rs) covers it.
+    fn dpi_variants_full() -> Vec<crate::network::types::ApplicationProtocol> {
+        use crate::network::types::{
+            ApplicationProtocol, BitTorrentInfo, BitTorrentType, DhcpInfo, DhcpMessageType,
+            DnsInfo, DnsQueryType, FtpInfo, FtpMessageType, HttpInfo, HttpVersion, HttpsInfo,
+            LlmnrInfo, MdnsInfo, MqttInfo, MqttPacketType, MqttVersion, NetBiosInfo, NetBiosOpcode,
+            NetBiosResponseStatus, NetBiosService, NtpInfo, NtpMode, QuicConnectionState, QuicInfo,
+            QuicPacketType, SnmpInfo, SnmpPduType, SnmpVersion, SsdpInfo, SsdpMethod,
+            SshConnectionState, SshInfo, SshVersion, StunInfo, StunMessageClass, StunMethod,
+            TlsInfo, TlsVersion,
+        };
+
+        let tls_info = TlsInfo {
+            version: Some(TlsVersion::Tls13),
+            sni: Some("github.com".to_string()),
+            alpn: vec!["h2".to_string(), "http/1.1".to_string()],
+            cipher_suite: Some(0x1301),
+        };
+        let mut quic = QuicInfo::new(0x0000_0001);
+        quic.packet_type = QuicPacketType::OneRtt;
+        quic.connection_state = QuicConnectionState::Connected;
+        quic.connection_id_hex = Some("deadbeefcafe".to_string());
+        quic.tls_info = Some(tls_info.clone());
+
+        let variants = vec![
+            ApplicationProtocol::Http(HttpInfo {
+                version: HttpVersion::Http11,
+                method: Some("GET".to_string()),
+                host: Some("example.com".to_string()),
+                path: Some("/index.html".to_string()),
+                status_code: Some(200),
+                user_agent: Some("curl/8.9.0".to_string()),
+            }),
+            ApplicationProtocol::Https(HttpsInfo {
+                tls_info: Some(tls_info),
+            }),
+            ApplicationProtocol::Dns(DnsInfo {
+                query_name: Some("example.com".to_string()),
+                query_type: Some(DnsQueryType::A),
+                response_ips: vec![
+                    IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                    IpAddr::V4(Ipv4Addr::new(93, 184, 216, 35)),
+                ],
+                is_response: true,
+                txid: 0x1234,
+                rcode: Some(0),
+                nodata: Some(false),
+            }),
+            ApplicationProtocol::Ssh(SshInfo {
+                version: Some(SshVersion::V2),
+                client_software: Some("OpenSSH_9.8".to_string()),
+                server_software: Some("OpenSSH_9.6p1".to_string()),
+                connection_state: SshConnectionState::Established,
+                algorithms: vec!["curve25519-sha256".to_string(), "ssh-ed25519".to_string()],
+                auth_method: Some("publickey".to_string()),
+            }),
+            ApplicationProtocol::Quic(Box::new(quic)),
+            ApplicationProtocol::Ntp(NtpInfo {
+                version: 4,
+                mode: NtpMode::Server,
+                stratum: 2,
+                origin_timestamp: 0xAABB,
+                transmit_timestamp: 0xCCDD,
+            }),
+            ApplicationProtocol::Mdns(MdnsInfo {
+                query_name: Some("printer.local".to_string()),
+                query_type: Some(DnsQueryType::A),
+                is_response: true,
+                response_ips: vec![IpAddr::V4(Ipv4Addr::new(192, 168, 1, 42))],
+            }),
+            ApplicationProtocol::Llmnr(LlmnrInfo {
+                query_name: Some("fileserver".to_string()),
+                query_type: Some(DnsQueryType::A),
+                is_response: true,
+                response_ips: vec![IpAddr::V4(Ipv4Addr::new(192, 168, 1, 43))],
+                txid: 0x77,
+            }),
+            ApplicationProtocol::Dhcp(DhcpInfo {
+                message_type: DhcpMessageType::Ack,
+                hostname: Some("laptop".to_string()),
+                client_mac: Some("aa:bb:cc:dd:ee:ff".to_string()),
+            }),
+            ApplicationProtocol::Snmp(SnmpInfo {
+                version: SnmpVersion::V2c,
+                community: Some("public".to_string()),
+                pdu_type: SnmpPduType::GetRequest,
+            }),
+            ApplicationProtocol::Ssdp(SsdpInfo {
+                method: SsdpMethod::MSearch,
+                service_type: Some("upnp:rootdevice".to_string()),
+            }),
+            ApplicationProtocol::NetBios(NetBiosInfo {
+                service: NetBiosService::NameService,
+                opcode: NetBiosOpcode::Response,
+                name: Some("FILESERVER".to_string()),
+                transaction_id: 0x1234,
+                is_response: true,
+                response_status: Some(NetBiosResponseStatus::NameService(0)),
+            }),
+            ApplicationProtocol::BitTorrent(BitTorrentInfo {
+                protocol_type: BitTorrentType::Peer,
+                info_hash: Some("aabbccddeeff00112233445566778899aabbccdd".to_string()),
+                client: Some("qBittorrent 4.6".to_string()),
+                dht_method: Some("get_peers".to_string()),
+                supports_dht: true,
+                supports_extension: true,
+                supports_fast: true,
+            }),
+            ApplicationProtocol::Stun(StunInfo {
+                message_class: StunMessageClass::SuccessResponse,
+                method: StunMethod::Binding,
+                transaction_id: [7u8; 12],
+                software: Some("coturn".to_string()),
+            }),
+            ApplicationProtocol::Mqtt(MqttInfo {
+                version: Some(MqttVersion::V311),
+                packet_type: MqttPacketType::Publish,
+                client_id: Some("sensor-1".to_string()),
+                topic: Some("home/temp".to_string()),
+                qos: Some(1),
+            }),
+            ApplicationProtocol::Ftp(FtpInfo {
+                message_type: FtpMessageType::Response,
+                command: Some("USER".to_string()),
+                args: Some("marco".to_string()),
+                response_code: Some(230),
+                response_message: Some("Login successful".to_string()),
+                username: Some("marco".to_string()),
+                server_software: Some("vsftpd 3.0.5".to_string()),
+                system_type: Some("UNIX".to_string()),
+            }),
+        ];
+
+        let mut seen = std::collections::HashSet::new();
+        for variant in &variants {
+            assert!(
+                seen.insert(std::mem::discriminant(variant)),
+                "duplicate fixture for {}",
+                variant.sort_key()
+            );
+            // Exhaustive on purpose: extend the fixture list above (and the
+            // Details row-set table) when this match stops compiling.
+            match variant {
+                ApplicationProtocol::Http(_) => {}
+                ApplicationProtocol::Https(_) => {}
+                ApplicationProtocol::Dns(_) => {}
+                ApplicationProtocol::Ssh(_) => {}
+                ApplicationProtocol::Quic(_) => {}
+                ApplicationProtocol::Ntp(_) => {}
+                ApplicationProtocol::Mdns(_) => {}
+                ApplicationProtocol::Llmnr(_) => {}
+                ApplicationProtocol::Dhcp(_) => {}
+                ApplicationProtocol::Snmp(_) => {}
+                ApplicationProtocol::Ssdp(_) => {}
+                ApplicationProtocol::NetBios(_) => {}
+                ApplicationProtocol::BitTorrent(_) => {}
+                ApplicationProtocol::Stun(_) => {}
+                ApplicationProtocol::Mqtt(_) => {}
+                ApplicationProtocol::Ftp(_) => {}
+            }
+        }
+        assert_eq!(
+            seen.len(),
+            16,
+            "fixture list out of sync with ApplicationProtocol: update the \
+             variants vec (and this count) alongside the match above"
+        );
+        variants
+    }
+
+    /// A Details-ready connection carrying `app` as its DPI classification,
+    /// on the transport that protocol actually rides on.
+    fn dpi_details_connection(app: crate::network::types::ApplicationProtocol) -> Connection {
+        use crate::network::types::{ApplicationProtocol, DpiInfo};
+
+        let tcp_based = matches!(
+            app,
+            ApplicationProtocol::Http(_)
+                | ApplicationProtocol::Https(_)
+                | ApplicationProtocol::Ssh(_)
+                | ApplicationProtocol::BitTorrent(_)
+                | ApplicationProtocol::Mqtt(_)
+                | ApplicationProtocol::Ftp(_)
+        );
+        let (protocol, state) = if tcp_based {
+            (Protocol::Tcp, ProtocolState::Tcp(TcpState::Established))
+        } else {
+            (Protocol::Udp, ProtocolState::Udp)
+        };
+        let mut conn = Connection::new(
+            protocol,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 50_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7)), 4433),
+            state,
+        );
+        conn.process_name = Some("proc".to_string());
+        conn.pid = Some(4242);
+        conn.dpi_info = Some(DpiInfo { application: app });
+        conn
+    }
+
+    fn arp_details_connection(with_vendors: bool) -> Connection {
+        use crate::network::types::{ArpInfo, ArpOperation};
+
+        let gateway = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1));
+        let host = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10));
+        Connection::new(
+            Protocol::Arp,
+            SocketAddr::new(host, 0),
+            SocketAddr::new(gateway, 0),
+            ProtocolState::Arp(ArpInfo {
+                operation: ArpOperation::Request,
+                sender_mac: "68:5e:dd:09:15:5e".to_string(),
+                sender_ip: host,
+                target_mac: "00:00:00:00:00:00".to_string(),
+                target_ip: gateway,
+                sender_vendor: with_vendors.then(|| "Apple, Inc.".to_string()),
+                target_vendor: with_vendors.then(|| "ASUSTek COMPUTER INC.".to_string()),
+            }),
+        )
+    }
+
+    fn icmp_echo_details_connection() -> Connection {
+        let mut conn = Connection::new(
+            Protocol::Icmp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 0),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+            ProtocolState::Icmp {
+                icmp_type: 8,
+                icmp_id: Some(0x1234),
+                icmp_sequence: Some(42),
+                ndp_neighbor: None,
+            },
+        );
+        conn.process_name = Some("ping".to_string());
+        conn.icmp_echo_rtt = Some(Duration::from_micros(8_700));
+        conn
+    }
+
+    fn icmpv6_ndp_details_connection() -> Connection {
+        use crate::network::types::NdpNeighbor;
+        use std::net::Ipv6Addr;
+
+        let local = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
+        let remote = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 2));
+        Connection::new(
+            Protocol::Icmp,
+            SocketAddr::new(local, 0),
+            SocketAddr::new(remote, 0),
+            ProtocolState::Icmp {
+                icmp_type: 136,
+                icmp_id: None,
+                icmp_sequence: None,
+                ndp_neighbor: Some(NdpNeighbor {
+                    ip: remote,
+                    mac: "b8:27:eb:12:34:56".to_string(),
+                    vendor: Some("Raspberry Pi Foundation".to_string()),
+                }),
+            },
+        )
+    }
+
+    fn igmp_details_connection() -> Connection {
+        Connection::new(
+            Protocol::Igmp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 10)), 0),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 251)), 0),
+            ProtocolState::Igmp {
+                igmp_type: 0x16,
+                group_addr: Some(Ipv4Addr::new(224, 0, 0, 251)),
+            },
+        )
+    }
+
+    /// Rows between the Application heading and the Transport Health heading
+    /// in a Details render: the release-mode guard for the Application card's
+    /// row budget.
+    fn application_card_height(app: &App, conn: Connection) -> usize {
+        let connections = vec![conn];
+        app.set_connections_snapshot_for_test(connections.clone());
+        let output = render_details(app, &connections, 0);
+        heading_row(&output, "Transport Health") - heading_row(&output, "Application")
+    }
+
+    /// The Application heading and the Transport Health heading must sit the
+    /// same distance apart for every protocol class, so the dashboard cards
+    /// never move while flipping through a mixed connection list. The
+    /// baseline is measured from an unclassified TCP record, not hardcoded.
+    #[test]
+    fn application_card_geometry_is_fixed_for_all_protocols() {
+        let app = test_app();
+        let baseline = {
+            let mut sample = sample_connections();
+            application_card_height(&app, sample.remove(0))
+        };
+        assert!(baseline > 0, "baseline render must show both headings");
+
+        for variant in dpi_variants_full() {
+            let name = variant.sort_key();
+            assert_eq!(
+                application_card_height(&app, dpi_details_connection(variant)),
+                baseline,
+                "Application card height for {name} deviates from the TCP baseline"
+            );
+        }
+        for (name, conn) in [
+            ("ARP", arp_details_connection(true)),
+            ("ICMP echo", icmp_echo_details_connection()),
+            ("ICMPv6 NDP", icmpv6_ndp_details_connection()),
+            ("IGMP", igmp_details_connection()),
+        ] {
+            assert_eq!(
+                application_card_height(&app, conn),
+                baseline,
+                "Application card height for {name} deviates from the TCP baseline"
+            );
+        }
+    }
+
+    /// Label column of the Application card (heading row through the row
+    /// before Transport Health), sliced at the card's own x offset since the
+    /// card lives in the right pane of the split layout.
+    fn application_card_labels(render: &str) -> Vec<String> {
+        let header_row = heading_row(render, "Application");
+        let header_line = render.lines().nth(header_row).expect("header line");
+        let byte_index = header_line.find("Application").expect("Application x");
+        let x = header_line[..byte_index].chars().count();
+        let end_row = heading_row(render, "Transport Health");
+        render
+            .lines()
+            .skip(header_row)
+            .take(end_row - header_row)
+            .map(|line| {
+                line.chars()
+                    .skip(x)
+                    .take(tabs::details::DETAIL_LABEL_WIDTH)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The card's label column is a function of the protocol class alone:
+    /// a fully populated record and an empty one of the same class must
+    /// render identical labels, with `-` filling the gaps.
+    #[test]
+    fn application_card_rows_do_not_depend_on_data() {
+        use crate::network::types::{
+            ApplicationProtocol, DnsInfo, DnsQueryType, FtpInfo, FtpMessageType, HttpsInfo,
+            QuicInfo, SshConnectionState, SshInfo,
+        };
+
+        let app = test_app();
+        let full = |matcher: fn(&ApplicationProtocol) -> bool| {
+            dpi_variants_full()
+                .into_iter()
+                .find(matcher)
+                .expect("fixture variant")
+        };
+
+        let pairs: Vec<(&str, Connection, Connection)> = vec![
+            (
+                "HTTPS",
+                dpi_details_connection(full(|v| matches!(v, ApplicationProtocol::Https(_)))),
+                dpi_details_connection(ApplicationProtocol::Https(HttpsInfo { tls_info: None })),
+            ),
+            (
+                "QUIC",
+                dpi_details_connection(full(|v| matches!(v, ApplicationProtocol::Quic(_)))),
+                dpi_details_connection(ApplicationProtocol::Quic(Box::new(QuicInfo::new(
+                    0xdead_beef,
+                )))),
+            ),
+            (
+                "SSH",
+                dpi_details_connection(full(|v| matches!(v, ApplicationProtocol::Ssh(_)))),
+                dpi_details_connection(ApplicationProtocol::Ssh(SshInfo {
+                    version: None,
+                    client_software: None,
+                    server_software: None,
+                    connection_state: SshConnectionState::Banner,
+                    algorithms: Vec::new(),
+                    auth_method: None,
+                })),
+            ),
+            (
+                "FTP",
+                dpi_details_connection(full(|v| matches!(v, ApplicationProtocol::Ftp(_)))),
+                dpi_details_connection(ApplicationProtocol::Ftp(FtpInfo {
+                    message_type: FtpMessageType::Request,
+                    command: None,
+                    args: None,
+                    response_code: None,
+                    response_message: None,
+                    username: None,
+                    server_software: None,
+                    system_type: None,
+                })),
+            ),
+            (
+                "DNS",
+                dpi_details_connection(full(|v| matches!(v, ApplicationProtocol::Dns(_)))),
+                dpi_details_connection(ApplicationProtocol::Dns(DnsInfo {
+                    query_name: Some("example.com".to_string()),
+                    query_type: Some(DnsQueryType::A),
+                    response_ips: Vec::new(),
+                    is_response: false,
+                    txid: 0x0001,
+                    rcode: None,
+                    nodata: None,
+                })),
+            ),
+            (
+                "ARP",
+                arp_details_connection(true),
+                arp_details_connection(false),
+            ),
+        ];
+
+        for (name, full_conn, empty_conn) in pairs {
+            let render_one = |conn: Connection| {
+                let connections = vec![conn];
+                app.set_connections_snapshot_for_test(connections.clone());
+                render_details(&app, &connections, 0)
+            };
+            let full_labels = application_card_labels(&render_one(full_conn));
+            let empty_labels = application_card_labels(&render_one(empty_conn));
+            assert!(
+                full_labels.len() > 1,
+                "{name}: the card must render labeled rows"
+            );
+            assert_eq!(
+                full_labels, empty_labels,
+                "{name}: the Application card labels must not depend on data availability"
+            );
+        }
+    }
+
+    /// Snapshot of one Details render per reworked Application card, so the
+    /// exact row sets (placeholders included) are pinned and reviewable.
+    /// The name is explicit because the assertion runs inside this shared
+    /// helper, where insta cannot derive a per-test name.
+    fn assert_details_snapshot(name: &str, conn: Connection) {
+        let app = test_app();
+        let connections = vec![conn];
+        app.set_connections_snapshot_for_test(connections.clone());
+        let output = render_details(&app, &connections, 0);
+        insta::with_settings!({
+            filters => time_filters(),
+        }, {
+            insta::assert_snapshot!(name, output);
+        });
+    }
+
+    #[test]
+    fn details_tab_http_application_card() {
+        use crate::network::types::ApplicationProtocol;
+        let http = dpi_variants_full()
+            .into_iter()
+            .find(|v| matches!(v, ApplicationProtocol::Http(_)))
+            .expect("HTTP fixture");
+        assert_details_snapshot(
+            "details_tab_http_application_card",
+            dpi_details_connection(http),
+        );
+    }
+
+    #[test]
+    fn details_tab_https_without_tls_info() {
+        use crate::network::types::{ApplicationProtocol, HttpsInfo};
+        assert_details_snapshot(
+            "details_tab_https_without_tls_info",
+            dpi_details_connection(ApplicationProtocol::Https(HttpsInfo { tls_info: None })),
+        );
+    }
+
+    #[test]
+    fn details_tab_ssh_application_card() {
+        use crate::network::types::ApplicationProtocol;
+        let ssh = dpi_variants_full()
+            .into_iter()
+            .find(|v| matches!(v, ApplicationProtocol::Ssh(_)))
+            .expect("SSH fixture");
+        assert_details_snapshot(
+            "details_tab_ssh_application_card",
+            dpi_details_connection(ssh),
+        );
+    }
+
+    #[test]
+    fn details_tab_dns_response_application_card() {
+        use crate::network::types::ApplicationProtocol;
+        let dns = dpi_variants_full()
+            .into_iter()
+            .find(|v| matches!(v, ApplicationProtocol::Dns(_)))
+            .expect("DNS fixture");
+        assert_details_snapshot(
+            "details_tab_dns_response_application_card",
+            dpi_details_connection(dns),
+        );
+    }
+
+    #[test]
+    fn details_tab_ntp_application_card() {
+        use crate::network::types::ApplicationProtocol;
+        let ntp = dpi_variants_full()
+            .into_iter()
+            .find(|v| matches!(v, ApplicationProtocol::Ntp(_)))
+            .expect("NTP fixture");
+        assert_details_snapshot(
+            "details_tab_ntp_application_card",
+            dpi_details_connection(ntp),
+        );
+    }
+
+    #[test]
+    fn details_tab_icmp_echo_application_card() {
+        assert_details_snapshot(
+            "details_tab_icmp_echo_application_card",
+            icmp_echo_details_connection(),
+        );
+    }
+
+    #[test]
+    fn details_tab_icmpv6_ndp_application_card() {
+        assert_details_snapshot(
+            "details_tab_icmpv6_ndp_application_card",
+            icmpv6_ndp_details_connection(),
+        );
+    }
+
+    #[test]
+    fn details_tab_igmp_application_card() {
+        assert_details_snapshot(
+            "details_tab_igmp_application_card",
+            igmp_details_connection(),
+        );
+    }
+
+    #[test]
+    fn details_tab_arp_application_card() {
+        assert_details_snapshot(
+            "details_tab_arp_application_card",
+            arp_details_connection(true),
+        );
     }
 }
