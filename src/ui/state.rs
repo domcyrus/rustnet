@@ -439,6 +439,15 @@ impl UIState {
         self.filter_mode || self.has_active_filter()
     }
 
+    /// Whether the filter input row is on screen, claiming a terminal row.
+    /// The row is an editing surface only: once a query is confirmed it is
+    /// gone and the title chip carries the state. The layout in `ui::draw`
+    /// and the page-navigation math in `main` both read this, so the two
+    /// cannot disagree about how many rows the chrome occupies.
+    pub fn filter_row_visible(&self) -> bool {
+        self.filter_mode
+    }
+
     /// Set the selected connection key, resetting the Details pane
     /// scroll when the selection actually changes so a newly selected
     /// record always starts at the top.

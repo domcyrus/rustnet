@@ -47,7 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Theme Contrast Warning**: config file color overrides that leave a
   foreground/background pair below 3:1 contrast now print a startup warning.
-  The colors are never altered, and the built-in presets all pass (#563)
+  Only pairs the override touches are judged, so the built-in palettes are
+  never second-guessed, and the colors are never altered. Body text is the
+  terminal's own foreground, so pairs involving it cannot be measured (#563)
+- **Truecolor Detection on Direct-Color Terminals**: `TERM=*-direct` entries
+  advertise 24-bit color without setting `COLORTERM`, and are no longer
+  downgraded to ANSI-16 (#563)
+- **Config File Under sudo**: `sudo rustnet` now reads the invoking user's
+  config rather than root's, resolving their home from the passwd database
+  the same way the privilege drop resolves `SUDO_UID` (#563)
 - **New Theme Presets**: `--theme` gains `catppuccin-mocha`, `tokyo-night`,
   `gruvbox`, and `nord` truecolor themes with ANSI fallback (#563)
 - **Config File**: optional `~/.config/rustnet/config.toml` sets the theme and
@@ -230,8 +238,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Filtering Is a Mode, Not Four Notices**: the filter input row now shows
   only while a query is being typed. Once confirmed it collapses, leaving the
   query chip in the Connections title and the activity dot on the Overview
-  tab, and the status bar returns to actions with `esc clear filter` first
-  (#563)
+  tab, and the status bar returns to actions with `esc clear filter` first.
+  While typing, the footer offers only what the filter editor handles, since
+  every other key types a character into the query (#563)
 - **Connection Table Cues**: the selected row now leads with an accent bar,
   and process names get a stable per-name tint (#563)
 - **Tab Bar Status Cues**: the tab row right-aligns the capture interface and

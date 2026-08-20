@@ -263,7 +263,7 @@ pub fn draw(
     let capture_error = app.get_capture_error();
     let status_height = status_bar_height(capture_error.as_deref(), f.area().width);
 
-    let chunks = if ui_state.filter_mode {
+    let chunks = if ui_state.filter_row_visible() {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -298,7 +298,7 @@ pub fn draw(
     draw_tabs(f, ui_state, &capture, chunks[0], click_regions);
 
     let content_area = chunks[1];
-    let (filter_area, status_area) = if ui_state.filter_mode {
+    let (filter_area, status_area) = if ui_state.filter_row_visible() {
         (Some(chunks[2]), chunks[3])
     } else {
         (None, chunks[2])

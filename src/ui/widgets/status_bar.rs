@@ -23,9 +23,14 @@ use crate::ui::{UIState, theme};
 /// One keycap hint: the key as typed and the action it triggers.
 type Hint = (&'static str, &'static str);
 
-/// Pinned to the right edge on every tab, and the last thing dropped: the
-/// two keys worth knowing when nothing else makes sense.
+/// Pinned to the right edge, and the last thing dropped: the two keys worth
+/// knowing when nothing else makes sense.
 const GLOBAL_HINTS: [Hint; 2] = [("h", "help"), ("q", "quit")];
+
+/// Right-edge cluster while a filter is being typed. `h` and `q` would type
+/// a character into the query rather than help or quit, so the two keys that
+/// end the mode take their place.
+const FILTER_HINTS: [Hint; 2] = [("enter", "apply"), ("esc", "cancel")];
 
 /// Cells between two hints inside a group.
 const HINT_GAP: usize = 2;
@@ -43,6 +48,13 @@ const MIN_LABELED: usize = 3;
 /// else on screen. Copy drops out entirely when the clipboard is out of
 /// reach, rather than advertising a key that can only fail.
 fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
+    // While a filter is being typed the key handler routes every character
+    // into the query, so the tab's own actions are unreachable: advertising
+    // them would name keys that type a letter instead. Only what the filter
+    // editor actually handles is offered.
+    if ui_state.filter_mode {
+        return vec![("\u{2191}\u{2193}", "select")];
+    }
     match ui_state.selected_tab {
         // Overview
         0 => {
@@ -140,13 +152,13 @@ fn push_group(spans: &mut Vec<Span<'static>>, hints: &[Hint], labels: bool) {
     }
 }
 
-/// Lay the bar out: context actions from the left, the global cluster flush
-/// right. Tried once with every label spelled out, then with keys alone,
-/// dropping context actions from the end only when even that overflows.
-fn hint_line(context: &[Hint], width: u16) -> Line<'static> {
+/// Lay the bar out: context actions from the left, `cluster` flush right.
+/// Tried once with every label spelled out, then with keys alone, dropping
+/// context actions from the end only when even that overflows.
+fn hint_line(context: &[Hint], cluster: &[Hint], width: u16) -> Line<'static> {
     let width = width as usize;
     for labels in [true, false] {
-        let global = group_width(&GLOBAL_HINTS, labels);
+        let global = group_width(cluster, labels);
         // One pad cell at each edge, plus the reserved global cluster.
         let Some(room) = width.checked_sub(global + 2) else {
             continue;
@@ -171,12 +183,12 @@ fn hint_line(context: &[Hint], width: u16) -> Line<'static> {
         let mut spans = vec![Span::raw(" ")];
         push_group(&mut spans, &kept, labels);
         spans.push(Span::raw(" ".repeat(room - used)));
-        push_group(&mut spans, &GLOBAL_HINTS, labels);
+        push_group(&mut spans, cluster, labels);
         spans.push(Span::raw(" "));
         return Line::from(spans);
     }
-    // Narrower than "h q": show the one key that always matters.
-    Line::from(hint_spans(GLOBAL_HINTS[1], false))
+    // Narrower than the cluster itself: show the one key that ends the mode.
+    Line::from(hint_spans(cluster[cluster.len() - 1], false))
 }
 
 /// Actionable half of a capture-failure line.
@@ -255,8 +267,17 @@ pub(in crate::ui) fn draw_status_bar(
         Paragraph::new(capture_error_text(error, area.width, area.height))
             .style(theme::status_bar_error())
     } else {
-        Paragraph::new(hint_line(&context_hints(ui_state, clipboard), area.width))
-            .style(theme::status_bar_default())
+        let cluster: &[Hint] = if ui_state.filter_mode {
+            &FILTER_HINTS
+        } else {
+            &GLOBAL_HINTS
+        };
+        Paragraph::new(hint_line(
+            &context_hints(ui_state, clipboard),
+            cluster,
+            area.width,
+        ))
+        .style(theme::status_bar_default())
     };
 
     f.render_widget(status_bar.alignment(ratatui::layout::Alignment::Left), area);
@@ -316,7 +337,7 @@ mod tests {
     fn the_global_cluster_survives_every_width() {
         let context = context_hints(&UIState::default(), true);
         for width in [200u16, 120, 80, 60, 40, 24, 12] {
-            let line = rendered(&hint_line(&context, width));
+            let line = rendered(&hint_line(&context, &GLOBAL_HINTS, width));
             assert!(line.contains('q'), "quit dropped at {width}: {line:?}");
             assert!(
                 line.chars().count() <= width as usize,
@@ -329,12 +350,12 @@ mod tests {
     fn labels_are_dropped_before_context_actions_are() {
         let context = context_hints(&UIState::default(), true);
         // Wide enough to spell every action out.
-        let wide = rendered(&hint_line(&context, 120));
+        let wide = rendered(&hint_line(&context, &GLOBAL_HINTS, 120));
         assert!(wide.contains("filter"), "{wide:?}");
         assert!(wide.contains("quit"), "{wide:?}");
 
         // Too narrow for labels, yet every key is still there.
-        let narrow = rendered(&hint_line(&context, 40));
+        let narrow = rendered(&hint_line(&context, &GLOBAL_HINTS, 40));
         assert!(!narrow.contains("filter"), "{narrow:?}");
         for (key, _) in &context {
             assert!(narrow.contains(key), "{key} dropped: {narrow:?}");
@@ -350,7 +371,7 @@ mod tests {
             ..Default::default()
         };
         let context = context_hints(&ui_state, true);
-        let line = rendered(&hint_line(&context, 80));
+        let line = rendered(&hint_line(&context, &GLOBAL_HINTS, 80));
         assert!(line.contains("clear filter"), "{line:?}");
         assert!(line.contains("select"), "{line:?}");
         assert!(line.ends_with("q quit "), "{line:?}");
@@ -383,8 +404,32 @@ mod tests {
     }
 
     #[test]
+    fn filter_editing_only_offers_keys_the_editor_handles() {
+        let editing = UIState {
+            filter_mode: true,
+            filter_query: "port:44".to_string(),
+            ..Default::default()
+        };
+        let hints = context_hints(&editing, true);
+        // Every Char key goes into the query while typing, so none of the
+        // tab's own actions may be named here.
+        for key in ["/", "a", "t", "i", "c"] {
+            assert!(
+                !advertises(&hints, key),
+                "{key} types a character while filtering, but is advertised"
+            );
+        }
+        // The keys that end the mode move to the right-edge cluster.
+        assert_eq!(FILTER_HINTS.map(|(key, _)| key), ["enter", "esc"]);
+    }
+
+    #[test]
     fn the_global_cluster_sits_flush_right() {
-        let line = rendered(&hint_line(&context_hints(&UIState::default(), true), 120));
+        let line = rendered(&hint_line(
+            &context_hints(&UIState::default(), true),
+            &GLOBAL_HINTS,
+            120,
+        ));
         assert!(line.ends_with("q quit "), "{line:?}");
     }
 }

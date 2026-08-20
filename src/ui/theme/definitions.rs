@@ -230,10 +230,26 @@ impl ThemeSpec {
 /// Whether the terminal advertises truecolor support: COLORTERM contains
 /// "truecolor" or "24bit" (case-insensitive).
 pub fn detect_truecolor() -> bool {
-    std::env::var("COLORTERM").is_ok_and(|v| {
+    truecolor_from(
+        std::env::var("COLORTERM").ok().as_deref(),
+        std::env::var("TERM").ok().as_deref(),
+    )
+}
+
+/// The decision behind [`detect_truecolor`], separated from the environment
+/// so it can be tested without mutating process-wide state.
+fn truecolor_from(colorterm: Option<&str>, term: Option<&str>) -> bool {
+    if colorterm.is_some_and(|v| {
         let v = v.to_ascii_lowercase();
         v.contains("truecolor") || v.contains("24bit")
-    })
+    }) {
+        return true;
+    }
+    // Direct-color terminfo entries (xterm-direct, tmux-direct, and the rest
+    // of the `-direct` family) advertise 24-bit color through their own
+    // capabilities and frequently ship no COLORTERM at all. Without this they
+    // would be downgraded to ANSI-16 and lose the truecolor presets.
+    term.is_some_and(|v| v.to_ascii_lowercase().contains("direct"))
 }
 
 /// Reference RGB values for the 16 ANSI colors (VGA palette). Used both for
@@ -520,6 +536,19 @@ fn nord() -> ThemeSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truecolor_is_detected_from_colorterm_or_a_direct_term() {
+        assert!(truecolor_from(Some("truecolor"), Some("xterm-256color")));
+        assert!(truecolor_from(Some("24bit"), None));
+        // A -direct terminfo entry carries no COLORTERM of its own.
+        assert!(truecolor_from(None, Some("xterm-direct")));
+        assert!(truecolor_from(None, Some("tmux-direct")));
+
+        assert!(!truecolor_from(None, Some("xterm-256color")));
+        assert!(!truecolor_from(Some("8bit"), Some("screen")));
+        assert!(!truecolor_from(None, None));
+    }
 
     #[test]
     fn preset_names_round_trip() {

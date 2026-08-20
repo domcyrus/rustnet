@@ -779,10 +779,13 @@ where
 
         // Update visible rows for page navigation based on terminal height.
         // Chrome rows: tab bar (2) + section title (1) + table header incl.
-        // margin (2) + status bar (1) = 6, plus the filter line (1) when a
-        // filter is being edited or active.
+        // margin (2) + status bar (1) = 6, plus the filter line (1) while a
+        // filter is being typed. This must track the layout in `ui::draw`
+        // exactly: a confirmed filter keeps no row of its own, so counting
+        // one here would scroll the selection a row early and hand the
+        // scrollbar a viewport shorter than what is drawn.
         if let Ok(size) = terminal.size() {
-            let chrome = if ui_state.is_filtering() { 7 } else { 6 };
+            let chrome = if ui_state.filter_row_visible() { 7 } else { 6 };
             ui_state.visible_rows = (size.height as usize).saturating_sub(chrome);
         }
 

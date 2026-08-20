@@ -86,6 +86,37 @@ fn parse(contents: &str) -> Result<UserConfig, String> {
 /// `$XDG_CONFIG_HOME/rustnet/config.toml` (when set and non-empty) or
 /// `$HOME/.config/rustnet/config.toml`. `None` when the relevant
 /// environment variables are unset.
+/// Home directory of the user who invoked `sudo`, when running under it.
+/// `None` when not under sudo, when the invoking user is root anyway (their
+/// own HOME is then correct), or when the passwd lookup yields nothing.
+#[cfg(not(windows))]
+fn invoking_user_home() -> Option<PathBuf> {
+    let uid: u32 = std::env::var("SUDO_UID").ok()?.parse().ok()?;
+    if uid == 0 {
+        return None;
+    }
+    let user = std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty())?;
+    // Read the home field straight out of the passwd database rather than
+    // assuming /home/<user>: it is wrong for root, for macOS (/Users), and
+    // for anyone with a relocated home.
+    let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
+    passwd_home(&passwd, &user)
+}
+
+/// Home directory field for `user` in the contents of a passwd file.
+#[cfg(not(windows))]
+fn passwd_home(passwd: &str, user: &str) -> Option<PathBuf> {
+    passwd.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        if fields.next()? != user {
+            return None;
+        }
+        // name:passwd:uid:gid:gecos:home:shell, so home is four past passwd.
+        let home = fields.nth(4)?;
+        (!home.is_empty()).then(|| PathBuf::from(home))
+    })
+}
+
 fn config_path() -> Option<PathBuf> {
     #[cfg(windows)]
     {
@@ -95,6 +126,15 @@ fn config_path() -> Option<PathBuf> {
     }
     #[cfg(not(windows))]
     {
+        // Under `sudo rustnet`, which the docs recommend, sudo's env_reset
+        // clears XDG_CONFIG_HOME and many distros point HOME at /root, so
+        // both would resolve to root's config rather than the config of the
+        // person who ran the command. rustnet already drops back to
+        // SUDO_UID/SUDO_GID after initialization, so it knows who that is:
+        // resolve their home the same way and read their config.
+        if let Some(home) = invoking_user_home() {
+            return Some(home.join(".config").join("rustnet").join("config.toml"));
+        }
         if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
             return Some(PathBuf::from(xdg).join("rustnet").join("config.toml"));
         }
@@ -112,6 +152,28 @@ fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(not(windows))]
+    fn passwd_home_reads_the_home_field_not_a_guessed_path() {
+        let passwd = "root:x:0:0:root:/root:/bin/bash\n\
+                      marco:x:1000:1000:Marco:/home/marco:/usr/bin/fish\n\
+                      relocated:x:1001:1001::/srv/people/relocated:/bin/sh\n\
+                      noshell:x:1002:1002:::\n";
+        assert_eq!(
+            passwd_home(passwd, "marco"),
+            Some(PathBuf::from("/home/marco"))
+        );
+        // A home outside /home is exactly why the field is read, not guessed.
+        assert_eq!(
+            passwd_home(passwd, "relocated"),
+            Some(PathBuf::from("/srv/people/relocated"))
+        );
+        assert_eq!(passwd_home(passwd, "root"), Some(PathBuf::from("/root")));
+        // An empty home field is not a usable answer.
+        assert_eq!(passwd_home(passwd, "noshell"), None);
+        assert_eq!(passwd_home(passwd, "absent"), None);
+    }
 
     #[test]
     fn parses_theme_name_and_overrides() {

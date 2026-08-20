@@ -172,7 +172,7 @@ impl Theme {
         // there is nothing left to be unreadable: stay quiet there.
         let no_color = crate::ui::NO_COLOR.load(crate::ui::Ordering::Relaxed);
         if spec.has_overrides() && !no_color {
-            for warning in contrast_warnings(&theme) {
+            for warning in contrast_warnings(spec, &theme) {
                 eprintln!("rustnet: {warning}");
             }
         }
@@ -353,12 +353,26 @@ fn reference_rgb(color: Color) -> Option<(u8, u8, u8)> {
 /// [`super::on_color`], so neither needs a guard. ANSI colors are compared
 /// via their reference palette RGB, which is an approximation of what the
 /// terminal actually paints.
-pub(super) fn contrast_warnings(theme: &Theme) -> Vec<String> {
+pub(super) fn contrast_warnings(spec: &ThemeSpec, theme: &Theme) -> Vec<String> {
     let mut warnings = Vec::new();
-    let mut check = |fg_name: &str, fg: Option<Color>, bg_name: &str, bg: Option<Color>| {
+    // Only pairs the user actually touched are judged. The built-in palettes
+    // are their authors' deliberate choices (no Nord-family red clears 3:1 on
+    // a Nord background, and the recessed tiers are dim on purpose), so
+    // flagging them would be second-guessing the theme, not the config.
+    let mut check = |fg_name: &str,
+                     fg: Option<Color>,
+                     fg_exact: bool,
+                     bg_name: &str,
+                     bg: Option<Color>,
+                     bg_exact: bool| {
+        if !(fg_exact || bg_exact) {
+            return;
+        }
         let (Some(fg), Some(bg)) = (fg, bg) else {
             return;
         };
+        // Body text is the terminal's own foreground on every preset, so it
+        // resolves to `Reset` and has no RGB to measure. Unknowable, skipped.
         let (Some(fg_rgb), Some(bg_rgb)) = (reference_rgb(fg), reference_rgb(bg)) else {
             return;
         };
@@ -369,15 +383,53 @@ pub(super) fn contrast_warnings(theme: &Theme) -> Vec<String> {
             ));
         }
     };
-    // The selection band, which the filter chip also renders on.
+
+    // The selection band, which the filter chip also renders on. Every
+    // built-in leaves `selection_fg` unset, and tinting the band without
+    // setting the text color is the likeliest override of all, so the
+    // recessed row tier is measured against it too.
+    let sel_bg_exact = spec.selection_bg.is_some_and(|t| t.exact);
     check(
         "selection_fg",
         theme.selection_fg,
+        spec.selection_fg.is_some_and(|t| t.exact),
         "selection_bg",
         theme.selection_bg,
+        sel_bg_exact,
     );
-    // The status bar: keycaps carry its text.
-    check("key", Some(theme.key), "status_bg", theme.status_bg);
+    // Only when the band sets no text color of its own: with `selection_fg`
+    // set, every cell on the band takes it and the row's own tiers never
+    // render there.
+    if theme.selection_fg.is_none() {
+        check(
+            "muted",
+            Some(theme.muted),
+            spec.muted.exact,
+            "selection_bg",
+            theme.selection_bg,
+            sel_bg_exact,
+        );
+    }
+
+    // The status bar: keycaps carry the hints, labels sit beside them, and
+    // the alert states paint the same row in a signal color.
+    let status_exact = spec.status_bg.is_some_and(|t| t.exact);
+    for (name, color, exact) in [
+        ("key", theme.key, spec.key.exact),
+        ("label", theme.label, spec.label.exact),
+        ("warn", theme.warn, spec.warn.exact),
+        ("ok", theme.ok, spec.ok.exact),
+        ("err", theme.err, spec.err.exact),
+    ] {
+        check(
+            name,
+            Some(color),
+            exact,
+            "status_bg",
+            theme.status_bg,
+            status_exact,
+        );
+    }
     warnings
 }
 
@@ -638,17 +690,34 @@ mod tests {
     }
 
     #[test]
-    fn built_in_presets_pass_the_contrast_guard() {
+    fn built_in_presets_are_never_second_guessed() {
+        // A preset the user has not touched is its author's choice, however
+        // dim: the guard judges overrides only.
         for preset in ThemePreset::ALL {
             for truecolor in [false, true] {
-                let theme = Theme::resolve(&ThemeSpec::builtin(preset), truecolor);
+                let spec = ThemeSpec::builtin(preset);
+                let theme = Theme::resolve(&spec, truecolor);
                 assert!(
-                    contrast_warnings(&theme).is_empty(),
+                    contrast_warnings(&spec, &theme).is_empty(),
                     "{preset:?} (truecolor={truecolor}): {:?}",
-                    contrast_warnings(&theme)
+                    contrast_warnings(&spec, &theme)
                 );
             }
         }
+    }
+
+    #[test]
+    fn tinting_the_band_alone_is_still_judged() {
+        // The likeliest override of all: a new selection_bg with no
+        // selection_fg. Nothing pairs with it explicitly, so the recessed row
+        // tier is what gets measured against it.
+        let mut spec = ThemeSpec::builtin(ThemePreset::TokyoNight);
+        spec.set_token("selection_bg", "#828bb8").unwrap();
+        let warnings = contrast_warnings(&spec, &Theme::resolve(&spec, true));
+        assert!(
+            warnings.iter().any(|w| w.contains("muted on selection_bg")),
+            "a background-only override went unjudged: {warnings:?}"
+        );
     }
 
     #[test]
@@ -660,13 +729,21 @@ mod tests {
         spec.set_token("key", "#2b3350").unwrap();
         assert!(spec.has_overrides());
 
-        let warnings = contrast_warnings(&Theme::resolve(&spec, true));
-        assert_eq!(warnings.len(), 2, "{warnings:?}");
-        assert!(
-            warnings[0].contains("selection_fg on selection_bg"),
-            "{warnings:?}"
-        );
-        assert!(warnings[1].contains("key on status_bg"), "{warnings:?}");
+        let warnings = contrast_warnings(&spec, &Theme::resolve(&spec, true));
+        // An overridden background is judged against every foreground that
+        // lands on it, not just the one explicitly paired with it. `muted` is
+        // absent here on purpose: this spec sets `selection_fg`, so the band
+        // paints all of its text with that instead.
+        for pair in [
+            "selection_fg on selection_bg",
+            "key on status_bg",
+            "label on status_bg",
+        ] {
+            assert!(
+                warnings.iter().any(|w| w.contains(pair)),
+                "{pair} went unreported: {warnings:?}"
+            );
+        }
 
         // A readable override pair says nothing, and the colors are never
         // altered either way.
@@ -674,7 +751,7 @@ mod tests {
         spec.set_token("selection_bg", "#1a1b26").unwrap();
         spec.set_token("selection_fg", "#c0caf5").unwrap();
         let theme = Theme::resolve(&spec, true);
-        assert!(contrast_warnings(&theme).is_empty());
+        assert!(contrast_warnings(&spec, &theme).is_empty());
         assert_eq!(theme.selection_fg, Some(Color::Rgb(0xC0, 0xCA, 0xF5)));
     }
 
