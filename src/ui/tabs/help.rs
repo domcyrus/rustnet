@@ -14,8 +14,8 @@ use ratatui::{
 };
 
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, UIState, theme,
-    try_handle_pane_scroll, widgets::scrollbar::draw_scrollbar,
+    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, UIState, fade_line,
+    theme, try_handle_pane_scroll, widgets::scrollbar::draw_scrollbar,
 };
 
 /// Help tab. Zero-sized: the scroll offset it responds to lives in
@@ -225,6 +225,15 @@ fn push_section(
     );
 }
 
+/// Visible-window line indices whose style marks a scroll boundary: the
+/// top line when the page is scrolled past its start, the bottom line
+/// when content continues below. Both are `None` on a page that fits.
+fn fade_targets(scroll: u16, height: u16, max_scroll: u16) -> [Option<usize>; 2] {
+    let top = (scroll > 0).then_some(scroll as usize);
+    let bottom = (scroll < max_scroll && height > 0).then(|| scroll as usize + height as usize - 1);
+    [top, bottom]
+}
+
 pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) -> Result<()> {
     let mut help_text: Vec<Line> = vec![Line::from(vec![
         Span::styled("RustNet Monitor ", theme::bold_fg(theme::ok())),
@@ -317,6 +326,18 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
             .push(Span::styled(" · ↑/↓ scroll", theme::fg(theme::muted())));
     }
 
+    // Mark the cut edges of the visible window. Wrapping shifts the true
+    // window on narrow terminals, the same approximation the scroll range
+    // accepts above, which is good enough for a color-only cue.
+    for index in fade_targets(scroll, inner_height, max_scroll)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(line) = help_text.get_mut(index) {
+            fade_line(line);
+        }
+    }
+
     // Right padding keeps the text clear of the two rightmost columns:
     // a blank gap and the scrollbar, same arrangement as the Overview
     // table. `trim: false` preserves the row indent and the padded key
@@ -333,4 +354,32 @@ pub(in crate::ui) fn draw_help(f: &mut Frame, ui_state: &UIState, area: Rect) ->
     draw_scrollbar(f, area, total_lines, scroll as usize, inner_height as usize);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_that_fits_has_no_faded_edges() {
+        assert_eq!(fade_targets(0, 40, 0), [None, None]);
+    }
+
+    #[test]
+    fn scrolling_fades_the_edges_that_hide_content() {
+        // At the top only the bottom edge continues.
+        assert_eq!(fade_targets(0, 10, 5), [None, Some(9)]);
+        // Mid-page both edges do.
+        assert_eq!(fade_targets(3, 10, 5), [Some(3), Some(12)]);
+        // At the end only the top edge does.
+        assert_eq!(fade_targets(5, 10, 5), [Some(5), None]);
+    }
+
+    #[test]
+    fn faded_lines_restyle_every_span() {
+        let mut line = Line::from(vec![Span::raw("a"), Span::raw("b")]);
+        fade_line(&mut line);
+        let expected = theme::edge_fade(Style::default());
+        assert!(line.spans.iter().all(|span| span.style == expected));
+    }
 }

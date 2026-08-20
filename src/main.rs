@@ -782,11 +782,7 @@ where
         // margin (2) + status bar (1) = 6, plus the filter line (1) when a
         // filter is being edited or active.
         if let Ok(size) = terminal.size() {
-            let chrome = if ui_state.filter_mode || ui_state.has_active_filter() {
-                7
-            } else {
-                6
-            };
+            let chrome = if ui_state.is_filtering() { 7 } else { 6 };
             ui_state.visible_rows = (size.height as usize).saturating_sub(chrome);
         }
 

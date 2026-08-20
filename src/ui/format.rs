@@ -87,3 +87,58 @@ pub(super) fn truncate_with_ellipsis(s: &str, width: usize) -> String {
     out.push('…');
     out
 }
+
+/// Truncation to `max` chars that keeps the *end* of the string,
+/// prefixing "…" when cut. Like [`truncate_with_ellipsis`] it counts
+/// chars, not display cells, so a run of wide characters can still
+/// overflow a fixed-width column by a few cells.
+///
+/// The tail is the informative half of a filesystem path (the basename
+/// says what the binary is, the leading directories only say where it
+/// lives), so a path that has to lose characters loses them from the
+/// front.
+pub(super) fn ellipsize_left(s: &str, max: usize) -> String {
+    let len = s.chars().count();
+    if len <= max {
+        return s.to_string();
+    }
+    if max <= 1 {
+        return "…".to_string();
+    }
+    let tail: String = s.chars().skip(len - (max - 1)).collect();
+    format!("…{tail}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ellipsize_left;
+
+    #[test]
+    fn fitting_strings_are_returned_unchanged() {
+        assert_eq!(ellipsize_left("/usr/bin/curl", 13), "/usr/bin/curl");
+        assert_eq!(ellipsize_left("/usr/bin/curl", 40), "/usr/bin/curl");
+        assert_eq!(ellipsize_left("", 0), "");
+    }
+
+    #[test]
+    fn truncation_keeps_the_tail_and_fits_the_budget() {
+        let cut = ellipsize_left("/usr/libexec/ApplicationFirmwareUpdater", 10);
+        assert_eq!(cut, "…reUpdater");
+        assert_eq!(cut.chars().count(), 10);
+    }
+
+    #[test]
+    fn hopeless_budgets_collapse_to_the_ellipsis() {
+        assert_eq!(ellipsize_left("/usr/bin/curl", 1), "…");
+        assert_eq!(ellipsize_left("/usr/bin/curl", 0), "…");
+    }
+
+    #[test]
+    fn multibyte_input_is_cut_on_char_boundaries() {
+        // Counting bytes here would slice mid-codepoint and panic. The
+        // budget is in chars, so the wide-character result is 6 chars
+        // wide, not 6 cells.
+        assert_eq!(ellipsize_left("/日本語/データ/ファイル", 6), "…/ファイル");
+        assert_eq!(ellipsize_left("ααββγγ", 3), "…γγ");
+    }
+}

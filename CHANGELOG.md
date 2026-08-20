@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **Theme Contrast Warning**: config file color overrides that leave a
+  foreground/background pair below 3:1 contrast now print a startup warning.
+  The colors are never altered, and the built-in presets all pass (#XXX)
 - **New Theme Presets**: `--theme` gains `catppuccin-mocha`, `tokyo-night`,
   `gruvbox`, and `nord` truecolor themes with ANSI fallback (#XXX)
 - **Config File**: optional `~/.config/rustnet/config.toml` sets the theme and
@@ -197,6 +200,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Connection Table Cues**: the selected row now leads with an accent bar and
+  every row with a state-colored dot, and process names get a stable per-name
+  tint. Both glyphs still render under `NO_COLOR`, where the bar is the primary
+  selection cue (#XXX)
+- **Tab Bar Status Cues**: the tab row right-aligns the capture interface and
+  its link type, with a dot that turns red while capture is failing, and marks
+  Overview with a `•` while a filter is active. The active filter query also
+  shows next to the connection count in the Connections title. The capture
+  cluster drops its link type, then itself, when the tab row gets tight (#XXX)
+- **Details Header Badges**: the Details header shows the connection state as a
+  colored pill plus chips for the current rates and RTT, dropping chips
+  right to left as the terminal narrows. Scrolled Details and Help panes dim the
+  line where the content continues, and long process paths now truncate from the
+  left so the binary name stays visible (#XXX)
+- **Loading Shimmer**: the loading screen text shimmers across the accent color
+  on truecolor terminals and stays static everywhere else (#XXX)
 - **TUI Restyle**: keycap-style status bar, realigned Help tab, and refined
   bar, scrollbar, and selection styling (#XXX)
 - **Details Tab Application Card Alignment**: every protocol's Application

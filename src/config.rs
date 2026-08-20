@@ -15,7 +15,9 @@
 //!
 //! Loading never fails: a missing file yields the defaults silently, and an
 //! unreadable or invalid file yields the defaults after a single stderr
-//! warning (emitted before the terminal enters raw mode).
+//! warning (emitted before the terminal enters raw mode). Overrides that
+//! leave text unreadable on its background are reported the same way by the
+//! contrast guard in `ui::theme`, which warns but never changes a color.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

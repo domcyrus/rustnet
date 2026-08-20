@@ -25,11 +25,11 @@ use crate::ui::{
         Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
         connection_row, render_row_table, select_columns, visible_window,
     },
-    format::format_bytes,
+    format::{format_bytes, truncate_with_ellipsis},
     section_header,
     state::ProcessGroupStats,
     theme, try_handle_connection_nav,
-    widgets::braille_graph,
+    widgets::{badge, braille_graph},
 };
 
 /// Overview tab — connection list + stats sidebar. Reads every
@@ -490,6 +490,10 @@ fn draw_connections_list(
     );
 }
 
+/// Longest filter query shown in the title chip; longer queries are cut
+/// with an ellipsis so the chip cannot crowd out the title itself.
+const FILTER_CHIP_MAX: usize = 20;
+
 /// Shared section title for the flat and grouped connection tables. The
 /// visual grammar stays consistent while aggregate mode names its view.
 fn connections_title<'a>(
@@ -513,6 +517,13 @@ fn connections_title<'a>(
             format!(" · {shown} {counter}"),
             theme::fg(theme::muted()),
         ));
+        // The query itself rides along as a chip, so what is being
+        // filtered on stays visible without reopening filter mode.
+        let query = ui_state.filter_query.trim();
+        if !query.is_empty() {
+            spans.push(Span::raw(" "));
+            spans.extend(badge::chip(&truncate_with_ellipsis(query, FILTER_CHIP_MAX)));
+        }
     }
 
     if ui_state.sort_column != SortColumn::CreatedAt {
@@ -1566,13 +1577,24 @@ mod tests {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
+        // The default (muted) theme has no selection tint, so the chip
+        // renders in its bracket form.
         assert_eq!(
             title_text(connections_title(&filtered, false, Some(7))),
-            " Live Connections · 7 shown"
+            " Live Connections · 7 shown [port:443]"
         );
         assert_eq!(
             title_text(connections_title(&filtered, true, Some(3))),
-            " Process Aggregate · 3 processes"
+            " Process Aggregate · 3 processes [port:443]"
+        );
+
+        let long = UIState {
+            filter_query: "process:some-very-long-daemon-name".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            title_text(connections_title(&long, false, Some(1))),
+            " Live Connections · 1 shown [process:some-very-l…]"
         );
 
         let whitespace = UIState {

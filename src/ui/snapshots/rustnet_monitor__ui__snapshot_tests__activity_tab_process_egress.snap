@@ -2,7 +2,7 @@
 source: src/ui/mod.rs
 expression: "render_activity(&app, ActivityDirection::Egress)"
 ---
- rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                                    
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                              ● eth0
 ─────────────────────────────────────━━━━━━━━━━───────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Traffic Pulse                                                                                                                                       
 TX now 2.88 MB/s   60s captured 5.85 MB / eth0 8.00 MB   73.1% observed                                                                               

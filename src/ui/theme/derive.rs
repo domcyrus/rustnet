@@ -71,6 +71,13 @@ pub struct Theme {
     pub(super) special_ramp: [(u8, u8, u8); 5],
     pub(super) muted_ramp: [(u8, u8, u8); 5],
     pub(super) expiry_ramp: [(u8, u8, u8); 5],
+
+    /// 3-stop accent shimmer for the loading screen; `None` (static accent)
+    /// unless the preset and the terminal both do truecolor.
+    pub(super) shimmer_ramp: Option<[(u8, u8, u8); 3]>,
+    /// Hue wheel for per-identity tints; `None` disables them (ANSI
+    /// terminal, or the classic preset, which keeps its historic look).
+    pub(super) identity_hues: Option<&'static [u16]>,
 }
 
 impl Theme {
@@ -106,7 +113,7 @@ impl Theme {
         let text = color(spec.text);
         let classic = spec.classic;
 
-        Theme {
+        let theme = Theme {
             classic,
             accent,
             ok,
@@ -153,7 +160,23 @@ impl Theme {
             special_ramp: signal_ramp(seed(spec.special)),
             muted_ramp: signal_ramp(seed(spec.muted)),
             expiry_ramp: expiry_ramp(seed(spec.warn), seed(spec.err)),
+            shimmer_ramp: truecolor.then(|| shimmer_ramp(seed(spec.accent))),
+            // Identity tints synthesize RGB directly, so they need a
+            // truecolor terminal but not a truecolor preset. Classic opts
+            // out: its per-field palette is pinned to the historic look.
+            identity_hues: (terminal_truecolor && !classic && !spec.identity_hues.is_empty())
+                .then_some(spec.identity_hues),
+        };
+
+        // NO_COLOR strips every color before it reaches the terminal, so
+        // there is nothing left to be unreadable: stay quiet there.
+        let no_color = crate::ui::NO_COLOR.load(crate::ui::Ordering::Relaxed);
+        if spec.has_overrides() && !no_color {
+            for warning in contrast_warnings(&theme) {
+                eprintln!("rustnet: {warning}");
+            }
         }
+        theme
     }
 }
 
@@ -249,6 +272,16 @@ pub(super) fn expiry_ramp(warn_seed: (u8, u8, u8), err_seed: (u8, u8, u8)) -> [(
     stops
 }
 
+/// Midpoint between two colors, one channel at a time. Used by the edge
+/// fade to pull a foreground halfway toward the faint tier.
+pub(super) fn blend_half(a: (u8, u8, u8), b: (u8, u8, u8)) -> (u8, u8, u8) {
+    (
+        lerp_channel(a.0, b.0, 0.5),
+        lerp_channel(a.1, b.1, 0.5),
+        lerp_channel(a.2, b.2, 0.5),
+    )
+}
+
 pub(super) fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
     (a as f64 + (b as f64 - a as f64) * t).round() as u8
 }
@@ -257,6 +290,137 @@ pub(super) fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
 pub(super) fn five_stop(stops: &[(u8, u8, u8); 5], t: f64) -> Color {
     let seg = t.clamp(0.0, 1.0) * 4.0;
     let i = (seg as usize).min(3);
+    let local = seg - i as f64;
+    let (a, b) = (stops[i], stops[i + 1]);
+    Color::Rgb(
+        lerp_channel(a.0, b.0, local),
+        lerp_channel(a.1, b.1, local),
+        lerp_channel(a.2, b.2, local),
+    )
+}
+
+// --- Contrast (WCAG) ---
+
+/// Relative luminance of an sRGB color, per the WCAG 2.x definition.
+pub(super) fn relative_luminance(r: u8, g: u8, b: u8) -> f64 {
+    fn linear(channel: u8) -> f64 {
+        let c = f64::from(channel) / 255.0;
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+}
+
+/// WCAG contrast ratio between two colors, in `[1.0, 21.0]`. Order does
+/// not matter.
+pub(super) fn contrast_ratio(a: (u8, u8, u8), b: (u8, u8, u8)) -> f64 {
+    let la = relative_luminance(a.0, a.1, a.2);
+    let lb = relative_luminance(b.0, b.1, b.2);
+    let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+    (hi + 0.05) / (lo + 0.05)
+}
+
+/// Foreground candidates for [`super::on_color`]: near-black on light
+/// backgrounds, near-white on dark ones (pure black/white read as harsh
+/// next to the rest of the chrome).
+pub(super) const ON_COLOR_DARK: (u8, u8, u8) = (26, 26, 26);
+pub(super) const ON_COLOR_LIGHT: (u8, u8, u8) = (240, 240, 240);
+
+/// Minimum fg/bg contrast the guard accepts: WCAG AA for large or bold
+/// text, which is what every checked pair renders.
+const MIN_CONTRAST: f64 = 3.0;
+
+/// Reference RGB for a resolved color: itself when truecolor, the ANSI
+/// reference otherwise, `None` for `Color::Reset` (the terminal's own
+/// foreground, which we cannot know).
+fn reference_rgb(color: Color) -> Option<(u8, u8, u8)> {
+    match color {
+        Color::Rgb(r, g, b) => Some((r, g, b)),
+        other => ansi_seed(other),
+    }
+}
+
+/// Warnings for fg/bg pairs a user override pushed below [`MIN_CONTRAST`],
+/// one line per failing pair, ready for stderr. Nothing is altered: the
+/// user's colors win, they just get told.
+///
+/// Only pairs whose text must stay readable are checked. The `label` tier
+/// is deliberately dim (several built-ins sit below 3:1 on the status
+/// band by design) and badge foregrounds are auto-picked by
+/// [`super::on_color`], so neither needs a guard. ANSI colors are compared
+/// via their reference palette RGB, which is an approximation of what the
+/// terminal actually paints.
+pub(super) fn contrast_warnings(theme: &Theme) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut check = |fg_name: &str, fg: Option<Color>, bg_name: &str, bg: Option<Color>| {
+        let (Some(fg), Some(bg)) = (fg, bg) else {
+            return;
+        };
+        let (Some(fg_rgb), Some(bg_rgb)) = (reference_rgb(fg), reference_rgb(bg)) else {
+            return;
+        };
+        let ratio = contrast_ratio(fg_rgb, bg_rgb);
+        if ratio < MIN_CONTRAST {
+            warnings.push(format!(
+                "theme contrast: {fg_name} on {bg_name} is {ratio:.1}:1, below {MIN_CONTRAST:.1}:1; text may be hard to read"
+            ));
+        }
+    };
+    // The selection band, which the filter chip also renders on.
+    check(
+        "selection_fg",
+        theme.selection_fg,
+        "selection_bg",
+        theme.selection_bg,
+    );
+    // The status bar: keycaps carry its text.
+    check("key", Some(theme.key), "status_bg", theme.status_bg);
+    warnings
+}
+
+// --- Identity tints ---
+
+const IDENTITY_SATURATION: f64 = 0.45;
+const IDENTITY_LIGHTNESS: f64 = 0.68;
+
+/// FNV-1a over the name's bytes: a stable, dependency-free hash, so the
+/// same process name keeps the same tint across runs and machines.
+fn fnv1a(name: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in name.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Tint for `name`: its hash picks a hue from `hues`, which is then
+/// synthesized at a fixed pastel saturation and lightness so every
+/// identity color carries the same weight. `hues` must be non-empty.
+pub(super) fn identity_rgb(hues: &[u16], name: &str) -> (u8, u8, u8) {
+    debug_assert!(!hues.is_empty(), "identity hue list must be non-empty");
+    let hue = hues[(fnv1a(name) % hues.len() as u64) as usize];
+    hsl_to_rgb(f64::from(hue), IDENTITY_SATURATION, IDENTITY_LIGHTNESS)
+}
+
+/// Shimmer ramp: the accent walking up to 24% lighter in three steps.
+/// Stop 0 is the seed exactly, so a shimmer at rest is the accent color.
+pub(super) fn shimmer_ramp(seed: (u8, u8, u8)) -> [(u8, u8, u8); 3] {
+    let (h, s, l) = rgb_to_hsl(seed);
+    [
+        seed,
+        hsl_to_rgb(h, s, (l + 0.12).clamp(0.0, 0.95)),
+        hsl_to_rgb(h, s, (l + 0.24).clamp(0.0, 0.95)),
+    ]
+}
+
+/// Walk a 3-stop color ramp at `t` ∈ [0, 1] (2 linear segments).
+pub(super) fn three_stop(stops: &[(u8, u8, u8); 3], t: f64) -> Color {
+    let seg = t.clamp(0.0, 1.0) * 2.0;
+    let i = (seg as usize).min(1);
     let local = seg - i as f64;
     let (a, b) = (stops[i], stops[i + 1]);
     Color::Rgb(
@@ -364,6 +528,164 @@ mod tests {
         let theme = Theme::resolve(&ThemeSpec::builtin(ThemePreset::TokyoNight), true);
         assert_eq!(theme.accent, Color::Rgb(0x7A, 0xA2, 0xF7));
         assert_eq!(theme.selection_bg, Some(Color::Rgb(0x33, 0x46, 0x7C)));
+    }
+
+    #[test]
+    fn contrast_ratio_matches_wcag_extremes() {
+        let black = (0x00, 0x00, 0x00);
+        let white = (0xFF, 0xFF, 0xFF);
+        assert!((contrast_ratio(black, white) - 21.0).abs() < 1e-6);
+        assert!((contrast_ratio(white, black) - 21.0).abs() < 1e-6);
+        assert!((contrast_ratio(white, white) - 1.0).abs() < 1e-6);
+        // WCAG reference luminances.
+        assert!(relative_luminance(0, 0, 0).abs() < 1e-9);
+        assert!((relative_luminance(255, 255, 255) - 1.0).abs() < 1e-9);
+        assert!(relative_luminance(0, 255, 0) > relative_luminance(0, 0, 255));
+    }
+
+    #[test]
+    fn blend_half_is_the_channel_midpoint() {
+        assert_eq!(
+            blend_half((0x00, 0x10, 0xFF), (0x40, 0x20, 0xFF)),
+            (0x20, 0x18, 0xFF)
+        );
+    }
+
+    #[test]
+    fn shimmer_ramp_starts_at_the_seed_and_brightens() {
+        let seed = (0x08, 0x91, 0xB2);
+        let ramp = shimmer_ramp(seed);
+        assert_eq!(ramp[0], seed);
+        let lightness = ramp.map(|stop| rgb_to_hsl(stop).2);
+        assert!(lightness[1] > lightness[0], "{ramp:?}");
+        assert!(lightness[2] > lightness[1], "{ramp:?}");
+        // Endpoints land exactly on their stops, midpoint interpolates.
+        assert_eq!(three_stop(&ramp, 0.0), Color::Rgb(seed.0, seed.1, seed.2));
+        assert_eq!(
+            three_stop(&ramp, 1.0),
+            Color::Rgb(ramp[2].0, ramp[2].1, ramp[2].2)
+        );
+        assert_eq!(
+            three_stop(&ramp, 0.5),
+            Color::Rgb(ramp[1].0, ramp[1].1, ramp[1].2)
+        );
+    }
+
+    #[test]
+    fn shimmer_ramp_is_absent_without_truecolor() {
+        assert!(
+            Theme::resolve(&ThemeSpec::builtin(ThemePreset::TokyoNight), true)
+                .shimmer_ramp
+                .is_some()
+        );
+        assert!(
+            Theme::resolve(&ThemeSpec::builtin(ThemePreset::TokyoNight), false)
+                .shimmer_ramp
+                .is_none()
+        );
+        // Muted is an ANSI preset: static accent even on a truecolor term.
+        assert!(
+            Theme::resolve(&ThemeSpec::builtin(ThemePreset::Muted), true)
+                .shimmer_ramp
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn identity_rgb_is_stable_per_name_and_spreads_across_hues() {
+        let hues = super::super::definitions::IDENTITY_HUES;
+        assert_eq!(identity_rgb(hues, "firefox"), identity_rgb(hues, "firefox"));
+        assert_ne!(identity_rgb(hues, "firefox"), identity_rgb(hues, "curl"));
+
+        let names = [
+            "firefox", "chrome", "curl", "ssh", "sshd", "systemd", "dockerd", "postgres", "redis",
+            "nginx", "code", "slack", "spotify", "zoom",
+        ];
+        let distinct: std::collections::BTreeSet<_> =
+            names.iter().map(|n| identity_rgb(hues, n)).collect();
+        assert!(
+            distinct.len() >= names.len() * 2 / 3,
+            "identity hues clustered: {distinct:?}"
+        );
+    }
+
+    #[test]
+    fn identity_hues_are_gated_by_terminal_and_preset() {
+        // Truecolor terminal: available on every preset but classic, the
+        // ANSI muted preset included.
+        for preset in [ThemePreset::Muted, ThemePreset::Nord] {
+            assert!(
+                Theme::resolve(&ThemeSpec::builtin(preset), true)
+                    .identity_hues
+                    .is_some(),
+                "{preset:?}"
+            );
+        }
+        assert!(
+            Theme::resolve(&ThemeSpec::builtin(ThemePreset::Classic), true)
+                .identity_hues
+                .is_none()
+        );
+        // No truecolor: no synthesized hues anywhere.
+        for preset in ThemePreset::ALL {
+            assert!(
+                Theme::resolve(&ThemeSpec::builtin(preset), false)
+                    .identity_hues
+                    .is_none(),
+                "{preset:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn built_in_presets_pass_the_contrast_guard() {
+        for preset in ThemePreset::ALL {
+            for truecolor in [false, true] {
+                let theme = Theme::resolve(&ThemeSpec::builtin(preset), truecolor);
+                assert!(
+                    contrast_warnings(&theme).is_empty(),
+                    "{preset:?} (truecolor={truecolor}): {:?}",
+                    contrast_warnings(&theme)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn low_contrast_overrides_are_reported() {
+        let mut spec = ThemeSpec::builtin(ThemePreset::TokyoNight);
+        spec.set_token("selection_bg", "#33467c").unwrap();
+        spec.set_token("selection_fg", "#3b4261").unwrap();
+        spec.set_token("status_bg", "#292e42").unwrap();
+        spec.set_token("key", "#2b3350").unwrap();
+        assert!(spec.has_overrides());
+
+        let warnings = contrast_warnings(&Theme::resolve(&spec, true));
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings[0].contains("selection_fg on selection_bg"),
+            "{warnings:?}"
+        );
+        assert!(warnings[1].contains("key on status_bg"), "{warnings:?}");
+
+        // A readable override pair says nothing, and the colors are never
+        // altered either way.
+        let mut spec = ThemeSpec::builtin(ThemePreset::TokyoNight);
+        spec.set_token("selection_bg", "#1a1b26").unwrap();
+        spec.set_token("selection_fg", "#c0caf5").unwrap();
+        let theme = Theme::resolve(&spec, true);
+        assert!(contrast_warnings(&theme).is_empty());
+        assert_eq!(theme.selection_fg, Some(Color::Rgb(0xC0, 0xCA, 0xF5)));
+    }
+
+    #[test]
+    fn built_in_presets_have_no_overrides() {
+        for preset in ThemePreset::ALL {
+            assert!(!ThemeSpec::builtin(preset).has_overrides(), "{preset:?}");
+        }
+        let mut spec = ThemeSpec::builtin(ThemePreset::Muted);
+        spec.set_token("faint", "darkgray").unwrap();
+        assert!(spec.has_overrides());
     }
 
     #[test]

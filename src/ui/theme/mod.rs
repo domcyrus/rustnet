@@ -17,7 +17,7 @@ mod derive;
 pub use definitions::{ThemePreset, ThemeSpec, TokenColor, detect_truecolor};
 pub use derive::Theme;
 
-use derive::five_stop;
+use derive::{ON_COLOR_DARK, ON_COLOR_LIGHT, five_stop, three_stop};
 
 /// The resolved theme in effect. Set once at startup; reads are lock-free
 /// after first use and default to the muted preset (snapshot tests never
@@ -145,6 +145,17 @@ pub(super) fn muted_wave(t: f64) -> Color {
 /// Warn-to-err glow for connections nearing their removal timeout.
 pub(super) fn expiry_glow(t: f64) -> Color {
     five_stop(&active().expiry_ramp, t)
+}
+
+/// Accent shimmer at phase `t` (0 = the accent itself, 1 = its lightest
+/// step): a 3-stop lightness walk for animated text. Themes and terminals
+/// without truecolor get the plain accent color, so the animation
+/// gracefully becomes a static one.
+pub(super) fn shimmer_wave(t: f64) -> Color {
+    match &active().shimmer_ramp {
+        Some(ramp) => three_stop(ramp, t),
+        None => accent(),
+    }
 }
 
 /// Map connection staleness to the expiry glow. The row turns yellow at 75%
@@ -365,6 +376,63 @@ pub(super) fn bold_fg(color: Color) -> Style {
     }
 }
 
+/// Readable foreground for text drawn on `bg`, picking the near-black or
+/// near-white candidate with the better contrast. Non-RGB (ANSI)
+/// backgrounds return `Color::Black`: callers that cannot guarantee a
+/// readable pair on an ANSI terminal render their bracket fallback instead
+/// (see the badge widget). NO_COLOR returns `Color::Reset`.
+pub(super) fn on_color(bg: Color) -> Color {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return Color::Reset;
+    }
+    match bg {
+        Color::Rgb(r, g, b) => {
+            let bg = (r, g, b);
+            let (r, g, b) = if derive::contrast_ratio(bg, ON_COLOR_DARK)
+                >= derive::contrast_ratio(bg, ON_COLOR_LIGHT)
+            {
+                ON_COLOR_DARK
+            } else {
+                ON_COLOR_LIGHT
+            };
+            Color::Rgb(r, g, b)
+        }
+        _ => Color::Black,
+    }
+}
+
+/// Stable per-identity tint for a name (a process or application), so the
+/// same name keeps the same hue everywhere it appears. `None` means "no
+/// tint available": NO_COLOR, a terminal without truecolor, or the classic
+/// preset, whose palette stays as it always was. Callers keep their own
+/// style in that case.
+pub(super) fn identity_color(name: &str) -> Option<Color> {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return None;
+    }
+    let hues = active().identity_hues?;
+    let (r, g, b) = derive::identity_rgb(hues, name);
+    Some(Color::Rgb(r, g, b))
+}
+
+/// Fade a style toward the faint tier, marking a scroll boundary where
+/// content continues past the visible edge. Truecolor foregrounds blend
+/// halfway to the faint token; anything else (including a style with no
+/// foreground) is substituted with it outright. NO_COLOR returns the style
+/// untouched, since the fade is a color-only cue.
+pub(super) fn edge_fade(style: Style) -> Style {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return style;
+    }
+    match (style.fg, faint()) {
+        (Some(Color::Rgb(r, g, b)), Color::Rgb(fr, fg, fb)) => {
+            let (r, g, b) = derive::blend_half((r, g, b), (fr, fg, fb));
+            style.fg(Color::Rgb(r, g, b))
+        }
+        _ => style.fg(faint()),
+    }
+}
+
 /// Apply a foreground color with BOLD + UNDERLINED, respecting NO_COLOR.
 pub(super) fn bold_underline_fg(color: Color) -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
@@ -424,6 +492,60 @@ mod tests {
                 .add_modifier(Modifier::BOLD)
         );
         assert_eq!(key_hint_label(), Style::default().fg(Color::Gray));
+    }
+
+    #[test]
+    fn on_color_picks_the_readable_foreground() {
+        // Dark badge background: near-white text; light one: near-black.
+        assert_eq!(
+            on_color(Color::Rgb(0x33, 0x46, 0x7C)),
+            Color::Rgb(240, 240, 240)
+        );
+        assert_eq!(
+            on_color(Color::Rgb(0x00, 0x00, 0x00)),
+            Color::Rgb(240, 240, 240)
+        );
+        assert_eq!(
+            on_color(Color::Rgb(0xF9, 0xE2, 0xAF)),
+            Color::Rgb(26, 26, 26)
+        );
+        assert_eq!(
+            on_color(Color::Rgb(0xFF, 0xFF, 0xFF)),
+            Color::Rgb(26, 26, 26)
+        );
+        // ANSI backgrounds cannot be measured; callers render their
+        // bracket fallback instead of a filled badge.
+        assert_eq!(on_color(Color::Green), Color::Black);
+        assert_eq!(on_color(Color::Reset), Color::Black);
+    }
+
+    #[test]
+    fn shimmer_wave_is_static_accent_without_truecolor() {
+        // The default (muted, ANSI) theme has no shimmer ramp.
+        for t in [0.0, 0.25, 0.5, 1.0] {
+            assert_eq!(shimmer_wave(t), accent());
+        }
+    }
+
+    #[test]
+    fn identity_color_is_absent_without_truecolor() {
+        // The default theme resolves against a non-truecolor terminal.
+        assert_eq!(identity_color("firefox"), None);
+    }
+
+    #[test]
+    fn edge_fade_substitutes_faint_for_ansi_foregrounds() {
+        let style = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        let faded = edge_fade(style);
+        assert_eq!(faded.fg, Some(faint()));
+        assert_eq!(faded.add_modifier, Modifier::BOLD);
+        // A style with no foreground still picks up the faint tier.
+        assert_eq!(edge_fade(Style::default()).fg, Some(faint()));
+        // Backgrounds are untouched: only the text fades.
+        let banded = edge_fade(Style::default().bg(Color::Blue));
+        assert_eq!(banded.bg, Some(Color::Blue));
     }
 
     #[test]

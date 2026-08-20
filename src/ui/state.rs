@@ -426,6 +426,13 @@ impl UIState {
         !self.filter_query.trim().is_empty()
     }
 
+    /// Whether the connection list is being narrowed right now: a
+    /// persisted query, or one currently being typed. Drives the
+    /// Overview tab's activity dot in the tab bar.
+    pub fn is_filtering(&self) -> bool {
+        self.filter_mode || self.has_active_filter()
+    }
+
     /// Set the selected connection key, resetting the Details pane
     /// scroll when the selection actually changes so a newly selected
     /// record always starts at the top.
@@ -1067,6 +1074,32 @@ mod tests {
         assert!(!ui.filter_mode);
         assert!(ui.filter_query.is_empty());
         assert_eq!(ui.filter_cursor_position, 0);
+    }
+
+    #[test]
+    fn is_filtering_covers_both_typing_and_a_persisted_query() {
+        assert!(!UIState::default().is_filtering());
+
+        // Filter mode with an empty query still counts: the user is typing.
+        let typing = UIState {
+            filter_mode: true,
+            ..UIState::default()
+        };
+        assert!(typing.is_filtering());
+
+        // A persisted query counts after filter mode is left.
+        let persisted = UIState {
+            filter_query: "port:443".to_string(),
+            ..UIState::default()
+        };
+        assert!(persisted.is_filtering());
+
+        // Whitespace alone narrows nothing.
+        let blank = UIState {
+            filter_query: "   ".to_string(),
+            ..UIState::default()
+        };
+        assert!(!blank.is_filtering());
     }
 
     #[test]

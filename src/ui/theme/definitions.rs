@@ -100,7 +100,18 @@ pub struct ThemeSpec {
     pub selection_fg: Option<TokenColor>,
     /// Status bar background tint; `None` = REVERSED fallback.
     pub status_bg: Option<TokenColor>,
+    /// Hue wheel (degrees) for per-identity tints, indexed by a stable hash
+    /// of the identity's name (see `super::identity_color`). Not
+    /// overridable from the config file.
+    pub identity_hues: &'static [u16],
 }
+
+/// Default identity hue wheel: 16 well-separated hues walked in a
+/// scattered order, so adjacent hash buckets stay visually distinct. Every
+/// built-in shares this list; presets may curate their own later.
+pub(super) const IDENTITY_HUES: &[u16] = &[
+    220, 280, 170, 30, 330, 140, 200, 260, 50, 0, 185, 20, 235, 295, 155, 340,
+];
 
 /// Valid `set_token` keys, matching the `ThemeSpec` token field names.
 const TOKEN_NAMES: [&str; 20] = [
@@ -136,6 +147,37 @@ impl ThemeSpec {
             ThemePreset::Gruvbox => gruvbox(),
             ThemePreset::Nord => nord(),
         }
+    }
+
+    /// Whether any token carries a user config override (see
+    /// [`TokenColor::exact`]). Gates the contrast guard, which only has
+    /// something to say about hand-picked colors.
+    pub(super) fn has_overrides(&self) -> bool {
+        let required = [
+            self.accent,
+            self.ok,
+            self.warn,
+            self.err,
+            self.info,
+            self.special,
+            self.muted,
+            self.faint,
+            self.text,
+            self.heading,
+            self.label,
+            self.key,
+            self.border,
+            self.rx,
+            self.tx,
+        ];
+        let optional = [
+            self.rx_wave,
+            self.tx_wave,
+            self.selection_bg,
+            self.selection_fg,
+            self.status_bg,
+        ];
+        required.iter().any(|t| t.exact) || optional.iter().flatten().any(|t| t.exact)
     }
 
     /// Apply one config override. `token` is a snake_case key (the field
@@ -351,6 +393,7 @@ fn muted_or_classic(classic: bool) -> ThemeSpec {
         selection_bg: None,
         selection_fg: None,
         status_bg: None,
+        identity_hues: IDENTITY_HUES,
     }
 }
 
@@ -378,6 +421,7 @@ fn catppuccin_mocha() -> ThemeSpec {
         selection_bg: Some(rgb(0x45475A, Color::DarkGray)),
         selection_fg: None,
         status_bg: Some(rgb(0x313244, Color::DarkGray)),
+        identity_hues: IDENTITY_HUES,
     }
 }
 
@@ -405,6 +449,7 @@ fn tokyo_night() -> ThemeSpec {
         selection_bg: Some(rgb(0x33467C, Color::DarkGray)),
         selection_fg: None,
         status_bg: Some(rgb(0x292E42, Color::DarkGray)),
+        identity_hues: IDENTITY_HUES,
     }
 }
 
@@ -436,6 +481,7 @@ fn gruvbox() -> ThemeSpec {
         selection_bg: Some(rgb(0x504945, Color::DarkGray)),
         selection_fg: None,
         status_bg: Some(rgb(0x3C3836, Color::DarkGray)),
+        identity_hues: IDENTITY_HUES,
     }
 }
 
@@ -463,6 +509,7 @@ fn nord() -> ThemeSpec {
         selection_bg: Some(rgb(0x434C5E, Color::DarkGray)),
         selection_fg: None,
         status_bg: Some(rgb(0x3B4252, Color::DarkGray)),
+        identity_hues: IDENTITY_HUES,
     }
 }
 
@@ -523,6 +570,19 @@ mod tests {
         }
         // "reset" stays valid for foreground tokens.
         assert!(spec.set_token("text", "reset").is_ok());
+    }
+
+    #[test]
+    fn every_token_name_is_seen_by_has_overrides() {
+        // The contrast guard only runs on overridden specs, so a token
+        // that set_token accepts but has_overrides cannot see would
+        // silently opt out of it.
+        for token in TOKEN_NAMES {
+            let mut spec = ThemeSpec::builtin(ThemePreset::Muted);
+            assert!(!spec.has_overrides(), "{token}");
+            spec.set_token(token, "#3b4261").unwrap();
+            assert!(spec.has_overrides(), "{token}");
+        }
     }
 
     #[test]

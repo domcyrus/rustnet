@@ -12,7 +12,7 @@ use ratatui::{
 };
 
 use crate::app::App;
-use crate::network::process_activity::{ProcessActivity, ProcessActivitySnapshot};
+use crate::network::process_activity::{ProcessActivity, ProcessActivitySnapshot, ProcessIdentity};
 use crate::ui::{
     ActivityDirection, ActivitySort, ClickableRegions, Component, ComponentContext, Effect,
     HandlerContext, UIState,
@@ -530,6 +530,7 @@ fn draw_process_table(
     let wide = inner.width >= 132;
     let medium = inner.width >= 90;
     let pulse_width = if wide { 14 } else { 10 };
+    let name_width = if wide { 24 } else { 20 };
 
     let rows: Vec<Row> = processes
         .into_iter()
@@ -540,7 +541,12 @@ fn draw_process_table(
             } else {
                 retained_share(&process, traffic_direction) / 100.0
             };
-            let mut cells = vec![Cell::from(process.identity.display_name())];
+            let name = truncate_with_ellipsis(&process.identity.display_name(), name_width);
+            let name_cell = match process_tint(&process.identity) {
+                Some(style) => Cell::from(name).style(style),
+                None => Cell::from(name),
+            };
+            let mut cells = vec![name_cell];
             if medium {
                 cells.push(Cell::from(Line::from(glow_bar::spans(
                     pulse_fraction,
@@ -618,7 +624,7 @@ fn draw_process_table(
         .collect();
 
     let mut headers = vec![Cell::from("Process")];
-    let mut constraints = vec![Constraint::Length(if wide { 24 } else { 20 })];
+    let mut constraints = vec![Constraint::Length(name_width as u16)];
     if medium {
         headers.push(Cell::from("Pulse"));
         constraints.push(Constraint::Length(pulse_width as u16));
@@ -666,6 +672,19 @@ fn right_cell(value: String) -> Cell<'static> {
     Cell::from(Line::from(value).right_aligned())
 }
 
+/// Stable per-process tint for a process name, so the same process keeps
+/// the same hue wherever it appears. `None` keeps the caller's own style:
+/// the theme withholds a tint on NO_COLOR, non-truecolor terminals, and
+/// the classic preset, and unattributed rows keep their warning color so
+/// the "could not be mapped" cue is never painted over.
+fn process_tint(identity: &ProcessIdentity) -> Option<Style> {
+    identity
+        .attributed
+        .then(|| theme::identity_color(&identity.name))
+        .flatten()
+        .map(theme::fg)
+}
+
 fn draw_traffic_share(
     f: &mut Frame,
     snapshot: &ProcessActivitySnapshot,
@@ -703,7 +722,8 @@ fn draw_traffic_share(
             let name = truncate_with_ellipsis(&process.identity.display_name(), name_width);
             let mut spans = vec![Span::styled(
                 format!("{name:<name_width$} "),
-                theme::fg(theme::field_process()),
+                process_tint(&process.identity)
+                    .unwrap_or_else(|| theme::fg(theme::field_process())),
             )];
             spans.extend(glow_bar::spans(
                 window_share(&process, direction) / 100.0,
@@ -884,6 +904,23 @@ mod tests {
     fn truncation_uses_single_cell_ellipsis() {
         assert_eq!(truncate_with_ellipsis("agent-helper", 6), "agent…");
         assert_eq!(truncate_with_ellipsis("short", 6), "short");
+    }
+
+    #[test]
+    fn unattributed_processes_keep_their_warning_style() {
+        let mut identity = ProcessIdentity {
+            pid: Some(42),
+            name: "firefox".to_string(),
+            attributed: false,
+        };
+        assert_eq!(process_tint(&identity), None);
+        // Attributed names only get a tint where the theme offers one, so
+        // the tint must equal the theme's answer for the same name.
+        identity.attributed = true;
+        assert_eq!(
+            process_tint(&identity),
+            theme::identity_color("firefox").map(theme::fg)
+        );
     }
 
     #[test]
