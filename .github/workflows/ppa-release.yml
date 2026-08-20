@@ -18,7 +18,6 @@ on:
         options:
           - jammy # 22.04 LTS (also Linux Mint 21.x, Pop!_OS 22.04)
           - noble # 24.04 LTS (also Linux Mint 22.x)
-          - questing # 25.10
           - resolute # 26.04 LTS
       tarball_suffix:
         description: 'Tarball suffix (e.g., ds1, ds2) - leave empty for new releases'
@@ -46,8 +45,8 @@ jobs:
             echo 'releases=["${{ inputs.ubuntu_release }}"]' >> $GITHUB_OUTPUT
             echo "Dispatch: building only ${{ inputs.ubuntu_release }}"
           else
-            echo 'releases=["jammy","noble","questing","resolute"]' >> $GITHUB_OUTPUT
-            echo "Auto: building jammy, noble, questing and resolute"
+            echo 'releases=["jammy","noble","resolute"]' >> $GITHUB_OUTPUT
+            echo "Auto: building jammy, noble and resolute"
           fi
 
   build-and-upload:
@@ -136,7 +135,6 @@ jobs:
           case "${{ matrix.ubuntu_release }}" in
             jammy) RUST_VERSION=1.89 ;;
             noble) RUST_VERSION=1.89 ;;
-            questing) RUST_VERSION=1.88 ;;
             resolute) RUST_VERSION=1.91 ;;
             *) echo "::error::Unknown release ${{ matrix.ubuntu_release }} - add it to the case statement"; exit 1 ;;
           esac

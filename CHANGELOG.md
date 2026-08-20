@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **Ubuntu 25.10 (Questing) PPA**: the series reached end of life and
+  Launchpad rejects new uploads for it, so the PPA build matrix and install
+  docs drop it. Already-published questing packages stay in the PPA archive
+
 ## [1.6.0] - 2026-08-20
 
 ### Added

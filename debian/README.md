@@ -15,10 +15,9 @@ This automatically builds and uploads source packages for all supported Ubuntu s
 
 - Ubuntu 22.04 LTS (Jammy Jellyfish)
 - Ubuntu 24.04 LTS (Noble Numbat)
-- Ubuntu 25.10 (Questing Quokka)
 - Ubuntu 26.04 LTS (Resolute Raccoon)
 
-Each series ships versioned `rustc`/`cargo` packages satisfying the Rust 1.88 minimum required for the let-chains feature used by the project (see `rust-version` in `Cargo.toml`). The workflow pins the toolchain per series (Jammy: 1.89, Noble: 1.89, Questing: 1.88, Resolute: 1.91).
+Each series ships versioned `rustc`/`cargo` packages satisfying the Rust 1.88 minimum required for the let-chains feature used by the project (see `rust-version` in `Cargo.toml`). The workflow pins the toolchain per series (Jammy: 1.89, Noble: 1.89, Resolute: 1.91).
 
 ## GitHub Secrets Setup
 
@@ -56,7 +55,7 @@ sudo apt install rustnet
 - **Binary**: rustnet
 - **Maintainer**: Marco Cadetg <cadetg@gmail.com>
 - **PPA**: https://launchpad.net/~domcyrus/+archive/ubuntu/rustnet
-- **Supported**: Ubuntu 22.04 LTS (Jammy), 24.04 LTS (Noble), 25.10 (Questing) and 26.04 LTS (Resolute)
+- **Supported**: Ubuntu 22.04 LTS (Jammy), 24.04 LTS (Noble) and 26.04 LTS (Resolute)
 - **Architectures**: amd64, arm64, armhf
 
 ## Workflow

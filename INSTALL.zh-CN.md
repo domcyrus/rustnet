@@ -99,7 +99,6 @@ choco install rustnet
 
 - Ubuntu 22.04 LTS（Jammy Jellyfish）
 - Ubuntu 24.04 LTS（Noble Numbat）
-- Ubuntu 25.10（Questing Quokka）
 - Ubuntu 26.04 LTS（Resolute Raccoon）
 
 衍生发行版会将 PPA 注册到对应的 Ubuntu 基础系列，因此相同的命令同样适用：

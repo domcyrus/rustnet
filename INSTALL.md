@@ -99,7 +99,6 @@ The easiest way to install RustNet on Ubuntu and its derivatives is via the offi
 
 - Ubuntu 22.04 LTS (Jammy Jellyfish)
 - Ubuntu 24.04 LTS (Noble Numbat)
-- Ubuntu 25.10 (Questing Quokka)
 - Ubuntu 26.04 LTS (Resolute Raccoon)
 
 Derivatives register PPAs under their Ubuntu base series, so the same commands work there:
