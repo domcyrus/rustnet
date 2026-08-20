@@ -2,4 +2,4 @@
 source: src/ui/mod.rs
 expression: output
 ---
- / filter  a group  t history  i info  c copy                                                            h help  q quit
+ ↑↓ select  / filter  a group  t history  i info  c copy                                                 h help  q quit

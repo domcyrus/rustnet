@@ -27,4 +27,4 @@ expression: render_overview(true)
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- / filter  a group  t history  i info  c copy                                                                                h help  q quit
+ ↑↓ select  / filter  a group  t history  i info  c copy                                                                     h help  q quit

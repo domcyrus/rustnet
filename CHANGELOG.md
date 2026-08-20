@@ -210,9 +210,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so quit never falls off the edge; when the terminal is too narrow to spell
   the actions out, the labels go first and the keys stand alone. Tab
   navigation hints are gone, since the numbered tab bar already advertises
-  them, and the exhaustive keymap lives on the Help tab. Keys are bright
-  text on the terminal background rather than a reverse-video band, and
-  Details only offers `ctrl-d/u` when the record outgrows its pane (#XXX)
+  them, and the exhaustive keymap lives on the Help tab. Trailing actions
+  are dropped one at a time to keep the remaining labels readable, and only
+  a very narrow terminal falls back to bare keys. Keys are bright text on
+  the terminal background rather than a reverse-video band, and Details
+  only offers `ctrl-d/u` when the record outgrows its pane (#XXX)
 - **Filtering Is a Mode, Not Four Notices**: the filter input row now shows
   only while a query is being typed. Once confirmed it collapses, leaving the
   query chip in the Connections title and the activity dot on the Overview

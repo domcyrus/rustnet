@@ -32,6 +32,10 @@ const HINT_GAP: usize = 2;
 /// Minimum blank cells between the context actions and the global cluster,
 /// so the two groups never read as one run of hints.
 const CLUSTER_GAP: usize = 3;
+/// How many context actions must still fit with their labels spelled out
+/// before the bar gives up on labels entirely. Below this it is showing so
+/// few actions that a full row of bare keys carries more.
+const MIN_LABELED: usize = 3;
 
 /// Context actions for the active tab, most useful first. Tab navigation is
 /// deliberately absent: the numbered titles in the tab bar already advertise
@@ -47,6 +51,7 @@ fn context_hints(ui_state: &UIState) -> Vec<Hint> {
                 hints.push(("esc", "clear filter"));
             }
             hints.extend([
+                ("\u{2191}\u{2193}", "select"),
                 ("/", "filter"),
                 ("a", "group"),
                 ("t", "history"),
@@ -151,9 +156,10 @@ fn hint_line(context: &[Hint], width: u16) -> Line<'static> {
             used += needed;
             kept.push(*hint);
         }
-        // Labels are all or nothing: half a spelled-out row reads worse than
-        // the full row of bare keys the next pass builds.
-        if labels && kept.len() < context.len() {
+        // A labeled action says what it does, which is the whole point of the
+        // footer, so trailing actions are dropped to keep the labels. Only
+        // once too few survive is the row better off as bare keys.
+        if labels && kept.len() < context.len().min(MIN_LABELED) {
             continue;
         }
         let mut spans = vec![Span::raw(" ")];
@@ -280,7 +286,8 @@ mod tests {
     #[test]
     fn overview_spends_its_room_on_actions_visible_nowhere_else() {
         let hints = context_hints(&UIState::default());
-        assert_eq!(hints.first().map(|(key, _)| *key), Some("/"));
+        assert_eq!(hints.first().map(|(key, _)| *key), Some("\u{2191}\u{2193}"));
+        assert!(advertises(&hints, "/"));
         // Tab navigation is advertised by the numbered tab bar itself.
         assert!(!advertises(&hints, "1-5"));
         assert!(!advertises(&hints, "tab"));
@@ -325,6 +332,25 @@ mod tests {
         for (key, _) in &context {
             assert!(narrow.contains(key), "{key} dropped: {narrow:?}");
         }
+    }
+
+    #[test]
+    fn labels_survive_a_standard_terminal_by_dropping_trailing_actions() {
+        // 80 columns with a filter on is the tightest realistic case: the
+        // labels have to survive it, even if the last action does not.
+        let ui_state = UIState {
+            filter_query: "port:443".to_string(),
+            ..Default::default()
+        };
+        let context = context_hints(&ui_state);
+        let line = rendered(&hint_line(&context, 80));
+        assert!(line.contains("clear filter"), "{line:?}");
+        assert!(line.contains("select"), "{line:?}");
+        assert!(line.ends_with("q quit "), "{line:?}");
+        assert!(
+            !line.contains("copy"),
+            "the last action should have gone before the labels: {line:?}"
+        );
     }
 
     #[test]
