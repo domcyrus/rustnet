@@ -37,18 +37,18 @@ RustNet Monitor - Network Connection Monitor · ↑/↓ scroll                  
   Details   Full details for selected connection                                                   ▐
   Activity  Process egress/ingress, bandwidth shares, connections, and interface pulse             ▐
   Graph     Traffic charts and protocol distribution                                               ▐
-  Help      This help screen                                                                       │
-                                                                                                   │
-▎ Activity Concepts                                                                                │
-  Egress (TX) / Ingress (RX)  Traffic sent from or received by the local process                   │
-  60s coverage                Captured connection traffic divided by interface traffic             │
-  Retained                    Active traffic plus up to 5,000 recently closed connections          │
-  Process attribution         Traffic mapped to a PID or process name; unresolved bytes are        │
-Unknown                                                                                            │
-  Top remote peer             Highest-volume remote endpoint for the selected direction            │
-                                                                                                   │
-▎ Mouse Controls                                                                                   │
-  Click tab              Switch between tabs                                                       │
-  Click row              Select connection                                                         │
-  Scroll wheel           Navigate connection list / scroll Details, Activity interfaces, Help      │
-  Double-click row       Open connection details                                                   │
+  Help      This help screen                                                                        
+                                                                                                    
+▎ Activity Concepts                                                                                 
+  Egress (TX) / Ingress (RX)  Traffic sent from or received by the local process                    
+  60s coverage                Captured connection traffic divided by interface traffic              
+  Retained                    Active traffic plus up to 5,000 recently closed connections           
+  Process attribution         Traffic mapped to a PID or process name; unresolved bytes are         
+Unknown                                                                                             
+  Top remote peer             Highest-volume remote endpoint for the selected direction             
+                                                                                                    
+▎ Mouse Controls                                                                                    
+  Click tab              Switch between tabs                                                        
+  Click row              Select connection                                                          
+  Scroll wheel           Navigate connection list / scroll Details, Activity interfaces, Help       
+  Double-click row       Open connection details

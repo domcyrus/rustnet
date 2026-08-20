@@ -5,7 +5,6 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    symbols,
     widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
@@ -43,24 +42,22 @@ pub(in crate::ui) fn draw_scrollbar(
     let mut scrollbar_state = ScrollbarState::new(scroll_positions)
         .position(position)
         .viewport_content_length(viewport);
-    // A half-block thumb in the accent color on a light vertical track.
-    // The half block hugs the outer edge of its column, so the bar stays
-    // clear of the right-aligned data it sits beside, and the accent keeps
-    // it a deliberate cue rather than the slab of terminal-foreground that
-    // a full block in the text color renders as.
+    // A half-block thumb in the accent color, riding an unpainted track.
+    // The thumb alone carries both position and proportion, so the track
+    // rule only adds a second vertical line beside the pane chrome that
+    // already has one. The half block hugs the outer edge of its column,
+    // keeping the bar clear of the right-aligned data beside it.
     //
     // The thumb fg must be set explicitly, not left empty: ratatui styles
     // are patches, and an empty patch lets the thumb inherit whatever color
     // the underlying cells already have (on the Help tab the scrollbar
-    // rides the panel border, which is gray, and the thumb would blend into
-    // the track). Under NO_COLOR the distinct glyphs keep track and thumb
-    // legible on their own.
+    // rides the panel border, which is gray, and the thumb would vanish
+    // into it). Under NO_COLOR the glyph keeps it legible on its own.
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)
-        .track_symbol(Some(symbols::line::VERTICAL))
+        .track_symbol(None)
         .thumb_symbol(THUMB)
-        .track_style(theme::fg(theme::border()))
         .thumb_style(theme::fg(theme::accent()));
     f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }

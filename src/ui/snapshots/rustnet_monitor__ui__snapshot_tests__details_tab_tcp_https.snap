@@ -28,11 +28,11 @@ Local MAC             68:5e:dd:09:15:5e (Apple, Inc.)                 Live RTT  
 Remote Hostname       -                                               TCP Retransmits       0                                              ▐
 Attributed Name       -                                               Out-of-Order Packets  0                                              ▐
 Attributed Via        -                                               Duplicate ACKs        0                                              ▐
-Remote MAC            -                                               Fast Retransmits      0                                              │
-Country               -                                               Window Size           0                                              │
-City                  -                                                                                                                    │
-ASN                   -                                                                                                                    │
-                                                                                                                                           │
+Remote MAC            -                                               Fast Retransmits      0                                               
+Country               -                                               Window Size           0                                               
+City                  -                                                                                                                     
+ASN                   -                                                                                                                     
+                                                                                                                                            
                                                                                                                                             
 ▎ Traffic Statistics                                                                                                                        
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
