@@ -2,37 +2,37 @@
 source: src/ui/mod.rs
 expression: output
 ---
- rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                          
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                    ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Process                 Remote                    Local              Service    App                       State            RTT     Rx↓/Tx↑
+ Process                 Remote                    Local              Service    App                        State            RTT     Rx↓/Tx↑
                                                                                                                                             
-> proc (4242)             203.0.113.7:4433          192.168.1.10:50000 -          TCP·HTTP (example.com)    ESTABLISHED        -         -/-
+▌proc (4242)             203.0.113.7:4433          192.168.1.10:50000 -          TCP·HTTP (example.com)     ESTABLISHED        -         -/-
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-▎ proc → 203.0.113.7:4433 · click a field to copy                                                                                           
-Connection                                                            Application: HTTP                                                    █
-Protocol              TCP                                             HTTP Version          HTTP/1.1                                       █
-Status                Active (last seen <T> ago)                       HTTP Method           GET                                            █
-Local Address         192.168.1.10:50000                              HTTP Host             example.com                                    █
-Remote Address        203.0.113.7:4433                                HTTP Path             /index.html                                    █
-Scope                 DOCUMENTATION                                   HTTP Status           200                                            █
-State                 ESTABLISHED                                     User-Agent            curl/8.9.0                                     █
-Process               proc                                                                                                                 █
-PID                   4242                                                                                                                 █
-Service               -                                                                                                                    █
-                                                                                                                                           █
-Network Context                                                       Transport Health                                                     █
-Local Hostname        -                                               Initial RTT           -                                              █
-Local MAC             -                                               Live RTT              -                                              █
-Remote Hostname       -                                               TCP Retransmits       0                                              █
-Attributed Name       -                                               Out-of-Order Packets  0                                              █
-Attributed Via        -                                               Duplicate ACKs        0                                              █
-Remote MAC            -                                               Fast Retransmits      0                                              ║
-Country               -                                               Window Size           0                                              ║
-City                  -                                                                                                                    ║
-ASN                   -                                                                                                                    ║
-                                                                                                                                           ║
+▎ proc → 203.0.113.7:4433 [ESTABLISHED] · click a field to copy                                                                             
+Connection                                                            Application: HTTP                                                    ▐
+Protocol              TCP                                             HTTP Version          HTTP/1.1                                       ▐
+Status                Active (last seen <T> ago)                       HTTP Method           GET                                            ▐
+Local Address         192.168.1.10:50000                              HTTP Host             example.com                                    ▐
+Remote Address        203.0.113.7:4433                                HTTP Path             /index.html                                    ▐
+Scope                 DOCUMENTATION                                   HTTP Status           200                                            ▐
+State                 ESTABLISHED                                     User-Agent            curl/8.9.0                                     ▐
+Process               proc                                                                                                                 ▐
+PID                   4242                                                                                                                 ▐
+Service               -                                                                                                                    ▐
+                                                                                                                                           ▐
+Network Context                                                       Transport Health                                                     ▐
+Local Hostname        -                                               Initial RTT           -                                              ▐
+Local MAC             -                                               Live RTT              -                                              ▐
+Remote Hostname       -                                               TCP Retransmits       0                                              ▐
+Attributed Name       -                                               Out-of-Order Packets  0                                              ▐
+Attributed Via        -                                               Duplicate ACKs        0                                              ▐
+Remote MAC            -                                               Fast Retransmits      0                                               
+Country               -                                               Window Size           0                                               
+City                  -                                                                                                                     
+ASN                   -                                                                                                                     
+                                                                                                                                            
                                                                                                                                             
 ▎ Traffic Statistics                                                                                                                        
 ↓ RX -           →                                 peak           -   ↑ TX -           →                                 peak           -   
@@ -41,4 +41,4 @@ Total 0 B  ·  0 packets                                               Total 0 B
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
 ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  ⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀  
- 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | Ctrl-d/u scroll | 'c' copy remote addr | Esc back
+ j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back                                                                h help  q quit

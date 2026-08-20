@@ -216,11 +216,11 @@ pub(crate) fn dpi_color(app: &crate::network::types::ApplicationProtocol) -> Col
 
 /// Color for the Details Application heading of the non-DPI protocol classes
 /// (ARP, ICMP, IGMP), which have no `ApplicationProtocol` value to feed
-/// [`dpi_color`]. Mirrors its theme fallback: the classic preset colors the
+/// [`dpi_color`]. Mirrors its theme fallback: the vivid preset colors the
 /// heading like any other detected application, the muted preset renders it
 /// as plain content.
 pub(crate) fn non_dpi_app_color() -> Color {
-    if theme::is_classic() {
+    if theme::is_vivid() {
         theme::field_application()
     } else {
         Color::Reset
