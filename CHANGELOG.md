@@ -204,19 +204,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of its column instead of a full block in the terminal foreground, and the
   track rule is gone, so the bar reads as a cue rather than a second vertical
   line beside the data (#XXX)
-- **Status Bar Keycaps**: hint keys now sit on a raised chip so every key
-  carries the same weight (the arrow glyphs no longer read as thinner than
-  the letters), and the hint row drops the reverse-video band on themes
-  without a status background, so keys read as bright text on the terminal
-  background instead of solid blocks of color. Overview advertises `j/k` to
-  match Details (both tabs accept the arrows too), and Details only offers
-  `ctrl-d/u` when the record actually outgrows its pane (#XXX)
-- **Grouped View Indicator**: the expand/collapse triangle is now solid, so it
-  matches the weight of the row dots beside it (#XXX)
-- **Connection Table Cues**: the selected row now leads with an accent bar and
-  every row with a state-colored dot, and process names get a stable per-name
-  tint. Both glyphs still render under `NO_COLOR`, where the bar is the primary
-  selection cue (#XXX)
+- **Status Bar Rebuilt Around Priority**: the footer now shows the active
+  tab's context actions on the left and a fixed `h help  q quit` cluster
+  pinned right. The cluster is reserved before any context action is placed,
+  so quit never falls off the edge; when the terminal is too narrow to spell
+  the actions out, the labels go first and the keys stand alone. Tab
+  navigation hints are gone, since the numbered tab bar already advertises
+  them, and the exhaustive keymap lives on the Help tab. Keys are bright
+  text on the terminal background rather than a reverse-video band, and
+  Details only offers `ctrl-d/u` when the record outgrows its pane (#XXX)
+- **Filtering Is a Mode, Not Four Notices**: the filter input row now shows
+  only while a query is being typed. Once confirmed it collapses, leaving the
+  query chip in the Connections title and the activity dot on the Overview
+  tab, and the status bar returns to actions with `esc clear filter` first
+  (#XXX)
+- **Connection Table Cues**: the selected row now leads with an accent bar,
+  and process names get a stable per-name tint (#XXX)
 - **Tab Bar Status Cues**: the tab row right-aligns the capture interface and
   its link type, with a dot that turns red while capture is failing, and marks
   Overview with a `•` while a filter is active. The active filter query also

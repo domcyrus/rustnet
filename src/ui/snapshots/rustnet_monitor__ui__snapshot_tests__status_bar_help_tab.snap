@@ -2,4 +2,4 @@
 source: src/ui/mod.rs
 expression: output
 ---
-  h  help   1-5  tabs   tab  cycle   j/k  scroll   esc  back   q  quit
+ j/k scroll  esc back                                                                                    h help  q quit

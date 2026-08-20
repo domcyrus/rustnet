@@ -1,12 +1,15 @@
-//! Bottom status line: shows tab-specific keycap hints by default, or
-//! transient confirmation prompts ("press q again to quit"),
-//! filtered-count messages, clipboard feedback, and capture failures
-//! (which claim a second row when they do not fit on one).
+//! Bottom status line: the active tab's context actions on the left and a
+//! fixed global cluster (help, quit) pinned right, or transient
+//! confirmation prompts ("press q again to quit"), clipboard feedback, and
+//! capture failures (which claim a second row when they do not fit on one).
 //!
-//! Hints follow a keycap grammar: the key on a raised chip
-//! (`theme::key_cap()`), its label in `theme::status_hint_label()`, two
-//! spaces between hints. When the bar is too narrow, trailing hints are
-//! dropped whole; nothing wraps mid-hint.
+//! Hints follow a keycap grammar: the key in `theme::key_hint()`, its label
+//! in `theme::key_hint_label()`, two spaces between hints. The global
+//! cluster is reserved before any context action is placed, so `q quit`
+//! never falls off the right edge. When the terminal is too narrow to spell
+//! every action out, the labels go first and the keys stand alone; only
+//! then are context actions dropped from the end. The exhaustive keymap
+//! lives on the Help tab.
 
 use ratatui::{
     Frame,
@@ -20,86 +23,148 @@ use crate::ui::{UIState, theme};
 /// One keycap hint: the key as typed and the action it triggers.
 type Hint = (&'static str, &'static str);
 
-/// Hints shared by every tab, always listed first.
-const COMMON_HINTS: [Hint; 3] = [("h", "help"), ("1-5", "tabs"), ("tab", "cycle")];
+/// Pinned to the right edge on every tab, and the last thing dropped: the
+/// two keys worth knowing when nothing else makes sense.
+const GLOBAL_HINTS: [Hint; 2] = [("h", "help"), ("q", "quit")];
 
-/// Keycap hints per tab. Only Overview exposes connection-list shortcuts
-/// (select, filter, group, history, copy); other tabs show just what
-/// actually works there. Every tab ends on q quit.
-fn tab_hints(ui_state: &UIState) -> Vec<Hint> {
-    let mut hints = COMMON_HINTS.to_vec();
+/// Cells between two hints inside a group.
+const HINT_GAP: usize = 2;
+/// Minimum blank cells between the context actions and the global cluster,
+/// so the two groups never read as one run of hints.
+const CLUSTER_GAP: usize = 3;
+
+/// Context actions for the active tab, most useful first. Tab navigation is
+/// deliberately absent: the numbered titles in the tab bar already advertise
+/// it, and the footer's room is better spent on actions that appear nowhere
+/// else on screen.
+fn context_hints(ui_state: &UIState) -> Vec<Hint> {
     match ui_state.selected_tab {
         // Overview
-        0 => hints.extend([
-            ("j/k", "select"),
-            ("/", "filter"),
-            ("a", "group"),
-            ("t", "history"),
-            ("i", "info"),
-            ("c", "copy"),
-        ]),
+        0 => {
+            let mut hints = Vec::new();
+            // Clearing outranks everything else while a filter is on.
+            if ui_state.has_active_filter() {
+                hints.push(("esc", "clear filter"));
+            }
+            hints.extend([
+                ("/", "filter"),
+                ("a", "group"),
+                ("t", "history"),
+                ("i", "info"),
+                ("c", "copy"),
+            ]);
+            hints
+        }
         // Details
         1 => {
-            hints.push(("j/k", "prev/next"));
+            let mut hints = vec![("j/k", "prev/next")];
             // Ctrl+D/U only moves when the record outgrows its pane, so on a
             // tall terminal the hint would advertise a no-op.
             if ui_state.details_scroll.can_scroll() {
                 hints.push(("ctrl-d/u", "scroll"));
             }
             hints.extend([("c", "copy remote addr"), ("esc", "back")]);
+            hints
         }
         // Activity, interface list
-        2 if ui_state.activity_show_interfaces => hints.extend([
+        2 if ui_state.activity_show_interfaces => vec![
             ("j/k", "scroll"),
             ("i", "process activity"),
             ("esc", "back"),
-        ]),
+        ],
         // Activity
-        2 => hints.extend([
+        2 => vec![
             ("d", "tx/rx"),
             ("s", "sort"),
             ("S", "order"),
             ("i", "interfaces"),
             ("esc", "back"),
-        ]),
+        ],
         // Help
-        4 => hints.extend([("j/k", "scroll"), ("esc", "back")]),
+        4 => vec![("j/k", "scroll"), ("esc", "back")],
         // Graph
-        _ => hints.push(("esc", "back")),
+        _ => vec![("esc", "back")],
     }
-    hints.push(("q", "quit"));
-    hints
 }
 
-/// Lay hints out as spans: leading space, then keycap + label pairs with
-/// two-space gaps, then an optional trailing message. Anything that does
-/// not fit `width` is dropped whole from the end.
-fn hint_line(hints: &[Hint], trailing: Option<String>, width: u16) -> Line<'static> {
-    let width = width as usize;
-    let mut spans: Vec<Span<'static>> = vec![Span::raw(" ")];
-    let mut used = 1usize;
-    for (i, (key, label)) in hints.iter().enumerate() {
-        let gap = if i == 0 { 0 } else { 2 };
-        // Keycap chip (" key ") plus the single space before its label.
-        let needed = gap + key.chars().count() + 3 + label.chars().count();
-        if used + needed > width {
-            return Line::from(spans);
-        }
-        if gap > 0 {
-            spans.push(Span::raw("  "));
-        }
-        spans.push(Span::styled(format!(" {key} "), theme::key_cap()));
+/// Spans for one hint. Without `labels` the key stands alone, the fallback
+/// for a terminal too narrow to spell the action out.
+fn hint_spans(hint: Hint, labels: bool) -> Vec<Span<'static>> {
+    let (key, label) = hint;
+    let mut spans = vec![Span::styled(key, theme::key_hint())];
+    if labels {
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(*label, theme::status_hint_label()));
-        used += needed;
+        spans.push(Span::styled(label, theme::key_hint_label()));
     }
-    if let Some(message) = trailing
-        && used + 2 + message.chars().count() <= width
-    {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(message, theme::status_hint_label()));
+    spans
+}
+
+fn hint_width(hint: Hint, labels: bool) -> usize {
+    let (key, label) = hint;
+    let mut width = key.chars().count();
+    if labels {
+        width += 1 + label.chars().count();
     }
-    Line::from(spans)
+    width
+}
+
+/// Cells a run of hints occupies, gaps included.
+fn group_width(hints: &[Hint], labels: bool) -> usize {
+    hints
+        .iter()
+        .enumerate()
+        .map(|(i, hint)| {
+            let gap = if i == 0 { 0 } else { HINT_GAP };
+            gap + hint_width(*hint, labels)
+        })
+        .sum()
+}
+
+fn push_group(spans: &mut Vec<Span<'static>>, hints: &[Hint], labels: bool) {
+    for (i, hint) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" ".repeat(HINT_GAP)));
+        }
+        spans.extend(hint_spans(*hint, labels));
+    }
+}
+
+/// Lay the bar out: context actions from the left, the global cluster flush
+/// right. Tried once with every label spelled out, then with keys alone,
+/// dropping context actions from the end only when even that overflows.
+fn hint_line(context: &[Hint], width: u16) -> Line<'static> {
+    let width = width as usize;
+    for labels in [true, false] {
+        let global = group_width(&GLOBAL_HINTS, labels);
+        // One pad cell at each edge, plus the reserved global cluster.
+        let Some(room) = width.checked_sub(global + 2) else {
+            continue;
+        };
+        let mut kept: Vec<Hint> = Vec::new();
+        let mut used = 0usize;
+        for hint in context {
+            let gap = if kept.is_empty() { 0 } else { HINT_GAP };
+            let needed = gap + hint_width(*hint, labels);
+            if used + needed + CLUSTER_GAP > room {
+                break;
+            }
+            used += needed;
+            kept.push(*hint);
+        }
+        // Labels are all or nothing: half a spelled-out row reads worse than
+        // the full row of bare keys the next pass builds.
+        if labels && kept.len() < context.len() {
+            continue;
+        }
+        let mut spans = vec![Span::raw(" ")];
+        push_group(&mut spans, &kept, labels);
+        spans.push(Span::raw(" ".repeat(room - used)));
+        push_group(&mut spans, &GLOBAL_HINTS, labels);
+        spans.push(Span::raw(" "));
+        return Line::from(spans);
+    }
+    // Narrower than "h q": show the one key that always matters.
+    Line::from(hint_spans(GLOBAL_HINTS[1], false))
 }
 
 /// Actionable half of a capture-failure line.
@@ -156,7 +221,6 @@ fn capture_error_text(cause: &str, width: u16, height: u16) -> String {
 pub(in crate::ui) fn draw_status_bar(
     f: &mut Frame,
     ui_state: &UIState,
-    connection_count: usize,
     capture_error: Option<&str>,
     area: Rect,
 ) {
@@ -177,14 +241,8 @@ pub(in crate::ui) fn draw_status_bar(
     } else if let Some(error) = capture_error {
         Paragraph::new(capture_error_text(error, area.width, area.height))
             .style(theme::status_bar_error())
-    } else if ui_state.has_active_filter() {
-        let mut hints = COMMON_HINTS.to_vec();
-        hints.push(("esc", "clear filter"));
-        let message = format!("showing {connection_count} filtered connections");
-        Paragraph::new(hint_line(&hints, Some(message), area.width))
-            .style(theme::status_bar_default())
     } else {
-        Paragraph::new(hint_line(&tab_hints(ui_state), None, area.width))
+        Paragraph::new(hint_line(&context_hints(ui_state), area.width))
             .style(theme::status_bar_default())
     };
 
@@ -212,33 +270,66 @@ mod tests {
             selected_tab: 1,
             ..Default::default()
         };
-        assert!(!advertises(&tab_hints(&ui_state), "ctrl-d/u"));
+        assert!(!advertises(&context_hints(&ui_state), "ctrl-d/u"));
 
         // A render that reports headroom turns the hint on.
         ui_state.details_scroll.clamp_for_render(12);
-        assert!(advertises(&tab_hints(&ui_state), "ctrl-d/u"));
+        assert!(advertises(&context_hints(&ui_state), "ctrl-d/u"));
     }
 
     #[test]
-    fn overview_and_details_advertise_the_same_navigation_keys() {
-        let overview = tab_hints(&UIState::default());
-        let details = tab_hints(&UIState {
-            selected_tab: 1,
+    fn overview_spends_its_room_on_actions_visible_nowhere_else() {
+        let hints = context_hints(&UIState::default());
+        assert_eq!(hints.first().map(|(key, _)| *key), Some("/"));
+        // Tab navigation is advertised by the numbered tab bar itself.
+        assert!(!advertises(&hints, "1-5"));
+        assert!(!advertises(&hints, "tab"));
+    }
+
+    #[test]
+    fn clearing_outranks_every_other_overview_action() {
+        let ui_state = UIState {
+            filter_query: "port:443".to_string(),
             ..Default::default()
-        });
-        assert!(advertises(&overview, "j/k"));
-        assert!(advertises(&details, "j/k"));
+        };
+        assert_eq!(
+            context_hints(&ui_state).first(),
+            Some(&("esc", "clear filter"))
+        );
     }
 
     #[test]
-    fn keycaps_pad_the_key_and_keep_one_space_before_the_label() {
-        let line = hint_line(&[("h", "help"), ("q", "quit")], None, 80);
-        assert_eq!(rendered(&line), "  h  help   q  quit");
+    fn the_global_cluster_survives_every_width() {
+        let context = context_hints(&UIState::default());
+        for width in [200u16, 120, 80, 60, 40, 24, 12] {
+            let line = rendered(&hint_line(&context, width));
+            assert!(line.contains('q'), "quit dropped at {width}: {line:?}");
+            assert!(
+                line.chars().count() <= width as usize,
+                "overflowed {width}: {line:?}"
+            );
+        }
     }
 
     #[test]
-    fn a_hint_that_does_not_fit_is_dropped_whole() {
-        let line = hint_line(&[("h", "help"), ("q", "quit")], None, 10);
-        assert_eq!(rendered(&line), "  h  help");
+    fn labels_are_dropped_before_context_actions_are() {
+        let context = context_hints(&UIState::default());
+        // Wide enough to spell every action out.
+        let wide = rendered(&hint_line(&context, 120));
+        assert!(wide.contains("filter"), "{wide:?}");
+        assert!(wide.contains("quit"), "{wide:?}");
+
+        // Too narrow for labels, yet every key is still there.
+        let narrow = rendered(&hint_line(&context, 40));
+        assert!(!narrow.contains("filter"), "{narrow:?}");
+        for (key, _) in &context {
+            assert!(narrow.contains(key), "{key} dropped: {narrow:?}");
+        }
+    }
+
+    #[test]
+    fn the_global_cluster_sits_flush_right() {
+        let line = rendered(&hint_line(&context_hints(&UIState::default()), 120));
+        assert!(line.ends_with("q quit "), "{line:?}");
     }
 }

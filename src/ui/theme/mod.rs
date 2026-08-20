@@ -310,38 +310,6 @@ pub(super) fn status_bar_hints() -> Style {
     }
 }
 
-/// Keycap chip for one status bar hint. The raised background gives every
-/// key the same weight, so thin glyphs (arrows, slashes) read as strongly
-/// as letters do.
-pub(super) fn key_cap() -> Style {
-    if super::NO_COLOR.load(super::Ordering::Relaxed) {
-        return Style::default().add_modifier(Modifier::BOLD);
-    }
-    let theme = active();
-    match theme.key_cap_bg {
-        Some((r, g, b)) => Style::default()
-            .bg(Color::Rgb(r, g, b))
-            .fg(theme.key)
-            .add_modifier(Modifier::BOLD),
-        // Classic keeps its historic bar: a bold key in the theme color,
-        // no chip behind it.
-        None => Style::default().fg(theme.key).add_modifier(Modifier::BOLD),
-    }
-}
-
-/// Label beside a status bar keycap, recessed a step below the key so the key
-/// stays the brightest part of the hint. Classic falls back to the shared
-/// key-hint label tone.
-pub(super) fn status_hint_label() -> Style {
-    if super::NO_COLOR.load(super::Ordering::Relaxed) {
-        return Style::default();
-    }
-    match active().hint_label {
-        Some((r, g, b)) => Style::default().fg(Color::Rgb(r, g, b)),
-        None => key_hint_label(),
-    }
-}
-
 pub(super) fn status_bar_default() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) || !is_classic() {
         return status_bar_hints();

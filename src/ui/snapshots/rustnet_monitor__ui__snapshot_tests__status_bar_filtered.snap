@@ -2,4 +2,4 @@
 source: src/ui/mod.rs
 expression: output
 ---
-  h  help   1-5  tabs   tab  cycle   esc  clear filter  showing 7 filtered connections
+ esc clear filter  / filter  a group  t history  i info  c copy                                          h help  q quit
