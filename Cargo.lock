@@ -2640,7 +2640,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-capture"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "log",
@@ -2649,7 +2649,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2668,7 +2668,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-host"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bitflags 2.13.1",
@@ -2684,7 +2684,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-monitor"
-version = "1.5.0"
+version = "1.6.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2719,7 +2719,7 @@ dependencies = [
 
 [[package]]
 name = "rustnet-sandbox"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "caps",

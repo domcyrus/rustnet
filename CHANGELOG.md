@@ -7,42 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **Linux Aggregate Capture Recovery**: Capturing with `-i any` now retries
-  transient libpcap "interface disappeared" errors during VPN or other
-  interface removal instead of stopping immediately. Named-interface failures
-  and persistent errors remain fatal (#559)
-- **Details Tab ARP Layout**: ARP connections were exempt from the fixed
-  Details layout and dropped the Network Context MAC/attribution rows and the
-  whole Attribution card, so Traffic Statistics and the cards below jumped
-  when moving between ARP and non-ARP entries. ARP now renders the same
-  left-column row set with `-` placeholders, and its MAC rows resolve from
-  the neighbor cache like any other on-link connection. The Status and
-  Attributed Via ages now share one formatter, so connections closed or idle
-  for over an hour show `2h ago` instead of a large minute count (#555)
-- **Details Tab Layout Stability**: rows in the Details tab no longer appear
-  or disappear with data availability. MAC, Attributed Name/Via, the
-  Attribution card's process fields, the Kubernetes card's fields, and the
-  inbound Ping RTT row now always render for their connection class, showing
-  `-` when unresolved, so labels and the cards below keep fixed positions
-  while navigating between connections. Placeholder rows are not
-  click-to-copy targets (#554)
-- **macOS lsof Attribution UID**: When libproc details resolve, lsof-based
-  attribution now reports the process's live effective UID from libproc
-  instead of the UID captured in the earlier lsof scan, matching the other
-  platforms (#545)
-- **Broadcast/Multicast Endpoint Display**: A broadcast or multicast datagram
-  sent by a peer (e.g. NetBIOS to 192.168.0.255) used to render its
-  destination as a normal-looking Local address. Such endpoints now render as
-  `bcast:PORT` / `mcast:PORT` in the Overview table, the Details tab annotates
-  the full address with `(broadcast)` / `(multicast)`, and the Scope field
-  reports BROADCAST for subnet-directed broadcasts instead of PRIVATE.
-  Interface prefixes are now collected alongside local addresses to recognize
-  each subnet's broadcast address; recognized broadcasts no longer trigger
-  ambiguous-endpoint interface re-enumeration. JSONL logs gain
-  `local_addr_kind`/`remote_addr_kind` (sidecar) and
-  `source_addr_kind`/`destination_addr_kind` (event log) keys, emitted only
-  for non-unicast endpoints
+## [1.6.0] - 2026-08-20
 
 ### Added
 - **Light Background Detection**: at startup rustnet asks the terminal for its
@@ -92,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   match replies from individual hosts, and the round trip is shown on both the
   broadcast request row and the responder's connection. WACK packets keep the
   request pending until its final response, and pending requests have a 10s
-  expiry and hard cap
+  expiry and hard cap (#538)
 - **Ubuntu 22.04 LTS (Jammy) PPA**: The PPA now also builds for Ubuntu 22.04
   LTS using its backported `rustc-1.89` toolchain, covering Linux Mint 21.x
   and Pop!_OS 22.04. Install docs now list the supported derivatives and the
@@ -125,7 +90,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   idle for 30+ minutes are swept out to make room — and the clear-connections
   action resets it. `rustnet-core` API note: `ProtocolState::Icmp` gained an
   `ndp_neighbor` field, a breaking change for code constructing or
-  exhaustively matching that variant.
+  exhaustively matching that variant (#530, #531)
 - **Default Gateway Marker**: Connections whose remote endpoint is the host's
   default gateway (the local router) are now marked. The Overview Remote
   column appends `(gw)` when it fits, the Details tab annotates the remote
@@ -134,23 +99,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Gateways are read from the OS routing table (`/proc/net/route` and
   `/proc/net/ipv6_route` on Linux, a `PF_ROUTE` sysctl dump on macOS/FreeBSD,
   `GetIpForwardTable2` on Windows) and refreshed with the local-address
-  snapshot, so VPN or network changes are picked up
+  snapshot, so VPN or network changes are picked up (#529)
 - **NTP RTT**: NTP client connections now show the latest request→response
   round trip in the Details Transport Health card, along with the server
   stratum. Polls pair with responses through the originate timestamp echo
   (RFC 5905), so daemons polling several servers stay distinct. Pending
-  requests are bounded (hard cap plus 10s expiry) like DNS queries
+  requests are bounded (hard cap plus 10s expiry) like DNS queries (#527)
 - **STUN RTT**: STUN connections now show the latest request→response round
   trip in the Details Transport Health card, paired by the 96-bit transaction
   ID that retransmits reuse. Pending requests are bounded (hard cap plus 10s
-  expiry) like DNS queries
+  expiry) like DNS queries (#526)
 - **Ping RTT**: ICMPv4 and ICMPv6 echo connections now show their latest RTT
   in the Overview RTT column and the Details Transport Health card. Requests
   and replies are paired by identifier and sequence number using per-packet
   capture timestamps, so overlapping or reordered exchanges from commands such
   as `ping 8.8.8.8 -i .2` remain distinct. Loopback pings are timed too, and
   inbound echo flows skip the RTT row since only the remote sender can measure
-  it. Pending requests expire after 10 seconds and have a hard cap
+  it. Pending requests expire after 10 seconds and have a hard cap (#525)
 - **DNS Response Time**: Unicast UDP DNS connections now show a transport
   metric in the Details Transport Health card instead of "No transport metrics
   for this protocol". Queries and responses are paired by their 16-bit
@@ -158,7 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shown as `DNS Response Time`, and the card also surfaces the last response
   code (NOERROR, NXDOMAIN, SERVFAIL, ...). Pending queries are bounded (hard
   cap plus 10s expiry), so floods cost samples, not memory. mDNS/LLMNR
-  first-response timing is a possible follow-up
+  first-response timing is a possible follow-up (#523)
 - **Cross-Platform Process Lineage**: The Details tab shows up to four parent
   processes for each attributed connection on Linux, macOS, Windows, and
   FreeBSD. JSONL exports include each ancestor's PID, name, executable path,
@@ -215,6 +180,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Library Crates 0.5.0**: the workspace library crates are released as
+  0.5.0: `rustnet-core`, `rustnet-capture`, `rustnet-host`, and the new
+  `rustnet-sandbox`, carrying the breaking API changes noted in this
+  section's entries
 - **Scrollbar**: the thumb is now a thin accent-colored bar on the outer edge
   of its column instead of a full block in the terminal foreground, and the
   track rule is gone, so the bar reads as a cue rather than a second vertical
@@ -312,7 +281,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot cause QUIC handshakes to be reported below TLS 1.3 (#546)
 - **Shared OUI Database**: The OUI vendor table is now shared between
   packet-processor threads via `Arc` instead of being cloned per thread,
-  saving roughly 10 MB of memory
+  saving roughly 10 MB of memory (#542)
 - **Modern Linux eBPF Attribution Backend**: Process attribution now prefers BPF
   trampoline programs (fentry/fexit) and falls back to legacy kprobes and then procfs,
   choosing the backend from actual BTF, load, and attach results rather than the
@@ -325,6 +294,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dropped on the capture workers after privileged initialization (#498)
 
 ### Fixed
+- **Linux Aggregate Capture Recovery**: Capturing with `-i any` now retries
+  transient libpcap "interface disappeared" errors during VPN or other
+  interface removal instead of stopping immediately. Named-interface failures
+  and persistent errors remain fatal (#559)
+- **Details Tab ARP Layout**: ARP connections were exempt from the fixed
+  Details layout and dropped the Network Context MAC/attribution rows and the
+  whole Attribution card, so Traffic Statistics and the cards below jumped
+  when moving between ARP and non-ARP entries. ARP now renders the same
+  left-column row set with `-` placeholders, and its MAC rows resolve from
+  the neighbor cache like any other on-link connection. The Status and
+  Attributed Via ages now share one formatter, so connections closed or idle
+  for over an hour show `2h ago` instead of a large minute count (#555)
+- **Details Tab Layout Stability**: rows in the Details tab no longer appear
+  or disappear with data availability. MAC, Attributed Name/Via, the
+  Attribution card's process fields, the Kubernetes card's fields, and the
+  inbound Ping RTT row now always render for their connection class, showing
+  `-` when unresolved, so labels and the cards below keep fixed positions
+  while navigating between connections. Placeholder rows are not
+  click-to-copy targets (#554)
+- **macOS lsof Attribution UID**: When libproc details resolve, lsof-based
+  attribution now reports the process's live effective UID from libproc
+  instead of the UID captured in the earlier lsof scan, matching the other
+  platforms (#545)
+- **Broadcast/Multicast Endpoint Display**: A broadcast or multicast datagram
+  sent by a peer (e.g. NetBIOS to 192.168.0.255) used to render its
+  destination as a normal-looking Local address. Such endpoints now render as
+  `bcast:PORT` / `mcast:PORT` in the Overview table, the Details tab annotates
+  the full address with `(broadcast)` / `(multicast)`, and the Scope field
+  reports BROADCAST for subnet-directed broadcasts instead of PRIVATE.
+  Interface prefixes are now collected alongside local addresses to recognize
+  each subnet's broadcast address; recognized broadcasts no longer trigger
+  ambiguous-endpoint interface re-enumeration. JSONL logs gain
+  `local_addr_kind`/`remote_addr_kind` (sidecar) and
+  `source_addr_kind`/`destination_addr_kind` (event log) keys, emitted only
+  for non-unicast endpoints (#528)
 - **FreeBSD User Names in Connection Details**: Numeric socket-owner UIDs from
   `sockstat` now survive process attribution, so Details can resolve user names
   even when live process metadata is unavailable (#522)
@@ -349,7 +353,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a saved pcap is replayed. Separately, RTT could be measured from an inbound
   packet to this host's own reply, which spans no network at all; the clock now
   starts only on a packet leaving this host. This affected TCP as well — any
-  connection to a local listener reported a handshake RTT of roughly 60µs
+  connection to a local listener reported a handshake RTT of roughly 60µs (#507)
 - **Transport Health On QUIC Connections**: The Details pane labelled every
   connection's Transport Health card with TCP loss counters, so a QUIC flow showed
   `TCP Retransmits`, `Duplicate ACKs`, and `Window Size` sitting empty as if the
@@ -360,7 +364,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plus a note about the encrypted counters — and `Initial RTT` is filled in from
   the long-header handshake exchange, the QUIC analogue of SYN/SYN-ACK timing.
   Other UDP flows say so instead of showing six blank TCP fields. All variants keep
-  the card's height so the dashboard doesn't resize between connections
+  the card's height so the dashboard doesn't resize between connections (#507)
 - **TCP Transport Health Counters**: `TCP Retransmits` in the Details pane stayed
   at 0 for the life of a connection while `Fast Retransmits` climbed into the
   dozens. Outbound sequence tracking desynchronized permanently the first time a
@@ -1078,7 +1082,8 @@ Special thanks to the external contributors in this release:
 - Configurable refresh intervals and filtering options
 - Optional logging with multiple log levels
 
-[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/domcyrus/rustnet/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/domcyrus/rustnet/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/domcyrus/rustnet/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/domcyrus/rustnet/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/domcyrus/rustnet/compare/v1.2.0...v1.3.0
