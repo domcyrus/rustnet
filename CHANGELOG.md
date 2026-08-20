@@ -200,6 +200,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Status Bar Keycaps**: hint keys now sit on a raised chip so every key
+  carries the same weight (the arrow glyphs no longer read as thinner than
+  the letters), and the hint row drops the reverse-video band on themes
+  without a status background, so keys read as bright text on the terminal
+  background instead of solid blocks of color. Overview advertises `j/k` to
+  match Details (both tabs accept the arrows too), and Details only offers
+  `ctrl-d/u` when the record actually outgrows its pane (#XXX)
+- **Grouped View Indicator**: the expand/collapse triangle is now solid, so it
+  matches the weight of the row dots beside it (#XXX)
 - **Connection Table Cues**: the selected row now leads with an accent bar and
   every row with a state-colored dot, and process names get a stable per-name
   tint. Both glyphs still render under `NO_COLOR`, where the bar is the primary

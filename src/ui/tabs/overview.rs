@@ -643,7 +643,7 @@ fn group_header_row<'a>(
     expanded: bool,
     ui_state: &UIState,
 ) -> Row<'a> {
-    let indicator = if expanded { "▾" } else { "▸" };
+    let indicator = if expanded { "▼" } else { "▶" };
     // Plain BOLD (no accent): group headers are structural anchors, and
     // the accent color stays reserved for the active tab / sort indicator.
     let group_style = Style::default().add_modifier(Modifier::BOLD);

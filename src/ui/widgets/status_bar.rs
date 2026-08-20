@@ -3,10 +3,10 @@
 //! filtered-count messages, clipboard feedback, and capture failures
 //! (which claim a second row when they do not fit on one).
 //!
-//! Hints follow a keycap grammar: the key in `theme::key_hint()`, its
-//! label in `theme::key_hint_label()`, two spaces between hints. When the
-//! bar is too narrow, trailing hints are dropped whole; nothing wraps
-//! mid-hint.
+//! Hints follow a keycap grammar: the key on a raised chip
+//! (`theme::key_cap()`), its label in `theme::key_hint_label()`, two
+//! spaces between hints. When the bar is too narrow, trailing hints are
+//! dropped whole; nothing wraps mid-hint.
 
 use ratatui::{
     Frame,
@@ -31,7 +31,7 @@ fn tab_hints(ui_state: &UIState) -> Vec<Hint> {
     match ui_state.selected_tab {
         // Overview
         0 => hints.extend([
-            ("\u{2191}\u{2193}", "select"),
+            ("j/k", "select"),
             ("/", "filter"),
             ("a", "group"),
             ("t", "history"),
@@ -39,12 +39,15 @@ fn tab_hints(ui_state: &UIState) -> Vec<Hint> {
             ("c", "copy"),
         ]),
         // Details
-        1 => hints.extend([
-            ("j/k", "prev/next"),
-            ("ctrl-d/u", "scroll"),
-            ("c", "copy remote addr"),
-            ("esc", "back"),
-        ]),
+        1 => {
+            hints.push(("j/k", "prev/next"));
+            // Ctrl+D/U only moves when the record outgrows its pane, so on a
+            // tall terminal the hint would advertise a no-op.
+            if ui_state.details_scroll.can_scroll() {
+                hints.push(("ctrl-d/u", "scroll"));
+            }
+            hints.extend([("c", "copy remote addr"), ("esc", "back")]);
+        }
         // Activity, interface list
         2 if ui_state.activity_show_interfaces => hints.extend([
             ("j/k", "scroll"),
@@ -77,14 +80,15 @@ fn hint_line(hints: &[Hint], trailing: Option<String>, width: u16) -> Line<'stat
     let mut used = 1usize;
     for (i, (key, label)) in hints.iter().enumerate() {
         let gap = if i == 0 { 0 } else { 2 };
-        let needed = gap + key.chars().count() + 1 + label.chars().count();
+        // Keycap chip (" key ") plus the single space before its label.
+        let needed = gap + key.chars().count() + 3 + label.chars().count();
         if used + needed > width {
             return Line::from(spans);
         }
         if gap > 0 {
             spans.push(Span::raw("  "));
         }
-        spans.push(Span::styled(*key, theme::key_hint()));
+        spans.push(Span::styled(format!(" {key} "), theme::key_cap()));
         spans.push(Span::raw(" "));
         spans.push(Span::styled(*label, theme::key_hint_label()));
         used += needed;
@@ -185,4 +189,56 @@ pub(in crate::ui) fn draw_status_bar(
     };
 
     f.render_widget(status_bar.alignment(ratatui::layout::Alignment::Left), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn advertises(hints: &[Hint], key: &str) -> bool {
+        hints.iter().any(|(hint_key, _)| *hint_key == key)
+    }
+
+    fn rendered(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn details_advertises_pane_scrolling_only_once_the_pane_scrolls() {
+        let ui_state = UIState {
+            selected_tab: 1,
+            ..Default::default()
+        };
+        assert!(!advertises(&tab_hints(&ui_state), "ctrl-d/u"));
+
+        // A render that reports headroom turns the hint on.
+        ui_state.details_scroll.clamp_for_render(12);
+        assert!(advertises(&tab_hints(&ui_state), "ctrl-d/u"));
+    }
+
+    #[test]
+    fn overview_and_details_advertise_the_same_navigation_keys() {
+        let overview = tab_hints(&UIState::default());
+        let details = tab_hints(&UIState {
+            selected_tab: 1,
+            ..Default::default()
+        });
+        assert!(advertises(&overview, "j/k"));
+        assert!(advertises(&details, "j/k"));
+    }
+
+    #[test]
+    fn keycaps_pad_the_key_and_keep_one_space_before_the_label() {
+        let line = hint_line(&[("h", "help"), ("q", "quit")], None, 80);
+        assert_eq!(rendered(&line), "  h  help   q  quit");
+    }
+
+    #[test]
+    fn a_hint_that_does_not_fit_is_dropped_whole() {
+        let line = hint_line(&[("h", "help"), ("q", "quit")], None, 10);
+        assert_eq!(rendered(&line), "  h  help");
+    }
 }

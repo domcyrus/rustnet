@@ -2,4 +2,4 @@
 source: src/ui/mod.rs
 expression: output
 ---
- h help  1-5 tabs  tab cycle  j/k prev/next  ctrl-d/u scroll  c copy remote addr  esc back  q quit
+  h  help   1-5  tabs   tab  cycle   j/k  prev/next   c  copy remote addr   esc  back   q  quit

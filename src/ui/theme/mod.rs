@@ -293,11 +293,53 @@ pub(super) fn status_bar_error() -> Style {
     }
     status_bar_base().fg(err()).add_modifier(Modifier::BOLD)
 }
+/// Base style for the hint row. Unlike the alert states this one rides on
+/// the terminal background when the theme has no `status_bg` tint: the
+/// keycaps and their labels carry the contrast, and a REVERSED band would
+/// turn every span's foreground into a solid block of that color.
+pub(super) fn status_bar_hints() -> Style {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        // Without color the band is the only thing marking the row as the
+        // status bar, so it stays. Keycaps still separate keys from labels
+        // by weight.
+        return Style::default().add_modifier(Modifier::REVERSED);
+    }
+    match active().status_bg {
+        Some(bg) => Style::default().bg(bg),
+        None => Style::default(),
+    }
+}
+
+/// Keycap chip for one status bar hint. The raised background gives every
+/// key the same weight, so thin glyphs (arrows, slashes) read as strongly
+/// as letters do.
+pub(super) fn key_cap() -> Style {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return Style::default().add_modifier(Modifier::BOLD);
+    }
+    let theme = active();
+    match theme.selection_bg {
+        // The truecolor presets set selection_bg to their palette's raised
+        // surface, which is the tier a keycap wants.
+        Some(bg) => Style::default()
+            .bg(bg)
+            .fg(theme.selection_fg.unwrap_or(theme.text))
+            .add_modifier(Modifier::BOLD),
+        // ANSI presets have no raised tint to borrow. DarkGray reads as a
+        // chip on light and dark terminals alike, and White keeps the key
+        // legible against it.
+        None => Style::default()
+            .bg(Color::DarkGray)
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    }
+}
+
 pub(super) fn status_bar_default() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) || !is_classic() {
-        return status_bar_base();
+        return status_bar_hints();
     }
-    status_bar_base().fg(info())
+    status_bar_hints().fg(info())
 }
 
 // --- Selection and key hint styles ---

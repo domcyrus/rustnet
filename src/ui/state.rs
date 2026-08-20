@@ -125,6 +125,12 @@ impl PaneScroll {
         self.offset = 0;
     }
 
+    /// Whether the last render had content beyond the viewport. Drives
+    /// hints that would otherwise advertise a key that does nothing.
+    pub fn can_scroll(&self) -> bool {
+        self.max.get() > 0
+    }
+
     /// Record this render's maximum scroll offset and return the
     /// (clamped) offset to draw with.
     pub fn clamp_for_render(&self, max: u16) -> u16 {
