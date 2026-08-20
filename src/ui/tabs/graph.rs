@@ -173,7 +173,8 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let inner = section_header(f, area, graph_title(" Traffic Over Time (60s)"));
 
     if !history.has_enough_data() {
-        let placeholder = Paragraph::new("Collecting data...").style(theme::fg(theme::muted()));
+        let placeholder =
+            Paragraph::new("Waiting for traffic data...").style(theme::fg(theme::muted()));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -215,7 +216,8 @@ fn draw_connection_lifecycle(f: &mut Frame, history: &TrafficHistory, area: Rect
     let inner = section_header(f, area, graph_title(" Connection Lifecycle"));
 
     if !history.has_enough_data() {
-        let placeholder = Paragraph::new("Collecting...").style(theme::fg(theme::muted()));
+        let placeholder =
+            Paragraph::new("Waiting for connection data...").style(theme::fg(theme::muted()));
         f.render_widget(placeholder, inner);
         return;
     }
@@ -469,7 +471,8 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let inner = section_header(f, area, graph_title(" Network Health"));
 
     if !history.has_enough_data() {
-        let placeholder = Paragraph::new("Collecting data...").style(theme::fg(theme::muted()));
+        let placeholder =
+            Paragraph::new("Waiting for health data...").style(theme::fg(theme::muted()));
         f.render_widget(placeholder, inner);
         return;
     }

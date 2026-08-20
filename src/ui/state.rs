@@ -123,6 +123,16 @@ impl PaneScroll {
 
     pub fn reset(&mut self) {
         self.offset = 0;
+        // Forget the last render's extent too, so the hint gating does not
+        // keep advertising scroll for content that is gone; the next render
+        // reports the real extent again.
+        self.max.set(0);
+    }
+
+    /// Whether the last render had content beyond the viewport. Drives
+    /// hints that would otherwise advertise a key that does nothing.
+    pub fn can_scroll(&self) -> bool {
+        self.max.get() > 0
     }
 
     /// Record this render's maximum scroll offset and return the
@@ -424,6 +434,22 @@ impl UIState {
     /// Whether the query changes the displayed connection set.
     pub fn has_active_filter(&self) -> bool {
         !self.filter_query.trim().is_empty()
+    }
+
+    /// Whether the connection list is being narrowed right now: a
+    /// persisted query, or one currently being typed. Drives the
+    /// Overview tab's activity dot in the tab bar.
+    pub fn is_filtering(&self) -> bool {
+        self.filter_mode || self.has_active_filter()
+    }
+
+    /// Whether the filter input row is on screen, claiming a terminal row.
+    /// The row is an editing surface only: once a query is confirmed it is
+    /// gone and the title chip carries the state. The layout in `ui::draw`
+    /// and the page-navigation math in `main` both read this, so the two
+    /// cannot disagree about how many rows the chrome occupies.
+    pub fn filter_row_visible(&self) -> bool {
+        self.filter_mode
     }
 
     /// Set the selected connection key, resetting the Details pane
@@ -1067,6 +1093,32 @@ mod tests {
         assert!(!ui.filter_mode);
         assert!(ui.filter_query.is_empty());
         assert_eq!(ui.filter_cursor_position, 0);
+    }
+
+    #[test]
+    fn is_filtering_covers_both_typing_and_a_persisted_query() {
+        assert!(!UIState::default().is_filtering());
+
+        // Filter mode with an empty query still counts: the user is typing.
+        let typing = UIState {
+            filter_mode: true,
+            ..UIState::default()
+        };
+        assert!(typing.is_filtering());
+
+        // A persisted query counts after filter mode is left.
+        let persisted = UIState {
+            filter_query: "port:443".to_string(),
+            ..UIState::default()
+        };
+        assert!(persisted.is_filtering());
+
+        // Whitespace alone narrows nothing.
+        let blank = UIState {
+            filter_query: "   ".to_string(),
+            ..UIState::default()
+        };
+        assert!(!blank.is_filtering());
     }
 
     #[test]

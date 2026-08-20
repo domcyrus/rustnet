@@ -1,6 +1,5 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 697
 expression: output
 ---
- 'h' help | 1-5 jump | Tab/[/] cycle | j/k prev/next | Ctrl-d/u scroll | 'c' copy remote addr | Esc back
+ j/k prev/next  c copy remote addr  esc back                                                             h help  q quit

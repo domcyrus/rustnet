@@ -23,8 +23,10 @@ pub use terminal::{Terminal, restore_terminal, setup_terminal};
 
 mod widgets;
 use widgets::{
-    filter_input::draw_filter_input, loading::draw_loading_screen, status_bar::draw_status_bar,
-    tabs_bar::draw_tabs,
+    filter_input::draw_filter_input,
+    loading::draw_loading_screen,
+    status_bar::draw_status_bar,
+    tabs_bar::{CaptureCluster, draw_tabs},
 };
 
 mod tabs;
@@ -105,7 +107,7 @@ mod sorting;
 pub use sorting::sort_connections;
 
 mod clipboard;
-pub use clipboard::copy_to_clipboard;
+pub use clipboard::{clipboard_available, copy_to_clipboard};
 
 mod actions;
 pub use actions::clear_all_with_confirmation;
@@ -120,7 +122,9 @@ mod effects;
 pub use effects::apply_effects;
 
 mod theme;
-pub use theme::{ThemePreset, set_preset as set_theme_preset};
+pub use theme::{
+    Theme, ThemePreset, ThemeSpec, TokenColor, detect_light_background, detect_truecolor, set_theme,
+};
 
 /// Standard panel chrome: rounded border + title. Kept for the few
 /// views that still frame themselves (Help reference card, loading
@@ -165,6 +169,18 @@ pub(crate) fn section_header<'a, T: Into<Line<'a>>>(
     )
 }
 
+/// Fade one line toward the faint tier: the scroll-boundary cue shared
+/// by every scrolling pane. Spans carry their own styles, so the fade is
+/// applied span by span, with the line style following for the cells a
+/// short line leaves empty. A no-op under NO_COLOR, where
+/// [`theme::edge_fade`] returns the style untouched.
+pub(crate) fn fade_line(line: &mut Line<'_>) {
+    line.style = theme::edge_fade(line.style);
+    for span in &mut line.spans {
+        span.style = theme::edge_fade(span.style);
+    }
+}
+
 /// Resolve the cell color for a connection's State column.
 /// Maps TCP states to the existing `tcp_*` aliases; falls back to
 /// `field_state()` for non-TCP protocols.
@@ -182,12 +198,12 @@ pub(crate) fn state_color(conn: &Connection) -> Color {
 }
 
 /// Resolve the cell color for a DPI Application protocol.
-/// Classic preset mirrors the palette used in `draw_app_distribution`;
+/// Vivid preset mirrors the palette used in `draw_app_distribution`;
 /// the muted preset renders detected applications as plain content so
 /// the `proto_*` palette stays a chart-only encoding.
 pub(crate) fn dpi_color(app: &crate::network::types::ApplicationProtocol) -> Color {
     use crate::network::types::ApplicationProtocol as AP;
-    if !theme::is_classic() {
+    if !theme::is_vivid() {
         return Color::Reset;
     }
     match app {
@@ -202,11 +218,11 @@ pub(crate) fn dpi_color(app: &crate::network::types::ApplicationProtocol) -> Col
 
 /// Color for the Details Application heading of the non-DPI protocol classes
 /// (ARP, ICMP, IGMP), which have no `ApplicationProtocol` value to feed
-/// [`dpi_color`]. Mirrors its theme fallback: the classic preset colors the
+/// [`dpi_color`]. Mirrors its theme fallback: the vivid preset colors the
 /// heading like any other detected application, the muted preset renders it
 /// as plain content.
 pub(crate) fn non_dpi_app_color() -> Color {
-    if theme::is_classic() {
+    if theme::is_vivid() {
         theme::field_application()
     } else {
         Color::Reset
@@ -249,7 +265,7 @@ pub fn draw(
     let capture_error = app.get_capture_error();
     let status_height = status_bar_height(capture_error.as_deref(), f.area().width);
 
-    let chunks = if ui_state.filter_mode || ui_state.has_active_filter() {
+    let chunks = if ui_state.filter_row_visible() {
         Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -270,10 +286,21 @@ pub fn draw(
             .split(f.area())
     };
 
-    draw_tabs(f, ui_state, chunks[0], click_regions);
+    // Capture cluster: same sources the status bar and the Overview
+    // sidebar read. `get_link_layer_info` reports "Unknown" until the
+    // capture thread has a linktype, which is not worth a suffix.
+    let capture_interface = app.get_current_interface();
+    let (link_type, _is_tunnel) = app.get_link_layer_info();
+    let capture = CaptureCluster {
+        interface: capture_interface.as_deref(),
+        link_type: Some(link_type.as_str()).filter(|link| *link != "Unknown"),
+        failed: capture_error.is_some(),
+    };
+
+    draw_tabs(f, ui_state, &capture, chunks[0], click_regions);
 
     let content_area = chunks[1];
-    let (filter_area, status_area) = if ui_state.filter_mode || ui_state.has_active_filter() {
+    let (filter_area, status_area) = if ui_state.filter_row_visible() {
         (Some(chunks[2]), chunks[3])
     } else {
         (None, chunks[2])
@@ -302,7 +329,7 @@ pub fn draw(
     draw_status_bar(
         f,
         ui_state,
-        connections.len(),
+        clipboard_available(app),
         capture_error.as_deref(),
         status_area,
     );
@@ -663,7 +690,15 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut regions = ClickableRegions::default();
-        let output = render(80, 2, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
+        let output = render(80, 2, |f| {
+            draw_tabs(
+                f,
+                &ui_state,
+                &CaptureCluster::default(),
+                f.area(),
+                &mut regions,
+            )
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -674,7 +709,15 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut regions = ClickableRegions::default();
-        let output = render(80, 2, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
+        let output = render(80, 2, |f| {
+            draw_tabs(
+                f,
+                &ui_state,
+                &CaptureCluster::default(),
+                f.area(),
+                &mut regions,
+            )
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -685,8 +728,108 @@ mod snapshot_tests {
             ..Default::default()
         };
         let mut regions = ClickableRegions::default();
-        let output = render(80, 2, |f| draw_tabs(f, &ui_state, f.area(), &mut regions));
+        let output = render(80, 2, |f| {
+            draw_tabs(
+                f,
+                &ui_state,
+                &CaptureCluster::default(),
+                f.area(),
+                &mut regions,
+            )
+        });
         insta::assert_snapshot!(output);
+    }
+
+    /// The capture cluster is right-aligned on the title row and
+    /// carries the interface plus its link layer.
+    #[test]
+    fn tabs_bar_capture_cluster_is_right_aligned() {
+        let ui_state = UIState::default();
+        let mut regions = ClickableRegions::default();
+        let capture = CaptureCluster {
+            interface: Some("eth0"),
+            link_type: Some("Ethernet"),
+            failed: false,
+        };
+        let output = render(100, 2, |f| {
+            draw_tabs(f, &ui_state, &capture, f.area(), &mut regions)
+        });
+
+        let title_row = output.lines().next().expect("title row");
+        assert!(
+            title_row.trim_end().ends_with("● eth0 · Ethernet"),
+            "cluster should sit at the right edge, got:\n{output}"
+        );
+    }
+
+    /// The cluster degrades in two steps: link layer first, then the
+    /// whole cluster once the tab titles would collide with it.
+    #[test]
+    fn tabs_bar_capture_cluster_drops_on_narrow_terminals() {
+        let ui_state = UIState::default();
+        let capture = CaptureCluster {
+            interface: Some("eth0"),
+            link_type: Some("Ethernet"),
+            failed: false,
+        };
+
+        let mut regions = ClickableRegions::default();
+        let medium = render(76, 2, |f| {
+            draw_tabs(f, &ui_state, &capture, f.area(), &mut regions)
+        });
+        assert!(
+            medium.contains("● eth0") && !medium.contains("Ethernet"),
+            "link layer should be dropped first, got:\n{medium}"
+        );
+
+        let mut regions = ClickableRegions::default();
+        let narrow = render(70, 2, |f| {
+            draw_tabs(f, &ui_state, &capture, f.area(), &mut regions)
+        });
+        assert!(
+            !narrow.contains("●"),
+            "cluster should disappear rather than collide, got:\n{narrow}"
+        );
+    }
+
+    /// An active filter marks the Overview title, and the underline
+    /// grows with the wider label so the rule keeps tracking it.
+    #[test]
+    fn tabs_bar_marks_an_active_filter_on_overview() {
+        let ui_state = UIState {
+            selected_tab: 0,
+            filter_query: "port:443".to_string(),
+            ..Default::default()
+        };
+        let mut regions = ClickableRegions::default();
+        let capture = CaptureCluster::default();
+        let output = render(80, 2, |f| {
+            draw_tabs(f, &ui_state, &capture, f.area(), &mut regions)
+        });
+
+        let mut rows = output.lines();
+        let title_row = rows.next().expect("title row");
+        let underline_row = rows.next().expect("underline row");
+        assert!(
+            title_row.contains("1 Overview •"),
+            "filtered Overview should carry the activity dot, got:\n{output}"
+        );
+        let dot_column = title_row
+            .chars()
+            .position(|c| c == '•')
+            .expect("dot column");
+        assert_eq!(
+            underline_row.chars().nth(dot_column),
+            Some('━'),
+            "the active underline must extend under the dot, got:\n{output}"
+        );
+
+        // No filter, no dot.
+        let mut regions = ClickableRegions::default();
+        let plain = render(80, 2, |f| {
+            draw_tabs(f, &UIState::default(), &capture, f.area(), &mut regions)
+        });
+        assert!(!plain.contains('•'), "unfiltered Overview stays plain");
     }
 
     #[test]
@@ -714,22 +857,10 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn filter_input_persisted() {
-        let ui_state = UIState {
-            filter_mode: false,
-            filter_query: "tcp port:443".to_string(),
-            filter_cursor_position: 0,
-            ..Default::default()
-        };
-        let output = render(80, 1, |f| draw_filter_input(f, &ui_state, f.area()));
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
     fn status_bar_overview_default() {
         let ui_state = UIState::default();
         let output = render(120, 1, |f| {
-            draw_status_bar(f, &ui_state, 42, None, f.area())
+            draw_status_bar(f, &ui_state, true, None, f.area())
         });
         insta::assert_snapshot!(output);
     }
@@ -741,7 +872,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let output = render(120, 1, |f| {
-            draw_status_bar(f, &ui_state, 42, None, f.area())
+            draw_status_bar(f, &ui_state, true, None, f.area())
         });
         insta::assert_snapshot!(output);
     }
@@ -753,7 +884,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let output = render(120, 1, |f| {
-            draw_status_bar(f, &ui_state, 42, None, f.area())
+            draw_status_bar(f, &ui_state, true, None, f.area())
         });
         insta::assert_snapshot!(output);
     }
@@ -764,7 +895,9 @@ mod snapshot_tests {
             selected_tab: 4,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 0, None, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -774,7 +907,9 @@ mod snapshot_tests {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, 7, None, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -785,7 +920,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let output = render(120, 1, |f| {
-            draw_status_bar(f, &ui_state, 42, None, f.area())
+            draw_status_bar(f, &ui_state, true, None, f.area())
         });
         insta::assert_snapshot!(output);
     }
@@ -797,7 +932,7 @@ mod snapshot_tests {
             ..Default::default()
         };
         let output = render(120, 1, |f| {
-            draw_status_bar(f, &ui_state, 42, None, f.area())
+            draw_status_bar(f, &ui_state, true, None, f.area())
         });
         insta::assert_snapshot!(output);
     }
@@ -809,7 +944,7 @@ mod snapshot_tests {
             draw_status_bar(
                 f,
                 &ui_state,
-                0,
+                true,
                 Some("Capture stopped: The interface disappeared."),
                 f.area(),
             )
@@ -826,7 +961,7 @@ mod snapshot_tests {
             draw_status_bar(
                 f,
                 &ui_state,
-                0,
+                true,
                 Some(
                     "Capture failed to start: eth0: You don't have permission to capture on that device (socket: Operation not permitted).",
                 ),

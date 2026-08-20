@@ -8,7 +8,7 @@ use anyhow::Result;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Paragraph, Wrap},
 };
@@ -30,11 +30,14 @@ use crate::network::types::{
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER,
-    connection_table::{build_header, column_constraints, connection_row, select_columns},
-    dpi_color,
-    format::{format_bytes, format_rate},
+    connection_table::{
+        SELECTION_BAR, build_header, column_constraints, connection_row, select_columns,
+    },
+    dpi_color, fade_line,
+    format::{ellipsize_left, format_bytes, format_rate, format_rtt_compact},
     non_dpi_app_color, section_header, state_color, theme, try_handle_connection_nav,
     try_handle_pane_wheel,
+    widgets::badge::{chip, pill},
     widgets::braille_graph,
     widgets::scrollbar::draw_scrollbar,
 };
@@ -471,6 +474,54 @@ fn process_tree_value(lineage: &ProcessLineage, owner_name: &str, max_width: usi
     format!("{prefix}…")
 }
 
+/// Rendered width of a span run, in characters.
+fn span_cells(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| s.content.chars().count()).sum()
+}
+
+/// Drop header-band badges right to left until they fit `room` cells,
+/// counting the separating space each one is rendered with. The state
+/// pill is the last to go, but it goes too: `room` already reserves the
+/// trailing hints, so a pill kept past the edge would push them out of
+/// the band instead of being dropped itself.
+fn fit_badges(mut badges: Vec<Vec<Span<'static>>>, room: usize) -> Vec<Vec<Span<'static>>> {
+    let row_cells = |badges: &[Vec<Span<'static>>]| {
+        badges
+            .iter()
+            .map(|badge| span_cells(badge) + 1)
+            .sum::<usize>()
+    };
+    while !badges.is_empty() && row_cells(&badges) > room {
+        badges.pop();
+    }
+    badges
+}
+
+/// Dim the boundary rows of a scrolled pane: the first visible row when
+/// content continues above it, the last when content continues below.
+/// Nothing is inserted or removed, so the panes' fixed row positions and
+/// the click-to-copy registry stay in step with the rendered lines.
+fn fade_scroll_edges(lines: &mut [Line<'_>], scroll: u16, height: u16) {
+    if height == 0 {
+        return;
+    }
+    let (top, height) = (scroll as usize, height as usize);
+    let bottom = top + height - 1;
+    if top > 0 {
+        fade_at(lines, top);
+    }
+    if bottom + 1 < lines.len() {
+        fade_at(lines, bottom);
+    }
+}
+
+/// Apply the shared edge fade to the line at `index`, if it exists.
+fn fade_at(lines: &mut [Line<'_>], index: usize) {
+    if let Some(line) = lines.get_mut(index) {
+        fade_line(line);
+    }
+}
+
 /// Component-aware middle ellipsis: `/nix/store/…/bin/hello`.
 fn fit_path_middle(display: &str, max_width: usize) -> String {
     let width = |s: &str| s.chars().count();
@@ -498,10 +549,7 @@ fn fit_path_middle(display: &str, max_width: usize) -> String {
     if components.is_empty() || width(&candidate(0, 1)) > max_width {
         // Not even `…/basename` fits; keep the end of the string, which at
         // least ends in the basename.
-        let keep = max_width.saturating_sub(1);
-        let skip = width(display).saturating_sub(keep);
-        let tail: String = display.chars().skip(skip).collect();
-        return format!("…{tail}");
+        return ellipsize_left(display, max_width);
     }
 
     // Grow greedily from both ends, leading components first: where the
@@ -771,7 +819,17 @@ fn draw_connection_strip(
 
     let rows: Vec<ratatui::widgets::Row> = window
         .iter()
-        .map(|conn| connection_row(conn, &columns, ui_state, dns_resolver, None))
+        .enumerate()
+        .map(|(i, conn)| {
+            connection_row(
+                conn,
+                &columns,
+                ui_state,
+                dns_resolver,
+                None,
+                start + i == selected,
+            )
+        })
         .collect();
 
     let mut state = ratatui::widgets::TableState::default();
@@ -780,7 +838,7 @@ fn draw_connection_strip(
     let table = ratatui::widgets::Table::new(rows, &widths)
         .header(header)
         .row_highlight_style(theme::row_highlight())
-        .highlight_symbol("> ");
+        .highlight_symbol(Line::styled(SELECTION_BAR, theme::fg(theme::accent())));
     f.render_stateful_widget(table, area, &mut state);
 
     let header_height = 2_u16; // column header (1) + bottom margin (1)
@@ -809,6 +867,9 @@ pub(in crate::ui) fn draw_connection_details(
     let (has_country_db, _has_asn_db, _has_city_db) = ctx.app.get_geoip_status();
 
     if connections.is_empty() {
+        // Nothing rendered: clear the recorded scroll extent so the status
+        // bar stops offering ctrl-d/u for a record that is no longer there.
+        ui_state.details_scroll.clamp_for_render(0);
         return Ok(());
     }
 
@@ -1726,30 +1787,71 @@ pub(in crate::ui) fn draw_connection_details(
     };
     let staleness = conn.staleness_ratio();
     let title_style = if conn.is_historic {
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::DIM | Modifier::BOLD)
+        theme::fg(theme::faint()).add_modifier(Modifier::DIM | Modifier::BOLD)
     } else if let Some(intensity) = theme::expiry_glow_intensity(staleness) {
         theme::bold_fg(theme::expiry_glow(intensity))
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };
 
+    // Badges after the title: the connection state as a solid pill in the
+    // state's own color, then quiet chips for the live rates and the
+    // measured RTT. They repeat values the cards below carry, so the band
+    // answers "how is this flow doing" before anything is scrolled.
+    // Historic and idle records have no live rates and, once historic, no
+    // state color left: they keep the pill on the muted tier and drop the
+    // rate chip rather than show a chip full of placeholders.
+    let state_bg = if conn.is_historic {
+        theme::muted()
+    } else {
+        state_color(conn)
+    };
+    let mut badges: Vec<Vec<Span<'static>>> = vec![pill(&conn.state(), state_bg)];
+    let moving = conn.current_incoming_rate_bps > 0.0 || conn.current_outgoing_rate_bps > 0.0;
+    if !conn.is_historic && moving {
+        badges.push(chip(&format!(
+            "{} in · {} out",
+            format_rate(conn.current_incoming_rate_bps),
+            format_rate(conn.current_outgoing_rate_bps),
+        )));
+    }
+    if let Some(rtt) = conn.current_rtt() {
+        badges.push(chip(&format!("rtt {}", format_rtt_compact(rtt))));
+    }
+
     // One header band across the whole info area; the panes below it
     // are borderless. When grouping is on, say so — the strip above and
     // the j/k navigation follow the grouped view's order, mirroring the
     // "Grouped by Process" suffix in the Overview title.
-    let mut band = vec![Span::styled(detail_title, title_style)];
+    let mut suffix: Vec<Span<'static>> = Vec::new();
     if ui_state.grouping_enabled {
-        band.push(Span::styled(
+        suffix.push(Span::styled(
             " · grouped by process",
             theme::fg(theme::muted()),
         ));
     }
-    band.push(Span::styled(
-        " · click a field to copy",
-        theme::fg(theme::muted()),
-    ));
+    // Same rule as the footer's copy hint: no point pointing at fields whose
+    // only outcome would be a clipboard error.
+    if crate::ui::clipboard_available(ctx.app) {
+        suffix.push(Span::styled(
+            " · click a field to copy",
+            theme::fg(theme::muted()),
+        ));
+    }
+
+    // The band is a single row, so the badges get whatever the title and
+    // the muted hints leave. One cell goes to the "▎" tick that
+    // section_header prefixes.
+    let room = (body.width as usize)
+        .saturating_sub(1 + detail_title.chars().count() + span_cells(&suffix));
+    let badges = fit_badges(badges, room);
+
+    let mut band = vec![Span::styled(detail_title, title_style)];
+    for badge in badges {
+        band.push(Span::raw(" "));
+        band.extend(badge);
+    }
+    band.extend(suffix);
     let info_area = section_header(f, body, Line::from(band));
     let info_area = Rect {
         width: info_area.width.min(DETAILS_MAX_CONTENT_WIDTH),
@@ -1826,6 +1928,12 @@ pub(in crate::ui) fn draw_connection_details(
     // they stay row-aligned; the taller pane bounds it.
     let max_scroll = (content_rows as u16).saturating_sub(info_h);
     let scroll = ui_state.details_scroll.clamp_for_render(max_scroll);
+
+    // Fade the rows the scroll window cuts through, so a clipped card
+    // reads as "there is more" rather than as a hard edge. Styling only:
+    // the row count and every anchor below it stay put.
+    fade_scroll_edges(&mut details_text, scroll, info_h);
+    fade_scroll_edges(&mut right_text, scroll, info_h);
 
     // Card rows must stay one terminal row tall. Long hostnames, SNI values,
     // and identifiers are clipped at the pane edge instead of wrapping and
@@ -2056,6 +2164,81 @@ pub(in crate::ui) fn draw_connection_details(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod header_band_tests {
+    use super::{fade_scroll_edges, fit_badges, span_cells};
+    use crate::ui::theme;
+    use crate::ui::widgets::badge::{chip, pill};
+    use ratatui::style::Color;
+    use ratatui::text::{Line, Span};
+
+    fn badges() -> Vec<Vec<Span<'static>>> {
+        vec![
+            pill("ESTABLISHED", Color::Rgb(0x4c, 0xaf, 0x50)),
+            chip("1.20 KB/s in · 340 B/s out"),
+            chip("rtt 34ms"),
+        ]
+    }
+
+    #[test]
+    fn a_wide_band_keeps_every_badge() {
+        let all = badges();
+        let room = all.iter().map(|badge| span_cells(badge) + 1).sum();
+        assert_eq!(fit_badges(badges(), room).len(), 3);
+    }
+
+    #[test]
+    fn a_narrow_band_drops_badges_right_to_left() {
+        let all = badges();
+        let rtt_cells = span_cells(&all[2]) + 1;
+        let room: usize = all.iter().map(|badge| span_cells(badge) + 1).sum();
+        assert_eq!(fit_badges(badges(), room - rtt_cells).len(), 2);
+        assert_eq!(fit_badges(badges(), 0).len(), 0);
+    }
+
+    #[test]
+    fn the_state_pill_is_the_last_badge_to_go() {
+        let pill_cells = span_cells(&badges()[0]) + 1;
+        let fitted = fit_badges(badges(), pill_cells);
+        assert_eq!(fitted.len(), 1);
+        assert_eq!(span_cells(&fitted[0]), span_cells(&badges()[0]));
+        // One cell short of the pill: the band keeps its hints instead.
+        assert!(fit_badges(badges(), pill_cells - 1).is_empty());
+    }
+
+    #[test]
+    fn only_the_cut_rows_of_a_scrolled_pane_fade() {
+        let plain = theme::fg(theme::text());
+        let mut lines: Vec<Line<'static>> = (0..6)
+            .map(|i| Line::from(Span::styled(format!("row {i}"), plain)))
+            .collect();
+        // Rows 1..=3 visible: content continues above and below.
+        fade_scroll_edges(&mut lines, 1, 3);
+        let faded = theme::edge_fade(plain);
+        assert_eq!(lines[1].spans[0].style, faded, "top boundary must fade");
+        assert_eq!(lines[3].spans[0].style, faded, "bottom boundary must fade");
+        for index in [0, 2, 4, 5] {
+            assert_eq!(
+                lines[index].spans[0].style, plain,
+                "row {index} is not a boundary and must keep its style"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pane_that_does_not_scroll_keeps_every_row() {
+        let plain = theme::fg(theme::text());
+        let mut lines: Vec<Line<'static>> = (0..3)
+            .map(|i| Line::from(Span::styled(format!("row {i}"), plain)))
+            .collect();
+        fade_scroll_edges(&mut lines, 0, 3);
+        assert!(lines.iter().all(|line| line.spans[0].style == plain));
+        // A zero-height pane has no boundary rows to fade.
+        fade_scroll_edges(&mut lines, 0, 0);
+        assert!(lines.iter().all(|line| line.spans[0].style == plain));
+    }
 }
 
 #[cfg(test)]

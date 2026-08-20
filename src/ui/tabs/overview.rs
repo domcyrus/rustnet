@@ -25,11 +25,11 @@ use crate::ui::{
         Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
         connection_row, render_row_table, select_columns, visible_window,
     },
-    format::format_bytes,
+    format::{format_bytes, truncate_with_ellipsis},
     section_header,
     state::ProcessGroupStats,
     theme, try_handle_connection_nav,
-    widgets::braille_graph,
+    widgets::{badge, braille_graph},
 };
 
 /// Overview tab — connection list + stats sidebar. Reads every
@@ -464,9 +464,14 @@ fn draw_connections_list(
     let widths = column_constraints(&columns);
     let header = build_header(&columns, ui_state);
 
+    let selected = ui_state.get_selected_index(connections);
     let rows: Vec<Row> = visible_connections
         .iter()
-        .map(|conn| connection_row(conn, &columns, ui_state, dns_resolver, None))
+        .enumerate()
+        .map(|(i, conn)| {
+            let is_selected = selected == Some(scroll_offset + i);
+            connection_row(conn, &columns, ui_state, dns_resolver, None, is_selected)
+        })
         .collect();
 
     render_row_table(
@@ -476,7 +481,7 @@ fn draw_connections_list(
         rows,
         &widths,
         RowWindow {
-            selected: ui_state.get_selected_index(connections),
+            selected,
             scroll_offset,
             total_rows: connections.len(),
             visible_rows,
@@ -484,6 +489,10 @@ fn draw_connections_list(
         click_regions,
     );
 }
+
+/// Longest filter query shown in the title chip; longer queries are cut
+/// with an ellipsis so the chip cannot crowd out the title itself.
+const FILTER_CHIP_MAX: usize = 20;
 
 /// Shared section title for the flat and grouped connection tables. The
 /// visual grammar stays consistent while aggregate mode names its view.
@@ -508,6 +517,13 @@ fn connections_title<'a>(
             format!(" · {shown} {counter}"),
             theme::fg(theme::muted()),
         ));
+        // The query itself rides along as a chip, so what is being
+        // filtered on stays visible without reopening filter mode.
+        let query = ui_state.filter_query.trim();
+        if !query.is_empty() {
+            spans.push(Span::raw(" "));
+            spans.extend(badge::chip(&truncate_with_ellipsis(query, FILTER_CHIP_MAX)));
+        }
     }
 
     if ui_state.sort_column != SortColumn::CreatedAt {
@@ -560,9 +576,11 @@ fn draw_grouped_connections_list(
     let widths = column_constraints(&columns);
     let header = build_header(&columns, ui_state);
 
+    let selected = ui_state.get_selected_grouped_index(grouped_rows);
     let rows: Vec<Row> = visible_grouped
         .iter()
-        .map(|row| match row {
+        .enumerate()
+        .map(|(i, row)| match row {
             GroupedRow::Group {
                 process_name,
                 stats,
@@ -594,6 +612,7 @@ fn draw_grouped_connections_list(
                     ui_state,
                     dns_resolver,
                     Some(process_cell),
+                    selected == Some(scroll_offset + i),
                 )
             }
         })
@@ -606,7 +625,7 @@ fn draw_grouped_connections_list(
         rows,
         &widths,
         RowWindow {
-            selected: ui_state.get_selected_grouped_index(grouped_rows),
+            selected,
             scroll_offset,
             total_rows: grouped_rows.len(),
             visible_rows,
@@ -641,9 +660,7 @@ fn group_header_row<'a>(
                         ),
                         Span::styled(
                             stats.historic_count.to_string(),
-                            Style::default()
-                                .fg(Color::DarkGray)
-                                .add_modifier(Modifier::DIM | Modifier::BOLD),
+                            theme::fg(theme::faint()).add_modifier(Modifier::DIM | Modifier::BOLD),
                         ),
                         Span::styled(")".to_string(), group_style),
                     ])
@@ -675,15 +692,14 @@ fn group_header_row<'a>(
 }
 
 /// Draw stats panel
-/// Render a single-row horizontal rule between sections. Uses the default
-/// terminal foreground so it matches the surrounding `Block` borders rather
-/// than rendering muted gray.
+/// Render a single-row horizontal rule between sections, styled with the
+/// theme border color so it matches every other rule in the chrome.
 fn render_section_separator(f: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
     let rule: String = "─".repeat(area.width as usize);
-    let para = Paragraph::new(Line::from(rule));
+    let para = Paragraph::new(Line::from(rule)).style(theme::fg(theme::border()));
     f.render_widget(para, area);
 }
 
@@ -1561,13 +1577,24 @@ mod tests {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
+        // The default (muted) theme has no selection tint, so the chip
+        // renders in its bracket form.
         assert_eq!(
             title_text(connections_title(&filtered, false, Some(7))),
-            " Live Connections · 7 shown"
+            " Live Connections · 7 shown [port:443]"
         );
         assert_eq!(
             title_text(connections_title(&filtered, true, Some(3))),
-            " Process Aggregate · 3 processes"
+            " Process Aggregate · 3 processes [port:443]"
+        );
+
+        let long = UIState {
+            filter_query: "process:some-very-long-daemon-name".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(
+            title_text(connections_title(&long, false, Some(1))),
+            " Live Connections · 1 shown [process:some-very-l…]"
         );
 
         let whitespace = UIState {

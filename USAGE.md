@@ -63,8 +63,8 @@ rustnet --refresh-interval 2000
 # Disable deep packet inspection
 rustnet --no-dpi
 
-# Restore the original full-color palette
-rustnet --theme classic
+# Pick a color theme (muted, vivid, catppuccin-mocha, tokyo-night, gruvbox, nord)
+rustnet --theme tokyo-night
 
 # Disable reverse DNS lookups (enabled by default)
 rustnet --no-resolve-dns
@@ -95,8 +95,9 @@ Options:
       --pcap-export <FILE>               Export captured packets to PCAP file for Wireshark analysis
       --pcapng-export <FILE>             Export captured packets to annotated PCAPNG file for Wireshark analysis
       --no-color                         Disable all colors in the UI (also respects NO_COLOR env var)
-      --theme <PRESET>                   Color theme preset: "muted" (single accent, color reserved
-                                         for signals, default) or "classic" (original full-color palette)
+      --theme <PRESET>                   Color theme: muted (default), vivid, catppuccin-mocha,
+                                         tokyo-night, gruvbox, nord. Overrides the theme set in the
+                                         config file (~/.config/rustnet/config.toml)
       --geoip-country <PATH>             Path to GeoLite2-Country.mmdb (auto-discovered if not specified)
       --geoip-asn <PATH>                 Path to GeoLite2-ASN.mmdb (auto-discovered if not specified)
       --geoip-city <PATH>                Path to GeoLite2-City.mmdb (auto-discovered if not specified)
@@ -210,15 +211,57 @@ Select the color theme preset:
 
 - **`muted`** (default): A restrained palette with one cyan accent. Addresses
   keep calm colors (remote = blue, local = cyan); everything else uses color
-  only for *signals* — transitional connection states, staleness (yellow/red
+  only for *signals*: transitional connection states, staleness (yellow/red
   rows), and live bandwidth.
-- **`classic`**: The original full-color palette from earlier releases, with a
-  distinct color per column.
+- **`vivid`**: The same ANSI-16 palette as `muted`, but the chrome itself takes
+  color: yellow headings and keys, magenta borders, and a distinct color per
+  column.
+- **`catppuccin-mocha`**, **`tokyo-night`**, **`gruvbox`**, **`nord`**:
+  Truecolor renditions of the popular palettes. On terminals without truecolor
+  support they fall back to the nearest ANSI-16 colors.
 
 ```bash
-# Bring back the original full-color look
-rustnet --theme classic
+# Color the chrome too, with a distinct color per column
+rustnet --theme vivid
+
+# Use a truecolor theme
+rustnet --theme tokyo-night
 ```
+
+The theme can also be set in an optional config file at
+`~/.config/rustnet/config.toml` (`$XDG_CONFIG_HOME/rustnet/config.toml` when
+set; `%APPDATA%\rustnet\config.toml` on Windows), so the flag is not needed on
+every run. The `[theme.overrides]` table optionally replaces individual colors:
+
+```toml
+[theme]
+name = "tokyo-night"
+
+[theme.overrides]
+accent = "#ff9e64"
+border = "darkgray"
+```
+
+Override values are ANSI color names (`red`, `lightblue`, `darkgray`, ...) or
+`#rrggbb` hex. Valid keys: `accent`, `ok`, `warn`, `err`, `info`, `special`,
+`muted`, `faint`, `text`, `heading`, `label`, `key`, `border`, `rx`, `tx`,
+`rx_wave`, `tx_wave`, `selection_bg`, `selection_fg`, `status_bg`.
+
+Precedence: `--theme` on the command line overrides the config file, which
+overrides the `muted` default. A missing config file is fine; an unreadable or
+invalid file, or a bad override value, prints a warning at startup and falls
+back to the defaults. Overrides that leave a foreground/background pair below
+3:1 contrast also print a startup warning, though the colors are used as
+given. Under `sudo rustnet`, the config of the user who ran sudo is read
+rather than root's, and the file must be owned by that user.
+
+On light terminal backgrounds, ANSI Gray (the muted/label text tier of the
+`muted` and `vivid` presets) is nearly unreadable, so at startup rustnet asks
+the terminal for its background color (an OSC 11 query, Unix only) and darkens
+those gray tiers to ANSI DarkGray when the background reports as light; the
+per-process name tints darken likewise. Terminals that do not answer the query
+keep the theme as-is, and explicit `[theme.overrides]` values are never
+touched.
 
 Related: `--no-color` disables all colors entirely (also honors the `NO_COLOR`
 environment variable).

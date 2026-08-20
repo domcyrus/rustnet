@@ -1,7 +1,7 @@
 use anyhow::Result;
 use log::{LevelFilter, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
-use rustnet_monitor::{app, cli, network, ui};
+use rustnet_monitor::{app, cli, config, network, ui};
 use simplelog::{ConfigBuilder, WriteLogger};
 use std::fs;
 use std::io;
@@ -96,13 +96,35 @@ fn main() -> Result<()> {
         ui::set_no_color(true);
     }
 
-    // Color theme preset
-    let theme_preset = match matches.get_one::<String>("theme").map(String::as_str) {
-        Some("classic") => ui::ThemePreset::Classic,
-        _ => ui::ThemePreset::Muted,
-    };
-    info!("Using {theme_preset:?} color theme");
-    ui::set_theme_preset(theme_preset);
+    // Color theme: CLI --theme > config file > muted default. Warnings go to
+    // stderr here, before the terminal enters raw mode.
+    let user_config = config::load();
+    let theme_name = matches
+        .get_one::<String>("theme")
+        .map(String::as_str)
+        .or(user_config.theme.as_deref())
+        .unwrap_or("muted");
+    let preset = ui::ThemePreset::from_name(theme_name).unwrap_or_else(|| {
+        // Only reachable via the config file; clap validates the CLI value.
+        eprintln!("rustnet: unknown theme {theme_name:?} in config, using \"muted\"");
+        ui::ThemePreset::Muted
+    });
+    let mut spec = ui::ThemeSpec::builtin(preset);
+    for (token, value) in &user_config.overrides {
+        if let Err(e) = spec.set_token(token, value) {
+            eprintln!("rustnet: ignoring theme override {token:?}: {e}");
+        }
+    }
+    info!("Using {preset:?} color theme");
+    // ANSI Gray (the muted/label text tier) is nearly unreadable on light
+    // backgrounds, so ask the terminal for its background (OSC 11) and
+    // darken those tiers when it reports a light one. Skipped under
+    // NO_COLOR, where no colors are emitted at all.
+    if !no_color && ui::detect_light_background() == Some(true) {
+        info!("Light terminal background detected; darkening gray text tiers");
+        spec.adapt_to_light_background();
+    }
+    ui::set_theme(ui::Theme::resolve(&spec, ui::detect_truecolor()));
 
     // GeoIP configuration
     if matches.get_flag("no-geoip") {
@@ -765,14 +787,13 @@ where
 
         // Update visible rows for page navigation based on terminal height.
         // Chrome rows: tab bar (2) + section title (1) + table header incl.
-        // margin (2) + status bar (1) = 6, plus the filter line (1) when a
-        // filter is being edited or active.
+        // margin (2) + status bar (1) = 6, plus the filter line (1) while a
+        // filter is being typed. This must track the layout in `ui::draw`
+        // exactly: a confirmed filter keeps no row of its own, so counting
+        // one here would scroll the selection a row early and hand the
+        // scrollbar a viewport shorter than what is drawn.
         if let Ok(size) = terminal.size() {
-            let chrome = if ui_state.filter_mode || ui_state.has_active_filter() {
-                7
-            } else {
-                6
-            };
+            let chrome = if ui_state.filter_row_visible() { 7 } else { 6 };
             ui_state.visible_rows = (size.height as usize).saturating_sub(chrome);
         }
 

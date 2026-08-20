@@ -50,12 +50,18 @@ const BANDWIDTH_WIDTH: u16 = 11;
 /// Floor for the Remote column; bare "ip:port" for IPv4 fits in 21.
 const REMOTE_MIN_WIDTH: u16 = 21;
 
+/// Selection bar drawn in front of the highlighted row. It is the row
+/// highlight symbol, so it costs no column width, and it stays the
+/// selection cue when colors are off.
+pub(in crate::ui) const SELECTION_BAR: &str = "▌";
+
 /// One of the connection-table columns. Headers use short labels and
 /// single-cell glyphs (↓ ↑ ·) only — multi-width emoji are deliberately
 /// avoided because double-width glyphs break ratatui column alignment
 /// in many terminals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::ui) enum ColumnId {
+    /// Narrow gutter holding the connection's state dot.
     Process,
     Remote,
     Local,
@@ -96,11 +102,14 @@ impl Column {
     }
 }
 
-/// Fixed chrome the table adds around the column widths: the row
-/// highlight symbol "> " (2) plus the inter-column spacing.
+/// Fixed chrome the table adds around the column widths: the 1-cell
+/// selection bar drawn as the row highlight symbol, plus the
+/// inter-column spacing. Every caller of this grid (the Overview lists
+/// and the Details continuity strip) draws the same bar, so the
+/// reserve is exact and the last column lands flush right.
 fn table_chrome(column_count: usize) -> u16 {
     let spacing = column_count.saturating_sub(1) as u16; // default column_spacing(1)
-    2 + spacing
+    1 + spacing
 }
 
 /// Pick the visible column set for `available_width` (the table area's
@@ -109,8 +118,9 @@ fn table_chrome(column_count: usize) -> u16 {
 ///
 /// Too narrow: whole columns are hidden in a fixed degradation order
 /// (Location → Service → Local → RTT → Application shrinks to compact →
-/// State) rather than truncating cells. The floor is Process · Remote ·
-/// App · Bandwidth; below that ratatui clips columns from the right.
+/// State) rather than truncating cells. The floor is Process ·
+/// Remote · App · Bandwidth; below that ratatui clips columns from the
+/// right.
 ///
 /// Width to spare: the surplus is distributed to the flexible columns
 /// proportionally to their weight (Remote 4 · App 3 · Process 2 ·
@@ -399,10 +409,18 @@ pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UIState) ->
 /// Row-level staleness styling shared by every connection row. Fresh rows
 /// keep per-cell colors. Historic rows turn gray, while expiring rows stay
 /// yellow through the warning window and intensify toward red near removal.
-fn staleness_style(conn: &Connection) -> (Option<Style>, bool) {
+///
+/// A selected historic row on a theme with a selection tint keeps its
+/// per-cell colors instead: the faint whole-row fg is unreadable against
+/// the selection band, and the "closed" state still marks the row.
+fn staleness_style(conn: &Connection, selected: bool) -> (Option<Style>, bool) {
     let staleness = conn.staleness_ratio();
     if conn.is_historic {
-        (Some(theme::historic_row()), false)
+        if selected && theme::selection_has_bg() {
+            (None, true)
+        } else {
+            (Some(theme::historic_row()), false)
+        }
     } else if let Some(intensity) = theme::expiry_glow_intensity(staleness) {
         let color = theme::expiry_glow(intensity);
         let style = if intensity >= 0.6 {
@@ -420,15 +438,17 @@ fn staleness_style(conn: &Connection) -> (Option<Style>, bool) {
 ///
 /// `process_override` replaces the Process cell content (the grouped
 /// view passes the tree connector + PID since the group header above
-/// already names the process).
+/// already names the process). `selected` marks the table's highlighted
+/// row so historic rows can stay readable on the selection band.
 pub(in crate::ui) fn connection_row<'a>(
     conn: &'a Connection,
     columns: &[Column],
     ui_state: &UIState,
     dns_resolver: Option<&DnsResolver>,
     process_override: Option<Line<'a>>,
+    selected: bool,
 ) -> Row<'a> {
-    let (row_override, color_cells) = staleness_style(conn);
+    let (row_override, color_cells) = staleness_style(conn, selected);
     let style_if_colored = |c: Color| {
         if color_cells {
             theme::fg(c)
@@ -447,7 +467,7 @@ pub(in crate::ui) fn connection_row<'a>(
                 }
                 let full = process_text(conn);
                 Cell::from(truncate_with_ellipsis(&full, col.width as usize))
-                    .style(style_if_colored(theme::field_process()))
+                    .style(process_style(conn, color_cells))
             }
             ColumnId::Remote => {
                 let (display, attributed) =
@@ -512,6 +532,21 @@ pub(in crate::ui) fn connection_row<'a>(
     match row_override {
         Some(style) => row.style(style),
         None => row,
+    }
+}
+
+/// Style for the Process cell: the identity tint keyed on the process
+/// name, falling back to the shared process color when the theme has no
+/// identity hues (NO_COLOR, no truecolor, vivid preset). Rows painted
+/// whole by the staleness pass keep that paint instead.
+fn process_style(conn: &Connection, color_cells: bool) -> Style {
+    if !color_cells {
+        return Style::default();
+    }
+    let base = theme::fg(theme::field_process());
+    match conn.process_name.as_deref() {
+        Some(name) => theme::identity_color(name).map(theme::fg).unwrap_or(base),
+        None => base,
     }
 }
 
@@ -591,7 +626,7 @@ pub(in crate::ui) fn bandwidth_cell<'a>(rx_bps: f64, tx_bps: f64, color_cells: b
 
     let line = if !color_cells {
         Line::from(format!("{rx}/{tx}"))
-    } else if !active && !theme::is_classic() {
+    } else if !active && !theme::is_vivid() {
         Line::from(Span::styled(
             format!("{rx}/{tx}"),
             theme::fg(theme::muted()),
@@ -654,7 +689,7 @@ pub(in crate::ui) fn render_row_table(
     let connections_table = Table::new(rows, widths)
         .header(header)
         .row_highlight_style(theme::row_highlight())
-        .highlight_symbol("> ");
+        .highlight_symbol(Line::styled(SELECTION_BAR, theme::fg(theme::accent())));
 
     let table_area = Rect::new(area.x, area.y, area.width.saturating_sub(2), area.height);
     f.render_stateful_widget(connections_table, table_area, &mut state);
@@ -713,14 +748,15 @@ mod tests {
         assert!((midpoint - 0.5).abs() < 0.000_001);
         assert_eq!(theme::expiry_glow_intensity(1.0), Some(1.0));
         assert_eq!(theme::expiry_glow_intensity(1.5), Some(1.0));
-        assert_eq!(theme::expiry_glow(0.0), Color::Rgb(0xFA, 0xCC, 0x15));
-        assert_eq!(theme::expiry_glow(0.5), Color::Rgb(0xFB, 0x92, 0x3C));
-        assert_eq!(theme::expiry_glow(1.0), Color::Rgb(0xFF, 0x2D, 0x55));
+        // Endpoints of the muted theme's derived warn-to-err expiry ramp.
+        assert_eq!(theme::expiry_glow(0.0), Color::Rgb(250, 164, 65));
+        assert_eq!(theme::expiry_glow(0.5), Color::Rgb(247, 108, 59));
+        assert_eq!(theme::expiry_glow(1.0), Color::Rgb(244, 52, 52));
     }
 
     // Width math for the full set with Location at floor widths:
-    // 22+21+18+4+10+24+12+7+11 = 129 content + chrome(9 cols) = 10 -> 139.
-    const FULL_WIDTH: u16 = 139;
+    // 22+21+18+4+10+24+12+7+11 = 129 content + chrome(9 cols) = 9 -> 138.
+    const FULL_WIDTH: u16 = 138;
 
     #[test]
     fn select_columns_shows_everything_when_wide() {
@@ -749,31 +785,31 @@ mod tests {
         assert!(!ids(&cols).contains(&ColumnId::Location));
         assert!(ids(&cols).contains(&ColumnId::Service));
 
-        // 22+21+18+10+24+12+7+11 = 125 + chrome(8) = 134 -> below that Service goes.
-        let cols = select_columns(133, true);
+        // 22+21+18+10+24+12+7+11 = 125 + chrome(8) = 133 -> below that Service goes.
+        let cols = select_columns(132, true);
         assert!(!ids(&cols).contains(&ColumnId::Service));
         assert!(ids(&cols).contains(&ColumnId::Local));
 
-        // 22+21+18+24+12+7+11 = 115 + chrome(7) = 123 -> below that Local goes.
-        let cols = select_columns(123, true);
+        // 22+21+18+24+12+7+11 = 115 + chrome(7) = 122 -> below that Local goes.
+        let cols = select_columns(122, true);
         assert!(ids(&cols).contains(&ColumnId::Local));
         assert_eq!(width_of(&cols, ColumnId::Application), APP_WIDTH_FULL);
-        let cols = select_columns(122, true);
+        let cols = select_columns(121, true);
         assert!(!ids(&cols).contains(&ColumnId::Local));
 
-        // 22+21+24+12+7+11 = 97 + chrome(6) = 104 -> below that RTT goes.
-        let cols = select_columns(104, true);
-        assert!(ids(&cols).contains(&ColumnId::Rtt));
+        // 22+21+24+12+7+11 = 97 + chrome(6) = 103 -> below that RTT goes.
         let cols = select_columns(103, true);
+        assert!(ids(&cols).contains(&ColumnId::Rtt));
+        let cols = select_columns(102, true);
         assert!(!ids(&cols).contains(&ColumnId::Rtt));
 
-        // 22+21+24+12+11 = 90 + chrome(5) = 96 -> below that App compacts.
-        let cols = select_columns(95, true);
+        // 22+21+24+12+11 = 90 + chrome(5) = 95 -> below that App compacts.
+        let cols = select_columns(94, true);
         assert_eq!(width_of(&cols, ColumnId::Application), APP_WIDTH_COMPACT);
         assert!(ids(&cols).contains(&ColumnId::State));
 
-        // 22+21+14+12+11 = 80 + chrome(5) = 86 -> below that State goes.
-        let cols = select_columns(85, true);
+        // 22+21+14+12+11 = 80 + chrome(5) = 85 -> below that State goes.
+        let cols = select_columns(84, true);
         assert_eq!(
             ids(&cols),
             vec![
@@ -1025,5 +1061,32 @@ mod tests {
         // no name, with pid -> "placeholder (pid)"
         conn.pid = Some(42);
         assert_eq!(process_text(&conn), format!("{NONE_PLACEHOLDER} (42)"));
+    }
+
+    fn tcp_conn(state: TcpState) -> Connection {
+        Connection::new(
+            Protocol::Tcp,
+            "192.168.1.10:51234".parse().unwrap(),
+            "140.82.121.4:443".parse().unwrap(),
+            ProtocolState::Tcp(state),
+        )
+    }
+
+    #[test]
+    fn process_style_falls_back_without_identity_hues() {
+        let mut conn = tcp_conn(TcpState::Established);
+        conn.process_name = Some("firefox".to_string());
+
+        // Whole-row paint wins over any per-cell color.
+        assert_eq!(process_style(&conn, false), Style::default());
+
+        // The default test theme resolves without truecolor, so there are
+        // no identity hues and the shared process color stands.
+        let base = theme::fg(theme::field_process());
+        assert_eq!(process_style(&conn, true), base);
+
+        // Unnamed processes never hash the placeholder.
+        conn.process_name = None;
+        assert_eq!(process_style(&conn, true), base);
     }
 }

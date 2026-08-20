@@ -5,11 +5,14 @@
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Color, Style},
     widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
 use crate::ui::theme;
+
+/// Scrollbar thumb: a right half block, so the bar reads as a thin rule on
+/// the outer edge of its column instead of a full-width slab.
+const THUMB: &str = "\u{2590}";
 
 /// Render a vertical scrollbar on the right edge of `area` when the
 /// content overflows the viewport. `position` is the scroll offset of
@@ -39,27 +42,31 @@ pub(in crate::ui) fn draw_scrollbar(
     let mut scrollbar_state = ScrollbarState::new(scroll_positions)
         .position(position)
         .viewport_content_length(viewport);
-    // Thumb in the terminal's default foreground so it matches the
-    // content; only the track recedes into the chrome gray. The fg
-    // must be set explicitly (`Color::Reset`), not left empty: ratatui
-    // styles are patches, and an empty patch lets the thumb inherit
-    // whatever color the underlying cells already have (on the Help
-    // tab the scrollbar rides the panel border, which is gray, and the
-    // thumb would blend into the track).
+    // A half-block thumb in the accent color, riding an unpainted track.
+    // The thumb alone carries both position and proportion, so the track
+    // rule only adds a second vertical line beside the pane chrome that
+    // already has one. The half block hugs the outer edge of its column,
+    // keeping the bar clear of the right-aligned data beside it.
+    //
+    // The thumb fg must be set explicitly, not left empty: ratatui styles
+    // are patches, and an empty patch lets the thumb inherit whatever color
+    // the underlying cells already have (on the Help tab the scrollbar
+    // rides the panel border, which is gray, and the thumb would vanish
+    // into it). Under NO_COLOR the glyph keeps it legible on its own.
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)
-        .track_style(theme::fg(theme::border()))
-        .thumb_style(Style::default().fg(Color::Reset));
+        .track_symbol(None)
+        .thumb_symbol(THUMB)
+        .thumb_style(theme::fg(theme::accent()));
     f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
 
 #[cfg(test)]
 mod tests {
-    /// Render `draw_scrollbar` into a test buffer and report whether
-    /// any non-space glyph landed in the rightmost column (the scrollbar
-    /// track/thumb sits on the right border).
-    fn scrollbar_renders(total_rows: usize, position: usize, viewport: usize) -> bool {
+    /// Glyphs `draw_scrollbar` paints down the rightmost column (the
+    /// scrollbar track/thumb sits on the right border).
+    fn scrollbar_glyphs(total_rows: usize, position: usize, viewport: usize) -> Vec<String> {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         use ratatui::layout::Rect;
@@ -73,7 +80,31 @@ mod tests {
             .expect("draw scrollbar");
         let buffer = terminal.backend().buffer();
         let right_x = 19;
-        (0..12).any(|y| buffer[(right_x, y)].symbol() != " ")
+        (0..12)
+            .map(|y| buffer[(right_x, y)].symbol().to_string())
+            .collect()
+    }
+
+    /// Whether the scrollbar painted anything at all.
+    fn scrollbar_renders(total_rows: usize, position: usize, viewport: usize) -> bool {
+        scrollbar_glyphs(total_rows, position, viewport)
+            .iter()
+            .any(|glyph| glyph != " ")
+    }
+
+    #[test]
+    fn thumb_is_a_thin_bar_rather_than_a_full_block() {
+        let glyphs = scrollbar_glyphs(100, 0, 10);
+        assert!(
+            glyphs.iter().any(|glyph| glyph == super::THUMB),
+            "no thumb painted: {glyphs:?}"
+        );
+        assert!(
+            !glyphs
+                .iter()
+                .any(|glyph| glyph == ratatui::symbols::block::FULL),
+            "thumb still renders as a full block: {glyphs:?}"
+        );
     }
 
     #[test]

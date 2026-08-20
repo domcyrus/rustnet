@@ -1,7 +1,10 @@
-//! Filter input line shown above the status bar whenever the user
-//! has either entered filter mode or has a persistent filter active.
-//! A single borderless row: accent " / " prompt, the query, and a
-//! muted right-side hint with the relevant keys.
+//! Filter input line shown above the status bar while the user is typing
+//! a filter. A single borderless row: accent " / " prompt, the query with
+//! its cursor, and a muted right-side hint.
+//!
+//! It is an editing surface, not a status readout: once a query is
+//! confirmed the row is gone, and the Connections title chip plus the tab
+//! bar's activity dot carry the filter state instead.
 
 use ratatui::{
     Frame,
@@ -16,22 +19,11 @@ use crate::ui::{UIState, theme};
 pub(crate) const FILTER_INPUT_HEIGHT: u16 = 1;
 
 pub(in crate::ui) fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
-    let query = if ui_state.filter_mode {
-        // Show cursor when in filter mode
-        let mut display_query = ui_state.filter_query.clone();
-        if ui_state.filter_cursor_position <= display_query.len() {
-            display_query.insert(ui_state.filter_cursor_position, '|');
-        }
-        display_query
-    } else {
-        ui_state.filter_query.clone()
-    };
-
-    let hint = if ui_state.filter_mode {
-        "↑↓ navigate · Enter confirm · Esc cancel "
-    } else {
-        "filter active · Esc clears "
-    };
+    let mut query = ui_state.filter_query.clone();
+    if ui_state.filter_cursor_position <= query.len() {
+        query.insert(ui_state.filter_cursor_position, '|');
+    }
+    let hint = "↑↓ navigate · Enter confirm · Esc cancel ";
 
     let line = Line::from(vec![
         Span::styled(" / ", theme::bold_fg(theme::accent())),

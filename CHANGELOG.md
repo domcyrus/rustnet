@@ -45,6 +45,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **Light Background Detection**: at startup rustnet asks the terminal for its
+  background color (OSC 11, Unix only) and, on a light background, darkens the
+  ANSI Gray muted/label text tiers to DarkGray, which were nearly unreadable on
+  white; the per-process identity tints darken likewise. Terminals that stay
+  silent past a 150 ms timeout keep the theme unchanged, and explicit
+  `[theme.overrides]` values are never touched (#563)
+- **Theme Contrast Warning**: config file color overrides that leave a
+  foreground/background pair below 3:1 contrast now print a startup warning.
+  Only pairs the override touches are judged, so the built-in palettes are
+  never second-guessed, and the colors are never altered. Body text is the
+  terminal's own foreground, so pairs involving it cannot be measured (#563)
+- **Truecolor Detection on Direct-Color Terminals**: `TERM=*-direct` entries
+  advertise 24-bit color without setting `COLORTERM`, and are no longer
+  downgraded to ANSI-16 (#563)
+- **Config File Under sudo**: `sudo rustnet` now reads the invoking user's
+  config rather than root's, resolving their home from the passwd database
+  the same way the privilege drop resolves `SUDO_UID`. A config not owned by
+  that user is refused, since the read happens with root privileges (#563)
+- **New Theme Presets**: `--theme` gains `catppuccin-mocha`, `tokyo-night`,
+  `gruvbox`, and `nord` truecolor themes with ANSI fallback (#563)
+- **Config File**: optional `~/.config/rustnet/config.toml` sets the theme and
+  per-color overrides; `--theme` takes precedence (#563)
 - **Passive DNS Attribution**: connections without an SNI or HTTP Host header
   (encrypted QUIC, plain TCP/UDP) are now tagged with a hostname inferred from
   DNS responses observed on the wire within the last 10 seconds, shown as a
@@ -193,6 +215,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Scrollbar**: the thumb is now a thin accent-colored bar on the outer edge
+  of its column instead of a full block in the terminal foreground, and the
+  track rule is gone, so the bar reads as a cue rather than a second vertical
+  line beside the data (#563)
+- **`--theme classic` Renamed to `vivid`**: the name now describes the colors
+  rather than the provenance. It is the same ANSI-16 palette as `muted` with
+  the chrome colored: yellow headings and keys, magenta borders. `classic` is
+  no longer accepted (#563)
+- **Status Bar Rebuilt Around Priority**: the footer now shows the active
+  tab's context actions on the left and a fixed `h help  q quit` cluster
+  pinned right. The cluster is reserved before any context action is placed,
+  so quit never falls off the edge; when the terminal is too narrow to spell
+  the actions out, the labels go first and the keys stand alone. Tab
+  navigation hints are gone, since the numbered tab bar already advertises
+  them, and the exhaustive keymap lives on the Help tab. Trailing actions
+  are dropped one at a time to keep the remaining labels readable, and only
+  a very narrow terminal falls back to bare keys. Keys are bright text on
+  the terminal background rather than a reverse-video band, and Details
+  only offers `ctrl-d/u` when the record outgrows its pane (#563)
+- **Status Bar Alerts Match the Chrome**: the quit prompt, copy feedback,
+  and capture errors now carry their meaning in a bold signal color instead
+  of filling the row with a solid yellow, green, or red band. `NO_COLOR`
+  keeps the reverse-video band, where it is the only cue available (#563)
+- **Copy Hints Follow the Sandbox**: on Linux under the default sandbox the
+  clipboard cannot be reached, so the `c copy` hints and the Details
+  "click a field to copy" affordance are hidden rather than offering a key
+  that can only report an error. `--no-sandbox` restores them (#563)
+- **Filtering Is a Mode, Not Four Notices**: the filter input row now shows
+  only while a query is being typed. Once confirmed it collapses, leaving the
+  query chip in the Connections title and the activity dot on the Overview
+  tab, and the status bar returns to actions with `esc clear filter` first.
+  While typing, the footer offers only what the filter editor handles, since
+  every other key types a character into the query (#563)
+- **Connection Table Cues**: the selected row now leads with an accent bar,
+  and process names get a stable per-name tint (#563)
+- **Tab Bar Status Cues**: the tab row right-aligns the capture interface and
+  its link type, with a dot that turns red while capture is failing, and marks
+  Overview with a `•` while a filter is active. The active filter query also
+  shows next to the connection count in the Connections title. The capture
+  cluster drops its link type, then itself, when the tab row gets tight (#563)
+- **Details Header Badges**: the Details header shows the connection state as a
+  colored pill plus chips for the current rates and RTT, dropping chips
+  right to left as the terminal narrows. Scrolled Details and Help panes dim the
+  line where the content continues, and long process paths now truncate from the
+  left so the binary name stays visible (#563)
+- **Loading Shimmer**: the loading screen text shimmers across the accent color
+  on truecolor terminals and stays static everywhere else (#563)
+- **TUI Restyle**: keycap-style status bar, realigned Help tab, and refined
+  bar, scrollbar, and selection styling (#563)
 - **Details Tab Application Card Alignment**: every protocol's Application
   card now renders a fixed row set with `-` placeholders instead of rows that
   appear and disappear with data availability; HTTPS shows its four rows even

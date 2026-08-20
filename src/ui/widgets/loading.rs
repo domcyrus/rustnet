@@ -1,13 +1,13 @@
 //! Startup splash shown while packet capture initializes: a breathing
-//! accent glow, a spinning braille spinner, and an animated wave in
-//! the same gradient family as the traffic graphs.
+//! accent glow, a spinning braille spinner, a shimmer running through
+//! the headline, and an animated wave in the same gradient family as
+//! the traffic graphs.
 
 use std::time::Duration;
 
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -21,6 +21,12 @@ const SPINNER: [char; 8] = ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '�
 /// `elapsed` to this bucket so repeated draws within one frame are
 /// byte-identical (and the first frame is deterministic for tests).
 pub(in crate::ui) const FRAME_MS: u64 = 120;
+
+/// Headline shimmer: cycles per second of the travelling highlight.
+const SHIMMER_SPEED: f64 = 0.7;
+/// Phase offset between neighboring characters, in cycles. Small enough
+/// that the crest reads as one band sliding along the text.
+const SHIMMER_STEP: f64 = 0.045;
 
 pub(in crate::ui) fn draw_loading_screen(f: &mut Frame, elapsed: Duration) {
     let chunks = Layout::default()
@@ -40,12 +46,12 @@ pub(in crate::ui) fn draw_loading_screen(f: &mut Frame, elapsed: Duration) {
     let glow = theme::accent_wave(0.35 + 0.55 * breath);
     let spinner = SPINNER[(elapsed.as_millis() as u64 / FRAME_MS) as usize % SPINNER.len()];
 
+    let mut headline = vec![Span::styled(format!("{spinner} "), theme::bold_fg(glow))];
+    headline.extend(shimmer_spans("Loading network connections...", secs));
+
     let loading_text = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled(format!("{spinner} "), theme::bold_fg(glow)),
-            Span::styled("Loading network connections...", Style::default()),
-        ]),
+        Line::from(headline),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Preparing capture and process attribution",
@@ -90,5 +96,60 @@ pub(in crate::ui) fn draw_loading_screen(f: &mut Frame, elapsed: Duration) {
             |intensity| theme::accent_wave((0.35 + 0.45 * breath) * intensity),
         );
         f.render_widget(Paragraph::new(lines), wave_area);
+    }
+}
+
+/// One span per character of `text`, each sampling the accent shimmer at
+/// its own phase so a highlight travels along the line. `secs` is the
+/// splash clock; the caller quantizes it, so a redraw inside one
+/// animation frame repeats byte for byte.
+///
+/// On themes and terminals without truecolor `shimmer_wave` returns the
+/// plain accent for every phase, which makes the headline a static
+/// accent line; under NO_COLOR `theme::fg` strips it back to plain text.
+fn shimmer_spans(text: &str, secs: f64) -> Vec<Span<'static>> {
+    text.chars()
+        .enumerate()
+        .map(|(i, ch)| {
+            let phase = secs * SHIMMER_SPEED - i as f64 * SHIMMER_STEP;
+            let t = 0.5 + 0.5 * (phase * std::f64::consts::TAU).sin();
+            Span::styled(ch.to_string(), theme::fg(theme::shimmer_wave(t)))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shimmer_preserves_the_text() {
+        let spans = shimmer_spans("Loading network connections...", 0.0);
+        assert_eq!(
+            spans.len(),
+            "Loading network connections...".chars().count()
+        );
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "Loading network connections...");
+    }
+
+    #[test]
+    fn shimmer_is_char_safe() {
+        let spans = shimmer_spans("héllo…", 1.5);
+        assert_eq!(spans.len(), 6);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "héllo…");
+    }
+
+    #[test]
+    fn shimmer_is_static_without_truecolor() {
+        // The default (muted) theme is ANSI, so every phase resolves to
+        // the same accent color and the splash simply stops animating.
+        let spans = shimmer_spans("abc", 0.0);
+        let later = shimmer_spans("abc", 3.0);
+        for (a, b) in spans.iter().zip(later.iter()) {
+            assert_eq!(a.style, b.style);
+            assert_eq!(a.style, theme::fg(theme::accent()));
+        }
     }
 }
