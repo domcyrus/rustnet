@@ -20,7 +20,7 @@
 //! contrast guard in `ui::theme`, which warns but never changes a color.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -55,7 +55,7 @@ pub fn load() -> UserConfig {
     let Some(path) = config_path() else {
         return UserConfig::default();
     };
-    let contents = match std::fs::read_to_string(&path) {
+    let contents = match read_config(&path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return UserConfig::default(),
         Err(e) => {
@@ -72,9 +72,49 @@ pub fn load() -> UserConfig {
     }
 }
 
+/// Read the config file. Under sudo the read happens with root privileges
+/// (before the privilege drop) at a path inside the invoking user's home,
+/// so a config not owned by that user is refused: following a planted
+/// symlink there would otherwise turn rustnet into a root file oracle.
+/// The owner comes from fstat on the opened file, leaving no window
+/// between check and read.
+fn read_config(path: &Path) -> std::io::Result<String> {
+    #[cfg(not(windows))]
+    {
+        use std::io::Read as _;
+        use std::os::unix::fs::MetadataExt as _;
+        let mut file = std::fs::File::open(path)?;
+        if let Some(uid) = sudo_uid() {
+            let owner = file.metadata()?.uid();
+            if owner != uid {
+                return Err(std::io::Error::other(format!(
+                    "owned by uid {owner}, not the invoking user (uid {uid})"
+                )));
+            }
+        }
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+        Ok(contents)
+    }
+    #[cfg(windows)]
+    {
+        std::fs::read_to_string(path)
+    }
+}
+
 /// Pure parsing core, unit-testable without the filesystem.
 fn parse(contents: &str) -> Result<UserConfig, String> {
-    let raw: RawConfig = toml::from_str(contents).map_err(|e| e.to_string())?;
+    // Not `e.to_string()`: the toml Display echoes the offending source
+    // line, and the file may have been read with root privileges, so its
+    // contents must never be reflected back to the caller's terminal.
+    let raw: RawConfig = toml::from_str(contents).map_err(|e| match e.span() {
+        Some(span) => {
+            let clamped = span.start.min(contents.len());
+            let line = contents[..clamped].bytes().filter(|&b| b == b'\n').count() + 1;
+            format!("{} (line {line})", e.message())
+        }
+        None => e.message().to_string(),
+    })?;
     Ok(UserConfig {
         theme: raw.theme.name,
         overrides: raw.theme.overrides.into_iter().collect(),
@@ -91,16 +131,21 @@ fn parse(contents: &str) -> Result<UserConfig, String> {
 /// own HOME is then correct), or when the passwd lookup yields nothing.
 #[cfg(not(windows))]
 fn invoking_user_home() -> Option<PathBuf> {
-    let uid: u32 = std::env::var("SUDO_UID").ok()?.parse().ok()?;
-    if uid == 0 {
-        return None;
-    }
+    sudo_uid()?;
     let user = std::env::var("SUDO_USER").ok().filter(|u| !u.is_empty())?;
     // Read the home field straight out of the passwd database rather than
     // assuming /home/<user>: it is wrong for root, for macOS (/Users), and
     // for anyone with a relocated home.
     let passwd = std::fs::read_to_string("/etc/passwd").ok()?;
     passwd_home(&passwd, &user)
+}
+
+/// The uid that invoked `sudo`, when running under it. `None` when not
+/// under sudo or when the invoker was root anyway.
+#[cfg(not(windows))]
+fn sudo_uid() -> Option<u32> {
+    let uid: u32 = std::env::var("SUDO_UID").ok()?.parse().ok()?;
+    (uid != 0).then_some(uid)
 }
 
 /// Home directory field for `user` in the contents of a passwd file.
@@ -216,6 +261,18 @@ selection_bg = "#3b4261"
     fn invalid_toml_is_an_error() {
         let err = parse("not [valid toml").unwrap_err();
         assert!(!err.is_empty());
+    }
+
+    #[test]
+    fn parse_error_never_echoes_file_contents() {
+        // A parse error on a file rustnet was never meant to read (here a
+        // shadow-style line) must not quote the offending source back.
+        let err = parse("root:$6$hunter2$abcdef:19000:0:99999:7:::").unwrap_err();
+        assert!(!err.contains("hunter2"), "{err}");
+        // The line number alone is fine and expected.
+        let err = parse("[theme]\nname = not-quoted\n").unwrap_err();
+        assert!(err.contains("(line 2)"), "{err}");
+        assert!(!err.contains("not-quoted"), "{err}");
     }
 
     #[test]

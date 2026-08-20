@@ -48,8 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Light Background Detection**: at startup rustnet asks the terminal for its
   background color (OSC 11, Unix only) and, on a light background, darkens the
   ANSI Gray muted/label text tiers to DarkGray, which were nearly unreadable on
-  white. Terminals that stay silent past a 150 ms timeout keep the theme
-  unchanged, and explicit `[theme.overrides]` values are never touched
+  white; the per-process identity tints darken likewise. Terminals that stay
+  silent past a 150 ms timeout keep the theme unchanged, and explicit
+  `[theme.overrides]` values are never touched (#563)
 - **Theme Contrast Warning**: config file color overrides that leave a
   foreground/background pair below 3:1 contrast now print a startup warning.
   Only pairs the override touches are judged, so the built-in palettes are
@@ -60,7 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   downgraded to ANSI-16 (#563)
 - **Config File Under sudo**: `sudo rustnet` now reads the invoking user's
   config rather than root's, resolving their home from the passwd database
-  the same way the privilege drop resolves `SUDO_UID` (#563)
+  the same way the privilege drop resolves `SUDO_UID`. A config not owned by
+  that user is refused, since the read happens with root privileges (#563)
 - **New Theme Presets**: `--theme` gains `catppuccin-mocha`, `tokyo-night`,
   `gruvbox`, and `nord` truecolor themes with ANSI fallback (#563)
 - **Config File**: optional `~/.config/rustnet/config.toml` sets the theme and

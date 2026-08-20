@@ -35,6 +35,12 @@ mod unix {
         let fd = tty.as_raw_fd();
         let saved = enter_quiet_read(fd)?;
         let rgb = query_background(&mut tty, fd);
+        // Discard whatever is still queued on the tty: a reply landing
+        // after the deadline, or the trailing `\` of an ST terminator
+        // read in a later chunk, would otherwise reach the TUI as
+        // phantom keystrokes. Best effort like the rest; a reply still
+        // in flight can arrive after the flush.
+        unsafe { libc::tcflush(fd, libc::TCIFLUSH) };
         // Best effort: the settings were valid a moment ago.
         unsafe { libc::tcsetattr(fd, libc::TCSANOW, &saved) };
         rgb.map(super::is_light)

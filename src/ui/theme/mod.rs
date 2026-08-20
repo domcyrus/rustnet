@@ -418,8 +418,9 @@ pub(super) fn identity_color(name: &str) -> Option<Color> {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
         return None;
     }
-    let hues = active().identity_hues?;
-    let (r, g, b) = derive::identity_rgb(hues, name);
+    let theme = active();
+    let hues = theme.identity_hues?;
+    let (r, g, b) = derive::identity_rgb(hues, name, theme.identity_lightness);
     Some(Color::Rgb(r, g, b))
 }
 

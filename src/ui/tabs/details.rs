@@ -867,6 +867,9 @@ pub(in crate::ui) fn draw_connection_details(
     let (has_country_db, _has_asn_db, _has_city_db) = ctx.app.get_geoip_status();
 
     if connections.is_empty() {
+        // Nothing rendered: clear the recorded scroll extent so the status
+        // bar stops offering ctrl-d/u for a record that is no longer there.
+        ui_state.details_scroll.clamp_for_render(0);
         return Ok(());
     }
 

@@ -78,6 +78,9 @@ pub struct Theme {
     /// Hue wheel for per-identity tints; `None` disables them (ANSI
     /// terminal, or the vivid preset, whose per-field palette is fixed).
     pub(super) identity_hues: Option<&'static [u16]>,
+    /// Lightness the identity tints are synthesized at: pastel on dark
+    /// backgrounds, darkened on light ones so they stay readable.
+    pub(super) identity_lightness: f64,
 }
 
 impl Theme {
@@ -166,6 +169,11 @@ impl Theme {
             // out: its per-field palette is fixed by design.
             identity_hues: (terminal_truecolor && !vivid && !spec.identity_hues.is_empty())
                 .then_some(spec.identity_hues),
+            identity_lightness: if spec.light_background {
+                IDENTITY_LIGHTNESS_ON_LIGHT
+            } else {
+                IDENTITY_LIGHTNESS
+            },
         };
 
         // NO_COLOR strips every color before it reaches the terminal, so
@@ -437,6 +445,10 @@ pub(super) fn contrast_warnings(spec: &ThemeSpec, theme: &Theme) -> Vec<String> 
 
 const IDENTITY_SATURATION: f64 = 0.45;
 const IDENTITY_LIGHTNESS: f64 = 0.68;
+/// On a light terminal background the pastel tints fall to roughly 2:1
+/// against white, so identities darken instead; 0.34 keeps the worst hue
+/// (yellow) above the same 3:1 floor the contrast guard enforces.
+const IDENTITY_LIGHTNESS_ON_LIGHT: f64 = 0.34;
 
 /// FNV-1a over the name's bytes: a stable, dependency-free hash, so the
 /// same process name keeps the same tint across runs and machines.
@@ -450,12 +462,12 @@ fn fnv1a(name: &str) -> u64 {
 }
 
 /// Tint for `name`: its hash picks a hue from `hues`, which is then
-/// synthesized at a fixed pastel saturation and lightness so every
-/// identity color carries the same weight. `hues` must be non-empty.
-pub(super) fn identity_rgb(hues: &[u16], name: &str) -> (u8, u8, u8) {
+/// synthesized at a fixed saturation and `lightness` so every identity
+/// color carries the same weight. `hues` must be non-empty.
+pub(super) fn identity_rgb(hues: &[u16], name: &str, lightness: f64) -> (u8, u8, u8) {
     debug_assert!(!hues.is_empty(), "identity hue list must be non-empty");
     let hue = hues[(fnv1a(name) % hues.len() as u64) as usize];
-    hsl_to_rgb(f64::from(hue), IDENTITY_SATURATION, IDENTITY_LIGHTNESS)
+    hsl_to_rgb(f64::from(hue), IDENTITY_SATURATION, lightness)
 }
 
 /// Shimmer ramp: the accent walking up to 24% lighter in three steps.
@@ -646,19 +658,50 @@ mod tests {
     #[test]
     fn identity_rgb_is_stable_per_name_and_spreads_across_hues() {
         let hues = super::super::definitions::IDENTITY_HUES;
-        assert_eq!(identity_rgb(hues, "firefox"), identity_rgb(hues, "firefox"));
-        assert_ne!(identity_rgb(hues, "firefox"), identity_rgb(hues, "curl"));
+        let l = IDENTITY_LIGHTNESS;
+        assert_eq!(
+            identity_rgb(hues, "firefox", l),
+            identity_rgb(hues, "firefox", l)
+        );
+        assert_ne!(
+            identity_rgb(hues, "firefox", l),
+            identity_rgb(hues, "curl", l)
+        );
 
         let names = [
             "firefox", "chrome", "curl", "ssh", "sshd", "systemd", "dockerd", "postgres", "redis",
             "nginx", "code", "slack", "spotify", "zoom",
         ];
         let distinct: std::collections::BTreeSet<_> =
-            names.iter().map(|n| identity_rgb(hues, n)).collect();
+            names.iter().map(|n| identity_rgb(hues, n, l)).collect();
         assert!(
             distinct.len() >= names.len() * 2 / 3,
             "identity hues clustered: {distinct:?}"
         );
+    }
+
+    #[test]
+    fn identity_tints_on_light_background_clear_the_contrast_floor() {
+        // Every hue on the wheel must stay readable as fg text on a white
+        // terminal background, the same 3:1 floor the contrast guard uses.
+        for &hue in super::super::definitions::IDENTITY_HUES {
+            let rgb = hsl_to_rgb(
+                f64::from(hue),
+                IDENTITY_SATURATION,
+                IDENTITY_LIGHTNESS_ON_LIGHT,
+            );
+            let ratio = contrast_ratio(rgb, (0xFF, 0xFF, 0xFF));
+            assert!(ratio >= 3.0, "hue {hue}: {ratio:.2}:1 against white");
+        }
+    }
+
+    #[test]
+    fn light_background_spec_darkens_identity_tints() {
+        let mut spec = ThemeSpec::builtin(ThemePreset::Muted);
+        let pastel = Theme::resolve(&spec, true).identity_lightness;
+        spec.adapt_to_light_background();
+        let darkened = Theme::resolve(&spec, true).identity_lightness;
+        assert!(darkened < pastel);
     }
 
     #[test]

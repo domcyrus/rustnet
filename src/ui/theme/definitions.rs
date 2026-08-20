@@ -106,6 +106,9 @@ pub struct ThemeSpec {
     /// of the identity's name (see `super::identity_color`). Not
     /// overridable from the config file.
     pub identity_hues: &'static [u16],
+    /// Whether the palette has been adapted to a light terminal background
+    /// (see [`Self::adapt_to_light_background`]).
+    pub light_background: bool,
 }
 
 /// Default identity hue wheel: 16 well-separated hues walked in a
@@ -187,7 +190,11 @@ impl ThemeSpec {
     /// that would emit it emits DarkGray instead. RGB values are left
     /// alone (the truecolor palettes are their authors' choices, and the
     /// ramp seeds are already mid-tone), as are `exact` user overrides.
+    /// The synthesized identity tints do darken: `Theme::resolve` reads
+    /// the flag this sets and lowers their lightness to clear the same
+    /// contrast floor on white.
     pub fn adapt_to_light_background(&mut self) {
+        self.light_background = true;
         // The optional bg/wave slots are skipped: no built-in puts Gray
         // there, and they are not text tiers.
         let tokens = [
@@ -446,6 +453,7 @@ fn muted_or_vivid(vivid: bool) -> ThemeSpec {
         selection_fg: None,
         status_bg: None,
         identity_hues: IDENTITY_HUES,
+        light_background: false,
     }
 }
 
@@ -474,6 +482,7 @@ fn catppuccin_mocha() -> ThemeSpec {
         selection_fg: None,
         status_bg: Some(rgb(0x313244, Color::DarkGray)),
         identity_hues: IDENTITY_HUES,
+        light_background: false,
     }
 }
 
@@ -502,6 +511,7 @@ fn tokyo_night() -> ThemeSpec {
         selection_fg: None,
         status_bg: Some(rgb(0x292E42, Color::DarkGray)),
         identity_hues: IDENTITY_HUES,
+        light_background: false,
     }
 }
 
@@ -534,6 +544,7 @@ fn gruvbox() -> ThemeSpec {
         selection_fg: None,
         status_bg: Some(rgb(0x3C3836, Color::DarkGray)),
         identity_hues: IDENTITY_HUES,
+        light_background: false,
     }
 }
 
@@ -562,6 +573,7 @@ fn nord() -> ThemeSpec {
         selection_fg: None,
         status_bg: Some(rgb(0x3B4252, Color::DarkGray)),
         identity_hues: IDENTITY_HUES,
+        light_background: false,
     }
 }
 

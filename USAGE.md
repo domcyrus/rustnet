@@ -250,14 +250,18 @@ Override values are ANSI color names (`red`, `lightblue`, `darkgray`, ...) or
 Precedence: `--theme` on the command line overrides the config file, which
 overrides the `muted` default. A missing config file is fine; an unreadable or
 invalid file, or a bad override value, prints a warning at startup and falls
-back to the defaults.
+back to the defaults. Overrides that leave a foreground/background pair below
+3:1 contrast also print a startup warning, though the colors are used as
+given. Under `sudo rustnet`, the config of the user who ran sudo is read
+rather than root's, and the file must be owned by that user.
 
 On light terminal backgrounds, ANSI Gray (the muted/label text tier of the
 `muted` and `vivid` presets) is nearly unreadable, so at startup rustnet asks
 the terminal for its background color (an OSC 11 query, Unix only) and darkens
-those gray tiers to ANSI DarkGray when the background reports as light.
-Terminals that do not answer the query keep the theme as-is, and explicit
-`[theme.overrides]` values are never touched.
+those gray tiers to ANSI DarkGray when the background reports as light; the
+per-process name tints darken likewise. Terminals that do not answer the query
+keep the theme as-is, and explicit `[theme.overrides]` values are never
+touched.
 
 Related: `--no-color` disables all colors entirely (also honors the `NO_COLOR`
 environment variable).

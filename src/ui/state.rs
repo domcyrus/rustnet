@@ -123,6 +123,10 @@ impl PaneScroll {
 
     pub fn reset(&mut self) {
         self.offset = 0;
+        // Forget the last render's extent too, so the hint gating does not
+        // keep advertising scroll for content that is gone; the next render
+        // reports the real extent again.
+        self.max.set(0);
     }
 
     /// Whether the last render had content beyond the viewport. Drives
