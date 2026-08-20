@@ -107,7 +107,7 @@ mod sorting;
 pub use sorting::sort_connections;
 
 mod clipboard;
-pub use clipboard::copy_to_clipboard;
+pub use clipboard::{clipboard_available, copy_to_clipboard};
 
 mod actions;
 pub use actions::clear_all_with_confirmation;
@@ -324,7 +324,13 @@ pub fn draw(
         draw_filter_input(f, ui_state, filter_area);
     }
 
-    draw_status_bar(f, ui_state, capture_error.as_deref(), status_area);
+    draw_status_bar(
+        f,
+        ui_state,
+        clipboard_available(app),
+        capture_error.as_deref(),
+        status_area,
+    );
 
     Ok(())
 }
@@ -851,7 +857,9 @@ mod snapshot_tests {
     #[test]
     fn status_bar_overview_default() {
         let ui_state = UIState::default();
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, None, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -861,7 +869,9 @@ mod snapshot_tests {
             selected_tab: 1,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, None, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -871,7 +881,9 @@ mod snapshot_tests {
             selected_tab: 2,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, None, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -881,7 +893,9 @@ mod snapshot_tests {
             selected_tab: 4,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, None, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -891,7 +905,9 @@ mod snapshot_tests {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, None, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -901,7 +917,9 @@ mod snapshot_tests {
             quit_confirmation: true,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, None, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -911,7 +929,9 @@ mod snapshot_tests {
             clear_confirmation: true,
             ..Default::default()
         };
-        let output = render(120, 1, |f| draw_status_bar(f, &ui_state, None, f.area()));
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
         insta::assert_snapshot!(output);
     }
 
@@ -922,6 +942,7 @@ mod snapshot_tests {
             draw_status_bar(
                 f,
                 &ui_state,
+                true,
                 Some("Capture stopped: The interface disappeared."),
                 f.area(),
             )
@@ -938,6 +959,7 @@ mod snapshot_tests {
             draw_status_bar(
                 f,
                 &ui_state,
+                true,
                 Some(
                     "Capture failed to start: eth0: You don't have permission to capture on that device (socket: Operation not permitted).",
                 ),

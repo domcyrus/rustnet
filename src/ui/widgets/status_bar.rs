@@ -40,8 +40,9 @@ const MIN_LABELED: usize = 3;
 /// Context actions for the active tab, most useful first. Tab navigation is
 /// deliberately absent: the numbered titles in the tab bar already advertise
 /// it, and the footer's room is better spent on actions that appear nowhere
-/// else on screen.
-fn context_hints(ui_state: &UIState) -> Vec<Hint> {
+/// else on screen. Copy drops out entirely when the clipboard is out of
+/// reach, rather than advertising a key that can only fail.
+fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
     match ui_state.selected_tab {
         // Overview
         0 => {
@@ -56,8 +57,10 @@ fn context_hints(ui_state: &UIState) -> Vec<Hint> {
                 ("a", "group"),
                 ("t", "history"),
                 ("i", "info"),
-                ("c", "copy"),
             ]);
+            if clipboard {
+                hints.push(("c", "copy"));
+            }
             hints
         }
         // Details
@@ -68,7 +71,10 @@ fn context_hints(ui_state: &UIState) -> Vec<Hint> {
             if ui_state.details_scroll.can_scroll() {
                 hints.push(("ctrl-d/u", "scroll"));
             }
-            hints.extend([("c", "copy remote addr"), ("esc", "back")]);
+            if clipboard {
+                hints.push(("c", "copy remote addr"));
+            }
+            hints.push(("esc", "back"));
             hints
         }
         // Activity, interface list
@@ -227,6 +233,7 @@ fn capture_error_text(cause: &str, width: u16, height: u16) -> String {
 pub(in crate::ui) fn draw_status_bar(
     f: &mut Frame,
     ui_state: &UIState,
+    clipboard: bool,
     capture_error: Option<&str>,
     area: Rect,
 ) {
@@ -248,7 +255,7 @@ pub(in crate::ui) fn draw_status_bar(
         Paragraph::new(capture_error_text(error, area.width, area.height))
             .style(theme::status_bar_error())
     } else {
-        Paragraph::new(hint_line(&context_hints(ui_state), area.width))
+        Paragraph::new(hint_line(&context_hints(ui_state, clipboard), area.width))
             .style(theme::status_bar_default())
     };
 
@@ -276,16 +283,16 @@ mod tests {
             selected_tab: 1,
             ..Default::default()
         };
-        assert!(!advertises(&context_hints(&ui_state), "ctrl-d/u"));
+        assert!(!advertises(&context_hints(&ui_state, true), "ctrl-d/u"));
 
         // A render that reports headroom turns the hint on.
         ui_state.details_scroll.clamp_for_render(12);
-        assert!(advertises(&context_hints(&ui_state), "ctrl-d/u"));
+        assert!(advertises(&context_hints(&ui_state, true), "ctrl-d/u"));
     }
 
     #[test]
     fn overview_spends_its_room_on_actions_visible_nowhere_else() {
-        let hints = context_hints(&UIState::default());
+        let hints = context_hints(&UIState::default(), true);
         assert_eq!(hints.first().map(|(key, _)| *key), Some("\u{2191}\u{2193}"));
         assert!(advertises(&hints, "/"));
         // Tab navigation is advertised by the numbered tab bar itself.
@@ -300,14 +307,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            context_hints(&ui_state).first(),
+            context_hints(&ui_state, true).first(),
             Some(&("esc", "clear filter"))
         );
     }
 
     #[test]
     fn the_global_cluster_survives_every_width() {
-        let context = context_hints(&UIState::default());
+        let context = context_hints(&UIState::default(), true);
         for width in [200u16, 120, 80, 60, 40, 24, 12] {
             let line = rendered(&hint_line(&context, width));
             assert!(line.contains('q'), "quit dropped at {width}: {line:?}");
@@ -320,7 +327,7 @@ mod tests {
 
     #[test]
     fn labels_are_dropped_before_context_actions_are() {
-        let context = context_hints(&UIState::default());
+        let context = context_hints(&UIState::default(), true);
         // Wide enough to spell every action out.
         let wide = rendered(&hint_line(&context, 120));
         assert!(wide.contains("filter"), "{wide:?}");
@@ -342,7 +349,7 @@ mod tests {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
-        let context = context_hints(&ui_state);
+        let context = context_hints(&ui_state, true);
         let line = rendered(&hint_line(&context, 80));
         assert!(line.contains("clear filter"), "{line:?}");
         assert!(line.contains("select"), "{line:?}");
@@ -354,8 +361,30 @@ mod tests {
     }
 
     #[test]
+    fn copy_is_not_offered_when_the_clipboard_is_out_of_reach() {
+        for tab in [0, 1] {
+            let ui_state = UIState {
+                selected_tab: tab,
+                ..Default::default()
+            };
+            assert!(
+                advertises(&context_hints(&ui_state, true), "c"),
+                "tab {tab} should offer copy when the clipboard works"
+            );
+            assert!(
+                !advertises(&context_hints(&ui_state, false), "c"),
+                "tab {tab} still offers a copy that can only fail"
+            );
+        }
+        // Everything else on the tab survives losing copy.
+        let sandboxed = context_hints(&UIState::default(), false);
+        assert!(advertises(&sandboxed, "/"));
+        assert!(advertises(&sandboxed, "i"));
+    }
+
+    #[test]
     fn the_global_cluster_sits_flush_right() {
-        let line = rendered(&hint_line(&context_hints(&UIState::default()), 120));
+        let line = rendered(&hint_line(&context_hints(&UIState::default(), true), 120));
         assert!(line.ends_with("q quit "), "{line:?}");
     }
 }

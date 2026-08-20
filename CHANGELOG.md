@@ -215,6 +215,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a very narrow terminal falls back to bare keys. Keys are bright text on
   the terminal background rather than a reverse-video band, and Details
   only offers `ctrl-d/u` when the record outgrows its pane (#XXX)
+- **Status Bar Alerts Match the Chrome**: the quit prompt, copy feedback,
+  and capture errors now carry their meaning in a bold signal color instead
+  of filling the row with a solid yellow, green, or red band. `NO_COLOR`
+  keeps the reverse-video band, where it is the only cue available (#XXX)
+- **Copy Hints Follow the Sandbox**: on Linux under the default sandbox the
+  clipboard cannot be reached, so the `c copy` hints and the Details
+  "click a field to copy" affordance are hidden rather than offering a key
+  that can only report an error. `--no-sandbox` restores them (#XXX)
 - **Filtering Is a Mode, Not Four Notices**: the filter input row now shows
   only while a query is being typed. Once confirmed it collapses, leaving the
   query chip in the Connections title and the activity dot on the Overview

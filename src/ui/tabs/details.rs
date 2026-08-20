@@ -1827,10 +1827,14 @@ pub(in crate::ui) fn draw_connection_details(
             theme::fg(theme::muted()),
         ));
     }
-    suffix.push(Span::styled(
-        " · click a field to copy",
-        theme::fg(theme::muted()),
-    ));
+    // Same rule as the footer's copy hint: no point pointing at fields whose
+    // only outcome would be a clipboard error.
+    if crate::ui::clipboard_available(ctx.app) {
+        suffix.push(Span::styled(
+            " · click a field to copy",
+            theme::fg(theme::muted()),
+        ));
+    }
 
     // The band is a single row, so the badges get whatever the title and
     // the muted hints leave. One cell goes to the "▎" tick that

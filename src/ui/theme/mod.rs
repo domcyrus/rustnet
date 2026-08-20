@@ -260,48 +260,19 @@ pub(super) fn border() -> Color {
 }
 
 // --- Status bar styles ---
-// Built on status_bar_base(): a REVERSED band (fg(Black).bg(Color) breaks
-// on dark terminals) unless the theme provides a truecolor bg tint.
+// Every state rides `status_bar_hints()`: the theme's status_bg tint when it
+// has one, otherwise the terminal background. The alert states carry their
+// meaning in a bold signal color rather than a filled band, the way color is
+// used everywhere else in the chrome. `fg(Black).bg(Color)` is deliberately
+// avoided (it breaks on dark terminals), and REVERSED is reserved for
+// NO_COLOR, where a band is the only cue the row is a status bar.
 
-/// Subtle background band for the status bar: the theme's status_bg tint
-/// when available, otherwise the REVERSED fallback.
-pub(super) fn status_bar_base() -> Style {
-    if super::NO_COLOR.load(super::Ordering::Relaxed) {
-        return Style::default().add_modifier(Modifier::REVERSED);
-    }
-    match active().status_bg {
-        Some(bg) => Style::default().bg(bg),
-        None => Style::default().add_modifier(Modifier::REVERSED),
-    }
-}
-
-pub(super) fn status_bar_confirm() -> Style {
-    if super::NO_COLOR.load(super::Ordering::Relaxed) {
-        return status_bar_base();
-    }
-    status_bar_base().fg(warn()).add_modifier(Modifier::BOLD)
-}
-pub(super) fn status_bar_success() -> Style {
-    if super::NO_COLOR.load(super::Ordering::Relaxed) {
-        return status_bar_base();
-    }
-    status_bar_base().fg(ok()).add_modifier(Modifier::BOLD)
-}
-pub(super) fn status_bar_error() -> Style {
-    if super::NO_COLOR.load(super::Ordering::Relaxed) {
-        return status_bar_base().add_modifier(Modifier::BOLD);
-    }
-    status_bar_base().fg(err()).add_modifier(Modifier::BOLD)
-}
-/// Base style for the hint row. Unlike the alert states this one rides on
-/// the terminal background when the theme has no `status_bg` tint: the
-/// keycaps and their labels carry the contrast, and a REVERSED band would
-/// turn every span's foreground into a solid block of that color.
+/// Base style for the status bar. Reverse video under NO_COLOR, the theme's
+/// own band when it has one, and otherwise nothing: the spans carry the
+/// contrast, and a REVERSED band would turn each one into a solid block of
+/// its own foreground color.
 pub(super) fn status_bar_hints() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
-        // Without color the band is the only thing marking the row as the
-        // status bar, so it stays. Keycaps still separate keys from labels
-        // by weight.
         return Style::default().add_modifier(Modifier::REVERSED);
     }
     match active().status_bg {
@@ -310,6 +281,24 @@ pub(super) fn status_bar_hints() -> Style {
     }
 }
 
+pub(super) fn status_bar_confirm() -> Style {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return status_bar_hints();
+    }
+    status_bar_hints().fg(warn()).add_modifier(Modifier::BOLD)
+}
+pub(super) fn status_bar_success() -> Style {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return status_bar_hints();
+    }
+    status_bar_hints().fg(ok()).add_modifier(Modifier::BOLD)
+}
+pub(super) fn status_bar_error() -> Style {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return status_bar_hints().add_modifier(Modifier::BOLD);
+    }
+    status_bar_hints().fg(err()).add_modifier(Modifier::BOLD)
+}
 pub(super) fn status_bar_default() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) || !is_classic() {
         return status_bar_hints();
@@ -494,9 +483,21 @@ mod tests {
         let reversed_bold = Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED);
         assert_eq!(selection_row(), reversed_bold);
         assert_eq!(row_highlight(), reversed_bold);
+    }
+
+    #[test]
+    fn status_bar_alerts_are_colored_text_rather_than_a_filled_band() {
+        // No status_bg on the default theme, so the row rides the terminal
+        // background and the signal color lands on the text. A REVERSED band
+        // here would paint the whole row in the alert color instead.
+        assert_eq!(status_bar_hints(), Style::default());
         assert_eq!(
-            status_bar_base(),
-            Style::default().add_modifier(Modifier::REVERSED)
+            status_bar_confirm(),
+            Style::default().fg(warn()).add_modifier(Modifier::BOLD)
+        );
+        assert_eq!(
+            status_bar_error(),
+            Style::default().fg(err()).add_modifier(Modifier::BOLD)
         );
     }
 
