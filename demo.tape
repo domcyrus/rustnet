@@ -36,10 +36,20 @@
 # sidebar (GitHub scales the GIF down to the README width; wide captures
 # stay sharp on click-through/retina). Narrower canvases push the table
 # to its degraded column floor, which hides most of the data.
+#
+# The font is pinned deliberately. The traffic graphs are drawn with Unicode
+# Braille (U+2800..U+28FF), and VHS's default family is plain "JetBrains Mono",
+# which is often not installed. Fontconfig then substitutes silently and every
+# graph cell renders as fallback tofu, turning the waves into a solid block.
+# The Nerd Font Mono variant has Braille coverage and keeps every glyph one
+# cell wide, so the table columns stay aligned.
+#   Arch: sudo pacman -S ttf-jetbrains-mono-nerd
+#   Verify: fc-list ':charset=2840' family
 
 Output assets/rustnet.gif
 
 Set Theme "Catppuccin Mocha"
+Set FontFamily "JetBrainsMono Nerd Font Mono"
 Set FontSize 16
 Set Width 1600
 Set Height 900
