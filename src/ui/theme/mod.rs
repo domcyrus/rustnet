@@ -11,9 +11,11 @@ use std::sync::OnceLock;
 
 use ratatui::style::{Color, Modifier, Style};
 
+mod background;
 mod definitions;
 mod derive;
 
+pub use background::detect_light_background;
 pub use definitions::{ThemePreset, ThemeSpec, TokenColor, detect_truecolor};
 pub use derive::Theme;
 

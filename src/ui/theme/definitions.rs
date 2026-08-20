@@ -182,6 +182,38 @@ impl ThemeSpec {
         required.iter().any(|t| t.exact) || optional.iter().flatten().any(|t| t.exact)
     }
 
+    /// Adapt the ANSI palette to a light terminal background: ANSI Gray
+    /// (color 7) is nearly invisible on white, so every built-in token
+    /// that would emit it emits DarkGray instead. RGB values are left
+    /// alone (the truecolor palettes are their authors' choices, and the
+    /// ramp seeds are already mid-tone), as are `exact` user overrides.
+    pub fn adapt_to_light_background(&mut self) {
+        // The optional bg/wave slots are skipped: no built-in puts Gray
+        // there, and they are not text tiers.
+        let tokens = [
+            &mut self.accent,
+            &mut self.ok,
+            &mut self.warn,
+            &mut self.err,
+            &mut self.info,
+            &mut self.special,
+            &mut self.muted,
+            &mut self.faint,
+            &mut self.text,
+            &mut self.heading,
+            &mut self.label,
+            &mut self.key,
+            &mut self.border,
+            &mut self.rx,
+            &mut self.tx,
+        ];
+        for token in tokens {
+            if !token.exact && token.ansi == Color::Gray {
+                token.ansi = Color::DarkGray;
+            }
+        }
+    }
+
     /// Apply one config override. `token` is a snake_case key (the field
     /// names above); `value` is an ANSI color name or `#rrggbb`. The `Err`
     /// string is a human-readable message intended for stderr.
@@ -628,6 +660,25 @@ mod tests {
         );
         spec.set_token("rx_wave", "lightcyan").unwrap();
         assert_eq!(spec.rx_wave.map(|t| t.ansi), Some(Color::LightCyan));
+    }
+
+    #[test]
+    fn light_background_darkens_gray_tiers_but_not_overrides() {
+        let mut spec = ThemeSpec::builtin(ThemePreset::Muted);
+        spec.adapt_to_light_background();
+        assert_eq!(spec.muted.ansi, Color::DarkGray);
+        assert_eq!(spec.label.ansi, Color::DarkGray);
+        // Ramp seeds and the non-gray tokens are untouched.
+        assert_eq!(spec.muted.rgb, Some((0x6B, 0x72, 0x80)));
+        assert_eq!(spec.accent.ansi, Color::Cyan);
+        assert_eq!(spec.faint.ansi, Color::DarkGray);
+
+        // An explicit user choice of Gray is kept.
+        let mut spec = ThemeSpec::builtin(ThemePreset::Muted);
+        spec.set_token("label", "gray").unwrap();
+        spec.adapt_to_light_background();
+        assert_eq!(spec.label.ansi, Color::Gray);
+        assert_eq!(spec.muted.ansi, Color::DarkGray);
     }
 
     #[test]

@@ -252,6 +252,13 @@ overrides the `muted` default. A missing config file is fine; an unreadable or
 invalid file, or a bad override value, prints a warning at startup and falls
 back to the defaults.
 
+On light terminal backgrounds, ANSI Gray (the muted/label text tier of the
+`muted` and `vivid` presets) is nearly unreadable, so at startup rustnet asks
+the terminal for its background color (an OSC 11 query, Unix only) and darkens
+those gray tiers to ANSI DarkGray when the background reports as light.
+Terminals that do not answer the query keep the theme as-is, and explicit
+`[theme.overrides]` values are never touched.
+
 Related: `--no-color` disables all colors entirely (also honors the `NO_COLOR`
 environment variable).
 

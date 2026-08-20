@@ -45,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for non-unicast endpoints
 
 ### Added
+- **Light Background Detection**: at startup rustnet asks the terminal for its
+  background color (OSC 11, Unix only) and, on a light background, darkens the
+  ANSI Gray muted/label text tiers to DarkGray, which were nearly unreadable on
+  white. Terminals that stay silent past a 150 ms timeout keep the theme
+  unchanged, and explicit `[theme.overrides]` values are never touched
 - **Theme Contrast Warning**: config file color overrides that leave a
   foreground/background pair below 3:1 contrast now print a startup warning.
   Only pairs the override touches are judged, so the built-in palettes are

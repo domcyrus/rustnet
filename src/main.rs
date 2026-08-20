@@ -116,6 +116,14 @@ fn main() -> Result<()> {
         }
     }
     info!("Using {preset:?} color theme");
+    // ANSI Gray (the muted/label text tier) is nearly unreadable on light
+    // backgrounds, so ask the terminal for its background (OSC 11) and
+    // darken those tiers when it reports a light one. Skipped under
+    // NO_COLOR, where no colors are emitted at all.
+    if !no_color && ui::detect_light_background() == Some(true) {
+        info!("Light terminal background detected; darkening gray text tiers");
+        spec.adapt_to_light_background();
+    }
     ui::set_theme(ui::Theme::resolve(&spec, ui::detect_truecolor()));
 
     // GeoIP configuration

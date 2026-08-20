@@ -249,6 +249,11 @@ border = "darkgray"
 配置文件缺失没有影响；文件不可读、无效或覆盖值错误时，启动时打印一条警告并
 回退到默认值。
 
+在浅色终端背景上，ANSI Gray（`muted` 和 `vivid` 预设的 muted/label 文字层级）
+几乎不可读，因此 rustnet 会在启动时向终端查询背景色（OSC 11 查询，仅限
+Unix），并在背景报告为浅色时将这些灰色层级加深为 ANSI DarkGray。不回应查询的
+终端保持主题原样，显式的 `[theme.overrides]` 值也绝不会被改动。
+
 相关：`--no-color` 完全禁用所有颜色（同时尊重 `NO_COLOR` 环境变量）。
 
 #### `-f, --bpf-filter <FILTER>`<a id="-f---bpf-filter-filter"></a>
