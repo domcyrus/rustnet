@@ -318,20 +318,27 @@ pub(super) fn key_cap() -> Style {
         return Style::default().add_modifier(Modifier::BOLD);
     }
     let theme = active();
-    match theme.selection_bg {
-        // The truecolor presets set selection_bg to their palette's raised
-        // surface, which is the tier a keycap wants.
-        Some(bg) => Style::default()
-            .bg(bg)
-            .fg(theme.selection_fg.unwrap_or(theme.text))
+    match theme.key_cap_bg {
+        Some((r, g, b)) => Style::default()
+            .bg(Color::Rgb(r, g, b))
+            .fg(theme.key)
             .add_modifier(Modifier::BOLD),
-        // ANSI presets have no raised tint to borrow. DarkGray reads as a
-        // chip on light and dark terminals alike, and White keeps the key
-        // legible against it.
-        None => Style::default()
-            .bg(Color::DarkGray)
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
+        // Classic keeps its historic bar: a bold key in the theme color,
+        // no chip behind it.
+        None => Style::default().fg(theme.key).add_modifier(Modifier::BOLD),
+    }
+}
+
+/// Label beside a status bar keycap, recessed a step below the key so the key
+/// stays the brightest part of the hint. Classic falls back to the shared
+/// key-hint label tone.
+pub(super) fn status_hint_label() -> Style {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return Style::default();
+    }
+    match active().hint_label {
+        Some((r, g, b)) => Style::default().fg(Color::Rgb(r, g, b)),
+        None => key_hint_label(),
     }
 }
 

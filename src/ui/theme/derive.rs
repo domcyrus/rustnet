@@ -78,6 +78,12 @@ pub struct Theme {
     /// Hue wheel for per-identity tints; `None` disables them (ANSI
     /// terminal, or the classic preset, which keeps its historic look).
     pub(super) identity_hues: Option<&'static [u16]>,
+
+    /// Raised background a status bar keycap sits on, and the recessed tone
+    /// its label takes beside it. `None` on the classic preset, which keeps
+    /// its historic bold-key status bar.
+    pub(super) key_cap_bg: Option<(u8, u8, u8)>,
+    pub(super) hint_label: Option<(u8, u8, u8)>,
 }
 
 impl Theme {
@@ -112,6 +118,18 @@ impl Theme {
         let muted = color(spec.muted);
         let text = color(spec.text);
         let classic = spec.classic;
+        // Keycaps are always RGB, the same bargain the gradient ramps
+        // strike: ANSI-16 holds no tone subtle enough for a raised chip, and
+        // terminals approximate what they cannot render. Classic opts out and
+        // keeps the historic bold-key bar.
+        let (key_cap_bg, hint_label) = if classic {
+            (None, None)
+        } else {
+            (
+                Some(key_cap_tint(spec.status_bg.map(seed), seed(spec.key))),
+                Some(seed(spec.muted)),
+            )
+        };
 
         let theme = Theme {
             classic,
@@ -166,6 +184,8 @@ impl Theme {
             // out: its per-field palette is pinned to the historic look.
             identity_hues: (terminal_truecolor && !classic && !spec.identity_hues.is_empty())
                 .then_some(spec.identity_hues),
+            key_cap_bg,
+            hint_label,
         };
 
         // NO_COLOR strips every color before it reaches the terminal, so
@@ -274,6 +294,42 @@ pub(super) fn expiry_ramp(warn_seed: (u8, u8, u8), err_seed: (u8, u8, u8)) -> [(
 
 /// Midpoint between two colors, one channel at a time. Used by the edge
 /// fade to pull a foreground halfway toward the faint tier.
+/// Lightness step from a theme's own status band up to its keycap chips.
+const KEY_CAP_LIFT: f64 = 0.07;
+/// Chip tone for themes with no status band of their own: dark and barely
+/// saturated, so the key color on top stays the brightest part of the hint.
+const KEY_CAP_SATURATION: f64 = 0.20;
+const KEY_CAP_LIGHTNESS: f64 = 0.17;
+
+/// Step the chip darkens by while it hunts for a legible tone.
+const KEY_CAP_STEP: f64 = 0.01;
+
+/// Raised background for a status bar keycap. Derived from the theme's own
+/// status band when it has one, so the chip reads as one step above it,
+/// otherwise from the key color's hue kept dark and desaturated, so the chip
+/// recedes and the key on top of it carries the color.
+///
+/// The tint then darkens in small steps until the key clears `MIN_CONTRAST`
+/// on top of it: a dark key color (ANSI cyan, for one) would otherwise sit
+/// on a chip too close to its own tone to read.
+pub(super) fn key_cap_tint(band: Option<(u8, u8, u8)>, key: (u8, u8, u8)) -> (u8, u8, u8) {
+    let (hue, saturation, start) = match band {
+        Some(band) => {
+            let (h, s, l) = rgb_to_hsl(band);
+            (h, s, (l + KEY_CAP_LIFT).min(1.0))
+        }
+        None => (rgb_to_hsl(key).0, KEY_CAP_SATURATION, KEY_CAP_LIGHTNESS),
+    };
+    let mut lightness = start;
+    loop {
+        let tint = hsl_to_rgb(hue, saturation, lightness);
+        if lightness <= 0.0 || contrast_ratio(tint, key) >= MIN_CONTRAST {
+            return tint;
+        }
+        lightness = (lightness - KEY_CAP_STEP).max(0.0);
+    }
+}
+
 pub(super) fn blend_half(a: (u8, u8, u8), b: (u8, u8, u8)) -> (u8, u8, u8) {
     (
         lerp_channel(a.0, b.0, 0.5),
@@ -606,6 +662,44 @@ mod tests {
         assert!(
             distinct.len() >= names.len() * 2 / 3,
             "identity hues clustered: {distinct:?}"
+        );
+    }
+
+    #[test]
+    fn keycap_chips_carry_their_key_legibly_on_every_preset() {
+        for preset in ThemePreset::ALL.iter().copied() {
+            let spec = ThemeSpec::builtin(preset);
+            let theme = Theme::resolve(&spec, true);
+            let Some(chip) = theme.key_cap_bg else {
+                // Classic derives no chip: it keeps the historic bold-key bar.
+                assert!(spec.classic, "{} dropped its chip", preset.name());
+                continue;
+            };
+            let key = reference_rgb(theme.key).expect("key has a reference color");
+            assert!(
+                relative_luminance(chip.0, chip.1, chip.2)
+                    < relative_luminance(key.0, key.1, key.2),
+                "{}: chip {chip:?} is not darker than its key {key:?}",
+                preset.name()
+            );
+            assert!(
+                contrast_ratio(chip, key) >= MIN_CONTRAST,
+                "{}: key on chip is only {:.1}:1",
+                preset.name(),
+                contrast_ratio(chip, key)
+            );
+        }
+    }
+
+    #[test]
+    fn hint_labels_recede_to_the_themes_own_muted_tone() {
+        let theme = Theme::resolve(&ThemeSpec::builtin(ThemePreset::Muted), true);
+        // The muted seed, not the brighter ANSI label tier the Help tab uses,
+        // so the key stays the brightest part of a hint.
+        assert_eq!(theme.hint_label, Some((0x6B, 0x72, 0x80)));
+        assert_eq!(
+            Theme::resolve(&ThemeSpec::builtin(ThemePreset::Classic), true).hint_label,
+            None
         );
     }
 

@@ -4,7 +4,7 @@
 //! (which claim a second row when they do not fit on one).
 //!
 //! Hints follow a keycap grammar: the key on a raised chip
-//! (`theme::key_cap()`), its label in `theme::key_hint_label()`, two
+//! (`theme::key_cap()`), its label in `theme::status_hint_label()`, two
 //! spaces between hints. When the bar is too narrow, trailing hints are
 //! dropped whole; nothing wraps mid-hint.
 
@@ -90,14 +90,14 @@ fn hint_line(hints: &[Hint], trailing: Option<String>, width: u16) -> Line<'stat
         }
         spans.push(Span::styled(format!(" {key} "), theme::key_cap()));
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(*label, theme::key_hint_label()));
+        spans.push(Span::styled(*label, theme::status_hint_label()));
         used += needed;
     }
     if let Some(message) = trailing
         && used + 2 + message.chars().count() <= width
     {
         spans.push(Span::raw("  "));
-        spans.push(Span::styled(message, theme::key_hint_label()));
+        spans.push(Span::styled(message, theme::status_hint_label()));
     }
     Line::from(spans)
 }
