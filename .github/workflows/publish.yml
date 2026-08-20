@@ -48,9 +48,11 @@ jobs:
 
           # The workspace must be published in dependency order: rustnet-core
           # first, then the crates that depend on it, then the binary last.
-          # Each crate's path deps also carry a version, so dependents resolve
-          # against crates.io once their dependencies are indexed.
-          for crate in rustnet-core rustnet-capture rustnet-host rustnet-monitor; do
+          # rustnet-sandbox depends on no other workspace crate; it only needs
+          # to be indexed before the binary. Each crate's path deps also carry
+          # a version, so dependents resolve against crates.io once their
+          # dependencies are indexed.
+          for crate in rustnet-core rustnet-capture rustnet-host rustnet-sandbox rustnet-monitor; do
             VERSION=$(cargo metadata --no-deps --format-version 1 \
               | jq -r --arg n "$crate" '.packages[] | select(.name == $n) | .version')
             if is_published "$crate" "$VERSION"; then

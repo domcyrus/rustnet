@@ -45,8 +45,9 @@ This catches cross-platform and static linking issues before you invest time in 
 > **Two version tracks since the workspace split.** `Cargo.toml` carries two
 > versions: the binary's `[package] version` (line ~30, the user-facing `1.x`
 > line that tags and packages follow) and `[workspace.package] version` (line
-> ~9, the `0.x` library crates `rustnet-core`/`-capture`/`-host`, single source
-> of truth also referenced from `[workspace.dependencies]`). A normal feature
+> ~9, the `0.x` library crates `rustnet-core`/`-capture`/`-host`/`-sandbox`,
+> single source of truth also referenced from
+> `[workspace.dependencies]`). A normal feature
 > release bumps **only the binary `[package] version`** and `rpm/rustnet.spec`.
 > Bump the library version separately, and only when the libraries actually
 > change in a release-worthy way.
@@ -146,13 +147,13 @@ The release process is fully automated via [`.github/workflows/release.yml`](.gi
 
 5. **Publishes the workspace to crates.io** (via
    [`.github/workflows/publish.yml`](.github/workflows/publish.yml), after the
-   GitHub release is published): the four crates are published in dependency
-   order — `rustnet-core` → `rustnet-capture` → `rustnet-host` →
-   `rustnet-monitor` — waiting for each to appear in the index before publishing
-   a dependent. The step is idempotent (it skips any `crate@version` already on
-   crates.io), so a re-run after a partial failure is safe. The library crates
-   use the `[workspace.package]` version; the binary uses its `[package]`
-   version.
+   GitHub release is published): the five crates are published in dependency
+   order (`rustnet-core` → `rustnet-capture` → `rustnet-host` →
+   `rustnet-sandbox` → `rustnet-monitor`), waiting for each to appear in the
+   index before publishing a dependent. The step is idempotent (it skips any
+   `crate@version` already on crates.io), so a re-run after a partial failure
+   is safe. The library crates use the `[workspace.package]` version; the
+   binary uses its `[package]` version.
 
 ## Important: Never Move a Tag After Release
 
@@ -186,7 +187,7 @@ After GitHub Actions completes:
 - [ ] Verify all platform binaries built successfully
 - [ ] Verify all installer packages created (DEB, RPM, DMG, MSI)
 - [ ] Verify Docker image pushed to ghcr.io
-- [ ] Verify all four crates published to crates.io (`rustnet-monitor`, `rustnet-core`, `rustnet-capture`, `rustnet-host`) and docs.rs built
+- [ ] Verify all five crates published to crates.io (`rustnet-monitor`, `rustnet-core`, `rustnet-capture`, `rustnet-host`, `rustnet-sandbox`) and docs.rs built
 - [ ] Review automatically extracted release notes
 - [ ] Verify Homebrew formula updated at https://github.com/domcyrus/homebrew-rustnet
 - [ ] Verify Chocolatey package updated at https://github.com/domcyrus/rustnet-chocolatey
