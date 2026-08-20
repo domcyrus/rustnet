@@ -200,6 +200,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each socket-table refresh (#513)
 
 ### Changed
+- **Scrollbar**: the thumb is now a thin accent-colored bar on the outer edge
+  of its column instead of a full block in the terminal foreground, so it
+  reads as a cue rather than a slab beside the data (#XXX)
 - **Status Bar Keycaps**: hint keys now sit on a raised chip so every key
   carries the same weight (the arrow glyphs no longer read as thinner than
   the letters), and the hint row drops the reverse-video band on themes

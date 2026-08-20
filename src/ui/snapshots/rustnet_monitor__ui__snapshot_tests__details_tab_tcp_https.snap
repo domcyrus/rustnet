@@ -11,23 +11,23 @@ expression: output
  ● sshd (1500)             10.0.0.5:51022           192.168.1.10:22    ssh        TCP                       ESTABLISHED        -         -/-
                                                                                                                                             
 ▎ firefox → 140.82.121.4:443 [ESTABLISHED] · click a field to copy                                                                          
-Connection                                                            Application                                                          █
-Protocol              TCP                                             Detected              -                                              █
-Status                Active (last seen <T> ago)                                                                                            █
-Local Address         192.168.1.10:51234                                                                                                   █
-Remote Address        140.82.121.4:443                                                                                                     █
-Scope                 PUBLIC                                                                                                               █
-State                 ESTABLISHED                                                                                                          █
-Process               firefox                                                                                                              █
-PID                   2001                                                                                                                 █
-Service               https                                                                                                                █
-                                                                                                                                           █
-Network Context                                                       Transport Health                                                     █
-Local Hostname        -                                               Initial RTT           -                                              █
-Local MAC             68:5e:dd:09:15:5e (Apple, Inc.)                 Live RTT              -                                              █
-Remote Hostname       -                                               TCP Retransmits       0                                              █
-Attributed Name       -                                               Out-of-Order Packets  0                                              █
-Attributed Via        -                                               Duplicate ACKs        0                                              █
+Connection                                                            Application                                                          ▐
+Protocol              TCP                                             Detected              -                                              ▐
+Status                Active (last seen <T> ago)                                                                                            ▐
+Local Address         192.168.1.10:51234                                                                                                   ▐
+Remote Address        140.82.121.4:443                                                                                                     ▐
+Scope                 PUBLIC                                                                                                               ▐
+State                 ESTABLISHED                                                                                                          ▐
+Process               firefox                                                                                                              ▐
+PID                   2001                                                                                                                 ▐
+Service               https                                                                                                                ▐
+                                                                                                                                           ▐
+Network Context                                                       Transport Health                                                     ▐
+Local Hostname        -                                               Initial RTT           -                                              ▐
+Local MAC             68:5e:dd:09:15:5e (Apple, Inc.)                 Live RTT              -                                              ▐
+Remote Hostname       -                                               TCP Retransmits       0                                              ▐
+Attributed Name       -                                               Out-of-Order Packets  0                                              ▐
+Attributed Via        -                                               Duplicate ACKs        0                                              ▐
 Remote MAC            -                                               Fast Retransmits      0                                              │
 Country               -                                               Window Size           0                                              │
 City                  -                                                                                                                    │

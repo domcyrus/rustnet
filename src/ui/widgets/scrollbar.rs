@@ -11,6 +11,10 @@ use ratatui::{
 
 use crate::ui::theme;
 
+/// Scrollbar thumb: a right half block, so the bar reads as a thin rule on
+/// the outer edge of its column instead of a full-width slab.
+const THUMB: &str = "\u{2590}";
+
 /// Render a vertical scrollbar on the right edge of `area` when the
 /// content overflows the viewport. `position` is the scroll offset of
 /// the topmost visible row; `viewport` is the number of rows currently
@@ -39,31 +43,33 @@ pub(in crate::ui) fn draw_scrollbar(
     let mut scrollbar_state = ScrollbarState::new(scroll_positions)
         .position(position)
         .viewport_content_length(viewport);
-    // Light vertical line for the track (matching the section rules and
-    // pane borders) with a solid block thumb in the text color so it
-    // stands out against the chrome. The thumb fg must be set explicitly
-    // (via `theme::text()`, `Reset` under the default theme), not left
-    // empty: ratatui styles are patches, and an empty patch lets the
-    // thumb inherit whatever color the underlying cells already have
-    // (on the Help tab the scrollbar rides the panel border, which is
-    // gray, and the thumb would blend into the track). Under NO_COLOR
-    // the distinct glyphs keep track and thumb legible.
+    // A half-block thumb in the accent color on a light vertical track.
+    // The half block hugs the outer edge of its column, so the bar stays
+    // clear of the right-aligned data it sits beside, and the accent keeps
+    // it a deliberate cue rather than the slab of terminal-foreground that
+    // a full block in the text color renders as.
+    //
+    // The thumb fg must be set explicitly, not left empty: ratatui styles
+    // are patches, and an empty patch lets the thumb inherit whatever color
+    // the underlying cells already have (on the Help tab the scrollbar
+    // rides the panel border, which is gray, and the thumb would blend into
+    // the track). Under NO_COLOR the distinct glyphs keep track and thumb
+    // legible on their own.
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .begin_symbol(None)
         .end_symbol(None)
         .track_symbol(Some(symbols::line::VERTICAL))
-        .thumb_symbol(symbols::block::FULL)
+        .thumb_symbol(THUMB)
         .track_style(theme::fg(theme::border()))
-        .thumb_style(theme::fg(theme::text()));
+        .thumb_style(theme::fg(theme::accent()));
     f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
 
 #[cfg(test)]
 mod tests {
-    /// Render `draw_scrollbar` into a test buffer and report whether
-    /// any non-space glyph landed in the rightmost column (the scrollbar
-    /// track/thumb sits on the right border).
-    fn scrollbar_renders(total_rows: usize, position: usize, viewport: usize) -> bool {
+    /// Glyphs `draw_scrollbar` paints down the rightmost column (the
+    /// scrollbar track/thumb sits on the right border).
+    fn scrollbar_glyphs(total_rows: usize, position: usize, viewport: usize) -> Vec<String> {
         use ratatui::Terminal;
         use ratatui::backend::TestBackend;
         use ratatui::layout::Rect;
@@ -77,7 +83,31 @@ mod tests {
             .expect("draw scrollbar");
         let buffer = terminal.backend().buffer();
         let right_x = 19;
-        (0..12).any(|y| buffer[(right_x, y)].symbol() != " ")
+        (0..12)
+            .map(|y| buffer[(right_x, y)].symbol().to_string())
+            .collect()
+    }
+
+    /// Whether the scrollbar painted anything at all.
+    fn scrollbar_renders(total_rows: usize, position: usize, viewport: usize) -> bool {
+        scrollbar_glyphs(total_rows, position, viewport)
+            .iter()
+            .any(|glyph| glyph != " ")
+    }
+
+    #[test]
+    fn thumb_is_a_thin_bar_rather_than_a_full_block() {
+        let glyphs = scrollbar_glyphs(100, 0, 10);
+        assert!(
+            glyphs.iter().any(|glyph| glyph == super::THUMB),
+            "no thumb painted: {glyphs:?}"
+        );
+        assert!(
+            !glyphs
+                .iter()
+                .any(|glyph| glyph == ratatui::symbols::block::FULL),
+            "thumb still renders as a full block: {glyphs:?}"
+        );
     }
 
     #[test]
