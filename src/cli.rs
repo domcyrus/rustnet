@@ -6,7 +6,7 @@ use clap::{Arg, Command};
 /// `ThemePreset::ALL`.
 pub const THEME_PRESETS: [&str; 6] = [
     "muted",
-    "classic",
+    "vivid",
     "catppuccin-mocha",
     "tokyo-night",
     "gruvbox",
@@ -126,7 +126,7 @@ pub fn build_cli() -> Command {
             Arg::new("theme")
                 .long("theme")
                 .value_name("PRESET")
-                .help("Color theme: muted (default), classic, catppuccin-mocha, tokyo-night, gruvbox, nord. Overrides the theme set in the config file (~/.config/rustnet/config.toml)")
+                .help("Color theme: muted (default), vivid, catppuccin-mocha, tokyo-night, gruvbox, nord. Overrides the theme set in the config file (~/.config/rustnet/config.toml)")
                 .value_parser(THEME_PRESETS)
                 .required(false),
         )

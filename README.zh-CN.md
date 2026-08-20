@@ -188,7 +188,7 @@ rustnet -i eth0              # 指定网络接口
 rustnet --show-localhost     # 显示 localhost 上的连接
 rustnet --no-resolve-dns     # 关闭反向 DNS 解析(默认开启)
 rustnet -r 500               # 设置刷新间隔(毫秒)
-rustnet --theme tokyo-night  # 主题：muted(默认)、classic、catppuccin-mocha、tokyo-night、gruvbox、nord
+rustnet --theme tokyo-night  # 主题：muted(默认)、vivid、catppuccin-mocha、tokyo-night、gruvbox、nord
 rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 ```
 

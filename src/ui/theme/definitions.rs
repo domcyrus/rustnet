@@ -17,7 +17,7 @@ pub struct TokenColor {
     pub rgb: Option<(u8, u8, u8)>,
     pub ansi: Color,
     /// True for user config overrides: resolve honors the value even on
-    /// presets whose own tokens stay ANSI (muted, classic), so an explicit
+    /// presets whose own tokens stay ANSI (muted, vivid), so an explicit
     /// override never silently degrades or vanishes.
     pub exact: bool,
 }
@@ -27,8 +27,9 @@ pub struct TokenColor {
 pub enum ThemePreset {
     /// Restrained default: one cyan accent, color only for semantic signals.
     Muted,
-    /// The original full-color palette with per-field colors.
-    Classic,
+    /// Colored chrome on the ANSI-16 palette: yellow headings and keys,
+    /// magenta borders, where Muted leaves all three gray.
+    Vivid,
     /// Catppuccin Mocha (truecolor).
     CatppuccinMocha,
     /// Tokyo Night (truecolor).
@@ -42,7 +43,7 @@ pub enum ThemePreset {
 impl ThemePreset {
     pub const ALL: [ThemePreset; 6] = [
         ThemePreset::Muted,
-        ThemePreset::Classic,
+        ThemePreset::Vivid,
         ThemePreset::CatppuccinMocha,
         ThemePreset::TokyoNight,
         ThemePreset::Gruvbox,
@@ -57,7 +58,7 @@ impl ThemePreset {
     pub fn name(self) -> &'static str {
         match self {
             ThemePreset::Muted => "muted",
-            ThemePreset::Classic => "classic",
+            ThemePreset::Vivid => "vivid",
             ThemePreset::CatppuccinMocha => "catppuccin-mocha",
             ThemePreset::TokyoNight => "tokyo-night",
             ThemePreset::Gruvbox => "gruvbox",
@@ -70,10 +71,11 @@ impl ThemePreset {
 /// derived from these during resolve and are not part of the spec.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThemeSpec {
-    /// Classic field/heading mapping (the original per-field rainbow).
-    pub classic: bool,
+    /// Whether the chrome itself takes color: yellow headings and keys,
+    /// magenta borders, plus the per-field palette that goes with them.
+    pub vivid: bool,
     /// When false, built-in tokens always emit their `ansi` color (muted,
-    /// classic); `exact` user overrides are still honored.
+    /// vivid); `exact` user overrides are still honored.
     pub truecolor_tokens: bool,
     pub accent: TokenColor,
     pub ok: TokenColor,
@@ -140,8 +142,8 @@ const TOKEN_NAMES: [&str; 20] = [
 impl ThemeSpec {
     pub fn builtin(preset: ThemePreset) -> ThemeSpec {
         match preset {
-            ThemePreset::Muted => muted_or_classic(false),
-            ThemePreset::Classic => muted_or_classic(true),
+            ThemePreset::Muted => muted_or_vivid(false),
+            ThemePreset::Vivid => muted_or_vivid(true),
             ThemePreset::CatppuccinMocha => catppuccin_mocha(),
             ThemePreset::TokyoNight => tokyo_night(),
             ThemePreset::Gruvbox => gruvbox(),
@@ -333,7 +335,7 @@ pub(super) fn parse_color(value: &str) -> Result<TokenColor, String> {
 // --- Built-in specs ---
 
 /// Token with an RGB ramp seed and an ANSI-16 color. On `truecolor_tokens`
-/// themes the RGB is emitted (ANSI is the fallback); on muted/classic the
+/// themes the RGB is emitted (ANSI is the fallback); on muted/vivid the
 /// ANSI name is always emitted and the RGB only seeds gradient ramps.
 const fn rgb(hex: u32, ansi: Color) -> TokenColor {
     TokenColor {
@@ -352,12 +354,14 @@ const fn ansi_only(ansi: Color) -> TokenColor {
     }
 }
 
-/// Muted (default) and Classic share every token except the classic
-/// heading/key/border mapping. `truecolor_tokens` is false for both, so
-/// non-gradient colors are byte-identical to the historical palette.
-fn muted_or_classic(classic: bool) -> ThemeSpec {
+/// Muted (default) and Vivid share every token except the three Vivid
+/// colors the chrome: heading and key go yellow, border goes magenta, where
+/// Muted keeps them the terminal foreground, cyan, and dark gray.
+/// `truecolor_tokens` is false for both, so neither emits RGB outside the
+/// gradient ramps and both follow the terminal's own ANSI-16 palette.
+fn muted_or_vivid(vivid: bool) -> ThemeSpec {
     ThemeSpec {
-        classic,
+        vivid,
         truecolor_tokens: false,
         accent: rgb(0x0891B2, Color::Cyan),
         ok: rgb(0x10B981, Color::Green),
@@ -368,18 +372,18 @@ fn muted_or_classic(classic: bool) -> ThemeSpec {
         muted: rgb(0x6B7280, Color::Gray),
         faint: rgb(0x4B5563, Color::DarkGray),
         text: ansi_only(Color::Reset),
-        heading: if classic {
+        heading: if vivid {
             ansi_only(Color::Yellow)
         } else {
             ansi_only(Color::Reset)
         },
         label: ansi_only(Color::Gray),
-        key: if classic {
+        key: if vivid {
             ansi_only(Color::Yellow)
         } else {
             ansi_only(Color::Cyan)
         },
-        border: if classic {
+        border: if vivid {
             ansi_only(Color::Magenta)
         } else {
             ansi_only(Color::DarkGray)
@@ -399,7 +403,7 @@ fn muted_or_classic(classic: bool) -> ThemeSpec {
 
 fn catppuccin_mocha() -> ThemeSpec {
     ThemeSpec {
-        classic: false,
+        vivid: false,
         truecolor_tokens: true,
         accent: rgb(0xCBA6F7, Color::LightMagenta),
         ok: rgb(0xA6E3A1, Color::LightGreen),
@@ -427,7 +431,7 @@ fn catppuccin_mocha() -> ThemeSpec {
 
 fn tokyo_night() -> ThemeSpec {
     ThemeSpec {
-        classic: false,
+        vivid: false,
         truecolor_tokens: true,
         accent: rgb(0x7AA2F7, Color::LightBlue),
         ok: rgb(0x9ECE6A, Color::LightGreen),
@@ -459,7 +463,7 @@ fn tokyo_night() -> ThemeSpec {
 
 fn gruvbox() -> ThemeSpec {
     ThemeSpec {
-        classic: false,
+        vivid: false,
         truecolor_tokens: true,
         accent: rgb(0xFE8019, Color::LightRed),
         ok: rgb(0xB8BB26, Color::Green),
@@ -487,7 +491,7 @@ fn gruvbox() -> ThemeSpec {
 
 fn nord() -> ThemeSpec {
     ThemeSpec {
-        classic: false,
+        vivid: false,
         truecolor_tokens: true,
         accent: rgb(0x88C0D0, Color::LightCyan),
         ok: rgb(0xA3BE8C, Color::LightGreen),

@@ -196,12 +196,12 @@ pub(crate) fn state_color(conn: &Connection) -> Color {
 }
 
 /// Resolve the cell color for a DPI Application protocol.
-/// Classic preset mirrors the palette used in `draw_app_distribution`;
+/// Vivid preset mirrors the palette used in `draw_app_distribution`;
 /// the muted preset renders detected applications as plain content so
 /// the `proto_*` palette stays a chart-only encoding.
 pub(crate) fn dpi_color(app: &crate::network::types::ApplicationProtocol) -> Color {
     use crate::network::types::ApplicationProtocol as AP;
-    if !theme::is_classic() {
+    if !theme::is_vivid() {
         return Color::Reset;
     }
     match app {

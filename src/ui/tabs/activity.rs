@@ -675,7 +675,7 @@ fn right_cell(value: String) -> Cell<'static> {
 /// Stable per-process tint for a process name, so the same process keeps
 /// the same hue wherever it appears. `None` keeps the caller's own style:
 /// the theme withholds a tint on NO_COLOR, non-truecolor terminals, and
-/// the classic preset, and unattributed rows keep their warning color so
+/// the vivid preset, and unattributed rows keep their warning color so
 /// the "could not be mapped" cue is never painted over.
 fn process_tint(identity: &ProcessIdentity) -> Option<Style> {
     identity

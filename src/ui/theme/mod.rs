@@ -36,9 +36,9 @@ pub fn set_theme(theme: Theme) {
     }
 }
 
-/// Whether the Classic (full-color) preset mapping is active.
-pub(super) fn is_classic() -> bool {
-    active().classic
+/// Whether the Vivid (full-color) preset mapping is active.
+pub(super) fn is_vivid() -> bool {
+    active().vivid
 }
 
 // --- Base color accessors ---
@@ -190,7 +190,7 @@ pub(super) fn proto_other() -> Color {
 }
 
 // --- TCP state aliases ---
-// Non-classic themes: ESTABLISHED is the common case and reads as plain
+// Non-vivid themes: ESTABLISHED is the common case and reads as plain
 // text; only transitional states (a genuine signal) keep an attention color.
 pub(super) fn tcp_established() -> Color {
     active().tcp_established
@@ -209,7 +209,7 @@ pub(super) fn tcp_closed() -> Color {
 }
 
 // --- Field-level aliases (same color used everywhere a field appears) ---
-// Non-classic themes: addresses keep a calm color (they're the data being
+// Non-vivid themes: addresses keep a calm color (they're the data being
 // monitored), the other identifying fields render as body text, supporting
 // context fades to the muted tier. Same address roles in every theme.
 pub(super) fn field_local_addr() -> Color {
@@ -300,7 +300,7 @@ pub(super) fn status_bar_error() -> Style {
     status_bar_hints().fg(err()).add_modifier(Modifier::BOLD)
 }
 pub(super) fn status_bar_default() -> Style {
-    if super::NO_COLOR.load(super::Ordering::Relaxed) || !is_classic() {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) || !is_vivid() {
         return status_bar_hints();
     }
     status_bar_hints().fg(info())
@@ -409,7 +409,7 @@ pub(super) fn on_color(bg: Color) -> Color {
 
 /// Stable per-identity tint for a name (a process or application), so the
 /// same name keeps the same hue everywhere it appears. `None` means "no
-/// tint available": NO_COLOR, a terminal without truecolor, or the classic
+/// tint available": NO_COLOR, a terminal without truecolor, or the vivid
 /// preset, whose palette stays as it always was. Callers keep their own
 /// style in that case.
 pub(super) fn identity_color(name: &str) -> Option<Color> {
@@ -581,6 +581,6 @@ mod tests {
         assert_eq!(border(), Color::DarkGray);
         assert_eq!(rx(), Color::Green);
         assert_eq!(tx(), Color::Blue);
-        assert!(!is_classic());
+        assert!(!is_vivid());
     }
 }

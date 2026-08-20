@@ -73,7 +73,7 @@ fn render(
     }
     if width > lit {
         // faint(): a neutral dim tier on every preset. border() would leak
-        // chrome colors into data bars (Classic's border is Magenta).
+        // chrome colors into data bars (Vivid's border is Magenta).
         spans.push(Span::styled(
             TRACK.repeat(width - lit),
             theme::fg(theme::faint()),

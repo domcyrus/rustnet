@@ -537,7 +537,7 @@ pub(in crate::ui) fn connection_row<'a>(
 
 /// Style for the Process cell: the identity tint keyed on the process
 /// name, falling back to the shared process color when the theme has no
-/// identity hues (NO_COLOR, no truecolor, classic preset). Rows painted
+/// identity hues (NO_COLOR, no truecolor, vivid preset). Rows painted
 /// whole by the staleness pass keep that paint instead.
 fn process_style(conn: &Connection, color_cells: bool) -> Style {
     if !color_cells {
@@ -626,7 +626,7 @@ pub(in crate::ui) fn bandwidth_cell<'a>(rx_bps: f64, tx_bps: f64, color_cells: b
 
     let line = if !color_cells {
         Line::from(format!("{rx}/{tx}"))
-    } else if !active && !theme::is_classic() {
+    } else if !active && !theme::is_vivid() {
         Line::from(Span::styled(
             format!("{rx}/{tx}"),
             theme::fg(theme::muted()),

@@ -14,7 +14,7 @@ use super::definitions::{ThemeSpec, TokenColor, ansi_seed};
 /// and stored in the module-level `ACTIVE` static.
 #[derive(Debug, Clone)]
 pub struct Theme {
-    pub(super) classic: bool,
+    pub(super) vivid: bool,
 
     // Core tokens.
     pub(super) accent: Color,
@@ -76,7 +76,7 @@ pub struct Theme {
     /// unless the preset and the terminal both do truecolor.
     pub(super) shimmer_ramp: Option<[(u8, u8, u8); 3]>,
     /// Hue wheel for per-identity tints; `None` disables them (ANSI
-    /// terminal, or the classic preset, which keeps its historic look).
+    /// terminal, or the vivid preset, whose per-field palette is fixed).
     pub(super) identity_hues: Option<&'static [u16]>,
 }
 
@@ -111,10 +111,10 @@ impl Theme {
         let special = color(spec.special);
         let muted = color(spec.muted);
         let text = color(spec.text);
-        let classic = spec.classic;
+        let vivid = spec.vivid;
 
         let theme = Theme {
-            classic,
+            vivid,
             accent,
             ok,
             warn,
@@ -134,16 +134,16 @@ impl Theme {
             status_bg: bg(spec.status_bg),
             field_local_addr: accent,
             field_remote_addr: info,
-            field_state: if classic { ok } else { text },
-            field_service: if classic { warn } else { muted },
-            field_location: if classic { special } else { muted },
-            field_process: if classic { ok } else { text },
-            field_application: if classic { warn } else { muted },
+            field_state: if vivid { ok } else { text },
+            field_service: if vivid { warn } else { muted },
+            field_location: if vivid { special } else { muted },
+            field_process: if vivid { ok } else { text },
+            field_application: if vivid { warn } else { muted },
             field_attributed_hostname: muted,
-            tcp_established: if classic { ok } else { text },
+            tcp_established: if vivid { ok } else { text },
             tcp_opening: warn,
-            tcp_closing: if classic { accent } else { muted },
-            tcp_waiting: if classic { special } else { muted },
+            tcp_closing: if vivid { accent } else { muted },
+            tcp_waiting: if vivid { special } else { muted },
             tcp_closed: muted,
             proto_https: ok,
             proto_quic: accent,
@@ -162,9 +162,9 @@ impl Theme {
             expiry_ramp: expiry_ramp(seed(spec.warn), seed(spec.err)),
             shimmer_ramp: truecolor.then(|| shimmer_ramp(seed(spec.accent))),
             // Identity tints synthesize RGB directly, so they need a
-            // truecolor terminal but not a truecolor preset. Classic opts
-            // out: its per-field palette is pinned to the historic look.
-            identity_hues: (terminal_truecolor && !classic && !spec.identity_hues.is_empty())
+            // truecolor terminal but not a truecolor preset. Vivid opts
+            // out: its per-field palette is fixed by design.
+            identity_hues: (terminal_truecolor && !vivid && !spec.identity_hues.is_empty())
                 .then_some(spec.identity_hues),
         };
 
@@ -611,7 +611,7 @@ mod tests {
 
     #[test]
     fn identity_hues_are_gated_by_terminal_and_preset() {
-        // Truecolor terminal: available on every preset but classic, the
+        // Truecolor terminal: available on every preset but vivid, the
         // ANSI muted preset included.
         for preset in [ThemePreset::Muted, ThemePreset::Nord] {
             assert!(
@@ -622,7 +622,7 @@ mod tests {
             );
         }
         assert!(
-            Theme::resolve(&ThemeSpec::builtin(ThemePreset::Classic), true)
+            Theme::resolve(&ThemeSpec::builtin(ThemePreset::Vivid), true)
                 .identity_hues
                 .is_none()
         );

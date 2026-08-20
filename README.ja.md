@@ -93,7 +93,7 @@ rustnet -i any                          # Linux ですべてのインターフ�
 rustnet --show-localhost                # localhost 接続を表示
 rustnet --no-resolve-dns                # 逆引き DNS を無効化
 rustnet --no-dpi                        # 深層パケット解析を無効化
-rustnet --theme tokyo-night             # カラーテーマ（muted［既定］、classic、catppuccin-mocha、tokyo-night、gruvbox、nord）
+rustnet --theme tokyo-night             # カラーテーマ（muted［既定］、vivid、catppuccin-mocha、tokyo-night、gruvbox、nord）
 rustnet --pcapng-export capture.pcapng  # 注釈付き PCAPNG を出力
 ```
 

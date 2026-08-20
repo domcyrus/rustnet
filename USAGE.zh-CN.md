@@ -63,7 +63,7 @@ rustnet --refresh-interval 2000
 # 禁用深度包检测
 rustnet --no-dpi
 
-# 选择颜色主题（muted、classic、catppuccin-mocha、tokyo-night、gruvbox、nord）
+# 选择颜色主题（muted、vivid、catppuccin-mocha、tokyo-night、gruvbox、nord）
 rustnet --theme tokyo-night
 
 # 禁用反向 DNS 查找（默认启用）
@@ -95,7 +95,7 @@ Options:
       --pcap-export <FILE>               将捕获的数据包导出到 PCAP 文件供 Wireshark 分析
       --pcapng-export <FILE>             将捕获的数据包导出为带注释的 PCAPNG 文件供 Wireshark 分析
       --no-color                         禁用 UI 中的所有颜色（同时尊重 NO_COLOR 环境变量）
-      --theme <PRESET>                   颜色主题：muted（默认）、classic、catppuccin-mocha、
+      --theme <PRESET>                   颜色主题：muted（默认）、vivid、catppuccin-mocha、
                                          tokyo-night、gruvbox、nord。优先于配置文件
                                          （~/.config/rustnet/config.toml）中设置的主题
       --geoip-country <PATH>             GeoLite2-Country.mmdb 的路径（未指定时自动发现）
@@ -212,14 +212,15 @@ RustNet 自动检测 TUN/TAP 接口并相应调整数据包解析。接口类型
 - **`muted`**（默认）：克制的调色板，只有一个青色强调色。地址保留柔和的颜色
   （远程 = 蓝色，本地 = 青色）；其他颜色仅用于*信号*：连接状态变化、
   过期状态（黄色/红色行）以及实时带宽。
-- **`classic`**：早期版本的原始全彩调色板，每列一种颜色。
+- **`vivid`**：与 `muted` 相同的 ANSI-16 调色板，但界面框架本身也带颜色：
+  黄色标题与按键、洋红色边框，并且每列一种颜色。
 - **`catppuccin-mocha`**、**`tokyo-night`**、**`gruvbox`**、**`nord`**：
   流行配色的真彩色（truecolor）版本。在不支持真彩色的终端上回退到最接近的
   ANSI-16 颜色。
 
 ```bash
-# 恢复原始全彩外观
-rustnet --theme classic
+# 让界面框架也带颜色，每列一种颜色
+rustnet --theme vivid
 
 # 使用真彩色主题
 rustnet --theme tokyo-night

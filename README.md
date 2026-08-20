@@ -188,7 +188,7 @@ rustnet -i eth0              # Specify network interface
 rustnet --show-localhost     # Show localhost connections
 rustnet --no-resolve-dns     # Disable reverse DNS lookups (enabled by default)
 rustnet -r 500               # Set refresh interval (ms)
-rustnet --theme tokyo-night  # Theme: muted (default), classic, catppuccin-mocha, tokyo-night, gruvbox, nord
+rustnet --theme tokyo-night  # Theme: muted (default), vivid, catppuccin-mocha, tokyo-night, gruvbox, nord
 rustnet --pcapng-export capture.pcapng  # Annotated PCAPNG for Wireshark
 ```
 

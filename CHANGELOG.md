@@ -204,6 +204,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of its column instead of a full block in the terminal foreground, and the
   track rule is gone, so the bar reads as a cue rather than a second vertical
   line beside the data (#XXX)
+- **`--theme classic` Renamed to `vivid`**: the name now describes the colors
+  rather than the provenance. It is the same ANSI-16 palette as `muted` with
+  the chrome colored: yellow headings and keys, magenta borders. `classic` is
+  no longer accepted (#XXX)
 - **Status Bar Rebuilt Around Priority**: the footer now shows the active
   tab's context actions on the left and a fixed `h help  q quit` cluster
   pinned right. The cluster is reserved before any context action is placed,
