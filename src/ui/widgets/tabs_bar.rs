@@ -18,12 +18,9 @@ use ratatui::{
 
 use crate::ui::{ClickAction, ClickableRegions, UIState, theme};
 
-pub(crate) const TAB_TITLES: [&str; 5] = ["Overview", "Details", "Activity", "Graph", "Help"];
+pub(crate) const TAB_TITLES: [&str; 4] = ["Overview", "Details", "Activity", "Graph"];
 /// Total number of tabs (kept in sync with `TAB_TITLES`).
 pub(crate) const TAB_COUNT: usize = TAB_TITLES.len();
-/// Index of the Help tab. Lets `UIState::jump_to_tab` keep `show_help` in
-/// sync without re-checking `TAB_TITLES` at the call site.
-pub(crate) const HELP_TAB_INDEX: usize = TAB_COUNT - 1;
 /// Index of the Overview tab, the only tab with an activity dot so far.
 const OVERVIEW_TAB_INDEX: usize = 0;
 
@@ -106,7 +103,7 @@ pub(in crate::ui) fn draw_tabs(
     let gap = " ".repeat(TAB_GAP as usize);
     let mut x_offset = area.x + BRAND.chars().count() as u16;
     for (i, title) in TAB_TITLES.iter().enumerate() {
-        // Numbered titles: the 1-5 jump shortcut becomes discoverable.
+        // Numbered titles: the 1-4 jump shortcut becomes discoverable.
         let label = format!("{} {}", i + 1, title);
         let active = i == ui_state.selected_tab;
         let dotted = i == OVERVIEW_TAB_INDEX && ui_state.is_filtering();

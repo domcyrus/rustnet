@@ -363,10 +363,13 @@ rustnet --kubernetes on
 
 - `Tab` or `]` - Next tab
 - `Shift+Tab` or `[` - Previous tab
-- `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Activity / Graph / Help
+- `1` / `2` / `3` / `4` - Jump directly to Overview / Details / Activity / Graph
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
-- `h` - Toggle help screen
+- `h` - Toggle a help overlay containing controls for the active tab
+
+The help overlay keeps the active tab visible underneath it and only lists
+controls and concepts that apply to that tab.
 
 ### Actions
 
@@ -383,7 +386,7 @@ rustnet --kubernetes on
 
 - `a` - Toggle process grouping mode (aggregate connections by process)
 - `Space` - Expand/collapse selected process group
-- `←` or `h` - Collapse selected group
+- `←` - Collapse selected group
 - `→` or `l` - Expand selected group
 
 ### Sorting

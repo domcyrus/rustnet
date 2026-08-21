@@ -1,6 +1,6 @@
 //! Shared vertical scrollbar for panes whose content can overflow:
 //! the Overview connection table, the Details info panes, the Help
-//! text, and the Interfaces table.
+//! overlay, and the Interfaces table.
 
 use ratatui::{
     Frame,
@@ -50,7 +50,7 @@ pub(in crate::ui) fn draw_scrollbar(
     //
     // The thumb fg must be set explicitly, not left empty: ratatui styles
     // are patches, and an empty patch lets the thumb inherit whatever color
-    // the underlying cells already have (on the Help tab the scrollbar
+    // the underlying cells already have (on the Help overlay the scrollbar
     // rides the panel border, which is gray, and the thumb would vanish
     // into it). Under NO_COLOR the glyph keeps it legible on its own.
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)

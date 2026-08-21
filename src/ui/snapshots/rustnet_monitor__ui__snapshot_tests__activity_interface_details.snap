@@ -2,7 +2,7 @@
 source: src/ui/mod.rs
 expression: output
 ---
- rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                    ● eth0
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph                                                                             ● eth0
 ─────────────────────────────────────━━━━━━━━━━─────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Interface Statistics                                                                                                                      
 Interface           RX Rate      TX Rate RX Packets TX Packets    RX Err    TX Err    RX Drop    TX Drop Collisions                         
