@@ -31,7 +31,7 @@ use widgets::{
 
 mod tabs;
 use tabs::{
-    activity::ActivityTab, details::DetailsTab, graph::GraphTab, help::HelpTab,
+    activity::ActivityTab, details::DetailsTab, graph::GraphTab, help::HelpOverlay,
     overview::OverviewTab,
 };
 
@@ -44,13 +44,16 @@ use tabs::{
 /// filter input widget), so when `filter_mode` is on the dispatch
 /// routes to `OverviewTab` regardless of the visible tab. This
 /// keeps filter typing working when the user has switched to
-/// Details / Activity / Graph / Help while a filter is being
+/// Details / Activity / Graph while a filter is being
 /// edited.
 pub fn dispatch_key(
     tab: usize,
     key: crossterm::event::KeyEvent,
     ctx: &mut HandlerContext<'_>,
 ) -> Option<Vec<Effect>> {
+    if ctx.ui_state.show_help {
+        return HelpOverlay.handle_key(key, ctx);
+    }
     if ctx.ui_state.filter_mode {
         return OverviewTab.handle_key(key, ctx);
     }
@@ -59,7 +62,6 @@ pub fn dispatch_key(
         1 => DetailsTab.handle_key(key, ctx),
         2 => ActivityTab.handle_key(key, ctx),
         3 => GraphTab.handle_key(key, ctx),
-        4 => HelpTab.handle_key(key, ctx),
         _ => None,
     }
 }
@@ -72,12 +74,14 @@ pub fn dispatch_mouse(
     mouse: crossterm::event::MouseEvent,
     ctx: &mut HandlerContext<'_>,
 ) -> Option<Vec<Effect>> {
+    if ctx.ui_state.show_help {
+        return HelpOverlay.handle_mouse(mouse, ctx);
+    }
     match tab {
         0 => OverviewTab.handle_mouse(mouse, ctx),
         1 => DetailsTab.handle_mouse(mouse, ctx),
         2 => ActivityTab.handle_mouse(mouse, ctx),
         3 => GraphTab.handle_mouse(mouse, ctx),
-        4 => HelpTab.handle_mouse(mouse, ctx),
         _ => None,
     }
 }
@@ -99,7 +103,7 @@ pub use state::{
     ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, PaneScroll,
     SortColumn, UIState, compute_grouped_rows, compute_scroll_offset,
 };
-pub(crate) use widgets::tabs_bar::{HELP_TAB_INDEX, TAB_COUNT};
+pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
 mod connection_table;
 
@@ -127,7 +131,7 @@ pub use theme::{
 };
 
 /// Standard panel chrome: rounded border + title. Kept for the few
-/// views that still frame themselves (Help reference card, loading
+/// views that still frame themselves (Help overlay, loading
 /// splash); everything else uses [`section_header`].
 pub(crate) fn panel_block<'a, T: Into<Line<'a>>>(title: T) -> Block<'a> {
     Block::default()
@@ -318,12 +322,15 @@ pub fn draw(
         1 => DetailsTab.draw(f, content_area, &comp_ctx, click_regions)?,
         2 => ActivityTab.draw(f, content_area, &comp_ctx, click_regions)?,
         3 => GraphTab.draw(f, content_area, &comp_ctx, click_regions)?,
-        4 => HelpTab.draw(f, content_area, &comp_ctx, click_regions)?,
         _ => {}
     }
 
     if let Some(filter_area) = filter_area {
         draw_filter_input(f, ui_state, filter_area);
+    }
+
+    if ui_state.show_help {
+        tabs::help::draw_help_overlay(f, ui_state, content_area)?;
     }
 
     draw_status_bar(
@@ -674,12 +681,30 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn help_tab() {
-        use crate::ui::tabs::help::draw_help;
-        let ui_state = UIState::default();
-        let output = render(100, 50, |f| {
-            draw_help(f, &ui_state, f.area()).expect("draw_help");
+    fn help_overlay_overview() {
+        use crate::ui::tabs::help::draw_help_overlay;
+        let ui_state = UIState {
+            show_help: true,
+            ..UIState::default()
+        };
+        let output = render(100, 40, |f| {
+            draw_help_overlay(f, &ui_state, f.area()).expect("draw help overlay");
         });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn help_overlay_details() {
+        use crate::ui::tabs::help::draw_help_overlay;
+        let ui_state = UIState {
+            selected_tab: 1,
+            show_help: true,
+            ..UIState::default()
+        };
+        let output = render(100, 30, |f| {
+            draw_help_overlay(f, &ui_state, f.area()).expect("draw help overlay");
+        });
+        assert!(!output.contains("Filter"));
         insta::assert_snapshot!(output);
     }
 
@@ -706,25 +731,6 @@ mod snapshot_tests {
     fn tabs_bar_details_active() {
         let ui_state = UIState {
             selected_tab: 1,
-            ..Default::default()
-        };
-        let mut regions = ClickableRegions::default();
-        let output = render(80, 2, |f| {
-            draw_tabs(
-                f,
-                &ui_state,
-                &CaptureCluster::default(),
-                f.area(),
-                &mut regions,
-            )
-        });
-        insta::assert_snapshot!(output);
-    }
-
-    #[test]
-    fn tabs_bar_help_active() {
-        let ui_state = UIState {
-            selected_tab: 4,
             ..Default::default()
         };
         let mut regions = ClickableRegions::default();
@@ -774,7 +780,7 @@ mod snapshot_tests {
         };
 
         let mut regions = ClickableRegions::default();
-        let medium = render(76, 2, |f| {
+        let medium = render(70, 2, |f| {
             draw_tabs(f, &ui_state, &capture, f.area(), &mut regions)
         });
         assert!(
@@ -783,7 +789,7 @@ mod snapshot_tests {
         );
 
         let mut regions = ClickableRegions::default();
-        let narrow = render(70, 2, |f| {
+        let narrow = render(64, 2, |f| {
             draw_tabs(f, &ui_state, &capture, f.area(), &mut regions)
         });
         assert!(
@@ -890,9 +896,10 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn status_bar_help_tab() {
+    fn status_bar_help_overlay() {
         let ui_state = UIState {
-            selected_tab: 4,
+            selected_tab: 1,
+            show_help: true,
             ..Default::default()
         };
         let output = render(120, 1, |f| {

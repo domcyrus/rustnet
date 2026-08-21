@@ -1,5 +1,0 @@
----
-source: src/ui/mod.rs
-expression: output
----
- j/k scroll  esc back                                                                                    h help  q quit

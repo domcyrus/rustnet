@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Contextual Help Overlay**: Help now opens above the active tab and only
+  shows controls and concepts relevant to that view. The tab bar now contains
+  the four application views, with direct shortcuts `1` through `4`
+
 ### Removed
 - **Ubuntu 25.10 (Questing) PPA**: the series reached end of life and
   Launchpad rejects new uploads for it, so the PPA build matrix and install
