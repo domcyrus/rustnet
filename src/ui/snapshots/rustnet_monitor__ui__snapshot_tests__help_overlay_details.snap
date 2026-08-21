@@ -3,7 +3,6 @@ source: src/ui/mod.rs
 expression: output
 ---
                                                                                                     
-                                                                                                    
     ╭ Help · Details ──────────────────────────────────────────────────────────────────────────╮    
     │ Inspect the currently selected connection.                                               │    
     │                                                                                          │    
@@ -25,6 +24,7 @@ expression: output
     │   Tab, ]        Next tab                                                                 │    
     │   Shift+Tab, [  Previous tab                                                             │    
     │   1-4           Jump to Overview, Details, Activity, or Graph                            │    
+    │   x             Clear all connections (press twice)                                      │    
     │   h, Esc        Close this help overlay                                                  │    
     │   q             Quit application (press twice to confirm)                                │    
     │   Ctrl+C        Quit immediately                                                         │    
