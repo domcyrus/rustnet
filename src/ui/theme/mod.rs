@@ -266,8 +266,10 @@ pub(super) fn border() -> Color {
 // has one, otherwise the terminal background. The alert states carry their
 // meaning in a bold signal color rather than a filled band, the way color is
 // used everywhere else in the chrome. `fg(Black).bg(Color)` is deliberately
-// avoided (it breaks on dark terminals), and REVERSED is reserved for
-// NO_COLOR, where a band is the only cue the row is a status bar.
+// avoided (it breaks on dark terminals). Reverse video appears in two roles:
+// the whole bar under NO_COLOR, where a band is the only cue the row is a
+// status bar, and the active-mode chip's boxed fallback when no RGB tint is
+// available (see `active_key_hint`).
 
 /// Base style for the status bar. Reverse video under NO_COLOR, the theme's
 /// own band when it has one, and otherwise nothing: the spans carry the
@@ -365,17 +367,24 @@ pub(super) fn key_hint_label() -> Style {
 }
 
 /// Selected mode in the status bar. RGB terminals get a quiet box derived
-/// from the theme's keycap hue, with a contrast-safe foreground. Basic and
-/// NO_COLOR terminals retain the connection selection's boxed fallback, but
-/// without bold so the current table row remains the strongest focus.
+/// from the theme's keycap hue, with a contrast-safe foreground. Elsewhere
+/// the chip is a boxed fallback: normal video cut out of the REVERSED band
+/// under NO_COLOR, reverse video otherwise. Neither variant carries BOLD,
+/// so the current table row remains the strongest focus.
 pub(super) fn active_key_hint() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
-        return Style::default().add_modifier(Modifier::REVERSED);
+        // The whole bar is already REVERSED here (see `status_bar_hints`),
+        // so adding REVERSED again would be a visual no-op. Un-reversing
+        // the chip instead cuts a normal-video box out of the band.
+        return Style::default().remove_modifier(Modifier::REVERSED);
     }
     if let Some(bg) = active().key_chip_bg {
         return Style::default().fg(on_color(bg)).bg(bg);
     }
-    selection_row().remove_modifier(Modifier::BOLD)
+    // `selection_row()`'s tint is deliberately not reused: an ANSI
+    // selection_bg with no selection_fg carries no readable-foreground
+    // guarantee (see `on_color`), while plain reverse video always does.
+    Style::default().add_modifier(Modifier::REVERSED)
 }
 
 // --- Style builders (NO_COLOR-aware) ---
@@ -527,9 +536,12 @@ mod tests {
                 .add_modifier(Modifier::BOLD)
         );
         assert_eq!(key_hint_label(), Style::default().fg(Color::Gray));
-        let active = active_key_hint();
-        assert!(active.add_modifier.contains(Modifier::REVERSED));
-        assert!(active.sub_modifier.contains(Modifier::BOLD));
+        // The default theme resolves without truecolor, so no chip tint:
+        // the active mode falls back to an unbolded reverse-video box.
+        assert_eq!(
+            active_key_hint(),
+            Style::default().add_modifier(Modifier::REVERSED)
+        );
     }
 
     #[test]

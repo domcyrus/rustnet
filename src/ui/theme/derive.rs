@@ -120,21 +120,26 @@ impl Theme {
         let vivid = spec.vivid;
         // Active status modes should echo the keycap hue without becoming as
         // loud as a selected table row. Blend a little of the key into the
-        // status or selection surface. ANSI presets have no surface token,
-        // so a dark neutral base produces a restrained colored glow.
-        let key_chip_bg = terminal_truecolor.then(|| {
-            let key = seed(spec.key);
-            let (base, strength) = spec
-                .status_bg
-                .or(spec.selection_bg)
-                .map(|token| (seed(token), 0.24))
-                .unwrap_or(((0, 0, 0), 0.42));
-            Color::Rgb(
-                lerp_channel(base.0, key.0, strength),
-                lerp_channel(base.1, key.1, strength),
-                lerp_channel(base.2, key.2, strength),
-            )
-        });
+        // status or selection surface. The chip only exists when every
+        // ingredient has a known RGB: a "reset" key or an ANSI-named surface
+        // paints whatever the terminal's palette holds, which no blend can
+        // echo faithfully, so those fall back to the boxed chip style.
+        let key_chip_bg = terminal_truecolor
+            .then(|| {
+                let key = spec.key.rgb.or_else(|| ansi_seed(spec.key.ansi))?;
+                let (base, strength) = match spec.status_bg.or(spec.selection_bg) {
+                    Some(token) => (token.rgb?, 0.24),
+                    // No surface token (the ANSI presets): a neutral base on
+                    // the terminal's side of the spectrum keeps the glow
+                    // restrained instead of painting a near-black box on a
+                    // light background.
+                    None if spec.light_background => ((0xFF, 0xFF, 0xFF), 0.42),
+                    None => ((0x00, 0x00, 0x00), 0.42),
+                };
+                let (r, g, b) = blend(base, key, strength);
+                Some(Color::Rgb(r, g, b))
+            })
+            .flatten();
 
         let theme = Theme {
             vivid,
@@ -291,27 +296,27 @@ pub(super) fn expiry_ramp(warn_seed: (u8, u8, u8), err_seed: (u8, u8, u8)) -> [(
     let b = hsl_to_rgb(eh, es.max(0.90), 0.58);
     let mut stops = [(0u8, 0u8, 0u8); 5];
     for (i, stop) in stops.iter_mut().enumerate() {
-        let t = i as f64 / 4.0;
-        *stop = (
-            lerp_channel(a.0, b.0, t),
-            lerp_channel(a.1, b.1, t),
-            lerp_channel(a.2, b.2, t),
-        );
+        *stop = blend(a, b, i as f64 / 4.0);
     }
     stops
 }
 
-/// Midpoint between two colors, one channel at a time. Used by the edge
-/// fade to pull a foreground halfway toward the faint tier.
-pub(super) fn blend_half(a: (u8, u8, u8), b: (u8, u8, u8)) -> (u8, u8, u8) {
+/// Linear blend from `a` to `b` at `t` ∈ [0, 1], one channel at a time.
+pub(super) fn blend(a: (u8, u8, u8), b: (u8, u8, u8), t: f64) -> (u8, u8, u8) {
     (
-        lerp_channel(a.0, b.0, 0.5),
-        lerp_channel(a.1, b.1, 0.5),
-        lerp_channel(a.2, b.2, 0.5),
+        lerp_channel(a.0, b.0, t),
+        lerp_channel(a.1, b.1, t),
+        lerp_channel(a.2, b.2, t),
     )
 }
 
-pub(super) fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
+/// Midpoint between two colors. Used by the edge fade to pull a foreground
+/// halfway toward the faint tier.
+pub(super) fn blend_half(a: (u8, u8, u8), b: (u8, u8, u8)) -> (u8, u8, u8) {
+    blend(a, b, 0.5)
+}
+
+fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
     (a as f64 + (b as f64 - a as f64) * t).round() as u8
 }
 
@@ -319,13 +324,8 @@ pub(super) fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
 pub(super) fn five_stop(stops: &[(u8, u8, u8); 5], t: f64) -> Color {
     let seg = t.clamp(0.0, 1.0) * 4.0;
     let i = (seg as usize).min(3);
-    let local = seg - i as f64;
-    let (a, b) = (stops[i], stops[i + 1]);
-    Color::Rgb(
-        lerp_channel(a.0, b.0, local),
-        lerp_channel(a.1, b.1, local),
-        lerp_channel(a.2, b.2, local),
-    )
+    let (r, g, b) = blend(stops[i], stops[i + 1], seg - i as f64);
+    Color::Rgb(r, g, b)
 }
 
 // --- Contrast (WCAG) ---
@@ -506,13 +506,8 @@ pub(super) fn shimmer_ramp(seed: (u8, u8, u8)) -> [(u8, u8, u8); 3] {
 pub(super) fn three_stop(stops: &[(u8, u8, u8); 3], t: f64) -> Color {
     let seg = t.clamp(0.0, 1.0) * 2.0;
     let i = (seg as usize).min(1);
-    let local = seg - i as f64;
-    let (a, b) = (stops[i], stops[i + 1]);
-    Color::Rgb(
-        lerp_channel(a.0, b.0, local),
-        lerp_channel(a.1, b.1, local),
-        lerp_channel(a.2, b.2, local),
-    )
+    let (r, g, b) = blend(stops[i], stops[i + 1], seg - i as f64);
+    Color::Rgb(r, g, b)
 }
 
 #[cfg(test)]
@@ -599,6 +594,30 @@ mod tests {
         let theme = Theme::resolve(&spec, false);
         assert_eq!(theme.accent, spec.accent.ansi);
         assert_eq!(theme.selection_bg, Some(spec.selection_bg.unwrap().ansi));
+    }
+
+    #[test]
+    fn key_chip_adapts_its_neutral_base_to_a_light_background() {
+        let mut spec = ThemeSpec::builtin(ThemePreset::Muted);
+        spec.adapt_to_light_background();
+        let theme = Theme::resolve(&spec, true);
+        // White base blended toward the cyan key seed: a pale tint instead
+        // of the near-black box the dark base would paint on a light row.
+        assert_eq!(theme.key_chip_bg, Some(Color::Rgb(0x94, 0xCA, 0xCA)));
+    }
+
+    #[test]
+    fn key_chip_is_absent_when_its_ingredients_have_no_rgb() {
+        // An ANSI-named band paints the terminal's palette color, which no
+        // blend can echo faithfully next to it.
+        let mut spec = ThemeSpec::builtin(ThemePreset::Muted);
+        spec.set_token("status_bg", "blue").unwrap();
+        assert_eq!(Theme::resolve(&spec, true).key_chip_bg, None);
+
+        // A "reset" key has no color to blend from at all.
+        let mut spec = ThemeSpec::builtin(ThemePreset::Muted);
+        spec.set_token("key", "reset").unwrap();
+        assert_eq!(Theme::resolve(&spec, true).key_chip_bg, None);
     }
 
     #[test]

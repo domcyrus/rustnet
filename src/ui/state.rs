@@ -761,15 +761,21 @@ impl UIState {
         }
     }
 
+    /// Whether the currently selected group is expanded; `None` when no
+    /// group is selected. The single predicate behind the Space key and the
+    /// status bar's expand/collapse hint, so the two can never disagree.
+    pub fn selected_group_expansion(&self) -> Option<bool> {
+        self.selected_group
+            .as_ref()
+            .map(|group| self.expanded_groups.contains(group))
+    }
+
     /// Toggle expansion of the currently selected group
     pub fn toggle_group_expansion(&mut self) {
-        if let Some(group_name) = self.selected_group.clone() {
-            if self.expanded_groups.contains(&group_name) {
-                self.expanded_groups.remove(&group_name);
-                self.set_connection_key(None);
-            } else {
-                self.expanded_groups.insert(group_name);
-            }
+        match self.selected_group_expansion() {
+            Some(true) => self.collapse_selected_group(),
+            Some(false) => self.expand_selected_group(),
+            None => {}
         }
     }
 
@@ -943,17 +949,16 @@ impl UIState {
             return None;
         }
 
-        // If no group is selected, or current selection is not visible, reset to first row
-        // This handles the case when grouping is first enabled
-        let current_index = self.get_selected_grouped_index(grouped_rows);
-        let needs_init = self.selected_group.is_none() || current_index.is_none();
-
-        if needs_init {
-            self.set_selected_grouped_by_index(grouped_rows, 0);
-            Some(0)
-        } else {
-            current_index
-        }
+        // Re-anchor the selection state to the row actually highlighted.
+        // `get_selected_grouped_index` falls back to row 0 whenever the
+        // selected group or connection vanished from the rows; without this
+        // write-back, `selected_group` would keep naming the vanished group
+        // and the Space hint and handler would act on a group that is no
+        // longer the highlighted row. This also covers first enabling
+        // grouping, when nothing is selected yet.
+        let index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
+        self.set_selected_grouped_by_index(grouped_rows, index);
+        Some(index)
     }
 
     /// Check if the current selection is on a group header
@@ -1271,6 +1276,25 @@ mod tests {
 
         assert_eq!(ui.get_selected_grouped_index(&rows), Some(2));
         assert_eq!(ui.selected_grouped_index_hint.get(), Some(2));
+    }
+
+    #[test]
+    fn vanished_group_is_repaired_to_the_row_actually_highlighted() {
+        let mut ui = UIState {
+            grouping_enabled: true,
+            selected_group: Some("firefox".to_string()),
+            ..UIState::default()
+        };
+        ui.expanded_groups.insert("firefox".to_string());
+
+        // firefox exits while chrome remains: the highlight falls back to
+        // row 0, and the selection state must follow it, or Space (and the
+        // status bar hint) would keep acting on the vanished group.
+        let survivors = vec![test_connection(1000, "chrome")];
+        let rows = compute_grouped_rows(&survivors, &ui.expanded_groups);
+        assert_eq!(ui.ensure_valid_grouped_selection(&rows), Some(0));
+        assert_eq!(ui.selected_group.as_deref(), Some("chrome"));
+        assert_eq!(ui.selected_group_expansion(), Some(false));
     }
 
     /// Unattributed connections and ones carrying the "Unknown" name

@@ -1261,7 +1261,7 @@ mod snapshot_tests {
         let app = test_app();
         let connections = overview_connections();
         app.set_connections_snapshot_for_test(connections.clone());
-        let ui_state = UIState {
+        let mut ui_state = UIState {
             grouping_enabled: grouped,
             show_system_panel: false,
             visible_rows: 18,
@@ -1269,6 +1269,13 @@ mod snapshot_tests {
         };
         let grouped_rows =
             grouped.then(|| compute_grouped_rows(&connections, &ui_state.expanded_groups));
+        // The app repairs the grouped selection before every draw (see the
+        // main loop), so the canonical snapshot must render it repaired too:
+        // otherwise the footer would omit the space hint no real user of the
+        // grouped view ever loses, and its fit would go untested.
+        if let Some(rows) = grouped_rows.as_deref() {
+            ui_state.ensure_valid_grouped_selection(rows);
+        }
         render_app(
             &app,
             &ui_state,

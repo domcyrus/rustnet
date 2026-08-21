@@ -5,12 +5,15 @@
 //!
 //! Hints follow a keycap grammar: the key in `theme::key_hint()`, its label
 //! in `theme::key_hint_label()`, two spaces between hints. Active modes use
-//! a compact tinted chip, or a boxed fallback when no tint is available.
-//! The global cluster is reserved before any context action is placed, so
+//! a compact chip (a tinted box, or a boxed fallback when no tint is
+//! available) carrying one padding cell of its own on each side, so a chip
+//! sits a cell further from its neighbors than a plain hint does. The
+//! global cluster is reserved before any context action is placed, so
 //! `q quit` never falls off the right edge. When the terminal is too narrow
 //! to spell every action out, the labels go first and the keys stand alone;
-//! only then are context actions dropped from the end. The exhaustive keymap
-//! lives on the Help tab.
+//! only then are context actions dropped, plain actions from the end before
+//! active mode chips, which show state visible nowhere else on the tab. The
+//! exhaustive keymap lives on the Help tab.
 
 use ratatui::{
     Frame,
@@ -90,13 +93,9 @@ fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
             // selected group is retained while walking its children, so the
             // label remains accurate on both a header and a child row.
             if ui_state.grouping_enabled
-                && let Some(group) = ui_state.selected_group.as_ref()
+                && let Some(expanded) = ui_state.selected_group_expansion()
             {
-                let label = if ui_state.expanded_groups.contains(group) {
-                    "collapse"
-                } else {
-                    "expand"
-                };
+                let label = if expanded { "collapse" } else { "expand" };
                 hints.push(Hint::action("space", label));
             }
             hints.extend([
@@ -218,17 +217,19 @@ fn hint_line(context: &[Hint], cluster: &[Hint], width: u16) -> Line<'static> {
         let Some(room) = width.checked_sub(global + 2) else {
             continue;
         };
-        let mut kept: Vec<Hint> = Vec::new();
-        let mut used = 0usize;
-        for hint in context {
-            let gap = if kept.is_empty() { 0 } else { HINT_GAP };
-            let needed = gap + hint_width(*hint, labels);
-            if used + needed + CLUSTER_GAP > room {
-                break;
-            }
-            used += needed;
-            kept.push(*hint);
+        let mut kept: Vec<Hint> = context.to_vec();
+        // Dropped back-to-front, except that active mode chips outlive the
+        // plain actions around them: a chip is state the user can read
+        // nowhere else on the tab, and without it a mode-specific action
+        // like "space expand" would show with no sign the mode is on.
+        while !kept.is_empty() && group_width(&kept, labels) + CLUSTER_GAP > room {
+            let victim = kept
+                .iter()
+                .rposition(|hint| !hint.active)
+                .unwrap_or(kept.len() - 1);
+            kept.remove(victim);
         }
+        let used = group_width(&kept, labels);
         // A labeled action says what it does, which is the whole point of the
         // footer, so trailing actions are dropped to keep the labels. Only
         // once too few survive is the row better off as bare keys.
@@ -491,6 +492,27 @@ mod tests {
             assert!(line.contains(text), "{text:?} dropped: {line:?}");
         }
         assert!(line.ends_with("q quit "), "{line:?}");
+        assert!(line.chars().count() <= 80, "{line:?}");
+    }
+
+    #[test]
+    fn active_mode_chips_outlive_plain_actions_when_room_runs_out() {
+        // 80 columns with a filter, grouping, and history all on is the
+        // tightest realistic case: the chips must survive it, even at the
+        // cost of plain actions, or the bar would show grouping-specific
+        // actions with no sign that grouping is on.
+        let ui_state = UIState {
+            grouping_enabled: true,
+            selected_group: Some("firefox".to_string()),
+            show_historic: true,
+            filter_query: "port:443".to_string(),
+            ..Default::default()
+        };
+        let context = context_hints(&ui_state, true);
+        let line = rendered(&hint_line(&context, &GLOBAL_HINTS, 80));
+        for text in ["clear filter", "grouped", "history"] {
+            assert!(line.contains(text), "{text:?} dropped: {line:?}");
+        }
         assert!(line.chars().count() <= 80, "{line:?}");
     }
 
