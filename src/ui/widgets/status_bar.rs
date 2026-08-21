@@ -12,8 +12,8 @@
 //! `q quit` never falls off the right edge. When the terminal is too narrow
 //! to spell every action out, the labels go first and the keys stand alone;
 //! only then are context actions dropped, plain actions from the end before
-//! active mode chips, which show state visible nowhere else on the tab. The
-//! exhaustive keymap lives on the Help tab.
+//! active mode chips, which show state visible nowhere else on the tab.
+//! Contextual keymaps live in the help overlay.
 
 use ratatui::{
     Frame,
@@ -58,6 +58,9 @@ const FILTER_HINTS: [Hint; 2] = [
     Hint::action("esc", "cancel"),
 ];
 
+/// Right-edge cluster while contextual help is visible.
+const HELP_HINTS: [Hint; 2] = [Hint::action("h/esc", "close"), Hint::action("q", "quit")];
+
 /// Cells between two hints inside a group.
 const HINT_GAP: usize = 2;
 /// Minimum blank cells between the context actions and the global cluster,
@@ -74,6 +77,14 @@ const MIN_LABELED: usize = 3;
 /// else on screen. Copy drops out entirely when the clipboard is out of
 /// reach, rather than advertising a key that can only fail.
 fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
+    if ui_state.show_help {
+        return ui_state
+            .help_scroll
+            .can_scroll()
+            .then_some(Hint::action("j/k", "scroll"))
+            .into_iter()
+            .collect();
+    }
     // While a filter is being typed the key handler routes every character
     // into the query, so the tab's own actions are unreachable: advertising
     // them would name keys that type a letter instead. Only what the filter
@@ -146,8 +157,6 @@ fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
             Hint::action("i", "interfaces"),
             Hint::action("esc", "back"),
         ],
-        // Help
-        4 => vec![Hint::action("j/k", "scroll"), Hint::action("esc", "back")],
         // Graph
         _ => vec![Hint::action("esc", "back")],
     }
@@ -323,7 +332,9 @@ pub(in crate::ui) fn draw_status_bar(
         Paragraph::new(capture_error_text(error, area.width, area.height))
             .style(theme::status_bar_error())
     } else {
-        let cluster: &[Hint] = if ui_state.filter_mode {
+        let cluster: &[Hint] = if ui_state.show_help {
+            &HELP_HINTS
+        } else if ui_state.filter_mode {
             &FILTER_HINTS
         } else {
             &GLOBAL_HINTS
@@ -380,7 +391,7 @@ mod tests {
         assert_eq!(hints.first().map(|hint| hint.key), Some("\u{2191}\u{2193}"));
         assert!(advertises(&hints, "/"));
         // Tab navigation is advertised by the numbered tab bar itself.
-        assert!(!advertises(&hints, "1-5"));
+        assert!(!advertises(&hints, "1-4"));
         assert!(!advertises(&hints, "tab"));
     }
 

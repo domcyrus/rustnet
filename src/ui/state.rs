@@ -93,7 +93,7 @@ impl ActivitySort {
 }
 
 /// Scroll state for a pane that only learns its content and viewport
-/// size at render time (Details info panes, Help text, Activity interface
+/// size at render time (Details info panes, Help overlay, Activity interface
 /// table). Event handlers mutate `offset`; the draw path reports the
 /// real maximum through [`Self::clamp_for_render`] — a `Cell`, because
 /// drawing only holds `&UIState` — so the next scroll input clamps
@@ -102,6 +102,7 @@ impl ActivitySort {
 pub struct PaneScroll {
     offset: u16,
     max: Cell<u16>,
+    viewport: Cell<u16>,
 }
 
 impl PaneScroll {
@@ -140,6 +141,18 @@ impl PaneScroll {
     pub fn clamp_for_render(&self, max: u16) -> u16 {
         self.max.set(max);
         self.offset.min(max)
+    }
+
+    /// Record this render's viewport height so page-wise scrolling can
+    /// step by what is actually on screen. Survives [`Self::reset`]: a
+    /// stale height from the previous render beats stepping by one line.
+    pub fn record_viewport(&self, rows: u16) {
+        self.viewport.set(rows);
+    }
+
+    /// Viewport height reported by the last render (0 before the first).
+    pub fn viewport_rows(&self) -> u16 {
+        self.viewport.get()
     }
 }
 
@@ -258,7 +271,7 @@ pub enum GroupedRow<'a> {
 /// Represents an action that can be triggered by clicking a screen region.
 #[derive(Debug, Clone)]
 pub enum ClickAction {
-    /// Switch to a specific tab (index 0-4)
+    /// Switch to a specific tab (index 0-3).
     SwitchTab(usize),
     /// Select a connection by index in the current sorted/filtered list
     SelectConnection(usize),
@@ -351,7 +364,7 @@ pub struct UIState {
     pub grouped_scroll_offset: usize,
     /// Scroll state for the Details info panes (reset when the selection changes)
     pub details_scroll: PaneScroll,
-    /// Scroll state for the Help tab text
+    /// Scroll state for the contextual help overlay.
     pub help_scroll: PaneScroll,
     /// Scroll state for the Activity tab's interface table
     pub interfaces_scroll: PaneScroll,
@@ -689,27 +702,25 @@ impl UIState {
         }
     }
 
-    /// Jump directly to a tab by index (0 = Overview … 4 = Help).
-    ///
-    /// Keeps `show_help` in sync with `selected_tab` so the Help tab toggle
-    /// (`h`) and the direct-jump shortcut (`5`) agree on which screen is
-    /// visible. Out-of-range indices are ignored.
+    /// Jump directly to a tab by index (0 = Overview, 3 = Graph).
+    /// Out-of-range indices are ignored.
     pub fn jump_to_tab(&mut self, target: usize) {
-        use crate::ui::{HELP_TAB_INDEX, TAB_COUNT};
+        use crate::ui::TAB_COUNT;
         if target >= TAB_COUNT {
             return;
         }
         self.selected_tab = target;
-        self.show_help = target == HELP_TAB_INDEX;
+        self.rewind_help_for_new_view();
     }
 
-    /// Cycle to the next tab, wrapping back to Overview after Help.
+    /// Cycle to the next tab, wrapping back to Overview after Graph.
     pub fn next_tab(&mut self) {
         use crate::ui::TAB_COUNT;
         self.selected_tab = (self.selected_tab + 1) % TAB_COUNT;
+        self.rewind_help_for_new_view();
     }
 
-    /// Cycle to the previous tab, wrapping from Overview back to Help.
+    /// Cycle to the previous tab, wrapping from Overview back to Graph.
     pub fn prev_tab(&mut self) {
         use crate::ui::TAB_COUNT;
         self.selected_tab = if self.selected_tab == 0 {
@@ -717,6 +728,15 @@ impl UIState {
         } else {
             self.selected_tab - 1
         };
+        self.rewind_help_for_new_view();
+    }
+
+    /// Help content is per-view, so an open overlay restarts from its top
+    /// when tab navigation changes the view underneath it.
+    fn rewind_help_for_new_view(&mut self) {
+        if self.show_help {
+            self.help_scroll.reset();
+        }
     }
 
     /// Cycle to the next sort column.
@@ -1069,7 +1089,7 @@ pub fn compute_grouped_rows<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::{HELP_TAB_INDEX, TAB_COUNT};
+    use crate::ui::TAB_COUNT;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn test_connection(port: u16, process: &str) -> Connection {
@@ -1127,15 +1147,12 @@ mod tests {
     }
 
     #[test]
-    fn jump_to_tab_sets_selected_and_help_flag() {
-        // Each in-range index switches to the matching tab; `show_help` must
-        // agree with `selected_tab == HELP_TAB_INDEX` so the `h` toggle and
-        // the direct-jump shortcut (`5`) stay coherent.
+    fn jump_to_tab_preserves_overlay_visibility() {
+        // Tab selection and overlay visibility are independent so help can
+        // describe the view that remains underneath it.
         for idx in 0..TAB_COUNT {
-            // Start in the opposite `show_help` state so the assertion below
-            // proves `jump_to_tab` rewrote the flag, not just left it alone.
             let mut ui = UIState {
-                show_help: idx != HELP_TAB_INDEX,
+                show_help: true,
                 ..UIState::default()
             };
             ui.jump_to_tab(idx);
@@ -1143,11 +1160,7 @@ mod tests {
                 ui.selected_tab, idx,
                 "selected_tab after jump_to_tab({idx})"
             );
-            assert_eq!(
-                ui.show_help,
-                idx == HELP_TAB_INDEX,
-                "show_help after jump_to_tab({idx})"
-            );
+            assert!(ui.show_help, "overlay after jump_to_tab({idx})");
         }
     }
 

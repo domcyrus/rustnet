@@ -207,7 +207,7 @@ rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 | `x` | 清空所有连接(连按两次确认) |
 | `Tab` 或 `]` | 下一个标签页 |
 | `Shift+Tab` 或 `[` | 上一个标签页 |
-| `1`–`5` | 直接跳转到 Overview / Details / Activity / Graph / Help |
+| `1`–`4` | 直接跳转到 Overview / Details / Activity / Graph |
 | `↑/k` `↓/j` | 上下移动 |
 | `g` `G` | 跳到第一条 / 最后一条连接 |
 | `Enter` | 查看连接详情 |
@@ -218,13 +218,13 @@ rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 | `s` `S` | 切换排序列 / 切换排序方向 |
 | `a` | 切换按进程分组 |
 | `Space` | 展开 / 折叠进程分组 |
-| `←/→` 或 `h/l` | 折叠 / 展开当前分组 |
+| `←` / `→` 或 `l` | 折叠 / 展开当前分组 |
 | `PageUp/PageDown` 或 `Ctrl+B/F` | 翻页 |
 | `t` | 切换是否显示历史（已关闭）连接 |
 | `i` | 在概览中切换 System 信息，或在活动标签页切换接口详情 |
 | `r` | 重置视图(分组、排序、过滤) |
 | `/` | 进入过滤模式 |
-| `h` | 切换帮助 |
+| `h` | 切换当前标签页的上下文帮助浮层 |
 
 在 Overview 中，底部状态栏会高亮当前启用的进程分组和历史连接模式。
 处于分组模式时，状态栏还会针对所选进程组显示 `space expand` 或

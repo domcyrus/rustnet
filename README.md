@@ -209,7 +209,7 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `x` | Clear all connections (press twice to confirm) |
 | `Tab` or `]` | Next tab |
 | `Shift+Tab` or `[` | Previous tab |
-| `1`–`5` | Jump to Overview / Details / Activity / Graph / Help |
+| `1`–`4` | Jump to Overview / Details / Activity / Graph |
 | `↑/k` `↓/j` | Navigate up/down |
 | `g` `G` | Jump to first/last connection |
 | `Enter` | View connection details |
@@ -220,13 +220,13 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `s` `S` | Cycle sort columns / toggle direction |
 | `a` | Toggle process grouping |
 | `Space` | Expand/collapse process group |
-| `←/→` or `h/l` | Collapse/expand group |
+| `←` / `→` or `l` | Collapse/expand group |
 | `PageUp/PageDown` or `Ctrl+B/F` | Page navigation |
 | `t` | Toggle historic (closed) connections |
 | `i` | Toggle System info on Overview or interface details on Activity |
 | `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |
-| `h` | Toggle help |
+| `h` | Toggle contextual help for the active tab |
 
 On Overview, the bottom status bar highlights process grouping and historic
 connections while those modes are active. In grouped mode it also shows

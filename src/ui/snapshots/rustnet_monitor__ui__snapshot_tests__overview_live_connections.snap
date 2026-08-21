@@ -2,7 +2,7 @@
 source: src/ui/mod.rs
 expression: render_overview(false)
 ---
- rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                    ● eth0
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph                                                                             ● eth0
 ────────────━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Live Connections                                                                                                                          
  Process                 Remote                   Local              Service    App                       State            RTT     Rx↓/Tx↑  

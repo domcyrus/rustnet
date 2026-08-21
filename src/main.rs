@@ -1037,27 +1037,22 @@ where
                             // numeric-jump convention used by htop, tmux, etc.).
                             // Tab indices match `TAB_TITLES` in
                             // `ui::widgets::tabs_bar`: Overview, Details,
-                            // Activity, Graph, Help.
+                            // Activity, Graph.
                             (KeyCode::Char('1'), KeyModifiers::NONE) => ui_state.jump_to_tab(0),
                             (KeyCode::Char('2'), KeyModifiers::NONE) => ui_state.jump_to_tab(1),
                             (KeyCode::Char('3'), KeyModifiers::NONE) => ui_state.jump_to_tab(2),
                             (KeyCode::Char('4'), KeyModifiers::NONE) => ui_state.jump_to_tab(3),
-                            (KeyCode::Char('5'), KeyModifiers::NONE) => ui_state.jump_to_tab(4),
 
-                            // Help toggle — kept because `h` is the universal
+                            // Help overlay, kept because `h` is the universal
                             // mnemonic for help across less / man / vim / tmux.
                             (KeyCode::Char('h'), _) => {
-                                ui_state.show_help = !ui_state.show_help;
-                                if ui_state.show_help {
-                                    ui_state.selected_tab = 4; // Switch to help tab
-                                } else {
-                                    ui_state.selected_tab = 0; // Back to overview
-                                }
+                                ui_state.show_help = true;
+                                ui_state.help_scroll.reset();
                             }
 
                             // x and Esc keep cross-tab fallbacks here so
                             // clear / filter-clear / tab-back still work
-                            // from Details / Activity / Graph / Help
+                            // from Details / Activity / Graph
                             // (OverviewTab only claims them on Overview).
                             (KeyCode::Char('x'), _)
                                 if clear_all_with_confirmation(&mut ui_state, app) =>

@@ -105,7 +105,7 @@ rustnet --pcapng-export capture.pcapng  # 注釈付き PCAPNG を出力
 |---|---|
 | `q` | 終了。確認のため 2 回押す |
 | `Tab` / `Shift+Tab` | 次または前のタブ |
-| `1` から `5` | Overview、Details、Activity、Graph、Help |
+| `1` から `4` | Overview、Details、Activity、Graph |
 | `↑/k` `↓/j` | 選択を移動 |
 | `Enter` | 接続の詳細を表示 |
 | `/` | フィルター入力 |
@@ -114,6 +114,7 @@ rustnet --pcapng-export capture.pcapng  # 注釈付き PCAPNG を出力
 | `Space` | 選択したプロセスグループを展開または折りたたむ |
 | `t` | 終了済み接続の表示を切り替え |
 | `r` | 表示、並び替え、フィルターをリセット |
+| `h` | 現在のタブに対応したヘルプオーバーレイを表示または閉じる |
 
 Overview の下部ステータスバーでは、プロセスグループ表示と履歴接続の
 有効状態がハイライトされます。グループ表示中は、選択したグループに

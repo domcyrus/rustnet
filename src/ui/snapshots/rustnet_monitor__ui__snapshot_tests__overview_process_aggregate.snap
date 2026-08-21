@@ -3,7 +3,7 @@ source: src/ui/mod.rs
 assertion_line: 1296
 expression: render_overview(true)
 ---
- rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Help                                                                    ● eth0
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph                                                                             ● eth0
 ────────────━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Process Aggregate                                                                                                                         
  Process                 Remote                   Local              Service    App                       State            RTT     Rx↓/Tx↑  
