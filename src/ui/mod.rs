@@ -638,6 +638,7 @@ mod snapshot_tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::buffer::Buffer;
+    use std::collections::HashSet;
 
     /// Render a closure into a `width × height` test buffer and return a
     /// plain-text dump (one line per row, no trailing whitespace trim).
@@ -859,6 +860,34 @@ mod snapshot_tests {
     #[test]
     fn status_bar_overview_default() {
         let ui_state = UIState::default();
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_overview_grouped_collapsed() {
+        let ui_state = UIState {
+            grouping_enabled: true,
+            selected_group: Some("firefox".to_string()),
+            ..Default::default()
+        };
+        let output = render(120, 1, |f| {
+            draw_status_bar(f, &ui_state, true, None, f.area())
+        });
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn status_bar_overview_grouped_expanded_with_history() {
+        let ui_state = UIState {
+            grouping_enabled: true,
+            selected_group: Some("firefox".to_string()),
+            expanded_groups: HashSet::from(["firefox".to_string()]),
+            show_historic: true,
+            ..Default::default()
+        };
         let output = render(120, 1, |f| {
             draw_status_bar(f, &ui_state, true, None, f.area())
         });

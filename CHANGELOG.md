@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **State-Aware Status Bar**: the Overview footer highlights active process
+  grouping and history modes and shows whether Space will expand or collapse
+  the selected process group
+
 ### Removed
 - **Ubuntu 25.10 (Questing) PPA**: the series reached end of life and
   Launchpad rejects new uploads for it, so the PPA build matrix and install

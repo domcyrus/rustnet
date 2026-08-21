@@ -364,6 +364,20 @@ pub(super) fn key_hint_label() -> Style {
     Style::default().fg(active().label)
 }
 
+/// Selected mode in the status bar. RGB terminals get a quiet box derived
+/// from the theme's keycap hue, with a contrast-safe foreground. Basic and
+/// NO_COLOR terminals retain the connection selection's boxed fallback, but
+/// without bold so the current table row remains the strongest focus.
+pub(super) fn active_key_hint() -> Style {
+    if super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return Style::default().add_modifier(Modifier::REVERSED);
+    }
+    if let Some(bg) = active().key_chip_bg {
+        return Style::default().fg(on_color(bg)).bg(bg);
+    }
+    selection_row().remove_modifier(Modifier::BOLD)
+}
+
 // --- Style builders (NO_COLOR-aware) ---
 
 /// Apply a foreground color, respecting NO_COLOR.
@@ -513,6 +527,9 @@ mod tests {
                 .add_modifier(Modifier::BOLD)
         );
         assert_eq!(key_hint_label(), Style::default().fg(Color::Gray));
+        let active = active_key_hint();
+        assert!(active.add_modifier.contains(Modifier::REVERSED));
+        assert!(active.sub_modifier.contains(Modifier::BOLD));
     }
 
     #[test]

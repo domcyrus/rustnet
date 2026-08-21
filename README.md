@@ -228,6 +228,10 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `/` | Enter filter mode |
 | `h` | Toggle help |
 
+On Overview, the bottom status bar highlights process grouping and historic
+connections while those modes are active. In grouped mode it also shows
+`space expand` or `space collapse` for the selected process group.
+
 See [USAGE.md](USAGE.md) for detailed keyboard controls and navigation tips.
 
 ## Filtering & Sorting

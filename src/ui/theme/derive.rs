@@ -37,6 +37,9 @@ pub struct Theme {
     pub(super) selection_bg: Option<Color>,
     pub(super) selection_fg: Option<Color>,
     pub(super) status_bg: Option<Color>,
+    /// Quiet status-chip tint derived from the theme's key color. Unlike a
+    /// configured token, this only exists when the terminal supports RGB.
+    pub(super) key_chip_bg: Option<Color>,
 
     // Role colors mapped from the core tokens at resolve time.
     pub(super) field_local_addr: Color,
@@ -115,6 +118,23 @@ impl Theme {
         let muted = color(spec.muted);
         let text = color(spec.text);
         let vivid = spec.vivid;
+        // Active status modes should echo the keycap hue without becoming as
+        // loud as a selected table row. Blend a little of the key into the
+        // status or selection surface. ANSI presets have no surface token,
+        // so a dark neutral base produces a restrained colored glow.
+        let key_chip_bg = terminal_truecolor.then(|| {
+            let key = seed(spec.key);
+            let (base, strength) = spec
+                .status_bg
+                .or(spec.selection_bg)
+                .map(|token| (seed(token), 0.24))
+                .unwrap_or(((0, 0, 0), 0.42));
+            Color::Rgb(
+                lerp_channel(base.0, key.0, strength),
+                lerp_channel(base.1, key.1, strength),
+                lerp_channel(base.2, key.2, strength),
+            )
+        });
 
         let theme = Theme {
             vivid,
@@ -135,6 +155,7 @@ impl Theme {
             selection_bg: bg(spec.selection_bg),
             selection_fg: bg(spec.selection_fg),
             status_bg: bg(spec.status_bg),
+            key_chip_bg,
             field_local_addr: accent,
             field_remote_addr: info,
             field_state: if vivid { ok } else { text },
@@ -558,6 +579,7 @@ mod tests {
         let theme = Theme::resolve(&ThemeSpec::builtin(ThemePreset::Muted), true);
         assert_eq!(theme.accent, Color::Cyan);
         assert_eq!(theme.selection_bg, None);
+        assert_eq!(theme.key_chip_bg, Some(Color::Rgb(0x00, 0x36, 0x36)));
     }
 
     #[test]
@@ -585,6 +607,7 @@ mod tests {
         assert_eq!(theme.accent, Color::LightBlue);
         assert_eq!(theme.selection_bg, None);
         assert_eq!(theme.status_bg, None);
+        assert_eq!(theme.key_chip_bg, None);
     }
 
     #[test]
@@ -592,6 +615,7 @@ mod tests {
         let theme = Theme::resolve(&ThemeSpec::builtin(ThemePreset::TokyoNight), true);
         assert_eq!(theme.accent, Color::Rgb(0x7A, 0xA2, 0xF7));
         assert_eq!(theme.selection_bg, Some(Color::Rgb(0x33, 0x46, 0x7C)));
+        assert_eq!(theme.key_chip_bg, Some(Color::Rgb(0x3C, 0x4A, 0x6D)));
     }
 
     #[test]
