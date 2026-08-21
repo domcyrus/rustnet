@@ -4,12 +4,16 @@
 //! capture failures (which claim a second row when they do not fit on one).
 //!
 //! Hints follow a keycap grammar: the key in `theme::key_hint()`, its label
-//! in `theme::key_hint_label()`, two spaces between hints. The global
-//! cluster is reserved before any context action is placed, so `q quit`
-//! never falls off the right edge. When the terminal is too narrow to spell
-//! every action out, the labels go first and the keys stand alone; only
-//! then are context actions dropped from the end. Contextual keymaps live
-//! in the help overlay.
+//! in `theme::key_hint_label()`, two spaces between hints. Active modes use
+//! a compact chip (a tinted box, or a boxed fallback when no tint is
+//! available) carrying one padding cell of its own on each side, so a chip
+//! sits a cell further from its neighbors than a plain hint does. The
+//! global cluster is reserved before any context action is placed, so
+//! `q quit` never falls off the right edge. When the terminal is too narrow
+//! to spell every action out, the labels go first and the keys stand alone;
+//! only then are context actions dropped, plain actions from the end before
+//! active mode chips, which show state visible nowhere else on the tab.
+//! Contextual keymaps live in the help overlay.
 
 use ratatui::{
     Frame,
@@ -21,19 +25,41 @@ use ratatui::{
 use crate::ui::{UIState, theme};
 
 /// One keycap hint: the key as typed and the action it triggers.
-type Hint = (&'static str, &'static str);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Hint {
+    key: &'static str,
+    label: &'static str,
+    active: bool,
+}
+
+impl Hint {
+    const fn action(key: &'static str, label: &'static str) -> Self {
+        Self {
+            key,
+            label,
+            active: false,
+        }
+    }
+
+    const fn mode(key: &'static str, label: &'static str, active: bool) -> Self {
+        Self { key, label, active }
+    }
+}
 
 /// Pinned to the right edge, and the last thing dropped: the two keys worth
 /// knowing when nothing else makes sense.
-const GLOBAL_HINTS: [Hint; 2] = [("h", "help"), ("q", "quit")];
+const GLOBAL_HINTS: [Hint; 2] = [Hint::action("h", "help"), Hint::action("q", "quit")];
 
 /// Right-edge cluster while a filter is being typed. `h` and `q` would type
 /// a character into the query rather than help or quit, so the two keys that
 /// end the mode take their place.
-const FILTER_HINTS: [Hint; 2] = [("enter", "apply"), ("esc", "cancel")];
+const FILTER_HINTS: [Hint; 2] = [
+    Hint::action("enter", "apply"),
+    Hint::action("esc", "cancel"),
+];
 
 /// Right-edge cluster while contextual help is visible.
-const HELP_HINTS: [Hint; 2] = [("h/esc", "close"), ("q", "quit")];
+const HELP_HINTS: [Hint; 2] = [Hint::action("h/esc", "close"), Hint::action("q", "quit")];
 
 /// Cells between two hints inside a group.
 const HINT_GAP: usize = 2;
@@ -55,7 +81,7 @@ fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
         return ui_state
             .help_scroll
             .can_scroll()
-            .then_some(("j/k", "scroll"))
+            .then_some(Hint::action("j/k", "scroll"))
             .into_iter()
             .collect();
     }
@@ -64,7 +90,7 @@ fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
     // them would name keys that type a letter instead. Only what the filter
     // editor actually handles is offered.
     if ui_state.filter_mode {
-        return vec![("\u{2191}\u{2193}", "select")];
+        return vec![Hint::action("\u{2191}\u{2193}", "select")];
     }
     match ui_state.selected_tab {
         // Overview
@@ -72,70 +98,98 @@ fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
             let mut hints = Vec::new();
             // Clearing outranks everything else while a filter is on.
             if ui_state.has_active_filter() {
-                hints.push(("esc", "clear filter"));
+                hints.push(Hint::action("esc", "clear filter"));
+            }
+            // Grouping turns Space into the most useful local action. The
+            // selected group is retained while walking its children, so the
+            // label remains accurate on both a header and a child row.
+            if ui_state.grouping_enabled
+                && let Some(expanded) = ui_state.selected_group_expansion()
+            {
+                let label = if expanded { "collapse" } else { "expand" };
+                hints.push(Hint::action("space", label));
             }
             hints.extend([
-                ("\u{2191}\u{2193}", "select"),
-                ("/", "filter"),
-                ("a", "group"),
-                ("t", "history"),
-                ("i", "info"),
+                Hint::action("\u{2191}\u{2193}", "select"),
+                Hint::action("/", "filter"),
+                Hint::mode(
+                    "a",
+                    if ui_state.grouping_enabled {
+                        "grouped"
+                    } else {
+                        "group"
+                    },
+                    ui_state.grouping_enabled,
+                ),
+                Hint::mode("t", "history", ui_state.show_historic),
+                Hint::action("i", "info"),
             ]);
             if clipboard {
-                hints.push(("c", "copy"));
+                hints.push(Hint::action("c", "copy"));
             }
             hints
         }
         // Details
         1 => {
-            let mut hints = vec![("j/k", "prev/next")];
+            let mut hints = vec![Hint::action("j/k", "prev/next")];
             // Ctrl+D/U only moves when the record outgrows its pane, so on a
             // tall terminal the hint would advertise a no-op.
             if ui_state.details_scroll.can_scroll() {
-                hints.push(("ctrl-d/u", "scroll"));
+                hints.push(Hint::action("ctrl-d/u", "scroll"));
             }
             if clipboard {
-                hints.push(("c", "copy remote addr"));
+                hints.push(Hint::action("c", "copy remote addr"));
             }
-            hints.push(("esc", "back"));
+            hints.push(Hint::action("esc", "back"));
             hints
         }
         // Activity, interface list
         2 if ui_state.activity_show_interfaces => vec![
-            ("j/k", "scroll"),
-            ("i", "process activity"),
-            ("esc", "back"),
+            Hint::action("j/k", "scroll"),
+            Hint::action("i", "process activity"),
+            Hint::action("esc", "back"),
         ],
         // Activity
         2 => vec![
-            ("d", "tx/rx"),
-            ("s", "sort"),
-            ("S", "order"),
-            ("i", "interfaces"),
-            ("esc", "back"),
+            Hint::action("d", "tx/rx"),
+            Hint::action("s", "sort"),
+            Hint::action("S", "order"),
+            Hint::action("i", "interfaces"),
+            Hint::action("esc", "back"),
         ],
         // Graph
-        _ => vec![("esc", "back")],
+        _ => vec![Hint::action("esc", "back")],
     }
 }
 
 /// Spans for one hint. Without `labels` the key stands alone, the fallback
 /// for a terminal too narrow to spell the action out.
 fn hint_spans(hint: Hint, labels: bool) -> Vec<Span<'static>> {
-    let (key, label) = hint;
-    let mut spans = vec![Span::styled(key, theme::key_hint())];
+    if hint.active {
+        let text = if labels {
+            format!(" {} {} ", hint.key, hint.label)
+        } else {
+            format!(" {} ", hint.key)
+        };
+        return vec![Span::styled(text, theme::active_key_hint())];
+    }
+
+    let mut spans = vec![Span::styled(hint.key, theme::key_hint())];
     if labels {
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(label, theme::key_hint_label()));
+        spans.push(Span::styled(hint.label, theme::key_hint_label()));
     }
     spans
 }
 
 fn hint_width(hint: Hint, labels: bool) -> usize {
-    let (key, label) = hint;
-    let mut width = key.chars().count();
+    let mut width = hint.key.chars().count();
     if labels {
-        width += 1 + label.chars().count();
+        width += 1 + hint.label.chars().count();
+    }
+    if hint.active {
+        // One padding cell on each side turns the selected mode into a chip.
+        width += 2;
     }
     width
 }
@@ -172,17 +226,19 @@ fn hint_line(context: &[Hint], cluster: &[Hint], width: u16) -> Line<'static> {
         let Some(room) = width.checked_sub(global + 2) else {
             continue;
         };
-        let mut kept: Vec<Hint> = Vec::new();
-        let mut used = 0usize;
-        for hint in context {
-            let gap = if kept.is_empty() { 0 } else { HINT_GAP };
-            let needed = gap + hint_width(*hint, labels);
-            if used + needed + CLUSTER_GAP > room {
-                break;
-            }
-            used += needed;
-            kept.push(*hint);
+        let mut kept: Vec<Hint> = context.to_vec();
+        // Dropped back-to-front, except that active mode chips outlive the
+        // plain actions around them: a chip is state the user can read
+        // nowhere else on the tab, and without it a mode-specific action
+        // like "space expand" would show with no sign the mode is on.
+        while !kept.is_empty() && group_width(&kept, labels) + CLUSTER_GAP > room {
+            let victim = kept
+                .iter()
+                .rposition(|hint| !hint.active)
+                .unwrap_or(kept.len() - 1);
+            kept.remove(victim);
         }
+        let used = group_width(&kept, labels);
         // A labeled action says what it does, which is the whole point of the
         // footer, so trailing actions are dropped to keep the labels. Only
         // once too few survive is the row better off as bare keys.
@@ -299,7 +355,14 @@ mod tests {
     use super::*;
 
     fn advertises(hints: &[Hint], key: &str) -> bool {
-        hints.iter().any(|(hint_key, _)| *hint_key == key)
+        hints.iter().any(|hint| hint.key == key)
+    }
+
+    fn hint_for<'a>(hints: &'a [Hint], key: &str) -> &'a Hint {
+        hints
+            .iter()
+            .find(|hint| hint.key == key)
+            .unwrap_or_else(|| panic!("missing {key:?} hint"))
     }
 
     fn rendered(line: &Line<'_>) -> String {
@@ -325,7 +388,7 @@ mod tests {
     #[test]
     fn overview_spends_its_room_on_actions_visible_nowhere_else() {
         let hints = context_hints(&UIState::default(), true);
-        assert_eq!(hints.first().map(|(key, _)| *key), Some("\u{2191}\u{2193}"));
+        assert_eq!(hints.first().map(|hint| hint.key), Some("\u{2191}\u{2193}"));
         assert!(advertises(&hints, "/"));
         // Tab navigation is advertised by the numbered tab bar itself.
         assert!(!advertises(&hints, "1-4"));
@@ -340,8 +403,56 @@ mod tests {
         };
         assert_eq!(
             context_hints(&ui_state, true).first(),
-            Some(&("esc", "clear filter"))
+            Some(&Hint::action("esc", "clear filter"))
         );
+    }
+
+    #[test]
+    fn overview_marks_grouping_and_history_as_active_modes() {
+        let ui_state = UIState {
+            grouping_enabled: true,
+            show_historic: true,
+            ..Default::default()
+        };
+        let hints = context_hints(&ui_state, true);
+
+        assert_eq!(hint_for(&hints, "a"), &Hint::mode("a", "grouped", true));
+        assert_eq!(hint_for(&hints, "t"), &Hint::mode("t", "history", true));
+    }
+
+    #[test]
+    fn overview_offers_space_to_expand_or_collapse_the_selected_group() {
+        let mut ui_state = UIState {
+            grouping_enabled: true,
+            selected_group: Some("firefox".to_string()),
+            ..Default::default()
+        };
+
+        let collapsed = context_hints(&ui_state, true);
+        assert_eq!(hint_for(&collapsed, "space").label, "expand");
+
+        ui_state.expanded_groups.insert("firefox".to_string());
+        let expanded = context_hints(&ui_state, true);
+        assert_eq!(hint_for(&expanded, "space").label, "collapse");
+
+        // Child selection keeps the parent group selected, so Space still
+        // advertises the collapse action that the key handler performs.
+        ui_state.selected_connection_key = Some("child".to_string());
+        let child = context_hints(&ui_state, true);
+        assert_eq!(hint_for(&child, "space").label, "collapse");
+    }
+
+    #[test]
+    fn overview_omits_space_without_an_actionable_group() {
+        assert!(!advertises(
+            &context_hints(&UIState::default(), true),
+            "space"
+        ));
+        let grouped_empty = UIState {
+            grouping_enabled: true,
+            ..Default::default()
+        };
+        assert!(!advertises(&context_hints(&grouped_empty, true), "space"));
     }
 
     #[test]
@@ -368,9 +479,52 @@ mod tests {
         // Too narrow for labels, yet every key is still there.
         let narrow = rendered(&hint_line(&context, &GLOBAL_HINTS, 40));
         assert!(!narrow.contains("filter"), "{narrow:?}");
-        for (key, _) in &context {
-            assert!(narrow.contains(key), "{key} dropped: {narrow:?}");
+        for hint in &context {
+            assert!(
+                narrow.contains(hint.key),
+                "{} dropped: {narrow:?}",
+                hint.key
+            );
         }
+    }
+
+    #[test]
+    fn standard_terminal_keeps_group_actions_and_active_modes() {
+        let ui_state = UIState {
+            grouping_enabled: true,
+            selected_group: Some("firefox".to_string()),
+            show_historic: true,
+            ..Default::default()
+        };
+        let context = context_hints(&ui_state, true);
+        let line = rendered(&hint_line(&context, &GLOBAL_HINTS, 80));
+
+        for text in ["space expand", "select", "filter", "grouped", "history"] {
+            assert!(line.contains(text), "{text:?} dropped: {line:?}");
+        }
+        assert!(line.ends_with("q quit "), "{line:?}");
+        assert!(line.chars().count() <= 80, "{line:?}");
+    }
+
+    #[test]
+    fn active_mode_chips_outlive_plain_actions_when_room_runs_out() {
+        // 80 columns with a filter, grouping, and history all on is the
+        // tightest realistic case: the chips must survive it, even at the
+        // cost of plain actions, or the bar would show grouping-specific
+        // actions with no sign that grouping is on.
+        let ui_state = UIState {
+            grouping_enabled: true,
+            selected_group: Some("firefox".to_string()),
+            show_historic: true,
+            filter_query: "port:443".to_string(),
+            ..Default::default()
+        };
+        let context = context_hints(&ui_state, true);
+        let line = rendered(&hint_line(&context, &GLOBAL_HINTS, 80));
+        for text in ["clear filter", "grouped", "history"] {
+            assert!(line.contains(text), "{text:?} dropped: {line:?}");
+        }
+        assert!(line.chars().count() <= 80, "{line:?}");
     }
 
     #[test]
@@ -431,7 +585,7 @@ mod tests {
             );
         }
         // The keys that end the mode move to the right-edge cluster.
-        assert_eq!(FILTER_HINTS.map(|(key, _)| key), ["enter", "esc"]);
+        assert_eq!(FILTER_HINTS.map(|hint| hint.key), ["enter", "esc"]);
     }
 
     #[test]

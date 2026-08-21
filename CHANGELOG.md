@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **State-Aware Status Bar**: the Overview footer highlights active process
+  grouping and history modes and shows whether Space will expand or collapse
+  the selected process group
+
 ### Changed
 - **Contextual Help Overlay**: Help now opens above the active tab and only
   shows controls and concepts relevant to that view. The tab bar now contains

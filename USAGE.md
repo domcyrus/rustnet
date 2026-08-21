@@ -657,6 +657,11 @@ Press `a` to toggle process grouping mode. When enabled:
 
 Press `a` again to return to the flat (ungrouped) connection list.
 
+The Overview status bar highlights `a grouped` while this mode is active. It
+also promotes the selected group's immediate action to `space expand` or
+`space collapse`, including while an individual connection inside that group
+is selected.
+
 ### Grouped View Display
 
 When grouping is enabled, the connection list shows process groups:
@@ -1031,6 +1036,10 @@ available in Details.
 ### Historic Connections
 
 By default, connections disappear from the list once they time out or close. Press `t` to toggle **historic connections** mode, which keeps closed connections visible alongside active ones.
+
+While historic connections are visible, the Overview status bar highlights
+`t history`. This indicator can be active alongside the process-grouping
+indicator.
 
 **How it works:**
 

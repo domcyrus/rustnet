@@ -112,7 +112,8 @@ impl Component for OverviewTab {
 
             // --- Group expand / collapse ---
             (KeyCode::Char(' '), _)
-                if ctx.ui_state.grouping_enabled && ctx.ui_state.selected_group.is_some() =>
+                if ctx.ui_state.grouping_enabled
+                    && ctx.ui_state.selected_group_expansion().is_some() =>
             {
                 ctx.ui_state.toggle_group_expansion();
                 Some(vec![Effect::Regroup])

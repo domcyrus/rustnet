@@ -1,0 +1,5 @@
+---
+source: src/ui/mod.rs
+expression: output
+---
+ space collapse  ↑↓ select  / filter   a grouped    t history   i info  c copy                           h help  q quit

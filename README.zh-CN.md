@@ -226,6 +226,10 @@ rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 | `/` | 进入过滤模式 |
 | `h` | 切换当前标签页的上下文帮助浮层 |
 
+在 Overview 中，底部状态栏会高亮当前启用的进程分组和历史连接模式。
+处于分组模式时，状态栏还会针对所选进程组显示 `space expand` 或
+`space collapse`。
+
 完整键位说明与导航技巧见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。
 
 ## 过滤与排序
