@@ -1,6 +1,6 @@
 //! # rustnet-host
 //!
-//! Per-connection **process attribution** for
+//! Per-connection **process attribution** and a host **socket inventory** for
 //! [RustNet](https://github.com/domcyrus/rustnet): given a [`Connection`], find
 //! the owning process (pid + name). Each platform uses its best available
 //! strategy behind one [`ProcessLookup`] trait, selected by
@@ -18,6 +18,10 @@
 //! [`ProcessAttribution`]: parent process id, effective UID/GID, executable
 //! path, process lineage, and a [`MatchQuality`] saying how the connection was
 //! matched.
+//!
+//! [`ProcessLookup::socket_snapshot`] exposes the operating system's TCP and
+//! UDP tables independently from captured traffic. This includes TCP LISTEN
+//! sockets and UDP BOUND endpoints that may never emit a captured packet.
 //!
 //! When a platform can't use its optimal method, [`ProcessLookup::get_degradation_reason`]
 //! reports why via [`DegradationReason`] (e.g. missing `CAP_BPF`, no root for
@@ -37,6 +41,144 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+/// TCP state reported by the host operating system's socket table.
+///
+/// This is intentionally separate from `rustnet_core::TcpState`, which is an
+/// observed state reconstructed from captured packets. Host socket tables can
+/// also report sockets that never emit a packet, most notably listeners.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HostTcpState {
+    Closed,
+    Listen,
+    SynSent,
+    SynReceived,
+    Established,
+    FinWait1,
+    FinWait2,
+    CloseWait,
+    Closing,
+    LastAck,
+    TimeWait,
+    /// Windows exposes deletion of the TCP control block as a separate state.
+    DeleteTcb,
+    Unknown,
+}
+
+impl std::fmt::Display for HostTcpState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Closed => "CLOSED",
+            Self::Listen => "LISTEN",
+            Self::SynSent => "SYN_SENT",
+            Self::SynReceived => "SYN_RECV",
+            Self::Established => "ESTAB",
+            Self::FinWait1 => "FIN_WAIT1",
+            Self::FinWait2 => "FIN_WAIT2",
+            Self::CloseWait => "CLOSE_WAIT",
+            Self::Closing => "CLOSING",
+            Self::LastAck => "LAST_ACK",
+            Self::TimeWait => "TIME_WAIT",
+            Self::DeleteTcb => "DELETE_TCB",
+            Self::Unknown => "UNKNOWN",
+        })
+    }
+}
+
+/// State of a host socket record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HostSocketState {
+    Tcp(HostTcpState),
+    /// UDP has no LISTEN state. A row in the host UDP table represents a local
+    /// endpoint that has been bound, explicitly or implicitly.
+    UdpBound,
+}
+
+/// Best-effort process ownership attached to a host socket.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct SocketOwner {
+    pub pid: u32,
+    pub name: String,
+    pub uid: Option<u32>,
+}
+
+impl SocketOwner {
+    pub fn new(pid: u32, name: impl Into<String>, uid: Option<u32>) -> Self {
+        Self {
+            pid,
+            name: name.into(),
+            uid,
+        }
+    }
+}
+
+/// One socket returned by the host operating system.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct HostSocket {
+    pub protocol: Protocol,
+    pub local_addr: SocketAddr,
+    /// TCP listeners and unconnected UDP endpoints have no remote peer.
+    pub remote_addr: Option<SocketAddr>,
+    pub state: HostSocketState,
+    /// Missing when the platform does not expose an owner or permissions hide
+    /// it. The socket record itself remains useful and must not be discarded.
+    pub owner: Option<SocketOwner>,
+    /// Platform-native identity when cheaply available, such as a Linux socket
+    /// inode. It is not displayed, but can distinguish otherwise equal rows.
+    pub native_id: Option<u64>,
+}
+
+impl HostSocket {
+    pub fn new(protocol: Protocol, local_addr: SocketAddr, state: HostSocketState) -> Self {
+        Self {
+            protocol,
+            local_addr,
+            remote_addr: None,
+            state,
+            owner: None,
+            native_id: None,
+        }
+    }
+
+    pub fn with_remote_addr(mut self, remote_addr: SocketAddr) -> Self {
+        self.remote_addr = Some(remote_addr);
+        self
+    }
+
+    pub fn with_owner(mut self, owner: SocketOwner) -> Self {
+        self.owner = Some(owner);
+        self
+    }
+
+    pub fn with_native_id(mut self, native_id: u64) -> Self {
+        self.native_id = Some(native_id);
+        self
+    }
+}
+
+/// Point-in-time host socket inventory.
+#[derive(Debug, Clone, Default)]
+pub struct SocketSnapshot {
+    pub sockets: Arc<[HostSocket]>,
+    pub collected_at: Option<SystemTime>,
+}
+
+impl SocketSnapshot {
+    pub(crate) fn new(sockets: Vec<HostSocket>) -> Self {
+        Self {
+            sockets: sockets.into(),
+            collected_at: Some(SystemTime::now()),
+        }
+    }
+}
+
+pub(crate) fn remote_if_present(addr: SocketAddr) -> Option<SocketAddr> {
+    (addr.port() != 0 || !addr.ip().is_unspecified()).then_some(addr)
+}
 
 /// Active process-attribution backend.
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
@@ -282,12 +424,21 @@ where
 
 /// Parse a socket address as printed by OS socket-table tools (`sockstat`,
 /// `lsof`): `ip:port`, `*:port` (wildcard), `[ipv6]:port`, or bracketless
-/// IPv6 like `::1:8080` (the last colon splits off the port).
+/// IPv6 like `::1:8080` (the last colon splits off the port). A `*` port
+/// (sockstat prints a wildcard peer as `*:*`) parses as port 0, so listener
+/// rows survive and `remote_if_present` reads them as "no peer".
 #[cfg(any(test, target_os = "freebsd", target_os = "macos"))]
 pub(crate) fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
+    fn parse_port(port_str: &str) -> Option<u16> {
+        if port_str == "*" {
+            return Some(0);
+        }
+        port_str.parse::<u16>().ok()
+    }
+
     // Handle wildcard addresses
-    if addr_str.starts_with("*:") {
-        let port = addr_str.strip_prefix("*:")?.parse::<u16>().ok()?;
+    if let Some(port_str) = addr_str.strip_prefix("*:") {
+        let port = parse_port(port_str)?;
         // Use unspecified address for wildcards
         return Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
     }
@@ -303,7 +454,7 @@ pub(crate) fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
     let (ip_str, port_str) = addr_str.split_at(last_colon);
     let port_str = &port_str[1..]; // Remove the colon
 
-    let port = port_str.parse::<u16>().ok()?;
+    let port = parse_port(port_str)?;
 
     // Detect IPv6 (contains colons) vs IPv4
     let ip = if ip_str.contains(':') {
@@ -474,6 +625,14 @@ pub trait ProcessLookup: Send + Sync {
     /// Refresh internal caches if any (best-effort)
     fn refresh(&self) -> Result<()> {
         Ok(()) // Default no-op
+    }
+
+    /// Latest operating-system socket table, independent from packet capture.
+    ///
+    /// The empty default keeps third-party process lookup implementations
+    /// source-compatible when they do not provide host socket inventory.
+    fn socket_snapshot(&self) -> SocketSnapshot {
+        SocketSnapshot::default()
     }
 
     /// Get the detection method name for display purposes
@@ -873,6 +1032,16 @@ mod tests {
         assert_eq!(
             parse_socket_addr_text("*:65535"),
             Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 65535))
+        );
+        // sockstat prints a wildcard peer as `*:*`; the port parses as 0 so
+        // `remote_if_present` reads the row as "no peer" instead of dropping it.
+        assert_eq!(
+            parse_socket_addr_text("*:*"),
+            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))
+        );
+        assert_eq!(
+            remote_if_present(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)),
+            None
         );
     }
 

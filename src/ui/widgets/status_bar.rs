@@ -22,7 +22,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{UIState, theme};
+use crate::ui::{HostView, UIState, theme};
 
 /// One keycap hint: the key as typed and the action it triggers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,20 +143,32 @@ fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
             hints.push(Hint::action("esc", "back"));
             hints
         }
-        // Activity, interface list
-        2 if ui_state.activity_show_interfaces => vec![
-            Hint::action("j/k", "scroll"),
-            Hint::action("i", "process activity"),
-            Hint::action("esc", "back"),
-        ],
         // Activity
         2 => vec![
             Hint::action("d", "tx/rx"),
             Hint::action("s", "sort"),
             Hint::action("S", "order"),
-            Hint::action("i", "interfaces"),
             Hint::action("esc", "back"),
         ],
+        // Host
+        4 => {
+            // Like ctrl-d/u on Details: only advertise scrolling when the
+            // table actually outgrew its pane.
+            let (scroll, toggle) = match ui_state.host_view {
+                HostView::Sockets => (
+                    &ui_state.host_sockets_scroll,
+                    Hint::action("i", "interfaces"),
+                ),
+                HostView::Interfaces => (&ui_state.interfaces_scroll, Hint::action("s", "sockets")),
+            };
+            let mut hints = Vec::new();
+            if scroll.can_scroll() {
+                hints.push(Hint::action("j/k", "scroll"));
+            }
+            hints.push(toggle);
+            hints.push(Hint::action("esc", "back"));
+            hints
+        }
         // Graph
         _ => vec![Hint::action("esc", "back")],
     }
@@ -391,7 +403,7 @@ mod tests {
         assert_eq!(hints.first().map(|hint| hint.key), Some("\u{2191}\u{2193}"));
         assert!(advertises(&hints, "/"));
         // Tab navigation is advertised by the numbered tab bar itself.
-        assert!(!advertises(&hints, "1-4"));
+        assert!(!advertises(&hints, "1-5"));
         assert!(!advertises(&hints, "tab"));
     }
 

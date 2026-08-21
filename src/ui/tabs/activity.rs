@@ -1,8 +1,8 @@
 //! Activity tab: retained process traffic, glowing traffic-share bars,
-//! attribution coverage, and a toggleable detailed interface table.
+//! and attribution coverage.
 
 use anyhow::Result;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -17,11 +17,9 @@ use crate::ui::{
     ActivityDirection, ActivitySort, ClickableRegions, Component, ComponentContext, Effect,
     HandlerContext, UIState,
     format::{format_bytes, format_rate, format_rate_compact, truncate_with_ellipsis},
-    section_header, theme, try_handle_pane_scroll, try_handle_pane_wheel,
+    section_header, theme,
     widgets::glow_bar,
 };
-
-use super::interfaces::draw_interface_stats;
 
 const MAX_VISIBLE_PROCESSES: usize = 10;
 
@@ -35,54 +33,27 @@ impl Component for ActivityTab {
         ctx: &ComponentContext<'_>,
         _click_regions: &mut ClickableRegions,
     ) -> Result<()> {
-        if ctx.ui_state.activity_show_interfaces {
-            draw_interface_stats(f, ctx.app, ctx.ui_state, area)
-        } else {
-            draw_activity(f, ctx.app, ctx.ui_state, area)
-        }
+        draw_activity(f, ctx.app, ctx.ui_state, area)
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('i'), KeyModifiers::NONE) => {
-                ctx.ui_state.activity_show_interfaces = !ctx.ui_state.activity_show_interfaces;
-                ctx.ui_state.interfaces_scroll.reset();
-                Some(Vec::new())
-            }
-            (KeyCode::Char('d'), KeyModifiers::NONE) if !ctx.ui_state.activity_show_interfaces => {
+            (KeyCode::Char('d'), KeyModifiers::NONE) => {
                 ctx.ui_state.activity_direction = ctx.ui_state.activity_direction.toggle();
                 Some(Vec::new())
             }
-            (KeyCode::Char('s'), KeyModifiers::NONE) if !ctx.ui_state.activity_show_interfaces => {
+            (KeyCode::Char('s'), KeyModifiers::NONE) => {
                 ctx.ui_state.activity_sort = ctx.ui_state.activity_sort.next();
                 ctx.ui_state.activity_sort_ascending =
                     ctx.ui_state.activity_sort == ActivitySort::Process;
                 Some(Vec::new())
             }
-            (KeyCode::Char('S'), _) | (KeyCode::Char('s'), KeyModifiers::SHIFT)
-                if !ctx.ui_state.activity_show_interfaces =>
-            {
+            (KeyCode::Char('S'), _) | (KeyCode::Char('s'), KeyModifiers::SHIFT) => {
                 ctx.ui_state.activity_sort_ascending = !ctx.ui_state.activity_sort_ascending;
                 Some(Vec::new())
             }
-            _ if ctx.ui_state.activity_show_interfaces => try_handle_pane_scroll(
-                key,
-                ctx.ui_state.visible_rows,
-                &mut ctx.ui_state.interfaces_scroll,
-            ),
             _ => None,
         }
-    }
-
-    fn handle_mouse(
-        &mut self,
-        mouse: MouseEvent,
-        ctx: &mut HandlerContext<'_>,
-    ) -> Option<Vec<Effect>> {
-        ctx.ui_state
-            .activity_show_interfaces
-            .then(|| try_handle_pane_wheel(mouse, &mut ctx.ui_state.interfaces_scroll))
-            .flatten()
     }
 }
 

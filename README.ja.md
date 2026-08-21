@@ -20,6 +20,7 @@ RustNet は、各接続を所有するプロセス、通信量、状態、アプ
 - TCP、UDP、QUIC 接続とプロセスの対応付け。詳細には PID、実行ファイル、ユーザー/グループ名、照合の信頼度、全プラットフォーム共通の親プロセスチェーン（上限あり）を表示
 - HTTP、TLS/SNI、DNS、SSH、QUIC などの深層パケット解析
 - TCP、QUIC ハンドシェイク、DNS 応答、ICMP エコーの往復時間（RTT）と、TCP の再送・順序入れ替わりをリアルタイム表示
+- Host タブに TCP LISTEN ソケット、UDP BOUND エンドポイント、TCP 状態集計、観測 RTT、所有プロセス、インターフェース統計を表示
 - `port:`、`process:`、`sni:`、`state:` などのフィルター
 - 注釈付き PCAPNG、PCAP と JSONL sidecar、JSON ログの出力
 - ローカル GeoIP データベースによる国、ASN、都市情報
@@ -105,7 +106,7 @@ rustnet --pcapng-export capture.pcapng  # 注釈付き PCAPNG を出力
 |---|---|
 | `q` | 終了。確認のため 2 回押す |
 | `Tab` / `Shift+Tab` | 次または前のタブ |
-| `1` から `4` | Overview、Details、Activity、Graph |
+| `1` から `5` | Overview、Details、Activity、Graph、Host |
 | `↑/k` `↓/j` | 選択を移動 |
 | `Enter` | 接続の詳細を表示 |
 | `/` | フィルター入力 |
@@ -113,6 +114,7 @@ rustnet --pcapng-export capture.pcapng  # 注釈付き PCAPNG を出力
 | `a` | プロセス単位のグループ表示 |
 | `Space` | 選択したプロセスグループを展開または折りたたむ |
 | `t` | 終了済み接続の表示を切り替え |
+| `i` | Overview では System 情報を切り替え、Host ではインターフェース表示に切り替える |
 | `r` | 表示、並び替え、フィルターをリセット |
 | `h` | 現在のタブに対応したヘルプオーバーレイを表示または閉じる |
 

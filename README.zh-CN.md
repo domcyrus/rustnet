@@ -77,14 +77,15 @@ cargo build --release --no-default-features
 </details>
 
 <details>
-<summary><b>进程活动与网络接口监控</b></summary>
+<summary><b>进程活动与主机监控</b></summary>
 
 RustNet 将进程级流量计量与实时网络接口统计整合在一起：
 
 - **概览标签页**：展示当前活跃的接口，包含速率、错误数与丢包数
 - **活动标签页**(按 `3`)：按出站 (TX) 或入站 (RX) 查看进程排名，包括保留流量与滚动流量、速率、占比、连接数和目的地
 - **安全工作流**：按出站流量排序，找出异常上传进程，然后检查其流量最大的远端对端；即使连接关闭，仍可查看保留流量
-- **接口详情**(在活动标签页按 `i`)：显示原有的各接口完整指标表格
+- **主机标签页**(按 `5`)：显示 TCP LISTEN 套接字、UDP BOUND 端点、TCP 状态汇总、观测 RTT 和所属进程
+- **接口详情**(在主机标签页按 `i`)：显示各接口完整指标表格
 - **跨平台**：Linux(sysfs)、macOS / FreeBSD(getifaddrs)、Windows(GetIfTable2 API)
 - **智能过滤**：Windows 上自动剔除虚拟 / 过滤类适配器
 
@@ -207,7 +208,7 @@ rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 | `x` | 清空所有连接(连按两次确认) |
 | `Tab` 或 `]` | 下一个标签页 |
 | `Shift+Tab` 或 `[` | 上一个标签页 |
-| `1`–`4` | 直接跳转到 Overview / Details / Activity / Graph |
+| `1`–`5` | 直接跳转到 Overview / Details / Activity / Graph / Host |
 | `↑/k` `↓/j` | 上下移动 |
 | `g` `G` | 跳到第一条 / 最后一条连接 |
 | `Enter` | 查看连接详情 |
@@ -221,7 +222,7 @@ rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 | `←` / `→` 或 `l` | 折叠 / 展开当前分组 |
 | `PageUp/PageDown` 或 `Ctrl+B/F` | 翻页 |
 | `t` | 切换是否显示历史（已关闭）连接 |
-| `i` | 在概览中切换 System 信息，或在活动标签页切换接口详情 |
+| `i` | 在概览中切换 System 信息，或在主机标签页打开接口详情 |
 | `r` | 重置视图(分组、排序、过滤) |
 | `/` | 进入过滤模式 |
 | `h` | 切换当前标签页的上下文帮助浮层 |

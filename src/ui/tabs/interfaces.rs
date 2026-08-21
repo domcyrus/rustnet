@@ -1,4 +1,4 @@
-//! Detailed per-interface table used as the Activity tab's secondary view.
+//! Detailed per-interface table used by the Host tab.
 
 use anyhow::Result;
 use ratatui::{

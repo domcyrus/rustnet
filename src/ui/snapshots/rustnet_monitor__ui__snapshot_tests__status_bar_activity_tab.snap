@@ -2,4 +2,4 @@
 source: src/ui/mod.rs
 expression: output
 ---
- d tx/rx  s sort  S order  i interfaces  esc back                                                        h help  q quit
+ d tx/rx  s sort  S order  esc back                                                                      h help  q quit

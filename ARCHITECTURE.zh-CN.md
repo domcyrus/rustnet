@@ -22,7 +22,7 @@ RustNet 是一个由五个 crate 组成的 Cargo 工作区。分析逻辑、捕�
 | --- | --- | --- |
 | [`rustnet-core`](crates/rustnet-core) | 库 | 与平台和捕获无关的分析核心：数据包解析、协议/连接类型、深度包检测、链路层解析器、连接合并、DNS/GeoIP/OUI 查找、可复用的 `ConnectionTracker`，以及有界的保留进程活动计量。仅操作字节切片和已解析的结构，不依赖 libpcap、原始套接字或操作系统进程表。 |
 | [`rustnet-capture`](crates/rustnet-capture) | 库 | 基于 libpcap/Npcap 的数据包捕获后端：设备选择、BPF 过滤器、macOS PKTAP、TUN/TAP，以及原始帧 `PacketReader`。 |
-| [`rustnet-host`](crates/rustnet-host) | 库 | 单一 `ProcessLookup` trait 背后的按连接进程归属：Linux 上的 eBPF/procfs、macOS 上的 PKTAP/lsof、Windows 上的 ETW/IP Helper，以及 FreeBSD 上的 `sockstat`。负责 eBPF 构建工具链及内置的 `vmlinux.h`。 |
+| [`rustnet-host`](crates/rustnet-host) | 库 | 按连接进程归属及主机 TCP/UDP 套接字清单：Linux 上的 eBPF/procfs、macOS 上的 PKTAP/lsof、Windows 上的 ETW/IP Helper，以及 FreeBSD 上的 `sockstat`。负责 eBPF 构建工具链及内置的 `vmlinux.h`。 |
 | [`rustnet-sandbox`](crates/rustnet-sandbox) | 库 | 初始化完成后的沙箱与 root 权限降级，统一入口 `apply_sandbox`：Linux 上的 Landlock + 能力降级、macOS 上的 Seatbelt、Windows 上的受限令牌 + 作业对象，以及 Linux/macOS/FreeBSD 共享的 uid 降级。不依赖任何其他工作区 crate。 |
 | `rustnet-monitor`（二进制 `rustnet`） | 二进制 | 面向用户的应用：CLI、TUI 和应用事件循环。以 `ConnectionTracker` 作为唯一数据来源（dogfooding）。 |
 
@@ -50,7 +50,7 @@ flowchart TD
 
 ### 重导出门面
 
-为了将拆分对二进制内部保持透明，`src/network/mod.rs` 重导出 `rustnet_core::network::*` 和 `rustnet_capture`（作为 `capture`），因此现有的 `crate::network::*` 路径、集成测试和基准测试无需改动即可编译。`src/network/platform` 模块如今只是接入 `rustnet-host` 进程查找的一层薄壳；各平台的接口统计提供者位于 `rustnet-core`（入口 `interface_stats::create_stats_provider`），沙箱与 root uid 降级位于 `rustnet-sandbox`，二进制直接使用这些 crate。
+为了将拆分对二进制内部保持透明，`src/network/mod.rs` 重导出 `rustnet_core::network::*` 和 `rustnet_capture`（作为 `capture`），因此现有的 `crate::network::*` 路径、集成测试和基准测试无需改动即可编译。`src/network/platform` 模块如今只是接入 `rustnet-host` 进程与套接字查找的一层薄壳；各平台的接口统计提供者位于 `rustnet-core`（入口 `interface_stats::create_stats_provider`），沙箱与 root uid 降级位于 `rustnet-sandbox`，二进制直接使用这些 crate。
 
 ## 多线程架构<a id="multi-threaded-architecture"></a>
 
@@ -241,12 +241,15 @@ CNAME 链不需要单独的映射：DNS DPI 解析器记录的是原始*问题*�
 
 ### 进程查找
 
-RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属还会附带有层级上限的父进程链（最多四级祖先，包含 PID、名称、可执行文件路径和启动时间），在 Details 标签页中以进程树展示，并导出到 JSONL：
+RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属还会附带有层级上限的父进程链（最多四级祖先，包含 PID、名称、可执行文件路径和启动时间），在 Details 标签页中以进程树展示，并导出到 JSONL。
+
+同一后端每 5 秒为 Host 标签页发布一次套接字快照。该快照独立于数据包捕获，因此可包含尚未产生数据包的 TCP LISTEN 套接字和 UDP BOUND 端点。TCP 状态汇总来自此原生快照，RTT 仍是基于已捕获数据包的观测指标。各平台的实现如下：
 
 #### Linux
 
 **标准模式（procfs）：**
 - 解析 `/proc/net/tcp` 和 `/proc/net/udp` 获取 socket inode
+- 同时读取 `tcp6`、`udp` 和 `udp6`，并在 Host 快照中保留所有原生 TCP 状态
 - 遍历 `/proc/<pid>/fd/` 查找 socket 文件描述符
 - 将 inode 映射到进程 ID，并从 `/proc/<pid>/comm` 解析进程名，同时借助可执行文件名恢复被 `comm` 截断的名称
 - 从 `/proc/<pid>/` 解析可执行路径、PPID 以及 UID/GID
@@ -278,6 +281,7 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 
 **lsof 模式（无 sudo 或回退时）：**
 - 使用 `lsof -i -n -P -l` 列出网络连接及数字 UID
+- 即使 PKTAP 提供数据包进程元数据，Host 标签页仍持续使用 lsof 套接字清单
 - 解析输出以将 socket 与进程关联，然后使用 libproc 获取 PPID 和可执行文件路径
 - CPU 开销更高，但无需 root
 - 当 PKTAP 不可用时自动使用
@@ -288,7 +292,7 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 
 #### FreeBSD
 
-- 使用 `sockstat` 将 TCP 和 UDP socket 关联到进程
+- 使用 `sockstat -s` 将 TCP 和 UDP socket 关联到进程并保留原生 TCP 状态
 - 使用原生 `KERN_PROC_PID` 和 `KERN_PROC_PATHNAME` sysctl 查询补充
   PPID、有效 UID/GID 和可执行文件路径
 - 在每次 socket 表刷新周期内按 PID 缓存进程详情
@@ -300,6 +304,7 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 - 使用包含进程 ID、方向和连接元组的 TCP/UDP 事件
 - 缓存连接元组所有权和进程生命周期元数据，使短生命周期进程退出后仍可归属
 - 使用 `GetExtendedTcpTable` 和 `GetExtendedUdpTable` 进行校准、补全缓存未命中项，并在 ETW 无法启动时完全回退
+- Host 套接字清单复用相同的 IP Helper owner 表，其中包括 TCP LISTEN 和所有已分配的 UDP 端点
 - 支持 IPv4 和 IPv6 上的 TCP 与 UDP
 - 使用生命周期事件或 `OpenProcess` 和 `QueryFullProcessImageNameW` 解析进程名
 

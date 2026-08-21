@@ -23,7 +23,7 @@ expression: output
     │ ▎ Global                                                                                 │    
     │   Tab, ]        Next tab                                                                 │    
     │   Shift+Tab, [  Previous tab                                                             │    
-    │   1-4           Jump to Overview, Details, Activity, or Graph                            │    
+    │   1-5           Jump to Overview, Details, Activity, Graph, or Host                      │    
     │   x             Clear all connections (press twice)                                      │    
     │   h, Esc        Close this help overlay                                                  │    
     │   q             Quit application (press twice to confirm)                                │    
