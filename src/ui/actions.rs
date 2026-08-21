@@ -110,7 +110,7 @@ pub fn try_handle_connection_nav(
 }
 
 /// Shared key handling for read-only scrollable panes (Help overlay and
-/// Activity interface details): line, page, and top/bottom movement on the usual
+/// Host tables): line, page, and top/bottom movement on the usual
 /// vim-style keys. Claims only those keys; everything else falls
 /// through to the caller's global handling.
 pub fn try_handle_pane_scroll(
@@ -138,7 +138,7 @@ pub fn try_handle_pane_scroll(
 }
 
 /// Shared wheel handling for scrollable panes (Details info panes,
-/// Help overlay, and Activity interface details).
+/// Help overlay, and Host tables).
 pub fn try_handle_pane_wheel(mouse: MouseEvent, scroll: &mut PaneScroll) -> Option<Vec<Effect>> {
     match mouse.kind {
         MouseEventKind::ScrollUp => scroll.scroll_up(1),

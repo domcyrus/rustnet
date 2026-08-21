@@ -4,7 +4,7 @@ mod process;
 
 use process::MacOSProcessLookup;
 
-use crate::{DegradationReason, MatchQuality, ProcessAttribution, ProcessLookup};
+use crate::{DegradationReason, MatchQuality, ProcessAttribution, ProcessLookup, SocketSnapshot};
 use anyhow::Result;
 use rustnet_core::network::types::Connection;
 use std::sync::OnceLock;
@@ -35,7 +35,9 @@ pub(crate) fn pktap_degradation() -> DegradationReason {
 }
 
 /// Enrich process identity carried directly in PKTAP packet metadata.
-struct PktapProcessLookup;
+struct PktapProcessLookup {
+    socket_lookup: MacOSProcessLookup,
+}
 
 impl ProcessLookup for PktapProcessLookup {
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
@@ -55,11 +57,15 @@ impl ProcessLookup for PktapProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
-        Ok(())
+        self.socket_lookup.refresh()
     }
 
     fn get_detection_method(&self) -> &str {
         "pktap"
+    }
+
+    fn socket_snapshot(&self) -> SocketSnapshot {
+        self.socket_lookup.socket_snapshot()
     }
 }
 
@@ -68,7 +74,9 @@ impl ProcessLookup for PktapProcessLookup {
 pub fn create_process_lookup(use_pktap: bool) -> Result<Box<dyn ProcessLookup>> {
     if use_pktap {
         log::info!("Using PKTAP process metadata with libproc enrichment");
-        Ok(Box::new(PktapProcessLookup))
+        Ok(Box::new(PktapProcessLookup {
+            socket_lookup: MacOSProcessLookup::new()?,
+        }))
     } else {
         log::info!("Using macOS process lookup (lsof)");
         Ok(Box::new(MacOSProcessLookup::new()?))
@@ -95,7 +103,9 @@ mod tests {
         conn.pid = Some(std::process::id());
         conn.process_name = Some("rustnet-host-test".to_string());
 
-        let lookup = PktapProcessLookup;
+        let lookup = PktapProcessLookup {
+            socket_lookup: MacOSProcessLookup::empty_for_test(),
+        };
         let attribution = lookup.get_process_attribution(&conn).unwrap();
 
         assert_eq!(attribution.tgid, std::process::id());
@@ -124,7 +134,9 @@ mod tests {
 
     #[test]
     fn pktap_lookup_requires_packet_process_identity() {
-        let lookup = PktapProcessLookup;
+        let lookup = PktapProcessLookup {
+            socket_lookup: MacOSProcessLookup::empty_for_test(),
+        };
         let mut conn = connection();
         assert!(lookup.get_process_attribution(&conn).is_none());
 

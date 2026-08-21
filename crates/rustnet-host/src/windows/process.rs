@@ -2,8 +2,9 @@
 
 use super::etw::{EtwAttribution, EtwProcessCache};
 use crate::{
-    ConnectionKey, DegradationReason, MatchQuality, ProcessAncestor, ProcessAttribution,
-    ProcessLineage, ProcessLookup, collect_process_lineage, relaxed_lookup,
+    ConnectionKey, DegradationReason, HostSocket, HostSocketState, HostTcpState, MatchQuality,
+    ProcessAncestor, ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner,
+    SocketSnapshot, collect_process_lineage, relaxed_lookup, remote_if_present,
 };
 use anyhow::{Context, Result};
 use rustnet_core::network::types::{Connection, Protocol};
@@ -62,6 +63,7 @@ fn table_buffer_len(table: &[u32]) -> usize {
 pub(super) struct WindowsProcessLookup {
     cache: RwLock<ProcessCache>,
     process_details: RwLock<HashMap<u32, WindowsProcessDetails>>,
+    socket_snapshot: RwLock<SocketSnapshot>,
     etw_cache: Arc<EtwProcessCache>,
     _etw: Option<EtwAttribution>,
 }
@@ -104,12 +106,14 @@ macro_rules! refresh_table {
         $api_label:literal,
         $table_label:literal,
         $processing_label:literal,
-        |$row:ident| $key:expr $(,)?
+        |$row:ident| $key:expr,
+        |$state_row:ident| $state:expr $(,)?
     ) => {
         fn $fn_name(
             &self,
             cache: &mut ProcessMap,
             process_names: &mut ProcessNameCache,
+            sockets: &mut Vec<HostSocket>,
         ) -> Result<()> {
             unsafe {
                 let mut size: u32 = 0;
@@ -184,7 +188,20 @@ macro_rules! refresh_table {
                 for i in 0..num_entries {
                     let $row = &*rows_ptr.add(i);
                     let key = $key;
-                    cache_process(cache, process_names, key, $row.dwOwningPid);
+                    if key.protocol == Protocol::Udp && key.local_addr.port() == 0 {
+                        continue;
+                    }
+                    let $state_row = $row;
+                    let state = $state;
+                    let owner = cache_process(cache, process_names, key.clone(), $row.dwOwningPid);
+                    sockets.push(HostSocket {
+                        protocol: key.protocol,
+                        local_addr: key.local_addr,
+                        remote_addr: remote_if_present(key.remote_addr),
+                        state,
+                        owner,
+                        native_id: None,
+                    });
                 }
             }
 
@@ -217,15 +234,18 @@ impl WindowsProcessLookup {
             }
         };
 
-        Ok(Self {
+        let lookup = Self {
             cache: RwLock::new(ProcessCache {
                 lookup: HashMap::new(),
                 last_refresh: initial_refresh,
             }),
             process_details: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(SocketSnapshot::default()),
             etw_cache,
             _etw: etw,
-        })
+        };
+        lookup.refresh()?;
+        Ok(lookup)
     }
 
     fn snapshot_processes() -> Result<HashMap<u32, WindowsProcessDetails>> {
@@ -337,11 +357,12 @@ impl WindowsProcessLookup {
         &self,
         cache: &mut ProcessMap,
         process_names: &mut ProcessNameCache,
+        sockets: &mut Vec<HostSocket>,
     ) -> Result<()> {
         // IPv4 TCP connections
-        self.refresh_tcp_table_v4(cache, process_names)?;
+        self.refresh_tcp_table_v4(cache, process_names, sockets)?;
         // IPv6 TCP connections
-        self.refresh_tcp_table_v6(cache, process_names)?;
+        self.refresh_tcp_table_v6(cache, process_names, sockets)?;
         Ok(())
     }
 
@@ -365,7 +386,8 @@ impl WindowsProcessLookup {
                 IpAddr::V4(Ipv4Addr::from(row.dwRemoteAddr.to_ne_bytes())),
                 u16::from_be(row.dwRemotePort as u16),
             ),
-        }
+        },
+        |row| HostSocketState::Tcp(windows_tcp_state(row.dwState))
     );
 
     refresh_table!(
@@ -388,18 +410,20 @@ impl WindowsProcessLookup {
                 IpAddr::V6(Ipv6Addr::from(row.ucRemoteAddr)),
                 u16::from_be(row.dwRemotePort as u16),
             ),
-        }
+        },
+        |row| HostSocketState::Tcp(windows_tcp_state(row.dwState))
     );
 
     fn refresh_udp_processes(
         &self,
         cache: &mut ProcessMap,
         process_names: &mut ProcessNameCache,
+        sockets: &mut Vec<HostSocket>,
     ) -> Result<()> {
         // IPv4 UDP connections
-        self.refresh_udp_table_v4(cache, process_names)?;
+        self.refresh_udp_table_v4(cache, process_names, sockets)?;
         // IPv6 UDP connections
-        self.refresh_udp_table_v6(cache, process_names)?;
+        self.refresh_udp_table_v6(cache, process_names, sockets)?;
         Ok(())
     }
 
@@ -421,7 +445,8 @@ impl WindowsProcessLookup {
             ),
             // UDP doesn't have remote address in the table
             remote_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0),
-        }
+        },
+        |_row| HostSocketState::UdpBound
     );
 
     refresh_table!(
@@ -442,7 +467,8 @@ impl WindowsProcessLookup {
             ),
             // UDP doesn't have remote address in the table
             remote_addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-        }
+        },
+        |_row| HostSocketState::UdpBound
     );
 }
 
@@ -553,9 +579,10 @@ impl ProcessLookup for WindowsProcessLookup {
     fn refresh(&self) -> Result<()> {
         let mut new_cache = HashMap::new();
         let mut process_names = HashMap::new();
+        let mut sockets = Vec::new();
 
-        self.refresh_tcp_processes(&mut new_cache, &mut process_names)?;
-        self.refresh_udp_processes(&mut new_cache, &mut process_names)?;
+        self.refresh_tcp_processes(&mut new_cache, &mut process_names, &mut sockets)?;
+        self.refresh_udp_processes(&mut new_cache, &mut process_names, &mut sockets)?;
 
         match Self::snapshot_processes() {
             Ok(processes) => {
@@ -578,6 +605,10 @@ impl ProcessLookup for WindowsProcessLookup {
         let total_entries = new_cache.len();
         cache.lookup = new_cache;
         cache.last_refresh = Instant::now();
+        *self
+            .socket_snapshot
+            .write()
+            .expect("socket snapshot lock poisoned") = SocketSnapshot::new(sockets);
 
         log::debug!(
             "Windows process lookup refresh complete: {} entries cached",
@@ -601,6 +632,31 @@ impl ProcessLookup for WindowsProcessLookup {
         } else {
             DegradationReason::EtwUnavailable
         }
+    }
+
+    fn socket_snapshot(&self) -> SocketSnapshot {
+        self.socket_snapshot
+            .read()
+            .expect("socket snapshot lock poisoned")
+            .clone()
+    }
+}
+
+fn windows_tcp_state(state: u32) -> HostTcpState {
+    match state {
+        1 => HostTcpState::Closed,
+        2 => HostTcpState::Listen,
+        3 => HostTcpState::SynSent,
+        4 => HostTcpState::SynReceived,
+        5 => HostTcpState::Established,
+        6 => HostTcpState::FinWait1,
+        7 => HostTcpState::FinWait2,
+        8 => HostTcpState::CloseWait,
+        9 => HostTcpState::Closing,
+        10 => HostTcpState::LastAck,
+        11 => HostTcpState::TimeWait,
+        12 => HostTcpState::DeleteTcb,
+        _ => HostTcpState::Unknown,
     }
 }
 
@@ -661,14 +717,14 @@ fn cache_process(
     process_names: &mut ProcessNameCache,
     key: ConnectionKey,
     pid: u32,
-) {
+) -> Option<SocketOwner> {
     // PID 0 is used for TCP rows whose owner is no longer available (for
     // example TIME_WAIT), so treating it as a process would create false
     // attribution. The same applies when the owning process has already
     // exited. Access-denied is different: the process is alive, so preserve
     // the kernel-provided owner PID even without a name.
     if pid == 0 {
-        return;
+        return None;
     }
 
     let resolved = process_names
@@ -679,7 +735,7 @@ fn cache_process(
             ProcessNameLookup::Gone => None,
         });
     let Some(process_name) = resolved.clone() else {
-        return;
+        return None;
     };
 
     log::trace!(
@@ -690,7 +746,12 @@ fn cache_process(
         pid,
         process_name
     );
-    cache.insert(key, (pid, process_name));
+    cache.insert(key, (pid, process_name.clone()));
+    Some(SocketOwner {
+        pid,
+        name: process_name,
+        uid: None,
+    })
 }
 
 pub(super) fn get_process_name_from_pid(pid: u32) -> Option<String> {
@@ -770,7 +831,7 @@ mod tests {
         let mut cache = ProcessMap::new();
         let mut process_names = ProcessNameCache::new();
 
-        cache_process(&mut cache, &mut process_names, key.clone(), u32::MAX);
+        let _ = cache_process(&mut cache, &mut process_names, key.clone(), u32::MAX);
 
         assert_eq!(cache.get(&key), None);
     }
@@ -788,7 +849,7 @@ mod tests {
         // PID 4 is the System process: always alive, but its image name is
         // not queryable via QueryFullProcessImageNameW, so it is named
         // directly rather than cached as the Unknown placeholder.
-        cache_process(&mut cache, &mut process_names, key.clone(), 4);
+        let _ = cache_process(&mut cache, &mut process_names, key.clone(), 4);
 
         assert_eq!(cache.get(&key), Some(&(4, "System".to_string())));
     }
@@ -827,5 +888,14 @@ mod tests {
         };
 
         assert_eq!(filetime_to_unix_ms(time), Some(0));
+    }
+
+    #[test]
+    fn maps_ip_helper_tcp_states() {
+        assert_eq!(windows_tcp_state(2), HostTcpState::Listen);
+        assert_eq!(windows_tcp_state(5), HostTcpState::Established);
+        assert_eq!(windows_tcp_state(11), HostTcpState::TimeWait);
+        assert_eq!(windows_tcp_state(12), HostTcpState::DeleteTcb);
+        assert_eq!(windows_tcp_state(u32::MAX), HostTcpState::Unknown);
     }
 }

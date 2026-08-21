@@ -5,6 +5,7 @@ use anyhow::Result;
 use crossbeam::channel::Receiver;
 use dashmap::DashMap;
 use log::{info, warn};
+use rustnet_host::SocketSnapshot;
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,7 +28,7 @@ use crate::network::{
     process_activity::{ProcessActivitySnapshot, ProcessActivityTracker},
     services::ServiceLookup,
     tracker::ConnectionTracker,
-    types::{ApplicationProtocol, Connection, DnsQueryType, TrafficHistory},
+    types::{ApplicationProtocol, Connection, DnsQueryType, Protocol, TrafficHistory},
 };
 
 use super::capture::CaptureStatus;
@@ -100,6 +101,9 @@ pub struct App {
 
     /// Current process detection status (method and degradation info)
     pub(super) process_detection_status: Arc<RwLock<ProcessDetectionStatus>>,
+
+    /// Latest operating-system socket table, independent of captured packets.
+    pub(super) socket_snapshot: Arc<RwLock<SocketSnapshot>>,
 
     /// Interface statistics (cumulative totals)
     pub(super) interface_stats: Arc<DashMap<String, InterfaceStats>>,
@@ -286,6 +290,7 @@ impl App {
             process_detection_status: Arc::new(RwLock::new(ProcessDetectionStatus::with_method(
                 "initializing...",
             ))),
+            socket_snapshot: Arc::new(RwLock::new(SocketSnapshot::default())),
             interface_stats: Arc::new(DashMap::new()),
             interface_rates: Arc::new(DashMap::new()),
             interface_traffic_windows: Arc::new(DashMap::new()),
@@ -587,6 +592,19 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Get the latest host socket inventory.
+    pub(crate) fn get_socket_snapshot(&self) -> SocketSnapshot {
+        self.socket_snapshot
+            .read()
+            .map(|snapshot| snapshot.clone())
+            .unwrap_or_default()
+    }
+
+    /// Resolve a conventional service name for a local endpoint.
+    pub(crate) fn get_service_name(&self, port: u16, protocol: Protocol) -> Option<&str> {
+        self.service_lookup.lookup(port, protocol)
+    }
+
     /// Get sandbox status information. Rendered by the Linux, Windows, and
     /// macOS (with `macos-sandbox`) UIs.
     #[cfg(any(
@@ -707,6 +725,12 @@ impl App {
     #[cfg(test)]
     pub(crate) fn set_interface_stats_for_test(&self, name: &str, stats: InterfaceStats) {
         self.interface_stats.insert(name.to_string(), stats);
+    }
+
+    /// Seed the host socket inventory. Tests only.
+    #[cfg(test)]
+    pub(crate) fn set_socket_snapshot_for_test(&self, snapshot: SocketSnapshot) {
+        *self.socket_snapshot.write().unwrap() = snapshot;
     }
 
     /// Seed an interface's rate counters. Tests only.

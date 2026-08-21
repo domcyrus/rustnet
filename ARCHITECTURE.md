@@ -22,7 +22,7 @@ RustNet is a Cargo workspace of five crates. The analysis logic, capture backend
 | --- | --- | --- |
 | [`rustnet-core`](crates/rustnet-core) | library | Platform- and capture-independent analysis core: packet parsing, protocol/connection types, deep packet inspection, link-layer parsers, connection merging, DNS/GeoIP/OUI lookups, a reusable `ConnectionTracker`, and bounded retained process-activity accounting. Operates only on byte slices and parsed structures, with no libpcap, raw sockets, or OS process tables. |
 | [`rustnet-capture`](crates/rustnet-capture) | library | libpcap/Npcap packet-capture backend: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame `PacketReader`. |
-| [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution behind one `ProcessLookup` trait: eBPF/procfs on Linux, PKTAP/lsof on macOS, ETW/IP Helper on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
+| [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution plus a host TCP/UDP socket inventory: eBPF/procfs on Linux, PKTAP/lsof on macOS, ETW/IP Helper on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
 | [`rustnet-sandbox`](crates/rustnet-sandbox) | library | Post-initialization sandboxing and root privilege dropping behind one `apply_sandbox` entry point: Landlock + capability drops on Linux, Seatbelt on macOS, restricted token + job object on Windows, and the shared uid drop on Linux/macOS/FreeBSD. Depends on no other workspace crate. |
 | `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, and the app event loop. Dogfoods `ConnectionTracker` as the single source of truth. |
 
@@ -50,7 +50,7 @@ The graph is acyclic: `rustnet-core` has no workspace dependencies, `rustnet-cap
 
 ### Re-export Facade
 
-To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. The `src/network/platform` module is now just the shim wiring in `rustnet-host`'s process lookup; the per-platform interface-stats providers live in `rustnet-core` behind `interface_stats::create_stats_provider`, and sandboxing plus the root uid drop live in `rustnet-sandbox`, which the binary uses directly.
+To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. The `src/network/platform` module is now just the shim wiring in `rustnet-host`'s process and socket lookup; the per-platform interface-stats providers live in `rustnet-core` behind `interface_stats::create_stats_provider`, and sandboxing plus the root uid drop live in `rustnet-sandbox`, which the binary uses directly.
 
 ## Multi-threaded Architecture
 
@@ -246,12 +246,15 @@ Concurrent hashmap (`DashMap<ConnectionKey, Connection>`) for storing connection
 
 ### Process Lookup
 
-RustNet uses platform-specific APIs to associate network connections with processes. On every platform, an attribution also carries a capped parent-process chain (up to four ancestors with PID, name, executable path, and start time), shown as a process tree in the Details tab and exported in JSONL:
+RustNet uses platform-specific APIs to associate network connections with processes. On every platform, an attribution also carries a capped parent-process chain (up to four ancestors with PID, name, executable path, and start time), shown as a process tree in the Details tab and exported in JSONL.
+
+The same backend publishes a socket snapshot every 5 seconds for the Host tab. This snapshot is independent of packet capture and therefore includes TCP LISTEN sockets and UDP BOUND endpoints that may not have emitted a packet. TCP state aggregates come from this native snapshot, while RTT remains an observed packet-derived metric. Per platform:
 
 #### Linux
 
 **Standard Mode (procfs):**
 - Parses `/proc/net/tcp` and `/proc/net/udp` to get socket inodes
+- Reads `tcp6`, `udp`, and `udp6` alongside the IPv4 tables and retains every native TCP state for the Host snapshot
 - Iterates through `/proc/<pid>/fd/` to find socket file descriptors
 - Maps inodes to process IDs and resolves process names from `/proc/<pid>/comm`, recovering comm-truncated names from the executable's file name
 - Resolves the executable path, PPID, and UID/GID from `/proc/<pid>/`
@@ -283,6 +286,7 @@ RustNet uses platform-specific APIs to associate network connections with proces
 
 **lsof Mode (without sudo or fallback):**
 - Uses `lsof -i -n -P -l` to list network connections with numeric UIDs
+- Keeps the lsof socket inventory active for the Host tab even when PKTAP supplies packet process metadata
 - Parses output to associate sockets with processes, then uses libproc for the
   PPID and executable path
 - Higher CPU overhead but works without root
@@ -294,7 +298,7 @@ RustNet uses platform-specific APIs to associate network connections with proces
 
 #### FreeBSD
 
-- Uses `sockstat` to associate TCP and UDP sockets with processes
+- Uses `sockstat -s` to associate TCP and UDP sockets with processes and retain native TCP states
 - Uses native `KERN_PROC_PID` and `KERN_PROC_PATHNAME` sysctl queries to add
   PPID, effective UID/GID, and executable path
 - Caches process details by PID for each socket-table refresh
@@ -306,6 +310,7 @@ RustNet uses platform-specific APIs to associate network connections with proces
 - Consumes TCP/UDP events with their process IDs, direction, and connection tuples
 - Caches tuple ownership and process lifecycle metadata so short-lived processes remain attributable after exit
 - Uses `GetExtendedTcpTable` and `GetExtendedUdpTable` for reconciliation, cache misses, and complete fallback when ETW cannot start
+- Uses the same IP Helper owner tables as the Host socket inventory, including TCP LISTEN and all assigned UDP endpoints
 - Supports TCP and UDP over both IPv4 and IPv6
 - Resolves process names using lifecycle events or `OpenProcess` and `QueryFullProcessImageNameW`
 

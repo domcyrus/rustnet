@@ -1,5 +1,5 @@
 //! Terminal user interface built on `ratatui` + `crossterm`: tabbed
-//! layout (overview, details, process activity, graphs), sortable tables
+//! layout (overview, details, process activity, graphs, host data), sortable tables
 //! with adjustable columns, sparkline/chart bandwidth widgets, and
 //! keyboard-driven filter and navigation.
 
@@ -31,7 +31,7 @@ use widgets::{
 
 mod tabs;
 use tabs::{
-    activity::ActivityTab, details::DetailsTab, graph::GraphTab, help::HelpOverlay,
+    activity::ActivityTab, details::DetailsTab, graph::GraphTab, help::HelpOverlay, host::HostTab,
     overview::OverviewTab,
 };
 
@@ -44,7 +44,7 @@ use tabs::{
 /// filter input widget), so when `filter_mode` is on the dispatch
 /// routes to `OverviewTab` regardless of the visible tab. This
 /// keeps filter typing working when the user has switched to
-/// Details / Activity / Graph while a filter is being
+/// Details / Activity / Graph / Host while a filter is being
 /// edited.
 pub fn dispatch_key(
     tab: usize,
@@ -62,6 +62,7 @@ pub fn dispatch_key(
         1 => DetailsTab.handle_key(key, ctx),
         2 => ActivityTab.handle_key(key, ctx),
         3 => GraphTab.handle_key(key, ctx),
+        4 => HostTab.handle_key(key, ctx),
         _ => None,
     }
 }
@@ -82,6 +83,7 @@ pub fn dispatch_mouse(
         1 => DetailsTab.handle_mouse(mouse, ctx),
         2 => ActivityTab.handle_mouse(mouse, ctx),
         3 => GraphTab.handle_mouse(mouse, ctx),
+        4 => HostTab.handle_mouse(mouse, ctx),
         _ => None,
     }
 }
@@ -100,8 +102,8 @@ pub fn set_no_color(enabled: bool) {
 mod state;
 pub(crate) use state::process_group_label;
 pub use state::{
-    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, PaneScroll,
-    SortColumn, UIState, compute_grouped_rows, compute_scroll_offset,
+    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, HostView,
+    PaneScroll, SortColumn, UIState, compute_grouped_rows, compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
@@ -322,6 +324,7 @@ pub fn draw(
         1 => DetailsTab.draw(f, content_area, &comp_ctx, click_regions)?,
         2 => ActivityTab.draw(f, content_area, &comp_ctx, click_regions)?,
         3 => GraphTab.draw(f, content_area, &comp_ctx, click_regions)?,
+        4 => HostTab.draw(f, content_area, &comp_ctx, click_regions)?,
         _ => {}
     }
 
@@ -781,7 +784,7 @@ mod snapshot_tests {
         };
 
         let mut regions = ClickableRegions::default();
-        let medium = render(70, 2, |f| {
+        let medium = render(79, 2, |f| {
             draw_tabs(f, &ui_state, &capture, f.area(), &mut regions)
         });
         assert!(
@@ -790,7 +793,7 @@ mod snapshot_tests {
         );
 
         let mut regions = ClickableRegions::default();
-        let narrow = render(64, 2, |f| {
+        let narrow = render(72, 2, |f| {
             draw_tabs(f, &ui_state, &capture, f.area(), &mut regions)
         });
         assert!(
@@ -1029,7 +1032,9 @@ mod snapshot_tests {
     use crate::network::geoip::GeoIpInfo;
     use crate::network::interface_stats::{InterfaceRates, InterfaceStats, InterfaceTrafficWindow};
     use crate::network::types::{Connection, Protocol, ProtocolState, TcpState, TrafficHistory};
+    use rustnet_host::{HostSocket, HostSocketState, HostTcpState, SocketOwner, SocketSnapshot};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
     use std::time::{Duration, SystemTime};
 
     fn test_config() -> Config {
@@ -2193,7 +2198,54 @@ mod snapshot_tests {
     }
 
     #[test]
-    fn activity_interface_details() {
+    fn host_socket_inventory() {
+        let app = test_app();
+        let mut connections = sample_connections();
+        connections[0].initial_rtt = Some(Duration::from_millis(24));
+        app.set_connections_snapshot_for_test(connections);
+        app.set_socket_snapshot_for_test(SocketSnapshot {
+            sockets: Arc::from([
+                HostSocket::new(
+                    Protocol::Tcp,
+                    "0.0.0.0:8080".parse().unwrap(),
+                    HostSocketState::Tcp(HostTcpState::Listen),
+                )
+                .with_owner(SocketOwner::new(4242, "web-server", Some(1000)))
+                .with_native_id(123),
+                HostSocket::new(
+                    Protocol::Tcp,
+                    "192.0.2.10:49152".parse().unwrap(),
+                    HostSocketState::Tcp(HostTcpState::Established),
+                )
+                .with_remote_addr("198.51.100.20:443".parse().unwrap())
+                .with_native_id(124),
+                HostSocket::new(
+                    Protocol::Udp,
+                    "127.0.0.1:53".parse().unwrap(),
+                    HostSocketState::UdpBound,
+                )
+                .with_owner(SocketOwner::new(53, "resolver", Some(0)))
+                .with_native_id(125),
+            ]),
+            collected_at: Some(SystemTime::UNIX_EPOCH),
+        });
+
+        let ui_state = UIState {
+            selected_tab: 4,
+            ..Default::default()
+        };
+        let connections = app.get_connections();
+        let output = render_app(&app, &ui_state, &connections, None, 140, 30);
+
+        insta::with_settings!({
+            filters => time_filters(),
+        }, {
+            insta::assert_snapshot!(output);
+        });
+    }
+
+    #[test]
+    fn host_interface_details() {
         let app = test_app();
         app.set_connections_snapshot_for_test(sample_connections());
         app.set_interface_stats_for_test(
@@ -2221,8 +2273,8 @@ mod snapshot_tests {
         );
 
         let ui_state = UIState {
-            selected_tab: 2, // Activity
-            activity_show_interfaces: true,
+            selected_tab: 4, // Host
+            host_view: HostView::Interfaces,
             ..Default::default()
         };
         let connections = app.get_connections();

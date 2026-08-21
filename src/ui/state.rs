@@ -41,6 +41,14 @@ impl ActivityDirection {
     }
 }
 
+/// Subview shown on the Host tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HostView {
+    #[default]
+    Sockets,
+    Interfaces,
+}
+
 /// Sort modes for the process activity view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ActivitySort {
@@ -93,8 +101,8 @@ impl ActivitySort {
 }
 
 /// Scroll state for a pane that only learns its content and viewport
-/// size at render time (Details info panes, Help overlay, Activity interface
-/// table). Event handlers mutate `offset`; the draw path reports the
+/// size at render time (Details info panes, Help overlay, Host tables).
+/// Event handlers mutate `offset`; the draw path reports the
 /// real maximum through [`Self::clamp_for_render`] — a `Cell`, because
 /// drawing only holds `&UIState` — so the next scroll input clamps
 /// against what is actually on screen.
@@ -271,7 +279,7 @@ pub enum GroupedRow<'a> {
 /// Represents an action that can be triggered by clicking a screen region.
 #[derive(Debug, Clone)]
 pub enum ClickAction {
-    /// Switch to a specific tab (index 0-3).
+    /// Switch to a specific tab (index 0-4).
     SwitchTab(usize),
     /// Select a connection by index in the current sorted/filtered list
     SelectConnection(usize),
@@ -366,11 +374,12 @@ pub struct UIState {
     pub details_scroll: PaneScroll,
     /// Scroll state for the contextual help overlay.
     pub help_scroll: PaneScroll,
-    /// Scroll state for the Activity tab's interface table
+    /// Scroll state for the Host tab's interface table.
     pub interfaces_scroll: PaneScroll,
-    /// Activity tab subview. False shows process activity; true shows the
-    /// original detailed interface table.
-    pub activity_show_interfaces: bool,
+    /// Scroll state for the Host tab's socket table.
+    pub host_sockets_scroll: PaneScroll,
+    /// Active Host tab subview.
+    pub host_view: HostView,
     /// Process traffic direction emphasized by Activity.
     pub activity_direction: ActivityDirection,
     /// Active process-activity sort mode.
@@ -410,7 +419,8 @@ impl Default for UIState {
             details_scroll: PaneScroll::default(),
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
-            activity_show_interfaces: false,
+            host_sockets_scroll: PaneScroll::default(),
+            host_view: HostView::default(),
             activity_direction: ActivityDirection::default(),
             activity_sort: ActivitySort::default(),
             activity_sort_ascending: false,
@@ -702,7 +712,7 @@ impl UIState {
         }
     }
 
-    /// Jump directly to a tab by index (0 = Overview, 3 = Graph).
+    /// Jump directly to a tab by index (0 = Overview, 4 = Host).
     /// Out-of-range indices are ignored.
     pub fn jump_to_tab(&mut self, target: usize) {
         use crate::ui::TAB_COUNT;
@@ -713,14 +723,14 @@ impl UIState {
         self.rewind_help_for_new_view();
     }
 
-    /// Cycle to the next tab, wrapping back to Overview after Graph.
+    /// Cycle to the next tab, wrapping back to Overview after Host.
     pub fn next_tab(&mut self) {
         use crate::ui::TAB_COUNT;
         self.selected_tab = (self.selected_tab + 1) % TAB_COUNT;
         self.rewind_help_for_new_view();
     }
 
-    /// Cycle to the previous tab, wrapping from Overview back to Graph.
+    /// Cycle to the previous tab, wrapping from Overview back to Host.
     pub fn prev_tab(&mut self) {
         use crate::ui::TAB_COUNT;
         self.selected_tab = if self.selected_tab == 0 {

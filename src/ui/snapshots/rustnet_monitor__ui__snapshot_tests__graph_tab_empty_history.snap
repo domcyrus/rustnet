@@ -2,7 +2,7 @@
 source: src/ui/mod.rs
 expression: output
 ---
- rustnet    1 Overview   2 Details   3 Activity   4 Graph                                                                             ● eth0
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ──────────────────────────────────────────────────━━━━━━━───────────────────────────────────────────────────────────────────────────────────
 ▎ Traffic Over Time (60s)                                                                         ▎ Connection Lifecycle                    
 Waiting for traffic data...                                                                       Waiting for connection data...            
@@ -18,7 +18,7 @@ Waiting for traffic data...                                                     
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-▎ Network Health                                 ▎ TCP Counters                                   ▎ TCP States                              
+▎ Observed Network Health                        ▎ TCP Counters                                   ▎ Observed TCP States                     
 Waiting for health data...                         Retransmits         0                               ESTAB █████████████████████████    2 
                                                    Out of Order        0                           TIME_WAIT ████████████    1              
                                                    Fast Retrans        0                                                                    

@@ -37,6 +37,7 @@ impl App {
         let pktap_active = Arc::clone(&self.pktap_active);
         let should_stop = Arc::clone(&self.should_stop);
         let process_detection_status = Arc::clone(&self.process_detection_status);
+        let socket_snapshot = Arc::clone(&self.socket_snapshot);
         #[cfg(feature = "kubernetes")]
         let kubernetes_mode = self.config.kubernetes_mode;
 
@@ -79,6 +80,7 @@ impl App {
                 should_stop,
                 pktap_active,
                 process_detection_status,
+                socket_snapshot,
                 process_ready_tx,
                 #[cfg(feature = "kubernetes")]
                 kubernetes_mode,
@@ -97,6 +99,7 @@ impl App {
         should_stop: Arc<AtomicBool>,
         pktap_active: Arc<AtomicBool>,
         process_detection_status: Arc<RwLock<ProcessDetectionStatus>>,
+        socket_snapshot: Arc<RwLock<rustnet_host::SocketSnapshot>>,
         process_ready_tx: std::sync::mpsc::SyncSender<()>,
         #[cfg(feature = "kubernetes")] kubernetes_mode: crate::network::kubernetes::KubernetesMode,
     ) -> Result<()> {
@@ -106,6 +109,9 @@ impl App {
         let use_pktap = pktap_active.load(Ordering::Relaxed);
 
         let process_lookup = create_process_lookup(use_pktap)?;
+        if let Ok(mut snapshot) = socket_snapshot.write() {
+            *snapshot = process_lookup.socket_snapshot();
+        }
         #[cfg(target_os = "macos")]
         let mut process_lookup = process_lookup;
         #[cfg(target_os = "macos")]
@@ -200,11 +206,15 @@ impl App {
                 break;
             }
 
-            // If PKTAP activates after the startup grace period, stop polling
-            // lsof and enrich the packet-provided identity through libproc.
+            // If PKTAP activates after the startup grace period, use its
+            // packet-provided identity for attribution. The replacement also
+            // keeps a low-frequency lsof scan for the host socket inventory.
             #[cfg(target_os = "macos")]
             if !using_pktap && pktap_active.load(Ordering::Relaxed) {
                 process_lookup = create_process_lookup(true)?;
+                if let Ok(mut snapshot) = socket_snapshot.write() {
+                    *snapshot = process_lookup.socket_snapshot();
+                }
                 using_pktap = true;
                 if let Ok(mut status) = process_detection_status.write() {
                     *status = ProcessDetectionStatus::with_method("pktap");
@@ -216,6 +226,8 @@ impl App {
             if last_refresh.elapsed() > Duration::from_secs(5) {
                 if let Err(e) = process_lookup.refresh() {
                     debug!("Process lookup refresh failed: {}", e);
+                } else if let Ok(mut snapshot) = socket_snapshot.write() {
+                    *snapshot = process_lookup.socket_snapshot();
                 }
                 // Refresh pod-name metadata and rebuild the cross-namespace
                 // socket table on the same cadence.

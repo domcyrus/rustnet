@@ -1,16 +1,14 @@
 ---
 source: src/ui/mod.rs
-expression: render_overview(false)
+expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
-────────────━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-▎ Live Connections                                                                                                                          
- Process                 Remote                   Local              Service    App                       State            RTT     Rx↓/Tx↑  
+────────────────────────────────────────────────────────────━━━━━━──────────────────────────────────────────────────────────────────────────
+Host   Sockets  ·  Interfaces                                                                                                               
                                                                                                                                             
-▌firefox (2001)          140.82.121.4:443         192.168.1.10:51234 https      TCP                       ESTABLISHED     23ms   3.1M/928K  
- systemd-resolved (820)  1.1.1.1:53               192.168.1.10:53    dns        UDP                       UDP_ACTIVE         -     47K/82K  
- sshd (1500)             10.0.0.5:51022           192.168.1.10:22    ssh        TCP                       ESTABLISHED    184ms   410K/1.7M  
- curl (9876)             151.101.1.195:443        192.168.1.10:60123 https      TCP                       TIME_WAIT          -         -/-  
+▎ Interface Statistics                                                                                                                      
+Interface           RX Rate      TX Rate RX Packets TX Packets    RX Err    TX Err    RX Drop    TX Drop Collisions                         
+eth0            512.00 KB/s  128.00 KB/s    1200000     800000         0         0         12          0          0                         
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
@@ -27,4 +25,10 @@ expression: render_overview(false)
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- ↑↓ select  / filter  a group  t history  i info  c copy                                                                     h help  q quit
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ s sockets  esc back                                                                                                         h help  q quit
