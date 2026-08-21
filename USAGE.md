@@ -369,7 +369,9 @@ rustnet --kubernetes on
 - `h` - Toggle a help overlay containing controls for the active tab
 
 The help overlay keeps the active tab visible underneath it and only lists
-controls and concepts that apply to that tab.
+controls and concepts that apply to that tab. Tab navigation (`Tab`,
+`Shift+Tab`, `1`-`4`) stays available while the overlay is open, and a mouse
+click anywhere dismisses it.
 
 ### Actions
 

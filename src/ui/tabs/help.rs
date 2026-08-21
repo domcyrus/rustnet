@@ -7,13 +7,19 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, Padding, Paragraph, Wrap},
+    widgets::{Clear, Padding, Paragraph, Wrap},
 };
 
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, UIState, fade_line,
-    panel_block, theme, try_handle_pane_scroll, widgets::scrollbar::draw_scrollbar,
+    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, TAB_COUNT, UIState,
+    fade_line, panel_block, theme, try_handle_pane_scroll, try_handle_pane_wheel,
+    widgets::scrollbar::draw_scrollbar, widgets::tabs_bar::TAB_TITLES,
 };
+
+// Compile-time tripwire: adding a tab must also add a `HelpContext`
+// variant, `from_state` arm, and key tables, or the new tab would
+// silently render another view's help.
+const _: () = assert!(TAB_COUNT == 4, "update HelpContext for the new tab");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HelpContext {
@@ -31,17 +37,20 @@ impl HelpContext {
             1 => Self::Details,
             2 if ui_state.activity_show_interfaces => Self::Interfaces,
             2 => Self::Activity,
-            _ => Self::Graph,
+            3 => Self::Graph,
+            // `selected_tab` is always < TAB_COUNT (jump_to_tab / next_tab
+            // enforce it); the tripwire above keeps this match exhaustive.
+            _ => Self::Overview,
         }
     }
 
     fn title(self) -> &'static str {
         match self {
-            Self::Overview => "Overview",
-            Self::Details => "Details",
-            Self::Activity => "Activity",
+            Self::Overview => TAB_TITLES[0],
+            Self::Details => TAB_TITLES[1],
+            Self::Activity => TAB_TITLES[2],
             Self::Interfaces => "Activity · Interfaces",
-            Self::Graph => "Graph",
+            Self::Graph => TAB_TITLES[3],
         }
     }
 
@@ -78,13 +87,22 @@ impl Component for HelpOverlay {
                 ctx.ui_state.help_scroll.reset();
                 Some(Vec::new())
             }
-            (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => None,
-            _ => try_handle_pane_scroll(
-                key,
-                ctx.ui_state.visible_rows,
-                &mut ctx.ui_state.help_scroll,
-            )
-            .or_else(|| Some(Vec::new())),
+            // Every key GLOBAL_KEYS advertises must stay live while the
+            // overlay is open: quit, clear, and tab navigation fall through
+            // to the global fallback in main.rs. Tab switches leave the
+            // overlay up and it re-renders for the newly active view.
+            (KeyCode::Char('q'), _)
+            | (KeyCode::Char('c'), KeyModifiers::CONTROL)
+            | (KeyCode::Char('x'), _)
+            | (KeyCode::Tab, _)
+            | (KeyCode::BackTab, _)
+            | (KeyCode::Char('[' | ']'), KeyModifiers::NONE)
+            | (KeyCode::Char('1'..='4'), KeyModifiers::NONE) => None,
+            _ => {
+                let page = ctx.ui_state.help_scroll.viewport_rows() as usize;
+                try_handle_pane_scroll(key, page, &mut ctx.ui_state.help_scroll)
+                    .or_else(|| Some(Vec::new()))
+            }
         }
     }
 
@@ -93,24 +111,34 @@ impl Component for HelpOverlay {
         mouse: MouseEvent,
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
-        const WHEEL_STEP: u16 = 3;
-        match mouse.kind {
-            MouseEventKind::ScrollUp => ctx.ui_state.help_scroll.scroll_up(WHEEL_STEP),
-            MouseEventKind::ScrollDown => ctx.ui_state.help_scroll.scroll_down(WHEEL_STEP),
-            _ => {}
+        if let MouseEventKind::Down(_) = mouse.kind {
+            // A click anywhere dismisses the overlay (the mouse equivalent
+            // of Esc); claiming the event also keeps the click from
+            // activating controls in the obscured view. Mirror the
+            // click preamble in main.rs that this claim short-circuits:
+            // a click cancels pending confirmations everywhere else too.
+            ctx.ui_state.show_help = false;
+            ctx.ui_state.help_scroll.reset();
+            ctx.ui_state.quit_confirmation = false;
+            ctx.ui_state.clear_confirmation = false;
+            return Some(Vec::new());
         }
-        // The overlay is modal. Claim all mouse input so controls in the
-        // obscured view cannot be activated accidentally.
-        Some(Vec::new())
+        // Wheel scrolling via the shared pane helper; Moved/Drag/Up stay
+        // unclaimed so pointer motion does not force redraws.
+        try_handle_pane_wheel(mouse, &mut ctx.ui_state.help_scroll)
     }
 }
 
 type HelpRow = (&'static str, &'static str);
 
+// Only list keys here that the overlay's `handle_key` lets fall through
+// to the global fallback in main.rs, so everything this section
+// advertises works while the overlay is open.
 const GLOBAL_KEYS: &[HelpRow] = &[
     ("Tab, ]", "Next tab"),
     ("Shift+Tab, [", "Previous tab"),
     ("1-4", "Jump to Overview, Details, Activity, or Graph"),
+    ("x", "Clear all connections (press twice)"),
     ("h, Esc", "Close this help overlay"),
     ("q", "Quit application (press twice to confirm)"),
     ("Ctrl+C", "Quit immediately"),
@@ -137,7 +165,6 @@ const OVERVIEW_KEYS: &[HelpRow] = &[
     ("t", "Toggle historic connections"),
     ("i", "Toggle the System info panel"),
     ("r", "Reset grouping, sorting, filter, and history"),
-    ("x", "Clear all connections (press twice)"),
 ];
 
 const FILTER_EXAMPLES: &[HelpRow] = &[
@@ -147,7 +174,11 @@ const FILTER_EXAMPLES: &[HelpRow] = &[
     ("/dst:github.com", "Match a destination"),
     ("/process:firefox", "Match a process name"),
     ("/state:established", "Match connection state"),
-    ("/sni:/.*github.*/", "Use a regular expression for SNI"),
+    ("/port:/22/", "Regex port match (22, 220, 5522, ...)"),
+    (
+        "/sni:/.*github.*/",
+        "Regex SNI match; /.../ works on any field",
+    ),
 ];
 
 const OVERVIEW_MOUSE: &[HelpRow] = &[
@@ -267,8 +298,7 @@ fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &'stati
     );
 }
 
-fn help_lines(ui_state: &UIState) -> Vec<Line<'static>> {
-    let context = HelpContext::from_state(ui_state);
+fn help_lines(context: HelpContext) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         context.summary(),
         theme::key_hint_label(),
@@ -302,14 +332,18 @@ fn help_lines(ui_state: &UIState) -> Vec<Line<'static>> {
     lines
 }
 
-fn overlay_area(area: Rect, content_lines: usize) -> Rect {
+/// Popup width: near-full width on small terminals, capped for readability.
+fn overlay_width(area: Rect) -> u16 {
+    area.width.saturating_sub(4).max(1).min(area.width).min(92)
+}
+
+fn overlay_area(area: Rect, width: u16, content_rows: usize) -> Rect {
     if area.width == 0 || area.height == 0 {
         return area;
     }
-    let available_width = area.width.saturating_sub(4).max(1).min(area.width);
     let available_height = area.height.saturating_sub(2).max(1).min(area.height);
-    let width = available_width.min(92);
-    let height = available_height.min((content_lines as u16).saturating_add(2).min(32));
+    let content_rows = u16::try_from(content_rows).unwrap_or(u16::MAX);
+    let height = available_height.min(content_rows.saturating_add(2).min(32));
     Rect::new(
         area.x + area.width.saturating_sub(width) / 2,
         area.y + area.height.saturating_sub(height) / 2,
@@ -329,40 +363,69 @@ pub(in crate::ui) fn draw_help_overlay(
     ui_state: &UIState,
     area: Rect,
 ) -> Result<()> {
-    let mut lines = help_lines(ui_state);
+    if area.width == 0 || area.height == 0 {
+        return Ok(());
+    }
+    let context = HelpContext::from_state(ui_state);
+    let mut lines = help_lines(context);
     let total_lines = lines.len();
-    let popup = overlay_area(area, total_lines);
+
+    let width = overlay_width(area);
+    // Room the text really gets: borders (2) + horizontal padding (2) +
+    // the gutter (2) that keeps text clear of the scrollbar thumb.
+    let text_width = width.saturating_sub(6);
+    // Wrap-aware extent: on narrow popups lines wrap, so the popup height
+    // and the scroll range must count rendered rows, not source lines,
+    // or the tail of the help would be unreachable.
+    let content_rows = if text_width == 0 {
+        total_lines
+    } else {
+        Paragraph::new(lines.clone())
+            .wrap(Wrap { trim: false })
+            .line_count(text_width)
+    };
+    let popup = overlay_area(area, width, content_rows);
     if popup.width == 0 || popup.height == 0 {
         return Ok(());
     }
 
-    let context = HelpContext::from_state(ui_state);
     let base_block =
         panel_block(format!(" Help · {} ", context.title())).padding(Padding::horizontal(1));
     let inner = base_block.inner(popup);
-    let max_scroll = (total_lines as u16).saturating_sub(inner.height);
+    let max_scroll = u16::try_from(content_rows)
+        .unwrap_or(u16::MAX)
+        .saturating_sub(inner.height);
     let scroll = ui_state.help_scroll.clamp_for_render(max_scroll);
+    ui_state.help_scroll.record_viewport(inner.height);
 
-    for index in fade_targets(scroll, inner.height, max_scroll)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(line) = lines.get_mut(index) {
-            fade_line(line);
+    // The edge fade indexes into the source lines, which only lines up
+    // with rendered rows while nothing wraps; skip the cosmetic fade
+    // otherwise.
+    if content_rows == total_lines {
+        for index in fade_targets(scroll, inner.height, max_scroll)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(line) = lines.get_mut(index) {
+                fade_line(line);
+            }
         }
     }
 
     f.render_widget(Clear, popup);
     f.render_widget(base_block, popup);
+    let text_area = Rect {
+        width: inner.width.saturating_sub(2),
+        ..inner
+    };
     let help = Paragraph::new(lines)
-        .block(Block::default().padding(Padding::right(2)))
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
-    f.render_widget(help, inner);
+    f.render_widget(help, text_area);
     draw_scrollbar(
         f,
         inner,
-        total_lines,
+        content_rows,
         scroll as usize,
         inner.height as usize,
     );
@@ -375,7 +438,7 @@ mod tests {
     use crate::app::{App, Config};
 
     fn plain_text(ui_state: &UIState) -> String {
-        help_lines(ui_state)
+        help_lines(HelpContext::from_state(ui_state))
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
@@ -424,7 +487,7 @@ mod tests {
     #[test]
     fn overlay_stays_inside_small_areas() {
         let parent = Rect::new(3, 4, 8, 3);
-        let popup = overlay_area(parent, 50);
+        let popup = overlay_area(parent, overlay_width(parent), 50);
         assert!(popup.x >= parent.x && popup.y >= parent.y);
         assert!(popup.right() <= parent.right());
         assert!(popup.bottom() <= parent.bottom());
@@ -516,14 +579,103 @@ mod tests {
                 .is_some()
         );
         assert!(!ctx.ui_state.filter_mode);
-        assert!(
-            HelpOverlay
-                .handle_key(
-                    KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
-                    &mut ctx,
-                )
-                .is_none()
-        );
+        // Every key the overlay's Global section advertises must fall
+        // through (None) so main.rs's global fallback can act on it.
+        for key in [
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+        ] {
+            assert!(
+                HelpOverlay.handle_key(key, &mut ctx).is_none(),
+                "{key:?} should fall through to the global fallback"
+            );
+        }
         assert!(ctx.ui_state.show_help);
+    }
+
+    #[test]
+    fn click_dismisses_overlay_and_motion_stays_unclaimed() {
+        use crossterm::event::MouseButton;
+
+        let app = App::new(Config {
+            resolve_dns: false,
+            disable_geoip: true,
+            ..Config::default()
+        })
+        .expect("create app");
+        let mut ui_state = UIState {
+            show_help: true,
+            quit_confirmation: true,
+            ..UIState::default()
+        };
+        let click_regions = ClickableRegions::default();
+        let mut ctx = HandlerContext {
+            app: &app,
+            ui_state: &mut ui_state,
+            connections: &[],
+            grouped_rows: None,
+            click_regions: &click_regions,
+        };
+
+        let motion = MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 10,
+            row: 10,
+            modifiers: KeyModifiers::NONE,
+        };
+        // Pointer motion must stay unclaimed or every move forces a redraw.
+        assert!(HelpOverlay.handle_mouse(motion, &mut ctx).is_none());
+        assert!(ctx.ui_state.show_help);
+
+        let click = MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            ..motion
+        };
+        assert!(HelpOverlay.handle_mouse(click, &mut ctx).is_some());
+        assert!(!ctx.ui_state.show_help);
+        assert!(!ctx.ui_state.quit_confirmation);
+    }
+
+    #[test]
+    fn narrow_overlay_can_scroll_to_the_last_line() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        fn render_overlay(ui_state: &UIState) -> String {
+            let backend = TestBackend::new(46, 20);
+            let mut terminal = Terminal::new(backend).expect("create terminal");
+            terminal
+                .draw(|frame| {
+                    draw_help_overlay(frame, ui_state, frame.area()).expect("draw help overlay")
+                })
+                .expect("draw frame");
+            let buffer = terminal.backend().buffer().clone();
+            let mut out = String::new();
+            for y in 0..buffer.area.height {
+                for x in 0..buffer.area.width {
+                    out.push_str(buffer[(x, y)].symbol());
+                }
+                out.push('\n');
+            }
+            out
+        }
+
+        // At this width several help rows wrap onto two rendered rows, so
+        // the scroll range must be computed from wrapped rows or the tail
+        // of the Global section becomes unreachable.
+        let mut ui_state = UIState {
+            show_help: true,
+            ..UIState::default()
+        };
+        let first = render_overlay(&ui_state);
+        assert!(!first.contains("Quit immediately"));
+        ui_state.help_scroll.scroll_to_bottom();
+        let bottom = render_overlay(&ui_state);
+        assert!(bottom.contains("Quit immediately"));
     }
 }

@@ -102,6 +102,7 @@ impl ActivitySort {
 pub struct PaneScroll {
     offset: u16,
     max: Cell<u16>,
+    viewport: Cell<u16>,
 }
 
 impl PaneScroll {
@@ -140,6 +141,18 @@ impl PaneScroll {
     pub fn clamp_for_render(&self, max: u16) -> u16 {
         self.max.set(max);
         self.offset.min(max)
+    }
+
+    /// Record this render's viewport height so page-wise scrolling can
+    /// step by what is actually on screen. Survives [`Self::reset`]: a
+    /// stale height from the previous render beats stepping by one line.
+    pub fn record_viewport(&self, rows: u16) {
+        self.viewport.set(rows);
+    }
+
+    /// Viewport height reported by the last render (0 before the first).
+    pub fn viewport_rows(&self) -> u16 {
+        self.viewport.get()
     }
 }
 
@@ -697,12 +710,14 @@ impl UIState {
             return;
         }
         self.selected_tab = target;
+        self.rewind_help_for_new_view();
     }
 
     /// Cycle to the next tab, wrapping back to Overview after Graph.
     pub fn next_tab(&mut self) {
         use crate::ui::TAB_COUNT;
         self.selected_tab = (self.selected_tab + 1) % TAB_COUNT;
+        self.rewind_help_for_new_view();
     }
 
     /// Cycle to the previous tab, wrapping from Overview back to Graph.
@@ -713,6 +728,15 @@ impl UIState {
         } else {
             self.selected_tab - 1
         };
+        self.rewind_help_for_new_view();
+    }
+
+    /// Help content is per-view, so an open overlay restarts from its top
+    /// when tab navigation changes the view underneath it.
+    fn rewind_help_for_new_view(&mut self) {
+        if self.show_help {
+            self.help_scroll.reset();
+        }
     }
 
     /// Cycle to the next sort column.

@@ -23,13 +23,12 @@ expression: output
     │   p       Toggle service names and port numbers                                        ▐ │    
     │   d       Toggle hostnames and IP addresses                                            ▐ │    
     │   s, S    Change sort column or direction                                              ▐ │    
-    │   a       Toggle process grouping                                                      ▐ │    
+    │   a       Toggle process grouping                                                        │    
     │   Space   Expand or collapse the selected group                                          │    
     │   ←/→, l  Collapse or expand the selected group                                          │    
     │   t       Toggle historic connections                                                    │    
     │   i       Toggle the System info panel                                                   │    
     │   r       Reset grouping, sorting, filter, and history                                   │    
-    │   x       Clear all connections (press twice)                                            │    
     │                                                                                          │    
     │ ▎ Connection Display                                                                     │    
     │   White          Active connection                                                       │    
@@ -37,4 +36,5 @@ expression: output
     │   Gray           Historic closed connection                                              │    
     │   ~name          Hostname inferred from an observed DNS response                         │    
     │   App column     Application protocol, SNI, or HTTP Host                                 │    
+    │                                                                                          │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯
