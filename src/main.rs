@@ -9,12 +9,14 @@ use std::path::Path;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    // Check for required dependencies on Windows
-    #[cfg(target_os = "windows")]
-    check_windows_dependencies()?;
-
     // Parse command line arguments
     let matches = cli::build_cli().get_matches();
+
+    // Clap handles --help and --version before this point, so both remain
+    // available even when Npcap is not installed. wpcap.dll is delay-loaded
+    // specifically so Windows can enter main() before resolving that import.
+    #[cfg(target_os = "windows")]
+    initialize_windows_npcap()?;
 
     // Set up logging only if log-level was provided
     if let Some(log_level_str) = matches.get_one::<String>("log-level") {
@@ -1119,15 +1121,46 @@ fn check_privileges_early() -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn check_windows_dependencies() -> Result<()> {
-    use anyhow::anyhow;
+fn initialize_windows_npcap() -> Result<()> {
+    use anyhow::{Context, anyhow};
+    use windows::Win32::System::LibraryLoader::{LoadLibraryW, SetDllDirectoryW};
+    use windows::Win32::System::SystemInformation::GetSystemDirectoryW;
+    use windows::core::{PCWSTR, w};
 
-    // Check if Npcap/WinPcap DLLs are available
-    // Try to load the DLLs to see if they're in the system path
-    let wpcap_available = check_dll_available("wpcap.dll");
-    let packet_available = check_dll_available("Packet.dll");
+    // Windows paths can exceed MAX_PATH when long-path support is enabled.
+    // The system directory is normally short, but a full-size UTF-16 buffer
+    // avoids depending on that configuration detail.
+    let mut system_directory = vec![0u16; 32_768];
+    let length = unsafe { GetSystemDirectoryW(Some(&mut system_directory)) } as usize;
+    if length == 0 {
+        return Err(anyhow!(windows::core::Error::from_thread()))
+            .context("Failed to locate the Windows system directory");
+    }
+    if length >= system_directory.len() {
+        return Err(anyhow!(
+            "Windows system directory path exceeds the supported length"
+        ));
+    }
 
-    if !wpcap_available || !packet_available {
+    system_directory.truncate(length);
+    if system_directory.last() != Some(&u16::from(b'\\')) {
+        system_directory.push(u16::from(b'\\'));
+    }
+    system_directory.extend("Npcap".encode_utf16());
+    system_directory.push(0);
+
+    let npcap_directory =
+        String::from_utf16_lossy(&system_directory[..system_directory.len().saturating_sub(1)]);
+
+    if let Err(error) = unsafe { SetDllDirectoryW(PCWSTR(system_directory.as_ptr())) } {
+        return Err(anyhow!(error)).with_context(|| {
+            format!("Failed to add the Npcap directory '{npcap_directory}' to the DLL search path")
+        });
+    }
+
+    // Keep the module loaded for the life of the process. When the first pcap
+    // function is called, the delay-load helper reuses this module by name.
+    if let Err(error) = unsafe { LoadLibraryW(w!("wpcap.dll")) } {
         eprintln!(
             "\n╔═══════════════════════════════════════════════════════════════════════════╗"
         );
@@ -1136,58 +1169,22 @@ fn check_windows_dependencies() -> Result<()> {
         eprintln!();
         eprintln!("RustNet requires Npcap for packet capture on Windows.");
         eprintln!();
-
-        if !wpcap_available {
-            eprintln!("  ✗ wpcap.dll not found");
-        }
-        if !packet_available {
-            eprintln!("  ✗ Packet.dll not found");
-        }
-
+        eprintln!("  ✗ Could not load wpcap.dll from {npcap_directory}");
+        eprintln!("    {error}");
         eprintln!();
         eprintln!("To fix this:");
         eprintln!();
         eprintln!("  1. Download Npcap from: https://npcap.com/dist/");
         eprintln!("  2. Run the installer");
-        eprintln!("  3. IMPORTANT: Check \"Install Npcap in WinPcap API-compatible Mode\"");
-        eprintln!("  4. Complete the installation");
+        eprintln!("  3. Complete the installation with the default settings");
         eprintln!();
         eprintln!("After installation, restart your terminal and try again.");
         eprintln!();
 
         return Err(anyhow!(
-            "Npcap is not installed or not in WinPcap compatible mode"
+            "Npcap is not installed or its runtime could not be loaded"
         ));
     }
 
     Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn check_dll_available(dll_name: &str) -> bool {
-    use std::ffi::CString;
-    use windows::Win32::Foundation::{FreeLibrary, HMODULE};
-    use windows::Win32::System::LibraryLoader::LoadLibraryA;
-    use windows::core::PCSTR;
-
-    // Try to load the DLL
-    let dll_cstring = match CString::new(dll_name) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-
-    unsafe {
-        // Use LoadLibraryA to check if the DLL can be loaded
-        let handle = LoadLibraryA(PCSTR(dll_cstring.as_ptr() as *const u8));
-
-        if let Ok(h) = handle
-            && h != HMODULE(std::ptr::null_mut())
-        {
-            // Free the library if it was loaded
-            let _ = FreeLibrary(h);
-            true
-        } else {
-            false
-        }
-    }
 }

@@ -62,7 +62,7 @@ Cargo:
 cargo install rustnet-monitor
 ```
 
-Windows では Npcap を WinPcap API 互換モードでインストールし、管理者 PowerShell で実行します。
+Windows では Npcap を標準設定でインストールできます。WinPcap API 互換モードは不要です。Npcap の設定によっては管理者 PowerShell が必要です。
 
 ```powershell
 choco install rustnet
