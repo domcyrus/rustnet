@@ -36,3 +36,41 @@ runs:
 
         echo "Running: $BUILD_CMD"
         $BUILD_CMD
+
+    - name: Verify Windows Npcap delay loading
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+        $installPath = & $vswhere -latest -products * `
+          -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+          -property installationPath
+        if (-not $installPath) {
+          throw "Visual Studio C++ tools were not found"
+        }
+
+        $dumpbinPattern = Join-Path $installPath "VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe"
+        $dumpbin = Get-ChildItem $dumpbinPattern |
+          Sort-Object FullName -Descending |
+          Select-Object -First 1
+        if (-not $dumpbin) {
+          throw "dumpbin.exe was not found"
+        }
+
+        $executable = (Resolve-Path "target\${{ inputs.target }}\release\rustnet.exe").Path
+        $imports = (& $dumpbin.FullName /imports $executable | Out-String)
+        if ($LASTEXITCODE -ne 0) {
+          throw "dumpbin failed while inspecting rustnet.exe"
+        }
+        if ($imports -notmatch '(?is)following delay load imports:.*?wpcap\.dll') {
+          throw "wpcap.dll is not listed as a delay-loaded import"
+        }
+
+        & $executable --version
+        if ($LASTEXITCODE -ne 0) {
+          throw "rustnet --version failed"
+        }
+        & $executable --help | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          throw "rustnet --help failed"
+        }

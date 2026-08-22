@@ -290,7 +290,7 @@ fn check_windows_privileges() -> Result<PrivilegeStatus> {
 
                 let instructions = vec![
                     "Run as Administrator: Right-click the terminal and select 'Run as Administrator'".to_string(),
-                    "If using Npcap: Ensure it was installed with 'WinPcap API-compatible Mode' enabled".to_string(),
+                    "If using Npcap: Ensure its packet-capture service is running".to_string(),
                 ];
 
                 Ok(PrivilegeStatus::insufficient(missing, instructions))

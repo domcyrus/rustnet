@@ -8,6 +8,11 @@ fn main() -> Result<()> {
     // Add library search paths for cross-compilation
     setup_cross_compilation_libs();
 
+    // A stock Npcap install keeps wpcap.dll under System32\Npcap, outside the
+    // default loader search path. Delay-loading lets main() add that directory
+    // before Windows resolves the import.
+    setup_windows_npcap_delay_load();
+
     // eBPF program compilation now lives in the rustnet-host crate's build.rs.
 
     #[cfg(target_os = "windows")]
@@ -50,6 +55,16 @@ fn setup_cross_compilation_libs() {
         _ => {
             // For other targets, including native builds, let pkg-config handle it
         }
+    }
+}
+
+fn setup_windows_npcap_delay_load() {
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+
+    if target_os == "windows" && target_env == "msvc" {
+        println!("cargo:rustc-link-arg=/DELAYLOAD:wpcap.dll");
+        println!("cargo:rustc-link-arg=/DEFAULTLIB:delayimp.lib");
     }
 }
 

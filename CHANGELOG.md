@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shows controls and concepts relevant to that view. The tab bar now contains
   the four application views, with direct shortcuts `1` through `4`
 
+### Fixed
+
+- **Default Npcap Installations on Windows**: RustNet now finds Npcap in its
+  standard `System32\Npcap` directory, so WinPcap API-compatible mode is no
+  longer required. `--help` and `--version` also work without Npcap installed
+
 ### Removed
 - **Ubuntu 25.10 (Questing) PPA**: the series reached end of life and
   Launchpad rejects new uploads for it, so the PPA build matrix and install
