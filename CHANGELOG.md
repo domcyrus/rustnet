@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Responsive System Sidebar**: Traffic now appears before the static Security
+  details, which collapse to the sandbox status when terminal height is limited
 - **Contextual Help Overlay**: Help now opens above the active tab and only
   shows controls and concepts relevant to that view. The tab bar now contains
   the four application views, with direct shortcuts `1` through `4`
