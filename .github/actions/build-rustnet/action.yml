@@ -62,15 +62,17 @@ runs:
         if ($LASTEXITCODE -ne 0) {
           throw "dumpbin failed while inspecting rustnet.exe"
         }
-        if ($imports -notmatch '(?is)following delay load imports:.*?wpcap\.dll') {
-          throw "wpcap.dll is not listed as a delay-loaded import"
+        foreach ($dll in @("Packet.dll", "wpcap.dll")) {
+          if ($imports -notmatch "(?is)following delay load imports:.*?$([regex]::Escape($dll))") {
+            throw "$dll is not listed as a delay-loaded import"
+          }
         }
 
         & $executable --version
         if ($LASTEXITCODE -ne 0) {
-          throw "rustnet --version failed"
+          throw "rustnet --version failed with exit code $LASTEXITCODE"
         }
         & $executable --help | Out-Null
         if ($LASTEXITCODE -ne 0) {
-          throw "rustnet --help failed"
+          throw "rustnet --help failed with exit code $LASTEXITCODE"
         }

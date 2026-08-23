@@ -13,8 +13,8 @@ fn main() -> Result<()> {
     let matches = cli::build_cli().get_matches();
 
     // Clap handles --help and --version before this point, so both remain
-    // available even when Npcap is not installed. wpcap.dll is delay-loaded
-    // specifically so Windows can enter main() before resolving that import.
+    // available even when Npcap is not installed. The Npcap DLLs are
+    // delay-loaded so Windows can enter main() before resolving those imports.
     #[cfg(target_os = "windows")]
     initialize_windows_npcap()?;
 
