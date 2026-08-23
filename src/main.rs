@@ -395,6 +395,7 @@ fn main() -> Result<()> {
     app.start_workers()?;
 
     // Run the UI loop
+    install_signal_handlers();
     let res = run_ui_loop(&mut terminal, &app);
 
     // Cleanup
@@ -645,6 +646,36 @@ mod output_file_tests {
 /// Sort connections based on the specified column and direction
 use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
 
+/// Set from the signal handler; the UI loop exits through its normal
+/// cleanup path (flush outputs, restore the terminal) when it flips.
+static SHUTDOWN_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn shutdown_requested() -> bool {
+    SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Route SIGTERM/SIGHUP through the regular shutdown path. Without this,
+/// `kill` (or a session manager closing the terminal) ends the process
+/// before the JSONL/PCAP outputs are flushed and leaves the terminal in
+/// raw mode. Ctrl+C needs no handler: raw mode delivers it as a key event.
+#[cfg(unix)]
+fn install_signal_handlers() {
+    extern "C" fn on_signal(_sig: libc::c_int) {
+        // Only async-signal-safe work here: set the flag, nothing else.
+        SHUTDOWN_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    let handler: extern "C" fn(libc::c_int) = on_signal;
+    // SAFETY: installing a handler that only stores to an atomic.
+    unsafe {
+        libc::signal(libc::SIGTERM, handler as libc::sighandler_t);
+        libc::signal(libc::SIGHUP, handler as libc::sighandler_t);
+    }
+}
+
+#[cfg(not(unix))]
+fn install_signal_handlers() {}
+
 fn run_ui_loop<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,
     app: &app::App,
@@ -681,6 +712,11 @@ where
     let mut last_seen_generation = u64::MAX; // force the first refresh
 
     'main: loop {
+        if shutdown_requested() {
+            info!("Termination signal received, shutting down");
+            break 'main;
+        }
+
         // Refresh connection data only when needed:
         // - On timer tick (every 200ms), but only if the snapshot actually
         //   changed since we last consumed it (it rebuilds every
