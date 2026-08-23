@@ -144,6 +144,67 @@ pub struct MqttInfo {
     pub qos: Option<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WireGuardPacketType {
+    HandshakeInitiation,
+    HandshakeResponse,
+    CookieReply,
+    TransportData,
+}
+
+impl fmt::Display for WireGuardPacketType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            WireGuardPacketType::HandshakeInitiation => "Handshake Initiation",
+            WireGuardPacketType::HandshakeResponse => "Handshake Response",
+            WireGuardPacketType::CookieReply => "Cookie Reply",
+            WireGuardPacketType::TransportData => "Transport Data",
+        };
+        f.write_str(name)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct WireGuardInfo {
+    pub packet_type: WireGuardPacketType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenVpnPacketType {
+    ControlSoftReset,
+    Control,
+    Ack,
+    DataV1,
+    DataV2,
+    ControlHardResetClientV2,
+    ControlHardResetServerV2,
+    ControlHardResetClientV3,
+    ControlWithWrappedKey,
+}
+
+impl fmt::Display for OpenVpnPacketType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            OpenVpnPacketType::ControlSoftReset => "Control Soft Reset",
+            OpenVpnPacketType::Control => "Control",
+            OpenVpnPacketType::Ack => "ACK",
+            OpenVpnPacketType::DataV1 => "Data v1",
+            OpenVpnPacketType::DataV2 => "Data v2",
+            OpenVpnPacketType::ControlHardResetClientV2 => "Client Hard Reset v2",
+            OpenVpnPacketType::ControlHardResetServerV2 => "Server Hard Reset v2",
+            OpenVpnPacketType::ControlHardResetClientV3 => "Client Hard Reset v3",
+            OpenVpnPacketType::ControlWithWrappedKey => "Control with Wrapped Key",
+        };
+        f.write_str(name)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenVpnInfo {
+    pub packet_type: OpenVpnPacketType,
+    pub key_id: u8,
+}
+
 #[derive(Debug, Clone)]
 pub enum ApplicationProtocol {
     Http(HttpInfo),
@@ -162,6 +223,8 @@ pub enum ApplicationProtocol {
     Stun(StunInfo),
     Mqtt(MqttInfo),
     Ftp(FtpInfo),
+    WireGuard(WireGuardInfo),
+    OpenVpn(OpenVpnInfo),
 }
 
 impl ApplicationProtocol {
@@ -179,11 +242,13 @@ impl ApplicationProtocol {
             ApplicationProtocol::Mqtt(_) => "MQTT",
             ApplicationProtocol::NetBios(_) => "NetBIOS",
             ApplicationProtocol::Ntp(_) => "NTP",
+            ApplicationProtocol::OpenVpn(_) => "OpenVPN",
             ApplicationProtocol::Quic(_) => "QUIC",
             ApplicationProtocol::Snmp(_) => "SNMP",
             ApplicationProtocol::Ssh(_) => "SSH",
             ApplicationProtocol::Ssdp(_) => "SSDP",
             ApplicationProtocol::Stun(_) => "STUN",
+            ApplicationProtocol::WireGuard(_) => "WireGuard",
         }
     }
 
@@ -363,6 +428,8 @@ impl std::fmt::Display for ApplicationProtocol {
                     }
                 }
             },
+            ApplicationProtocol::WireGuard(_) => write!(f, "WireGuard"),
+            ApplicationProtocol::OpenVpn(_) => write!(f, "OpenVPN"),
         }
     }
 }

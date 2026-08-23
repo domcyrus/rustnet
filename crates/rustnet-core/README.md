@@ -13,7 +13,8 @@ to analyze.
 - **Packet parsing** for Ethernet, Linux SLL/SLL2, PKTAP, raw IP, and TUN/TAP
   link layers, plus IPv4/IPv6, TCP, UDP, ICMP, and IGMP.
 - **Deep packet inspection** for HTTP, HTTPS/TLS (SNI extraction), DNS, SSH,
-  QUIC, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, NetBIOS, and more.
+  QUIC, WireGuard, OpenVPN, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, NetBIOS, and
+  more.
 - **Connection merging** — fold parsed packets into long-lived connection
   state with protocol-aware lifecycle tracking and TCP analytics
   (retransmissions, out-of-order, fast-retransmit).
