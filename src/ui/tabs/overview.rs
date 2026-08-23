@@ -17,6 +17,7 @@ use log::{debug, info};
 
 use crate::app::{App, AppStats, ConnectionCounts};
 use crate::network::dns::DnsResolver;
+use crate::network::dns_analytics::{DnsAnalyticsSnapshot, DnsHealth};
 use crate::network::types::Connection;
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
@@ -26,7 +27,7 @@ use crate::ui::{
         CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
         connection_row, render_row_table, select_columns, visible_window,
     },
-    format::{format_bytes, truncate_with_ellipsis},
+    format::{format_bytes, format_rtt_compact, truncate_with_ellipsis},
     section_header, section_title,
     state::ProcessGroupStats,
     theme, try_handle_connection_nav, try_handle_pane_scroll, try_handle_pane_wheel,
@@ -348,7 +349,7 @@ const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
 const TRAFFIC_MIN_HEIGHT: u16 = 4;
 /// Compact Security keeps its heading and overall sandbox status visible.
 const COMPACT_SECURITY_HEIGHT: u16 = 2;
-const NETWORK_STATS_HEIGHT: u16 = 5;
+const NETWORK_STATS_HEIGHT: u16 = 6;
 const SECTION_GAP_HEIGHT: u16 = 1;
 
 /// The sidebar has `SYSTEM_PANEL_WIDTH` minus the rule and padding to play
@@ -752,6 +753,57 @@ fn render_section_separator(f: &mut Frame, area: Rect) {
 
 fn section_separator(width: u16) -> Line<'static> {
     Line::styled("─".repeat(usize::from(width)), theme::fg(theme::border()))
+}
+
+fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Line<'static> {
+    if capture_failed {
+        return Line::from(vec![
+            Span::raw("DNS: "),
+            Span::styled("unknown · capture stopped", theme::fg(theme::warn())),
+        ]);
+    }
+
+    let failures = snapshot
+        .timeouts
+        .saturating_add(snapshot.servfail)
+        .saturating_add(snapshot.refused)
+        .saturating_add(snapshot.other_rcodes);
+    let finalized = snapshot.answered.saturating_add(snapshot.timeouts);
+    let failure_percent = failures
+        .saturating_mul(100)
+        .checked_div(finalized)
+        .unwrap_or(0);
+    let (text, color) = match snapshot.health {
+        DnsHealth::NotObserved => ("not observed".to_string(), theme::muted()),
+        DnsHealth::Checking => ("checking".to_string(), theme::muted()),
+        DnsHealth::Responsive => (
+            snapshot.latency_p95.map_or_else(
+                || "responsive".to_string(),
+                |p95| format!("responsive · p95 {}", format_rtt_compact(p95)),
+            ),
+            theme::ok(),
+        ),
+        DnsHealth::Degraded => {
+            let reason = if failure_percent >= 20 {
+                format!("{failure_percent}% failed")
+            } else {
+                snapshot.latency_p95.map_or_else(
+                    || "limited evidence".to_string(),
+                    |p95| format!("p95 {}", format_rtt_compact(p95)),
+                )
+            };
+            (format!("degraded · {reason}"), theme::warn())
+        }
+        DnsHealth::Failing => (format!("failing · {failures} errors"), theme::err()),
+        DnsHealth::NoReplies => (
+            format!("no replies · {} timeouts", snapshot.timeouts),
+            theme::err(),
+        ),
+    };
+    Line::from(vec![
+        Span::raw("DNS: "),
+        Span::styled(text, theme::fg(color)),
+    ])
 }
 
 /// Effective-UID privilege line shared by the Linux and macOS Security
@@ -1215,6 +1267,10 @@ fn draw_stats_panel(
             Span::styled("Network Stats ", theme::bold_fg(theme::heading())),
             Span::styled("(active / total)", theme::fg(theme::muted())),
         ]),
+        dns_health_line(
+            &app.get_dns_analytics_snapshot(),
+            app.get_capture_error().is_some(),
+        ),
         Line::from(format!(
             "TCP Retransmits: {} / {}",
             connection_counts.tcp_retransmits, total_retransmits
@@ -1550,14 +1606,16 @@ mod tests {
 
     use super::{
         MINI_WAVE_INTENSITY, OverviewTab, SYSTEM_PANEL_WIDTH, connections_title,
-        detection_method_label, handle_filter_mode_key, is_filter_backspace_char, mini_wave,
-        mini_wave_ceiling, mini_wave_window, security_details_fit, smooth_mini_wave,
+        detection_method_label, dns_health_line, handle_filter_mode_key, is_filter_backspace_char,
+        mini_wave, mini_wave_ceiling, mini_wave_window, security_details_fit, smooth_mini_wave,
     };
+    use crate::network::dns_analytics::{DnsAnalyticsSnapshot, DnsHealth};
     use crate::ui::{
         ClickableRegions, Component, Effect, HandlerContext, UiState, compute_grouped_rows,
         test_support::{empty_ctx, line_text, local_tcp, test_app},
         theme,
     };
+    use std::time::Duration;
 
     #[test]
     fn windows_detection_methods_use_human_facing_labels() {
@@ -1571,8 +1629,8 @@ mod tests {
 
     #[test]
     fn security_details_only_use_rows_left_after_traffic_minimum() {
-        assert!(!security_details_fit(36, 14, 11));
-        assert!(security_details_fit(37, 14, 11));
+        assert!(!security_details_fit(37, 14, 11));
+        assert!(security_details_fit(38, 14, 11));
     }
 
     #[test]
@@ -1597,6 +1655,45 @@ mod tests {
                 rendered.chars().count()
             );
         }
+    }
+
+    #[test]
+    fn dns_health_summary_is_conservative_and_compact() {
+        let responsive = DnsAnalyticsSnapshot {
+            health: DnsHealth::Responsive,
+            latency_p95: Some(Duration::from_millis(18)),
+            ..DnsAnalyticsSnapshot::default()
+        };
+        assert_eq!(
+            line_text(dns_health_line(&responsive, false)),
+            "DNS: responsive · p95 18ms"
+        );
+
+        let no_replies = DnsAnalyticsSnapshot {
+            health: DnsHealth::NoReplies,
+            timeouts: 4,
+            ..DnsAnalyticsSnapshot::default()
+        };
+        assert_eq!(
+            line_text(dns_health_line(&no_replies, false)),
+            "DNS: no replies · 4 timeouts"
+        );
+
+        let slow = DnsAnalyticsSnapshot {
+            health: DnsHealth::Degraded,
+            answered: 5,
+            noerror: 5,
+            latency_p95: Some(Duration::from_millis(620)),
+            ..DnsAnalyticsSnapshot::default()
+        };
+        assert_eq!(
+            line_text(dns_health_line(&slow, false)),
+            "DNS: degraded · p95 620ms"
+        );
+        assert_eq!(
+            line_text(dns_health_line(&responsive, true)),
+            "DNS: unknown · capture stopped"
+        );
     }
 
     #[test]

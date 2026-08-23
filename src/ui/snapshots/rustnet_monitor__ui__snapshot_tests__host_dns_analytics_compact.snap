@@ -1,0 +1,28 @@
+---
+source: src/ui/mod.rs
+expression: "render_host_dns(80, 24)"
+---
+ rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host        ● eth0
+────────────────────────────────────────────────────────────━━━━━━──────────────
+Host   Sockets  ·  Interfaces  ·  DNS                                           
+                                                                                
+▎ DNS Outcomes (60s)                                                            
+Status degraded                                                                 
+Lookups 5   answered 5   pending 0   timeout 0                                  
+NOERROR 3   NXDOMAIN 1   NODATA 0                                               
+SERVFAIL 1   REFUSED 0   other 0                                                
+Response time  p50 45ms   p95 220ms   max 220ms                                 
+                                                                                
+                                                                                
+▎ Question Names (60s)  sort: lookups                                           
+Question                                                 Lookups  NX    Fail    
+api.example.com                                                 1     0      0  
+cdn.example.com                                                 1     0      0  
+missing.example.com                                             1     1      0  
+registry.example.com                                            1     0      1  
+updates.example.com                                             1     0      0  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ o sort  s sockets  i interfaces  esc back                       h help  q quit

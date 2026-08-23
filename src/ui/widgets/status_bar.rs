@@ -226,10 +226,14 @@ fn view_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
             let scroll = match ui_state.host_view {
                 HostView::Sockets => &ui_state.host_sockets_scroll,
                 HostView::Interfaces => &ui_state.interfaces_scroll,
+                HostView::Dns => &ui_state.dns_questions_scroll,
             };
             let mut hints = Vec::new();
             if scroll.can_scroll() {
                 hints.push(Hint::action("j/k", "scroll"));
+            }
+            if ui_state.host_view == HostView::Dns {
+                hints.push(Hint::action("o", "sort"));
             }
             hints.push(Hint::action("esc", "back"));
             hints

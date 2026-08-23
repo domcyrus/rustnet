@@ -177,6 +177,37 @@ pub enum HostView {
     #[default]
     Sockets,
     Interfaces,
+    Dns,
+}
+
+/// Sort modes for the Host DNS question table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DnsSort {
+    #[default]
+    Lookups,
+    Nxdomain,
+    Failures,
+    Latency,
+}
+
+impl DnsSort {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Lookups => Self::Nxdomain,
+            Self::Nxdomain => Self::Failures,
+            Self::Failures => Self::Latency,
+            Self::Latency => Self::Lookups,
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Lookups => "lookups",
+            Self::Nxdomain => "NXDOMAIN",
+            Self::Failures => "failures",
+            Self::Latency => "p95 latency",
+        }
+    }
 }
 
 /// Selected Graph section, shown alone when the dashboard does not fit.
@@ -574,8 +605,12 @@ pub struct UiState {
     pub graph_section: GraphSection,
     /// Whether the last Graph frame showed only the selected section.
     pub graph_compact: Cell<bool>,
+    /// Scroll state for the Host tab's DNS question table.
+    pub dns_questions_scroll: PaneScroll,
     /// Active Host tab subview.
     pub host_view: HostView,
+    /// Sort mode for the Host DNS question table.
+    pub dns_sort: DnsSort,
     /// Process traffic direction emphasized by Activity.
     pub activity_direction: ActivityDirection,
     pub activity_section: ActivitySection,
@@ -631,7 +666,9 @@ impl Default for UiState {
             host_sockets_scroll: PaneScroll::default(),
             graph_section: GraphSection::default(),
             graph_compact: Cell::new(false),
+            dns_questions_scroll: PaneScroll::default(),
             host_view: HostView::default(),
+            dns_sort: DnsSort::default(),
             activity_direction: ActivityDirection::default(),
             activity_section: ActivitySection::default(),
             activity_table: RefCell::default(),
@@ -949,6 +986,8 @@ impl UiState {
         self.activity_sort = ActivitySort::default();
         self.activity_sort_ascending = false;
         self.activity_direction = ActivityDirection::default();
+        self.dns_sort = DnsSort::default();
+        self.dns_questions_scroll.reset();
         self.grouped_scroll_offset = 0;
     }
 
