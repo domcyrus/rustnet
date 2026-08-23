@@ -66,7 +66,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 
 1. **Install Npcap Runtime** (required for packet capture):
    - Download from https://npcap.com/dist/
-   - Run the installer and select **"WinPcap API compatible mode"**
+   - Run the installer. The default settings are supported; WinPcap API-compatible mode is not required
 
 2. **Download and install** the appropriate MSI package:
    - `Rustnet_Windows_64-bit.msi` for 64-bit Windows
@@ -77,7 +77,7 @@ Pre-built packages are available for each release on the [GitHub Releases](https
 4. **Run RustNet**:
    - Open Command Prompt or PowerShell
    - Run: `rustnet.exe`
-   - If Npcap is not installed or not in WinPcap compatible mode, RustNet will display a helpful error message with installation instructions
+   - If Npcap is not installed or cannot be loaded, RustNet will display a helpful error message with installation instructions
    - Note: Depending on your Npcap installation settings, you may or may not need Administrator privileges
 
 ### Windows Chocolatey Installation
@@ -89,7 +89,7 @@ The easiest way to install RustNet on Windows is via [Chocolatey](https://commun
 choco install rustnet
 ```
 
-**Note:** You still need to install [Npcap](https://npcap.com) separately with "WinPcap API compatible mode" enabled.
+**Note:** You still need to install [Npcap](https://npcap.com) separately. The default installer settings are supported.
 
 ### Linux Package Installation
 
@@ -541,8 +541,7 @@ Building RustNet on Windows requires the Npcap SDK and proper environment config
 
 1. **Install Npcap Runtime**:
    - Download the Npcap installer from https://npcap.com/dist/
-   - Run the installer and **select "WinPcap API compatible mode"** during installation
-   - This ensures compatibility with the packet capture library
+   - Run the installer. The default settings are supported; WinPcap API-compatible mode is not required
 
 2. **Run RustNet**:
    ```cmd
@@ -1111,7 +1110,7 @@ for memlock, etc.) that points at the root cause.
 #### Windows: Npcap Not Found
 
 - Ensure Npcap is installed from https://npcap.com/dist/
-- During Npcap installation, select **"WinPcap API compatible mode"**
+- The default Npcap settings are supported; WinPcap API-compatible mode is not required
 - Verify Npcap service is running: `sc query npcap`
 - Try reinstalling Npcap with administrator privileges
 
