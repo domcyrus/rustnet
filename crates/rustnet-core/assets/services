@@ -11605,3 +11605,4 @@ pmwebapi        44323/tcp               # Performance Co-Pilot client HTTP API
 cloudcheck-ping 45514/udp               # ASSIA CloudCheck WiFi Management keepalive
 cloudcheck      45514/tcp               # ASSIA CloudCheck WiFi Management System
 spremotetablet  46998/tcp               # Capture handwritten signatures
+wireguard       51820/udp               # WireGuard

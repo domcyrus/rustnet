@@ -90,6 +90,7 @@ impl ServiceLookup {
         lookup.add_service(587, Protocol::Tcp, "submission");
         lookup.add_service(993, Protocol::Tcp, "imaps");
         lookup.add_service(995, Protocol::Tcp, "pop3s");
+        lookup.add_service(1194, Protocol::Tcp, "openvpn");
         lookup.add_service(1433, Protocol::Tcp, "mssql");
         lookup.add_service(3306, Protocol::Tcp, "mysql");
         lookup.add_service(3389, Protocol::Tcp, "rdp");
@@ -111,6 +112,7 @@ impl ServiceLookup {
         lookup.add_service(1194, Protocol::Udp, "openvpn");
         lookup.add_service(4500, Protocol::Udp, "ipsec-nat");
         lookup.add_service(5060, Protocol::Udp, "sip");
+        lookup.add_service(51820, Protocol::Udp, "wireguard");
 
         lookup
     }
@@ -144,5 +146,17 @@ mod tests {
         assert_eq!(lookup.lookup(443, Protocol::Tcp), Some("https"));
         assert_eq!(lookup.lookup(22, Protocol::Tcp), Some("ssh"));
         assert_eq!(lookup.lookup(53, Protocol::Udp), Some("dns"));
+        assert_eq!(lookup.lookup(1194, Protocol::Tcp), Some("openvpn"));
+        assert_eq!(lookup.lookup(1194, Protocol::Udp), Some("openvpn"));
+        assert_eq!(lookup.lookup(51820, Protocol::Udp), Some("wireguard"));
+    }
+
+    #[test]
+    fn test_embedded_vpn_services() {
+        let lookup = ServiceLookup::from_embedded().unwrap();
+
+        assert_eq!(lookup.lookup(1194, Protocol::Tcp), Some("openvpn"));
+        assert_eq!(lookup.lookup(1194, Protocol::Udp), Some("openvpn"));
+        assert_eq!(lookup.lookup(51820, Protocol::Udp), Some("wireguard"));
     }
 }

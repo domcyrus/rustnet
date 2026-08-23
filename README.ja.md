@@ -18,7 +18,7 @@ RustNet は、各接続を所有するプロセス、通信量、状態、アプ
 ## 主な機能
 
 - TCP、UDP、QUIC 接続とプロセスの対応付け。詳細には PID、実行ファイル、ユーザー/グループ名、照合の信頼度、全プラットフォーム共通の親プロセスチェーン（上限あり）を表示
-- HTTP、TLS/SNI、DNS、SSH、QUIC などの深層パケット解析
+- HTTP、TLS/SNI、DNS、SSH、QUIC、WireGuard、OpenVPN などの深層パケット解析
 - TCP、QUIC ハンドシェイク、DNS 応答、ICMP エコーの往復時間（RTT）と、TCP の再送・順序入れ替わりをリアルタイム表示
 - Host タブに TCP LISTEN ソケット、UDP BOUND エンドポイント、TCP 状態集計、観測 RTT、所有プロセス、インターフェース統計を表示
 - `port:`、`process:`、`sni:`、`state:` などのフィルター
