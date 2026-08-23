@@ -15,6 +15,7 @@ This guide covers detailed usage of RustNet, including command-line options, key
 - [Process Grouping](#process-grouping)
 - [Network Statistics Panel](#network-statistics-panel)
 - [Process Activity](#process-activity)
+- [Host Socket Inventory](#host-socket-inventory)
 - [Interface Statistics](#interface-statistics)
 - [Connection Lifecycle & Visual Indicators](#connection-lifecycle--visual-indicators)
 - [Logging](#logging)
@@ -363,14 +364,14 @@ rustnet --kubernetes on
 
 - `Tab` or `]` - Next tab
 - `Shift+Tab` or `[` - Previous tab
-- `1` / `2` / `3` / `4` - Jump directly to Overview / Details / Activity / Graph
+- `1` / `2` / `3` / `4` / `5` - Jump directly to Overview / Details / Activity / Graph / Host
 - `Enter` - View detailed information about selected connection
 - `Esc` - Go back to previous view or clear active filter
 - `h` - Toggle a help overlay containing controls for the active tab
 
 The help overlay keeps the active tab visible underneath it and only lists
 controls and concepts that apply to that tab. Tab navigation (`Tab`,
-`Shift+Tab`, `1`-`4`) stays available while the overlay is open, and a mouse
+`Shift+Tab`, `1`-`5`) stays available while the overlay is open, and a mouse
 click anywhere dismisses it.
 
 ### Actions
@@ -381,7 +382,7 @@ click anywhere dismisses it.
 - `/` - Enter filter mode (vim-style search with real-time results)
 - `x` - Clear all connections and reset statistics (press twice to confirm)
 - `t` - Toggle display of historic (closed) connections
-- `i` - Toggle the System info sidebar on Overview or interface details on Activity
+- `i` - Toggle the System info sidebar on Overview or open interface details on Host
 - `r` - Reset view to defaults (clears grouping, sort, filter, and historic)
 
 ### Process Grouping
@@ -824,9 +825,33 @@ The table adapts to the available terminal width, so narrower terminals hide som
 
 Traffic Pulse shows the current captured rate, but calculates coverage from captured bytes and interface-counter bytes over the same rolling 60-second window. This avoids the large fluctuations caused by comparing independently sampled instantaneous rates. Coverage divides the captured total by the interface total and caps the displayed percentage at 100%, because slightly different window endpoints or counter visibility can otherwise produce small overages. Both raw totals remain visible for diagnosis. When RustNet captures one named interface, it compares directly with that interface. With multi-interface capture, RustNet compares against a host-wide interface aggregate and prefixes the value with `~` because VPN and virtual interface counters can overlap.
 
-Press `d` to switch between Egress (TX, blue) and Ingress (RX, green), `s` to cycle the Activity sort metric, `S` to reverse its order, and `i` to toggle the detailed interface table.
+Press `d` to switch between Egress (TX, blue) and Ingress (RX, green), `s` to cycle the Activity sort metric, and `S` to reverse its order. The detailed interface table lives on the Host tab (press `5`, then `i`).
 
 For a quick security review, sort Egress by the rolling or retained byte count, look for an unexpected high-volume process, and inspect its top remote peer. Retained traffic keeps a short-lived uploader visible after its socket closes.
+
+## Host Socket Inventory
+
+Press `5` to open the Host tab. Unlike the Overview connection list, this view reads the operating system's socket table and does not require a packet to have been captured for a row to appear.
+
+The Sockets view includes:
+
+- Counts for TCP LISTEN, ESTABLISHED, opening, closing, and TIME_WAIT states
+- The total number of UDP BOUND endpoints
+- Average and maximum RTT from connections observed by packet capture
+- A table of TCP LISTEN sockets and UDP BOUND endpoints with local address, optional peer, service, PID, and process name
+
+UDP does not have a LISTEN state. Every UDP row represents a local bound endpoint, including endpoints that were bound implicitly by their first send. A connected UDP endpoint may also have a peer.
+
+The inventory refreshes every 5 seconds. Process ownership is best effort because a process can exit during a scan or permissions can hide its details. The socket row remains visible when ownership is unavailable.
+
+| Platform | Socket source |
+|---|---|
+| Linux | `/proc/net/tcp`, `tcp6`, `udp`, and `udp6`, joined to socket inodes in `/proc/<pid>/fd` |
+| macOS | Numeric `lsof` socket inventory, also used for this view while PKTAP supplies packet process metadata |
+| FreeBSD | `sockstat -s` for native TCP states plus UDP socket rows |
+| Windows | IP Helper owner tables from `GetExtendedTcpTable` and `GetExtendedUdpTable` |
+
+Press `i` for Interfaces and `s` to return to Sockets. Left and right arrow keys switch between the two views.
 
 ## Interface Statistics
 
@@ -840,8 +865,8 @@ RustNet provides real-time network interface statistics across all supported pla
 - Displays: `InterfaceName: X KB/s ↓ / Y KB/s ↑`
 - Shows cumulative totals: `Errors (Total): N  Drops (Total): M`
 
-**Activity Tab (Detailed View):**
-- Press `3` for Activity, then `i` to toggle the Interface Statistics view
+**Host Tab (Detailed View):**
+- Press `5` for Host, then `i` to open the Interface Statistics view
 - Shows a detailed table of all network interfaces
 - Displays comprehensive metrics for each interface
 
@@ -923,7 +948,7 @@ High error/drop counts may indicate:
 - macOS/Linux: Shows interfaces with recent traffic (`rx_bytes > 0 || tx_bytes > 0 || rx_packets > 0 || tx_packets > 0`)
 - Special interfaces (`any`, `pktap`): Shows all interfaces with any activity
 
-**Activity Interface Details:**
+**Host Interface Details:**
 - Shows all detected interfaces that pass the platform-specific filters
 - Sorts to show the currently captured interface first (highlighted)
 - Other interfaces appear in alphabetical order

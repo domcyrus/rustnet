@@ -468,7 +468,7 @@ fn select_top_processes<'a>(
 
 /// Draw the network health gauges with RTT and packet loss bars
 fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let inner = section_header(f, area, graph_title(" Network Health"));
+    let inner = section_header(f, area, graph_title(" Observed Network Health"));
 
     if !history.has_enough_data() {
         let placeholder =
@@ -649,7 +649,7 @@ fn draw_tcp_states(f: &mut Frame, state_counts: &[usize; TCP_STATE_NAMES.len()],
         .filter_map(|(&name, &count)| (count > 0).then_some((name, count)))
         .collect();
 
-    let inner = section_header(f, area, graph_title(" TCP States"));
+    let inner = section_header(f, area, graph_title(" Observed TCP States"));
 
     if states.is_empty() {
         let text = Paragraph::new("No TCP connections").style(theme::fg(theme::muted()));

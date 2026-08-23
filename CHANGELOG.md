@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Host Socket Inventory**: the new Host tab shows TCP LISTEN sockets, UDP
+  BOUND endpoints, TCP state totals, observed RTT, process owners, and the
+  detailed interface table on Linux, macOS, FreeBSD, and Windows
 - **State-Aware Status Bar**: the Overview footer highlights active process
   grouping and history modes and shows whether Space will expand or collapse
   the selected process group
@@ -17,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   details, which collapse to the sandbox status when terminal height is limited
 - **Contextual Help Overlay**: Help now opens above the active tab and only
   shows controls and concepts relevant to that view. The tab bar now contains
-  the four application views, with direct shortcuts `1` through `4`
+  the five application views, with direct shortcuts `1` through `5`
 
 ### Removed
 - **Ubuntu 25.10 (Questing) PPA**: the series reached end of life and

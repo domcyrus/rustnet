@@ -4,9 +4,10 @@ Host-OS integration layer for [RustNet](https://github.com/domcyrus/rustnet):
 the metadata about a connection that only the operating system / kernel can
 tell us, behind one trait per concern.
 
-Today this is **per-connection process attribution**: given a
-`rustnet_core` `Connection`, find the owning process (pid + name), using the
-best strategy each platform offers, with graceful fallbacks:
+The crate provides per-connection process attribution and a point-in-time host
+socket inventory. Given a `rustnet_core` `Connection`, it finds the owning
+process (pid + name) using the best strategy each platform offers, with
+graceful fallbacks:
 
 - **Linux**: fentry/fexit eBPF, legacy kprobes, then procfs.
 - **macOS**: PKTAP packet metadata plus libproc when available, else `lsof`
@@ -31,7 +32,18 @@ if let Some(attribution) = lookup.get_process_attribution(&conn) {
         attribution.quality,
     );
 }
+
+for socket in lookup.socket_snapshot().sockets.iter() {
+    println!("{} {} {:?}", socket.protocol, socket.local_addr, socket.state);
+}
 ```
+
+The socket inventory is independent of captured traffic. It exposes native TCP
+states, including LISTEN, and marks UDP rows as BOUND because UDP has no LISTEN
+state. Linux reads procfs socket tables, macOS uses numeric `lsof`, FreeBSD uses
+`sockstat -s`, and Windows uses the IP Helper owner tables. Process ownership is
+best effort, so a socket remains in the inventory when its owner cannot be
+resolved.
 
 `MatchQuality` records how the connection was matched, so a relaxed
 wildcard/listener guess is never mistaken for a proven 4-tuple hit; use
@@ -92,10 +104,10 @@ sudo -E cargo test -p rustnet-host --features ebpf -- \
 ## Scope
 
 The crate is named `rustnet-host` rather than `rustnet-process` on purpose: it's
-the home for *all* host/kernel-derived connection metadata. Process ownership is
-the first inhabitant; kernel TCP/UDP counters, socket states, and
-cgroup/container info are natural future additions that share the same eBPF and
-OS-query machinery.
+the home for *all* host/kernel-derived connection metadata. Process ownership
+and socket state inventory are the first inhabitants; kernel TCP/UDP counters
+and cgroup/container info are natural future additions that share the same eBPF
+and OS-query machinery.
 
 It depends only on `rustnet-core` (for `Connection`/`Protocol`); it does not
 depend on `rustnet-capture`. On macOS the application injects whether PKTAP is

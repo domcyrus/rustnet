@@ -2,6 +2,7 @@
 
 use crate::{
     AttributionBackend, ConnectionKey, DegradationReason, ProcessAttribution, ProcessLookup,
+    SocketSnapshot,
 };
 
 use super::process::LinuxProcessLookup;
@@ -380,6 +381,10 @@ impl ProcessLookup for EnhancedLinuxProcessLookup {
 
     fn get_degradation_reason(&self) -> DegradationReason {
         self.degradation_reason.clone()
+    }
+
+    fn socket_snapshot(&self) -> SocketSnapshot {
+        self.procfs_lookup.socket_snapshot()
     }
 }
 

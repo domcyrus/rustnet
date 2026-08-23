@@ -11,23 +11,24 @@ use ratatui::{
 };
 
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, TAB_COUNT, UIState,
-    fade_line, panel_block, theme, try_handle_pane_scroll, try_handle_pane_wheel,
+    ClickableRegions, Component, ComponentContext, Effect, HandlerContext, HostView, TAB_COUNT,
+    UIState, fade_line, panel_block, theme, try_handle_pane_scroll, try_handle_pane_wheel,
     widgets::scrollbar::draw_scrollbar, widgets::tabs_bar::TAB_TITLES,
 };
 
 // Compile-time tripwire: adding a tab must also add a `HelpContext`
 // variant, `from_state` arm, and key tables, or the new tab would
 // silently render another view's help.
-const _: () = assert!(TAB_COUNT == 4, "update HelpContext for the new tab");
+const _: () = assert!(TAB_COUNT == 5, "update HelpContext for the new tab");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HelpContext {
     Overview,
     Details,
     Activity,
-    Interfaces,
     Graph,
+    HostSockets,
+    HostInterfaces,
 }
 
 impl HelpContext {
@@ -35,9 +36,12 @@ impl HelpContext {
         match ui_state.selected_tab {
             0 => Self::Overview,
             1 => Self::Details,
-            2 if ui_state.activity_show_interfaces => Self::Interfaces,
             2 => Self::Activity,
             3 => Self::Graph,
+            4 => match ui_state.host_view {
+                HostView::Sockets => Self::HostSockets,
+                HostView::Interfaces => Self::HostInterfaces,
+            },
             // `selected_tab` is always < TAB_COUNT (jump_to_tab / next_tab
             // enforce it); the tripwire above keeps this match exhaustive.
             _ => Self::Overview,
@@ -49,8 +53,9 @@ impl HelpContext {
             Self::Overview => TAB_TITLES[0],
             Self::Details => TAB_TITLES[1],
             Self::Activity => TAB_TITLES[2],
-            Self::Interfaces => "Activity · Interfaces",
             Self::Graph => TAB_TITLES[3],
+            Self::HostSockets => "Host · Sockets",
+            Self::HostInterfaces => "Host · Interfaces",
         }
     }
 
@@ -59,8 +64,9 @@ impl HelpContext {
             Self::Overview => "Inspect, filter, group, and sort captured connections.",
             Self::Details => "Inspect the currently selected connection.",
             Self::Activity => "Compare retained traffic by process.",
-            Self::Interfaces => "Inspect traffic and counters for each interface.",
             Self::Graph => "Review live traffic, protocol, and connection charts.",
+            Self::HostSockets => "Inspect the OS socket table: listeners, bound endpoints, states.",
+            Self::HostInterfaces => "Inspect traffic and counters for each interface.",
         }
     }
 }
@@ -97,7 +103,7 @@ impl Component for HelpOverlay {
             | (KeyCode::Tab, _)
             | (KeyCode::BackTab, _)
             | (KeyCode::Char('[' | ']'), KeyModifiers::NONE)
-            | (KeyCode::Char('1'..='4'), KeyModifiers::NONE) => None,
+            | (KeyCode::Char('1'..='5'), KeyModifiers::NONE) => None,
             _ => {
                 let page = ctx.ui_state.help_scroll.viewport_rows() as usize;
                 try_handle_pane_scroll(key, page, &mut ctx.ui_state.help_scroll)
@@ -137,7 +143,7 @@ type HelpRow = (&'static str, &'static str);
 const GLOBAL_KEYS: &[HelpRow] = &[
     ("Tab, ]", "Next tab"),
     ("Shift+Tab, [", "Previous tab"),
-    ("1-4", "Jump to Overview, Details, Activity, or Graph"),
+    ("1-5", "Jump to Overview, Details, Activity, Graph, or Host"),
     ("x", "Clear all connections (press twice)"),
     ("h, Esc", "Close this help overlay"),
     ("q", "Quit application (press twice to confirm)"),
@@ -219,7 +225,6 @@ const ACTIVITY_KEYS: &[HelpRow] = &[
     ("d", "Toggle Egress (TX) and Ingress (RX)"),
     ("s", "Cycle the process sort column"),
     ("S", "Reverse the sort direction"),
-    ("i", "Open interface details"),
     ("Esc", "Return to Overview"),
 ];
 
@@ -242,11 +247,35 @@ const ACTIVITY_CONCEPTS: &[HelpRow] = &[
     ),
 ];
 
+const HOST_SOCKET_KEYS: &[HelpRow] = &[
+    ("↑/k, ↓/j", "Scroll one line"),
+    ("Page Up/Down", "Scroll one page"),
+    ("Ctrl+B/F", "Scroll one page"),
+    ("g, G", "Jump to the top or bottom"),
+    ("i, →", "Show interface details"),
+    ("Esc", "Return to Overview"),
+    ("Scroll wheel", "Scroll the endpoint table"),
+];
+
+const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
+    (
+        "LISTEN",
+        "TCP socket awaiting connections, from the OS socket table",
+    ),
+    ("BOUND", "UDP endpoint; UDP has no LISTEN state"),
+    (
+        "Observed RTT",
+        "Measured from captured packets, not the socket table",
+    ),
+    ("Refresh", "The socket inventory rescans every 5 seconds"),
+];
+
 const INTERFACE_KEYS: &[HelpRow] = &[
     ("↑/k, ↓/j", "Scroll one line"),
     ("Page Up/Down", "Scroll one page"),
+    ("Ctrl+B/F", "Scroll one page"),
     ("g, G", "Jump to the top or bottom"),
-    ("i", "Return to process activity"),
+    ("s, ←", "Return to the socket inventory"),
     ("Esc", "Return to Overview"),
     ("Scroll wheel", "Scroll interface details"),
 ];
@@ -320,11 +349,15 @@ fn help_lines(context: HelpContext) -> Vec<Line<'static>> {
             push_section(&mut lines, "Activity Actions", ACTIVITY_KEYS);
             push_section(&mut lines, "Activity Concepts", ACTIVITY_CONCEPTS);
         }
-        HelpContext::Interfaces => {
-            push_section(&mut lines, "Interface Actions", INTERFACE_KEYS);
-        }
         HelpContext::Graph => {
             push_section(&mut lines, "Graph", GRAPH_KEYS);
+        }
+        HelpContext::HostSockets => {
+            push_section(&mut lines, "Socket Actions", HOST_SOCKET_KEYS);
+            push_section(&mut lines, "Socket Concepts", HOST_SOCKET_CONCEPTS);
+        }
+        HelpContext::HostInterfaces => {
+            push_section(&mut lines, "Interface Actions", INTERFACE_KEYS);
         }
     }
     push_section(&mut lines, "Global", GLOBAL_KEYS);
@@ -467,21 +500,23 @@ mod tests {
     }
 
     #[test]
-    fn activity_subviews_have_distinct_help() {
-        let activity = UIState {
-            selected_tab: 2,
+    fn host_subviews_have_distinct_help() {
+        let sockets = UIState {
+            selected_tab: 4,
             ..UIState::default()
         };
-        assert!(plain_text(&activity).contains("Activity Concepts"));
+        let text = plain_text(&sockets);
+        assert!(text.contains("Socket Actions"));
+        assert!(!text.contains("Interface Actions"));
 
         let interfaces = UIState {
-            selected_tab: 2,
-            activity_show_interfaces: true,
+            selected_tab: 4,
+            host_view: HostView::Interfaces,
             ..UIState::default()
         };
         let text = plain_text(&interfaces);
         assert!(text.contains("Interface Actions"));
-        assert!(!text.contains("Activity Concepts"));
+        assert!(!text.contains("Socket Actions"));
     }
 
     #[test]

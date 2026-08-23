@@ -77,14 +77,15 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for technical information.
 </details>
 
 <details>
-<summary><b>Process Activity and Interface Monitoring</b></summary>
+<summary><b>Process Activity and Host Monitoring</b></summary>
 
 RustNet combines process-level traffic accounting with real-time network interface statistics:
 
 - **Overview Tab**: Shows active interfaces with current rates, errors, and drops
 - **Activity Tab** (press `3`): Ranks processes by Egress (TX) or Ingress (RX), including retained and rolling traffic, rates, shares, connections, and destinations
 - **Security Workflow**: Sort by Egress, identify an unexpected uploader, then inspect its top remote peer and retained traffic even after the connection closes
-- **Interface Details** (press `i` on Activity): Shows the original comprehensive metrics for every interface
+- **Host Tab** (press `5`): Shows TCP LISTEN sockets, UDP BOUND endpoints, aggregated TCP states, observed RTT, and process ownership
+- **Interface Details** (press `i` on Host): Shows comprehensive metrics for every interface
 - **Cross-Platform**: Linux (sysfs), macOS/FreeBSD (getifaddrs), Windows (GetIfTable2 API)
 - **Smart Filtering**: Windows automatically excludes virtual/filter adapters
 
@@ -209,7 +210,7 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `x` | Clear all connections (press twice to confirm) |
 | `Tab` or `]` | Next tab |
 | `Shift+Tab` or `[` | Previous tab |
-| `1`–`4` | Jump to Overview / Details / Activity / Graph |
+| `1`–`5` | Jump to Overview / Details / Activity / Graph / Host |
 | `↑/k` `↓/j` | Navigate up/down |
 | `g` `G` | Jump to first/last connection |
 | `Enter` | View connection details |
@@ -223,7 +224,7 @@ See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.
 | `←` / `→` or `l` | Collapse/expand group |
 | `PageUp/PageDown` or `Ctrl+B/F` | Page navigation |
 | `t` | Toggle historic (closed) connections |
-| `i` | Toggle System info on Overview or interface details on Activity |
+| `i` | Toggle System info on Overview or interface details on Host |
 | `r` | Reset view (grouping, sort, filter) |
 | `/` | Enter filter mode |
 | `h` | Toggle contextual help for the active tab |

@@ -5,5 +5,6 @@ pub(super) mod activity;
 pub(super) mod details;
 pub(super) mod graph;
 pub(super) mod help;
+pub(super) mod host;
 pub(super) mod interfaces;
 pub(super) mod overview;

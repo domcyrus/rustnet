@@ -1,9 +1,10 @@
 // network/platform/macos/process.rs - macOS lsof-based process lookup
 
 use crate::{
-    ConnectionKey, DegradationReason, MatchQuality, ProcessAncestor, ProcessAttribution,
-    ProcessLineage, ProcessLookup, ancestor_display_name, collect_process_lineage,
-    decode_process_name, parse_socket_addr_text, relaxed_lookup,
+    ConnectionKey, DegradationReason, HostSocket, HostSocketState, HostTcpState, MatchQuality,
+    ProcessAncestor, ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner,
+    SocketSnapshot, ancestor_display_name, collect_process_lineage, decode_process_name,
+    parse_socket_addr_text, relaxed_lookup, remote_if_present,
 };
 use anyhow::Result;
 use log::{debug, error, info, warn};
@@ -28,6 +29,12 @@ struct MacOSProcessInfo {
 
 pub(super) struct MacOSProcessLookup {
     cache: RwLock<HashMap<ConnectionKey, MacOSProcessInfo>>,
+    socket_snapshot: RwLock<SocketSnapshot>,
+}
+
+struct MacOSSocketScan {
+    lookup: HashMap<ConnectionKey, MacOSProcessInfo>,
+    sockets: Vec<HostSocket>,
 }
 
 pub(super) struct ProcessDetails {
@@ -146,14 +153,33 @@ pub(super) fn resolve_process_lineage(pid: u32, ppid: u32) -> Option<ProcessLine
 
 impl MacOSProcessLookup {
     pub(super) fn new() -> Result<Self> {
+        // Populate eagerly so early connections and the first Host snapshot
+        // have data, but tolerate a failed lsof spawn: constructor failure
+        // would abort the whole enrichment thread (including the mid-run
+        // PKTAP switch), while an empty scan is retried by the periodic
+        // refresh a few seconds later.
+        let scan = Self::parse_lsof().unwrap_or_else(|e| {
+            warn!("Initial lsof scan failed, deferring to periodic refresh: {e}");
+            MacOSSocketScan {
+                lookup: HashMap::new(),
+                sockets: Vec::new(),
+            }
+        });
         Ok(Self {
-            cache: RwLock::new(HashMap::new()),
+            cache: RwLock::new(scan.lookup),
+            socket_snapshot: RwLock::new(SocketSnapshot::new(scan.sockets)),
         })
     }
 
-    fn parse_lsof() -> Result<HashMap<ConnectionKey, MacOSProcessInfo>> {
-        let lookup = HashMap::new();
+    #[cfg(test)]
+    pub(super) fn empty_for_test() -> Self {
+        Self {
+            cache: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(SocketSnapshot::default()),
+        }
+    }
 
+    fn parse_lsof() -> Result<MacOSSocketScan> {
         info!("Running lsof to get network connections");
 
         // Run lsof to get network connections
@@ -164,21 +190,25 @@ impl MacOSProcessLookup {
         if !output.status.success() {
             error!("lsof command failed with status: {}", output.status);
             error!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-            return Ok(lookup);
+            return Ok(MacOSSocketScan {
+                lookup: HashMap::new(),
+                sockets: Vec::new(),
+            });
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(Self::parse_lsof_output(&stdout))
     }
 
-    fn parse_lsof_output(stdout: &str) -> HashMap<ConnectionKey, MacOSProcessInfo> {
+    fn parse_lsof_output(stdout: &str) -> MacOSSocketScan {
         let mut lookup = HashMap::new();
+        let mut sockets = Vec::new();
         let lines: Vec<&str> = stdout.lines().collect();
         info!("lsof returned {} lines", lines.len());
 
         if lines.is_empty() {
             warn!("lsof returned no output");
-            return lookup;
+            return MacOSSocketScan { lookup, sockets };
         }
 
         debug!("lsof header: {}", lines.first().unwrap_or(&""));
@@ -273,6 +303,10 @@ impl MacOSProcessLookup {
             if let Some((protocol, local, remote)) =
                 parse_lsof_connection_with_hint(connection_field, protocol_hint)
             {
+                if protocol == Protocol::Udp && local.port() == 0 {
+                    debug!("  Skipping unbound UDP socket");
+                    continue;
+                }
                 let key = ConnectionKey {
                     protocol,
                     local_addr: local,
@@ -283,13 +317,30 @@ impl MacOSProcessLookup {
                     key, process_name, pid
                 );
                 lookup.insert(
-                    key,
+                    key.clone(),
                     MacOSProcessInfo {
                         pid,
-                        name: process_name,
+                        name: process_name.clone(),
                         uid,
                     },
                 );
+                let state = match protocol {
+                    Protocol::Tcp => HostSocketState::Tcp(parse_lsof_tcp_state(last_field)),
+                    Protocol::Udp => HostSocketState::UdpBound,
+                    _ => continue,
+                };
+                sockets.push(HostSocket {
+                    protocol,
+                    local_addr: local,
+                    remote_addr: remote_if_present(remote),
+                    state,
+                    owner: Some(SocketOwner {
+                        pid,
+                        name: process_name,
+                        uid: Some(uid),
+                    }),
+                    native_id: parts.get(5).and_then(|value| parse_lsof_native_id(value)),
+                });
                 successful_parsers += 1;
             } else {
                 debug!("  Failed to parse connection from NAME field");
@@ -302,7 +353,7 @@ impl MacOSProcessLookup {
         );
         info!("Total connections in lookup table: {}", lookup.len());
 
-        lookup
+        MacOSSocketScan { lookup, sockets }
     }
 
     fn lookup_match(&self, conn: &Connection) -> Option<(MacOSProcessInfo, MatchQuality)> {
@@ -345,9 +396,13 @@ impl ProcessLookup for MacOSProcessLookup {
 
     fn refresh(&self) -> Result<()> {
         info!("Refreshing macOS process lookup cache");
-        let new_cache = Self::parse_lsof()?;
-        let cache_size = new_cache.len();
-        *self.cache.write().expect("cache lock poisoned") = new_cache;
+        let scan = Self::parse_lsof()?;
+        let cache_size = scan.lookup.len();
+        *self.cache.write().expect("cache lock poisoned") = scan.lookup;
+        *self
+            .socket_snapshot
+            .write()
+            .expect("socket snapshot lock poisoned") = SocketSnapshot::new(scan.sockets);
         info!("Process lookup cache refreshed with {} entries", cache_size);
         Ok(())
     }
@@ -360,6 +415,13 @@ impl ProcessLookup for MacOSProcessLookup {
         // The reason PKTAP wasn't used is injected by the application (which
         // learns it from the capture layer); see `super::report_pktap_degradation`.
         super::pktap_degradation()
+    }
+
+    fn socket_snapshot(&self) -> SocketSnapshot {
+        self.socket_snapshot
+            .read()
+            .expect("socket snapshot lock poisoned")
+            .clone()
     }
 }
 
@@ -429,6 +491,29 @@ fn parse_lsof_connection_with_hint(
     }
 }
 
+fn parse_lsof_tcp_state(value: &str) -> HostTcpState {
+    match value.trim_matches(['(', ')']).to_ascii_uppercase().as_str() {
+        "CLOSED" => HostTcpState::Closed,
+        "LISTEN" => HostTcpState::Listen,
+        "SYN_SENT" => HostTcpState::SynSent,
+        "SYN_RECEIVED" | "SYN_RECV" => HostTcpState::SynReceived,
+        "ESTABLISHED" => HostTcpState::Established,
+        "FIN_WAIT_1" | "FIN_WAIT1" => HostTcpState::FinWait1,
+        "FIN_WAIT_2" | "FIN_WAIT2" => HostTcpState::FinWait2,
+        "CLOSE_WAIT" => HostTcpState::CloseWait,
+        "CLOSING" => HostTcpState::Closing,
+        "LAST_ACK" => HostTcpState::LastAck,
+        "TIME_WAIT" => HostTcpState::TimeWait,
+        _ => HostTcpState::Unknown,
+    }
+}
+
+fn parse_lsof_native_id(value: &str) -> Option<u64> {
+    value
+        .strip_prefix("0x")
+        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+}
+
 /// Robust normalization of process names to match PKTAP normalization
 /// (shared with rustnet-core so both sides stay identical)
 fn normalize_process_name_robust(name: &str) -> String {
@@ -494,7 +579,8 @@ COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
 curl\\x20helper 4294967295 501 9u IPv4 0x1 0t0 TCP 127.0.0.1:5000->1.1.1.1:443 (ESTABLISHED)
 ";
         let lookup = MacOSProcessLookup {
-            cache: RwLock::new(MacOSProcessLookup::parse_lsof_output(output)),
+            cache: RwLock::new(MacOSProcessLookup::parse_lsof_output(output).lookup),
+            socket_snapshot: RwLock::new(SocketSnapshot::default()),
         };
         let conn = tcp_connection("127.0.0.1:5000", "1.1.1.1:443");
 
@@ -515,7 +601,8 @@ COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
 server 4294967295 0 3u IPv4 0x1 0t0 TCP *:8080 (LISTEN)
 ";
         let lookup = MacOSProcessLookup {
-            cache: RwLock::new(MacOSProcessLookup::parse_lsof_output(output)),
+            cache: RwLock::new(MacOSProcessLookup::parse_lsof_output(output).lookup),
+            socket_snapshot: RwLock::new(SocketSnapshot::default()),
         };
         let conn = tcp_connection("127.0.0.1:8080", "203.0.113.7:45000");
 
@@ -532,7 +619,31 @@ COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
 server 42 root 3u IPv4 0x1 0t0 TCP 127.0.0.1:8080 (LISTEN)
 ";
 
-        assert!(MacOSProcessLookup::parse_lsof_output(output).is_empty());
+        assert!(
+            MacOSProcessLookup::parse_lsof_output(output)
+                .lookup
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn lsof_parser_reports_tcp_listeners_and_udp_binds() {
+        let output = "\
+COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+server 42 1000 3u IPv4 0x1 0t0 TCP *:8080 (LISTEN)
+resolver 43 1000 4u IPv6 0x2 0t0 UDP [::1]:5353
+client 44 1000 5u IPv4 0x3 0t0 UDP *:0 (Unbound)
+";
+
+        let scan = MacOSProcessLookup::parse_lsof_output(output);
+
+        assert_eq!(scan.sockets.len(), 2);
+        assert_eq!(
+            scan.sockets[0].state,
+            HostSocketState::Tcp(HostTcpState::Listen)
+        );
+        assert_eq!(scan.sockets[1].state, HostSocketState::UdpBound);
+        assert_eq!(scan.sockets[0].owner.as_ref().unwrap().pid, 42);
     }
 
     #[test]

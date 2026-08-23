@@ -1,8 +1,9 @@
 // network/platform/linux/process.rs - Linux procfs-based process lookup
 
 use crate::{
-    ConnectionKey, MatchQuality, ProcessAncestor, ProcessAttribution, ProcessLineage,
-    ProcessLookup, collect_process_lineage, memoized, relaxed_lookup,
+    ConnectionKey, HostSocket, HostSocketState, HostTcpState, MatchQuality, ProcessAncestor,
+    ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketSnapshot,
+    collect_process_lineage, memoized, relaxed_lookup, remote_if_present,
 };
 use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};
@@ -144,8 +145,8 @@ fn resolve_process_lineage(tgid: u32, ppid: u32) -> Option<ProcessLineage> {
     collect_process_lineage(tgid, ppid, resolve_process_ancestor)
 }
 
-/// Map of socket inode to (PID, process name)
-type InodeProcessMap = HashMap<u64, (u32, String)>;
+/// Map of socket inode to its best-effort process owner.
+type InodeProcessMap = HashMap<u64, SocketOwner>;
 /// Map of PID to process name
 #[cfg(feature = "ebpf")]
 type PidNameMap = HashMap<u32, String>;
@@ -153,6 +154,23 @@ type PidNameMap = HashMap<u32, String>;
 type PidNameMap = ();
 /// Map of connection key to (PID, process name)
 type ConnectionProcessMap = HashMap<ConnectionKey, (u32, String)>;
+
+fn parse_proc_tcp_state(value: &str) -> HostTcpState {
+    match value {
+        "01" => HostTcpState::Established,
+        "02" => HostTcpState::SynSent,
+        "03" | "0C" => HostTcpState::SynReceived,
+        "04" => HostTcpState::FinWait1,
+        "05" => HostTcpState::FinWait2,
+        "06" => HostTcpState::TimeWait,
+        "07" => HostTcpState::Closed,
+        "08" => HostTcpState::CloseWait,
+        "09" => HostTcpState::LastAck,
+        "0A" => HostTcpState::Listen,
+        "0B" => HostTcpState::Closing,
+        _ => HostTcpState::Unknown,
+    }
+}
 
 pub(super) struct LinuxProcessLookup {
     // Cache: ConnectionKey -> (pid, process_name)
@@ -163,19 +181,21 @@ pub(super) struct LinuxProcessLookup {
     // Memo: TGID -> lineage, so many connections of one process walk /proc
     // once per refresh instead of once each. Failures are memoized too.
     lineages: RwLock<HashMap<u32, Option<ProcessLineage>>>,
+    socket_snapshot: RwLock<SocketSnapshot>,
 }
 
 impl LinuxProcessLookup {
     pub(super) fn new() -> Result<Self> {
         // Populate the cache immediately so early connections have process names available.
         // This ensures the PID→name cache is ready before packet capture starts.
-        let (process_map, _pid_names) = Self::build_process_map()?;
+        let (process_map, _pid_names, socket_snapshot) = Self::build_process_map()?;
 
         Ok(Self {
             cache: RwLock::new(process_map),
             #[cfg(feature = "ebpf")]
             pid_names: RwLock::new(_pid_names),
             lineages: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(socket_snapshot),
         })
     }
 
@@ -188,6 +208,7 @@ impl LinuxProcessLookup {
             #[cfg(feature = "ebpf")]
             pid_names: RwLock::new(HashMap::new()),
             lineages: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(SocketSnapshot::default()),
         }
     }
 
@@ -287,8 +308,9 @@ impl LinuxProcessLookup {
     }
 
     /// Build connection -> process mapping and PID -> name mapping
-    fn build_process_map() -> Result<(ConnectionProcessMap, PidNameMap)> {
+    fn build_process_map() -> Result<(ConnectionProcessMap, PidNameMap, SocketSnapshot)> {
         let mut process_map = HashMap::new();
+        let mut sockets = Vec::new();
 
         // First, build inode -> process mapping and PID -> name mapping
         let (inode_to_process, pid_names) = Self::build_inode_map()?;
@@ -299,27 +321,31 @@ impl LinuxProcessLookup {
             Protocol::Tcp,
             &inode_to_process,
             &mut process_map,
+            &mut sockets,
         )?;
         Self::parse_and_map(
             "/proc/net/tcp6",
             Protocol::Tcp,
             &inode_to_process,
             &mut process_map,
+            &mut sockets,
         )?;
         Self::parse_and_map(
             "/proc/net/udp",
             Protocol::Udp,
             &inode_to_process,
             &mut process_map,
+            &mut sockets,
         )?;
         Self::parse_and_map(
             "/proc/net/udp6",
             Protocol::Udp,
             &inode_to_process,
             &mut process_map,
+            &mut sockets,
         )?;
 
-        Ok((process_map, pid_names))
+        Ok((process_map, pid_names, SocketSnapshot::new(sockets)))
     }
 
     /// Build inode -> (pid, process_name) mapping and PID -> process_name mapping
@@ -352,6 +378,8 @@ impl LinuxProcessLookup {
                 #[cfg(feature = "ebpf")]
                 pid_names.insert(pid, process_name.clone());
 
+                let uid = fs::metadata(&path).ok().map(|metadata| metadata.uid());
+
                 // Check file descriptors for socket inodes
                 let fd_dir = path.join("fd");
                 if let Ok(fd_entries) = fs::read_dir(&fd_dir) {
@@ -360,7 +388,14 @@ impl LinuxProcessLookup {
                             && let Some(link_str) = link.to_str()
                             && let Some(inode) = Self::extract_socket_inode(link_str)
                         {
-                            inode_map.insert(inode, (pid, process_name.clone()));
+                            inode_map.insert(
+                                inode,
+                                SocketOwner {
+                                    pid,
+                                    name: process_name.clone(),
+                                    uid,
+                                },
+                            );
                         }
                     }
                 }
@@ -376,6 +411,7 @@ impl LinuxProcessLookup {
         protocol: Protocol,
         inode_map: &InodeProcessMap,
         result: &mut ConnectionProcessMap,
+        sockets: &mut Vec<HostSocket>,
     ) -> Result<()> {
         let content = match fs::read_to_string(path) {
             Ok(c) => c,
@@ -402,18 +438,35 @@ impl LinuxProcessLookup {
                 Some(addr) => addr,
                 None => continue,
             };
-
-            // Get inode
-            if let Ok(inode) = parts[9].parse::<u64>()
-                && let Some((pid, name)) = inode_map.get(&inode)
-            {
-                let key = ConnectionKey {
-                    protocol,
-                    local_addr,
-                    remote_addr,
-                };
-                result.insert(key, (*pid, name.clone()));
+            if protocol == Protocol::Udp && local_addr.port() == 0 {
+                continue;
             }
+
+            let inode = parts[9].parse::<u64>().ok();
+            let owner = inode.and_then(|inode| inode_map.get(&inode)).cloned();
+            let state = match protocol {
+                Protocol::Tcp => HostSocketState::Tcp(parse_proc_tcp_state(parts[3])),
+                Protocol::Udp => HostSocketState::UdpBound,
+                _ => continue,
+            };
+
+            let key = ConnectionKey {
+                protocol,
+                local_addr,
+                remote_addr,
+            };
+            if let Some(owner) = &owner {
+                result.insert(key, (owner.pid, owner.name.clone()));
+            }
+
+            sockets.push(HostSocket {
+                protocol,
+                local_addr,
+                remote_addr: remote_if_present(remote_addr),
+                state,
+                owner,
+                native_id: inode,
+            });
         }
 
         Ok(())
@@ -465,9 +518,13 @@ impl ProcessLookup for LinuxProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
-        let (process_map, _pid_names) = Self::build_process_map()?;
+        let (process_map, _pid_names, socket_snapshot) = Self::build_process_map()?;
 
         *self.cache.write().expect("process cache lock poisoned") = process_map;
+        *self
+            .socket_snapshot
+            .write()
+            .expect("socket snapshot lock poisoned") = socket_snapshot;
 
         #[cfg(feature = "ebpf")]
         {
@@ -483,6 +540,13 @@ impl ProcessLookup for LinuxProcessLookup {
 
     fn get_detection_method(&self) -> &str {
         "procfs"
+    }
+
+    fn socket_snapshot(&self) -> SocketSnapshot {
+        self.socket_snapshot
+            .read()
+            .expect("socket snapshot lock poisoned")
+            .clone()
     }
 }
 
@@ -512,6 +576,14 @@ mod tests {
     /// target with known credentials and a known executable.
     fn own_pid() -> u32 {
         std::process::id()
+    }
+
+    #[test]
+    fn proc_tcp_states_include_listen_and_established() {
+        assert_eq!(parse_proc_tcp_state("0A"), HostTcpState::Listen);
+        assert_eq!(parse_proc_tcp_state("01"), HostTcpState::Established);
+        assert_eq!(parse_proc_tcp_state("06"), HostTcpState::TimeWait);
+        assert_eq!(parse_proc_tcp_state("FF"), HostTcpState::Unknown);
     }
 
     #[test]
