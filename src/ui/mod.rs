@@ -1332,6 +1332,51 @@ mod snapshot_tests {
         assert!(output.contains("Total Connections: 4"));
     }
 
+    #[test]
+    fn overview_system_panel_places_traffic_before_security() {
+        let app = test_app();
+        let connections = overview_connections();
+        let output = render_app(&app, &UIState::default(), &connections, None, 140, 40);
+
+        let traffic = output.find("Traffic").expect("Traffic section");
+        let security = output.find("Security").expect("Security section");
+        assert!(
+            traffic < security,
+            "Traffic should precede Security:\n{output}"
+        );
+    }
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "windows",
+        all(target_os = "macos", feature = "macos-sandbox")
+    ))]
+    #[test]
+    fn overview_system_panel_compacts_security_on_short_terminals() {
+        let app = test_app();
+        let connections = overview_connections();
+        let output = render_app(&app, &UIState::default(), &connections, None, 140, 32);
+
+        assert!(output.contains("Traffic"));
+        assert!(output.contains("Security (compact)"));
+        assert!(!output.contains("No restrictions active"));
+    }
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "windows",
+        all(target_os = "macos", feature = "macos-sandbox")
+    ))]
+    #[test]
+    fn overview_system_panel_expands_security_when_space_returns() {
+        let app = test_app();
+        let connections = overview_connections();
+        let output = render_app(&app, &UIState::default(), &connections, None, 140, 35);
+
+        assert!(!output.contains("Security (compact)"));
+        assert!(output.contains("No restrictions active"));
+    }
+
     /// One observed ARP reply between the gateway and this host. Seeds the
     /// tracker's neighbor cache so Details can label on-link addresses with
     /// MAC + vendor. The fixture's remote (140.82.121.4) is public and never

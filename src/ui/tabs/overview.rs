@@ -354,6 +354,13 @@ const SYSTEM_PANEL_WIDTH: u16 = 34;
 /// Below this Overview width the sidebar is dropped even when toggled
 /// on — the connection table needs the room more.
 const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
+/// Minimum rows reserved for the Traffic heading, its two waves, and the
+/// current-rate line. Security details yield this space on short terminals.
+const TRAFFIC_MIN_HEIGHT: u16 = 4;
+/// Compact Security keeps its heading and overall sandbox status visible.
+const COMPACT_SECURITY_HEIGHT: u16 = 2;
+const NETWORK_STATS_HEIGHT: u16 = 5;
+const SECTION_GAP_HEIGHT: u16 = 1;
 
 /// The sidebar has `SYSTEM_PANEL_WIDTH` minus the rule and padding to play
 /// with, so labels here are kept short enough that `Detection: <label>` stays
@@ -368,6 +375,17 @@ fn detection_method_label(method: &str) -> &str {
         "eBPF fentry/fexit + procfs" => "eBPF fentry + procfs",
         _ => method,
     }
+}
+
+/// Whether the complete Security section fits without taking the four rows
+/// needed to keep the live Traffic summary usable.
+fn security_details_fit(area_height: u16, stats_height: u16, full_security_height: u16) -> bool {
+    let required_height = stats_height
+        .saturating_add(NETWORK_STATS_HEIGHT)
+        .saturating_add(TRAFFIC_MIN_HEIGHT)
+        .saturating_add(SECTION_GAP_HEIGHT * 3)
+        .saturating_add(full_security_height);
+    area_height >= required_height
 }
 
 fn draw_overview(
@@ -780,7 +798,7 @@ fn draw_stats_panel(
     // Build the security/sandbox text up front so the chunk height can match
     // its content. Otherwise long feature lists get clipped on narrow columns.
     #[cfg(target_os = "linux")]
-    let security_text: Vec<Line> = {
+    let mut security_text: Vec<Line> = {
         use rustnet_sandbox::SandboxStatus;
 
         let sandbox_info = app.get_sandbox_info();
@@ -839,7 +857,7 @@ fn draw_stats_panel(
     };
 
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
-    let security_text: Vec<Line> = {
+    let mut security_text: Vec<Line> = {
         use rustnet_sandbox::SandboxStatus;
 
         let sandbox_info = app.get_sandbox_info();
@@ -878,7 +896,7 @@ fn draw_stats_panel(
         not(target_os = "linux"),
         not(all(target_os = "macos", feature = "macos-sandbox"))
     ))]
-    let security_text: Vec<Line> = {
+    let mut security_text: Vec<Line> = {
         let uid = crate::network::privileges::effective_uid();
         if uid == 0 {
             vec![Line::from(Span::styled(
@@ -894,7 +912,7 @@ fn draw_stats_panel(
     };
 
     #[cfg(target_os = "windows")]
-    let security_text: Vec<Line> = {
+    let mut security_text: Vec<Line> = {
         use rustnet_sandbox::SandboxStatus;
 
         let sandbox_info = app.get_sandbox_info();
@@ -937,9 +955,6 @@ fn draw_stats_panel(
         )
     };
 
-    // 1 line for the "Security" heading + one line per content line.
-    let security_height = 1u16 + security_text.len() as u16;
-
     // The Statistics block is normally 14 lines. Degraded process detection
     // adds two compact, indented lines for the unavailable feature and impact.
     let pcap_export_enabled = app.is_pcap_export_enabled();
@@ -951,6 +966,17 @@ fn draw_stats_panel(
     } + if pcap_export_enabled { 4 } else { 0 }
         + if pcapng_export_enabled { 7 } else { 0 };
 
+    // Keep Security after the live Traffic section. If both do not fit, retain
+    // the overall sandbox status and hide the static detail lines. They return
+    // automatically as soon as the terminal is tall enough.
+    let full_security_height = 1u16.saturating_add(security_text.len() as u16);
+    let compact_security = full_security_height > COMPACT_SECURITY_HEIGHT
+        && !security_details_fit(inner_area.height, stats_height, full_security_height);
+    if compact_security {
+        security_text.truncate(1);
+    }
+    let security_height = 1u16.saturating_add(security_text.len() as u16);
+
     // Inside the frame, sections are separated by a 1-row gap (no inner
     // borders) so the right column reads as one cohesive panel with
     // headings rather than a stack of nested boxes.
@@ -958,12 +984,12 @@ fn draw_stats_panel(
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(stats_height), // Statistics (1 heading + content)
-            Constraint::Length(1),            // gap
-            Constraint::Length(5),            // Network Stats (1 heading + 4 content)
-            Constraint::Length(1),            // gap
-            Constraint::Length(security_height), // Security (heading + content)
-            Constraint::Length(1),            // gap
-            Constraint::Min(0),               // Traffic + interface details
+            Constraint::Length(SECTION_GAP_HEIGHT),
+            Constraint::Length(NETWORK_STATS_HEIGHT),
+            Constraint::Length(SECTION_GAP_HEIGHT),
+            Constraint::Min(TRAFFIC_MIN_HEIGHT),
+            Constraint::Length(SECTION_GAP_HEIGHT),
+            Constraint::Length(security_height),
         ])
         .split(inner_area);
 
@@ -1179,17 +1205,22 @@ fn draw_stats_panel(
     f.render_widget(network_stats, chunks[2]);
     render_section_separator(f, chunks[3]);
 
-    let mut security_lines: Vec<Line> = vec![Line::from(Span::styled(
-        "Security",
-        theme::bold_fg(theme::heading()),
-    ))];
-    security_lines.extend(security_text);
-    let security_stats = Paragraph::new(security_lines).style(Style::default());
-    f.render_widget(security_stats, chunks[4]);
+    // Interface statistics with traffic graph
+    draw_interface_stats_with_graph(f, app, chunks[4])?;
     render_section_separator(f, chunks[5]);
 
-    // Interface statistics with traffic graph
-    draw_interface_stats_with_graph(f, app, chunks[6])?;
+    let security_heading = if compact_security {
+        Line::from(vec![
+            Span::styled("Security ", theme::bold_fg(theme::heading())),
+            Span::styled("(compact)", theme::fg(theme::muted())),
+        ])
+    } else {
+        Line::from(Span::styled("Security", theme::bold_fg(theme::heading())))
+    };
+    let mut security_lines: Vec<Line> = vec![security_heading];
+    security_lines.extend(security_text);
+    let security_stats = Paragraph::new(security_lines).style(Style::default());
+    f.render_widget(security_stats, chunks[6]);
 
     Ok(())
 }
@@ -1462,7 +1493,7 @@ mod tests {
     use super::{
         MINI_WAVE_INTENSITY, OverviewTab, SYSTEM_PANEL_WIDTH, connections_title,
         detection_method_label, handle_filter_mode_key, is_filter_backspace_char, mini_wave,
-        mini_wave_ceiling, mini_wave_window, smooth_mini_wave,
+        mini_wave_ceiling, mini_wave_window, security_details_fit, smooth_mini_wave,
     };
     use crate::{
         app::{App, Config},
@@ -1500,6 +1531,12 @@ mod tests {
         );
         assert_eq!(detection_method_label("windows-iphlpapi"), "IP Helper");
         assert_eq!(detection_method_label("procfs"), "procfs");
+    }
+
+    #[test]
+    fn security_details_only_use_rows_left_after_traffic_minimum() {
+        assert!(!security_details_fit(36, 14, 11));
+        assert!(security_details_fit(37, 14, 11));
     }
 
     #[test]
