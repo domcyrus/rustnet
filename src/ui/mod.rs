@@ -2404,6 +2404,29 @@ mod snapshot_tests {
         });
     }
 
+    /// A stock 80x24 terminal cannot hold all three Graph sections; the
+    /// fixed-height rows drop from the bottom up so the waves and the
+    /// health row render at full height instead of all three squeezed.
+    #[test]
+    fn graph_tab_small_terminal_drops_bottom_sections() {
+        let app = test_app();
+        app.set_connections_snapshot_for_test(sample_connections());
+        app.set_traffic_history_for_test(TrafficHistory::new(60));
+
+        let ui_state = UIState {
+            selected_tab: 3, // Graph
+            ..Default::default()
+        };
+        let connections = app.get_connections();
+        let output = render_app(&app, &ui_state, &connections, None, 80, 24);
+
+        insta::with_settings!({
+            filters => time_filters(),
+        }, {
+            insta::assert_snapshot!(output);
+        });
+    }
+
     #[test]
     fn loading_screen_via_app() {
         let app = App::new(test_config()).expect("App::new");
