@@ -5,11 +5,19 @@ use std::collections::HashMap;
 use std::io;
 use std::time::SystemTime;
 
-use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
+use windows::Win32::NetworkManagement::IpHelper::{
+    FreeMibTable, GetIfTable2, IF_TYPE_SOFTWARE_LOOPBACK, MIB_IF_TABLE2,
+};
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 
 /// Windows-specific implementation using IP Helper API
 pub struct WindowsStatsProvider;
+
+/// NDIS reports `NDIS_LINK_SPEED_UNKNOWN` (`u64::MAX`) for adapters without a
+/// negotiated speed, such as disconnected Wi-Fi.
+fn reported_link_speed(bits_per_second: u64) -> Option<u64> {
+    (bits_per_second > 0 && bits_per_second != u64::MAX).then_some(bits_per_second)
+}
 
 impl InterfaceStatsProvider for WindowsStatsProvider {
     fn get_all_stats(&self) -> Result<Vec<InterfaceStats>, io::Error> {
@@ -75,12 +83,20 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
                     continue;
                 }
 
+                // The loopback pseudo-interface reports a nominal speed that
+                // would inflate the summed aggregate capacity.
+                let link_capacity = if row.Type == IF_TYPE_SOFTWARE_LOOPBACK {
+                    LinkCapacity::default()
+                } else {
+                    LinkCapacity {
+                        rx_bps: reported_link_speed(row.ReceiveLinkSpeed),
+                        tx_bps: reported_link_speed(row.TransmitLinkSpeed),
+                    }
+                };
+
                 let stat = InterfaceStats {
                     interface_name: name.clone(),
-                    link_capacity: LinkCapacity {
-                        rx_bps: (row.ReceiveLinkSpeed > 0).then_some(row.ReceiveLinkSpeed),
-                        tx_bps: (row.TransmitLinkSpeed > 0).then_some(row.TransmitLinkSpeed),
-                    },
+                    link_capacity,
                     rx_bytes: row.InOctets,
                     tx_bytes: row.OutOctets,
                     rx_packets: row.InUcastPkts + row.InNUcastPkts,
@@ -123,6 +139,13 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ignores_unknown_link_speed_sentinel() {
+        assert_eq!(reported_link_speed(0), None);
+        assert_eq!(reported_link_speed(u64::MAX), None);
+        assert_eq!(reported_link_speed(1_000_000_000), Some(1_000_000_000));
+    }
 
     #[test]
     fn test_windows_list_interfaces() {
