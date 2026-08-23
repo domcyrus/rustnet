@@ -4,7 +4,7 @@ use log::{debug, info, warn};
 use std::time::{Duration, SystemTime};
 
 use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reassembler};
-use crate::network::parser::{ParsedPacket, TcpFlags};
+use crate::network::parser::{ParsedPacket, SynWindowScale, TcpFlags};
 use crate::network::types::{
     ApplicationProtocol, Connection, DnsInfo, DpiInfo, FtpInfo, HttpInfo, MqttInfo, NetBiosInfo,
     ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState, TlsInfo,
@@ -88,6 +88,9 @@ struct TcpSegment {
     payload_len: u32,
     is_outgoing: bool,
     has_ack_flag: bool,
+    is_syn: bool,
+    /// Window-scale verdict from this segment's options (SYN only).
+    window_scale: Option<SynWindowScale>,
 }
 
 /// Analyze TCP segment and update analytics for retransmissions, packet
@@ -104,11 +107,38 @@ fn analyze_tcp_segment(
         payload_len,
         is_outgoing,
         has_ack_flag,
+        is_syn,
+        window_scale,
     } = segment;
     let mut events = TcpMergeEvents::default();
 
-    // Track window size
+    // Learn each side's window-scale shift from its SYN. Only a fully
+    // examined SYN without the option turns scaling off (RFC 7323); a SYN
+    // whose options could not be examined (truncated capture, malformed
+    // options) proves nothing, and a complete retransmitted SYN may still
+    // supply the shift later.
+    if is_syn {
+        match window_scale {
+            Some(SynWindowScale::Present(shift)) => {
+                if is_outgoing {
+                    analytics.window_scale_out = Some(shift);
+                } else {
+                    analytics.window_scale_in = Some(shift);
+                }
+            }
+            Some(SynWindowScale::Absent) => analytics.window_scaling_disabled = true,
+            Some(SynWindowScale::Unknown) | None => {}
+        }
+    }
+
+    // Track window size. SYN windows are never scaled; for data segments the
+    // sender's negotiated shift applies (0 when the handshake wasn't seen).
     analytics.last_window_size = window;
+    analytics.last_window_shift = if is_syn {
+        0
+    } else {
+        analytics.window_shift_for(is_outgoing)
+    };
 
     if is_outgoing {
         // Outbound packet - check for retransmissions
@@ -309,6 +339,8 @@ pub fn merge_packet_into_connection(
                     payload_len: seq_consumed,
                     is_outgoing: parsed.is_outgoing,
                     has_ack_flag: tcp_header.flags.ack,
+                    is_syn: tcp_header.flags.syn,
+                    window_scale: tcp_header.window_scale,
                 },
                 now,
             );
@@ -1020,6 +1052,7 @@ mod tests {
                     rst: false,
                 },
                 payload_len: 60, // Simulated payload length
+                window_scale: None,
             },
         );
         packet.is_outgoing = is_outgoing;
@@ -1346,6 +1379,8 @@ mod tests {
                 payload_len: len,
                 is_outgoing: true,
                 has_ack_flag: false,
+                is_syn: false,
+                window_scale: None,
             },
             at,
         );
@@ -1372,9 +1407,83 @@ mod tests {
                 payload_len: len,
                 is_outgoing: false,
                 has_ack_flag: true,
+                is_syn: false,
+                window_scale: None,
             },
             at,
         )
+    }
+
+    /// One SYN (or SYN-ACK, via `is_outgoing`/`ack`) with the given
+    /// window-scale verdict and a raw window of 65535.
+    fn syn(analytics: &mut TcpAnalytics, is_outgoing: bool, window_scale: SynWindowScale) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq: 0,
+                ack: 0,
+                window: 65535,
+                payload_len: 1,
+                is_outgoing,
+                has_ack_flag: !is_outgoing,
+                is_syn: true,
+                window_scale: Some(window_scale),
+            },
+            t0(),
+        );
+    }
+
+    #[test]
+    fn window_scale_applies_after_observed_handshake() {
+        let mut a = TcpAnalytics::new();
+        syn(&mut a, true, SynWindowScale::Present(7));
+        assert_eq!(a.last_window_shift, 0, "SYN windows are never scaled");
+        syn(&mut a, false, SynWindowScale::Present(8));
+        assert_eq!(a.last_window_shift, 0, "SYN-ACK windows are never scaled");
+
+        recv(&mut a, 1, 1, 100);
+        assert_eq!(a.last_window_shift, 8, "inbound uses the remote's shift");
+        assert_eq!(a.last_window_bytes(), 65535 << 8);
+
+        send(&mut a, 1, 100);
+        assert_eq!(a.last_window_shift, 7, "outbound uses the local shift");
+        assert_eq!(a.last_window_bytes(), 65535 << 7);
+    }
+
+    #[test]
+    fn window_scale_off_when_one_side_lacks_the_option() {
+        let mut a = TcpAnalytics::new();
+        syn(&mut a, true, SynWindowScale::Present(7));
+        syn(&mut a, false, SynWindowScale::Absent); // peer refused scaling
+        recv(&mut a, 1, 1, 100);
+        assert_eq!(a.last_window_shift, 0);
+        assert_eq!(a.last_window_bytes(), 65535);
+    }
+
+    #[test]
+    fn truncated_syn_options_do_not_disable_scaling() {
+        // A SYN-ACK whose options were cut off by the snaplen proves
+        // nothing; a complete retransmitted SYN-ACK must still be able to
+        // enable scaling afterwards.
+        let mut a = TcpAnalytics::new();
+        syn(&mut a, true, SynWindowScale::Present(7));
+        syn(&mut a, false, SynWindowScale::Unknown); // options unexaminable
+        recv(&mut a, 1, 1, 100);
+        assert_eq!(a.last_window_shift, 0, "no conclusion yet, raw window");
+
+        syn(&mut a, false, SynWindowScale::Present(8)); // retransmitted, complete
+        recv(&mut a, 101, 1, 100);
+        assert_eq!(a.last_window_shift, 8);
+        assert_eq!(a.last_window_bytes(), 65535 << 8);
+    }
+
+    #[test]
+    fn window_unscaled_when_handshake_not_observed() {
+        // Connection picked up mid-stream: no SYNs seen, raw value shown.
+        let mut a = TcpAnalytics::new();
+        recv(&mut a, 1, 1, 100);
+        assert_eq!(a.last_window_shift, 0);
+        assert_eq!(a.last_window_bytes(), 65535);
     }
 
     #[test]

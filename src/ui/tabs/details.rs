@@ -1757,7 +1757,7 @@ pub(in crate::ui) fn draw_connection_details(
                 "Fast Retransmits",
                 counters.map(|a| a.fast_retransmit_count),
             ),
-            ("Window Size", counters.map(|a| a.last_window_size as u64)),
+            ("Window Size", counters.map(|a| a.last_window_bytes())),
         ] {
             details.field(
                 label,

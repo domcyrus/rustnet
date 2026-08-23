@@ -1126,6 +1126,7 @@ mod tests {
                 window: 65_535,
                 flags: TcpFlags { syn, ack, fin, rst },
                 payload_len: 0,
+                window_scale: None,
             },
         );
         packet.is_outgoing = is_outgoing;
