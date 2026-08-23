@@ -324,10 +324,17 @@ The same backend publishes a socket snapshot every 5 seconds for the Host tab. T
 The tool automatically detects and lists available network interfaces using platform-specific methods:
 
 - **Linux**: Uses `netlink` or falls back to `/sys/class/net/`
-- **macOS**: Uses `getifaddrs()` system call
+- **macOS**: Uses `getifaddrs()` system call and `SIOCGIFMEDIA` for link state and speed
 - **Windows**: Uses IP Helper APIs (`GetAdaptersInfo()` for interface listing and
   `GetAdaptersAddresses()` for the parser's complete IPv4/IPv6 local-address set)
 - **All platforms**: Falls back to pcap's `pcap_findalldevs()` when native methods fail
+
+The interface-statistics provider also reports optional directional link
+capacity. Linux reads `/sys/class/net/<interface>/speed`, macOS combines active
+media information with the interface baud rate, FreeBSD uses `ifi_baudrate`,
+and Windows reads `ReceiveLinkSpeed` and `TransmitLinkSpeed` from
+`MIB_IF_ROW2`. Aggregate graphs use this capacity only when every interface
+carrying traffic in that direction has a known value.
 
 Packet endpoint orientation maintains a snapshot of the addresses currently assigned to
 the host. Packet-processing workers refresh it every 30 seconds and, when neither unicast

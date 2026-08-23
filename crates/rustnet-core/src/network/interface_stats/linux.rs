@@ -1,6 +1,6 @@
 // interface_stats/linux.rs - Linux sysfs-based interface stats
 
-use super::{InterfaceStats, InterfaceStatsProvider};
+use super::{InterfaceStats, InterfaceStatsProvider, LinkCapacity};
 use std::fs;
 use std::io;
 use std::time::SystemTime;
@@ -22,6 +22,7 @@ impl LinuxStatsProvider {
 
         Ok(InterfaceStats {
             interface_name: interface.to_string(),
+            link_capacity: read_link_capacity(interface),
             rx_bytes: read_stat(&base_path, "rx_bytes")?,
             tx_bytes: read_stat(&base_path, "tx_bytes")?,
             rx_packets: read_stat(&base_path, "rx_packets")?,
@@ -34,6 +35,27 @@ impl LinuxStatsProvider {
             timestamp: SystemTime::now(),
         })
     }
+}
+
+/// Read the latest negotiated speed exposed by ethtool-backed drivers.
+/// Missing files and sentinel values are normal for loopback, tunnels, and
+/// virtual interfaces, so capacity discovery must not fail stat collection.
+fn read_link_capacity(interface: &str) -> LinkCapacity {
+    let path = format!("/sys/class/net/{interface}/speed");
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|value| parse_speed_mbps(&value))
+        .map(LinkCapacity::symmetric)
+        .unwrap_or_default()
+}
+
+fn parse_speed_mbps(value: &str) -> Option<u64> {
+    value
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|speed| *speed > 0)
+        .and_then(|speed| speed.checked_mul(1_000_000))
 }
 
 impl InterfaceStatsProvider for LinuxStatsProvider {
@@ -146,5 +168,14 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn parses_optional_link_speed() {
+        assert_eq!(parse_speed_mbps("1000\n"), Some(1_000_000_000));
+        assert_eq!(parse_speed_mbps("-1\n"), None);
+        assert_eq!(parse_speed_mbps("0"), None);
+        assert_eq!(parse_speed_mbps("not available"), None);
+        assert_eq!(parse_speed_mbps(&u64::MAX.to_string()), None);
     }
 }

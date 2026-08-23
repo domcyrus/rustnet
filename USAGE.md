@@ -1095,6 +1095,13 @@ In process grouping mode (`a`), group headers show the historic connection count
 **Graph tab:**
 
 The graph tab always shows only active connections, even when historic mode is on.
+Its aggregate RX and TX waves use the operating system's reported link capacity
+as a stable ceiling when all traffic-bearing interfaces have a known speed. The
+header then shows current utilization and, where space permits, the link
+capacity. Tunnels, virtual adapters, and drivers without speed information fall
+back automatically to the rolling observed-peak scale. A `>100%` indicator
+means the measured interface counters exceeded the reported capacity; the wave
+remains pinned to the capacity ceiling so the mismatch is visible.
 
 **Resetting:**
 

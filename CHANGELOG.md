@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Capacity-Scaled Traffic Graphs**: aggregate RX and TX graphs use the local
+  interfaces' reported link capacity as a stable ceiling and show utilization
+  when every traffic-bearing interface has a known speed. Unsupported and
+  virtual interfaces retain observed-peak scaling
 - **Responsive System Sidebar**: Traffic now appears before the static Security
   details, which collapse to the sandbox status when terminal height is limited
 - **Contextual Help Overlay**: Help now opens above the active tab and only

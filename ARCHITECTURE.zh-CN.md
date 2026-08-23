@@ -318,10 +318,16 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 该工具使用平台特定的方法自动检测和列出可用网络接口：
 
 - **Linux**：使用 `netlink` 或回退到 `/sys/class/net/`
-- **macOS**：使用 `getifaddrs()` 系统调用
+- **macOS**：使用 `getifaddrs()` 系统调用，并通过 `SIOCGIFMEDIA` 获取链路状态与速率
 - **Windows**：使用 IP Helper API（`GetAdaptersInfo()` 用于列出接口，
   `GetAdaptersAddresses()` 用于获取解析器所需的完整 IPv4/IPv6 本地地址集合）
 - **所有平台**：当原生方法失败时回退到 pcap 的 `pcap_findalldevs()`
+
+接口统计 provider 还会报告可选的方向链路容量。Linux 读取
+`/sys/class/net/<interface>/speed`，macOS 将活跃媒体信息与接口 baud rate 结合，
+FreeBSD 使用 `ifi_baudrate`，Windows 则读取 `MIB_IF_ROW2` 的
+`ReceiveLinkSpeed` 和 `TransmitLinkSpeed`。只有当该方向上所有正在传输流量的接口
+都具有已知容量时，汇总图表才会使用这一固定上限。
 
 数据包端点方向判定会维护当前分配给主机的地址快照。数据包处理线程每 30 秒刷新一次；
 当两个单播端点都无法识别为本地地址时，还会以限速方式立即刷新，并重新解析该数据包一次。

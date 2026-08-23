@@ -21,6 +21,7 @@ RustNet は、各接続を所有するプロセス、通信量、状態、アプ
 - HTTP、TLS/SNI、DNS、SSH、QUIC などの深層パケット解析
 - TCP、QUIC ハンドシェイク、DNS 応答、ICMP エコーの往復時間（RTT）と、TCP の再送・順序入れ替わりをリアルタイム表示
 - Host タブに TCP LISTEN ソケット、UDP BOUND エンドポイント、TCP 状態集計、観測 RTT、所有プロセス、インターフェース統計を表示
+- リンク容量を取得できる場合、RX / TX グラフの上限を固定して現在の利用率を表示
 - `port:`、`process:`、`sni:`、`state:` などのフィルター
 - 注釈付き PCAPNG、PCAP と JSONL sidecar、JSON ログの出力
 - ローカル GeoIP データベースによる国、ASN、都市情報

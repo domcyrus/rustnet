@@ -14,7 +14,10 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{format::format_rate, theme};
+use crate::ui::{
+    format::{format_link_speed, format_rate},
+    theme,
+};
 
 /// Width of rate values in wave-panel headers. This fits values through
 /// `999.99 GB/s` and keeps both the trend glyph and `peak` label anchored as
@@ -26,6 +29,7 @@ pub(in crate::ui) struct WavePanelOptions {
     frac: f64,
     window: usize,
     max_val: Option<f64>,
+    capacity_bps: Option<u64>,
 }
 
 impl WavePanelOptions {
@@ -35,6 +39,7 @@ impl WavePanelOptions {
             frac,
             window,
             max_val: None,
+            capacity_bps: None,
         }
     }
 
@@ -45,6 +50,11 @@ impl WavePanelOptions {
 
     pub(in crate::ui) fn with_max_val(mut self, max_val: f64) -> Self {
         self.max_val = Some(max_val);
+        self
+    }
+
+    pub(in crate::ui) fn with_capacity_bps(mut self, capacity_bps: Option<u64>) -> Self {
+        self.capacity_bps = capacity_bps.filter(|capacity| *capacity > 0);
         self
     }
 }
@@ -224,6 +234,15 @@ fn format_peak_rate(rate: f64) -> String {
     format!("peak {rate:>HEADER_RATE_WIDTH$}")
 }
 
+fn format_utilization(bytes_per_second: f64, capacity_bps: u64) -> String {
+    let percent = bytes_per_second * 8.0 * 100.0 / capacity_bps as f64;
+    if percent > 100.0 {
+        ">100%".to_string()
+    } else {
+        format!("{percent:.1}%")
+    }
+}
+
 /// One rate direction as a complete panel: a header line (label, the
 /// current rate, a trend arrow, and the window peak), an optional summary
 /// line, then a gradient braille wave. The wave is normalized to the window
@@ -247,7 +266,7 @@ pub(in crate::ui) fn wave_panel(
     let speed_ratio = (current / max_val).clamp(0.0, 1.0);
 
     let value_color = wave(0.35 + 0.65 * speed_ratio);
-    let left = vec![
+    let mut left = vec![
         Span::styled(format!("{label} "), theme::bold_fg(wave(0.4))),
         Span::styled(format_header_rate(current), theme::bold_fg(value_color)),
         Span::styled(
@@ -255,7 +274,31 @@ pub(in crate::ui) fn wave_panel(
             theme::fg(theme::muted()),
         ),
     ];
-    let right = Span::styled(format_peak_rate(peak), theme::fg(theme::muted()));
+    if let Some(capacity_bps) = options.capacity_bps {
+        let saturated = current * 8.0 > capacity_bps as f64;
+        left.push(Span::styled(
+            format!(" {}", format_utilization(current, capacity_bps)),
+            theme::fg(if saturated {
+                theme::warn()
+            } else {
+                theme::muted()
+            }),
+        ));
+    }
+
+    let peak_text = format_peak_rate(peak);
+    let right_text = options
+        .capacity_bps
+        .map(|capacity| format!("{peak_text}  cap {}", format_link_speed(capacity)))
+        .filter(|text| {
+            let left_width = left
+                .iter()
+                .map(|span| span.content.chars().count())
+                .sum::<usize>();
+            left_width + 1 + text.chars().count() <= area.width as usize
+        })
+        .unwrap_or(peak_text);
+    let right = Span::styled(right_text, theme::fg(theme::muted()));
     f.render_widget(
         Paragraph::new(spread_line(left, right, area.width)),
         Rect::new(area.x, area.y, area.width, 1),
@@ -423,5 +466,11 @@ mod tests {
                 "peak ".len() + HEADER_RATE_WIDTH
             );
         }
+    }
+
+    #[test]
+    fn utilization_marks_saturated_samples() {
+        assert_eq!(format_utilization(62_500_000.0, 1_000_000_000), "50.0%");
+        assert_eq!(format_utilization(125_000_001.0, 1_000_000_000), ">100%");
     }
 }

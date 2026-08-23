@@ -1275,13 +1275,16 @@ fn mini_wave(
     width: u16,
     frac: f64,
     window: usize,
+    capacity_bytes_per_sec: Option<f64>,
     wave: fn(f64) -> Color,
 ) -> Vec<Line<'static>> {
     // A braille cell has two horizontal dots. Keep one traffic sample per dot
     // in this compact graph so advancing the ring translates existing crests
     // instead of resampling them against shifting fractional boundaries.
     let visible_window = mini_wave_window(width, window);
-    let ceiling = mini_wave_ceiling(samples, visible_window);
+    let ceiling = capacity_bytes_per_sec
+        .filter(|capacity| *capacity > 0.0)
+        .unwrap_or_else(|| mini_wave_ceiling(samples, visible_window));
     braille_graph::render(
         samples,
         width as usize,
@@ -1293,6 +1296,13 @@ fn mini_wave(
     )
 }
 
+struct MiniWaveOptions {
+    frac: f64,
+    window: usize,
+    capacity_bytes_per_sec: Option<f64>,
+    wave: fn(f64) -> Color,
+}
+
 /// One sidebar sparkline row: the colored RX/TX label, then the
 /// smoothed mini wave. Both traffic rows differ only in label, rate
 /// source, and color ramp.
@@ -1301,21 +1311,26 @@ fn draw_mini_wave_row(
     area: Rect,
     label: &'static str,
     rates: &[u64],
-    frac: f64,
-    window: usize,
-    wave: fn(f64) -> Color,
+    options: MiniWaveOptions,
 ) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
-    let label = Paragraph::new(label).style(theme::fg(wave(MINI_WAVE_INTENSITY)));
+    let label = Paragraph::new(label).style(theme::fg((options.wave)(MINI_WAVE_INTENSITY)));
     f.render_widget(label, cols[0]);
 
     let data = smooth_mini_wave(rates);
     f.render_widget(
-        Paragraph::new(mini_wave(&data, cols[1].width, frac, window, wave)),
+        Paragraph::new(mini_wave(
+            &data,
+            cols[1].width,
+            options.frac,
+            options.window,
+            options.capacity_bytes_per_sec,
+            options.wave,
+        )),
         cols[1],
     );
 }
@@ -1362,9 +1377,12 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         sparkline_rows[0],
         "RX",
         &rx_rates,
-        frac,
-        window,
-        theme::rx_wave,
+        MiniWaveOptions {
+            frac,
+            window,
+            capacity_bytes_per_sec: traffic_history.rx_link_capacity_bytes_per_sec(),
+            wave: theme::rx_wave,
+        },
     );
 
     let tx_rates = traffic_history.get_tx_sparkline_data(usize::MAX);
@@ -1373,9 +1391,12 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         sparkline_rows[1],
         "TX",
         &tx_rates,
-        frac,
-        window,
-        theme::tx_wave,
+        MiniWaveOptions {
+            frac,
+            window,
+            capacity_bytes_per_sec: traffic_history.tx_link_capacity_bytes_per_sec(),
+            wave: theme::tx_wave,
+        },
     );
 
     // Current rates row
@@ -1565,12 +1586,27 @@ mod tests {
 
     #[test]
     fn mini_wave_color_does_not_follow_latest_rate() {
-        let quiet = mini_wave(&[64, 128], 12, 0.0, 120, theme::rx_wave);
-        let busy = mini_wave(&[64, 1024], 12, 0.0, 120, theme::rx_wave);
+        let quiet = mini_wave(&[64, 128], 12, 0.0, 120, None, theme::rx_wave);
+        let busy = mini_wave(&[64, 1024], 12, 0.0, 120, None, theme::rx_wave);
         let expected = Some(theme::rx_wave(MINI_WAVE_INTENSITY));
 
         assert_eq!(quiet[0].spans[0].style.fg, expected);
         assert_eq!(busy[0].spans[0].style.fg, expected);
+    }
+
+    #[test]
+    fn mini_wave_uses_link_capacity_when_available() {
+        let auto = mini_wave(&[1_000_000; 8], 12, 0.0, 120, None, theme::rx_wave);
+        let capacity_scaled = mini_wave(
+            &[1_000_000; 8],
+            12,
+            0.0,
+            120,
+            Some(125_000_000.0),
+            theme::rx_wave,
+        );
+
+        assert_ne!(auto, capacity_scaled);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 // interface_stats/windows.rs - Windows IP Helper API interface stats
 
-use super::{InterfaceStats, InterfaceStatsProvider};
+use super::{InterfaceStats, InterfaceStatsProvider, LinkCapacity};
 use std::collections::HashMap;
 use std::io;
 use std::time::SystemTime;
@@ -77,6 +77,10 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
 
                 let stat = InterfaceStats {
                     interface_name: name.clone(),
+                    link_capacity: LinkCapacity {
+                        rx_bps: (row.ReceiveLinkSpeed > 0).then_some(row.ReceiveLinkSpeed),
+                        tx_bps: (row.TransmitLinkSpeed > 0).then_some(row.TransmitLinkSpeed),
+                    },
                     rx_bytes: row.InOctets,
                     tx_bytes: row.OutOctets,
                     rx_packets: row.InUcastPkts + row.InNUcastPkts,

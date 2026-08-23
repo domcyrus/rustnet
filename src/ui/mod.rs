@@ -1031,7 +1031,9 @@ mod snapshot_tests {
     use crate::app::{App, Config};
     use crate::network::geoip::GeoIpInfo;
     use crate::network::interface_stats::{InterfaceRates, InterfaceStats, InterfaceTrafficWindow};
-    use crate::network::types::{Connection, Protocol, ProtocolState, TcpState, TrafficHistory};
+    use crate::network::types::{
+        Connection, ConnectionLifecycleSample, Protocol, ProtocolState, TcpState, TrafficHistory,
+    };
     use rustnet_host::{HostSocket, HostSocketState, HostTcpState, SocketOwner, SocketSnapshot};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Arc;
@@ -2297,6 +2299,7 @@ mod snapshot_tests {
             "eth0",
             InterfaceStats {
                 interface_name: "eth0".to_string(),
+                link_capacity: Default::default(),
                 rx_bytes: 1_500_000_000,
                 tx_bytes: 250_000_000,
                 rx_packets: 1_200_000,
@@ -2314,6 +2317,7 @@ mod snapshot_tests {
             InterfaceRates {
                 rx_bytes_per_sec: 524_288,
                 tx_bytes_per_sec: 131_072,
+                ..Default::default()
             },
         );
 
@@ -2350,6 +2354,7 @@ mod snapshot_tests {
             InterfaceRates {
                 rx_bytes_per_sec: 2_097_152,
                 tx_bytes_per_sec: 4_194_304,
+                ..Default::default()
             },
         );
         app.set_interface_traffic_window_for_test(
@@ -2402,6 +2407,41 @@ mod snapshot_tests {
         }, {
             insta::assert_snapshot!(output);
         });
+    }
+
+    #[test]
+    fn graph_tab_shows_link_capacity_and_utilization() {
+        let app = test_app();
+        app.set_connections_snapshot_for_test(sample_connections());
+        let mut history = TrafficHistory::new(60);
+        for _ in 0..2 {
+            history.observe_link_capacity(Some(1_000_000_000), Some(1_000_000_000));
+        }
+        for _ in 0..2 {
+            history.add_sample_with_lifecycle(
+                62_500_000,
+                31_250_000,
+                ConnectionLifecycleSample::default(),
+                0,
+                0,
+                None,
+            );
+        }
+        app.set_traffic_history_for_test(history);
+
+        let ui_state = UIState {
+            selected_tab: 3,
+            ..Default::default()
+        };
+        let connections = app.get_connections();
+        let output = render_app(&app, &ui_state, &connections, None, 180, 40);
+
+        assert!(output.contains("50.0%"), "missing RX utilization: {output}");
+        assert!(output.contains("25.0%"), "missing TX utilization: {output}");
+        assert!(
+            output.matches("cap 1.0 Gb/s").count() >= 2,
+            "missing capacity labels: {output}"
+        );
     }
 
     /// A stock 80x24 terminal cannot hold all three Graph sections; the

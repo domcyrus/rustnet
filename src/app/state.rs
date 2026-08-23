@@ -896,6 +896,7 @@ mod activity_reset_tests {
     fn interface_sample(timestamp: SystemTime, rx_bytes: u64, tx_bytes: u64) -> InterfaceStats {
         InterfaceStats {
             interface_name: "eth0".to_string(),
+            link_capacity: Default::default(),
             rx_bytes,
             tx_bytes,
             rx_packets: 0,

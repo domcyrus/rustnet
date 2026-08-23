@@ -218,7 +218,9 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         halves[0],
         &rx,
         "↓ RX",
-        braille_graph::WavePanelOptions::new(frac, window).with_max_val(history.rx_graph_ceiling()),
+        braille_graph::WavePanelOptions::new(frac, window)
+            .with_max_val(history.rx_graph_ceiling())
+            .with_capacity_bps(history.rx_link_capacity_bps()),
         theme::rx_wave,
     );
     braille_graph::wave_panel(
@@ -226,7 +228,9 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         halves[2],
         &tx,
         "↑ TX",
-        braille_graph::WavePanelOptions::new(frac, window).with_max_val(history.tx_graph_ceiling()),
+        braille_graph::WavePanelOptions::new(frac, window)
+            .with_max_val(history.tx_graph_ceiling())
+            .with_capacity_bps(history.tx_link_capacity_bps()),
         theme::tx_wave,
     );
 }
