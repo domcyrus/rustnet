@@ -154,18 +154,30 @@ fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
         4 => {
             // Like ctrl-d/u on Details: only advertise scrolling when the
             // table actually outgrew its pane.
-            let (scroll, toggle) = match ui_state.host_view {
-                HostView::Sockets => (
-                    &ui_state.host_sockets_scroll,
-                    Hint::action("i", "interfaces"),
-                ),
-                HostView::Interfaces => (&ui_state.interfaces_scroll, Hint::action("s", "sockets")),
+            let scroll = match ui_state.host_view {
+                HostView::Sockets => &ui_state.host_sockets_scroll,
+                HostView::Interfaces => &ui_state.interfaces_scroll,
+                HostView::Dns => &ui_state.dns_questions_scroll,
             };
             let mut hints = Vec::new();
             if scroll.can_scroll() {
                 hints.push(Hint::action("j/k", "scroll"));
             }
-            hints.push(toggle);
+            match ui_state.host_view {
+                HostView::Sockets => {
+                    hints.push(Hint::action("i", "interfaces"));
+                    hints.push(Hint::action("d", "DNS"));
+                }
+                HostView::Interfaces => {
+                    hints.push(Hint::action("s", "sockets"));
+                    hints.push(Hint::action("d", "DNS"));
+                }
+                HostView::Dns => {
+                    hints.push(Hint::action("o", "sort"));
+                    hints.push(Hint::action("s", "sockets"));
+                    hints.push(Hint::action("i", "interfaces"));
+                }
+            }
             hints.push(Hint::action("esc", "back"));
             hints
         }

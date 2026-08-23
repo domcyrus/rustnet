@@ -181,6 +181,14 @@ Cache properties:
 
 CNAME chains need no separate map: the DNS DPI parser records the original *question* name, and the answer's A/AAAA records map directly to it. Capturing at the wire sees fewer signals than an eBPF socket-level approach (no app-to-stub traffic on `lo` unless captured, no D-Bus resolutions, no DoH/DoT plaintext); this is a known limitation.
 
+#### Passive DNS Analytics
+
+`network::dns_analytics::DnsAnalyticsTracker` is a separate bounded aggregate owned by `ConnectionTracker`. For captured unicast UDP DNS, it pairs each outgoing query with an incoming response using the host-oriented connection key and 16-bit transaction ID. Retransmissions refresh the pending entry, unmatched responses are ignored, and an unanswered query is finalized as a timeout after 10 seconds.
+
+Completed transactions are retained for a rolling 60-second window. The tracker caps pending transactions at 4,096 and completed transactions at 8,192; capacity pressure is surfaced as a sampled indicator in the Host DNS view. Snapshots contain response-code and NODATA totals, latency percentiles and buckets, normalized question-name aggregates, and the DNS health classification used by Overview. `ConnectionTracker::clear()` resets both pending and completed DNS state.
+
+Health is deliberately evidence based. NXDOMAIN counts as a normal resolver response, while SERVFAIL, REFUSED, other response codes, and timeouts count as operational failures. At least three failed observations are required for a failing or no-replies state. Degraded status requires either five completed observations with at least 20% operational failures, or five latency samples with p95 of at least 500 ms. No observed plaintext DNS remains unknown rather than healthy because encrypted DNS, caches, capture loss, and interface selection can hide activity.
+
 ### 6. Cleanup Thread
 
 Removes inactive connections using smart, protocol-aware timeouts. This prevents memory leaks and keeps the connection list relevant. When `--pcap-export` is enabled, also streams connection metadata (PID, process name, timestamps) to a JSONL sidecar file as connections close.

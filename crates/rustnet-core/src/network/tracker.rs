@@ -40,6 +40,7 @@
 //! single tracker can be wrapped in an [`std::sync::Arc`] and shared across a
 //! capture thread, a cleanup thread, and a reader thread.
 
+use crate::network::dns_analytics::{DnsAnalyticsSnapshot, DnsAnalyticsTracker};
 use crate::network::dns_attribution::DnsAttributionCache;
 use crate::network::merge::{
     TcpMergeEvents, create_connection_from_packet, merge_packet_into_connection,
@@ -291,6 +292,7 @@ pub struct ConnectionTracker {
     /// that need one consistent retained-connection view.
     lifecycle: RwLock<()>,
     rtt: Mutex<RttTracker>,
+    dns_analytics: Mutex<DnsAnalyticsTracker>,
     quic_map: Mutex<HashMap<String, ConnectionKey>>,
     recently_closed: Mutex<HashMap<ConnectionKey, SystemTime>>,
     config: TrackerConfig,
@@ -324,6 +326,7 @@ impl ConnectionTracker {
             historic: HistoricMap::with_hasher(FxBuildHasher),
             lifecycle: RwLock::new(()),
             rtt: Mutex::new(RttTracker::new()),
+            dns_analytics: Mutex::new(DnsAnalyticsTracker::default()),
             quic_map: Mutex::new(HashMap::new()),
             recently_closed: Mutex::new(HashMap::new()),
             config,
@@ -357,6 +360,20 @@ impl ConnectionTracker {
         }
 
         let timings = self.measure_timings(parsed, now);
+
+        if parsed.protocol == Protocol::Udp
+            && let Some(dpi) = &parsed.dpi_result
+            && let ApplicationProtocol::Dns(dns) = &dpi.application
+            && let Ok(mut analytics) = self.dns_analytics.lock()
+        {
+            analytics.record_packet(
+                parsed.connection_key(),
+                dns,
+                parsed.is_outgoing,
+                now,
+                timings.dns_response_time,
+            );
+        }
 
         // Passive DNS attribution: record answered A/AAAA mappings and collect
         // the connections that were waiting on one of the answered IPs.
@@ -1003,8 +1020,23 @@ impl ConnectionTracker {
         self.historic.len()
     }
 
-    /// Drop all active and historic connections and reset RTT/QUIC state and
-    /// the learned-neighbor cache.
+    /// Return passive DNS analytics for the latest rolling 60-second window.
+    pub fn dns_analytics_snapshot(&self) -> DnsAnalyticsSnapshot {
+        self.dns_analytics_snapshot_at(SystemTime::now())
+    }
+
+    /// Return passive DNS analytics relative to a supplied capture time.
+    /// Offline consumers can use this to keep the window aligned with a
+    /// replayed trace instead of wall-clock time.
+    pub fn dns_analytics_snapshot_at(&self, now: SystemTime) -> DnsAnalyticsSnapshot {
+        self.dns_analytics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot(now)
+    }
+
+    /// Drop all active and historic connections and reset RTT, DNS, QUIC,
+    /// and learned-neighbor state.
     pub fn clear(&self) {
         let _lifecycle = self
             .lifecycle
@@ -1015,6 +1047,9 @@ impl ConnectionTracker {
         self.historic.clear();
         if let Ok(mut tracker) = self.rtt.lock() {
             tracker.clear();
+        }
+        if let Ok(mut analytics) = self.dns_analytics.lock() {
+            analytics.clear();
         }
         if let Ok(mut mapping) = self.quic_map.lock() {
             mapping.clear();
@@ -1543,6 +1578,11 @@ mod tests {
         );
         let conn = tracker.connections().get(&response.key).unwrap().clone();
         assert_eq!(conn.dns_response_time, Some(Duration::from_millis(35)));
+        let analytics = tracker.dns_analytics_snapshot_at(capture_time(35));
+        assert_eq!(analytics.lookups, 1);
+        assert_eq!(analytics.answered, 1);
+        assert_eq!(analytics.noerror, 1);
+        assert_eq!(analytics.latency_p95, Some(Duration::from_millis(35)));
         assert!(
             conn.initial_rtt.is_none(),
             "DNS timing must not pollute the transport RTT"
@@ -2530,8 +2570,26 @@ mod tests {
         tracker.ingest(&parse(&udp_frame(40000, 53)));
         tracker.cleanup(SystemTime::now() + Duration::from_secs(86_400));
         assert_eq!(tracker.historic_len(), 1);
+
+        let dns_at = SystemTime::now();
+        tracker.ingest_at(&dns_packet(7, true, false, 0), dns_at);
+        tracker.ingest_at(
+            &dns_packet(7, false, true, 0),
+            dns_at + Duration::from_millis(15),
+        );
+        assert_eq!(
+            tracker
+                .dns_analytics_snapshot_at(dns_at + Duration::from_millis(15))
+                .lookups,
+            1
+        );
+
         tracker.clear();
         assert!(tracker.is_empty());
         assert_eq!(tracker.historic_len(), 0);
+        assert_eq!(
+            tracker.dns_analytics_snapshot_at(dns_at + Duration::from_millis(15)),
+            DnsAnalyticsSnapshot::default()
+        );
     }
 }

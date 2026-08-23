@@ -16,6 +16,7 @@ This guide covers detailed usage of RustNet, including command-line options, key
 - [Network Statistics Panel](#network-statistics-panel)
 - [Process Activity](#process-activity)
 - [Host Socket Inventory](#host-socket-inventory)
+- [Passive DNS Analytics](#passive-dns-analytics)
 - [Interface Statistics](#interface-statistics)
 - [Connection Lifecycle & Visual Indicators](#connection-lifecycle--visual-indicators)
 - [Logging](#logging)
@@ -738,9 +739,12 @@ Press `r` to reset all view settings at once:
 
 ## Network Statistics Panel
 
-The Network Statistics panel appears on the right side of the interface, below the Traffic panel. It provides real-time TCP connection quality metrics derived directly from packet capture analysis, making it platform-independent across Linux, macOS, Windows, and FreeBSD.
+The Network Statistics panel appears in the right-side system panel between Statistics and Traffic. It provides passive DNS health and real-time TCP connection quality metrics derived directly from packet capture analysis, making it platform-independent across Linux, macOS, Windows, and FreeBSD.
 
 ### Available Metrics
+
+**DNS Health**
+Summarizes the last 60 seconds of captured unicast DNS activity. It distinguishes normal responses, degraded service, operational failures, and queries that received no reply. A responsive line also includes p95 response time when matched samples are available. No observed DNS traffic is reported as `not observed`, not as healthy.
 
 **TCP Retransmits**
 Detects when a TCP segment is retransmitted due to packet loss or timeout. RustNet identifies retransmissions by analyzing TCP sequence numbers: when a packet arrives with a sequence number lower than expected, it indicates the original packet was lost and is being resent.
@@ -856,7 +860,30 @@ The inventory refreshes every 5 seconds. Process ownership is best effort becaus
 | FreeBSD | `sockstat -s` for native TCP states plus UDP socket rows |
 | Windows | IP Helper owner tables from `GetExtendedTcpTable` and `GetExtendedUdpTable` |
 
-Press `i` for Interfaces and `s` to return to Sockets. Left and right arrow keys switch between the two views.
+Press `i` for Interfaces, `d` for DNS, and `s` to return to Sockets. Left and right arrow keys cycle through all three views.
+
+## Passive DNS Analytics
+
+Press `5` for Host, then `d` to open DNS analytics. The view summarizes captured unicast UDP DNS traffic over a rolling 60-second window:
+
+- **Outcomes**: lookup, answer, pending, timeout, NOERROR, NXDOMAIN, NODATA, SERVFAIL, REFUSED, and other response-code counts
+- **Response time**: p50, p95, maximum, and latency buckets for responses paired by connection and transaction ID
+- **Question names**: normalized query name and type with lookup, NXDOMAIN, failure, and p95 latency totals
+
+Queries become timeouts after 10 seconds without a matching response. A retransmitted query with the same connection and transaction ID remains one logical lookup and restarts that timeout. Press `o` to sort question names by lookups, NXDOMAIN, failures, or p95 latency. The arrow keys, Page Up, Page Down, and mouse wheel scroll the table.
+
+The DNS health state uses enough recent evidence to avoid alarming on a single packet:
+
+- `not observed`: no captured DNS lookup is in the rolling window
+- `checking`: queries are pending or fewer than three completed lookups are inconclusive
+- `responsive`: at least one NOERROR or NXDOMAIN response was observed without a degradation threshold being crossed
+- `degraded`: at least five completed lookups have a 20% operational failure rate, or at least five latency samples have p95 of 500 ms or more
+- `failing`: at least three completed lookups produced no NOERROR or NXDOMAIN response
+- `no replies`: no response was captured and at least three lookups timed out
+
+NXDOMAIN is a valid resolver response, so it does not by itself make DNS unhealthy. Operational failures include SERVFAIL, REFUSED, other response codes, and timeouts.
+
+This is passive evidence, not an active DNS probe. DNS over HTTPS, DNS over TLS, cached answers, and traffic not present on the selected capture interface are not visible. Missing replies can also indicate capture loss or asymmetric routing. If capture stops, Overview reports DNS health as unknown. Pressing `x` to clear captured state also resets these DNS aggregates.
 
 ## Interface Statistics
 
@@ -866,6 +893,7 @@ RustNet provides real-time network interface statistics across all supported pla
 
 **Overview Tab (Main Screen):**
 - Interface stats appear in the right panel below Network Stats
+- Network Stats includes the compact rolling DNS health line
 - Shows up to 3 active interfaces with current rates
 - Displays: `InterfaceName: X KB/s ↓ / Y KB/s ↑`
 - Shows cumulative totals: `Errors (Total): N  Drops (Total): M`

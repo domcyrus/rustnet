@@ -16,6 +16,7 @@
 - [网络统计面板](#network-statistics-panel)
 - [进程活动](#process-activity)
 - [主机套接字清单](#host-socket-inventory)
+- [被动 DNS 分析](#passive-dns-analytics)
 - [接口统计](#interface-statistics)
 - [连接生命周期与视觉指示器](#connection-lifecycle--visual-indicators)
 - [日志](#logging)
@@ -727,9 +728,12 @@ RustNet 可以按进程名分组连接，提供聚合视图，让你更容易看
 
 ## 网络统计面板<a id="network-statistics-panel"></a>
 
-网络统计面板显示在界面右侧，位于流量面板下方。它提供直接从数据包捕获分析中得出的实时 TCP 连接质量指标，使其在 Linux、macOS、Windows 和 FreeBSD 上跨平台一致。
+网络统计面板显示在界面右侧的系统面板中，位于 Statistics 与 Traffic 之间。它提供被动 DNS 健康状态和直接从数据包捕获分析中得出的实时 TCP 连接质量指标，使其在 Linux、macOS、Windows 和 FreeBSD 上跨平台一致。
 
 ### 可用指标<a id="available-metrics"></a>
+
+**DNS 健康状态**
+汇总最近 60 秒捕获到的单播 DNS 活动，区分正常响应、服务退化、运行错误和查询无响应。当存在匹配样本时，正常状态行还会显示 p95 响应时间。没有观测到 DNS 流量时显示 `not observed`，不会将其判定为健康。
 
 **TCP 重传**
 检测由于数据包丢失或超时而重新传输的 TCP 段。RustNet 通过分析 TCP 序列号来识别重传：当到达的数据包序列号低于预期时，表示原始数据包已丢失并正在重发。
@@ -845,7 +849,30 @@ UDP 没有 LISTEN 状态。UDP 表中的每一行都代表一个本地绑定端�
 | FreeBSD | 使用 `sockstat -s` 获取原生 TCP 状态及 UDP 套接字行 |
 | Windows | IP Helper 的 `GetExtendedTcpTable` 和 `GetExtendedUdpTable` owner 表 |
 
-按 `i` 切换到 Interfaces，按 `s` 返回 Sockets。左右方向键也可在两个视图之间切换。
+按 `i` 切换到 Interfaces，按 `d` 打开 DNS，按 `s` 返回 Sockets。左右方向键可在三个视图之间循环切换。
+
+## 被动 DNS 分析<a id="passive-dns-analytics"></a>
+
+按 `5` 打开 Host，再按 `d` 打开 DNS 分析。该视图在滚动 60 秒窗口中汇总捕获到的单播 UDP DNS 流量：
+
+- **响应结果**：查询、应答、待处理、超时、NOERROR、NXDOMAIN、NODATA、SERVFAIL、REFUSED 和其他响应码计数
+- **响应时间**：按连接和事务 ID 匹配响应后得到的 p50、p95、最大值和延迟区间
+- **查询名称**：规范化的查询名称及类型，以及查询、NXDOMAIN、失败和 p95 延迟统计
+
+查询在 10 秒内没有匹配响应时记为超时。相同连接和事务 ID 的重传仍算作一次逻辑查询，并会重新开始超时计时。按 `o` 可依次按查询数、NXDOMAIN、失败数或 p95 延迟排序。方向键、Page Up、Page Down 和鼠标滚轮可滚动表格。
+
+DNS 健康状态需要足够的近期证据，避免因单个数据包误报：
+
+- `not observed`：滚动窗口中没有捕获到 DNS 查询
+- `checking`：仍有待处理查询，或少于三次已完成查询而无法判断
+- `responsive`：至少观测到一个 NOERROR 或 NXDOMAIN 响应，且未达到退化阈值
+- `degraded`：至少五次已完成查询中运行失败率达到 20%，或至少五个延迟样本的 p95 达到 500 ms
+- `failing`：至少三次已完成查询均未产生 NOERROR 或 NXDOMAIN 响应
+- `no replies`：未捕获到响应，且至少三个查询已超时
+
+NXDOMAIN 是有效的解析器响应，因此不会单独导致 DNS 被判定为不健康。运行失败包括 SERVFAIL、REFUSED、其他响应码和超时。
+
+这些状态来自被动观测，并非主动 DNS 探测。DNS over HTTPS、DNS over TLS、缓存结果以及未经过所选捕获接口的流量均不可见。响应缺失也可能由捕获丢包或非对称路由导致。如果捕获停止，Overview 会将 DNS 健康状态显示为 unknown。按 `x` 清空捕获状态时也会重置这些 DNS 汇总。
 
 ## 接口统计<a id="interface-statistics"></a>
 
@@ -855,6 +882,7 @@ RustNet 在所有支持的平台上（Linux、macOS、FreeBSD、Windows）提供
 
 **概览标签页（主屏幕）：**
 - 接口统计出现在右侧面板，位于网络统计下方
+- 网络统计中包含简洁的滚动 DNS 健康状态行
 - 显示最多 3 个活跃接口及当前速率
 - 显示：`InterfaceName: X KB/s ↓ / Y KB/s ↑`
 - 显示累计总数：`Errors (Total): N  Drops (Total): M`

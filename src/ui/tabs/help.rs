@@ -29,6 +29,7 @@ enum HelpContext {
     Graph,
     HostSockets,
     HostInterfaces,
+    HostDns,
 }
 
 impl HelpContext {
@@ -41,6 +42,7 @@ impl HelpContext {
             4 => match ui_state.host_view {
                 HostView::Sockets => Self::HostSockets,
                 HostView::Interfaces => Self::HostInterfaces,
+                HostView::Dns => Self::HostDns,
             },
             // `selected_tab` is always < TAB_COUNT (jump_to_tab / next_tab
             // enforce it); the tripwire above keeps this match exhaustive.
@@ -56,6 +58,7 @@ impl HelpContext {
             Self::Graph => TAB_TITLES[3],
             Self::HostSockets => "Host · Sockets",
             Self::HostInterfaces => "Host · Interfaces",
+            Self::HostDns => "Host · DNS",
         }
     }
 
@@ -67,6 +70,7 @@ impl HelpContext {
             Self::Graph => "Review live traffic, protocol, and connection charts.",
             Self::HostSockets => "Inspect the OS socket table: listeners, bound endpoints, states.",
             Self::HostInterfaces => "Inspect traffic and counters for each interface.",
+            Self::HostDns => "Review passive DNS outcomes, response time, and question names.",
         }
     }
 }
@@ -252,7 +256,9 @@ const HOST_SOCKET_KEYS: &[HelpRow] = &[
     ("Page Up/Down", "Scroll one page"),
     ("Ctrl+B/F", "Scroll one page"),
     ("g, G", "Jump to the top or bottom"),
-    ("i, →", "Show interface details"),
+    ("←/→", "Switch Host view"),
+    ("i", "Show interface details"),
+    ("d", "Show DNS analytics"),
     ("Esc", "Return to Overview"),
     ("Scroll wheel", "Scroll the endpoint table"),
 ];
@@ -275,9 +281,44 @@ const INTERFACE_KEYS: &[HelpRow] = &[
     ("Page Up/Down", "Scroll one page"),
     ("Ctrl+B/F", "Scroll one page"),
     ("g, G", "Jump to the top or bottom"),
-    ("s, ←", "Return to the socket inventory"),
+    ("←/→", "Switch Host view"),
+    ("s", "Show the socket inventory"),
+    ("d", "Show DNS analytics"),
     ("Esc", "Return to Overview"),
     ("Scroll wheel", "Scroll interface details"),
+];
+
+const DNS_KEYS: &[HelpRow] = &[
+    ("↑/k, ↓/j", "Scroll one line"),
+    ("Page Up/Down", "Scroll one page"),
+    ("Ctrl+B/F", "Scroll one page"),
+    ("g, G", "Jump to the top or bottom"),
+    ("o", "Cycle question sort metric"),
+    ("←/→", "Switch Host view"),
+    ("s", "Show the socket inventory"),
+    ("i", "Show interface details"),
+    ("Esc", "Return to Overview"),
+    ("Scroll wheel", "Scroll question names"),
+];
+
+const DNS_CONCEPTS: &[HelpRow] = &[
+    ("Window", "All DNS analytics cover the latest 60 seconds"),
+    (
+        "NXDOMAIN",
+        "The resolver replied that the question name does not exist",
+    ),
+    (
+        "NODATA",
+        "The name exists but has no answer of the requested type",
+    ),
+    (
+        "Response time",
+        "Outgoing queries paired with replies by transaction ID",
+    ),
+    (
+        "Timeout",
+        "An outgoing query had no matching reply within 10 seconds",
+    ),
 ];
 
 const GRAPH_KEYS: &[HelpRow] = &[
@@ -358,6 +399,10 @@ fn help_lines(context: HelpContext) -> Vec<Line<'static>> {
         }
         HelpContext::HostInterfaces => {
             push_section(&mut lines, "Interface Actions", INTERFACE_KEYS);
+        }
+        HelpContext::HostDns => {
+            push_section(&mut lines, "DNS Actions", DNS_KEYS);
+            push_section(&mut lines, "DNS Concepts", DNS_CONCEPTS);
         }
     }
     push_section(&mut lines, "Global", GLOBAL_KEYS);

@@ -32,7 +32,7 @@
 - **深度包检测**：无需外部解析器即可识别 HTTP、带 SNI 的 HTTPS/TLS、DNS、SSH、FTP、QUIC、MQTT、BitTorrent、STUN、NTP、mDNS、LLMNR、DHCP、SNMP、SSDP 及 NetBIOS。
 - **带注释的 PCAPNG 导出**：`--pcapng-export` 可写出能直接用 Wireshark 打开的捕获文件，并将进程、PID、方向、DPI/SNI 和 GeoIP 作为逐包注释嵌入。每个数据包都会直接标明所属进程，无需后处理。也可使用经典的 `--pcap-export` 配合 JSONL sidecar 进行离线关联。
 - **安全沙箱**：Linux 5.13+ 使用 Landlock，macOS 使用 Seatbelt，Windows 通过 token 降权 + job-object 阻止子进程创建。libpcap 初始化完成后立即丢弃特权。详见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
-- **网络分析**：实时统计 TCP、QUIC 握手、DNS 响应及 ICMP 回显的往返时延，并检测 TCP 重传、乱序包和快重传。
+- **网络分析**：实时统计 TCP、QUIC 握手、DNS 响应及 ICMP 回显的往返时延，并检测 TCP 重传、乱序包和快重传。被动 DNS 分析还会汇总响应码、超时、延迟分位数、查询名称和简洁的健康状态。
 - **智能连接生命周期**：按协议设置超时，以白 → 黄 → 红的颜色指示过期程度。按 `t` 可保留历史（已关闭）连接以便事后追溯。
 - **Vim / fzf 风格过滤**：支持 `port:`、`src:`、`dst:`、`sni:`、`process:`、`state:`、`proto:`，以及 `/(?i)pattern/` 形式的正则。
 - **GeoIP 增强**：基于本地 MaxMind GeoLite2 数据库查询国家信息，不发起任何网络请求。
@@ -84,8 +84,9 @@ RustNet 将进程级流量计量与实时网络接口统计整合在一起：
 - **概览标签页**：展示当前活跃的接口，包含速率、错误数与丢包数
 - **活动标签页**(按 `3`)：按出站 (TX) 或入站 (RX) 查看进程排名，包括保留流量与滚动流量、速率、占比、连接数和目的地
 - **安全工作流**：按出站流量排序，找出异常上传进程，然后检查其流量最大的远端对端；即使连接关闭，仍可查看保留流量
-- **主机标签页**(按 `5`)：显示 TCP LISTEN 套接字、UDP BOUND 端点、TCP 状态汇总、观测 RTT 和所属进程
+- **主机标签页**(按 `5`)：显示 TCP LISTEN 套接字、UDP BOUND 端点、TCP 状态汇总、观测 RTT、所属进程和被动 DNS 分析
 - **接口详情**(在主机标签页按 `i`)：显示各接口完整指标表格
+- **DNS 详情**(在主机标签页按 `d`)：显示滚动响应结果、匹配响应延迟和最活跃的查询名称
 - **跨平台**：Linux(sysfs)、macOS / FreeBSD(getifaddrs)、Windows(GetIfTable2 API)
 - **智能过滤**：Windows 上自动剔除虚拟 / 过滤类适配器
 
@@ -215,7 +216,7 @@ rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 | `Esc` | 返回或清除过滤器 |
 | `c` | 复制远端地址 |
 | `p` | 在服务名与端口之间切换 |
-| `d` | 在概览中切换主机名/IP，或在活动标签页切换出站/入站 |
+| `d` | 在概览中切换主机名/IP，在活动标签页切换出站/入站，或在主机标签页打开 DNS 分析 |
 | `s` `S` | 切换排序列 / 切换排序方向 |
 | `a` | 切换按进程分组 |
 | `Space` | 展开 / 折叠进程分组 |

@@ -102,7 +102,7 @@ pub fn set_no_color(enabled: bool) {
 mod state;
 pub(crate) use state::process_group_label;
 pub use state::{
-    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, HostView,
+    ActivityDirection, ActivitySort, ClickAction, ClickableRegions, DnsSort, GroupedRow, HostView,
     PaneScroll, SortColumn, UIState, compute_grouped_rows, compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
@@ -1031,7 +1031,12 @@ mod snapshot_tests {
     use crate::app::{App, Config};
     use crate::network::geoip::GeoIpInfo;
     use crate::network::interface_stats::{InterfaceRates, InterfaceStats, InterfaceTrafficWindow};
-    use crate::network::types::{Connection, Protocol, ProtocolState, TcpState, TrafficHistory};
+    use crate::network::parser::ParsedPacket;
+    use crate::network::types::{
+        ApplicationProtocol, Connection, DnsInfo, DnsQueryType, Protocol, ProtocolState, TcpState,
+        TrafficHistory,
+    };
+    use rustnet_core::network::dpi::DpiResult;
     use rustnet_host::{HostSocket, HostSocketState, HostTcpState, SocketOwner, SocketSnapshot};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Arc;
@@ -1063,6 +1068,56 @@ mod snapshot_tests {
         app.set_loading_for_test(false);
         app.set_current_interface_for_test(Some("eth0".to_string()));
         app
+    }
+
+    fn dns_test_packet(
+        txid: u16,
+        name: &str,
+        query_type: DnsQueryType,
+        is_response: bool,
+        rcode: Option<u8>,
+    ) -> ParsedPacket {
+        let mut packet = ParsedPacket::new(
+            Protocol::Udp,
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)), 53_000),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 53),
+            ProtocolState::Udp,
+            !is_response,
+            80,
+            Some("resolver-client".to_string()),
+            Some(4242),
+        );
+        packet.dpi_result = Some(DpiResult {
+            application: ApplicationProtocol::Dns(DnsInfo {
+                query_name: Some(name.to_string()),
+                query_type: Some(query_type),
+                response_ips: Vec::new(),
+                is_response,
+                txid,
+                rcode,
+                nodata: (is_response && rcode == Some(0)).then_some(false),
+            }),
+        });
+        packet
+    }
+
+    fn seed_dns_lookup(
+        app: &App,
+        txid: u16,
+        name: &str,
+        query_type: DnsQueryType,
+        rcode: u8,
+        sent_at: SystemTime,
+        latency: Duration,
+    ) {
+        app.ingest_packet_at_for_test(
+            &dns_test_packet(txid, name, query_type, false, None),
+            sent_at,
+        );
+        app.ingest_packet_at_for_test(
+            &dns_test_packet(txid, name, query_type, true, Some(rcode)),
+            sent_at + latency,
+        );
     }
 
     /// Full-page render of `app` through `draw`, owning the stats /
@@ -1343,6 +1398,7 @@ mod snapshot_tests {
         let connections = overview_connections();
         let output = render_app(&app, &UIState::default(), &connections, None, 140, 40);
 
+        assert!(output.contains("DNS: not observed"));
         let traffic = output.find("Traffic").expect("Traffic section");
         let security = output.find("Security").expect("Security section");
         assert!(
@@ -2330,6 +2386,78 @@ mod snapshot_tests {
         }, {
             insta::assert_snapshot!(output);
         });
+    }
+
+    fn seeded_dns_app() -> App {
+        let app = test_app();
+        let started = SystemTime::now() - Duration::from_secs(2);
+        seed_dns_lookup(
+            &app,
+            1,
+            "api.example.com",
+            DnsQueryType::A,
+            0,
+            started,
+            Duration::from_millis(12),
+        );
+        seed_dns_lookup(
+            &app,
+            2,
+            "missing.example.com",
+            DnsQueryType::AAAA,
+            3,
+            started + Duration::from_millis(200),
+            Duration::from_millis(84),
+        );
+        seed_dns_lookup(
+            &app,
+            3,
+            "registry.example.com",
+            DnsQueryType::A,
+            2,
+            started + Duration::from_millis(400),
+            Duration::from_millis(220),
+        );
+        seed_dns_lookup(
+            &app,
+            4,
+            "cdn.example.com",
+            DnsQueryType::A,
+            0,
+            started + Duration::from_millis(600),
+            Duration::from_millis(25),
+        );
+        seed_dns_lookup(
+            &app,
+            5,
+            "updates.example.com",
+            DnsQueryType::AAAA,
+            0,
+            started + Duration::from_millis(800),
+            Duration::from_millis(45),
+        );
+        app
+    }
+
+    fn render_host_dns(width: u16, height: u16) -> String {
+        let app = seeded_dns_app();
+        let ui_state = UIState {
+            selected_tab: 4,
+            host_view: HostView::Dns,
+            ..Default::default()
+        };
+        let connections = app.get_connections();
+        render_app(&app, &ui_state, &connections, None, width, height)
+    }
+
+    #[test]
+    fn host_dns_analytics() {
+        insta::assert_snapshot!(render_host_dns(140, 32));
+    }
+
+    #[test]
+    fn host_dns_analytics_compact() {
+        insta::assert_snapshot!(render_host_dns(80, 24));
     }
 
     fn seeded_activity_app() -> App {

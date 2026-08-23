@@ -1,34 +1,36 @@
 ---
 source: src/ui/mod.rs
-expression: output
+expression: "render_host_dns(140, 32)"
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ────────────────────────────────────────────────────────────━━━━━━──────────────────────────────────────────────────────────────────────────
 Host   Sockets  ·  Interfaces  ·  DNS                                                                                                       
                                                                                                                                             
-▎ Host Socket States                                                                                                                        
-TCP 2   LISTEN 1   ESTAB 1   OPENING 0   CLOSING 0   TIME_WAIT 0   OTHER 0   UDP BOUND 1                                                    
-Observed RTT  1 samples   average 24ms   max 24ms                                                                                           
+▎ DNS Outcomes (60s)                                                         ▎ Response Time (matched txid)                                 
+Status degraded                                                              p50 45ms   p95 220ms   max 220ms                               
+Lookups 5   answered 5   pending 0   timeout 0                               <10ms    ··············································   0%   
+NOERROR 3   NXDOMAIN 1   NODATA 0                                            10-50ms  ███████████████████████████▋··················  60%   
+SERVFAIL 1   REFUSED 0   other 0                                             50-100ms █████████▎····································  20%   
+                                                                             >=100ms  █████████▎····································  20%   
                                                                                                                                             
                                                                                                                                             
-                                                                                                                                            
-▎ Listening and Bound Endpoints  2 rows                                                                                                     
-Proto   State      Local endpoint                        Peer                                 Service        PID      Process               
-TCP     LISTEN     0.0.0.0:8080                          -                                    webcache           4242 web-server            
-UDP     BOUND      127.0.0.1:53                          -                                    domain               53 resolver              
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
-                                                                                                                                            
+▎ Question Names (60s)  sort: lookups                                                                                                       
+Question                                                                               Type      Lookups   NXDOMAIN   Failures  p95         
+api.example.com                                                                        A                 1          0         0       12ms  
+cdn.example.com                                                                        A                 1          0         0       25ms  
+missing.example.com                                                                    AAAA              1          1         0       84ms  
+registry.example.com                                                                   A                 1          0         1      220ms  
+updates.example.com                                                                    AAAA              1          0         0       45ms  
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
- i interfaces  d DNS  esc back                                                                                               h help  q quit
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+ o sort  s sockets  i interfaces  esc back                                                                                   h help  q quit

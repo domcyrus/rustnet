@@ -526,7 +526,7 @@ pub fn dns_rcode_name(rcode: u8) -> std::borrow::Cow<'static, str> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 // DNS record type names are standardized uppercase abbreviations per RFC 1035 et al.
 // Renaming e.g. AAAA to Aaaa or CNAME to Cname would be semantically incorrect.
 #[allow(clippy::upper_case_acronyms)]

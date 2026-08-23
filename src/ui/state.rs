@@ -47,6 +47,55 @@ pub enum HostView {
     #[default]
     Sockets,
     Interfaces,
+    Dns,
+}
+
+impl HostView {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Sockets => Self::Interfaces,
+            Self::Interfaces => Self::Dns,
+            Self::Dns => Self::Sockets,
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Sockets => Self::Dns,
+            Self::Interfaces => Self::Sockets,
+            Self::Dns => Self::Interfaces,
+        }
+    }
+}
+
+/// Sort modes for the Host DNS question table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DnsSort {
+    #[default]
+    Lookups,
+    Nxdomain,
+    Failures,
+    Latency,
+}
+
+impl DnsSort {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Lookups => Self::Nxdomain,
+            Self::Nxdomain => Self::Failures,
+            Self::Failures => Self::Latency,
+            Self::Latency => Self::Lookups,
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Lookups => "lookups",
+            Self::Nxdomain => "NXDOMAIN",
+            Self::Failures => "failures",
+            Self::Latency => "p95 latency",
+        }
+    }
 }
 
 /// Sort modes for the process activity view.
@@ -378,8 +427,12 @@ pub struct UIState {
     pub interfaces_scroll: PaneScroll,
     /// Scroll state for the Host tab's socket table.
     pub host_sockets_scroll: PaneScroll,
+    /// Scroll state for the Host tab's DNS question table.
+    pub dns_questions_scroll: PaneScroll,
     /// Active Host tab subview.
     pub host_view: HostView,
+    /// Sort mode for the Host DNS question table.
+    pub dns_sort: DnsSort,
     /// Process traffic direction emphasized by Activity.
     pub activity_direction: ActivityDirection,
     /// Active process-activity sort mode.
@@ -420,7 +473,9 @@ impl Default for UIState {
             help_scroll: PaneScroll::default(),
             interfaces_scroll: PaneScroll::default(),
             host_sockets_scroll: PaneScroll::default(),
+            dns_questions_scroll: PaneScroll::default(),
             host_view: HostView::default(),
+            dns_sort: DnsSort::default(),
             activity_direction: ActivityDirection::default(),
             activity_sort: ActivitySort::default(),
             activity_sort_ascending: false,
@@ -776,6 +831,8 @@ impl UIState {
         self.activity_sort = ActivitySort::default();
         self.activity_sort_ascending = false;
         self.activity_direction = ActivityDirection::default();
+        self.dns_sort = DnsSort::default();
+        self.dns_questions_scroll.reset();
         self.grouped_scroll_offset = 0;
     }
 

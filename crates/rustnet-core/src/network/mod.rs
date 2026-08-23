@@ -9,6 +9,7 @@
 
 pub mod bogon;
 pub mod dns;
+pub mod dns_analytics;
 pub(crate) mod dns_attribution;
 pub mod dpi;
 mod gateway;

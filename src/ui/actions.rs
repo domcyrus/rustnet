@@ -161,6 +161,7 @@ pub fn clear_all_with_confirmation(ui_state: &mut UIState, app: &App) -> bool {
         ui_state.clear_confirmation = false;
         ui_state.show_historic = false;
         ui_state.set_connection_key(None);
+        ui_state.dns_questions_scroll.reset();
         ui_state.clipboard_message = Some(("All connections cleared".to_string(), Instant::now()));
         true
     } else {
