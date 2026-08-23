@@ -9,7 +9,8 @@ const DNS_ANALYTICS_WINDOW: Duration = Duration::from_secs(60);
 const DNS_TRANSACTION_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PENDING_DNS_TRANSACTIONS: usize = 4096;
 const MAX_RETAINED_DNS_TRANSACTIONS: usize = 8192;
-const DEGRADED_FAILURE_PERCENT: usize = 20;
+/// Operational-failure share of finalized lookups that degrades DNS health.
+pub const DEGRADED_FAILURE_PERCENT: usize = 20;
 const DEGRADED_P95: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -46,6 +47,9 @@ pub struct DnsAnalyticsSnapshot {
     pub refused: usize,
     pub other_rcodes: usize,
     pub nodata: usize,
+    /// Operational failures among finalized lookups: timeouts plus every
+    /// response other than NOERROR or NXDOMAIN.
+    pub failures: usize,
     pub latency_samples: usize,
     pub latency_p50: Option<Duration>,
     pub latency_p95: Option<Duration>,
@@ -231,6 +235,7 @@ impl DnsAnalyticsTracker {
         }
 
         snapshot.lookups = self.completed.len() + snapshot.pending;
+        snapshot.failures = failures;
         latencies.sort_unstable();
         snapshot.latency_samples = latencies.len();
         snapshot.latency_p50 = percentile(&latencies, 50);

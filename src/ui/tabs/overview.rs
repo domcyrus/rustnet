@@ -17,7 +17,7 @@ use log::{debug, info};
 
 use crate::app::{App, AppStats, ConnectionCounts};
 use crate::network::dns::DnsResolver;
-use crate::network::dns_analytics::{DnsAnalyticsSnapshot, DnsHealth};
+use crate::network::dns_analytics::{DEGRADED_FAILURE_PERCENT, DnsAnalyticsSnapshot, DnsHealth};
 use crate::network::types::Connection;
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
@@ -731,13 +731,9 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
         ]);
     }
 
-    let failures = snapshot
-        .timeouts
-        .saturating_add(snapshot.servfail)
-        .saturating_add(snapshot.refused)
-        .saturating_add(snapshot.other_rcodes);
     let finalized = snapshot.answered.saturating_add(snapshot.timeouts);
-    let failure_percent = failures
+    let failure_percent = snapshot
+        .failures
         .saturating_mul(100)
         .checked_div(finalized)
         .unwrap_or(0);
@@ -752,7 +748,7 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
             theme::ok(),
         ),
         DnsHealth::Degraded => {
-            let reason = if failure_percent >= 20 {
+            let reason = if failure_percent >= DEGRADED_FAILURE_PERCENT {
                 format!("{failure_percent}% failed")
             } else {
                 snapshot.latency_p95.map_or_else(
@@ -762,7 +758,10 @@ fn dns_health_line(snapshot: &DnsAnalyticsSnapshot, capture_failed: bool) -> Lin
             };
             (format!("degraded · {reason}"), theme::warn())
         }
-        DnsHealth::Failing => (format!("failing · {failures} errors"), theme::err()),
+        DnsHealth::Failing => (
+            format!("failing · {} errors", snapshot.failures),
+            theme::err(),
+        ),
         DnsHealth::NoReplies => (
             format!("no replies · {} timeouts", snapshot.timeouts),
             theme::err(),
