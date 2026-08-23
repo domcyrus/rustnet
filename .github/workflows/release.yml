@@ -24,6 +24,11 @@ on:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
+    inputs:
+      skip_downstream:
+        description: "Skip downstream package triggers (BSD, Homebrew, Chocolatey, AUR). Use when re-running on an older tag so a backfill can't downgrade the packages."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -411,6 +416,7 @@ jobs:
     name: trigger-bsd-build
     runs-on: ubuntu-latest
     needs: all-published
+    if: github.event_name == 'push' || !inputs.skip_downstream
     steps:
       - name: Trigger FreeBSD build
         run: |
@@ -425,6 +431,7 @@ jobs:
     name: trigger-homebrew-update
     runs-on: ubuntu-latest
     needs: all-published
+    if: github.event_name == 'push' || !inputs.skip_downstream
     steps:
       - name: Trigger Homebrew formula update
         run: |
@@ -438,6 +445,7 @@ jobs:
     name: trigger-chocolatey-update
     runs-on: ubuntu-latest
     needs: all-published
+    if: github.event_name == 'push' || !inputs.skip_downstream
     steps:
       - name: Trigger Chocolatey package update
         run: |
@@ -454,6 +462,7 @@ jobs:
     name: trigger-aur-update
     runs-on: ubuntu-latest
     needs: all-published
+    if: github.event_name == 'push' || !inputs.skip_downstream
     permissions:
       actions: write
       contents: read
