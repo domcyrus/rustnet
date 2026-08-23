@@ -155,6 +155,71 @@ type PidNameMap = ();
 /// Map of connection key to (PID, process name)
 type ConnectionProcessMap = HashMap<ConnectionKey, (u32, String)>;
 
+/// Owner recorded by the privileged startup scan for one pre-existing
+/// socket, keyed by its exact 4-tuple. The inode pins the attribution to
+/// the socket object itself, not merely the tuple.
+#[derive(Debug, Clone)]
+struct SnapshotOwner {
+    pid: u32,
+    name: String,
+    inode: u64,
+}
+
+/// Build the startup fallback table from the startup socket inventory,
+/// pairing each owner with the inode of its own row so the two can never
+/// come from different sockets. A tuple occupied by more than one socket
+/// (SO_REUSEPORT plus connected UDP makes exact duplicates legal) is
+/// dropped entirely, even when only one of its rows resolved an owner:
+/// observed traffic cannot be assigned to either socket. Rows without an
+/// inode or a resolved owner contribute no entry of their own.
+fn build_startup_snapshot(sockets: &SocketSnapshot) -> HashMap<ConnectionKey, SnapshotOwner> {
+    let key_of = |socket: &HostSocket| {
+        socket.remote_addr.map(|remote_addr| ConnectionKey {
+            protocol: socket.protocol,
+            local_addr: socket.local_addr,
+            remote_addr,
+        })
+    };
+
+    let mut occupancy: HashMap<ConnectionKey, u32> = HashMap::new();
+    for socket in sockets.sockets.iter() {
+        if let Some(key) = key_of(socket) {
+            *occupancy.entry(key).or_insert(0) += 1;
+        }
+    }
+
+    let mut snapshot = HashMap::new();
+    for socket in sockets.sockets.iter() {
+        let (Some(key), Some(inode), Some(owner)) =
+            (key_of(socket), socket.native_id, socket.owner.as_ref())
+        else {
+            continue;
+        };
+        if occupancy.get(&key) != Some(&1) {
+            continue;
+        }
+        snapshot.insert(
+            key,
+            SnapshotOwner {
+                pid: owner.pid,
+                name: owner.name.clone(),
+                inode,
+            },
+        );
+    }
+    snapshot
+}
+
+/// Whether a startup-snapshot entry's recorded owner is still the same
+/// process: `/proc/<pid>/comm` (world-readable even after the uid drop) must
+/// still exist and match the name captured at startup. This rejects owners
+/// that have exited and PIDs since reused by a different program.
+fn snapshot_owner_still_matches(pid: u32, name: &str) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/comm"))
+        .map(|comm| comm.trim() == name)
+        .unwrap_or(false)
+}
+
 fn parse_proc_tcp_state(value: &str) -> HostTcpState {
     match value {
         "01" => HostTcpState::Established,
@@ -175,6 +240,14 @@ fn parse_proc_tcp_state(value: &str) -> HostTcpState {
 pub(super) struct LinuxProcessLookup {
     // Cache: ConnectionKey -> (pid, process_name)
     cache: RwLock<ConnectionProcessMap>,
+    // The socket table as scanned at startup, while the process still had
+    // its full privileges. After the uid drop, rescans only see the drop
+    // target's own /proc/<pid>/fd entries, so connections that already
+    // existed at launch (other users' daemons, root services) would lose
+    // their owner on the first refresh. This immutable snapshot keeps them
+    // attributable. The live cache always wins; the snapshot only fills
+    // holes, so a reused 4-tuple visible to the rescan is never shadowed.
+    startup_snapshot: HashMap<ConnectionKey, SnapshotOwner>,
     // Cache: PID -> process_name (for resolving eBPF thread names to main process names)
     #[cfg(feature = "ebpf")]
     pid_names: RwLock<HashMap<u32, String>>,
@@ -191,6 +264,7 @@ impl LinuxProcessLookup {
         let (process_map, _pid_names, socket_snapshot) = Self::build_process_map()?;
 
         Ok(Self {
+            startup_snapshot: build_startup_snapshot(&socket_snapshot),
             cache: RwLock::new(process_map),
             #[cfg(feature = "ebpf")]
             pid_names: RwLock::new(_pid_names),
@@ -204,6 +278,7 @@ impl LinuxProcessLookup {
     #[cfg(test)]
     fn with_socket_table(lookup: ConnectionProcessMap) -> Self {
         Self {
+            startup_snapshot: HashMap::new(),
             cache: RwLock::new(lookup),
             #[cfg(feature = "ebpf")]
             pid_names: RwLock::new(HashMap::new()),
@@ -268,8 +343,44 @@ impl LinuxProcessLookup {
         // shape is deliberately collapsed into a single `ProcfsRelaxed`: what
         // matters downstream is that procfs needed to guess, not which of the
         // three wildcard shapes it guessed with.
-        let ((pid, name), _shape) = relaxed_lookup(&cache, &key)?;
-        Some((*pid, name.clone(), MatchQuality::ProcfsRelaxed))
+        if let Some(((pid, name), _shape)) = relaxed_lookup(&cache, &key) {
+            return Some((*pid, name.clone(), MatchQuality::ProcfsRelaxed));
+        }
+        drop(cache);
+
+        // Last resort: the privileged startup snapshot, for connections that
+        // already existed at launch but whose owner the post-uid-drop rescan
+        // can no longer see. Exact 4-tuple hits only: relaxed matching
+        // against the snapshot would let a stale listener entry claim new
+        // inbound connections indefinitely. The hit is only trusted while
+        // (a) the very same socket, by inode, still occupies the tuple in
+        // the periodically refreshed socket inventory (which stays readable
+        // after the uid drop even when owners do not), so a closed-and-
+        // reused tuple is rejected; and (b) the recorded owner is
+        // verifiably still the same process. The refresh cadence bounds the
+        // reuse-detection window to one refresh interval.
+        let owner = self.startup_snapshot.get(&key)?;
+        if self.snapshot_socket_unchanged(&key, owner.inode)
+            && snapshot_owner_still_matches(owner.pid, &owner.name)
+        {
+            return Some((owner.pid, owner.name.clone(), MatchQuality::ProcfsSnapshot));
+        }
+        None
+    }
+
+    /// Whether the current socket inventory still shows the startup socket
+    /// (same inode) on this exact tuple.
+    fn snapshot_socket_unchanged(&self, key: &ConnectionKey, inode: u64) -> bool {
+        let snapshot = self
+            .socket_snapshot
+            .read()
+            .expect("socket snapshot lock poisoned");
+        snapshot.sockets.iter().any(|socket| {
+            socket.native_id == Some(inode)
+                && socket.protocol == key.protocol
+                && socket.local_addr == key.local_addr
+                && socket.remote_addr == Some(key.remote_addr)
+        })
     }
 
     /// Resolve a process's parent chain, memoized per TGID until the next
@@ -584,6 +695,218 @@ mod tests {
         assert_eq!(parse_proc_tcp_state("01"), HostTcpState::Established);
         assert_eq!(parse_proc_tcp_state("06"), HostTcpState::TimeWait);
         assert_eq!(parse_proc_tcp_state("FF"), HostTcpState::Unknown);
+    }
+
+    fn own_comm() -> String {
+        fs::read_to_string(format!("/proc/{}/comm", own_pid()))
+            .expect("own comm readable")
+            .trim()
+            .to_string()
+    }
+
+    /// An established TCP socket row as the refreshed inventory would list
+    /// it after the uid drop: tuple and inode visible, owner or not.
+    fn host_socket(local: &str, remote: &str, inode: u64) -> HostSocket {
+        let mut socket = HostSocket::new(
+            Protocol::Tcp,
+            local.parse().unwrap(),
+            HostSocketState::Tcp(HostTcpState::Established),
+        );
+        socket.remote_addr = Some(remote.parse().unwrap());
+        socket.native_id = Some(inode);
+        socket
+    }
+
+    fn snapshot_lookup(
+        owner: (&str, &str, u32, String, u64),
+        inventory: Vec<HostSocket>,
+    ) -> LinuxProcessLookup {
+        let (local, remote, pid, name, inode) = owner;
+        let mut startup = HashMap::new();
+        startup.insert(key(local, remote), SnapshotOwner { pid, name, inode });
+        LinuxProcessLookup {
+            startup_snapshot: startup,
+            cache: RwLock::new(ConnectionProcessMap::new()),
+            #[cfg(feature = "ebpf")]
+            pid_names: RwLock::new(HashMap::new()),
+            lineages: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(SocketSnapshot::new(inventory)),
+        }
+    }
+
+    fn owned_socket(local: &str, remote: &str, inode: u64, pid: u32, name: &str) -> HostSocket {
+        let mut socket = host_socket(local, remote, inode);
+        socket.owner = Some(SocketOwner::new(pid, name, None));
+        socket
+    }
+
+    #[test]
+    fn startup_snapshot_pairs_owner_and_inode_from_the_same_row() {
+        // Two owned sockets: each snapshot entry must carry its own row's
+        // inode and owner, never a mix.
+        let sockets = SocketSnapshot::new(vec![
+            owned_socket("192.168.1.10:44444", "203.0.113.5:22", 777, 41, "sshd"),
+            owned_socket("192.168.1.10:55555", "203.0.113.6:443", 888, 42, "nginx"),
+        ]);
+        let snapshot = build_startup_snapshot(&sockets);
+
+        let a = &snapshot[&key("192.168.1.10:44444", "203.0.113.5:22")];
+        assert_eq!((a.pid, a.name.as_str(), a.inode), (41, "sshd", 777));
+        let b = &snapshot[&key("192.168.1.10:55555", "203.0.113.6:443")];
+        assert_eq!((b.pid, b.name.as_str(), b.inode), (42, "nginx", 888));
+    }
+
+    #[test]
+    fn startup_snapshot_drops_a_tuple_occupied_by_two_sockets() {
+        // SO_REUSEPORT plus connected UDP permits exact duplicate tuples.
+        // Even when only one row resolved an owner (the other hidden by
+        // permissions or a scan race), the tuple is ambiguous: the owner
+        // must not be paired with either inode.
+        let owned = owned_socket("192.168.1.10:5353", "203.0.113.5:5353", 777, 41, "resolver");
+        let ownerless = host_socket("192.168.1.10:5353", "203.0.113.5:5353", 778);
+        let sockets = SocketSnapshot::new(vec![owned, ownerless]);
+        let snapshot = build_startup_snapshot(&sockets);
+
+        assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn startup_snapshot_skips_ownerless_and_inodeless_rows() {
+        let ownerless = host_socket("192.168.1.10:44444", "203.0.113.5:22", 777);
+        let mut inodeless = owned_socket("192.168.1.10:55555", "203.0.113.6:443", 0, 41, "sshd");
+        inodeless.native_id = None;
+        let sockets = SocketSnapshot::new(vec![ownerless, inodeless]);
+
+        assert!(build_startup_snapshot(&sockets).is_empty());
+    }
+
+    #[test]
+    fn startup_snapshot_attributes_when_the_rescanned_table_cannot() {
+        // A connection whose owner is present in the privileged startup
+        // scan but invisible to every post-uid-drop rescan: same socket
+        // (same inode) still on the tuple, owner still alive. The snapshot
+        // records this very test process so /proc validation has a real
+        // target.
+        let lookup = snapshot_lookup(
+            (
+                "192.168.1.10:44444",
+                "203.0.113.5:22",
+                own_pid(),
+                own_comm(),
+                777,
+            ),
+            vec![host_socket("192.168.1.10:44444", "203.0.113.5:22", 777)],
+        );
+
+        let conn = connection("192.168.1.10:44444", "203.0.113.5:22");
+        let (got_pid, got_name, quality) =
+            lookup.lookup_match(&conn).expect("snapshot should match");
+        assert_eq!(got_pid, own_pid());
+        assert_eq!(got_name, own_comm());
+        assert_eq!(quality, MatchQuality::ProcfsSnapshot);
+    }
+
+    #[test]
+    fn startup_snapshot_rejects_a_reused_tuple() {
+        // The startup socket closed and another (owner-invisible) socket
+        // reuses the exact tuple: the inventory shows a different inode,
+        // so the stale owner must not attribute, even though it still runs.
+        let lookup = snapshot_lookup(
+            (
+                "192.168.1.10:44444",
+                "203.0.113.5:22",
+                own_pid(),
+                own_comm(),
+                777,
+            ),
+            vec![host_socket("192.168.1.10:44444", "203.0.113.5:22", 778)],
+        );
+
+        let conn = connection("192.168.1.10:44444", "203.0.113.5:22");
+        assert!(lookup.lookup_match(&conn).is_none());
+    }
+
+    #[test]
+    fn startup_snapshot_rejects_a_closed_socket() {
+        // The tuple is gone from the current inventory entirely.
+        let lookup = snapshot_lookup(
+            (
+                "192.168.1.10:44444",
+                "203.0.113.5:22",
+                own_pid(),
+                own_comm(),
+                777,
+            ),
+            Vec::new(),
+        );
+
+        let conn = connection("192.168.1.10:44444", "203.0.113.5:22");
+        assert!(lookup.lookup_match(&conn).is_none());
+    }
+
+    #[test]
+    fn startup_snapshot_rejects_an_owner_that_no_longer_matches() {
+        // Socket unchanged, but the recorded owner has exited (or its PID
+        // was reused): a PID above the kernel's pid_max cannot exist.
+        let lookup = snapshot_lookup(
+            (
+                "192.168.1.10:44444",
+                "203.0.113.5:22",
+                u32::MAX,
+                "sshd".to_string(),
+                777,
+            ),
+            vec![host_socket("192.168.1.10:44444", "203.0.113.5:22", 777)],
+        );
+
+        let conn = connection("192.168.1.10:44444", "203.0.113.5:22");
+        assert!(lookup.lookup_match(&conn).is_none());
+    }
+
+    #[test]
+    fn startup_snapshot_never_matches_relaxed_shapes() {
+        // A stale wildcard listener entry in the snapshot must not claim
+        // new inbound connections; only exact 4-tuple hits are trusted.
+        let lookup = snapshot_lookup(
+            ("0.0.0.0:80", "0.0.0.0:0", own_pid(), own_comm(), 777),
+            vec![host_socket("192.168.1.10:80", "203.0.113.5:50000", 900)],
+        );
+
+        let conn = connection("192.168.1.10:80", "203.0.113.5:50000");
+        assert!(lookup.lookup_match(&conn).is_none());
+    }
+
+    #[test]
+    fn live_table_wins_over_the_startup_snapshot() {
+        // A 4-tuple reused after startup: the rescan sees the new owner and
+        // must shadow the stale snapshot entry.
+        let k = key("192.168.1.10:44444", "203.0.113.5:443");
+        let mut snapshot = HashMap::new();
+        snapshot.insert(
+            k.clone(),
+            SnapshotOwner {
+                pid: 4242,
+                name: "old-owner".to_string(),
+                inode: 777,
+            },
+        );
+        let mut live = ConnectionProcessMap::new();
+        live.insert(k, (5555, "curl".to_string()));
+
+        let lookup = LinuxProcessLookup {
+            startup_snapshot: snapshot,
+            cache: RwLock::new(live),
+            #[cfg(feature = "ebpf")]
+            pid_names: RwLock::new(HashMap::new()),
+            lineages: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(SocketSnapshot::default()),
+        };
+
+        let conn = connection("192.168.1.10:44444", "203.0.113.5:443");
+        let (pid, name, quality) = lookup.lookup_match(&conn).expect("live table should match");
+        assert_eq!(pid, 5555);
+        assert_eq!(name, "curl");
+        assert_eq!(quality, MatchQuality::ProcfsExact);
     }
 
     #[test]

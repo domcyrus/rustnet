@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Default Npcap Installations on Windows**: RustNet now finds Npcap in its
   standard `System32\Npcap` directory, so WinPcap API-compatible mode is no
   longer required. `--help` and `--version` also work without Npcap installed
+- **Attribution of Pre-Existing Connections on Linux**: connections that were
+  already open before RustNet started (other users' daemons, root services)
+  kept their process name past the first cache refresh after the uid drop.
+  The privileged startup scan now serves as a validated fallback, shown as
+  the "startup snapshot" match quality
 
 ### Removed
 - **Ubuntu 25.10 (Questing) PPA**: the series reached end of life and
