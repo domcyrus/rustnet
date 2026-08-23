@@ -17,7 +17,7 @@ const AMBIGUOUS_ENDPOINT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const AMBIGUOUS_ENDPOINT_REFRESH_MAX_INTERVAL: Duration = Duration::from_secs(60);
 
 // Re-export TCP types
-pub use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
+pub use crate::network::protocol::tcp::{SynWindowScale, TcpFlags, TcpHeaderInfo};
 
 /// Result of parsing a packet
 #[derive(Debug)]
