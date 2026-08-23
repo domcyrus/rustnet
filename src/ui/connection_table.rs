@@ -27,7 +27,7 @@ use ratatui::widgets::{Cell, Row, Table};
 use std::net::SocketAddr;
 
 use crate::network::dns::DnsResolver;
-use crate::network::types::{AddrKind, Connection, Protocol};
+use crate::network::types::{AddrKind, ApplicationProtocol, Connection, Protocol};
 use crate::ui::{
     ClickAction, ClickableRegions, NONE_PLACEHOLDER, SortColumn, UIState, dpi_color,
     format::{format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
@@ -44,8 +44,9 @@ const LOCATION_WIDTH: u16 = 4;
 const SERVICE_WIDTH: u16 = 10; // most IANA service names ("netbios-ns") fit
 const APP_WIDTH_FULL: u16 = 24;
 const APP_WIDTH_COMPACT: u16 = 14;
-const STATE_WIDTH: u16 = 12; // longest TCP state: "ESTABLISHED" (11)
+const STATE_WIDTH: u16 = 11; // longest TCP state: "ESTABLISHED" (11)
 const RTT_WIDTH: u16 = 7; // "234ms", "1.2s"; header "RTT ↓" when sorted
+const HEALTH_WIDTH: u16 = 5; // "R3/O1", "R1/V0", or "R2/T1"
 const BANDWIDTH_WIDTH: u16 = 11;
 /// Floor for the Remote column; bare "ip:port" for IPv4 fits in 21.
 const REMOTE_MIN_WIDTH: u16 = 21;
@@ -73,6 +74,8 @@ pub(in crate::ui) enum ColumnId {
     State,
     /// Best available TCP, QUIC handshake, or ICMP echo RTT.
     Rtt,
+    /// Protocol-aware observable health badge.
+    Health,
     Bandwidth,
 }
 
@@ -96,6 +99,7 @@ impl Column {
             ColumnId::Application => Some(SortColumn::Application),
             ColumnId::State => Some(SortColumn::State),
             ColumnId::Rtt => Some(SortColumn::Rtt),
+            ColumnId::Health => Some(SortColumn::Health),
             ColumnId::Bandwidth => Some(SortColumn::BandwidthTotal),
         };
         Self { id, width, sort }
@@ -117,8 +121,8 @@ fn table_chrome(column_count: usize) -> u16 {
 /// never affects the layout, so columns stay put while scrolling.
 ///
 /// Too narrow: whole columns are hidden in a fixed degradation order
-/// (Location → Service → Local → RTT → Application shrinks to compact →
-/// State) rather than truncating cells. The floor is Process ·
+/// (Location → Service → Local → RTT → Health → Application shrinks to
+/// compact → State) rather than truncating cells. The floor is Process ·
 /// Remote · App · Bandwidth; below that ratatui clips columns from the
 /// right.
 ///
@@ -141,6 +145,7 @@ pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) ->
         Column::new(ColumnId::Application, APP_WIDTH_FULL),
         Column::new(ColumnId::State, STATE_WIDTH),
         Column::new(ColumnId::Rtt, RTT_WIDTH),
+        Column::new(ColumnId::Health, HEALTH_WIDTH),
         Column::new(ColumnId::Bandwidth, BANDWIDTH_WIDTH),
     ]);
 
@@ -154,6 +159,7 @@ pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) ->
         ColumnId::Service,
         ColumnId::Local,
         ColumnId::Rtt,
+        ColumnId::Health,
     ] {
         if !fits(&columns) {
             columns.retain(|c| c.id != id);
@@ -352,6 +358,7 @@ fn header_label(id: ColumnId, ui_state: &UIState) -> &'static str {
         ColumnId::Application => "App",
         ColumnId::State => "State",
         ColumnId::Rtt => "RTT",
+        ColumnId::Health => "Hlth",
         ColumnId::Bandwidth => "", // built as spans in build_header
     }
 }
@@ -391,7 +398,9 @@ pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UIState) ->
         }
 
         let label = header_label(col.id, ui_state);
-        let text = if active {
+        let text = if active && col.id == ColumnId::Health {
+            format!("H {sort_arrow}")
+        } else if active {
             format!("{label} {sort_arrow}")
         } else {
             label.to_string()
@@ -514,6 +523,7 @@ pub(in crate::ui) fn connection_row<'a>(
                 }
             }
             ColumnId::Rtt => rtt_cell(conn, color_cells),
+            ColumnId::Health => health_cell(conn, color_cells),
             ColumnId::Bandwidth => {
                 if conn.is_historic {
                     Cell::from(Line::from("n/a").right_aligned())
@@ -612,6 +622,127 @@ fn rtt_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
         Line::from(text)
     };
     Cell::from(line.right_aligned())
+}
+
+/// Compact protocol-aware health badge. TCP shows retransmits/out-of-order,
+/// QUIC shows explicit Retry/Version Negotiation packets, and transaction-based
+/// UDP shows repeated requests/timeouts. Other protocols remain ungraded.
+fn health_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
+    let Some((kind, first_count, second_count)) = health_counts(conn) else {
+        let style = if color_cells {
+            theme::fg(theme::muted())
+        } else {
+            Style::default()
+        };
+        return Cell::from(NONE_PLACEHOLDER).style(style);
+    };
+    let (first, second) = match kind {
+        HealthKind::Tcp => (
+            ('R', first_count, theme::err()),
+            ('O', second_count, theme::warn()),
+        ),
+        HealthKind::Quic => (
+            ('R', first_count, theme::warn()),
+            ('V', second_count, theme::warn()),
+        ),
+        HealthKind::Transaction => (
+            ('R', first_count, theme::warn()),
+            ('T', second_count, theme::err()),
+        ),
+    };
+    health_pair_cell(first, second, color_cells)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HealthKind {
+    Tcp,
+    Quic,
+    Transaction,
+}
+
+fn health_counts(conn: &Connection) -> Option<(HealthKind, u64, u64)> {
+    if let Some(analytics) = conn.tcp_analytics.as_ref() {
+        return Some((
+            HealthKind::Tcp,
+            analytics.retransmit_count,
+            analytics.out_of_order_count,
+        ));
+    }
+
+    let application = conn.dpi_info.as_ref().map(|dpi| &dpi.application);
+    if matches!(application, Some(ApplicationProtocol::Quic(_))) {
+        return Some((
+            HealthKind::Quic,
+            conn.protocol_health.quic_retry_count,
+            conn.protocol_health.quic_version_negotiation_count,
+        ));
+    }
+
+    let transactional_udp = conn.protocol == Protocol::Udp
+        && matches!(
+            application,
+            Some(
+                ApplicationProtocol::Dns(_)
+                    | ApplicationProtocol::Llmnr(_)
+                    | ApplicationProtocol::NetBios(_)
+                    | ApplicationProtocol::Stun(_)
+                    | ApplicationProtocol::Ntp(_)
+            )
+        );
+    (transactional_udp && conn.protocol_health.request_observed).then_some((
+        HealthKind::Transaction,
+        conn.protocol_health.request_retry_count,
+        conn.protocol_health.request_timeout_count,
+    ))
+}
+
+fn health_pair_cell<'a>(
+    first: (char, u64, Color),
+    second: (char, u64, Color),
+    color_cells: bool,
+) -> Cell<'a> {
+    let (first_label, first_count, first_color) = first;
+    let (second_label, second_count, second_color) = second;
+    if first_count.saturating_add(second_count) == 0 {
+        let style = if color_cells {
+            theme::fg(theme::ok())
+        } else {
+            Style::default()
+        };
+        return Cell::from("ok").style(style);
+    }
+
+    let first_count_text = health_count_text(first_count);
+    let second_count_text = health_count_text(second_count);
+    if !color_cells {
+        return Cell::from(format!(
+            "{first_label}{first_count_text}/{second_label}{second_count_text}"
+        ));
+    }
+
+    let first_style = if first_count > 0 {
+        theme::bold_fg(first_color)
+    } else {
+        theme::fg(theme::muted())
+    };
+    let second_style = if second_count > 0 {
+        theme::bold_fg(second_color)
+    } else {
+        theme::fg(theme::muted())
+    };
+    Cell::from(Line::from(vec![
+        Span::styled(format!("{first_label}{first_count_text}"), first_style),
+        Span::styled("/", theme::fg(theme::muted())),
+        Span::styled(format!("{second_label}{second_count_text}"), second_style),
+    ]))
+}
+
+fn health_count_text(count: u64) -> String {
+    if count > 9 {
+        "+".to_string()
+    } else {
+        count.to_string()
+    }
 }
 
 /// Bandwidth cell: "{rx}/{tx}" right-aligned, rx/tx halves colored when
@@ -723,7 +854,10 @@ pub(in crate::ui) fn render_row_table(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::types::{Connection, Protocol, ProtocolState, TcpState};
+    use crate::network::types::{
+        ApplicationProtocol, Connection, DnsInfo, DnsQueryType, DpiInfo, Protocol, ProtocolState,
+        QuicInfo, TcpState,
+    };
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
     fn ids(columns: &[Column]) -> Vec<ColumnId> {
@@ -755,8 +889,8 @@ mod tests {
     }
 
     // Width math for the full set with Location at floor widths:
-    // 22+21+18+4+10+24+12+7+11 = 129 content + chrome(9 cols) = 9 -> 138.
-    const FULL_WIDTH: u16 = 138;
+    // 22+21+18+4+10+24+11+7+5+11 = 133 content + chrome(10 cols) = 10 -> 143.
+    const FULL_WIDTH: u16 = 143;
 
     #[test]
     fn select_columns_shows_everything_when_wide() {
@@ -772,6 +906,7 @@ mod tests {
                 ColumnId::Application,
                 ColumnId::State,
                 ColumnId::Rtt,
+                ColumnId::Health,
                 ColumnId::Bandwidth,
             ]
         );
@@ -785,31 +920,37 @@ mod tests {
         assert!(!ids(&cols).contains(&ColumnId::Location));
         assert!(ids(&cols).contains(&ColumnId::Service));
 
-        // 22+21+18+10+24+12+7+11 = 125 + chrome(8) = 133 -> below that Service goes.
-        let cols = select_columns(132, true);
+        // 22+21+18+10+24+11+7+5+11 = 129 + chrome(9) = 138 -> below that Service goes.
+        let cols = select_columns(137, true);
         assert!(!ids(&cols).contains(&ColumnId::Service));
         assert!(ids(&cols).contains(&ColumnId::Local));
 
-        // 22+21+18+24+12+7+11 = 115 + chrome(7) = 122 -> below that Local goes.
-        let cols = select_columns(122, true);
+        // 22+21+18+24+11+7+5+11 = 119 + chrome(8) = 127 -> below that Local goes.
+        let cols = select_columns(127, true);
         assert!(ids(&cols).contains(&ColumnId::Local));
         assert_eq!(width_of(&cols, ColumnId::Application), APP_WIDTH_FULL);
-        let cols = select_columns(121, true);
+        let cols = select_columns(126, true);
         assert!(!ids(&cols).contains(&ColumnId::Local));
 
-        // 22+21+24+12+7+11 = 97 + chrome(6) = 103 -> below that RTT goes.
-        let cols = select_columns(103, true);
+        // 22+21+24+11+7+5+11 = 101 + chrome(7) = 108 -> below that RTT goes.
+        let cols = select_columns(108, true);
         assert!(ids(&cols).contains(&ColumnId::Rtt));
-        let cols = select_columns(102, true);
+        let cols = select_columns(107, true);
         assert!(!ids(&cols).contains(&ColumnId::Rtt));
 
-        // 22+21+24+12+11 = 90 + chrome(5) = 95 -> below that App compacts.
-        let cols = select_columns(94, true);
+        // 22+21+24+11+5+11 = 94 + chrome(6) = 100 -> below that Health goes.
+        let cols = select_columns(100, true);
+        assert!(ids(&cols).contains(&ColumnId::Health));
+        let cols = select_columns(99, true);
+        assert!(!ids(&cols).contains(&ColumnId::Health));
+
+        // 22+21+24+11+11 = 89 + chrome(5) = 94 -> below that App compacts.
+        let cols = select_columns(93, true);
         assert_eq!(width_of(&cols, ColumnId::Application), APP_WIDTH_COMPACT);
         assert!(ids(&cols).contains(&ColumnId::State));
 
-        // 22+21+14+12+11 = 80 + chrome(5) = 85 -> below that State goes.
-        let cols = select_columns(84, true);
+        // 22+21+14+11+11 = 79 + chrome(5) = 84 -> below that State goes.
+        let cols = select_columns(83, true);
         assert_eq!(
             ids(&cols),
             vec![
@@ -843,6 +984,7 @@ mod tests {
         // Fixed columns never grow.
         assert_eq!(width_of(&cols, ColumnId::State), STATE_WIDTH);
         assert_eq!(width_of(&cols, ColumnId::Rtt), RTT_WIDTH);
+        assert_eq!(width_of(&cols, ColumnId::Health), HEALTH_WIDTH);
         assert_eq!(width_of(&cols, ColumnId::Bandwidth), BANDWIDTH_WIDTH);
         // The grid spans the full width exactly, so the Bandwidth
         // column sits flush against the right edge.
@@ -1088,5 +1230,54 @@ mod tests {
         // Unnamed processes never hash the placeholder.
         conn.process_name = None;
         assert_eq!(process_style(&conn, true), base);
+    }
+
+    #[test]
+    fn health_badge_keeps_both_issue_counts_compact() {
+        assert_eq!(health_count_text(3), "3");
+        assert_eq!(health_count_text(10), "+");
+        assert_eq!(
+            format!("R{}/O{}", health_count_text(3), health_count_text(1)),
+            "R3/O1"
+        );
+    }
+
+    #[test]
+    fn health_counts_adapt_to_quic_and_transactional_udp() {
+        let mut quic = Connection::new(
+            Protocol::Udp,
+            "192.168.1.10:50000".parse().unwrap(),
+            "203.0.113.7:443".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        quic.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Quic(Box::new(QuicInfo::new(1))),
+        });
+        quic.protocol_health.quic_retry_count = 2;
+        quic.protocol_health.quic_version_negotiation_count = 1;
+        assert_eq!(health_counts(&quic), Some((HealthKind::Quic, 2, 1)));
+
+        let mut dns = Connection::new(
+            Protocol::Udp,
+            "192.168.1.10:50001".parse().unwrap(),
+            "1.1.1.1:53".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        dns.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Dns(DnsInfo {
+                query_name: None,
+                query_type: Some(DnsQueryType::A),
+                response_ips: Vec::new(),
+                is_response: false,
+                txid: 1,
+                rcode: None,
+                nodata: None,
+            }),
+        });
+        assert_eq!(health_counts(&dns), None);
+        dns.protocol_health.request_observed = true;
+        dns.protocol_health.request_retry_count = 3;
+        dns.protocol_health.request_timeout_count = 1;
+        assert_eq!(health_counts(&dns), Some((HealthKind::Transaction, 3, 1)));
     }
 }

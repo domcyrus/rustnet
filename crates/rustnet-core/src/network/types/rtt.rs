@@ -41,7 +41,7 @@ struct PendingTable<K, V = SystemTime> {
     max_age: Duration,
 }
 
-impl<K: Eq + std::hash::Hash, V: PendingStamp> PendingTable<K, V> {
+impl<K: Eq + std::hash::Hash, V: PendingStamp + Copy> PendingTable<K, V> {
     fn new(cap: usize, max_age: Duration) -> Self {
         Self {
             map: HashMap::new(),
@@ -51,10 +51,12 @@ impl<K: Eq + std::hash::Hash, V: PendingStamp> PendingTable<K, V> {
     }
 
     /// Record a request, dropping new keys at the cap.
-    fn start(&mut self, key: K, value: V) {
-        if self.map.len() < self.cap || self.map.contains_key(&key) {
+    fn start(&mut self, key: K, value: V) -> bool {
+        let was_pending = self.map.contains_key(&key);
+        if self.map.len() < self.cap || was_pending {
             self.map.insert(key, value);
         }
+        was_pending
     }
 
     /// Take the pending entry a reply matches, if its request was tracked.
@@ -64,11 +66,19 @@ impl<K: Eq + std::hash::Hash, V: PendingStamp> PendingTable<K, V> {
 
     /// Drop entries older than `max_age` relative to the capture time of the
     /// packet being processed.
-    fn prune(&mut self, now: SystemTime) {
+    fn prune(&mut self, now: SystemTime) -> Vec<V> {
         let Some(cutoff) = now.checked_sub(self.max_age) else {
-            return;
+            return Vec::new();
         };
-        self.map.retain(|_, v| v.stamp() > cutoff);
+        let mut expired = Vec::new();
+        self.map.retain(|_, v| {
+            let keep = v.stamp() > cutoff;
+            if !keep {
+                expired.push(*v);
+            }
+            keep
+        });
+        expired
     }
 
     fn clear(&mut self) {
@@ -89,18 +99,29 @@ impl<K: Eq + std::hash::Hash> PendingTable<K, (SystemTime, ConnectionKey)> {
         is_request: bool,
         is_response: bool,
         at: SystemTime,
-    ) -> Option<(Duration, ConnectionKey)> {
-        self.prune(at);
+    ) -> (Option<(Duration, ConnectionKey)>, bool) {
         if is_outgoing && is_request {
-            self.start(pending_key, (at, connection_key));
-            return None;
+            let retried = self.start(pending_key, (at, connection_key));
+            return (None, retried);
         }
         if !is_outgoing && is_response {
-            let (sent_at, request_key) = self.complete(&pending_key)?;
-            return Some((at.duration_since(sent_at).unwrap_or_default(), request_key));
+            let Some((sent_at, request_key)) = self.complete(&pending_key) else {
+                return (None, false);
+            };
+            return (
+                Some((at.duration_since(sent_at).unwrap_or_default(), request_key)),
+                false,
+            );
         }
-        None
+        (None, false)
     }
+}
+
+/// Per-connection request health events collected while correlating packets.
+#[derive(Debug, Default)]
+pub(crate) struct RequestHealthEvents {
+    pub(crate) retries: Vec<ConnectionKey>,
+    pub(crate) timeouts: Vec<ConnectionKey>,
 }
 
 /// Correlation scope for protocols that use the DNS transaction ID.
@@ -146,10 +167,12 @@ pub struct RttTracker {
     pending_icmp_echoes: PendingTable<(ConnectionKey, u16, u16)>,
     /// Outbound STUN requests awaiting their response, keyed by connection
     /// and the 96-bit transaction ID.
-    pending_stun: PendingTable<(ConnectionKey, [u8; 12])>,
+    pending_stun: PendingTable<(ConnectionKey, [u8; 12]), (SystemTime, ConnectionKey)>,
     /// Outbound NTP client requests awaiting a server response, keyed by
     /// connection and the transmit timestamp the response echoes back.
-    pending_ntp: PendingTable<(ConnectionKey, u64)>,
+    pending_ntp: PendingTable<(ConnectionKey, u64), (SystemTime, ConnectionKey)>,
+    /// Health events waiting for the connection table to consume them.
+    request_health_events: RequestHealthEvents,
     /// Recent RTT measurements for aggregation: (timestamp, rtt_duration)
     recent_rtts: VecDeque<(Instant, Duration)>,
     /// Maximum number of recent RTTs to keep
@@ -176,6 +199,7 @@ impl RttTracker {
             pending_icmp_echoes: PendingTable::new(MAX_PENDING, max_request_age),
             pending_stun: PendingTable::new(MAX_PENDING, max_request_age),
             pending_ntp: PendingTable::new(MAX_PENDING, max_request_age),
+            request_health_events: RequestHealthEvents::default(),
             recent_rtts: VecDeque::new(),
             max_recent_rtts: 100,
         }
@@ -249,16 +273,20 @@ impl RttTracker {
         is_response: bool,
         at: SystemTime,
     ) -> Option<Duration> {
-        self.pending_dns
-            .record_exchange(
-                DnsTransactionKey::Unicast(key, txid),
-                key,
-                is_outgoing,
-                !is_response,
-                is_response,
-                at,
-            )
-            .map(|(rtt, _)| rtt)
+        let expired = self.pending_dns.prune(at);
+        self.note_request_timeouts(expired);
+        let (completed, retried) = self.pending_dns.record_exchange(
+            DnsTransactionKey::Unicast(key, txid),
+            key,
+            is_outgoing,
+            !is_response,
+            is_response,
+            at,
+        );
+        if retried {
+            self.request_health_events.retries.push(key);
+        }
+        completed.map(|(rtt, _)| rtt)
     }
 
     /// Record an LLMNR packet and return the first response time together with
@@ -276,14 +304,20 @@ impl RttTracker {
         is_outgoing: bool,
         at: SystemTime,
     ) -> Option<(Duration, ConnectionKey)> {
-        self.pending_dns.record_exchange(
+        let expired = self.pending_dns.prune(at);
+        self.note_request_timeouts(expired);
+        let (completed, retried) = self.pending_dns.record_exchange(
             DnsTransactionKey::Llmnr(key.local_addr, info.txid),
             key,
             is_outgoing,
             !info.is_response,
             info.is_response,
             at,
-        )
+        );
+        if retried {
+            self.request_health_events.retries.push(key);
+        }
+        completed
     }
 
     /// Record a NetBIOS packet and, when an incoming final response matches an
@@ -305,14 +339,20 @@ impl RttTracker {
         at: SystemTime,
     ) -> Option<(Duration, ConnectionKey)> {
         let pending_key = (key.local_addr, info.service, info.transaction_id);
-        self.pending_netbios.record_exchange(
+        let expired = self.pending_netbios.prune(at);
+        self.note_request_timeouts(expired);
+        let (completed, retried) = self.pending_netbios.record_exchange(
             pending_key,
             key,
             is_outgoing,
             info.is_request(),
             info.is_response,
             at,
-        )
+        );
+        if retried {
+            self.request_health_events.retries.push(key);
+        }
+        completed
     }
 
     /// Record an ICMP echo packet, returning the RTT when an incoming reply
@@ -365,15 +405,18 @@ impl RttTracker {
         class: StunMessageClass,
         at: SystemTime,
     ) -> Option<Duration> {
-        self.pending_stun.prune(at);
+        let expired = self.pending_stun.prune(at);
+        self.note_request_timeouts(expired);
         let pending_key = (key, transaction_id);
         match (is_outgoing, class) {
             (true, StunMessageClass::Request) => {
-                self.pending_stun.start(pending_key, at);
+                if self.pending_stun.start(pending_key, (at, key)) {
+                    self.request_health_events.retries.push(key);
+                }
                 None
             }
             (false, StunMessageClass::SuccessResponse | StunMessageClass::ErrorResponse) => {
-                let sent_at = self.pending_stun.complete(&pending_key)?;
+                let (sent_at, _) = self.pending_stun.complete(&pending_key)?;
                 Some(at.duration_since(sent_at).unwrap_or_default())
             }
             _ => None,
@@ -394,18 +437,50 @@ impl RttTracker {
         is_outgoing: bool,
         at: SystemTime,
     ) -> Option<Duration> {
-        self.pending_ntp.prune(at);
+        let expired = self.pending_ntp.prune(at);
+        self.note_request_timeouts(expired);
         match (is_outgoing, info.mode) {
             (true, NtpMode::Client) => {
-                self.pending_ntp.start((key, info.transmit_timestamp), at);
+                if self
+                    .pending_ntp
+                    .start((key, info.transmit_timestamp), (at, key))
+                {
+                    self.request_health_events.retries.push(key);
+                }
                 None
             }
             (false, NtpMode::Server) => {
-                let sent_at = self.pending_ntp.complete(&(key, info.origin_timestamp))?;
+                let (sent_at, _) = self.pending_ntp.complete(&(key, info.origin_timestamp))?;
                 Some(at.duration_since(sent_at).unwrap_or_default())
             }
             _ => None,
         }
+    }
+
+    fn note_request_timeouts(
+        &mut self,
+        expired: impl IntoIterator<Item = (SystemTime, ConnectionKey)>,
+    ) {
+        self.request_health_events
+            .timeouts
+            .extend(expired.into_iter().map(|(_, key)| key));
+    }
+
+    /// Expire all tracked request protocols and return their health events.
+    pub(crate) fn expire_requests(&mut self, now: SystemTime) -> RequestHealthEvents {
+        let dns = self.pending_dns.prune(now);
+        let netbios = self.pending_netbios.prune(now);
+        let stun = self.pending_stun.prune(now);
+        let ntp = self.pending_ntp.prune(now);
+        self.note_request_timeouts(dns);
+        self.note_request_timeouts(netbios);
+        self.note_request_timeouts(stun);
+        self.note_request_timeouts(ntp);
+        self.take_request_health_events()
+    }
+
+    pub(crate) fn take_request_health_events(&mut self) -> RequestHealthEvents {
+        std::mem::take(&mut self.request_health_events)
     }
 
     /// Record a completed data round trip (segment to covering ACK) measured
@@ -451,6 +526,7 @@ impl RttTracker {
         self.pending_icmp_echoes.clear();
         self.pending_stun.clear();
         self.pending_ntp.clear();
+        self.request_health_events = RequestHealthEvents::default();
         self.recent_rtts.clear();
     }
 }

@@ -48,7 +48,7 @@ use crate::network::neighbors::{NeighborCache, NeighborEntry};
 use crate::network::parser::ParsedPacket;
 use crate::network::types::{
     ApplicationProtocol, AttributionSource, Connection, ConnectionKey, Protocol, ProtocolState,
-    QuicPacketType, RttTracker,
+    QuicPacketType, RequestHealthEvents, RttTracker,
 };
 use dashmap::DashMap;
 use rustc_hash::FxBuildHasher;
@@ -282,6 +282,49 @@ fn apply_timings(conn: &mut Connection, timings: &PacketTimings) {
     }
 }
 
+/// Count explicit QUIC health signals and mark outgoing timed requests.
+fn apply_observed_protocol_health(conn: &mut Connection, parsed: &ParsedPacket) {
+    let Some(dpi) = parsed.dpi_result.as_ref() else {
+        return;
+    };
+    match &dpi.application {
+        ApplicationProtocol::Quic(quic) => match quic.packet_type {
+            QuicPacketType::Retry => {
+                conn.protocol_health.quic_retry_count =
+                    conn.protocol_health.quic_retry_count.saturating_add(1);
+            }
+            QuicPacketType::VersionNegotiation => {
+                conn.protocol_health.quic_version_negotiation_count = conn
+                    .protocol_health
+                    .quic_version_negotiation_count
+                    .saturating_add(1);
+            }
+            _ => {}
+        },
+        ApplicationProtocol::Dns(info) if parsed.is_outgoing && !info.is_response => {
+            conn.protocol_health.request_observed = true;
+        }
+        ApplicationProtocol::Llmnr(info) if parsed.is_outgoing && !info.is_response => {
+            conn.protocol_health.request_observed = true;
+        }
+        ApplicationProtocol::NetBios(info) if parsed.is_outgoing && info.is_request() => {
+            conn.protocol_health.request_observed = true;
+        }
+        ApplicationProtocol::Stun(info)
+            if parsed.is_outgoing
+                && info.message_class == crate::network::types::StunMessageClass::Request =>
+        {
+            conn.protocol_health.request_observed = true;
+        }
+        ApplicationProtocol::Ntp(info)
+            if parsed.is_outgoing && info.mode == crate::network::types::NtpMode::Client =>
+        {
+            conn.protocol_health.request_observed = true;
+        }
+        _ => {}
+    }
+}
+
 /// A live, lifecycle-managed table of network connections built from parsed
 /// packets. See the [module docs](self) for the intended usage.
 pub struct ConnectionTracker {
@@ -439,6 +482,7 @@ impl ConnectionTracker {
         let mut netbios_response_time: Option<Duration> = None;
         let mut stun_rtt: Option<Duration> = None;
         let mut ntp_rtt: Option<Duration> = None;
+        let mut request_health_events = RequestHealthEvents::default();
         let base_key = parsed.connection_key();
         if parsed.protocol == Protocol::Tcp
             && let Some(tcp_header) = &parsed.tcp_header
@@ -523,7 +567,10 @@ impl ConnectionTracker {
                 }
                 _ => {}
             }
+            request_health_events = tracker.take_request_health_events();
         }
+
+        self.apply_request_health_events(request_health_events);
 
         // ICMP echo requests reuse one identifier for the life of a ping
         // process, so sequence number is part of the key. That allows several
@@ -586,6 +633,21 @@ impl ConnectionTracker {
         }
     }
 
+    fn apply_request_health_events(&self, events: RequestHealthEvents) {
+        for key in events.retries {
+            if let Some(mut conn) = self.connections.get_mut(&key) {
+                conn.protocol_health.request_retry_count =
+                    conn.protocol_health.request_retry_count.saturating_add(1);
+            }
+        }
+        for key in events.timeouts {
+            if let Some(mut conn) = self.connections.get_mut(&key) {
+                conn.protocol_health.request_timeout_count =
+                    conn.protocol_health.request_timeout_count.saturating_add(1);
+            }
+        }
+    }
+
     fn ingest_into_active(
         &self,
         parsed: &ParsedPacket,
@@ -615,11 +677,13 @@ impl ConnectionTracker {
             .and_modify(|conn| {
                 deltas = merge_packet_into_connection(conn, parsed, now);
                 apply_timings(conn, &timings);
+                apply_observed_protocol_health(conn, parsed);
             })
             .or_insert_with(|| {
                 created = true;
                 let mut conn = create_connection_from_packet(parsed, now);
                 apply_timings(&mut conn, &timings);
+                apply_observed_protocol_health(&mut conn, parsed);
                 // Attribute a hostname (or enroll for a later DNS response)
                 // at creation. The cache only touches its own maps, so this
                 // is safe under the entry's shard lock.
@@ -885,6 +949,12 @@ impl ConnectionTracker {
             .lifecycle
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let request_health_events = self
+            .rtt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .expire_requests(now);
+        self.apply_request_health_events(request_health_events);
         let mut removed: Vec<Connection> = Vec::new();
         let mut removed_keys: Vec<ConnectionKey> = Vec::new();
         let mut to_archive: Vec<(HistoricKey, Connection)> = Vec::new();
@@ -1460,6 +1530,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn quic_retry_and_version_negotiation_packets_are_counted() {
+        let tracker = ConnectionTracker::new();
+        let retry = tracker.ingest_at(&quic_packet(QuicPacketType::Retry, false), capture_time(0));
+        tracker.ingest_at(
+            &quic_packet(QuicPacketType::VersionNegotiation, false),
+            capture_time(1),
+        );
+
+        let conn = tracker.connections().get(&retry.key).unwrap().clone();
+        assert_eq!(conn.protocol_health.quic_retry_count, 1);
+        assert_eq!(conn.protocol_health.quic_version_negotiation_count, 1);
+    }
+
     /// rustnet watches from an endpoint, so an arriving packet followed by this
     /// host's own answer spans no network at all — it times the local stack's
     /// turnaround. Only an outbound packet may start the clock.
@@ -1602,10 +1686,28 @@ mod tests {
     #[test]
     fn retransmitted_dns_query_measures_from_the_last_send() {
         let tracker = ConnectionTracker::new();
-        tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
+        let query = tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
         tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(1_000));
         let response = tracker.ingest_at(&dns_packet(0x1234, false, true, 0), capture_time(1_018));
         assert_eq!(response.dns_response_time, Some(Duration::from_millis(18)));
+
+        let conn = tracker.connections().get(&query.key).unwrap().clone();
+        assert!(conn.protocol_health.request_observed);
+        assert_eq!(conn.protocol_health.request_retry_count, 1);
+        assert_eq!(conn.protocol_health.request_timeout_count, 0);
+    }
+
+    #[test]
+    fn unanswered_dns_query_is_counted_as_a_timeout() {
+        let tracker = ConnectionTracker::new();
+        let query = tracker.ingest_at(&dns_packet(0x1234, true, false, 0), capture_time(0));
+
+        tracker.cleanup(capture_time(10_001));
+
+        let conn = tracker.connections().get(&query.key).unwrap().clone();
+        assert!(conn.protocol_health.request_observed);
+        assert_eq!(conn.protocol_health.request_retry_count, 0);
+        assert_eq!(conn.protocol_health.request_timeout_count, 1);
     }
 
     /// SERVFAIL is still an answer: the round trip completed, so it is a valid

@@ -4,9 +4,9 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
- Process                 Remote                    Local              Service    App                        State            RTT     Rx↓/Tx↑
+ Process                Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
                                                                                                                                             
-▌proc (4242)             203.0.113.7:4433          192.168.1.10:50000 -          UDP·NTP (v4 Server)        NTP                -         -/-
+▌proc (4242)            203.0.113.7:4433        192.168.1.10:50000 -          UDP·NTP (v4 Server)      NTP               - -             -/-
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
@@ -24,10 +24,10 @@ Service               -                                                         
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               NTP RTT               -                                              ▐
-Local MAC             -                                                                                                                    ▐
-Remote Hostname       -                                               Paired by originate timestamp echo                                   ▐
+Local MAC             -                                               Request Retries       -                                              ▐
+Remote Hostname       -                                               Request Timeouts      -                                              ▐
 Attributed Name       -                                                                                                                    ▐
-Attributed Via        -                                                                                                                    ▐
+Attributed Via        -                                               Paired by originate timestamp echo                                   ▐
 Remote MAC            -                                                                                                                     
 Country               -                                                                                                                     
 City                  -                                                                                                                     

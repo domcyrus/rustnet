@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Inline Connection Health**: connection rows now show compact TCP
+  retransmit/out-of-order, QUIC Retry/version, and transactional UDP
+  retry/timeout badges, with a severity-first Health sort
 - **Host Socket Inventory**: the new Host tab shows TCP LISTEN sockets, UDP
   BOUND endpoints, TCP state totals, observed RTT, process owners, and the
   detailed interface table on Linux, macOS, FreeBSD, and Windows

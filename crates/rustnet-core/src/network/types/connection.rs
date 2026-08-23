@@ -11,7 +11,9 @@ use super::identity::{
 use super::protocol_info::{
     ApplicationProtocol, DpiInfo, QuicConnectionState, QuicInfo, QuicPacketType,
 };
-use super::rates::{RateTracker, TERMINAL_ARCHIVE_GRACE, TcpAnalytics, smooth_rate};
+use super::rates::{
+    ProtocolHealth, RateTracker, TERMINAL_ARCHIVE_GRACE, TcpAnalytics, smooth_rate,
+};
 
 /// Distribution of connections by application protocol (from DPI)
 #[derive(Debug, Clone, Default)]
@@ -189,6 +191,9 @@ pub struct Connection {
     // TCP analytics (only for TCP connections)
     pub tcp_analytics: Option<TcpAnalytics>,
 
+    // Health signals observable without TCP sequence analysis.
+    pub protocol_health: ProtocolHealth,
+
     // Initial RTT measurement: TCP SYN/SYN-ACK timing, or the QUIC long-header
     // handshake exchange. Set once, from the first round trip observed.
     pub initial_rtt: Option<std::time::Duration>,
@@ -297,6 +302,7 @@ impl Connection {
             current_incoming_rate_bps: 0.0,
             current_outgoing_rate_bps: 0.0,
             tcp_analytics,
+            protocol_health: ProtocolHealth::default(),
             initial_rtt: None,
             dns_response_time: None,
             llmnr_response_time: None,
