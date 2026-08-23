@@ -21,7 +21,11 @@ fn main() -> Result<()> {
         let log_level = log_level_str
             .parse::<LevelFilter>()
             .map_err(|_| anyhow::anyhow!("Invalid log level: {}", log_level_str))?;
-        setup_logging(log_level)?;
+        // Diagnostic logging is a convenience; an unwritable or left-over
+        // root-owned logs/ directory should not abort the whole run.
+        if let Err(e) = setup_logging(log_level) {
+            eprintln!("Warning: diagnostic logging disabled: {e:#}");
+        }
     }
 
     // Check privileges BEFORE initializing TUI (so error messages are visible)
