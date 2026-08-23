@@ -654,13 +654,16 @@ fn health_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HealthKind {
+pub(in crate::ui) enum HealthKind {
     Tcp,
     Quic,
     Transaction,
 }
 
-fn health_counts(conn: &Connection) -> Option<(HealthKind, u64, u64)> {
+/// Classify a connection's gradable health signals: the badge kind plus its
+/// two counters in display order. Shared with the Health sort so the badge
+/// and the ordering can never disagree on which connections are graded.
+pub(in crate::ui) fn health_counts(conn: &Connection) -> Option<(HealthKind, u64, u64)> {
     if let Some(analytics) = conn.tcp_analytics.as_ref() {
         return Some((
             HealthKind::Tcp,

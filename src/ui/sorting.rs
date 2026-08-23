@@ -2,8 +2,9 @@
 //! function: no UI state, no I/O — just reorders the slice in
 //! place.
 
-use crate::network::types::{ApplicationProtocol, Connection, Protocol};
+use crate::network::types::Connection;
 use crate::ui::SortColumn;
+use crate::ui::connection_table::{HealthKind, health_counts};
 
 /// Sort `connections` in place by the chosen column. `ascending`
 /// flips the comparator's ordering after the column-specific cmp.
@@ -109,38 +110,13 @@ pub fn sort_connections(connections: &mut [Connection], sort_column: SortColumn,
 /// Rank observed health by severity first, then by total and severe events.
 /// A timeout or TCP retransmit stays above any number of warning-only signals.
 fn health_sort_key(connection: &Connection) -> (u8, u64, u64) {
-    let (severe, warning) = if let Some(analytics) = connection.tcp_analytics.as_ref() {
-        (analytics.retransmit_count, analytics.out_of_order_count)
-    } else {
-        let application = connection.dpi_info.as_ref().map(|dpi| &dpi.application);
-        if matches!(application, Some(ApplicationProtocol::Quic(_))) {
-            (
-                0,
-                connection
-                    .protocol_health
-                    .quic_retry_count
-                    .saturating_add(connection.protocol_health.quic_version_negotiation_count),
-            )
-        } else if connection.protocol == Protocol::Udp
-            && connection.protocol_health.request_observed
-            && matches!(
-                application,
-                Some(
-                    ApplicationProtocol::Dns(_)
-                        | ApplicationProtocol::Llmnr(_)
-                        | ApplicationProtocol::NetBios(_)
-                        | ApplicationProtocol::Stun(_)
-                        | ApplicationProtocol::Ntp(_)
-                )
-            )
-        {
-            (
-                connection.protocol_health.request_timeout_count,
-                connection.protocol_health.request_retry_count,
-            )
-        } else {
-            (0, 0)
+    let (severe, warning) = match health_counts(connection) {
+        Some((HealthKind::Tcp, retransmits, out_of_order)) => (retransmits, out_of_order),
+        Some((HealthKind::Quic, retries, version_negotiations)) => {
+            (0, retries.saturating_add(version_negotiations))
         }
+        Some((HealthKind::Transaction, retries, timeouts)) => (timeouts, retries),
+        None => (0, 0),
     };
     let severity = if severe > 0 {
         2
@@ -157,7 +133,7 @@ mod tests {
     use super::*;
     use crate::network::types::{
         ApplicationProtocol, DnsInfo, DnsQueryType, DpiInfo, Protocol, ProtocolState, QuicInfo,
-        TcpAnalytics, TcpState,
+        TcpState,
     };
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
@@ -254,16 +230,15 @@ mod tests {
         let mut connections = vec![healthy, out_of_order, retransmits];
         sort_connections(&mut connections, SortColumn::Health, false);
 
-        let health_counts: Vec<_> = connections
+        let event_counts: Vec<_> = connections
             .iter()
             .map(|connection| {
-                connection
-                    .tcp_analytics
-                    .as_ref()
-                    .map_or(0, TcpAnalytics::health_event_count)
+                connection.tcp_analytics.as_ref().map_or(0, |analytics| {
+                    analytics.retransmit_count + analytics.out_of_order_count
+                })
             })
             .collect();
-        assert_eq!(health_counts, [3, 2, 0]);
+        assert_eq!(event_counts, [3, 2, 0]);
     }
 
     #[test]

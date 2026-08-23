@@ -325,14 +325,6 @@ impl TcpAnalytics {
         (self.last_window_size as u64) << self.last_window_shift
     }
 
-    /// Combined connection-health event count.
-    /// Fast retransmits are excluded because they are a recovery mechanism
-    /// for retransmissions already represented by `retransmit_count`.
-    pub fn health_event_count(&self) -> u64 {
-        self.retransmit_count
-            .saturating_add(self.out_of_order_count)
-    }
-
     /// Shift applying to a non-SYN segment sent in the given direction:
     /// the sender's own advertised shift, but only when both sides offered
     /// the option (RFC 7323) and neither SYN explicitly lacked it.
@@ -375,18 +367,6 @@ pub struct ProtocolHealth {
     pub request_observed: bool,
 }
 
-impl ProtocolHealth {
-    pub fn quic_event_count(&self) -> u64 {
-        self.quic_retry_count
-            .saturating_add(self.quic_version_negotiation_count)
-    }
-
-    pub fn request_event_count(&self) -> u64 {
-        self.request_retry_count
-            .saturating_add(self.request_timeout_count)
-    }
-}
-
 // Rate-smoothing constants — tune these to control how quickly displayed
 // rates react to traffic changes.
 /// Multiplier when traffic stops entirely: prev * DECAY_FAST each refresh.
@@ -426,31 +406,6 @@ pub(super) fn smooth_rate(raw: f64, prev: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn health_event_count_combines_only_primary_issue_counters() {
-        let mut analytics = TcpAnalytics::new();
-        analytics.retransmit_count = 3;
-        analytics.out_of_order_count = 2;
-        analytics.fast_retransmit_count = 4;
-        assert_eq!(analytics.health_event_count(), 5);
-
-        analytics.retransmit_count = u64::MAX;
-        assert_eq!(analytics.health_event_count(), u64::MAX);
-    }
-
-    #[test]
-    fn protocol_health_totals_saturate() {
-        let health = ProtocolHealth {
-            quic_retry_count: u64::MAX,
-            quic_version_negotiation_count: 1,
-            request_retry_count: u64::MAX,
-            request_timeout_count: 1,
-            request_observed: true,
-        };
-        assert_eq!(health.quic_event_count(), u64::MAX);
-        assert_eq!(health.request_event_count(), u64::MAX);
-    }
 
     #[test]
     fn test_rate_tracker_initialization() {

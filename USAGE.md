@@ -775,7 +775,9 @@ column. The badge adapts to the protocol:
 - `R3/O1` for TCP means three retransmits and one out-of-order packet.
 - `R1/V0` for QUIC means one explicit Retry and no Version Negotiation packet.
 - `R2/T1` for outgoing DNS, LLMNR, NetBIOS, STUN, or NTP transactions means
-  two repeated request IDs and one request that expired unanswered.
+  two repeated request IDs and one request that expired unanswered. NTP polls
+  carry a fresh transmit timestamp each time, so NTP surfaces timeouts rather
+  than retries.
 
 Clean, gradable connections show `ok`. Generic UDP, unsupported protocols, and
 transaction rows where no outgoing request was observed show `-`. Double-digit
