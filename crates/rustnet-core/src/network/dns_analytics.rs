@@ -427,7 +427,7 @@ mod tests {
             is_response,
             txid,
             rcode,
-            nodata: Some(false).filter(|_| is_response && rcode == Some(0)),
+            nodata: (is_response && rcode == Some(0)).then_some(false),
         }
     }
 
