@@ -13,9 +13,31 @@ fn main() -> Result<()> {
     #[cfg(target_os = "windows")]
     download_windows_npcap_sdk()?;
 
+    embed_windows_manifest();
+
     println!("cargo:rerun-if-changed=src/cli.rs");
 
     Ok(())
+}
+
+/// Embed the UTF-8 active-code-page application manifest on MSVC Windows
+/// targets, the only Windows toolchain releases ship. Two plain linker
+/// flags, no build dependency; see the manifest file for why it exists.
+/// The GNU toolchain would need a compiled resource object instead and is
+/// deliberately left as-is (no manifest, today's behavior).
+fn embed_windows_manifest() {
+    let target = env::var("TARGET").unwrap_or_default();
+    if !target.contains("windows-msvc") {
+        return;
+    }
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default())
+        .join("resources/packaging/windows/rustnet.exe.manifest");
+    println!("cargo:rerun-if-changed={}", manifest.display());
+    println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg-bins=/MANIFESTINPUT:{}",
+        manifest.display()
+    );
 }
 
 include!("src/cli.rs");
