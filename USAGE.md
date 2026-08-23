@@ -137,6 +137,11 @@ rustnet -i eth0          # Monitor Ethernet interface
 rustnet -i wlan0         # Monitor WiFi interface
 rustnet -i en0           # Monitor macOS primary interface
 
+# Windows: use the adapter's friendly name; it is resolved to the
+# \Device\NPF_{GUID} device automatically
+rustnet -i Ethernet
+rustnet -i "Wi-Fi"
+
 # Monitor VPN and tunnel interfaces (TUN/TAP support)
 rustnet -i utun0         # macOS VPN tunnel (TUN, Layer 3)
 rustnet -i tun0          # Linux/BSD VPN tunnel (TUN, Layer 3)

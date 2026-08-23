@@ -356,6 +356,56 @@ pub fn validate_interface(interface_name: &Option<String>) -> Result<()> {
     Ok(())
 }
 
+/// Resolve a Windows interface alias ("Ethernet", "Wi-Fi") to the
+/// `\Device\NPF_{GUID}` name Npcap registers the adapter under, via the
+/// interface table's Alias and InterfaceGuid columns. `None` when no
+/// interface carries that alias.
+#[cfg(windows)]
+fn windows_alias_to_npf_name(alias: &str) -> Option<String> {
+    use windows::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
+
+    let alias_lower = alias.to_lowercase();
+    // SAFETY: GetIfTable2 allocates the table, which is freed with
+    // FreeMibTable on every path; rows are only read within NumEntries.
+    unsafe {
+        let mut table: *mut MIB_IF_TABLE2 = std::ptr::null_mut();
+        if GetIfTable2(&mut table).is_err() {
+            return None;
+        }
+        let table_ref = table.as_ref()?;
+
+        let mut guid = None;
+        for i in 0..table_ref.NumEntries as usize {
+            let row = &*table_ref.Table.as_ptr().add(i);
+            let row_alias = String::from_utf16_lossy(&row.Alias)
+                .trim_end_matches('\0')
+                .to_lowercase();
+            if row_alias == alias_lower {
+                guid = Some(row.InterfaceGuid);
+                break;
+            }
+        }
+        FreeMibTable(table as *const _);
+
+        guid.map(|g| {
+            format!(
+                "\\Device\\NPF_{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+                g.data1,
+                g.data2,
+                g.data3,
+                g.data4[0],
+                g.data4[1],
+                g.data4[2],
+                g.data4[3],
+                g.data4[4],
+                g.data4[5],
+                g.data4[6],
+                g.data4[7],
+            )
+        })
+    }
+}
+
 /// Find a capture device by name or return the default
 fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
     match interface_name {
@@ -393,8 +443,27 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                 return Ok(device.clone());
             }
 
-            // List available interfaces for error message
-            let available: Vec<String> = devices.iter().map(|d| d.name.clone()).collect();
+            // Windows: pcap device names are `\Device\NPF_{GUID}`, which
+            // nobody types. Resolve a friendly alias ("Ethernet", "Wi-Fi")
+            // to its adapter GUID and retry against the NPF name.
+            #[cfg(windows)]
+            if let Some(npf_name) = windows_alias_to_npf_name(name) {
+                let npf_lower = npf_name.to_lowercase();
+                if let Some(device) = devices.iter().find(|d| d.name.to_lowercase() == npf_lower) {
+                    log::info!("Resolved interface alias '{}' to '{}'", name, device.name);
+                    return Ok(device.clone());
+                }
+            }
+
+            // List available interfaces for the error message, with the
+            // human-readable description where the backend provides one.
+            let available: Vec<String> = devices
+                .iter()
+                .map(|d| match &d.desc {
+                    Some(desc) => format!("{} ({})", d.name, desc),
+                    None => d.name.clone(),
+                })
+                .collect();
 
             Err(anyhow!(
                 "Interface '{}' not found. Available interfaces: {}",
