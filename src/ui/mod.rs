@@ -1432,7 +1432,7 @@ mod snapshot_tests {
     fn overview_system_panel_expands_security_when_space_returns() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &UIState::default(), &connections, None, 140, 35);
+        let output = render_app(&app, &UIState::default(), &connections, None, 140, 36);
 
         assert!(!output.contains("Security (compact)"));
         assert!(output.contains("No restrictions active"));
