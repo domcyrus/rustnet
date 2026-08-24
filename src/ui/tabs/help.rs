@@ -251,16 +251,20 @@ const ACTIVITY_CONCEPTS: &[HelpRow] = &[
     ),
 ];
 
-const HOST_SOCKET_KEYS: &[HelpRow] = &[
+/// Keyboard scrolling shared by every Host pane; listed only while the
+/// pane's content has actually outgrown its viewport.
+const PANE_SCROLL_KEYS: &[HelpRow] = &[
     ("↑/k, ↓/j", "Scroll one line"),
     ("Page Up/Down", "Scroll one page"),
     ("Ctrl+B/F", "Scroll one page"),
     ("g, G", "Jump to the top or bottom"),
+];
+
+const HOST_SOCKET_KEYS: &[HelpRow] = &[
     ("←/→", "Switch Host view"),
     ("i", "Show interface details"),
     ("d", "Show DNS analytics"),
     ("Esc", "Return to Overview"),
-    ("Scroll wheel", "Scroll the endpoint table"),
 ];
 
 const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
@@ -277,28 +281,18 @@ const HOST_SOCKET_CONCEPTS: &[HelpRow] = &[
 ];
 
 const INTERFACE_KEYS: &[HelpRow] = &[
-    ("↑/k, ↓/j", "Scroll one line"),
-    ("Page Up/Down", "Scroll one page"),
-    ("Ctrl+B/F", "Scroll one page"),
-    ("g, G", "Jump to the top or bottom"),
     ("←/→", "Switch Host view"),
     ("s", "Show the socket inventory"),
     ("d", "Show DNS analytics"),
     ("Esc", "Return to Overview"),
-    ("Scroll wheel", "Scroll interface details"),
 ];
 
 const DNS_KEYS: &[HelpRow] = &[
-    ("↑/k, ↓/j", "Scroll one line"),
-    ("Page Up/Down", "Scroll one page"),
-    ("Ctrl+B/F", "Scroll one page"),
-    ("g, G", "Jump to the top or bottom"),
     ("o", "Cycle question sort metric"),
     ("←/→", "Switch Host view"),
     ("s", "Show the socket inventory"),
     ("i", "Show interface details"),
     ("Esc", "Return to Overview"),
-    ("Scroll wheel", "Scroll question names"),
 ];
 
 const DNS_CONCEPTS: &[HelpRow] = &[
@@ -358,7 +352,25 @@ fn column_row(key: &str, description: &'static str, width: usize) -> Line<'stati
     ])
 }
 
-fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &'static [HelpRow]) {
+/// Action rows for one Host pane: scrolling keys and the wheel row appear
+/// only while the pane really scrolls, mirroring the status-bar hints.
+fn host_pane_rows(
+    actions: &[HelpRow],
+    can_scroll: bool,
+    wheel_description: &'static str,
+) -> Vec<HelpRow> {
+    let mut rows = Vec::new();
+    if can_scroll {
+        rows.extend_from_slice(PANE_SCROLL_KEYS);
+    }
+    rows.extend_from_slice(actions);
+    if can_scroll {
+        rows.push(("Scroll wheel", wheel_description));
+    }
+    rows
+}
+
+fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &[HelpRow]) {
     out.push(Line::from(""));
     out.push(tick_line(title));
     let width = key_column_width(rows);
@@ -368,7 +380,7 @@ fn push_section(out: &mut Vec<Line<'static>>, title: &'static str, rows: &'stati
     );
 }
 
-fn help_lines(context: HelpContext) -> Vec<Line<'static>> {
+fn help_lines(context: HelpContext, ui_state: &UIState) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(Span::styled(
         context.summary(),
         theme::key_hint_label(),
@@ -394,14 +406,29 @@ fn help_lines(context: HelpContext) -> Vec<Line<'static>> {
             push_section(&mut lines, "Graph", GRAPH_KEYS);
         }
         HelpContext::HostSockets => {
-            push_section(&mut lines, "Socket Actions", HOST_SOCKET_KEYS);
+            let rows = host_pane_rows(
+                HOST_SOCKET_KEYS,
+                ui_state.host_sockets_scroll.can_scroll(),
+                "Scroll the endpoint table",
+            );
+            push_section(&mut lines, "Socket Actions", &rows);
             push_section(&mut lines, "Socket Concepts", HOST_SOCKET_CONCEPTS);
         }
         HelpContext::HostInterfaces => {
-            push_section(&mut lines, "Interface Actions", INTERFACE_KEYS);
+            let rows = host_pane_rows(
+                INTERFACE_KEYS,
+                ui_state.interfaces_scroll.can_scroll(),
+                "Scroll interface details",
+            );
+            push_section(&mut lines, "Interface Actions", &rows);
         }
         HelpContext::HostDns => {
-            push_section(&mut lines, "DNS Actions", DNS_KEYS);
+            let rows = host_pane_rows(
+                DNS_KEYS,
+                ui_state.dns_questions_scroll.can_scroll(),
+                "Scroll question names",
+            );
+            push_section(&mut lines, "DNS Actions", &rows);
             push_section(&mut lines, "DNS Concepts", DNS_CONCEPTS);
         }
     }
@@ -445,7 +472,7 @@ pub(in crate::ui) fn draw_help_overlay(
         return Ok(());
     }
     let context = HelpContext::from_state(ui_state);
-    let mut lines = help_lines(context);
+    let mut lines = help_lines(context, ui_state);
     let total_lines = lines.len();
 
     let width = overlay_width(area);
@@ -516,12 +543,29 @@ mod tests {
     use crate::app::{App, Config};
 
     fn plain_text(ui_state: &UIState) -> String {
-        help_lines(HelpContext::from_state(ui_state))
+        help_lines(HelpContext::from_state(ui_state), ui_state)
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn host_help_lists_scroll_keys_only_when_the_pane_scrolls() {
+        let state = UIState {
+            selected_tab: 4,
+            ..UIState::default()
+        };
+        let fits = plain_text(&state);
+        assert!(!fits.contains("Scroll one line"));
+        assert!(!fits.contains("Scroll wheel"));
+        assert!(fits.contains("Show interface details"));
+
+        state.host_sockets_scroll.clamp_for_render(3);
+        let outgrown = plain_text(&state);
+        assert!(outgrown.contains("Scroll one line"));
+        assert!(outgrown.contains("Scroll the endpoint table"));
     }
 
     #[test]
