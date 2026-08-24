@@ -1,5 +1,6 @@
 ---
 source: src/ui/mod.rs
+assertion_line: 703
 expression: output
 ---
                                                                                                     
@@ -22,7 +23,7 @@ expression: output
     │   c       Copy the selected remote address                                             ▐ │    
     │   p       Toggle service names and port numbers                                        ▐ │    
     │   d       Toggle hostnames and IP addresses                                            ▐ │    
-    │   s, S    Change sort column or direction                                              ▐ │    
+    │   s, S    Change sort column or direction                                                │    
     │   a       Toggle process grouping                                                        │    
     │   Space   Expand or collapse the selected group                                          │    
     │   ←/→, l  Collapse or expand the selected group                                          │    
@@ -36,5 +37,5 @@ expression: output
     │   Gray           Historic closed connection                                              │    
     │   ~name          Hostname inferred from an observed DNS response                         │    
     │   App column     Application protocol, SNI, or HTTP Host                                 │    
-    │                                                                                          │    
+    │   R3/O1          Health for TCP: retransmits and out-of-order packets                    │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯

@@ -200,6 +200,17 @@ const OVERVIEW_DISPLAY: &[HelpRow] = &[
     ("Gray", "Historic closed connection"),
     ("~name", "Hostname inferred from an observed DNS response"),
     ("App column", "Application protocol, SNI, or HTTP Host"),
+    (
+        "R3/O1",
+        "Health for TCP: retransmits and out-of-order packets",
+    ),
+    (
+        "R1/V0",
+        "Health for QUIC: Retry and Version Negotiation packets",
+    ),
+    ("R2/T1", "Health for UDP requests: retries and timeouts"),
+    ("ok, -", "Healthy connection, or an ungraded protocol"),
+    ("R+", "Counts of 10 or more; Details has the exact numbers"),
 ];
 
 const DETAILS_KEYS: &[HelpRow] = &[
