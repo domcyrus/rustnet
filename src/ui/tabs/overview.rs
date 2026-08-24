@@ -1282,18 +1282,27 @@ fn mini_wave(
     // in this compact graph so advancing the ring translates existing crests
     // instead of resampling them against shifting fractional boundaries.
     let visible_window = mini_wave_window(width, window);
-    let ceiling = capacity_bytes_per_sec
-        .filter(|capacity| *capacity > 0.0)
-        .unwrap_or_else(|| mini_wave_ceiling(samples, visible_window));
-    braille_graph::render(
-        samples,
-        width as usize,
-        1,
-        ceiling,
-        frac,
-        visible_window,
-        |intensity| wave(MINI_WAVE_INTENSITY * intensity),
-    )
+    if let Some(capacity) = capacity_bytes_per_sec.filter(|capacity| *capacity > 0.0) {
+        braille_graph::render_capacity(
+            samples,
+            width as usize,
+            1,
+            capacity,
+            frac,
+            visible_window,
+            |intensity| wave(MINI_WAVE_INTENSITY * intensity),
+        )
+    } else {
+        braille_graph::render(
+            samples,
+            width as usize,
+            1,
+            mini_wave_ceiling(samples, visible_window),
+            frac,
+            visible_window,
+            |intensity| wave(MINI_WAVE_INTENSITY * intensity),
+        )
+    }
 }
 
 struct MiniWaveOptions {

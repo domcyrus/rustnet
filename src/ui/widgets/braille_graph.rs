@@ -82,6 +82,34 @@ fn ease_out_quad(t: f64) -> f64 {
     t * (2.0 - t)
 }
 
+/// Vertical normalization for a wave. Observed peaks use the historical
+/// easing curve. Link capacity uses a stronger, fixed fourth-root curve so
+/// low utilization stays visible without changing the ceiling.
+#[derive(Debug, Clone, Copy)]
+enum WaveScale {
+    ObservedPeak(f64),
+    LinkCapacity(f64),
+}
+
+impl WaveScale {
+    fn height_ratio(self, value: f64) -> f64 {
+        let (maximum, capacity_scaled) = match self {
+            Self::ObservedPeak(maximum) => (maximum, false),
+            Self::LinkCapacity(maximum) => (maximum, true),
+        };
+        if maximum <= 0.0 {
+            return 0.0;
+        }
+
+        let ratio = (value / maximum).clamp(0.0, 1.0);
+        if capacity_scaled {
+            ratio.sqrt().sqrt()
+        } else {
+            ease_out_quad(ratio)
+        }
+    }
+}
+
 /// Value at fractional position `pos` (in sample units), linearly
 /// interpolated between neighbors.
 fn sample_at(samples: &[u64], pos: f64) -> f64 {
@@ -117,7 +145,7 @@ fn smooth_columns(cols: &[f64]) -> Vec<f64> {
 }
 
 /// Render `samples` (oldest→newest) as a filled braille wave of
-/// `width`×`height` cells, normalized against `max_val`.
+/// `width`×`height` cells, normalized against an observed peak.
 ///
 /// `window` is the number of samples the panel spans horizontally
 /// (the history buffer's capacity, not the current sample count).
@@ -138,6 +166,48 @@ pub(in crate::ui) fn render(
     width: usize,
     height: usize,
     max_val: f64,
+    frac: f64,
+    window: usize,
+    row_color: impl Fn(f64) -> ratatui::style::Color,
+) -> Vec<Line<'static>> {
+    render_with_scale(
+        samples,
+        width,
+        height,
+        WaveScale::ObservedPeak(max_val),
+        frac,
+        window,
+        row_color,
+    )
+}
+
+/// Render against a fixed link capacity using a curve that preserves detail
+/// at low utilization.
+pub(in crate::ui) fn render_capacity(
+    samples: &[u64],
+    width: usize,
+    height: usize,
+    capacity: f64,
+    frac: f64,
+    window: usize,
+    row_color: impl Fn(f64) -> ratatui::style::Color,
+) -> Vec<Line<'static>> {
+    render_with_scale(
+        samples,
+        width,
+        height,
+        WaveScale::LinkCapacity(capacity),
+        frac,
+        window,
+        row_color,
+    )
+}
+
+fn render_with_scale(
+    samples: &[u64],
+    width: usize,
+    height: usize,
+    scale: WaveScale,
     frac: f64,
     window: usize,
     row_color: impl Fn(f64) -> ratatui::style::Color,
@@ -178,11 +248,7 @@ pub(in crate::ui) fn render(
     // Fill each dot column bottom-up to its eased height.
     let mut grid = vec![vec![0u8; width]; height];
     for (x, col) in cols.iter().enumerate() {
-        let ratio = if max_val > 0.0 {
-            ease_out_quad((col / max_val).clamp(0.0, 1.0))
-        } else {
-            0.0
-        };
+        let ratio = scale.height_ratio(*col);
         let h_dots = ratio * dots_y as f64;
         for y_dot in 0..dots_y {
             if (y_dot as f64) < h_dots {
@@ -238,6 +304,10 @@ fn format_utilization(bytes_per_second: f64, capacity_bps: u64) -> String {
     let percent = bytes_per_second * 8.0 * 100.0 / capacity_bps as f64;
     if percent > 100.0 {
         ">100%".to_string()
+    } else if percent > 0.0 && percent < 0.01 {
+        "<0.01%".to_string()
+    } else if percent < 1.0 {
+        format!("{percent:.2}%")
     } else {
         format!("{percent:.1}%")
     }
@@ -245,9 +315,9 @@ fn format_utilization(bytes_per_second: f64, capacity_bps: u64) -> String {
 
 /// One rate direction as a complete panel: a header line (label, the
 /// current rate, a trend arrow, and the window peak), an optional summary
-/// line, then a gradient braille wave. The wave is normalized to the window
-/// peak, while row colors stay anchored to vertical height so rate changes do
-/// not recolor the entire history.
+/// line, then a gradient braille wave. The wave uses the observed peak or a
+/// fixed capacity-relative curve, while row colors stay anchored to vertical
+/// height so rate changes do not recolor the entire history.
 pub(in crate::ui) fn wave_panel(
     f: &mut Frame,
     area: Rect,
@@ -318,15 +388,27 @@ pub(in crate::ui) fn wave_panel(
         area.width,
         area.height.saturating_sub(1 + summary_height),
     );
-    let lines = render(
-        samples,
-        graph_area.width as usize,
-        graph_area.height as usize,
-        max_val,
-        options.frac,
-        options.window,
-        wave,
-    );
+    let lines = if let Some(capacity) = options.capacity_bps {
+        render_capacity(
+            samples,
+            graph_area.width as usize,
+            graph_area.height as usize,
+            capacity as f64 / 8.0,
+            options.frac,
+            options.window,
+            wave,
+        )
+    } else {
+        render(
+            samples,
+            graph_area.width as usize,
+            graph_area.height as usize,
+            max_val,
+            options.frac,
+            options.window,
+            wave,
+        )
+    };
     f.render_widget(Paragraph::new(lines), graph_area);
 }
 
@@ -472,5 +554,36 @@ mod tests {
     fn utilization_marks_saturated_samples() {
         assert_eq!(format_utilization(62_500_000.0, 1_000_000_000), "50.0%");
         assert_eq!(format_utilization(125_000_001.0, 1_000_000_000), ">100%");
+        assert_eq!(format_utilization(1_000.0, 1_000_000_000), "<0.01%");
+        assert_eq!(format_utilization(625_000.0, 1_000_000_000), "0.50%");
+    }
+
+    #[test]
+    fn capacity_scale_keeps_low_utilization_visible() {
+        let observed = WaveScale::ObservedPeak(100.0).height_ratio(0.4);
+        let capacity = WaveScale::LinkCapacity(100.0).height_ratio(0.4);
+
+        assert!(observed < 0.01);
+        assert!((0.24..0.27).contains(&capacity));
+        assert_eq!(WaveScale::LinkCapacity(100.0).height_ratio(100.0), 1.0);
+    }
+
+    #[test]
+    fn capacity_scaled_wave_renders_sub_percent_traffic() {
+        let samples = vec![4; 30];
+        let lines = render_capacity(&samples, 10, 10, 1_000.0, 0.0, 30, |_| {
+            ratatui::style::Color::Reset
+        });
+        let occupied_rows = lines
+            .iter()
+            .filter(|line| {
+                line.spans
+                    .iter()
+                    .flat_map(|span| span.content.chars())
+                    .any(|cell| cell != '\u{2800}')
+            })
+            .count();
+
+        assert!(occupied_rows >= 3, "got {occupied_rows} occupied rows");
     }
 }
