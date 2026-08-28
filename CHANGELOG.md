@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Inline Connection Health**: connection rows now show compact TCP
   retransmit/out-of-order, QUIC Retry/version, and transactional UDP
-  retry/timeout badges, with a severity-first Health sort (#583)
+  retry/timeout badges, with a severity-first Health sort. The Details
+  Transport Health card marks the counters behind the badge with their
+  letters, e.g. `TCP Retransmits (R)` and `Out-of-Order (O)` (#583)
 - **VPN Traffic Detection**: identify WireGuard and OpenVPN connections through
   packet signatures, including OpenVPN over UDP and TCP (#581)
 - **Host Socket Inventory**: the new Host tab shows TCP LISTEN sockets, UDP

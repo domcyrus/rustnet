@@ -25,8 +25,8 @@ Service               https                                                     
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               Initial RTT           -                                              ▐
 Local MAC             68:5e:dd:09:15:5e (Apple, Inc.)                 Live RTT              -                                              ▐
-Remote Hostname       -                                               TCP Retransmits       0                                              ▐
-Attributed Name       -                                               Out-of-Order Packets  0                                              ▐
+Remote Hostname       -                                               TCP Retransmits (R)   0                                              ▐
+Attributed Name       -                                               Out-of-Order (O)      0                                              ▐
 Attributed Via        -                                               Duplicate ACKs        0                                              ▐
 Remote MAC            -                                               Fast Retransmits      0                                               
 Country               -                                               Window Size           0                                               

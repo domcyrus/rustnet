@@ -25,8 +25,8 @@ Service               -                                                         
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               DNS Response Time     -                                              ▐
 Local MAC             -                                               Last Response Code    NOERROR                                        ▐
-Remote Hostname       -                                               Request Retries       -                                              ▐
-Attributed Name       -                                               Request Timeouts      -                                              ▐
+Remote Hostname       -                                               Request Retries (R)   -                                              ▐
+Attributed Name       -                                               Request Timeouts (T)  -                                              ▐
 Attributed Via        -                                                                                                                    ▐
 Remote MAC            -                                               Timed by pairing query and response IDs                               
 Country               -                                                                                                                     

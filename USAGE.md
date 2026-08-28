@@ -781,7 +781,10 @@ column. The badge adapts to the protocol:
 
 Clean, gradable connections show `ok`. Generic UDP, unsupported protocols, and
 transaction rows where no outgoing request was observed show `-`. Double-digit
-counts are displayed as `+`, while Details retains the exact counters. Health
+counts are displayed as `+`, while Details retains the exact counters. The
+Details Transport Health card marks the two counters behind the badge with
+their letters (`TCP Retransmits (R)`, `Out-of-Order (O)`), so the compact badge
+maps back to exact numbers. Health
 sorting is severity-first: TCP retransmits and request timeouts rank above
 warning-only out-of-order, retry, and version events, then higher counts rank
 first.

@@ -43,8 +43,8 @@ use crate::ui::{
 };
 
 /// Padded width for detail labels so values line up vertically.
-/// Sized for the longest expected label ("Out-of-Order Packets" = 20 chars)
-/// plus 2 chars of breathing room before the value column.
+/// Sized for the longest expected label ("Ver. Negotiations (V)" = 21 chars)
+/// plus breathing room before the value column.
 pub(in crate::ui) const DETAIL_LABEL_WIDTH: usize = 22;
 
 /// Below this terminal width the Details info panes collapse back to a
@@ -263,11 +263,11 @@ fn request_health_fields(details: &mut DetailsBuilder<'_>, conn: &Connection) {
         }
     };
     details.field(
-        "Request Retries",
+        "Request Retries (R)",
         display(conn.protocol_health.request_retry_count),
     );
     details.field(
-        "Request Timeouts",
+        "Request Timeouts (T)",
         display(conn.protocol_health.request_timeout_count),
     );
 }
@@ -1757,11 +1757,11 @@ pub(in crate::ui) fn draw_connection_details(
     }
     if let Some(quic) = quic_info {
         details.field(
-            "QUIC Retry Packets",
+            "Retry Packets (R)",
             conn.protocol_health.quic_retry_count.to_string(),
         );
         details.field(
-            "Version Negotiations",
+            "Ver. Negotiations (V)",
             conn.protocol_health
                 .quic_version_negotiation_count
                 .to_string(),
@@ -1789,11 +1789,8 @@ pub(in crate::ui) fn draw_connection_details(
         // life of the connection (unlike the one-shot handshake RTT above).
         details.rtt_field("Live RTT", counters.and_then(|a| a.smoothed_rtt));
         for (label, value) in [
-            ("TCP Retransmits", counters.map(|a| a.retransmit_count)),
-            (
-                "Out-of-Order Packets",
-                counters.map(|a| a.out_of_order_count),
-            ),
+            ("TCP Retransmits (R)", counters.map(|a| a.retransmit_count)),
+            ("Out-of-Order (O)", counters.map(|a| a.out_of_order_count)),
             ("Duplicate ACKs", counters.map(|a| a.duplicate_ack_count)),
             (
                 "Fast Retransmits",

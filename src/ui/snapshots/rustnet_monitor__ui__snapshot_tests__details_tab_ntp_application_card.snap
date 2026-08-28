@@ -24,8 +24,8 @@ Service               -                                                         
                                                                                                                                            ▐
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               NTP RTT               -                                              ▐
-Local MAC             -                                               Request Retries       -                                              ▐
-Remote Hostname       -                                               Request Timeouts      -                                              ▐
+Local MAC             -                                               Request Retries (R)   -                                              ▐
+Remote Hostname       -                                               Request Timeouts (T)  -                                              ▐
 Attributed Name       -                                                                                                                    ▐
 Attributed Via        -                                               Paired by originate timestamp echo                                   ▐
 Remote MAC            -                                                                                                                     

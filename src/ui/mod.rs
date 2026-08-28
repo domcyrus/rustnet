@@ -1548,7 +1548,7 @@ mod snapshot_tests {
 
         for tcp_only in [
             "TCP Retransmits",
-            "Out-of-Order Packets",
+            "Out-of-Order (O)",
             "Duplicate ACKs",
             "Fast Retransmits",
             "Window Size",
@@ -1564,8 +1564,8 @@ mod snapshot_tests {
         );
         assert!(output.contains("Idle Timeout") && output.contains("30s"));
         assert!(output.contains("Connection Close") && output.contains("application 0x100"));
-        assert!(output.contains("QUIC Retry Packets") && output.contains('2'));
-        assert!(output.contains("Version Negotiations") && output.contains('1'));
+        assert!(output.contains("Retry Packets (R)") && output.contains('2'));
+        assert!(output.contains("Ver. Negotiations (V)") && output.contains('1'));
         assert!(
             output.contains("1-RTT loss counters are encrypted in QUIC"),
             "the card should say why the loss counters are absent"
