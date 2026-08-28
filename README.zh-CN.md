@@ -32,7 +32,7 @@
 - **深度包检测**：无需外部解析器即可识别 HTTP、带 SNI 的 HTTPS/TLS、DNS、SSH、FTP、QUIC、MQTT、BitTorrent、WireGuard、OpenVPN、STUN、NTP、mDNS、LLMNR、DHCP、SNMP、SSDP 及 NetBIOS。
 - **带注释的 PCAPNG 导出**：`--pcapng-export` 可写出能直接用 Wireshark 打开的捕获文件，并将进程、PID、方向、DPI/SNI 和 GeoIP 作为逐包注释嵌入。每个数据包都会直接标明所属进程，无需后处理。也可使用经典的 `--pcap-export` 配合 JSONL sidecar 进行离线关联。
 - **安全沙箱**：Linux 5.13+ 使用 Landlock，macOS 使用 Seatbelt，Windows 通过 token 降权 + job-object 阻止子进程创建。libpcap 初始化完成后立即丢弃特权。详见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
-- **网络分析**：实时统计 TCP、QUIC 握手、DNS 响应及 ICMP 回显的往返时延，并检测 TCP 重传、乱序包和快重传。
+- **网络分析**：实时统计 TCP、QUIC 握手、DNS 响应及 ICMP 回显的往返时延，并检测 TCP 重传、乱序包和快重传。概览表格通过按协议显示的健康徽标，呈现 TCP 问题、明确可见的 QUIC Retry/版本协商事件，以及事务型 UDP 的重试/超时，并按严重程度排序。
 - **智能连接生命周期**：按协议设置超时，以白 → 黄 → 红的颜色指示过期程度。按 `t` 可保留历史（已关闭）连接以便事后追溯。
 - **Vim / fzf 风格过滤**：支持 `port:`、`src:`、`dst:`、`sni:`、`process:`、`state:`、`proto:`，以及 `/(?i)pattern/` 形式的正则。
 - **GeoIP 增强**：基于本地 MaxMind GeoLite2 数据库查询国家信息，不发起任何网络请求。

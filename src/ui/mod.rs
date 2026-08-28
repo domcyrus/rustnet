@@ -394,7 +394,8 @@ mod tests {
         assert_eq!(Service.next(false), Application);
         assert_eq!(Application.next(false), State);
         assert_eq!(State.next(false), Rtt);
-        assert_eq!(Rtt.next(false), BandwidthTotal);
+        assert_eq!(Rtt.next(false), Health);
+        assert_eq!(Health.next(false), BandwidthTotal);
         assert_eq!(BandwidthTotal.next(false), CreatedAt); // Cycles back
     }
 
@@ -414,9 +415,10 @@ mod tests {
     fn test_sort_column_default_directions() {
         use SortColumn::*;
 
-        // Bandwidth and RTT should default to descending (false)
+        // Bandwidth, RTT, and Health should default to descending (false)
         assert!(!BandwidthTotal.default_direction());
         assert!(!Rtt.default_direction());
+        assert!(!Health.default_direction());
 
         // Everything else should default to ascending (true)
         assert!(Process.default_direction());
@@ -458,11 +460,14 @@ mod tests {
         assert_eq!(ui_state.sort_column, SortColumn::Application);
         assert!(ui_state.sort_ascending);
 
-        // Cycle to State, then Rtt, then BandwidthTotal
+        // Cycle to State, Rtt, Health, then BandwidthTotal
         ui_state.cycle_sort_column(); // State
         ui_state.cycle_sort_column(); // Rtt
         assert_eq!(ui_state.sort_column, SortColumn::Rtt);
         assert!(!ui_state.sort_ascending); // RTT defaults to descending (slowest first)
+        ui_state.cycle_sort_column(); // Health
+        assert_eq!(ui_state.sort_column, SortColumn::Health);
+        assert!(!ui_state.sort_ascending); // Health defaults to descending (most events first)
         ui_state.cycle_sort_column(); // BandwidthTotal
         assert_eq!(ui_state.sort_column, SortColumn::BandwidthTotal);
         assert!(!ui_state.sort_ascending); // Bandwidth defaults to descending
@@ -499,6 +504,7 @@ mod tests {
         assert_eq!(Service.display_name(), "Service");
         assert_eq!(State.display_name(), "State");
         assert_eq!(Rtt.display_name(), "RTT");
+        assert_eq!(Health.display_name(), "Health");
     }
 
     #[test]
@@ -511,8 +517,8 @@ mod tests {
 
         // Cycle through columns to reach BandwidthTotal
         // CreatedAt -> Process -> RemoteAddress -> LocalAddress -> Service ->
-        // Application -> State -> Rtt -> BandwidthTotal
-        for _ in 0..8 {
+        // Application -> State -> Rtt -> Health -> BandwidthTotal
+        for _ in 0..9 {
             ui_state.cycle_sort_column();
         }
 
@@ -1253,6 +1259,8 @@ mod snapshot_tests {
     // both flat and process-aggregate modes below.
 
     fn overview_connections() -> Vec<Connection> {
+        use crate::network::types::{ApplicationProtocol, DnsInfo, DnsQueryType, DpiInfo};
+
         let mut connections = sample_connections();
         connections[0].current_incoming_rate_bps = 3_200_000.0;
         connections[0].current_outgoing_rate_bps = 950_000.0;
@@ -1264,7 +1272,23 @@ mod snapshot_tests {
         // and connections with nothing measured (placeholder).
         if let Some(analytics) = connections[0].tcp_analytics.as_mut() {
             analytics.smoothed_rtt = Some(Duration::from_micros(23_400));
+            analytics.retransmit_count = 3;
+            analytics.out_of_order_count = 1;
         }
+        connections[1].dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Dns(DnsInfo {
+                query_name: Some("example.com".to_string()),
+                query_type: Some(DnsQueryType::A),
+                response_ips: Vec::new(),
+                is_response: false,
+                txid: 0x1234,
+                rcode: None,
+                nodata: None,
+            }),
+        });
+        connections[1].protocol_health.request_observed = true;
+        connections[1].protocol_health.request_retry_count = 2;
+        connections[1].protocol_health.request_timeout_count = 1;
         connections[2].initial_rtt = Some(Duration::from_millis(184));
         connections
     }
@@ -1513,6 +1537,8 @@ mod snapshot_tests {
         quic_conn.service_name = Some("https".to_string());
         quic_conn.process_name = Some("firefox".to_string());
         quic_conn.initial_rtt = Some(Duration::from_micros(23_400));
+        quic_conn.protocol_health.quic_retry_count = 2;
+        quic_conn.protocol_health.quic_version_negotiation_count = 1;
         quic_conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Quic(Box::new(quic)),
         });
@@ -1522,7 +1548,7 @@ mod snapshot_tests {
 
         for tcp_only in [
             "TCP Retransmits",
-            "Out-of-Order Packets",
+            "Out-of-Order (O)",
             "Duplicate ACKs",
             "Fast Retransmits",
             "Window Size",
@@ -1538,8 +1564,10 @@ mod snapshot_tests {
         );
         assert!(output.contains("Idle Timeout") && output.contains("30s"));
         assert!(output.contains("Connection Close") && output.contains("application 0x100"));
+        assert!(output.contains("Retry Packets (R)") && output.contains('2'));
+        assert!(output.contains("Ver. Negotiations (V)") && output.contains('1'));
         assert!(
-            output.contains("Loss counters are encrypted in QUIC"),
+            output.contains("1-RTT loss counters are encrypted in QUIC"),
             "the card should say why the loss counters are absent"
         );
 
@@ -1566,6 +1594,9 @@ mod snapshot_tests {
 
         let dns_conn = &mut connections[1];
         dns_conn.dns_response_time = Some(Duration::from_micros(12_300));
+        dns_conn.protocol_health.request_observed = true;
+        dns_conn.protocol_health.request_retry_count = 2;
+        dns_conn.protocol_health.request_timeout_count = 1;
         dns_conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(DnsInfo {
                 query_name: Some("example.com".to_string()),
@@ -1586,6 +1617,8 @@ mod snapshot_tests {
             "the paired query/response time should fill the card"
         );
         assert!(output.contains("Last Response Code") && output.contains("NOERROR"));
+        assert!(output.contains("Request Retries") && output.contains('2'));
+        assert!(output.contains("Request Timeouts") && output.contains('1'));
         assert!(
             output.contains("DNS Query") && output.contains("example.com"),
             "the queried name should show alongside the response details"

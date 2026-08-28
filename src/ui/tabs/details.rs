@@ -43,8 +43,8 @@ use crate::ui::{
 };
 
 /// Padded width for detail labels so values line up vertically.
-/// Sized for the longest expected label ("Out-of-Order Packets" = 20 chars)
-/// plus 2 chars of breathing room before the value column.
+/// Sized for the longest expected label ("Ver. Negotiations (V)" = 21 chars)
+/// plus breathing room before the value column.
 pub(in crate::ui) const DETAIL_LABEL_WIDTH: usize = 22;
 
 /// Below this terminal width the Details info panes collapse back to a
@@ -252,6 +252,24 @@ impl<'a> DetailsBuilder<'a> {
             self.plain_line(Line::from(""));
         }
     }
+}
+
+fn request_health_fields(details: &mut DetailsBuilder<'_>, conn: &Connection) {
+    let display = |count: u64| {
+        if conn.protocol_health.request_observed {
+            count.to_string()
+        } else {
+            NONE_PLACEHOLDER.to_string()
+        }
+    };
+    details.field(
+        "Request Retries (R)",
+        display(conn.protocol_health.request_retry_count),
+    );
+    details.field(
+        "Request Timeouts (T)",
+        display(conn.protocol_health.request_timeout_count),
+    );
 }
 
 #[cfg(unix)]
@@ -1674,11 +1692,13 @@ pub(in crate::ui) fn draw_connection_details(
         } else {
             details.field("Last Response Code", NONE_PLACEHOLDER.to_string());
         }
+        request_health_fields(&mut details, conn);
         // Footnote style matching the QUIC branch below.
         details.plain_line(Line::from(""));
         details.note("Timed by pairing query and response IDs");
     } else if llmnr_info.is_some() {
         details.rtt_field("LLMNR Response Time", conn.llmnr_response_time);
+        request_health_fields(&mut details, conn);
         details.plain_line(Line::from(""));
         details.note("First response paired by transaction ID");
     } else if let Some(netbios) = netbios_info {
@@ -1697,18 +1717,21 @@ pub(in crate::ui) fn draw_connection_details(
         } else {
             details.field("Last Response Status", NONE_PLACEHOLDER.to_string());
         }
+        request_health_fields(&mut details, conn);
         details.plain_line(Line::from(""));
         details.note("Timed by pairing request and response IDs");
     } else if stun_info.is_some() {
         // Method and class live in the Application card; this card keeps
         // only the measured outcome.
         details.rtt_field("STUN RTT", conn.stun_rtt);
+        request_health_fields(&mut details, conn);
         details.plain_line(Line::from(""));
         details.note("Paired by 96-bit transaction ID");
     } else if ntp_info.is_some() {
         // Stratum lives in the Application card; this card keeps only the
         // measured outcome.
         details.rtt_field("NTP RTT", conn.ntp_rtt);
+        request_health_fields(&mut details, conn);
         details.plain_line(Line::from(""));
         details.note("Paired by originate timestamp echo");
     } else if let Some(sequence) = icmp_echo_sequence {
@@ -1734,6 +1757,16 @@ pub(in crate::ui) fn draw_connection_details(
     }
     if let Some(quic) = quic_info {
         details.field(
+            "Retry Packets (R)",
+            conn.protocol_health.quic_retry_count.to_string(),
+        );
+        details.field(
+            "Ver. Negotiations (V)",
+            conn.protocol_health
+                .quic_version_negotiation_count
+                .to_string(),
+        );
+        details.field(
             "Idle Timeout",
             quic.idle_timeout
                 .map(format_idle_timeout)
@@ -1749,18 +1782,15 @@ pub(in crate::ui) fn draw_connection_details(
         // Separated from the fields above so it reads as a footnote on the
         // card rather than another value that failed to resolve.
         details.plain_line(Line::from(""));
-        details.note("Loss counters are encrypted in QUIC");
+        details.note("1-RTT loss counters are encrypted in QUIC");
     } else if conn.protocol == Protocol::Tcp {
         let counters = conn.tcp_analytics.as_ref();
         // Live RTT: EWMA over data-segment round trips, updated for the whole
         // life of the connection (unlike the one-shot handshake RTT above).
         details.rtt_field("Live RTT", counters.and_then(|a| a.smoothed_rtt));
         for (label, value) in [
-            ("TCP Retransmits", counters.map(|a| a.retransmit_count)),
-            (
-                "Out-of-Order Packets",
-                counters.map(|a| a.out_of_order_count),
-            ),
+            ("TCP Retransmits (R)", counters.map(|a| a.retransmit_count)),
+            ("Out-of-Order (O)", counters.map(|a| a.out_of_order_count)),
             ("Duplicate ACKs", counters.map(|a| a.duplicate_ack_count)),
             (
                 "Fast Retransmits",

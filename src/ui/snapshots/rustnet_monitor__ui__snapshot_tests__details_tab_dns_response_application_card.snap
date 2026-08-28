@@ -4,9 +4,9 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
- Process                 Remote                    Local              Service    App                        State            RTT     Rx↓/Tx↑
+ Process                Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
                                                                                                                                             
-▌proc (4242)             203.0.113.7:4433          192.168.1.10:50000 -          UDP·DNS (example.com)      DNS_RESPONSE       -         -/-
+▌proc (4242)            203.0.113.7:4433        192.168.1.10:50000 -          UDP·DNS (example.com)    DNS_RESPON…       - -             -/-
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
@@ -25,10 +25,10 @@ Service               -                                                         
 Network Context                                                       Transport Health                                                     ▐
 Local Hostname        -                                               DNS Response Time     -                                              ▐
 Local MAC             -                                               Last Response Code    NOERROR                                        ▐
-Remote Hostname       -                                                                                                                    ▐
-Attributed Name       -                                               Timed by pairing query and response IDs                              ▐
+Remote Hostname       -                                               Request Retries (R)   -                                              ▐
+Attributed Name       -                                               Request Timeouts (T)  -                                              ▐
 Attributed Via        -                                                                                                                    ▐
-Remote MAC            -                                                                                                                     
+Remote MAC            -                                               Timed by pairing query and response IDs                               
 Country               -                                                                                                                     
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     

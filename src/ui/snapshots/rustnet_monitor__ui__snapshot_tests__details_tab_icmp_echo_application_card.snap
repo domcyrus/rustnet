@@ -4,9 +4,9 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
- Process                 Remote                    Local              Service    App                        State            RTT     Rx↓/Tx↑
+ Process                Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
                                                                                                                                             
-▌ping                    8.8.8.8:0                 192.168.1.10:0     -          ICMP                       ECHO_REQ(46…   8.7ms         -/-
+▌ping                   8.8.8.8:0               192.168.1.10:0     -          ICMP                     ECHO_REQ(4…   8.7ms -             -/-
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

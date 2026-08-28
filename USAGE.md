@@ -567,6 +567,7 @@ Press `s` to cycle through columns in left-to-right order:
 | **Application** | ↑ Ascending | Sort by detected application protocol (HTTP, DNS, etc.), with TCP/UDP as tie-break |
 | **State** | ↑ Ascending | Sort by connection state (ESTABLISHED, etc.) |
 | **RTT** | ↓ Descending | Sort by round-trip time (slowest connections first by default) |
+| **Health** | ↓ Descending | Sort protocol-aware health signals by severity, then event count |
 | **Bandwidth (Rx/Tx)** | ↓ Descending | Sort by **combined up+down** bandwidth (highest first by default) |
 
 Columns hidden at narrow terminal widths stay in the cycle — the active sort is always named in the table's section title.
@@ -594,7 +595,7 @@ Section title shows current sort:
 **Press `s` (lowercase) - Cycle Columns:**
 - Moves to the next column in left-to-right visual order
 - **Resets to default direction** for that column
-- Bandwidth column defaults to descending (↓) to show highest values first
+- Bandwidth, RTT, and Health default to descending (↓) to show the most significant values first
 - Text columns default to ascending (↑) for alphabetical order
 
 **Press `S` (Shift+s) - Toggle Direction:**
@@ -767,6 +768,26 @@ Active TCP Flows: 18
 - **Active TCP Flows**: Number of active TCP connections with analytics data.
 
 ### Per-Connection Statistics
+
+The Overview table shows observable connection quality in the **Health**
+column. The badge adapts to the protocol:
+
+- `R3/O1` for TCP means three retransmits and one out-of-order packet.
+- `R1/V0` for QUIC means one explicit Retry and no Version Negotiation packet.
+- `R2/T1` for outgoing DNS, LLMNR, NetBIOS, STUN, or NTP transactions means
+  two repeated request IDs and one request that expired unanswered. NTP polls
+  carry a fresh transmit timestamp each time, so NTP surfaces timeouts rather
+  than retries.
+
+Clean, gradable connections show `ok`. Generic UDP, unsupported protocols, and
+transaction rows where no outgoing request was observed show `-`. Double-digit
+counts are displayed as `+`, while Details retains the exact counters. The
+Details Transport Health card marks the two counters behind the badge with
+their letters (`TCP Retransmits (R)`, `Out-of-Order (O)`), so the compact badge
+maps back to exact numbers. Health
+sorting is severity-first: TCP retransmits and request timeouts rank above
+warning-only out-of-order, retry, and version events, then higher counts rank
+first.
 
 When viewing connection details (press `Enter` on a connection), TCP analytics are shown for that specific connection:
 

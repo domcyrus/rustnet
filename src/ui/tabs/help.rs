@@ -194,12 +194,25 @@ const OVERVIEW_MOUSE: &[HelpRow] = &[
     ("Scroll wheel", "Navigate the connection list"),
 ];
 
-const OVERVIEW_DISPLAY: &[HelpRow] = &[
+// Shown for both Overview and Details: the Details tab keeps the
+// connection table (and its Health column) above the cards.
+const CONNECTION_DISPLAY: &[HelpRow] = &[
     ("White", "Active connection"),
     ("Yellow to red", "Connection approaching its timeout"),
     ("Gray", "Historic closed connection"),
     ("~name", "Hostname inferred from an observed DNS response"),
     ("App column", "Application protocol, SNI, or HTTP Host"),
+    (
+        "R3/O1",
+        "Health for TCP: retransmits and out-of-order packets",
+    ),
+    (
+        "R1/V0",
+        "Health for QUIC: Retry and Version Negotiation packets",
+    ),
+    ("R2/T1", "Health for UDP requests: retries and timeouts"),
+    ("ok, -", "Healthy connection, or an ungraded protocol"),
+    ("R+", "Counts of 10 or more; Details has the exact numbers"),
 ];
 
 const DETAILS_KEYS: &[HelpRow] = &[
@@ -337,12 +350,13 @@ fn help_lines(context: HelpContext) -> Vec<Line<'static>> {
         HelpContext::Overview => {
             push_section(&mut lines, "Connection Navigation", CONNECTION_NAV_KEYS);
             push_section(&mut lines, "Overview Actions", OVERVIEW_KEYS);
-            push_section(&mut lines, "Connection Display", OVERVIEW_DISPLAY);
+            push_section(&mut lines, "Connection Display", CONNECTION_DISPLAY);
             push_section(&mut lines, "Filter Examples", FILTER_EXAMPLES);
             push_section(&mut lines, "Mouse", OVERVIEW_MOUSE);
         }
         HelpContext::Details => {
             push_section(&mut lines, "Details Actions", DETAILS_KEYS);
+            push_section(&mut lines, "Connection Display", CONNECTION_DISPLAY);
             push_section(&mut lines, "Mouse", DETAILS_MOUSE);
         }
         HelpContext::Activity => {
@@ -494,8 +508,10 @@ mod tests {
         };
         let text = plain_text(&state);
         assert!(text.contains("Details Actions"));
+        // The connection table (and its Health column) stays visible on
+        // Details, so its display legend is shared with Overview.
+        assert!(text.contains("Connection Display"));
         assert!(!text.contains("Filter Examples"));
-        assert!(!text.contains("Connection Display"));
         assert!(!text.contains("process grouping"));
     }
 

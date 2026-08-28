@@ -1,32 +1,34 @@
 ---
 source: src/ui/mod.rs
+assertion_line: 718
 expression: output
 ---
                                                                                                     
     ╭ Help · Details ──────────────────────────────────────────────────────────────────────────╮    
-    │ Inspect the currently selected connection.                                               │    
-    │                                                                                          │    
-    │ ▎ Details Actions                                                                        │    
-    │   ↑/k, ↓/j      Show the previous or next connection                                     │    
-    │   g, G          Show the first or last connection                                        │    
-    │   Page Up/Down  Move through connections by one page                                     │    
-    │   Ctrl+B/F      Move through connections by one page                                     │    
-    │   Ctrl+D/U      Scroll the connection information panes                                  │    
-    │   c             Copy the remote address                                                  │    
-    │   Esc           Return to Overview                                                       │    
+    │ Inspect the currently selected connection.                                             ▐ │    
+    │                                                                                        ▐ │    
+    │ ▎ Details Actions                                                                      ▐ │    
+    │   ↑/k, ↓/j      Show the previous or next connection                                   ▐ │    
+    │   g, G          Show the first or last connection                                      ▐ │    
+    │   Page Up/Down  Move through connections by one page                                   ▐ │    
+    │   Ctrl+B/F      Move through connections by one page                                   ▐ │    
+    │   Ctrl+D/U      Scroll the connection information panes                                ▐ │    
+    │   c             Copy the remote address                                                ▐ │    
+    │   Esc           Return to Overview                                                     ▐ │    
+    │                                                                                        ▐ │    
+    │ ▎ Connection Display                                                                   ▐ │    
+    │   White          Active connection                                                     ▐ │    
+    │   Yellow to red  Connection approaching its timeout                                    ▐ │    
+    │   Gray           Historic closed connection                                            ▐ │    
+    │   ~name          Hostname inferred from an observed DNS response                       ▐ │    
+    │   App column     Application protocol, SNI, or HTTP Host                               ▐ │    
+    │   R3/O1          Health for TCP: retransmits and out-of-order packets                  ▐ │    
+    │   R1/V0          Health for QUIC: Retry and Version Negotiation packets                  │    
+    │   R2/T1          Health for UDP requests: retries and timeouts                           │    
+    │   ok, -          Healthy connection, or an ungraded protocol                             │    
+    │   R+             Counts of 10 or more; Details has the exact numbers                     │    
     │                                                                                          │    
     │ ▎ Mouse                                                                                  │    
     │   Click field       Copy that field's value                                              │    
     │   Click connection  Select a connection in the continuity strip                          │    
-    │   Scroll wheel      Scroll the connection information panes                              │    
-    │                                                                                          │    
-    │ ▎ Global                                                                                 │    
-    │   Tab, ]        Next tab                                                                 │    
-    │   Shift+Tab, [  Previous tab                                                             │    
-    │   1-5           Jump to Overview, Details, Activity, Graph, or Host                      │    
-    │   x             Clear all connections (press twice)                                      │    
-    │   h, Esc        Close this help overlay                                                  │    
-    │   q             Quit application (press twice to confirm)                                │    
-    │   Ctrl+C        Quit immediately                                                         │    
-    │                                                                                          │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯

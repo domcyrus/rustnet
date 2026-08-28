@@ -4,9 +4,9 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
- Process                 Remote                    Local              Service    App                        State            RTT     Rx↓/Tx↑
+ Process                Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
                                                                                                                                             
-▌-                       192.168.1.1:0             192.168.1.10:0     -          ARP                        ARP_WHO_HAS…       -         -/-
+▌-                      192.168.1.1:0           192.168.1.10:0     -          ARP                      ARP_WHO_HA…       - -             -/-
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

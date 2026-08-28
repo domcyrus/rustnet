@@ -351,6 +351,22 @@ impl Default for TcpAnalytics {
     }
 }
 
+/// Observable health signals for protocols that do not expose TCP sequence
+/// and acknowledgement analysis.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProtocolHealth {
+    /// Explicit QUIC Retry packets seen on this connection.
+    pub quic_retry_count: u64,
+    /// Explicit QUIC Version Negotiation packets seen on this connection.
+    pub quic_version_negotiation_count: u64,
+    /// Repeated transaction IDs observed before a matching response.
+    pub request_retry_count: u64,
+    /// Tracked requests that expired without a matching response.
+    pub request_timeout_count: u64,
+    /// At least one outgoing request was observed for this connection.
+    pub request_observed: bool,
+}
+
 // Rate-smoothing constants — tune these to control how quickly displayed
 // rates react to traffic changes.
 /// Multiplier when traffic stops entirely: prev * DECAY_FAST each refresh.

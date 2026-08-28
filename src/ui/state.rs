@@ -179,7 +179,8 @@ pub enum SortColumn {
     Application,
     Service,
     State,
-    Rtt, // Best available TCP, QUIC handshake, or ICMP echo RTT
+    Rtt,    // Best available TCP, QUIC handshake, or ICMP echo RTT
+    Health, // Protocol-aware observable health signals
 }
 
 impl SortColumn {
@@ -206,7 +207,8 @@ impl SortColumn {
             Self::Service => Self::Application, // Column 6: App (proto·application)
             Self::Application => Self::State,   // Column 7: State
             Self::State => Self::Rtt,           // Column 8: RTT
-            Self::Rtt => Self::BandwidthTotal,  // Column 9: ↓Rx/Tx↑ (combined total)
+            Self::Rtt => Self::Health,          // Column 9: Health
+            Self::Health => Self::BandwidthTotal, // Column 10: ↓Rx/Tx↑ (combined total)
             Self::BandwidthTotal => Self::CreatedAt, // Back to default
         }
     }
@@ -218,6 +220,8 @@ impl SortColumn {
             Self::BandwidthTotal => false,
             // Slowest connections first - latency problems surface on top
             Self::Rtt => false,
+            // Most severe observable health signals first
+            Self::Health => false,
 
             // Ascending by default - alphabetical or chronological
             Self::Process => true,
@@ -244,6 +248,7 @@ impl SortColumn {
             Self::Service => "Service",
             Self::State => "State",
             Self::Rtt => "RTT",
+            Self::Health => "Health",
         }
     }
 }
