@@ -137,6 +137,11 @@ rustnet -i eth0          # 监控以太网接口
 rustnet -i wlan0         # 监控 WiFi 接口
 rustnet -i en0           # 监控 macOS 主接口
 
+# Windows：可直接使用适配器的友好名称，会自动解析为
+# \Device\NPF_{GUID} 设备
+rustnet -i Ethernet
+rustnet -i "Wi-Fi"
+
 # 监控 VPN 和隧道接口（TUN/TAP 支持）
 rustnet -i utun0         # macOS VPN 隧道（TUN，Layer 3）
 rustnet -i tun0          # Linux/BSD VPN 隧道（TUN，Layer 3）

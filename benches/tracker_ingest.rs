@@ -33,6 +33,7 @@ fn make_packet(flow: u16, seq: u32) -> ParsedPacket {
             rst: false,
         },
         payload_len: 1400,
+        window_scale: None,
     });
     packet
 }

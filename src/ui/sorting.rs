@@ -32,7 +32,12 @@ pub fn sort_connections(connections: &mut [Connection], sort_column: SortColumn,
             SortColumn::Process => {
                 let a_process = a.process_name.as_deref().unwrap_or("");
                 let b_process = b.process_name.as_deref().unwrap_or("");
-                a_process.cmp(b_process)
+                // Case-insensitive, so macOS-style mixed-case names don't
+                // split into separate alphabetical runs.
+                a_process
+                    .to_lowercase()
+                    .cmp(&b_process.to_lowercase())
+                    .then_with(|| a_process.cmp(b_process))
             }
 
             SortColumn::LocalAddress => a
@@ -59,7 +64,10 @@ pub fn sort_connections(connections: &mut [Connection], sort_column: SortColumn,
             SortColumn::Service => {
                 let a_service = a.service_name.as_deref().unwrap_or("");
                 let b_service = b.service_name.as_deref().unwrap_or("");
-                a_service.cmp(b_service)
+                a_service
+                    .to_lowercase()
+                    .cmp(&b_service.to_lowercase())
+                    .then_with(|| a_service.cmp(b_service))
             }
 
             SortColumn::State => Ord::cmp(&a.state(), &b.state()),
@@ -125,5 +133,24 @@ mod tests {
 
         assert!(!connections[0].is_historic);
         assert!(connections[1].is_historic);
+    }
+
+    #[test]
+    fn process_sort_ignores_case() {
+        let mut upper = connection(40_000);
+        upper.process_name = Some("Safari".to_string());
+        let mut lower = connection(40_001);
+        lower.process_name = Some("curl".to_string());
+        let mut upper2 = connection(40_002);
+        upper2.process_name = Some("WindowServer".to_string());
+
+        let mut connections = vec![upper, lower, upper2];
+        sort_connections(&mut connections, SortColumn::Process, true);
+
+        let names: Vec<_> = connections
+            .iter()
+            .map(|c| c.process_name.as_deref().unwrap())
+            .collect();
+        assert_eq!(names, ["curl", "Safari", "WindowServer"]);
     }
 }

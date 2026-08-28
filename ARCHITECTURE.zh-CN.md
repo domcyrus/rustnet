@@ -109,6 +109,7 @@ flowchart LR
   - 带 CONNECTION_CLOSE 帧检测的 QUIC 协议
   - 带报文类型、版本和客户端标识符的 MQTT
   - BitTorrent 握手和 DHT 消息
+  - WireGuard 和 OpenVPN 隧道流量
   - 用于 WebRTC 和 NAT 穿越的 STUN
   - 带版本、模式和 stratum 的 NTP
   - 用于本地名称解析的 mDNS 和 LLMNR

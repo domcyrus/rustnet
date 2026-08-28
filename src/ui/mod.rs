@@ -2404,6 +2404,29 @@ mod snapshot_tests {
         });
     }
 
+    /// A stock 80x24 terminal cannot hold all three Graph sections; the
+    /// fixed-height rows drop from the bottom up so the waves and the
+    /// health row render at full height instead of all three squeezed.
+    #[test]
+    fn graph_tab_small_terminal_drops_bottom_sections() {
+        let app = test_app();
+        app.set_connections_snapshot_for_test(sample_connections());
+        app.set_traffic_history_for_test(TrafficHistory::new(60));
+
+        let ui_state = UIState {
+            selected_tab: 3, // Graph
+            ..Default::default()
+        };
+        let connections = app.get_connections();
+        let output = render_app(&app, &ui_state, &connections, None, 80, 24);
+
+        insta::with_settings!({
+            filters => time_filters(),
+        }, {
+            insta::assert_snapshot!(output);
+        });
+    }
+
     #[test]
     fn loading_screen_via_app() {
         let app = App::new(test_config()).expect("App::new");
@@ -2425,10 +2448,11 @@ mod snapshot_tests {
             ApplicationProtocol, BitTorrentInfo, BitTorrentType, DhcpInfo, DhcpMessageType,
             DnsInfo, DnsQueryType, FtpInfo, FtpMessageType, HttpInfo, HttpVersion, HttpsInfo,
             LlmnrInfo, MdnsInfo, MqttInfo, MqttPacketType, MqttVersion, NetBiosInfo, NetBiosOpcode,
-            NetBiosResponseStatus, NetBiosService, NtpInfo, NtpMode, QuicConnectionState, QuicInfo,
-            QuicPacketType, SnmpInfo, SnmpPduType, SnmpVersion, SsdpInfo, SsdpMethod,
-            SshConnectionState, SshInfo, SshVersion, StunInfo, StunMessageClass, StunMethod,
-            TlsInfo, TlsVersion,
+            NetBiosResponseStatus, NetBiosService, NtpInfo, NtpMode, OpenVpnInfo,
+            OpenVpnPacketType, QuicConnectionState, QuicInfo, QuicPacketType, SnmpInfo,
+            SnmpPduType, SnmpVersion, SsdpInfo, SsdpMethod, SshConnectionState, SshInfo,
+            SshVersion, StunInfo, StunMessageClass, StunMethod, TlsInfo, TlsVersion, WireGuardInfo,
+            WireGuardPacketType,
         };
 
         let tls_info = TlsInfo {
@@ -2550,6 +2574,13 @@ mod snapshot_tests {
                 server_software: Some("vsftpd 3.0.5".to_string()),
                 system_type: Some("UNIX".to_string()),
             }),
+            ApplicationProtocol::WireGuard(WireGuardInfo {
+                packet_type: WireGuardPacketType::HandshakeInitiation,
+            }),
+            ApplicationProtocol::OpenVpn(OpenVpnInfo {
+                packet_type: OpenVpnPacketType::ControlHardResetClientV2,
+                key_id: 0,
+            }),
         ];
 
         let mut seen = std::collections::HashSet::new();
@@ -2578,11 +2609,13 @@ mod snapshot_tests {
                 ApplicationProtocol::Stun(_) => {}
                 ApplicationProtocol::Mqtt(_) => {}
                 ApplicationProtocol::Ftp(_) => {}
+                ApplicationProtocol::WireGuard(_) => {}
+                ApplicationProtocol::OpenVpn(_) => {}
             }
         }
         assert_eq!(
             seen.len(),
-            16,
+            18,
             "fixture list out of sync with ApplicationProtocol: update the \
              variants vec (and this count) alongside the match above"
         );

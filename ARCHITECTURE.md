@@ -109,6 +109,7 @@ Multiple worker threads (up to 4 by default, based on CPU cores) that parse pack
   - QUIC protocol with CONNECTION_CLOSE frame detection
   - MQTT with packet types, version, and client identifier
   - BitTorrent handshakes and DHT messages
+  - WireGuard and OpenVPN tunnel traffic
   - STUN for WebRTC and NAT traversal
   - NTP with version, mode, and stratum
   - mDNS and LLMNR for local name resolution

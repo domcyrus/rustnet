@@ -28,6 +28,61 @@ pub struct TcpHeaderInfo {
     pub window: u16,      // Window size
     pub flags: TcpFlags,  // TCP flags
     pub payload_len: u32, // Actual TCP payload length (not including headers)
+    /// Window-scale verdict from the SYN's options (RFC 7323). Only ever
+    /// `Some` on a SYN segment; the option is illegal elsewhere.
+    pub window_scale: Option<SynWindowScale>,
+}
+
+/// What a SYN's options said about window scaling. `Absent` is a proven
+/// negative (the options were walked completely and carried no window-scale
+/// option), which is different from `Unknown` (truncated or malformed
+/// options), where no conclusion may be drawn: treating an unexamined SYN
+/// as a refusal would permanently disable scaling for the connection even
+/// when a complete retransmitted SYN later shows the option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SynWindowScale {
+    /// The SYN offered window scaling with this shift.
+    Present(u8),
+    /// The options were fully examined and carry no window-scale option.
+    Absent,
+    /// The options could not be fully examined (capture truncation or a
+    /// malformed option); nothing can be concluded.
+    Unknown,
+}
+
+/// Highest shift RFC 7323 permits; larger advertised values are clamped.
+const MAX_WINDOW_SCALE: u8 = 14;
+
+/// Extract the window-scale verdict (option kind 3) from a SYN's option bytes.
+fn parse_window_scale(options: &[u8]) -> SynWindowScale {
+    let mut i = 0;
+    while i < options.len() {
+        match options[i] {
+            0 => return SynWindowScale::Absent, // End of option list
+            1 => i += 1,                        // NOP
+            kind => {
+                let Some(&len) = options.get(i + 1) else {
+                    return SynWindowScale::Unknown; // kind byte without length
+                };
+                let len = len as usize;
+                if len < 2 || i + len > options.len() {
+                    return SynWindowScale::Unknown; // Malformed, stop walking
+                }
+                if kind == 3 {
+                    // Kind 3 is exactly three bytes (RFC 7323); any other
+                    // length is a malformed option (RFC 9293) and proves
+                    // nothing, so it must not end the walk in Absent.
+                    return if len == 3 {
+                        SynWindowScale::Present(options[i + 2].min(MAX_WINDOW_SCALE))
+                    } else {
+                        SynWindowScale::Unknown
+                    };
+                }
+                i += len;
+            }
+        }
+    }
+    SynWindowScale::Absent
 }
 
 /// Parse TCP flags from the flags byte
@@ -81,12 +136,28 @@ pub(crate) fn parse(
     }
     let tcp_payload_len = transport_data.len().saturating_sub(tcp_header_len) as u32;
 
+    // The window-scale option only appears on SYN segments. A capture
+    // truncated before the declared data offset (snaplen) cannot prove the
+    // option absent, so it yields Unknown rather than Absent.
+    let window_scale = if tcp_flags.syn {
+        Some(if transport_data.len() < tcp_header_len {
+            SynWindowScale::Unknown
+        } else if tcp_header_len > 20 {
+            parse_window_scale(&transport_data[20..tcp_header_len])
+        } else {
+            SynWindowScale::Absent
+        })
+    } else {
+        None
+    };
+
     let tcp_header = TcpHeaderInfo {
         seq,
         ack,
         window,
         flags: tcp_flags,
         payload_len: tcp_payload_len,
+        window_scale,
     };
 
     // Log TCP flags for debugging
@@ -146,5 +217,52 @@ mod tests {
         let flags = parse_tcp_flags(0x11); // FIN + ACK
         assert!(flags.fin);
         assert!(flags.ack);
+    }
+
+    #[test]
+    fn window_scale_option_parsed() {
+        // MSS (kind 2, len 4), NOP, window scale (kind 3, len 3, shift 7)
+        let options = [2, 4, 0x05, 0xb4, 1, 3, 3, 7];
+        assert_eq!(parse_window_scale(&options), SynWindowScale::Present(7));
+    }
+
+    #[test]
+    fn window_scale_proven_absent() {
+        // MSS only, then end-of-options: a complete walk is a proven negative.
+        let options = [2, 4, 0x05, 0xb4, 0, 0, 0, 0];
+        assert_eq!(parse_window_scale(&options), SynWindowScale::Absent);
+        // Fully walked without hitting end-of-list is also proven.
+        let options = [2, 4, 0x05, 0xb4];
+        assert_eq!(parse_window_scale(&options), SynWindowScale::Absent);
+    }
+
+    #[test]
+    fn window_scale_clamped_to_rfc_max() {
+        let options = [3, 3, 60];
+        assert_eq!(parse_window_scale(&options), SynWindowScale::Present(14));
+    }
+
+    #[test]
+    fn window_scale_unknown_on_malformed_options() {
+        // Malformed options prove nothing: they must not read as a refusal.
+        // Option claims a length running past the buffer
+        let options = [2, 40, 0x05];
+        assert_eq!(parse_window_scale(&options), SynWindowScale::Unknown);
+        // Zero-length option must not loop forever
+        let options = [5, 0, 3, 3, 7];
+        assert_eq!(parse_window_scale(&options), SynWindowScale::Unknown);
+        // Truncated: kind byte with no length byte
+        let options = [3];
+        assert_eq!(parse_window_scale(&options), SynWindowScale::Unknown);
+    }
+
+    #[test]
+    fn window_scale_with_illegal_length_is_unknown() {
+        // Kind 3 is exactly three bytes; other lengths are malformed and
+        // must not read as a proven absence.
+        let options = [3, 2];
+        assert_eq!(parse_window_scale(&options), SynWindowScale::Unknown);
+        let options = [3, 4, 7, 0];
+        assert_eq!(parse_window_scale(&options), SynWindowScale::Unknown);
     }
 }

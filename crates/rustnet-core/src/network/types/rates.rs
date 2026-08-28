@@ -269,8 +269,21 @@ pub struct TcpAnalytics {
     pub out_of_order_count: u64,
     pub fast_retransmit_count: u64,
 
-    // Window tracking
+    // Window tracking. The header field is 16 bits; the real window is that
+    // value shifted by the sender's window-scale option from its SYN
+    // (RFC 7323). Scaling is only in effect when both SYNs offered it, so
+    // both shifts are tracked and a SYN without the option disables scaling.
     pub last_window_size: u16,
+    /// Shift that applies to `last_window_size` (0 when scaling is off,
+    /// unknown, or the segment was a SYN, whose window is never scaled).
+    pub last_window_shift: u8,
+    /// Window-scale shift advertised by the local side's SYN.
+    pub window_scale_out: Option<u8>,
+    /// Window-scale shift advertised by the remote side's SYN.
+    pub window_scale_in: Option<u8>,
+    /// A SYN was observed without the window-scale option, so scaling is
+    /// disabled for the whole connection.
+    pub window_scaling_disabled: bool,
 
     // Continuous RTT estimation. One outbound segment is timed at a time:
     // (sequence end of the timed bytes, capture time it left this host).
@@ -296,8 +309,38 @@ impl TcpAnalytics {
             out_of_order_count: 0,
             fast_retransmit_count: 0,
             last_window_size: 0,
+            last_window_shift: 0,
+            window_scale_out: None,
+            window_scale_in: None,
+            window_scaling_disabled: false,
             rtt_probe: None,
             smoothed_rtt: None,
+        }
+    }
+
+    /// Last advertised window in bytes, with the sender's window-scale
+    /// shift applied when the handshake negotiated one. Falls back to the
+    /// raw header value when the handshake was not observed.
+    pub fn last_window_bytes(&self) -> u64 {
+        (self.last_window_size as u64) << self.last_window_shift
+    }
+
+    /// Shift applying to a non-SYN segment sent in the given direction:
+    /// the sender's own advertised shift, but only when both sides offered
+    /// the option (RFC 7323) and neither SYN explicitly lacked it.
+    pub(crate) fn window_shift_for(&self, is_outgoing: bool) -> u8 {
+        if self.window_scaling_disabled {
+            return 0;
+        }
+        match (self.window_scale_out, self.window_scale_in) {
+            (Some(out), Some(inn)) => {
+                if is_outgoing {
+                    out
+                } else {
+                    inn
+                }
+            }
+            _ => 0,
         }
     }
 }

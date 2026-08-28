@@ -1492,6 +1492,15 @@ pub(in crate::ui) fn draw_connection_details(
                     ("QoS", info.qos.map(|q| q.to_string())),
                 ]);
             }
+            crate::network::types::ApplicationProtocol::WireGuard(info) => {
+                details.app_rows(&[("Packet Type", Some(info.packet_type.to_string()))]);
+            }
+            crate::network::types::ApplicationProtocol::OpenVpn(info) => {
+                details.app_rows(&[
+                    ("Packet Type", Some(info.packet_type.to_string())),
+                    ("Key ID", Some(info.key_id.to_string())),
+                ]);
+            }
         }
     } else if let ProtocolState::Arp(arp_info) = &conn.protocol_state {
         details.section_styled("Application: ARP", theme::bold_fg(non_dpi_app_color()));
@@ -1757,7 +1766,7 @@ pub(in crate::ui) fn draw_connection_details(
                 "Fast Retransmits",
                 counters.map(|a| a.fast_retransmit_count),
             ),
-            ("Window Size", counters.map(|a| a.last_window_size as u64)),
+            ("Window Size", counters.map(|a| a.last_window_bytes())),
         ] {
             details.field(
                 label,

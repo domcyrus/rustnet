@@ -838,6 +838,7 @@ mod connection_lifecycle_tests {
             window: 65_535,
             flags,
             payload_len: 0,
+            window_scale: None,
         });
         packet
     }

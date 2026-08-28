@@ -123,14 +123,29 @@ pub(in crate::ui) fn draw_graph_tab(
     // and distribution rows hold a handful of lines each, so they get
     // fixed heights and the wave panels absorb the rest — percentage
     // sizing left a large hole between sections on tall terminals.
+    //
+    // The three sections plus spacing need 32 rows. Smaller terminals
+    // (a stock 80x24 leaves ~20 content rows) drop the fixed-height rows
+    // from the bottom up instead of rendering all three squeezed beyond
+    // recognition: first the distribution row, then the health row, so
+    // the waves always keep their minimum height.
+    const WAVE_MIN_ROWS: u16 = 8;
+    const HEALTH_ROWS: u16 = 10;
+    const DISTRIBUTION_ROWS: u16 = 12;
+    let show_distribution = area.height >= WAVE_MIN_ROWS + 1 + HEALTH_ROWS + 1 + DISTRIBUTION_ROWS;
+    let show_health = area.height >= WAVE_MIN_ROWS + 1 + HEALTH_ROWS;
+
+    let mut constraints = vec![Constraint::Min(WAVE_MIN_ROWS)]; // Traffic + connections waves
+    if show_health {
+        constraints.push(Constraint::Length(HEALTH_ROWS)); // Network health + TCP counters/states
+    }
+    if show_distribution {
+        constraints.push(Constraint::Length(DISTRIBUTION_ROWS)); // App distribution + top processes
+    }
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .spacing(1)
-        .constraints([
-            Constraint::Min(8),     // Traffic + connections waves
-            Constraint::Length(10), // Network health + TCP counters/states
-            Constraint::Length(12), // App distribution + top processes
-        ])
+        .constraints(constraints)
         .split(area);
 
     let top_chunks = Layout::default()
@@ -139,29 +154,33 @@ pub(in crate::ui) fn draw_graph_tab(
         .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(main_chunks[0]);
 
-    let health_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .spacing(2)
-        .constraints([
-            Constraint::Percentage(35),
-            Constraint::Percentage(35),
-            Constraint::Percentage(30),
-        ])
-        .split(main_chunks[1]);
-
-    let bottom_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .spacing(2)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(main_chunks[2]);
-
     draw_traffic_chart(f, &traffic_history, top_chunks[0]);
     draw_connection_lifecycle(f, &traffic_history, top_chunks[1]);
-    draw_health_chart(f, &traffic_history, health_chunks[0]);
-    draw_tcp_counters(f, app, health_chunks[1]);
-    draw_tcp_states(f, &analytics.tcp_state_counts, health_chunks[2]);
-    draw_app_distribution(f, &analytics.app_distribution, bottom_chunks[0]);
-    draw_top_processes(f, &analytics.process_traffic, bottom_chunks[1]);
+
+    if show_health {
+        let health_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .spacing(2)
+            .constraints([
+                Constraint::Percentage(35),
+                Constraint::Percentage(35),
+                Constraint::Percentage(30),
+            ])
+            .split(main_chunks[1]);
+        draw_health_chart(f, &traffic_history, health_chunks[0]);
+        draw_tcp_counters(f, app, health_chunks[1]);
+        draw_tcp_states(f, &analytics.tcp_state_counts, health_chunks[2]);
+    }
+
+    if show_distribution {
+        let bottom_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .spacing(2)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(main_chunks[2]);
+        draw_app_distribution(f, &analytics.app_distribution, bottom_chunks[0]);
+        draw_top_processes(f, &analytics.process_traffic, bottom_chunks[1]);
+    }
 
     Ok(())
 }
