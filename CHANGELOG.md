@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **Inline Connection Health**: connection rows now show compact TCP
   retransmit/out-of-order, QUIC Retry/version, and transactional UDP
-  retry/timeout badges, with a severity-first Health sort
+  retry/timeout badges, with a severity-first Health sort (#583)
+- **VPN Traffic Detection**: identify WireGuard and OpenVPN connections through
+  packet signatures, including OpenVPN over UDP and TCP (#581)
 - **Host Socket Inventory**: the new Host tab shows TCP LISTEN sockets, UDP
   BOUND endpoints, TCP state totals, observed RTT, process owners, and the
   detailed interface table on Linux, macOS, FreeBSD, and Windows
@@ -30,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Default Npcap Installations on Windows**: RustNet now finds Npcap in its
   standard `System32\Npcap` directory, so WinPcap API-compatible mode is no
   longer required. `--help` and `--version` also work without Npcap installed
+- **Attribution of Pre-Existing Connections on Linux**: connections that were
+  already open before RustNet started keep their process name after privilege
+  reduction, including root services when RustNet runs with file capabilities
+  on Linux 5.11 and newer. A one-shot BPF task-file inventory and the
+  privileged procfs scan feed a validated fallback shown as the "startup
+  snapshot" match quality (#575)
 
 ### Removed
 - **Ubuntu 25.10 (Questing) PPA**: the series reached end of life and

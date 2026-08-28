@@ -2481,10 +2481,11 @@ mod snapshot_tests {
             ApplicationProtocol, BitTorrentInfo, BitTorrentType, DhcpInfo, DhcpMessageType,
             DnsInfo, DnsQueryType, FtpInfo, FtpMessageType, HttpInfo, HttpVersion, HttpsInfo,
             LlmnrInfo, MdnsInfo, MqttInfo, MqttPacketType, MqttVersion, NetBiosInfo, NetBiosOpcode,
-            NetBiosResponseStatus, NetBiosService, NtpInfo, NtpMode, QuicConnectionState, QuicInfo,
-            QuicPacketType, SnmpInfo, SnmpPduType, SnmpVersion, SsdpInfo, SsdpMethod,
-            SshConnectionState, SshInfo, SshVersion, StunInfo, StunMessageClass, StunMethod,
-            TlsInfo, TlsVersion,
+            NetBiosResponseStatus, NetBiosService, NtpInfo, NtpMode, OpenVpnInfo,
+            OpenVpnPacketType, QuicConnectionState, QuicInfo, QuicPacketType, SnmpInfo,
+            SnmpPduType, SnmpVersion, SsdpInfo, SsdpMethod, SshConnectionState, SshInfo,
+            SshVersion, StunInfo, StunMessageClass, StunMethod, TlsInfo, TlsVersion, WireGuardInfo,
+            WireGuardPacketType,
         };
 
         let tls_info = TlsInfo {
@@ -2606,6 +2607,13 @@ mod snapshot_tests {
                 server_software: Some("vsftpd 3.0.5".to_string()),
                 system_type: Some("UNIX".to_string()),
             }),
+            ApplicationProtocol::WireGuard(WireGuardInfo {
+                packet_type: WireGuardPacketType::HandshakeInitiation,
+            }),
+            ApplicationProtocol::OpenVpn(OpenVpnInfo {
+                packet_type: OpenVpnPacketType::ControlHardResetClientV2,
+                key_id: 0,
+            }),
         ];
 
         let mut seen = std::collections::HashSet::new();
@@ -2634,11 +2642,13 @@ mod snapshot_tests {
                 ApplicationProtocol::Stun(_) => {}
                 ApplicationProtocol::Mqtt(_) => {}
                 ApplicationProtocol::Ftp(_) => {}
+                ApplicationProtocol::WireGuard(_) => {}
+                ApplicationProtocol::OpenVpn(_) => {}
             }
         }
         assert_eq!(
             seen.len(),
-            16,
+            18,
             "fixture list out of sync with ApplicationProtocol: update the \
              variants vec (and this count) alongside the match above"
         );

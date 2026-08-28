@@ -29,7 +29,7 @@
 ## 功能特性
 
 - **进程级归属识别**：每一条 TCP、UDP、QUIC 连接都能追溯到所属进程。Linux 使用 eBPF，macOS 使用 PKTAP，Windows 使用 ETW 并在不可用时自动回退到 IP Helper，FreeBSD 则走原生 API。详情会显示 PID、可执行文件、用户/组名称、匹配可信度，以及每个平台都提供的父进程链（有层级上限）。Wireshark 与 tcpdump 做不到这一点；`netstat` / `ss` 也无法展示实时状态。
-- **深度包检测**：无需外部解析器即可识别 HTTP、带 SNI 的 HTTPS/TLS、DNS、SSH、FTP、QUIC、MQTT、BitTorrent、STUN、NTP、mDNS、LLMNR、DHCP、SNMP、SSDP 及 NetBIOS。
+- **深度包检测**：无需外部解析器即可识别 HTTP、带 SNI 的 HTTPS/TLS、DNS、SSH、FTP、QUIC、MQTT、BitTorrent、WireGuard、OpenVPN、STUN、NTP、mDNS、LLMNR、DHCP、SNMP、SSDP 及 NetBIOS。
 - **带注释的 PCAPNG 导出**：`--pcapng-export` 可写出能直接用 Wireshark 打开的捕获文件，并将进程、PID、方向、DPI/SNI 和 GeoIP 作为逐包注释嵌入。每个数据包都会直接标明所属进程，无需后处理。也可使用经典的 `--pcap-export` 配合 JSONL sidecar 进行离线关联。
 - **安全沙箱**：Linux 5.13+ 使用 Landlock，macOS 使用 Seatbelt，Windows 通过 token 降权 + job-object 阻止子进程创建。libpcap 初始化完成后立即丢弃特权。详见 [SECURITY.zh-CN.md](SECURITY.zh-CN.md)。
 - **网络分析**：实时统计 TCP、QUIC 握手、DNS 响应及 ICMP 回显的往返时延，并检测 TCP 重传、乱序包和快重传。概览表格通过按协议显示的健康徽标，呈现 TCP 问题、明确可见的 QUIC Retry/版本协商事件，以及事务型 UDP 的重试/超时，并按严重程度排序。
@@ -63,8 +63,9 @@ RustNet 在 Linux 上默认使用内核 eBPF 程序进行进程识别，从而�
 - 在该富化流程运行前就已退出的短命进程，仍保留 eBPF 记录的 16 字符名称
 
 **回退行为：**
+- 在 Linux 5.11 及更高版本上，一次性的 BPF task-file 迭代器会清点 RustNet 启动前已经打开的 socket；使用文件 capabilities 运行时，也能识别 root 和其他用户拥有的 socket
 - 当 eBPF 加载失败或权限不足时，RustNet 会自动回退到基于 procfs 的标准进程识别方式
-- 标准模式通过 procfs 扫描以同样的方式解析进程名，但 CPU 开销更高
+- 旧版内核和纯 procfs 构建通过 procfs 扫描解析进程名，CPU 开销更高，并且只能检查当前 RustNet 用户可见的 socket 所有者
 - eBPF 默认启用，无需任何特殊编译参数
 
 如需关闭 eBPF、仅使用 procfs 模式，请这样构建：

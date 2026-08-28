@@ -66,10 +66,11 @@ If an attacker exploits a vulnerability in DPI/packet parsing:
 
 Trade-off of the root uid drop: the procfs fallback for process attribution can
 then only inspect processes owned by the target user, and Kubernetes log
-directories under `/var/log/pods` may become unreadable. The eBPF fast path
-(the default) is unaffected. If you rely on procfs-only attribution (e.g. a
-build without eBPF) and need to attribute other users' processes, use
-`--no-uid-drop`.
+directories under `/var/log/pods` may become unreadable. On Linux 5.11 and
+newer, the default eBPF path takes a one-shot task-file socket inventory before
+the drop, so pre-existing sockets owned by other users remain attributable. If
+you rely on procfs-only attribution, such as a build without eBPF or an older
+kernel, and need to attribute other users' processes, use `--no-uid-drop`.
 
 ### Graceful Degradation
 
@@ -276,6 +277,7 @@ When using eBPF for enhanced process detection (default on Linux):
 - Requires additional kernel capabilities (`CAP_BPF`, `CAP_PERFMON`)
 - eBPF programs are verified by kernel before loading
 - Limited to read-only operations (no packet modification)
+- On Linux 5.11+, a one-shot task-file iterator inventories pre-existing socket owners
 - Automatically falls back to procfs if eBPF fails
 
 ## Threat Model

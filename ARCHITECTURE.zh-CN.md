@@ -109,6 +109,7 @@ flowchart LR
   - 带 CONNECTION_CLOSE 帧检测的 QUIC 协议
   - 带报文类型、版本和客户端标识符的 MQTT
   - BitTorrent 握手和 DHT 消息
+  - WireGuard 和 OpenVPN 隧道流量
   - 用于 WebRTC 和 NAT 穿越的 STUN
   - 带版本、模式和 stratum 的 NTP
   - 用于本地名称解析的 mDNS 和 LLMNR
@@ -257,6 +258,7 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
 **eBPF 模式（Linux 默认）：**
 - 使用附加到 socket 系统调用的内核 eBPF 程序
 - 捕获带进程上下文的 socket 创建事件
+- 在 Linux 5.11 及更高版本上，先附加实时探针，再运行一次性的 task-file 迭代器，以捕获 RustNet 启动前已存在的 socket 所有者；使用文件 capabilities 运行时也包括其他用户的 socket
 - 比 procfs 扫描开销更低
 - 记录进程组组长的 TGID、当前线程的 TID 以及凭据；进程名、可执行路径和 PPID 在用户态通过 procfs 富化
 - **局限性：**
@@ -267,7 +269,8 @@ RustNet 使用平台特定的 API 将网络连接与进程关联。每次归属�
   - 注意：不需要 CAP_NET_ADMIN（使用只读、非混杂包捕获）
 
 **回退行为：**
-- 如果 eBPF 加载失败（权限、内核兼容性），自动回退到 procfs 模式
+- 如果 task-file 迭代器不可用，则保留实时 eBPF 追踪，并使用启动时的 procfs 清单
+- 如果实时 eBPF 追踪器加载失败，则自动回退到 procfs 模式
 - TUI 统计面板显示当前使用的检测方法
 
 #### macOS

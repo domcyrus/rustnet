@@ -529,6 +529,18 @@ impl ConnectionFilter {
                     return true;
                 }
             }
+            ApplicationProtocol::WireGuard(info) => {
+                if match_text(&info.packet_type.to_string(), fv) {
+                    return true;
+                }
+            }
+            ApplicationProtocol::OpenVpn(info) => {
+                if match_text(&info.packet_type.to_string(), fv)
+                    || match_text(&info.key_id.to_string(), fv)
+                {
+                    return true;
+                }
+            }
         }
 
         false

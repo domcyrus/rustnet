@@ -46,7 +46,9 @@ impl AppProtocolDistribution {
                 | ApplicationProtocol::BitTorrent(_)
                 | ApplicationProtocol::Stun(_)
                 | ApplicationProtocol::Mqtt(_)
-                | ApplicationProtocol::Ftp(_) => self.other_count += 1,
+                | ApplicationProtocol::Ftp(_)
+                | ApplicationProtocol::WireGuard(_)
+                | ApplicationProtocol::OpenVpn(_) => self.other_count += 1,
             }
         } else {
             self.other_count += 1;
@@ -476,6 +478,8 @@ impl Connection {
                         }
                         ApplicationProtocol::Mqtt(_) => Cow::Borrowed("MQTT_UDP"),
                         ApplicationProtocol::Ftp(_) => Cow::Borrowed("FTP_UDP"),
+                        ApplicationProtocol::WireGuard(_) => Cow::Borrowed("WIREGUARD"),
+                        ApplicationProtocol::OpenVpn(_) => Cow::Borrowed("OPENVPN"),
                     }
                 } else {
                     // Regular UDP without DPI classification
@@ -597,6 +601,8 @@ impl Connection {
                         ApplicationProtocol::Stun(_) => Duration::from_secs(30),
                         ApplicationProtocol::Mqtt(_) => Duration::from_secs(120),
                         ApplicationProtocol::Ftp(_) => Duration::from_secs(60),
+                        ApplicationProtocol::WireGuard(_) => Duration::from_secs(300),
+                        ApplicationProtocol::OpenVpn(_) => Duration::from_secs(300),
                     }
                 } else {
                     // Regular UDP without DPI classification
