@@ -30,10 +30,10 @@ pub enum MatchQuality {
     ProcfsExact,
     /// procfs match that needed a relaxed key.
     ProcfsRelaxed,
-    /// Matched the privileged socket-table snapshot taken at startup. The
-    /// connection predates the run; the owner was read before privileges
-    /// were dropped and may since have exited.
-    ProcfsSnapshot,
+    /// Matched the validated socket-table snapshot taken at startup. The
+    /// owner came from BPF or a privileged procfs scan, and both the socket
+    /// inode and process identity still match their startup values.
+    StartupSnapshot,
     /// The backend reported an owner but could not report match provenance.
     Unspecified,
 }
@@ -52,7 +52,7 @@ impl MatchQuality {
             Self::ListenerSocket => "listener socket",
             Self::ProcfsExact => "procfs exact",
             Self::ProcfsRelaxed => "procfs relaxed",
-            Self::ProcfsSnapshot => "startup snapshot",
+            Self::StartupSnapshot => "startup snapshot",
             Self::Unspecified => "unspecified",
         }
     }
@@ -70,7 +70,7 @@ impl MatchQuality {
             Self::ListenerSocket => "listener-socket",
             Self::ProcfsExact => "procfs-exact",
             Self::ProcfsRelaxed => "procfs-relaxed",
-            Self::ProcfsSnapshot => "procfs-snapshot",
+            Self::StartupSnapshot => "startup-snapshot",
             Self::Unspecified => "unspecified",
         }
     }
@@ -385,7 +385,7 @@ mod tests {
             (MatchQuality::ListenerSocket, "listener-socket"),
             (MatchQuality::ProcfsExact, "procfs-exact"),
             (MatchQuality::ProcfsRelaxed, "procfs-relaxed"),
-            (MatchQuality::ProcfsSnapshot, "procfs-snapshot"),
+            (MatchQuality::StartupSnapshot, "startup-snapshot"),
             (MatchQuality::Unspecified, "unspecified"),
         ];
 
@@ -398,7 +398,7 @@ mod tests {
         assert!(MatchQuality::ExactTuple.is_exact());
         assert!(MatchQuality::ProcfsExact.is_exact());
         assert!(!MatchQuality::ProcfsRelaxed.is_exact());
-        assert!(!MatchQuality::ProcfsSnapshot.is_exact());
+        assert!(!MatchQuality::StartupSnapshot.is_exact());
         assert!(!MatchQuality::Unspecified.is_exact());
     }
 

@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use super::ebpf::EbpfSocketTracker;
+use super::ebpf::{EbpfSocketTracker, snapshot_task_file_owners};
 use crate::linux::ebpf::SocketMatch;
 use crate::linux::process::{refine_truncated_name, resolve_executable, resolve_parent_pid};
 use rustnet_core::network::types::ProtocolState;
@@ -54,7 +54,6 @@ impl Default for CleanupConfig {
 impl EnhancedLinuxProcessLookup {
     pub(super) fn new() -> Result<Self> {
         let cleanup_config = CleanupConfig::default();
-        let procfs_lookup = LinuxProcessLookup::new()?;
 
         let (ebpf_tracker, degradation_reason) = match EbpfSocketTracker::new() {
             Ok((tracker_opt, reason)) => {
@@ -76,6 +75,33 @@ impl EnhancedLinuxProcessLookup {
                 (None, DegradationReason::EbpfLoadFailed(e.to_string()))
             }
         };
+
+        // Attach the live tracker before taking the one-shot task-file
+        // inventory. Connections created during or after the inventory are
+        // then covered by fentry/kprobe even if the iterator does not visit
+        // them. Keep the iterator in a separate BPF object so an older kernel
+        // can reject it without disabling the live tracker.
+        let startup_owners = if ebpf_tracker.is_some() {
+            match snapshot_task_file_owners() {
+                Ok(owners) => {
+                    info!(
+                        "eBPF task-file startup snapshot found {} uniquely owned socket inodes",
+                        owners.len()
+                    );
+                    owners
+                }
+                Err(error) => {
+                    info!(
+                        "eBPF task-file startup snapshot unavailable: {}; using procfs ownership",
+                        error
+                    );
+                    Default::default()
+                }
+            }
+        } else {
+            Default::default()
+        };
+        let procfs_lookup = LinuxProcessLookup::new_with_bpf_startup_owners(startup_owners)?;
 
         Ok(Self {
             ebpf_tracker: RwLock::new(ebpf_tracker),

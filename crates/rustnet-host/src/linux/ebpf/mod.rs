@@ -5,8 +5,10 @@
 
 mod loader;
 mod maps_libbpf;
+mod task_file;
 mod tracker_libbpf;
 
+pub(super) use task_file::snapshot_task_file_owners;
 pub(super) use tracker_libbpf::LibbpfSocketTracker as EbpfSocketTracker;
 
 use crate::MatchQuality;

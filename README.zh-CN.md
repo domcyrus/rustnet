@@ -63,8 +63,9 @@ RustNet 在 Linux 上默认使用内核 eBPF 程序进行进程识别，从而�
 - 在该富化流程运行前就已退出的短命进程，仍保留 eBPF 记录的 16 字符名称
 
 **回退行为：**
+- 在 Linux 5.11 及更高版本上，一次性的 BPF task-file 迭代器会清点 RustNet 启动前已经打开的 socket；使用文件 capabilities 运行时，也能识别 root 和其他用户拥有的 socket
 - 当 eBPF 加载失败或权限不足时，RustNet 会自动回退到基于 procfs 的标准进程识别方式
-- 标准模式通过 procfs 扫描以同样的方式解析进程名，但 CPU 开销更高
+- 旧版内核和纯 procfs 构建通过 procfs 扫描解析进程名，CPU 开销更高，并且只能检查当前 RustNet 用户可见的 socket 所有者
 - eBPF 默认启用，无需任何特殊编译参数
 
 如需关闭 eBPF、仅使用 procfs 模式，请这样构建：

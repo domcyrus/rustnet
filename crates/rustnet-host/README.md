@@ -76,10 +76,13 @@ When a platform can't use its optimal method, `ProcessLookup::get_degradation_re
 reports why (e.g. missing `CAP_BPF`, no root for PKTAP) via `DegradationReason`,
 which front-ends can surface to the user.
 
-Both Linux BPF objects use CO-RE for safe socket field access and therefore
+All Linux BPF objects use CO-RE for safe kernel field access and therefore
 require usable target BTF. A compatible target-BTF kernel tries fentry/fexit
-first and legacy kprobes second. A kernel without usable target BTF falls
-directly to procfs rather than relying on fixed structure offsets.
+first and legacy kprobes second. On Linux 5.11 and newer, a separate one-shot
+task-file iterator captures socket owners that predate the live probes. Its
+failure leaves the selected live tracker running and falls back to the procfs
+startup inventory. A kernel without usable target BTF falls directly to procfs
+rather than relying on fixed structure offsets.
 
 ## Linux eBPF integration matrix
 
@@ -98,6 +101,11 @@ sudo -E cargo test -p rustnet-host --features ebpf -- \
 sudo -E cargo test -p rustnet-host --features ebpf -- \
   --ignored --exact \
   linux::ebpf::tracker_libbpf::integration_tests::legacy_kprobe_socket_attribution_matrix \
+  --nocapture
+
+sudo -E cargo test -p rustnet-host --features ebpf -- \
+  --ignored --exact \
+  linux::ebpf::task_file::tests::kernel_iterator_reports_current_process_socket \
   --nocapture
 ```
 
