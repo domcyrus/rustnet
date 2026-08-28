@@ -151,18 +151,21 @@ type InodeProcessMap = HashMap<u64, SocketOwner>;
 /// Socket owners discovered before the procfs connection tables are parsed.
 ///
 /// The BPF task-file iterator and procfs may both report an inode. Repeated
-/// reports from the same TGID are harmless, but an inode held by different
-/// processes is ambiguous and must not be attributed to whichever scan entry
-/// happened to arrive last.
+/// reports from the same TGID are harmless, but fork and fd passing let
+/// several processes hold one socket: a pre-forking server's workers all
+/// carry the listening inode their master opened. Those inodes keep a
+/// best-effort owner for the live table, chosen by lowest PID so that
+/// /proc iteration order cannot change the answer between refreshes, and are
+/// reported separately as shared so the startup snapshot can skip them.
 #[derive(Debug, Default)]
 pub(super) struct StartupSocketOwners {
     owners: InodeProcessMap,
-    ambiguous: HashSet<u64>,
+    shared: HashSet<u64>,
 }
 
 impl StartupSocketOwners {
     pub(super) fn insert(&mut self, inode: u64, owner: SocketOwner) {
-        if inode == 0 || self.ambiguous.contains(&inode) {
+        if inode == 0 {
             return;
         }
 
@@ -170,12 +173,16 @@ impl StartupSocketOwners {
             Entry::Vacant(entry) => {
                 entry.insert(owner);
             }
+            // The same process seen twice: prefer the later report, which is
+            // the procfs scan refreshing what BPF recorded first.
             Entry::Occupied(mut entry) if entry.get().pid == owner.pid => {
                 entry.insert(owner);
             }
-            Entry::Occupied(entry) => {
-                entry.remove();
-                self.ambiguous.insert(inode);
+            Entry::Occupied(mut entry) => {
+                self.shared.insert(inode);
+                if owner.pid < entry.get().pid {
+                    entry.insert(owner);
+                }
             }
         }
     }
@@ -189,8 +196,10 @@ impl StartupSocketOwners {
         self.owners.get(&inode)
     }
 
-    fn into_map(self) -> InodeProcessMap {
-        self.owners
+    /// The owner map for the live socket table, plus the inodes held by more
+    /// than one process.
+    fn into_parts(self) -> (InodeProcessMap, HashSet<u64>) {
+        (self.owners, self.shared)
     }
 }
 /// Map of PID to process name
@@ -209,6 +218,16 @@ struct SnapshotOwner {
     pid: u32,
     name: String,
     inode: u64,
+    /// Process start time in clock ticks, when it was readable at startup.
+    /// `comm` alone cannot survive PID reuse because any process may rename
+    /// itself with `prctl(PR_SET_NAME)`; the start time cannot be forged.
+    start_ticks: Option<u64>,
+}
+
+/// Process start time in clock ticks, stable for the life of the process.
+fn process_start_ticks(pid: u32) -> Option<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    Some(parse_proc_stat(&stat)?.start_ticks)
 }
 
 /// Build the startup fallback table from the startup socket inventory,
@@ -216,9 +235,14 @@ struct SnapshotOwner {
 /// come from different sockets. A tuple occupied by more than one socket
 /// (SO_REUSEPORT plus connected UDP makes exact duplicates legal) is
 /// dropped entirely, even when only one of its rows resolved an owner:
-/// observed traffic cannot be assigned to either socket. Rows without an
-/// inode or a resolved owner contribute no entry of their own.
-fn build_startup_snapshot(sockets: &SocketSnapshot) -> HashMap<ConnectionKey, SnapshotOwner> {
+/// observed traffic cannot be assigned to either socket. So is a socket held
+/// by several processes, whose single owner is a best-effort pick the live
+/// table can live with but a long-lived fallback should not freeze. Rows
+/// without an inode or a resolved owner contribute no entry of their own.
+fn build_startup_snapshot(
+    sockets: &SocketSnapshot,
+    shared_inodes: &HashSet<u64>,
+) -> HashMap<ConnectionKey, SnapshotOwner> {
     let key_of = |socket: &HostSocket| {
         socket.remote_addr.map(|remote_addr| ConnectionKey {
             protocol: socket.protocol,
@@ -241,7 +265,7 @@ fn build_startup_snapshot(sockets: &SocketSnapshot) -> HashMap<ConnectionKey, Sn
         else {
             continue;
         };
-        if occupancy.get(&key) != Some(&1) {
+        if occupancy.get(&key) != Some(&1) || shared_inodes.contains(&inode) {
             continue;
         }
         snapshot.insert(
@@ -250,6 +274,7 @@ fn build_startup_snapshot(sockets: &SocketSnapshot) -> HashMap<ConnectionKey, Sn
                 pid: owner.pid,
                 name: owner.name.clone(),
                 inode,
+                start_ticks: process_start_ticks(owner.pid),
             },
         );
     }
@@ -257,13 +282,21 @@ fn build_startup_snapshot(sockets: &SocketSnapshot) -> HashMap<ConnectionKey, Sn
 }
 
 /// Whether a startup-snapshot entry's recorded owner is still the same
-/// process: `/proc/<pid>/comm` (world-readable even after the uid drop) must
-/// still exist and match the name captured at startup. This rejects owners
-/// that have exited and PIDs since reused by a different program.
-fn snapshot_owner_still_matches(pid: u32, name: &str) -> bool {
-    fs::read_to_string(format!("/proc/{pid}/comm"))
-        .map(|comm| comm.trim() == name)
-        .unwrap_or(false)
+/// process. `/proc/<pid>` stays world-readable after the uid drop, so both
+/// the name captured at startup and, when it was readable, the process start
+/// time must still match. This rejects owners that have exited and PIDs
+/// since reused by a different program, including one that renamed itself to
+/// impersonate the original.
+fn snapshot_owner_still_matches(owner: &SnapshotOwner) -> bool {
+    let name_matches = fs::read_to_string(format!("/proc/{}/comm", owner.pid))
+        .map(|comm| comm.trim() == owner.name)
+        .unwrap_or(false);
+
+    name_matches
+        && match owner.start_ticks {
+            Some(start_ticks) => process_start_ticks(owner.pid) == Some(start_ticks),
+            None => true,
+        }
 }
 
 fn parse_proc_tcp_state(value: &str) -> HostTcpState {
@@ -316,10 +349,11 @@ impl LinuxProcessLookup {
     fn new_with_startup_socket_owners(owners: StartupSocketOwners) -> Result<Self> {
         // Populate the cache immediately so early connections have process names available.
         // This ensures the PID→name cache is ready before packet capture starts.
-        let (process_map, _pid_names, socket_snapshot) = Self::build_process_map(owners)?;
+        let (process_map, _pid_names, socket_snapshot, shared_inodes) =
+            Self::build_process_map(owners)?;
 
         Ok(Self {
-            startup_snapshot: build_startup_snapshot(&socket_snapshot),
+            startup_snapshot: build_startup_snapshot(&socket_snapshot, &shared_inodes),
             cache: RwLock::new(process_map),
             #[cfg(feature = "ebpf")]
             pid_names: RwLock::new(_pid_names),
@@ -416,8 +450,7 @@ impl LinuxProcessLookup {
         // verifiably still the same process. The refresh cadence bounds the
         // reuse-detection window to one refresh interval.
         let owner = self.startup_snapshot.get(&key)?;
-        if self.snapshot_socket_unchanged(&key, owner.inode)
-            && snapshot_owner_still_matches(owner.pid, &owner.name)
+        if self.snapshot_socket_unchanged(&key, owner.inode) && snapshot_owner_still_matches(owner)
         {
             return Some((owner.pid, owner.name.clone(), MatchQuality::StartupSnapshot));
         }
@@ -477,12 +510,17 @@ impl LinuxProcessLookup {
     /// Build connection -> process mapping and PID -> name mapping
     fn build_process_map(
         startup_owners: StartupSocketOwners,
-    ) -> Result<(ConnectionProcessMap, PidNameMap, SocketSnapshot)> {
+    ) -> Result<(
+        ConnectionProcessMap,
+        PidNameMap,
+        SocketSnapshot,
+        HashSet<u64>,
+    )> {
         let mut process_map = HashMap::new();
         let mut sockets = Vec::new();
 
         // First, build inode -> process mapping and PID -> name mapping
-        let (inode_to_process, pid_names) = Self::build_inode_map(startup_owners)?;
+        let (inode_to_process, pid_names, shared_inodes) = Self::build_inode_map(startup_owners)?;
 
         // Then, parse network files to map connections -> inodes -> processes
         Self::parse_and_map(
@@ -514,13 +552,18 @@ impl LinuxProcessLookup {
             &mut sockets,
         )?;
 
-        Ok((process_map, pid_names, SocketSnapshot::new(sockets)))
+        Ok((
+            process_map,
+            pid_names,
+            SocketSnapshot::new(sockets),
+            shared_inodes,
+        ))
     }
 
     /// Build inode -> (pid, process_name) mapping and PID -> process_name mapping
     fn build_inode_map(
         mut startup_owners: StartupSocketOwners,
-    ) -> Result<(InodeProcessMap, PidNameMap)> {
+    ) -> Result<(InodeProcessMap, PidNameMap, HashSet<u64>)> {
         #[cfg(feature = "ebpf")]
         let mut pid_names = startup_owners
             .owners
@@ -576,7 +619,8 @@ impl LinuxProcessLookup {
             }
         }
 
-        Ok((startup_owners.into_map(), pid_names))
+        let (inode_map, shared_inodes) = startup_owners.into_parts();
+        Ok((inode_map, pid_names, shared_inodes))
     }
 
     /// Parse /proc/net file and map connections to processes
@@ -701,7 +745,7 @@ impl ProcessLookup for LinuxProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
-        let (process_map, _pid_names, socket_snapshot) =
+        let (process_map, _pid_names, socket_snapshot, _shared_inodes) =
             Self::build_process_map(StartupSocketOwners::default())?;
 
         *self.cache.write().expect("process cache lock poisoned") = process_map;
@@ -757,14 +801,43 @@ mod tests {
     }
 
     #[test]
-    fn startup_socket_owners_reject_cross_process_ambiguity() {
+    fn startup_socket_owners_report_a_shared_inode_without_losing_its_owner() {
+        // A pre-forking server: the master opened the listening socket and
+        // every worker inherited it. Dropping the inode would leave the
+        // listener ownerless in the live table, so the lowest PID (the
+        // master) wins and the inode is reported as shared instead.
         let mut owners = StartupSocketOwners::default();
-        owners.insert(42, SocketOwner::new(10, "first", Some(1000)));
-        owners.insert(42, SocketOwner::new(20, "second", Some(1001)));
-        owners.insert(42, SocketOwner::new(10, "first", Some(1000)));
+        owners.insert(42, SocketOwner::new(1001, "nginx", Some(33)));
+        owners.insert(42, SocketOwner::new(1000, "nginx", Some(0)));
+        owners.insert(42, SocketOwner::new(1002, "nginx", Some(33)));
 
-        assert_eq!(owners.len(), 0);
-        assert!(owners.get(42).is_none());
+        assert_eq!(
+            owners.get(42),
+            Some(&SocketOwner::new(1000, "nginx", Some(0)))
+        );
+
+        let (inode_map, shared) = owners.into_parts();
+        assert_eq!(
+            inode_map.get(&42),
+            Some(&SocketOwner::new(1000, "nginx", Some(0)))
+        );
+        assert!(shared.contains(&42));
+    }
+
+    #[test]
+    fn startup_socket_owners_pick_a_shared_inode_owner_independent_of_scan_order() {
+        // /proc iteration order must not change the answer between refreshes.
+        let mut forward = StartupSocketOwners::default();
+        for pid in [1000, 1001, 1002] {
+            forward.insert(42, SocketOwner::new(pid, "nginx", Some(0)));
+        }
+        let mut reverse = StartupSocketOwners::default();
+        for pid in [1002, 1001, 1000] {
+            reverse.insert(42, SocketOwner::new(pid, "nginx", Some(0)));
+        }
+
+        assert_eq!(forward.get(42).map(|owner| owner.pid), Some(1000));
+        assert_eq!(reverse.get(42).map(|owner| owner.pid), Some(1000));
     }
 
     #[test]
@@ -783,7 +856,7 @@ mod tests {
     fn bpf_startup_owner_joins_the_procfs_socket_inode() {
         let mut owners = StartupSocketOwners::default();
         owners.insert(123, SocketOwner::new(10, "nordvpnd", Some(0)));
-        let inode_map = owners.into_map();
+        let (inode_map, _shared) = owners.into_parts();
         let mut process_map = ConnectionProcessMap::new();
         let mut sockets = Vec::new();
         let table = concat!(
@@ -851,7 +924,15 @@ mod tests {
     ) -> LinuxProcessLookup {
         let (local, remote, pid, name, inode) = owner;
         let mut startup = HashMap::new();
-        startup.insert(key(local, remote), SnapshotOwner { pid, name, inode });
+        startup.insert(
+            key(local, remote),
+            SnapshotOwner {
+                pid,
+                name,
+                inode,
+                start_ticks: process_start_ticks(pid),
+            },
+        );
         LinuxProcessLookup {
             startup_snapshot: startup,
             cache: RwLock::new(ConnectionProcessMap::new()),
@@ -876,7 +957,7 @@ mod tests {
             owned_socket("192.168.1.10:44444", "203.0.113.5:22", 777, 41, "sshd"),
             owned_socket("192.168.1.10:55555", "203.0.113.6:443", 888, 42, "nginx"),
         ]);
-        let snapshot = build_startup_snapshot(&sockets);
+        let snapshot = build_startup_snapshot(&sockets, &HashSet::new());
 
         let a = &snapshot[&key("192.168.1.10:44444", "203.0.113.5:22")];
         assert_eq!((a.pid, a.name.as_str(), a.inode), (41, "sshd", 777));
@@ -893,9 +974,26 @@ mod tests {
         let owned = owned_socket("192.168.1.10:5353", "203.0.113.5:5353", 777, 41, "resolver");
         let ownerless = host_socket("192.168.1.10:5353", "203.0.113.5:5353", 778);
         let sockets = SocketSnapshot::new(vec![owned, ownerless]);
-        let snapshot = build_startup_snapshot(&sockets);
+        let snapshot = build_startup_snapshot(&sockets, &HashSet::new());
 
         assert!(snapshot.is_empty());
+    }
+
+    #[test]
+    fn startup_snapshot_skips_a_socket_held_by_several_processes() {
+        // The live table keeps the master as a best-effort owner, but the
+        // long-lived fallback must not freeze that pick: the master can exit
+        // while a worker keeps the socket open.
+        let sockets = SocketSnapshot::new(vec![owned_socket(
+            "192.168.1.10:44444",
+            "203.0.113.5:22",
+            777,
+            1000,
+            "nginx",
+        )]);
+        let shared = HashSet::from([777]);
+
+        assert!(build_startup_snapshot(&sockets, &shared).is_empty());
     }
 
     #[test]
@@ -905,7 +1003,7 @@ mod tests {
         inodeless.native_id = None;
         let sockets = SocketSnapshot::new(vec![ownerless, inodeless]);
 
-        assert!(build_startup_snapshot(&sockets).is_empty());
+        assert!(build_startup_snapshot(&sockets, &HashSet::new()).is_empty());
     }
 
     #[test]
@@ -992,6 +1090,38 @@ mod tests {
     }
 
     #[test]
+    fn startup_snapshot_rejects_a_reused_pid_that_took_the_owner_name() {
+        // Socket unchanged and a live process answers to the recorded name,
+        // but it started later: any process can rename itself with
+        // prctl(PR_SET_NAME), so only the start time settles PID reuse.
+        let mut startup = HashMap::new();
+        startup.insert(
+            key("192.168.1.10:44444", "203.0.113.5:22"),
+            SnapshotOwner {
+                pid: own_pid(),
+                name: own_comm(),
+                inode: 777,
+                start_ticks: process_start_ticks(own_pid()).map(|ticks| ticks + 1),
+            },
+        );
+        let lookup = LinuxProcessLookup {
+            startup_snapshot: startup,
+            cache: RwLock::new(ConnectionProcessMap::new()),
+            #[cfg(feature = "ebpf")]
+            pid_names: RwLock::new(HashMap::new()),
+            lineages: RwLock::new(HashMap::new()),
+            socket_snapshot: RwLock::new(SocketSnapshot::new(vec![host_socket(
+                "192.168.1.10:44444",
+                "203.0.113.5:22",
+                777,
+            )])),
+        };
+
+        let conn = connection("192.168.1.10:44444", "203.0.113.5:22");
+        assert!(lookup.lookup_match(&conn).is_none());
+    }
+
+    #[test]
     fn startup_snapshot_never_matches_relaxed_shapes() {
         // A stale wildcard listener entry in the snapshot must not claim
         // new inbound connections; only exact 4-tuple hits are trusted.
@@ -1016,6 +1146,7 @@ mod tests {
                 pid: 4242,
                 name: "old-owner".to_string(),
                 inode: 777,
+                start_ticks: None,
             },
         );
         let mut live = ConnectionProcessMap::new();

@@ -85,7 +85,7 @@ impl EnhancedLinuxProcessLookup {
             match snapshot_task_file_owners() {
                 Ok(owners) => {
                     info!(
-                        "eBPF task-file startup snapshot found {} uniquely owned socket inodes",
+                        "eBPF task-file startup snapshot found owners for {} socket inodes",
                         owners.len()
                     );
                     owners
