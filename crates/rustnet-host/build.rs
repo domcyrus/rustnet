@@ -59,11 +59,11 @@ fn compile_ebpf_programs() {
     let vmlinux_include_path =
         get_vmlinux_header(vmlinux_arch).expect("Failed to locate bundled vmlinux.h");
 
-    for backend in ["fentry", "kprobe"] {
-        let src = format!("src/linux/ebpf/programs/socket_tracker_{backend}.bpf.c");
-        let out = out_dir.join(format!("socket_tracker_{backend}.skel.rs"));
+    for program in ["fentry", "kprobe", "task_file"] {
+        let src = format!("src/linux/ebpf/programs/socket_tracker_{program}.bpf.c");
+        let out = out_dir.join(format!("socket_tracker_{program}.skel.rs"));
 
-        println!("cargo:warning=Building eBPF {backend} backend using libbpf-cargo");
+        println!("cargo:warning=Building eBPF {program} program using libbpf-cargo");
 
         SkeletonBuilder::new()
             .source(&src)

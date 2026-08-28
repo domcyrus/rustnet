@@ -63,8 +63,9 @@ RustNet uses kernel eBPF programs by default on Linux for enhanced performance a
 - Short-lived processes that exit before this enrichment runs keep the eBPF-recorded 16-character name
 
 **Fallback Behavior:**
+- On Linux 5.11 and newer, a one-shot BPF task-file iterator inventories sockets that were already open at startup, including sockets owned by root and other users when RustNet runs with file capabilities
 - When eBPF fails to load or lacks sufficient permissions, RustNet automatically falls back to standard procfs-based process identification
-- Standard mode resolves names the same way via procfs scanning, but with higher CPU overhead
+- Older kernels and procfs-only builds resolve names through procfs scanning, which has higher CPU overhead and can only inspect socket owners visible to the RustNet user
 - eBPF is enabled by default; no special build flags needed
 
 To disable eBPF and use procfs-only mode, build with:

@@ -263,6 +263,7 @@ The same backend publishes a socket snapshot every 5 seconds for the Host tab. T
 **eBPF Mode (Default on Linux):**
 - Uses kernel eBPF programs attached to socket syscalls
 - Captures socket creation events with process context
+- On Linux 5.11+, runs a one-shot task-file iterator after attaching the live probes to capture owners of sockets that predate RustNet, including other users' sockets in file-capability mode
 - Provides lower overhead than procfs scanning
 - Records the group leader's TGID, the acting TID, and credentials; the name, executable path, and PPID are enriched in user space via procfs
 - **Limitations:**
@@ -273,7 +274,8 @@ The same backend publishes a socket snapshot every 5 seconds for the Host tab. T
   - Note: CAP_NET_ADMIN is NOT required (uses read-only, non-promiscuous packet capture)
 
 **Fallback Behavior:**
-- If eBPF fails to load (permissions, kernel compatibility), automatically falls back to procfs mode
+- If the task-file iterator is unavailable, keeps the live eBPF tracker and uses the procfs startup inventory
+- If the live eBPF tracker fails to load, automatically falls back to procfs mode
 - TUI Statistics panel shows active detection method
 
 #### macOS

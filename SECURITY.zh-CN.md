@@ -65,9 +65,10 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 ```
 
 root uid 降权的权衡：降权后，procfs 回退路径的进程归属只能检查目标用户拥有的进程，
-`/var/log/pods` 下的 Kubernetes 日志目录也可能不可读。eBPF 快速路径（默认）不受影响。
-如果依赖纯 procfs 归属（如未启用 eBPF 的构建）且需要归属其他用户的进程，请使用
-`--no-uid-drop`。
+`/var/log/pods` 下的 Kubernetes 日志目录也可能不可读。在 Linux 5.11 及更高版本上，
+默认 eBPF 路径会在降权前通过一次性的 task-file 迭代器清点 socket，因此其他用户拥有的
+既有 socket 仍可归属。如果依赖纯 procfs 归属（如未启用 eBPF 的构建或旧版内核）且需要
+归属其他用户的进程，请使用 `--no-uid-drop`。
 
 ### 优雅降级
 
@@ -271,6 +272,7 @@ RustNet 完全在本地运行：
 - 现代内核需要额外的 Linux capabilities（`CAP_BPF`、`CAP_PERFMON`）
 - eBPF 程序在加载前由内核验证
 - 仅限只读操作（不修改数据包）
+- 在 Linux 5.11 及更高版本上，一次性的 task-file 迭代器会清点既有 socket 的所有者
 - 如果 eBPF 失败，自动回退到 procfs
 
 ## 威胁模型<a id="threat-model"></a>
