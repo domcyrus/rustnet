@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   between the local and remote advertised windows. Both are now shown (`↓`
   local, `↑` remote), in bytes only when the captured handshake proved the
   window scale and as the raw header field otherwise (#589)
+- **TCP Analytics for a Connection's First Packet**: the packet that creates a
+  connection now reaches the TCP analytics. For a connection this host
+  initiates that packet is its own SYN, the only carrier of the local
+  window-scale option, so windows could never be reported in bytes even with
+  the whole handshake captured (#589)
+- **Duplicate ACK False Positives**: a repeated ACK only counts as a duplicate
+  when this host has data outstanding and the advertised window is unchanged
+  (RFC 5681), so an idle connection's keepalives and the peer's window updates
+  no longer inflate the counter or report a fast retransmit on a connection
+  that never retransmitted. A RST no longer overwrites the last advertised
+  window with its meaningless zero (#589)
 - **Default Npcap Installations on Windows**: RustNet now finds Npcap in its
   standard `System32\Npcap` directory, so WinPcap API-compatible mode is no
   longer required. `--help` and `--version` also work without Npcap installed
