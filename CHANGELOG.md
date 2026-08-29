@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **TCP Window Size Per Direction**: the Details Transport Health card kept a
+  single window slot that every segment overwrote, so the value flipped
+  between the local and remote advertised windows. Both are now shown (`↓`
+  local, `↑` remote), in bytes only when the captured handshake proved the
+  window scale and as the raw header field otherwise (#589)
 - **Default Npcap Installations on Windows**: RustNet now finds Npcap in its
   standard `System32\Npcap` directory, so WinPcap API-compatible mode is no
   longer required. `--help` and `--version` also work without Npcap installed

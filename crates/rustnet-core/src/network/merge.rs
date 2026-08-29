@@ -131,14 +131,9 @@ fn analyze_tcp_segment(
         }
     }
 
-    // Track window size. SYN windows are never scaled; for data segments the
-    // sender's negotiated shift applies (0 when the handshake wasn't seen).
-    analytics.last_window_size = window;
-    analytics.last_window_shift = if is_syn {
-        0
-    } else {
-        analytics.window_shift_for(is_outgoing)
-    };
+    // Track the advertised window per direction, since each end advertises
+    // its own and one shared slot would flip between them packet by packet.
+    analytics.record_window(window, is_outgoing, is_syn);
 
     if is_outgoing {
         // Outbound packet - check for retransmissions
@@ -1414,6 +1409,32 @@ mod tests {
         )
     }
 
+    /// One data segment in the given direction advertising `window`.
+    fn window_segment(analytics: &mut TcpAnalytics, window: u16, is_outgoing: bool) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq: 1,
+                ack: 1,
+                window,
+                payload_len: 0,
+                is_outgoing,
+                has_ack_flag: true,
+                is_syn: false,
+                window_scale: None,
+            },
+            t0(),
+        );
+    }
+
+    fn window_send(analytics: &mut TcpAnalytics, window: u16) {
+        window_segment(analytics, window, true);
+    }
+
+    fn window_recv(analytics: &mut TcpAnalytics, window: u16) {
+        window_segment(analytics, window, false);
+    }
+
     /// One SYN (or SYN-ACK, via `is_outgoing`/`ack`) with the given
     /// window-scale verdict and a raw window of 65535.
     fn syn(analytics: &mut TcpAnalytics, is_outgoing: bool, window_scale: SynWindowScale) {
@@ -1437,17 +1458,40 @@ mod tests {
     fn window_scale_applies_after_observed_handshake() {
         let mut a = TcpAnalytics::new();
         syn(&mut a, true, SynWindowScale::Present(7));
-        assert_eq!(a.last_window_shift, 0, "SYN windows are never scaled");
+        let out = a.last_window_out.unwrap();
+        assert_eq!(out.shift, 0, "SYN windows are never scaled");
+        assert!(out.scale_known, "a SYN window is an exact byte count");
         syn(&mut a, false, SynWindowScale::Present(8));
-        assert_eq!(a.last_window_shift, 0, "SYN-ACK windows are never scaled");
+        assert_eq!(
+            a.last_window_in.unwrap().shift,
+            0,
+            "SYN-ACK windows are never scaled"
+        );
 
         recv(&mut a, 1, 1, 100);
-        assert_eq!(a.last_window_shift, 8, "inbound uses the remote's shift");
-        assert_eq!(a.last_window_bytes(), 65535 << 8);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 8, "inbound uses the remote's shift");
+        assert_eq!(inbound.bytes(), 65535 << 8);
 
         send(&mut a, 1, 100);
-        assert_eq!(a.last_window_shift, 7, "outbound uses the local shift");
-        assert_eq!(a.last_window_bytes(), 65535 << 7);
+        let outbound = a.last_window_out.unwrap();
+        assert_eq!(outbound.shift, 7, "outbound uses the local shift");
+        assert_eq!(outbound.bytes(), 65535 << 7);
+    }
+
+    #[test]
+    fn window_directions_are_tracked_separately() {
+        // Regression: one shared slot made the displayed window flip between
+        // the two ends' advertisements on every packet.
+        let mut a = TcpAnalytics::new();
+        syn(&mut a, true, SynWindowScale::Present(7));
+        syn(&mut a, false, SynWindowScale::Present(7));
+
+        window_recv(&mut a, 8);
+        window_send(&mut a, 1100);
+
+        assert_eq!(a.last_window_in.unwrap().bytes(), 8 << 7);
+        assert_eq!(a.last_window_out.unwrap().bytes(), 1100 << 7);
     }
 
     #[test]
@@ -1456,8 +1500,10 @@ mod tests {
         syn(&mut a, true, SynWindowScale::Present(7));
         syn(&mut a, false, SynWindowScale::Absent); // peer refused scaling
         recv(&mut a, 1, 1, 100);
-        assert_eq!(a.last_window_shift, 0);
-        assert_eq!(a.last_window_bytes(), 65535);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 0);
+        assert!(inbound.scale_known, "absence of the option is a conclusion");
+        assert_eq!(inbound.bytes(), 65535);
     }
 
     #[test]
@@ -1469,21 +1515,28 @@ mod tests {
         syn(&mut a, true, SynWindowScale::Present(7));
         syn(&mut a, false, SynWindowScale::Unknown); // options unexaminable
         recv(&mut a, 1, 1, 100);
-        assert_eq!(a.last_window_shift, 0, "no conclusion yet, raw window");
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 0, "no conclusion yet, raw window");
+        assert!(!inbound.scale_known);
 
         syn(&mut a, false, SynWindowScale::Present(8)); // retransmitted, complete
         recv(&mut a, 101, 1, 100);
-        assert_eq!(a.last_window_shift, 8);
-        assert_eq!(a.last_window_bytes(), 65535 << 8);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 8);
+        assert!(inbound.scale_known);
+        assert_eq!(inbound.bytes(), 65535 << 8);
     }
 
     #[test]
     fn window_unscaled_when_handshake_not_observed() {
-        // Connection picked up mid-stream: no SYNs seen, raw value shown.
+        // Connection picked up mid-stream: no SYNs seen, so the shift is
+        // unknown and the raw field is all that can honestly be reported.
         let mut a = TcpAnalytics::new();
         recv(&mut a, 1, 1, 100);
-        assert_eq!(a.last_window_shift, 0);
-        assert_eq!(a.last_window_bytes(), 65535);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 0);
+        assert!(!inbound.scale_known);
+        assert_eq!(inbound.raw, 65535);
     }
 
     #[test]

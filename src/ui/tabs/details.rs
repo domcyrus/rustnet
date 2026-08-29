@@ -25,7 +25,8 @@ use std::{
 
 use crate::network::dns::DnsResolver;
 use crate::network::types::{
-    AddrKind, Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState,
+    AddrKind, Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState, TcpAnalytics,
+    WindowSample,
 };
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
@@ -252,6 +253,35 @@ impl<'a> DetailsBuilder<'a> {
             self.plain_line(Line::from(""));
         }
     }
+}
+
+/// Advertised receive windows, rendered as the pair they are: `↓` is the
+/// window this host advertised, which bounds inbound data, and `↑` the one
+/// the remote advertised, which bounds outbound data. The arrows match the
+/// RX/TX ones used for rates. A single last-segment value would instead flip
+/// between the two ends' windows on every packet.
+///
+/// Until both SYNs are seen the window-scale shift is unknown (RFC 7323), so
+/// the raw 16-bit field is labelled as raw rather than passed off as bytes.
+fn format_window_sizes(counters: Option<&TcpAnalytics>) -> String {
+    let Some(counters) = counters else {
+        return NONE_PLACEHOLDER.to_string();
+    };
+    // Nothing seen in either direction yet: one placeholder reads better
+    // than a pair of them.
+    if counters.last_window_out.is_none() && counters.last_window_in.is_none() {
+        return NONE_PLACEHOLDER.to_string();
+    }
+    let side = |sample: Option<WindowSample>| match sample {
+        Some(sample) if sample.scale_known => format_bytes(sample.bytes()),
+        Some(sample) => format!("{} raw", sample.raw),
+        None => NONE_PLACEHOLDER.to_string(),
+    };
+    format!(
+        "↓ {} · ↑ {}",
+        side(counters.last_window_out),
+        side(counters.last_window_in)
+    )
 }
 
 fn request_health_fields(details: &mut DetailsBuilder<'_>, conn: &Connection) {
@@ -1796,7 +1826,6 @@ pub(in crate::ui) fn draw_connection_details(
                 "Fast Retransmits",
                 counters.map(|a| a.fast_retransmit_count),
             ),
-            ("Window Size", counters.map(|a| a.last_window_bytes())),
         ] {
             details.field(
                 label,
@@ -1805,6 +1834,7 @@ pub(in crate::ui) fn draw_connection_details(
                     .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
             );
         }
+        details.field("Window Size", format_window_sizes(counters));
     }
     details.pad_section(metrics_start, TRANSPORT_CARD_ROWS);
     right_ranges.push(metrics_start..details.rows());
@@ -2538,5 +2568,49 @@ mod endpoint_annotation_tests {
         assert_eq!(remote_scope(&conn), Scope::Private);
         conn.remote_addr_kind = AddrKind::Broadcast;
         assert_eq!(remote_scope(&conn), Scope::Broadcast);
+    }
+}
+
+#[cfg(test)]
+mod window_size_tests {
+    use super::format_window_sizes;
+    use crate::network::types::{TcpAnalytics, WindowSample};
+
+    fn sample(raw: u16, shift: u8, scale_known: bool) -> Option<WindowSample> {
+        Some(WindowSample {
+            raw,
+            shift,
+            scale_known,
+        })
+    }
+
+    #[test]
+    fn reports_each_direction_separately() {
+        let mut analytics = TcpAnalytics::new();
+        analytics.last_window_out = sample(1100, 7, true);
+        analytics.last_window_in = sample(8, 7, true);
+        assert_eq!(
+            format_window_sizes(Some(&analytics)),
+            "↓ 137.50 KB · ↑ 1.00 KB"
+        );
+    }
+
+    #[test]
+    fn raw_field_shown_when_the_scale_is_unknown() {
+        // Handshake missed, so the shift is a guess: report the header field
+        // rather than an invented byte count.
+        let mut analytics = TcpAnalytics::new();
+        analytics.last_window_out = sample(1100, 0, false);
+        analytics.last_window_in = sample(8, 0, false);
+        assert_eq!(
+            format_window_sizes(Some(&analytics)),
+            "↓ 1100 raw · ↑ 8 raw"
+        );
+    }
+
+    #[test]
+    fn placeholder_until_a_window_is_seen() {
+        assert_eq!(format_window_sizes(None), "-");
+        assert_eq!(format_window_sizes(Some(&TcpAnalytics::new())), "-");
     }
 }

@@ -243,6 +243,31 @@ impl Default for RateTracker {
     }
 }
 
+/// One direction's most recently advertised receive window. The header
+/// field is 16 bits; the real window is that value shifted by the sender's
+/// window-scale option from its SYN (RFC 7323), so the shift is kept with
+/// the sample that it applies to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WindowSample {
+    /// Raw 16-bit header field, before window scaling.
+    pub raw: u16,
+    /// Shift applying to `raw`: 0 on a SYN, and whenever scaling is off or
+    /// was never observed.
+    pub shift: u8,
+    /// The shift is the negotiated one rather than an assumption. False when
+    /// the handshake was missed, where the true window is `raw` shifted by
+    /// an unknown amount and only `raw` can honestly be shown.
+    pub scale_known: bool,
+}
+
+impl WindowSample {
+    /// Advertised window in bytes. Only meaningful when `scale_known`;
+    /// otherwise it is the raw field with no shift applied.
+    pub fn bytes(&self) -> u64 {
+        (self.raw as u64) << self.shift
+    }
+}
+
 /// TCP analytics for tracking retransmissions and connection quality
 #[derive(Debug, Clone)]
 pub struct TcpAnalytics {
@@ -269,14 +294,14 @@ pub struct TcpAnalytics {
     pub out_of_order_count: u64,
     pub fast_retransmit_count: u64,
 
-    // Window tracking. The header field is 16 bits; the real window is that
-    // value shifted by the sender's window-scale option from its SYN
-    // (RFC 7323). Scaling is only in effect when both SYNs offered it, so
-    // both shifts are tracked and a SYN without the option disables scaling.
-    pub last_window_size: u16,
-    /// Shift that applies to `last_window_size` (0 when scaling is off,
-    /// unknown, or the segment was a SYN, whose window is never scaled).
-    pub last_window_shift: u8,
+    // Window tracking. Each end advertises its own receive window, so the
+    // two are kept apart: a single last-segment slot flips between them on
+    // every packet and reads as a wildly jumping value.
+    /// Last window advertised by this host, which bounds what the remote
+    /// may send us.
+    pub last_window_out: Option<WindowSample>,
+    /// Last window advertised by the remote, which bounds what we may send.
+    pub last_window_in: Option<WindowSample>,
     /// Window-scale shift advertised by the local side's SYN.
     pub window_scale_out: Option<u8>,
     /// Window-scale shift advertised by the remote side's SYN.
@@ -308,8 +333,8 @@ impl TcpAnalytics {
             retransmit_count: 0,
             out_of_order_count: 0,
             fast_retransmit_count: 0,
-            last_window_size: 0,
-            last_window_shift: 0,
+            last_window_out: None,
+            last_window_in: None,
             window_scale_out: None,
             window_scale_in: None,
             window_scaling_disabled: false,
@@ -318,11 +343,32 @@ impl TcpAnalytics {
         }
     }
 
-    /// Last advertised window in bytes, with the sender's window-scale
-    /// shift applied when the handshake negotiated one. Falls back to the
-    /// raw header value when the handshake was not observed.
-    pub fn last_window_bytes(&self) -> u64 {
-        (self.last_window_size as u64) << self.last_window_shift
+    /// Whether the window scaling in effect is known: both SYNs were seen,
+    /// or one of them proved the option absent. Until then a non-SYN window
+    /// is a raw header field with an unknown multiplier, not a byte count.
+    pub fn window_scale_known(&self) -> bool {
+        self.window_scaling_disabled
+            || (self.window_scale_out.is_some() && self.window_scale_in.is_some())
+    }
+
+    /// Record one direction's advertised window. `is_syn` matters twice: a
+    /// SYN's window is never scaled (RFC 7323), which also makes it an exact
+    /// byte count even when the rest of the handshake was missed.
+    pub fn record_window(&mut self, window: u16, is_outgoing: bool, is_syn: bool) {
+        let sample = WindowSample {
+            raw: window,
+            shift: if is_syn {
+                0
+            } else {
+                self.window_shift_for(is_outgoing)
+            },
+            scale_known: is_syn || self.window_scale_known(),
+        };
+        if is_outgoing {
+            self.last_window_out = Some(sample);
+        } else {
+            self.last_window_in = Some(sample);
+        }
     }
 
     /// Shift applying to a non-SYN segment sent in the given direction:

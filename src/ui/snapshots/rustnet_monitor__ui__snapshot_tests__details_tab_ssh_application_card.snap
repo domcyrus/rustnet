@@ -29,7 +29,7 @@ Remote Hostname       -                                               TCP Retran
 Attributed Name       -                                               Out-of-Order (O)      0                                              ▐
 Attributed Via        -                                               Duplicate ACKs        0                                              ▐
 Remote MAC            -                                               Fast Retransmits      0                                               
-Country               -                                               Window Size           0                                               
+Country               -                                               Window Size           -                                               
 City                  -                                                                                                                     
 ASN                   -                                                                                                                     
                                                                                                                                             
