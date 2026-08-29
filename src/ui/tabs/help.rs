@@ -225,6 +225,21 @@ const DETAILS_KEYS: &[HelpRow] = &[
     ("Esc", "Return to Overview"),
 ];
 
+const DETAILS_CONCEPTS: &[HelpRow] = &[
+    (
+        "Window Size",
+        "Advertised receive windows: ↓ this host's, ↑ the remote's",
+    ),
+    (
+        "unknown window",
+        "Scaling is announced only in a handshake rustnet did not see",
+    ),
+    (
+        "Initial RTT",
+        "Blank without a captured handshake; Live RTT still measures",
+    ),
+];
+
 const DETAILS_MOUSE: &[HelpRow] = &[
     ("Click field", "Copy that field's value"),
     (
@@ -356,6 +371,7 @@ fn help_lines(context: HelpContext) -> Vec<Line<'static>> {
         }
         HelpContext::Details => {
             push_section(&mut lines, "Details Actions", DETAILS_KEYS);
+            push_section(&mut lines, "Transport Health", DETAILS_CONCEPTS);
             push_section(&mut lines, "Connection Display", CONNECTION_DISPLAY);
             push_section(&mut lines, "Mouse", DETAILS_MOUSE);
         }

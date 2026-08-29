@@ -35,7 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single window slot that every segment overwrote, so the value flipped
   between the local and remote advertised windows. Both are now shown (`↓`
   local, `↑` remote), in bytes only when the captured handshake proved the
-  window scale and as the raw header field otherwise (#589)
+  window scale. Without it the scale is unknowable from the wire, so the row
+  reads `unknown (no handshake)` rather than a raw header field that stands
+  for anything up to 16384 times its value; the Details help and USAGE explain
+  it (#589)
 - **TCP Analytics for a Connection's First Packet**: the packet that creates a
   connection now reaches the TCP analytics. For a connection this host
   initiates that packet is its own SYN, the only carrier of the local
