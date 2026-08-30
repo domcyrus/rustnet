@@ -507,8 +507,8 @@ fn chown_to_uid_drop_target(
         && let Err(e) = rustnet_sandbox::privdrop::chown_to_target(file, target)
     {
         warn!(
-            "Failed to chown {} file '{}' to uid {}: {} (the file may not be writable after the root uid drop)",
-            label, path, target.uid, e
+            "Failed to chown {} file '{}' to the uid-drop target: {} (the file may not be writable after the root uid drop)",
+            label, path, e
         );
     }
 }

@@ -194,11 +194,9 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
                     target.uid, target.gid
                 ));
                 log::info!(
-                    "Dropped root privileges to uid {} gid {} (verified); \
+                    "Dropped root privileges to the target uid/gid (verified); \
                      procfs process attribution is now limited to that user's \
-                     processes (eBPF attribution unaffected)",
-                    target.uid,
-                    target.gid
+                     processes (eBPF attribution unaffected)"
                 );
             }
             Err(e) => {
@@ -319,11 +317,9 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
                 uid_dropped = true;
                 drop_message = format!("; root dropped to uid {} gid {}", target.uid, target.gid);
                 log::info!(
-                    "Dropped root privileges to uid {} gid {} (verified); \
+                    "Dropped root privileges to the target uid/gid (verified); \
                      procfs process attribution is now limited to that user's \
-                     processes",
-                    target.uid,
-                    target.gid
+                     processes"
                 );
             }
             Err(e) => {

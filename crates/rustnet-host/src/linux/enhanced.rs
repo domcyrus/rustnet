@@ -201,17 +201,8 @@ impl EnhancedLinuxProcessLookup {
         let ppid = resolve_parent_pid(info.pid);
 
         debug!(
-            "eBPF attribution: TGID {}, PPID {:?}, TID {}, UID {}, GID {}, eBPF comm {}, resolved {}, exe {:?}, {} match, observed {}ns (monotonic)",
-            info.pid,
-            ppid,
-            info.tid,
-            info.uid,
-            info.gid,
-            info.comm,
-            name,
-            executable,
-            quality,
-            info.timestamp
+            "eBPF attribution: TGID {}, PPID {:?}, TID {}, eBPF comm {}, resolved {}, exe {:?}, {} match, observed {}ns (monotonic)",
+            info.pid, ppid, info.tid, info.comm, name, executable, quality, info.timestamp
         );
 
         let mut attribution = ProcessAttribution::new(info.pid, name, quality)
