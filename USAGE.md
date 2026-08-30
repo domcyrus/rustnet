@@ -799,6 +799,22 @@ Fast Retransmits: 0
 
 These counters are tracked independently for each connection, allowing you to identify problematic connections experiencing packet loss or network issues.
 
+**Window Size**
+The same card reports each end's last advertised receive window as a pair:
+`↓` is the window this host advertised, which bounds inbound data, and `↑` the
+one the remote advertised, which bounds outbound data.
+
+```
+Window Size  ↓ 137.50 KB · ↑ 1.00 KB
+```
+
+Window scaling is negotiated only in the SYN handshake (RFC 7323), so a
+connection that was already open when RustNet started reads
+`unknown (no handshake)`. The 16-bit header field on its own stands for
+anything up to 16384 times its value, so it is reported as unknown rather than
+as a size that cannot be acted on. Connections opened while RustNet is running
+show byte counts.
+
 ### Use Cases
 
 **Network Quality Monitoring**

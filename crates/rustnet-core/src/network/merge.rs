@@ -4,7 +4,7 @@ use log::{debug, info, warn};
 use std::time::{Duration, SystemTime};
 
 use crate::network::dpi::{DpiResult, is_partial_sni, try_extract_tls_from_reassembler};
-use crate::network::parser::{ParsedPacket, SynWindowScale, TcpFlags};
+use crate::network::parser::{ParsedPacket, SynWindowScale, TcpFlags, TcpHeaderInfo};
 use crate::network::types::{
     ApplicationProtocol, Connection, DnsInfo, DpiInfo, FtpInfo, HttpInfo, MqttInfo, NetBiosInfo,
     ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState, TlsInfo,
@@ -89,8 +89,27 @@ struct TcpSegment {
     is_outgoing: bool,
     has_ack_flag: bool,
     is_syn: bool,
+    is_rst: bool,
     /// Window-scale verdict from this segment's options (SYN only).
     window_scale: Option<SynWindowScale>,
+}
+
+/// The analytics view of one packet's TCP header.
+fn tcp_segment_from(parsed: &ParsedPacket, tcp_header: &TcpHeaderInfo) -> TcpSegment {
+    TcpSegment {
+        seq: tcp_header.seq,
+        ack: tcp_header.ack,
+        window: tcp_header.window,
+        // SYN and FIN each consume a sequence number even with no payload.
+        payload_len: tcp_header.payload_len
+            + u32::from(tcp_header.flags.syn)
+            + u32::from(tcp_header.flags.fin),
+        is_outgoing: parsed.is_outgoing,
+        has_ack_flag: tcp_header.flags.ack,
+        is_syn: tcp_header.flags.syn,
+        is_rst: tcp_header.flags.rst,
+        window_scale: tcp_header.window_scale,
+    }
 }
 
 /// Analyze TCP segment and update analytics for retransmissions, packet
@@ -108,9 +127,13 @@ fn analyze_tcp_segment(
         is_outgoing,
         has_ack_flag,
         is_syn,
+        is_rst,
         window_scale,
     } = segment;
     let mut events = TcpMergeEvents::default();
+    // Read before this segment overwrites it: RFC 5681 asks whether the
+    // window moved, which only the previous advertisement can answer.
+    let previous_window_in = analytics.last_window_in;
 
     // Learn each side's window-scale shift from its SYN. Only a fully
     // examined SYN without the option turns scaling off (RFC 7323); a SYN
@@ -131,14 +154,13 @@ fn analyze_tcp_segment(
         }
     }
 
-    // Track window size. SYN windows are never scaled; for data segments the
-    // sender's negotiated shift applies (0 when the handshake wasn't seen).
-    analytics.last_window_size = window;
-    analytics.last_window_shift = if is_syn {
-        0
-    } else {
-        analytics.window_shift_for(is_outgoing)
-    };
+    // Track the advertised window per direction, since each end advertises
+    // its own and one shared slot would flip between them packet by packet.
+    // A RST carries no meaningful window (RFC 9293 §3.1), so it must not
+    // overwrite the last real advertisement with a zero.
+    if !is_rst {
+        analytics.record_window(window, is_outgoing, is_syn);
+    }
 
     if is_outgoing {
         // Outbound packet - check for retransmissions
@@ -218,25 +240,38 @@ fn analyze_tcp_segment(
 
         // Check for duplicate ACKs (fast retransmit indicator).
         //
-        // RFC 5681 §2 requires a duplicate ACK to carry no data — otherwise
-        // every inbound data segment of a download counts as one, since they
-        // all repeat the same ack number while we have nothing to send, and
-        // the fast-retransmit total balloons on healthy connections.
+        // RFC 5681 §2 counts an ACK as duplicate only when it carries no data
+        // (SYN and FIN consume sequence space, so `payload_len` covers both),
+        // this host still has data outstanding, the ack number does not
+        // advance, and the advertised window is unchanged. All four matter:
+        // without the no-data test every inbound segment of a download counts,
+        // and without the outstanding-data and window tests an idle
+        // connection's keepalives and the peer's window updates do, which ends
+        // in a phantom fast retransmit on a link that never lost a packet.
         if has_ack_flag && payload_len == 0 {
+            // Anything we sent that this ACK does not yet cover.
+            let data_outstanding =
+                analytics.seen_outbound && seq_lt(ack, analytics.highest_seq_outbound);
+            // No previous advertisement is no evidence of a window update.
+            let window_unchanged = previous_window_in.is_none_or(|prev| prev.raw == window);
             if !analytics.seen_ack {
                 // First ACK seen
                 analytics.seen_ack = true;
                 analytics.last_ack_received = ack;
             } else if ack == analytics.last_ack_received {
-                // Duplicate ACK
-                analytics.dup_ack_run += 1;
-                analytics.duplicate_ack_count += 1;
+                // A repeat that fails the RFC's other conditions is a
+                // keepalive or a window update: not counted, but it does not
+                // end a run in progress either, so the run is left alone.
+                if data_outstanding && window_unchanged {
+                    analytics.dup_ack_run += 1;
+                    analytics.duplicate_ack_count += 1;
 
-                // RFC 5681: 3 duplicate ACKs trigger fast retransmit
-                if analytics.dup_ack_run == 3 {
-                    analytics.fast_retransmit_count += 1;
-                    events.fast_retransmits += 1;
-                    debug!("TCP fast retransmit triggered (3 duplicate ACKs)");
+                    // RFC 5681: 3 duplicate ACKs trigger fast retransmit
+                    if analytics.dup_ack_run == 3 {
+                        analytics.fast_retransmit_count += 1;
+                        events.fast_retransmits += 1;
+                        debug!("TCP fast retransmit triggered (3 duplicate ACKs)");
+                    }
                 }
             } else if seq_lt(analytics.last_ack_received, ack) {
                 // Only a forward-moving ACK ends the run. A reordered stale
@@ -323,27 +358,7 @@ pub fn merge_packet_into_connection(
 
         // Update TCP analytics for retransmission and quality metrics
         if let Some(analytics) = conn.tcp_analytics.as_mut() {
-            // Use actual TCP payload length from header
-            // Note: SYN and FIN flags also consume 1 sequence number each, even with no payload
-            let payload_len = tcp_header.payload_len;
-            let seq_consumed = payload_len
-                + if tcp_header.flags.syn { 1 } else { 0 }
-                + if tcp_header.flags.fin { 1 } else { 0 };
-
-            tcp_events = analyze_tcp_segment(
-                analytics,
-                TcpSegment {
-                    seq: tcp_header.seq,
-                    ack: tcp_header.ack,
-                    window: tcp_header.window,
-                    payload_len: seq_consumed,
-                    is_outgoing: parsed.is_outgoing,
-                    has_ack_flag: tcp_header.flags.ack,
-                    is_syn: tcp_header.flags.syn,
-                    window_scale: tcp_header.window_scale,
-                },
-                now,
-            );
+            tcp_events = analyze_tcp_segment(analytics, tcp_segment_from(parsed, &tcp_header), now);
         }
     } else {
         // If no TCP flags, keep existing state or use the one from packet
@@ -510,6 +525,15 @@ pub(crate) fn create_connection_from_packet(parsed: &ParsedPacket, now: SystemTi
                 }
             }
         };
+
+        // The first packet counts too. For a connection this host initiates
+        // it is our own SYN, the only segment carrying this side's
+        // window-scale option, so skipping it left scaling unknown for the
+        // connection's whole life; it also seeds the sequence high-water
+        // marks the loss counters compare against.
+        if let Some(analytics) = conn.tcp_analytics.as_mut() {
+            analyze_tcp_segment(analytics, tcp_segment_from(parsed, &tcp_header), now);
+        }
 
         debug!(
             "Created new {} connection: {:?} -> {:?}, state: {:?}, direction: {:?}",
@@ -1380,6 +1404,7 @@ mod tests {
                 is_outgoing: true,
                 has_ack_flag: false,
                 is_syn: false,
+                is_rst: false,
                 window_scale: None,
             },
             at,
@@ -1408,10 +1433,76 @@ mod tests {
                 is_outgoing: false,
                 has_ack_flag: true,
                 is_syn: false,
+                is_rst: false,
                 window_scale: None,
             },
             at,
         )
+    }
+
+    /// One data segment in the given direction advertising `window`.
+    fn window_segment(analytics: &mut TcpAnalytics, window: u16, is_outgoing: bool) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq: 1,
+                ack: 1,
+                window,
+                payload_len: 0,
+                is_outgoing,
+                has_ack_flag: true,
+                is_syn: false,
+                is_rst: false,
+                window_scale: None,
+            },
+            t0(),
+        );
+    }
+
+    /// One inbound bare ACK carrying a specific ack number and window.
+    fn window_recv_ack(analytics: &mut TcpAnalytics, ack: u32, window: u16) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq: 0,
+                ack,
+                window,
+                payload_len: 0,
+                is_outgoing: false,
+                has_ack_flag: true,
+                is_syn: false,
+                is_rst: false,
+                window_scale: None,
+            },
+            t0(),
+        );
+    }
+
+    /// One inbound RST, which advertises a zero window.
+    fn reset_recv(analytics: &mut TcpAnalytics) {
+        analyze_tcp_segment(
+            analytics,
+            TcpSegment {
+                seq: 1,
+                ack: 1,
+                window: 0,
+                payload_len: 0,
+                is_outgoing: false,
+                has_ack_flag: true,
+                is_syn: false,
+                is_rst: true,
+                window_scale: None,
+            },
+            t0(),
+        );
+    }
+
+    fn window_send(analytics: &mut TcpAnalytics, window: u16) {
+        window_segment(analytics, window, true);
+    }
+
+    fn window_recv(analytics: &mut TcpAnalytics, window: u16) {
+        window_segment(analytics, window, false);
     }
 
     /// One SYN (or SYN-ACK, via `is_outgoing`/`ack`) with the given
@@ -1427,6 +1518,7 @@ mod tests {
                 is_outgoing,
                 has_ack_flag: !is_outgoing,
                 is_syn: true,
+                is_rst: false,
                 window_scale: Some(window_scale),
             },
             t0(),
@@ -1437,17 +1529,86 @@ mod tests {
     fn window_scale_applies_after_observed_handshake() {
         let mut a = TcpAnalytics::new();
         syn(&mut a, true, SynWindowScale::Present(7));
-        assert_eq!(a.last_window_shift, 0, "SYN windows are never scaled");
+        let out = a.last_window_out.unwrap();
+        assert_eq!(out.shift, 0, "SYN windows are never scaled");
+        assert!(out.scale_known, "a SYN window is an exact byte count");
         syn(&mut a, false, SynWindowScale::Present(8));
-        assert_eq!(a.last_window_shift, 0, "SYN-ACK windows are never scaled");
+        assert_eq!(
+            a.last_window_in.unwrap().shift,
+            0,
+            "SYN-ACK windows are never scaled"
+        );
 
         recv(&mut a, 1, 1, 100);
-        assert_eq!(a.last_window_shift, 8, "inbound uses the remote's shift");
-        assert_eq!(a.last_window_bytes(), 65535 << 8);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 8, "inbound uses the remote's shift");
+        assert_eq!(inbound.bytes(), 65535 << 8);
 
         send(&mut a, 1, 100);
-        assert_eq!(a.last_window_shift, 7, "outbound uses the local shift");
-        assert_eq!(a.last_window_bytes(), 65535 << 7);
+        let outbound = a.last_window_out.unwrap();
+        assert_eq!(outbound.shift, 7, "outbound uses the local shift");
+        assert_eq!(outbound.bytes(), 65535 << 7);
+    }
+
+    /// A SYN (or SYN-ACK) packet advertising `shift`, as the parser hands it
+    /// to the tracker.
+    fn syn_packet(is_outgoing: bool, is_syn_ack: bool, shift: u8) -> ParsedPacket {
+        use crate::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
+
+        let mut packet = ParsedPacket::test_tcp(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 12345),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            TcpHeaderInfo {
+                seq: 0,
+                ack: 0,
+                window: 65535,
+                flags: TcpFlags {
+                    syn: true,
+                    ack: is_syn_ack,
+                    fin: false,
+                    rst: false,
+                },
+                payload_len: 0,
+                window_scale: Some(SynWindowScale::Present(shift)),
+            },
+        );
+        packet.is_outgoing = is_outgoing;
+        packet.packet_len = 74;
+        packet
+    }
+
+    #[test]
+    fn the_connections_first_packet_reaches_the_analytics() {
+        // Regression: the packet that created the connection skipped the
+        // analytics entirely. For a connection this host initiates that is
+        // our own SYN, the only carrier of the local window-scale option, so
+        // scaling stayed unknown and every window read as a raw field even
+        // with the whole handshake captured.
+        let now = t0();
+        let mut conn = create_connection_from_packet(&syn_packet(true, false, 7), now);
+        merge_packet_into_connection(&mut conn, &syn_packet(false, true, 8), now);
+        merge_packet_into_connection(&mut conn, &create_test_packet(false, false), now);
+
+        let analytics = conn.tcp_analytics.unwrap();
+        assert_eq!(analytics.window_scale_out, Some(7));
+        assert_eq!(analytics.window_scale_in, Some(8));
+        assert!(analytics.window_scale_known());
+        assert_eq!(analytics.last_window_in.unwrap().bytes(), 65535 << 8);
+    }
+
+    #[test]
+    fn window_directions_are_tracked_separately() {
+        // Regression: one shared slot made the displayed window flip between
+        // the two ends' advertisements on every packet.
+        let mut a = TcpAnalytics::new();
+        syn(&mut a, true, SynWindowScale::Present(7));
+        syn(&mut a, false, SynWindowScale::Present(7));
+
+        window_recv(&mut a, 8);
+        window_send(&mut a, 1100);
+
+        assert_eq!(a.last_window_in.unwrap().bytes(), 8 << 7);
+        assert_eq!(a.last_window_out.unwrap().bytes(), 1100 << 7);
     }
 
     #[test]
@@ -1456,8 +1617,10 @@ mod tests {
         syn(&mut a, true, SynWindowScale::Present(7));
         syn(&mut a, false, SynWindowScale::Absent); // peer refused scaling
         recv(&mut a, 1, 1, 100);
-        assert_eq!(a.last_window_shift, 0);
-        assert_eq!(a.last_window_bytes(), 65535);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 0);
+        assert!(inbound.scale_known, "absence of the option is a conclusion");
+        assert_eq!(inbound.bytes(), 65535);
     }
 
     #[test]
@@ -1469,21 +1632,28 @@ mod tests {
         syn(&mut a, true, SynWindowScale::Present(7));
         syn(&mut a, false, SynWindowScale::Unknown); // options unexaminable
         recv(&mut a, 1, 1, 100);
-        assert_eq!(a.last_window_shift, 0, "no conclusion yet, raw window");
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 0, "no conclusion yet, raw window");
+        assert!(!inbound.scale_known);
 
         syn(&mut a, false, SynWindowScale::Present(8)); // retransmitted, complete
         recv(&mut a, 101, 1, 100);
-        assert_eq!(a.last_window_shift, 8);
-        assert_eq!(a.last_window_bytes(), 65535 << 8);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 8);
+        assert!(inbound.scale_known);
+        assert_eq!(inbound.bytes(), 65535 << 8);
     }
 
     #[test]
     fn window_unscaled_when_handshake_not_observed() {
-        // Connection picked up mid-stream: no SYNs seen, raw value shown.
+        // Connection picked up mid-stream: no SYNs seen, so the shift is
+        // unknown and the raw field is all that can honestly be reported.
         let mut a = TcpAnalytics::new();
         recv(&mut a, 1, 1, 100);
-        assert_eq!(a.last_window_shift, 0);
-        assert_eq!(a.last_window_bytes(), 65535);
+        let inbound = a.last_window_in.unwrap();
+        assert_eq!(inbound.shift, 0);
+        assert!(!inbound.scale_known);
+        assert_eq!(inbound.raw, 65535);
     }
 
     #[test]
@@ -1546,6 +1716,10 @@ mod tests {
     fn fast_retransmit_fires_once_per_dup_ack_run() {
         let mut a = TcpAnalytics::new();
 
+        // A duplicate ACK is only meaningful with data outstanding, so put
+        // some in flight first: every ack below covers only part of it.
+        send(&mut a, 1000, 500);
+
         recv(&mut a, 0, 500, 0); // first ACK establishes the baseline
         recv(&mut a, 0, 500, 0); // dup 1
         recv(&mut a, 0, 500, 0); // dup 2
@@ -1566,6 +1740,65 @@ mod tests {
         }
         assert_eq!(a.fast_retransmit_count, 2);
         assert_eq!(a.duplicate_ack_count, 7);
+    }
+
+    #[test]
+    fn keepalives_without_outstanding_data_are_not_duplicate_acks() {
+        // Regression: an idle connection the capture joined mid-stream sees
+        // only bare ACKs and keepalives, all repeating the same ack number.
+        // Counting those reported a fast retransmit on a connection that
+        // never retransmitted anything.
+        let mut a = TcpAnalytics::new();
+
+        for _ in 0..13 {
+            recv(&mut a, 0, 500, 0);
+        }
+
+        assert_eq!(a.duplicate_ack_count, 0);
+        assert_eq!(a.fast_retransmit_count, 0);
+    }
+
+    #[test]
+    fn acks_covering_everything_sent_are_not_duplicate_acks() {
+        // Nothing is outstanding once the peer has acked it all, so its
+        // repeated ACKs cannot be duplicates in the RFC 5681 sense.
+        let mut a = TcpAnalytics::new();
+        send(&mut a, 1000, 500);
+
+        for _ in 0..5 {
+            recv(&mut a, 0, 1500, 0);
+        }
+
+        assert_eq!(a.duplicate_ack_count, 0);
+        assert_eq!(a.fast_retransmit_count, 0);
+    }
+
+    #[test]
+    fn window_updates_are_not_duplicate_acks() {
+        // Same ack number, moving window: a window update, not a duplicate.
+        let mut a = TcpAnalytics::new();
+        send(&mut a, 1000, 500);
+        recv(&mut a, 0, 1200, 0); // baseline, window 65535
+
+        window_recv_ack(&mut a, 1200, 32768);
+        window_recv_ack(&mut a, 1200, 16384);
+
+        assert_eq!(a.duplicate_ack_count, 0);
+
+        // A repeat at the same window is a genuine duplicate again.
+        window_recv_ack(&mut a, 1200, 16384);
+        assert_eq!(a.duplicate_ack_count, 1);
+    }
+
+    #[test]
+    fn reset_does_not_overwrite_the_last_advertised_window() {
+        // A RST's window field carries no advertisement, so the last real
+        // one has to survive the teardown.
+        let mut a = TcpAnalytics::new();
+        window_recv(&mut a, 501);
+        reset_recv(&mut a);
+
+        assert_eq!(a.last_window_in.unwrap().raw, 501);
     }
 
     #[test]

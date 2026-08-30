@@ -25,7 +25,8 @@ use std::{
 
 use crate::network::dns::DnsResolver;
 use crate::network::types::{
-    AddrKind, Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState,
+    AddrKind, Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState, TcpAnalytics,
+    WindowSample,
 };
 use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
@@ -251,6 +252,50 @@ impl<'a> DetailsBuilder<'a> {
         for _ in 0..missing {
             self.plain_line(Line::from(""));
         }
+    }
+}
+
+/// Shown when a window was observed but its scale never was.
+const UNSCALED_WINDOW: &str = "unknown (no handshake)";
+
+/// Advertised receive windows, rendered as the pair they are: `↓` is the
+/// window this host advertised, which bounds inbound data, and `↑` the one
+/// the remote advertised, which bounds outbound data. The arrows match the
+/// RX/TX ones used for rates. A single last-segment value would instead flip
+/// between the two ends' windows on every packet.
+///
+/// The scale shift is announced only in the handshake (RFC 7323), so on a
+/// connection rustnet joined mid-stream the 16-bit header field stands for
+/// anything up to 16384 times itself. That is not a size anyone can act on,
+/// so it is reported as unknown rather than printed as a number.
+fn format_window_sizes(counters: Option<&TcpAnalytics>) -> String {
+    let Some(counters) = counters else {
+        return NONE_PLACEHOLDER.to_string();
+    };
+    let side = |sample: Option<WindowSample>| {
+        sample
+            .filter(|sample| sample.scale_known)
+            .map(|sample| format_bytes(sample.bytes()))
+    };
+    match (
+        side(counters.last_window_out),
+        side(counters.last_window_in),
+    ) {
+        // Nothing sizeable in either direction: one line saying so reads
+        // better than a pair of placeholders. Which of the two it is still
+        // matters — nothing observed at all, or observed but unscalable.
+        (None, None) => {
+            if counters.last_window_out.is_none() && counters.last_window_in.is_none() {
+                NONE_PLACEHOLDER.to_string()
+            } else {
+                UNSCALED_WINDOW.to_string()
+            }
+        }
+        (out, inbound) => format!(
+            "↓ {} · ↑ {}",
+            out.as_deref().unwrap_or("unknown"),
+            inbound.as_deref().unwrap_or("unknown")
+        ),
     }
 }
 
@@ -1796,7 +1841,6 @@ pub(in crate::ui) fn draw_connection_details(
                 "Fast Retransmits",
                 counters.map(|a| a.fast_retransmit_count),
             ),
-            ("Window Size", counters.map(|a| a.last_window_bytes())),
         ] {
             details.field(
                 label,
@@ -1805,6 +1849,7 @@ pub(in crate::ui) fn draw_connection_details(
                     .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
             );
         }
+        details.field("Window Size", format_window_sizes(counters));
     }
     details.pad_section(metrics_start, TRANSPORT_CARD_ROWS);
     right_ranges.push(metrics_start..details.rows());
@@ -2538,5 +2583,62 @@ mod endpoint_annotation_tests {
         assert_eq!(remote_scope(&conn), Scope::Private);
         conn.remote_addr_kind = AddrKind::Broadcast;
         assert_eq!(remote_scope(&conn), Scope::Broadcast);
+    }
+}
+
+#[cfg(test)]
+mod window_size_tests {
+    use super::format_window_sizes;
+    use crate::network::types::{TcpAnalytics, WindowSample};
+
+    fn sample(raw: u16, shift: u8, scale_known: bool) -> Option<WindowSample> {
+        Some(WindowSample {
+            raw,
+            shift,
+            scale_known,
+        })
+    }
+
+    #[test]
+    fn reports_each_direction_separately() {
+        let mut analytics = TcpAnalytics::new();
+        analytics.last_window_out = sample(1100, 7, true);
+        analytics.last_window_in = sample(8, 7, true);
+        assert_eq!(
+            format_window_sizes(Some(&analytics)),
+            "↓ 137.50 KB · ↑ 1.00 KB"
+        );
+    }
+
+    #[test]
+    fn unknown_when_the_scale_was_never_observed() {
+        // Handshake missed, so the raw field stands for anything up to 16384
+        // times itself. Reporting it as a size would be reporting garbage.
+        let mut analytics = TcpAnalytics::new();
+        analytics.last_window_out = sample(1100, 0, false);
+        analytics.last_window_in = sample(8, 0, false);
+        assert_eq!(
+            format_window_sizes(Some(&analytics)),
+            "unknown (no handshake)"
+        );
+    }
+
+    #[test]
+    fn one_sizeable_direction_still_reports_its_own() {
+        // A captured SYN is exact on its own (SYN windows are never scaled)
+        // even when the peer's half of the handshake was missed.
+        let mut analytics = TcpAnalytics::new();
+        analytics.last_window_out = sample(64240, 0, true);
+        analytics.last_window_in = sample(8, 0, false);
+        assert_eq!(
+            format_window_sizes(Some(&analytics)),
+            "↓ 62.73 KB · ↑ unknown"
+        );
+    }
+
+    #[test]
+    fn placeholder_until_a_window_is_seen() {
+        assert_eq!(format_window_sizes(None), "-");
+        assert_eq!(format_window_sizes(Some(&TcpAnalytics::new())), "-");
     }
 }
