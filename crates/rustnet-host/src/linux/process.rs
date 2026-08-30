@@ -34,6 +34,22 @@ pub(crate) fn resolve_credentials(tgid: u32) -> Option<(u32, u32)> {
     Some((metadata.uid(), metadata.gid()))
 }
 
+/// Read a process's name from `/proc/<pid>/comm`, given the process directory.
+///
+/// Returns `None` when comm is unreadable or empty, which happens when the
+/// process exits mid-scan. Callers skip such a process rather than storing a
+/// placeholder name: the fd scan has nothing left to read either, and a
+/// placeholder would surface as its own process group in the UI and outrank
+/// the eBPF-captured comm via the PID name cache.
+fn read_process_name(proc_dir: &Path) -> Option<String> {
+    let comm = fs::read_to_string(proc_dir.join("comm")).ok()?;
+    let name = comm.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 /// Recover a comm-truncated process name from the executable's file name.
 ///
 /// The kernel `comm` field holds at most 15 bytes, so both eBPF and the procfs
@@ -584,12 +600,11 @@ impl LinuxProcessLookup {
                     continue;
                 }
 
-                // Get process name
-                let comm_path = path.join("comm");
-                let process_name = fs::read_to_string(&comm_path)
-                    .unwrap_or_else(|_| "unknown".to_string())
-                    .trim()
-                    .to_string();
+                // Get process name, skipping the process when comm is
+                // unreadable (see `read_process_name`).
+                let Some(process_name) = read_process_name(&path) else {
+                    continue;
+                };
 
                 // Store PID -> name mapping for all processes
                 #[cfg(feature = "ebpf")]
@@ -782,6 +797,20 @@ impl ProcessLookup for LinuxProcessLookup {
 mod tests {
     use super::*;
     use rustnet_core::network::types::{ProtocolState, TcpState};
+
+    #[test]
+    fn process_name_comes_from_comm() {
+        let name = read_process_name(Path::new("/proc/self")).expect("own comm is readable");
+        assert!(!name.is_empty());
+        assert_eq!(name, name.trim());
+    }
+
+    #[test]
+    fn no_process_name_when_comm_is_unreadable() {
+        // A PID that cannot exist: the process directory is gone, as it is
+        // for a process that exits between the /proc listing and the read.
+        assert_eq!(read_process_name(Path::new("/proc/0")), None);
+    }
 
     fn connection(local: &str, remote: &str) -> Connection {
         Connection::new(

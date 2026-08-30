@@ -31,6 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bogus "unknown" Process Group on Linux**: a process that exited while
+  RustNet scanned `/proc` was recorded under the literal name `unknown`, which
+  showed up as its own process group next to the real `<unknown>` bucket and,
+  with eBPF attribution, overrode the correct name the kernel had captured at
+  socket creation. Such a process is now skipped instead (#590)
 - **TCP Window Size Per Direction**: the Details Transport Health card kept a
   single window slot that every segment overwrote, so the value flipped
   between the local and remote advertised windows. Both are now shown (`↓`
