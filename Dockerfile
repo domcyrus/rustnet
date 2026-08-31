@@ -1,6 +1,6 @@
 # Multi-stage Docker build for RustNet
 # Base images are pinned by digest for reproducible, tamper-evident builds.
-FROM rust:1.97-slim@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS builder
+FROM rust:1.98-slim@sha256:17d1ba895198f9934c6314ec5346a0d5115372f3243390c3d731e242f35c2f27 AS builder
 
 # Install rustfmt component (required for eBPF compilation)
 RUN rustup component add rustfmt
@@ -46,7 +46,7 @@ RUN if [ -n "$CARGO_FEATURES" ]; then \
 
 # Runtime stage - use trixie-slim to match GLIBC version from builder
 # Pinned by digest for a reproducible, tamper-evident base image.
-FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258
+FROM debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 
 # Install runtime dependencies
 # libcap2-bin provides setcap, used below to grant packet-capture capabilities
