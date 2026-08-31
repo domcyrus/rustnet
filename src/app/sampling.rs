@@ -11,7 +11,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::{
-    interface_stats::InterfaceStats,
+    interface_stats::{InterfaceRates, InterfaceStats, LinkCapacity},
     services::ServiceLookup,
     tracker::ConnectionTracker,
     types::{Connection, ConnectionLifecycleSample},
@@ -20,6 +20,55 @@ use crate::network::{
 use super::logging::{log_connection_event, log_pcap_connection};
 use super::state::App;
 use super::{LIVE_RATE_INTERVAL, MIN_RATE_SAMPLE_SECONDS, TRAFFIC_HISTORY_CAPACITY};
+
+/// One coherent aggregate of the interface rates used by the host traffic
+/// graphs. A direction has a trustworthy capacity only when at least one
+/// contributing interface reports it and no unknown-capacity interface is
+/// currently carrying traffic in that direction.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct AggregateInterfaceRates {
+    rx_bytes_per_sec: u64,
+    tx_bytes_per_sec: u64,
+    rx_capacity_bps: u64,
+    tx_capacity_bps: u64,
+    has_rx_capacity: bool,
+    has_tx_capacity: bool,
+    unknown_rx_active: bool,
+    unknown_tx_active: bool,
+}
+
+impl AggregateInterfaceRates {
+    fn include(&mut self, rates: &InterfaceRates) {
+        self.rx_bytes_per_sec = self.rx_bytes_per_sec.saturating_add(rates.rx_bytes_per_sec);
+        self.tx_bytes_per_sec = self.tx_bytes_per_sec.saturating_add(rates.tx_bytes_per_sec);
+
+        match rates.link_capacity.rx_bps {
+            Some(capacity) if capacity > 0 => {
+                self.has_rx_capacity = true;
+                self.rx_capacity_bps = self.rx_capacity_bps.saturating_add(capacity);
+            }
+            _ if rates.rx_bytes_per_sec > 0 => self.unknown_rx_active = true,
+            _ => {}
+        }
+        match rates.link_capacity.tx_bps {
+            Some(capacity) if capacity > 0 => {
+                self.has_tx_capacity = true;
+                self.tx_capacity_bps = self.tx_capacity_bps.saturating_add(capacity);
+            }
+            _ if rates.tx_bytes_per_sec > 0 => self.unknown_tx_active = true,
+            _ => {}
+        }
+    }
+
+    fn link_capacity(&self) -> LinkCapacity {
+        LinkCapacity {
+            rx_bps: (self.has_rx_capacity && !self.unknown_rx_active)
+                .then_some(self.rx_capacity_bps),
+            tx_bps: (self.has_tx_capacity && !self.unknown_tx_active)
+                .then_some(self.tx_capacity_bps),
+        }
+    }
+}
 
 /// Spawn a named worker thread that runs `body` every `interval` until
 /// `should_stop` is set.
@@ -337,15 +386,13 @@ impl App {
             Arc::clone(&self.should_stop),
             move || {
                 // Aggregate rates from all interfaces
-                let (total_rx, total_tx) =
-                    interface_rates
-                        .iter()
-                        .fold((0u64, 0u64), |(rx, tx), entry| {
-                            (
-                                rx + entry.value().rx_bytes_per_sec,
-                                tx + entry.value().tx_bytes_per_sec,
-                            )
-                        });
+                let aggregate = interface_rates.iter().fold(
+                    AggregateInterfaceRates::default(),
+                    |mut aggregate, entry| {
+                        aggregate.include(entry.value());
+                        aggregate
+                    },
+                );
 
                 // Get active connection count from snapshot (excludes
                 // historic) and record per-connection rate samples on
@@ -408,9 +455,11 @@ impl App {
 
                 // Add sample to traffic history
                 if let Ok(mut history) = traffic_history.write() {
+                    let link_capacity = aggregate.link_capacity();
+                    history.observe_link_capacity(link_capacity.rx_bps, link_capacity.tx_bps);
                     history.add_sample_with_lifecycle(
-                        total_rx,
-                        total_tx,
+                        aggregate.rx_bytes_per_sec,
+                        aggregate.tx_bytes_per_sec,
                         ConnectionLifecycleSample {
                             active: connection_count,
                             retained: tracker.historic_len(),
@@ -531,5 +580,58 @@ mod live_rate_sampling_tests {
         assert_eq!(per_second_rate(5, 0.5, 1.0), 10);
         assert_eq!(per_second_rate(1, 0.5, 10.0), 20);
         assert_eq!(per_second_rate(0, 0.5, 10.0), 0);
+    }
+
+    #[test]
+    fn aggregates_directional_rates_and_capacities() {
+        let mut aggregate = AggregateInterfaceRates::default();
+        aggregate.include(&InterfaceRates {
+            rx_bytes_per_sec: 10,
+            tx_bytes_per_sec: 20,
+            link_capacity: LinkCapacity {
+                rx_bps: Some(1_000),
+                tx_bps: Some(2_000),
+            },
+        });
+        aggregate.include(&InterfaceRates {
+            rx_bytes_per_sec: 30,
+            tx_bytes_per_sec: 40,
+            link_capacity: LinkCapacity {
+                rx_bps: Some(3_000),
+                tx_bps: Some(4_000),
+            },
+        });
+
+        assert_eq!(aggregate.rx_bytes_per_sec, 40);
+        assert_eq!(aggregate.tx_bytes_per_sec, 60);
+        assert_eq!(
+            aggregate.link_capacity(),
+            LinkCapacity {
+                rx_bps: Some(4_000),
+                tx_bps: Some(6_000),
+            }
+        );
+    }
+
+    #[test]
+    fn active_unknown_interfaces_disable_only_their_direction() {
+        let mut aggregate = AggregateInterfaceRates::default();
+        aggregate.include(&InterfaceRates {
+            link_capacity: LinkCapacity::symmetric(1_000),
+            ..InterfaceRates::default()
+        });
+        aggregate.include(&InterfaceRates {
+            rx_bytes_per_sec: 10,
+            tx_bytes_per_sec: 0,
+            ..InterfaceRates::default()
+        });
+
+        assert_eq!(
+            aggregate.link_capacity(),
+            LinkCapacity {
+                rx_bps: None,
+                tx_bps: Some(1_000),
+            }
+        );
     }
 }

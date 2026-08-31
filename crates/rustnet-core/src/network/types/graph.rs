@@ -116,6 +116,49 @@ impl Default for GraphScale {
     }
 }
 
+const LINK_CAPACITY_CONFIRMATIONS: u8 = 2;
+
+/// Debounces link negotiation changes and transient provider failures. A new
+/// value, including `None`, must be observed twice before it changes the graph
+/// ceiling.
+#[derive(Debug, Clone, Default)]
+struct StableLinkCapacity {
+    current_bps: Option<u64>,
+    candidate_bps: Option<u64>,
+    confirmations: u8,
+}
+
+impl StableLinkCapacity {
+    fn observe(&mut self, observed_bps: Option<u64>) {
+        let observed_bps = observed_bps.filter(|capacity| *capacity > 0);
+        if observed_bps == self.current_bps {
+            self.candidate_bps = observed_bps;
+            self.confirmations = 0;
+            return;
+        }
+
+        if observed_bps == self.candidate_bps {
+            self.confirmations = self.confirmations.saturating_add(1);
+        } else {
+            self.candidate_bps = observed_bps;
+            self.confirmations = 1;
+        }
+
+        if self.confirmations >= LINK_CAPACITY_CONFIRMATIONS {
+            self.current_bps = observed_bps;
+            self.confirmations = 0;
+        }
+    }
+
+    fn bits_per_second(&self) -> Option<u64> {
+        self.current_bps
+    }
+
+    fn bytes_per_second(&self) -> Option<f64> {
+        self.current_bps.map(|capacity| capacity as f64 / 8.0)
+    }
+}
+
 /// Ring buffer for aggregate traffic history (used for graphs)
 #[derive(Debug, Clone)]
 pub struct TrafficHistory {
@@ -123,6 +166,8 @@ pub struct TrafficHistory {
     max_samples: usize,
     rx_scale: GraphScale,
     tx_scale: GraphScale,
+    rx_link_capacity: StableLinkCapacity,
+    tx_link_capacity: StableLinkCapacity,
     opened_scale: GraphScale,
     closed_scale: GraphScale,
 }
@@ -142,6 +187,8 @@ impl TrafficHistory {
             max_samples,
             rx_scale: GraphScale::default(),
             tx_scale: GraphScale::default(),
+            rx_link_capacity: StableLinkCapacity::default(),
+            tx_link_capacity: StableLinkCapacity::default(),
             opened_scale: GraphScale::new(10),
             closed_scale: GraphScale::new(10),
         }
@@ -245,12 +292,39 @@ impl TrafficHistory {
         self.max_samples
     }
 
+    /// Observe the latest trustworthy aggregate capacity for the interface
+    /// rates represented by this history. Values are bits per second.
+    pub fn observe_link_capacity(&mut self, rx_bps: Option<u64>, tx_bps: Option<u64>) {
+        self.rx_link_capacity.observe(rx_bps);
+        self.tx_link_capacity.observe(tx_bps);
+    }
+
+    pub fn rx_link_capacity_bps(&self) -> Option<u64> {
+        self.rx_link_capacity.bits_per_second()
+    }
+
+    pub fn tx_link_capacity_bps(&self) -> Option<u64> {
+        self.tx_link_capacity.bits_per_second()
+    }
+
+    pub fn rx_link_capacity_bytes_per_sec(&self) -> Option<f64> {
+        self.rx_link_capacity.bytes_per_second()
+    }
+
+    pub fn tx_link_capacity_bytes_per_sec(&self) -> Option<f64> {
+        self.tx_link_capacity.bytes_per_second()
+    }
+
     pub fn rx_graph_ceiling(&self) -> f64 {
-        self.rx_scale.ceiling()
+        self.rx_link_capacity
+            .bytes_per_second()
+            .unwrap_or_else(|| self.rx_scale.ceiling())
     }
 
     pub fn tx_graph_ceiling(&self) -> f64 {
-        self.tx_scale.ceiling()
+        self.tx_link_capacity
+            .bytes_per_second()
+            .unwrap_or_else(|| self.tx_scale.ceiling())
     }
 
     pub fn opened_graph_ceiling(&self) -> f64 {
@@ -573,6 +647,35 @@ mod tests {
             scale.ceiling_at(down_started + GRAPH_SCALE_DOWN_TRANSITION),
             1024.0
         );
+    }
+
+    #[test]
+    fn link_capacity_replaces_the_observed_graph_ceiling_after_confirmation() {
+        let mut history = TrafficHistory::new(3);
+        add_sample(&mut history, 1_000_000, 2_000_000, 1, 0, 0, None);
+
+        history.observe_link_capacity(Some(1_000_000_000), Some(2_000_000_000));
+        assert_eq!(history.rx_link_capacity_bps(), None);
+        assert_eq!(history.tx_link_capacity_bps(), None);
+
+        history.observe_link_capacity(Some(1_000_000_000), Some(2_000_000_000));
+        assert_eq!(history.rx_link_capacity_bps(), Some(1_000_000_000));
+        assert_eq!(history.tx_link_capacity_bps(), Some(2_000_000_000));
+        assert_eq!(history.rx_graph_ceiling(), 125_000_000.0);
+        assert_eq!(history.tx_graph_ceiling(), 250_000_000.0);
+    }
+
+    #[test]
+    fn transient_missing_capacity_does_not_move_the_ceiling() {
+        let mut history = TrafficHistory::new(3);
+        for _ in 0..2 {
+            history.observe_link_capacity(Some(1_000_000_000), Some(1_000_000_000));
+        }
+
+        history.observe_link_capacity(None, None);
+        assert_eq!(history.rx_link_capacity_bps(), Some(1_000_000_000));
+        history.observe_link_capacity(None, None);
+        assert_eq!(history.rx_link_capacity_bps(), None);
     }
 
     #[test]

@@ -17,10 +17,29 @@ use linux::LinuxStatsProvider;
 #[cfg(target_os = "windows")]
 use windows::WindowsStatsProvider;
 
+/// Nominal receive and transmit capacity reported by the operating system.
+/// Values are bits per second. Either direction may be unavailable for
+/// interfaces such as loopback devices, tunnels, and virtual adapters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LinkCapacity {
+    pub rx_bps: Option<u64>,
+    pub tx_bps: Option<u64>,
+}
+
+impl LinkCapacity {
+    pub const fn symmetric(bits_per_second: u64) -> Self {
+        Self {
+            rx_bps: Some(bits_per_second),
+            tx_bps: Some(bits_per_second),
+        }
+    }
+}
+
 /// Statistics for a network interface
 #[derive(Debug, Clone)]
 pub struct InterfaceStats {
     pub interface_name: String,
+    pub link_capacity: LinkCapacity,
     pub rx_bytes: u64,
     pub tx_bytes: u64,
     pub rx_packets: u64,
@@ -43,7 +62,10 @@ impl InterfaceStats {
             .as_secs_f64();
 
         if duration == 0.0 {
-            return InterfaceRates::default();
+            return InterfaceRates {
+                link_capacity: self.link_capacity,
+                ..InterfaceRates::default()
+            };
         }
 
         InterfaceRates {
@@ -51,6 +73,7 @@ impl InterfaceStats {
                 as u64,
             tx_bytes_per_sec: ((self.tx_bytes.saturating_sub(previous.tx_bytes)) as f64 / duration)
                 as u64,
+            link_capacity: self.link_capacity,
         }
     }
 
@@ -77,6 +100,7 @@ impl InterfaceStats {
 pub struct InterfaceRates {
     pub rx_bytes_per_sec: u64,
     pub tx_bytes_per_sec: u64,
+    pub link_capacity: LinkCapacity,
 }
 
 /// Traffic transferred over a rolling interface-counter window.
@@ -136,6 +160,7 @@ mod tests {
     ) -> InterfaceStats {
         InterfaceStats {
             interface_name: "test".to_string(),
+            link_capacity: LinkCapacity::default(),
             rx_bytes,
             tx_bytes,
             rx_packets,

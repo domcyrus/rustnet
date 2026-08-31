@@ -83,6 +83,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for technical information.
 RustNet combines process-level traffic accounting with real-time network interface statistics:
 
 - **Overview Tab**: Shows active interfaces with current rates, errors, and drops
+- **Traffic Graphs**: Use a stable capacity-relative curve and show link utilization when available
 - **Activity Tab** (press `3`): Ranks processes by Egress (TX) or Ingress (RX), including retained and rolling traffic, rates, shares, connections, and destinations
 - **Security Workflow**: Sort by Egress, identify an unexpected uploader, then inspect its top remote peer and retained traffic even after the connection closes
 - **Host Tab** (press `5`): Shows TCP LISTEN sockets, UDP BOUND endpoints, aggregated TCP states, observed RTT, and process ownership

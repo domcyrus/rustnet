@@ -23,6 +23,28 @@ pub(super) fn format_rate(bytes_per_second: f64) -> String {
     }
 }
 
+/// Format an operating-system link capacity, which is reported in decimal
+/// bits per second rather than the binary byte units used for traffic rates.
+pub(super) fn format_link_speed(bits_per_second: u64) -> String {
+    const KILOBITS: f64 = 1_000.0;
+    const MEGABITS: f64 = KILOBITS * 1_000.0;
+    const GIGABITS: f64 = MEGABITS * 1_000.0;
+    const TERABITS: f64 = GIGABITS * 1_000.0;
+
+    let bits_per_second = bits_per_second as f64;
+    if bits_per_second >= TERABITS {
+        format!("{:.1} Tb/s", bits_per_second / TERABITS)
+    } else if bits_per_second >= GIGABITS {
+        format!("{:.1} Gb/s", bits_per_second / GIGABITS)
+    } else if bits_per_second >= MEGABITS {
+        format!("{:.1} Mb/s", bits_per_second / MEGABITS)
+    } else if bits_per_second >= KILOBITS {
+        format!("{:.1} Kb/s", bits_per_second / KILOBITS)
+    } else {
+        format!("{bits_per_second:.0} b/s")
+    }
+}
+
 /// Format rate to compact form for tight spaces. `zero` is what a
 /// zero/absent rate renders as: the "-" placeholder in tables, "0B"
 /// in the activity bars.
@@ -111,7 +133,14 @@ pub(super) fn ellipsize_left(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ellipsize_left;
+    use super::{ellipsize_left, format_link_speed};
+
+    #[test]
+    fn link_speeds_use_decimal_bit_units() {
+        assert_eq!(format_link_speed(1_000_000_000), "1.0 Gb/s");
+        assert_eq!(format_link_speed(2_500_000_000), "2.5 Gb/s");
+        assert_eq!(format_link_speed(100_000_000), "100.0 Mb/s");
+    }
 
     #[test]
     fn fitting_strings_are_returned_unchanged() {
