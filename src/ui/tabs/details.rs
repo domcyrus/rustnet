@@ -32,7 +32,8 @@ use crate::ui::{
     ClickAction, ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER,
     connection_table::{
-        SELECTION_BAR, build_header, column_constraints, connection_row, select_columns,
+        SELECTION_BAR, build_header, cleanup_remaining, column_constraints, connection_row,
+        select_columns, stale_window,
     },
     dpi_color, fade_line,
     format::{ellipsize_left, format_bytes, format_countdown, format_rate, format_rtt_compact},
@@ -1013,17 +1014,12 @@ pub(in crate::ui) fn draw_connection_details(
         // down to cleanup and takes the Overview countdown's yellow-to-red
         // glow, so the cue is consistent across views.
         let age = format_age(conn.last_activity.elapsed().unwrap_or_default());
-        let fade = theme::staleness_fade_intensity(conn.staleness_ratio());
+        let fade = stale_window(conn);
         let active_display = match fade {
-            Some(_) => {
-                let remaining = conn
-                    .get_timeout()
-                    .saturating_sub(conn.cleanup_age(std::time::SystemTime::now()));
-                format!(
-                    "Active (last seen {age}, cleanup in {})",
-                    format_countdown(remaining)
-                )
-            }
+            Some(_) => format!(
+                "Active (last seen {age}, cleanup in {})",
+                format_countdown(cleanup_remaining(conn))
+            ),
             None => format!("Active (last seen {age})"),
         };
         let active_style = match fade {

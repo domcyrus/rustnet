@@ -17,7 +17,7 @@
 //! column hiding has already done its job.
 
 use std::borrow::Cow;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
@@ -506,7 +506,7 @@ fn staleness_style(conn: &Connection, selected: bool) -> (Option<Style>, CellPai
         let fade = if on_selection_tint {
             0.0
         } else {
-            theme::staleness_fade_intensity(conn.staleness_ratio()).unwrap_or(0.0)
+            stale_window(conn).unwrap_or(0.0)
         };
         (None, CellPaint { plain: false, fade })
     }
@@ -626,14 +626,22 @@ fn connection_bandwidth_cell<'a>(conn: &Connection, paint: CellPaint) -> Cell<'a
 
 /// Fade intensity of a live row that has gone quiet and entered its
 /// staleness window; `None` for historic rows, rows still moving traffic,
-/// and rows outside the window. Keyed on the staleness ratio directly, so
-/// the stripe and countdown stay even when selection drops the color
-/// fade. Shared by both cues so they can never disagree.
-fn stale_window(conn: &Connection) -> Option<f64> {
+/// and rows outside the window. The one gate behind every lifecycle cue
+/// (row fade, stripe, table countdown, Details countdown), so they can
+/// never disagree: a terminal-state row whose cleanup clock started at
+/// the state change can cross the window while its smoothed rate is
+/// still decaying, and it must then read as active everywhere.
+pub(in crate::ui) fn stale_window(conn: &Connection) -> Option<f64> {
     if conn.is_historic || conn.has_nonzero_rates() {
         return None;
     }
     theme::staleness_fade_intensity(conn.staleness_ratio())
+}
+
+/// Time until cleanup removes the connection, on its own cleanup clock.
+pub(in crate::ui) fn cleanup_remaining(conn: &Connection) -> Duration {
+    conn.get_timeout()
+        .saturating_sub(conn.cleanup_age(SystemTime::now()))
 }
 
 /// Gutter span at the start of the Process cell: the ramp-colored stripe
@@ -649,10 +657,10 @@ fn stale_stripe(conn: &Connection) -> Span<'static> {
 /// colors it: the time until cleanup removes the row.
 fn countdown_text(conn: &Connection) -> Option<(String, f64)> {
     let fade = stale_window(conn)?;
-    let remaining = conn
-        .get_timeout()
-        .saturating_sub(conn.cleanup_age(SystemTime::now()));
-    Some((format!("{} left", format_countdown(remaining)), fade))
+    Some((
+        format!("{} left", format_countdown(cleanup_remaining(conn))),
+        fade,
+    ))
 }
 
 /// Style for the Process cell: the identity tint keyed on the process
@@ -1330,6 +1338,14 @@ mod tests {
         assert_eq!(row_override, None);
         assert!(paint.colored());
         assert!(paint.fade > 0.5, "fade was {}", paint.fade);
+
+        // Traffic still moving: the fade shares the stripe's gate, so the
+        // row reads as fully active until the rate decays to zero.
+        conn.current_outgoing_rate_bps = 5.0;
+        let (row_override, paint) = staleness_style(&conn, false);
+        assert_eq!(row_override, None);
+        assert_eq!(paint, CellPaint::FRESH);
+        conn.current_outgoing_rate_bps = 0.0;
 
         // Historic rows still hand the signal to the whole-row gray.
         conn.is_historic = true;

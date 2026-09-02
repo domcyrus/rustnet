@@ -1082,21 +1082,21 @@ mod tests {
             ratio
         );
 
-        // At 75% of timeout (warning threshold) - 225s
+        // At 75% of timeout - 225s
         conn.last_activity = SystemTime::now() - Duration::from_secs(225);
         let ratio = conn.staleness_ratio();
         assert!(
             ratio >= 0.75,
-            "Staleness ratio should be >= 0.75 at warning threshold, got {}",
+            "Staleness ratio should be >= 0.75 at 225s, got {}",
             ratio
         );
 
-        // At 90% of timeout (critical threshold) - 270s
+        // At 90% of timeout - 270s
         conn.last_activity = SystemTime::now() - Duration::from_secs(270);
         let ratio = conn.staleness_ratio();
         assert!(
             ratio >= 0.90,
-            "Staleness ratio should be >= 0.90 at critical threshold, got {}",
+            "Staleness ratio should be >= 0.90 at 270s, got {}",
             ratio
         );
 
@@ -1133,7 +1133,7 @@ mod tests {
         let ratio = conn.staleness_ratio();
         assert!(
             ratio >= 0.75,
-            "CLOSED connection should be stale at 4s, ratio: {}",
+            "CLOSED connection should be stale at 12s, ratio: {}",
             ratio
         );
     }
