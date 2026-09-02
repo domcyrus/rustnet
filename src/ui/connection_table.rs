@@ -17,6 +17,7 @@
 //! column hiding has already done its job.
 
 use std::borrow::Cow;
+use std::time::SystemTime;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
@@ -30,14 +31,22 @@ use crate::network::dns::DnsResolver;
 use crate::network::types::{AddrKind, ApplicationProtocol, Connection, Protocol};
 use crate::ui::{
     ClickAction, ClickableRegions, NONE_PLACEHOLDER, SortColumn, UIState, dpi_color,
-    format::{format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
+    format::{format_countdown, format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
     state_color, theme,
     widgets::scrollbar::draw_scrollbar,
 };
 
 // --- Column floors (cells). Flexible columns grow beyond their floor
 // --- when surplus width is distributed; fixed columns never do.
+/// Process column: a one-cell gutter for the stale stripe plus 21 cells of
+/// name and PID at the floor width (the column grows with the terminal).
 const PROCESS_WIDTH: u16 = 22;
+/// Width of the gutter every connection row reserves at the start of its
+/// Process cell, so names stay aligned whether or not the stripe shows.
+const STRIPE_GUTTER: usize = 1;
+/// Left-edge marker of a stale row, painted with the countdown's
+/// yellow-to-red ramp: the lifecycle cue where the eye enters the row.
+const STALE_STRIPE: &str = "▎";
 /// Floor for the Local column; "192.168.1.10:51234" fits in 18.
 const LOCAL_MIN_WIDTH: u16 = 18;
 const LOCATION_WIDTH: u16 = 4;
@@ -344,7 +353,9 @@ fn remote_display(
 /// Header label for a column. Short on purpose — no " Address" suffixes.
 fn header_label(id: ColumnId, ui_state: &UIState) -> &'static str {
     match id {
-        ColumnId::Process => "Process",
+        // Leading space mirrors the stripe gutter so the label sits over
+        // the process names.
+        ColumnId::Process => " Process",
         ColumnId::Remote => "Remote",
         ColumnId::Local => "Local",
         ColumnId::Location => "Loc",
@@ -415,31 +426,89 @@ pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UIState) ->
     Row::new(cells).height(1).bottom_margin(1)
 }
 
-/// Row-level staleness styling shared by every connection row. Fresh rows
-/// keep per-cell colors. Historic rows turn gray, while expiring rows stay
-/// yellow through the warning window and intensify toward red near removal.
-///
-/// A selected historic row on a theme with a selection tint keeps its
-/// per-cell colors instead: the faint whole-row fg is unreadable against
-/// the selection band, and the "closed" state still marks the row.
-fn staleness_style(conn: &Connection, selected: bool) -> (Option<Style>, bool) {
-    let staleness = conn.staleness_ratio();
-    if conn.is_historic {
-        if selected && theme::selection_has_bg() {
-            (None, true)
-        } else {
-            (Some(theme::historic_row()), false)
+/// How a row's cells are painted. `plain` drops every per-cell color so a
+/// whole-row override (the historic gray) carries the signal alone; `fade`
+/// softens a context cell's own color toward the muted tier as the
+/// connection nears its timeout (0 = fully fresh), via
+/// [`theme::stale_fade`]. The two never combine: historic rows are plain,
+/// live rows fade. Only context columns (process, addresses, location,
+/// service, application) fade; signal columns take [`CellPaint::signal`]
+/// so State, RTT, Health, and Bandwidth keep full color on a stale row.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::ui) struct CellPaint {
+    plain: bool,
+    fade: f64,
+}
+
+impl CellPaint {
+    /// Full per-cell color: fresh live rows and group aggregates.
+    pub(in crate::ui) const FRESH: CellPaint = CellPaint {
+        plain: false,
+        fade: 0.0,
+    };
+    const PLAIN: CellPaint = CellPaint {
+        plain: true,
+        fade: 0.0,
+    };
+
+    /// Whether cells carry any styling of their own.
+    fn colored(self) -> bool {
+        !self.plain
+    }
+
+    /// Paint for a signal column: the same plain/colored split, with the
+    /// staleness fade dropped so the cell's colors stay a pure signal.
+    fn signal(self) -> CellPaint {
+        CellPaint {
+            plain: self.plain,
+            fade: 0.0,
         }
-    } else if let Some(intensity) = theme::expiry_glow_intensity(staleness) {
-        let color = theme::expiry_glow(intensity);
-        let style = if intensity >= 0.6 {
-            theme::bold_fg(color)
+    }
+
+    /// Cell foreground in `color`, faded by the row's staleness.
+    fn style(self, color: Color) -> Style {
+        if self.plain {
+            Style::default()
         } else {
-            theme::fg(color)
-        };
-        (Some(style), false)
+            theme::stale_fade(theme::fg(color), self.fade)
+        }
+    }
+
+    /// Bold cell foreground in `color`, faded by the row's staleness.
+    fn bold_style(self, color: Color) -> Style {
+        if self.plain {
+            Style::default()
+        } else {
+            theme::stale_fade(theme::bold_fg(color), self.fade)
+        }
+    }
+}
+
+/// Row-level staleness styling shared by every connection row. Fresh rows
+/// keep per-cell colors. Historic rows turn faint gray as a whole, while
+/// expiring rows keep every semantic color and soften their context cells
+/// toward the muted tier, so the lifecycle never borrows the warn/err
+/// hues the Health, RTT, and State cells use for real problems and never
+/// sinks to the historic gray.
+///
+/// A selected row on a theme with a selection tint keeps full color
+/// instead: a faint or softened fg is unreadable against the selection
+/// band, and the "closed" state (or the countdown) still marks the row.
+fn staleness_style(conn: &Connection, selected: bool) -> (Option<Style>, CellPaint) {
+    let on_selection_tint = selected && theme::selection_has_bg();
+    if conn.is_historic {
+        if on_selection_tint {
+            (None, CellPaint::FRESH)
+        } else {
+            (Some(theme::historic_row()), CellPaint::PLAIN)
+        }
     } else {
-        (None, true)
+        let fade = if on_selection_tint {
+            0.0
+        } else {
+            theme::staleness_fade_intensity(conn.staleness_ratio()).unwrap_or(0.0)
+        };
+        (None, CellPaint { plain: false, fade })
     }
 }
 
@@ -457,31 +526,31 @@ pub(in crate::ui) fn connection_row<'a>(
     process_override: Option<Line<'a>>,
     selected: bool,
 ) -> Row<'a> {
-    let (row_override, color_cells) = staleness_style(conn, selected);
-    let style_if_colored = |c: Color| {
-        if color_cells {
-            theme::fg(c)
-        } else {
-            Style::default()
-        }
-    };
+    let (row_override, paint) = staleness_style(conn, selected);
+    let cell_style = |c: Color| paint.style(c);
 
     let mut process_override = process_override;
     let cells: Vec<Cell<'a>> = columns
         .iter()
         .map(|col| match col.id {
             ColumnId::Process => {
+                // Every row starts with the stripe gutter so names line up;
+                // only stale rows fill it.
+                let mut spans = vec![stale_stripe(conn)];
                 if let Some(line) = process_override.take() {
-                    return Cell::from(line);
+                    spans.extend(line.spans);
+                    return Cell::from(Line::from(spans))
+                        .style(theme::stale_fade(Style::default(), paint.fade));
                 }
                 let full = process_text(conn);
-                Cell::from(truncate_with_ellipsis(&full, col.width as usize))
-                    .style(process_style(conn, color_cells))
+                let budget = (col.width as usize).saturating_sub(STRIPE_GUTTER);
+                spans.push(Span::raw(truncate_with_ellipsis(&full, budget)));
+                Cell::from(Line::from(spans)).style(process_style(conn, paint))
             }
             ColumnId::Remote => {
                 let (display, attributed) =
                     remote_display(conn, ui_state, dns_resolver, col.width as usize);
-                Cell::from(display).style(style_if_colored(if attributed {
+                Cell::from(display).style(cell_style(if attributed {
                     theme::field_attributed_hostname()
                 } else {
                     theme::field_remote_addr()
@@ -493,48 +562,38 @@ pub(in crate::ui) fn connection_row<'a>(
                 false,
                 col.width as usize,
             ))
-            .style(style_if_colored(theme::field_local_addr())),
+            .style(cell_style(theme::field_local_addr())),
             ColumnId::Location => {
                 let location = conn
                     .geoip_info
                     .as_ref()
                     .map(|g| g.country_display())
                     .unwrap_or(NONE_PLACEHOLDER);
-                Cell::from(location).style(style_if_colored(theme::field_location()))
+                Cell::from(location).style(cell_style(theme::field_location()))
             }
             ColumnId::Service => {
                 let service =
                     truncate_with_ellipsis(&service_text(conn, ui_state), col.width as usize);
-                Cell::from(service).style(style_if_colored(theme::field_service()))
+                Cell::from(service).style(cell_style(theme::field_service()))
             }
-            ColumnId::Application => application_cell(conn, col.width, color_cells),
+            ColumnId::Application => application_cell(conn, col.width, paint),
             ColumnId::State => {
                 // Historic connections show "closed" instead of their last
                 // TCP state — together with the DIM row style this is the
                 // NO_COLOR-safe replacement for the old hollow status dot.
                 if conn.is_historic {
-                    Cell::from("closed").style(style_if_colored(theme::tcp_closed()))
+                    Cell::from("closed").style(paint.signal().style(theme::tcp_closed()))
                 } else {
                     // Most states fit the fixed width; the odd long one
                     // (e.g. "ECHO_REP(12345)") ellipsizes instead of
                     // hard-clipping.
                     let state = truncate_with_ellipsis(&conn.state(), col.width as usize);
-                    Cell::from(state).style(style_if_colored(state_color(conn)))
+                    Cell::from(state).style(paint.signal().style(state_color(conn)))
                 }
             }
-            ColumnId::Rtt => rtt_cell(conn, color_cells),
-            ColumnId::Health => health_cell(conn, color_cells),
-            ColumnId::Bandwidth => {
-                if conn.is_historic {
-                    Cell::from(Line::from("n/a").right_aligned())
-                } else {
-                    bandwidth_cell(
-                        conn.current_incoming_rate_bps,
-                        conn.current_outgoing_rate_bps,
-                        color_cells,
-                    )
-                }
-            }
+            ColumnId::Rtt => rtt_cell(conn, paint.signal()),
+            ColumnId::Health => health_cell(conn, paint.signal()),
+            ColumnId::Bandwidth => connection_bandwidth_cell(conn, paint.signal()),
         })
         .collect();
 
@@ -545,34 +604,81 @@ pub(in crate::ui) fn connection_row<'a>(
     }
 }
 
+/// Bandwidth cell for one connection row: "n/a" once historic, the
+/// removal countdown while the row is idle inside its staleness window,
+/// otherwise the live rates. The countdown carries the row's urgency
+/// color, yellow through orange to red as removal nears; the rest of the
+/// row only softens, so the hue stays on the one cell that explains it.
+fn connection_bandwidth_cell<'a>(conn: &Connection, paint: CellPaint) -> Cell<'a> {
+    if conn.is_historic {
+        return Cell::from(Line::from("n/a").right_aligned());
+    }
+    if let Some((countdown, fade)) = countdown_text(conn) {
+        return Cell::from(Line::from(countdown).right_aligned())
+            .style(theme::countdown_style(fade));
+    }
+    bandwidth_cell(
+        conn.current_incoming_rate_bps,
+        conn.current_outgoing_rate_bps,
+        paint,
+    )
+}
+
+/// Fade intensity of a live row that has gone quiet and entered its
+/// staleness window; `None` for historic rows, rows still moving traffic,
+/// and rows outside the window. Keyed on the staleness ratio directly, so
+/// the stripe and countdown stay even when selection drops the color
+/// fade. Shared by both cues so they can never disagree.
+fn stale_window(conn: &Connection) -> Option<f64> {
+    if conn.is_historic || conn.has_nonzero_rates() {
+        return None;
+    }
+    theme::staleness_fade_intensity(conn.staleness_ratio())
+}
+
+/// Gutter span at the start of the Process cell: the ramp-colored stripe
+/// for a stale row, a blank cell otherwise.
+fn stale_stripe(conn: &Connection) -> Span<'static> {
+    match stale_window(conn) {
+        Some(fade) => Span::styled(STALE_STRIPE, theme::countdown_style(fade)),
+        None => Span::raw(" "),
+    }
+}
+
+/// "{time} left" for a stale row, paired with the fade intensity that
+/// colors it: the time until cleanup removes the row.
+fn countdown_text(conn: &Connection) -> Option<(String, f64)> {
+    let fade = stale_window(conn)?;
+    let remaining = conn
+        .get_timeout()
+        .saturating_sub(conn.cleanup_age(SystemTime::now()));
+    Some((format!("{} left", format_countdown(remaining)), fade))
+}
+
 /// Style for the Process cell: the identity tint keyed on the process
 /// name, falling back to the shared process color when the theme has no
 /// identity hues (NO_COLOR, no truecolor, vivid preset). Rows painted
-/// whole by the staleness pass keep that paint instead.
-fn process_style(conn: &Connection, color_cells: bool) -> Style {
-    if !color_cells {
+/// whole by the historic pass keep that paint instead.
+fn process_style(conn: &Connection, paint: CellPaint) -> Style {
+    if !paint.colored() {
         return Style::default();
     }
-    let base = theme::fg(theme::field_process());
-    match conn.process_name.as_deref() {
-        Some(name) => theme::identity_color(name).map(theme::fg).unwrap_or(base),
-        None => base,
-    }
+    let color = conn
+        .process_name
+        .as_deref()
+        .and_then(theme::identity_color)
+        .unwrap_or_else(theme::field_process);
+    paint.style(color)
 }
 
 /// Merged protocol + application cell: "TCP·HTTPS (sni)" at full width,
 /// "TCP·HTTPS" compact, bare "TCP" without DPI info. The protocol half
 /// is muted so the detected application reads as the content.
-fn application_cell<'a>(conn: &Connection, width: u16, color_cells: bool) -> Cell<'a> {
+fn application_cell<'a>(conn: &Connection, width: u16, paint: CellPaint) -> Cell<'a> {
     let proto = conn.protocol.as_str();
 
     let Some(dpi) = conn.dpi_info.as_ref() else {
-        let style = if color_cells {
-            theme::fg(theme::muted())
-        } else {
-            Style::default()
-        };
-        return Cell::from(proto).style(style);
+        return Cell::from(proto).style(paint.style(theme::muted()));
     };
 
     let budget = (width as usize).saturating_sub(proto.chars().count() + 1);
@@ -581,10 +687,10 @@ fn application_cell<'a>(conn: &Connection, width: u16, color_cells: bool) -> Cel
     } else {
         truncate_with_ellipsis(dpi.application.sort_key(), budget)
     };
-    if color_cells {
+    if paint.colored() {
         Cell::from(Line::from(vec![
-            Span::styled(format!("{proto}·"), theme::fg(theme::muted())),
-            Span::styled(app, theme::fg(dpi_color(&dpi.application))),
+            Span::styled(format!("{proto}·"), paint.style(theme::muted())),
+            Span::styled(app, paint.style(dpi_color(&dpi.application))),
         ]))
     } else {
         Cell::from(format!("{proto}·{app}"))
@@ -596,20 +702,15 @@ fn application_cell<'a>(conn: &Connection, width: u16, color_cells: bool) -> Cel
 /// (green < 50ms, yellow < 150ms, red above). ICMP echo flows use their
 /// latest paired request/reply RTT; protocols without a timing signal show
 /// the placeholder.
-fn rtt_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
+fn rtt_cell<'a>(conn: &Connection, paint: CellPaint) -> Cell<'a> {
     let Some(rtt) = conn.current_rtt() else {
         let line = Line::from(NONE_PLACEHOLDER).right_aligned();
-        let style = if color_cells {
-            theme::fg(theme::muted())
-        } else {
-            Style::default()
-        };
-        return Cell::from(line).style(style);
+        return Cell::from(line).style(paint.style(theme::muted()));
     };
 
     let ms = rtt.as_secs_f64() * 1000.0;
     let text = format_rtt_compact(rtt);
-    let line = if color_cells {
+    let line = if paint.colored() {
         let color = if ms < 50.0 {
             theme::ok()
         } else if ms < 150.0 {
@@ -617,7 +718,7 @@ fn rtt_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
         } else {
             theme::err()
         };
-        Line::from(Span::styled(text, theme::fg(color)))
+        Line::from(Span::styled(text, paint.style(color)))
     } else {
         Line::from(text)
     };
@@ -627,14 +728,9 @@ fn rtt_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
 /// Compact protocol-aware health badge. TCP shows retransmits/out-of-order,
 /// QUIC shows explicit Retry/Version Negotiation packets, and transaction-based
 /// UDP shows repeated requests/timeouts. Other protocols remain ungraded.
-fn health_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
+fn health_cell<'a>(conn: &Connection, paint: CellPaint) -> Cell<'a> {
     let Some((kind, first_count, second_count)) = health_counts(conn) else {
-        let style = if color_cells {
-            theme::fg(theme::muted())
-        } else {
-            Style::default()
-        };
-        return Cell::from(NONE_PLACEHOLDER).style(style);
+        return Cell::from(NONE_PLACEHOLDER).style(paint.style(theme::muted()));
     };
     let (first, second) = match kind {
         HealthKind::Tcp => (
@@ -650,7 +746,7 @@ fn health_cell<'a>(conn: &Connection, color_cells: bool) -> Cell<'a> {
             ('T', second_count, theme::err()),
         ),
     };
-    health_pair_cell(first, second, color_cells)
+    health_pair_cell(first, second, paint)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -702,40 +798,35 @@ pub(in crate::ui) fn health_counts(conn: &Connection) -> Option<(HealthKind, u64
 fn health_pair_cell<'a>(
     first: (char, u64, Color),
     second: (char, u64, Color),
-    color_cells: bool,
+    paint: CellPaint,
 ) -> Cell<'a> {
     let (first_label, first_count, first_color) = first;
     let (second_label, second_count, second_color) = second;
     if first_count.saturating_add(second_count) == 0 {
-        let style = if color_cells {
-            theme::fg(theme::ok())
-        } else {
-            Style::default()
-        };
-        return Cell::from("ok").style(style);
+        return Cell::from("ok").style(paint.style(theme::ok()));
     }
 
     let first_count_text = health_count_text(first_count);
     let second_count_text = health_count_text(second_count);
-    if !color_cells {
+    if !paint.colored() {
         return Cell::from(format!(
             "{first_label}{first_count_text}/{second_label}{second_count_text}"
         ));
     }
 
     let first_style = if first_count > 0 {
-        theme::bold_fg(first_color)
+        paint.bold_style(first_color)
     } else {
-        theme::fg(theme::muted())
+        paint.style(theme::muted())
     };
     let second_style = if second_count > 0 {
-        theme::bold_fg(second_color)
+        paint.bold_style(second_color)
     } else {
-        theme::fg(theme::muted())
+        paint.style(theme::muted())
     };
     Cell::from(Line::from(vec![
         Span::styled(format!("{first_label}{first_count_text}"), first_style),
-        Span::styled("/", theme::fg(theme::muted())),
+        Span::styled("/", paint.style(theme::muted())),
         Span::styled(format!("{second_label}{second_count_text}"), second_style),
     ]))
 }
@@ -753,23 +844,23 @@ fn health_count_text(count: u64) -> String {
 /// ↓/↑ arrows live in the column header, not on every row. Takes raw
 /// rates so the grouped view can feed per-group aggregates through the
 /// same formatting.
-pub(in crate::ui) fn bandwidth_cell<'a>(rx_bps: f64, tx_bps: f64, color_cells: bool) -> Cell<'a> {
+pub(in crate::ui) fn bandwidth_cell<'a>(rx_bps: f64, tx_bps: f64, paint: CellPaint) -> Cell<'a> {
     let rx = format_rate_compact(rx_bps, NONE_PLACEHOLDER);
     let tx = format_rate_compact(tx_bps, NONE_PLACEHOLDER);
     let active = rx_bps > 0.0 || tx_bps > 0.0;
 
-    let line = if !color_cells {
+    let line = if !paint.colored() {
         Line::from(format!("{rx}/{tx}"))
     } else if !active && !theme::is_vivid() {
         Line::from(Span::styled(
             format!("{rx}/{tx}"),
-            theme::fg(theme::muted()),
+            paint.style(theme::muted()),
         ))
     } else {
         Line::from(vec![
-            Span::styled(rx, theme::fg(theme::rx())),
+            Span::styled(rx, paint.style(theme::rx())),
             Span::raw("/"),
-            Span::styled(tx, theme::fg(theme::tx())),
+            Span::styled(tx, paint.style(theme::tx())),
         ])
     };
     Cell::from(line.right_aligned())
@@ -876,19 +967,13 @@ mod tests {
     }
 
     #[test]
-    fn expiry_glow_tracks_the_removal_window() {
-        assert_eq!(theme::expiry_glow_intensity(0.74), None);
-        assert_eq!(theme::expiry_glow_intensity(0.75), Some(0.0));
-        assert_eq!(theme::expiry_glow_intensity(0.89), Some(0.0));
-        assert_eq!(theme::expiry_glow_intensity(0.90), Some(0.0));
-        let midpoint = theme::expiry_glow_intensity(0.95).unwrap();
+    fn staleness_fade_tracks_the_removal_window() {
+        assert_eq!(theme::staleness_fade_intensity(0.49), None);
+        assert_eq!(theme::staleness_fade_intensity(0.5), Some(0.0));
+        let midpoint = theme::staleness_fade_intensity(0.75).unwrap();
         assert!((midpoint - 0.5).abs() < 0.000_001);
-        assert_eq!(theme::expiry_glow_intensity(1.0), Some(1.0));
-        assert_eq!(theme::expiry_glow_intensity(1.5), Some(1.0));
-        // Endpoints of the muted theme's derived warn-to-err expiry ramp.
-        assert_eq!(theme::expiry_glow(0.0), Color::Rgb(250, 164, 65));
-        assert_eq!(theme::expiry_glow(0.5), Color::Rgb(247, 108, 59));
-        assert_eq!(theme::expiry_glow(1.0), Color::Rgb(244, 52, 52));
+        assert_eq!(theme::staleness_fade_intensity(1.0), Some(1.0));
+        assert_eq!(theme::staleness_fade_intensity(1.5), Some(1.0));
     }
 
     // Width math for the full set with Location at floor widths:
@@ -1222,17 +1307,131 @@ mod tests {
         let mut conn = tcp_conn(TcpState::Established);
         conn.process_name = Some("firefox".to_string());
 
-        // Whole-row paint wins over any per-cell color.
-        assert_eq!(process_style(&conn, false), Style::default());
+        // The historic whole-row paint wins over any per-cell color.
+        assert_eq!(process_style(&conn, CellPaint::PLAIN), Style::default());
 
         // The default test theme resolves without truecolor, so there are
         // no identity hues and the shared process color stands.
         let base = theme::fg(theme::field_process());
-        assert_eq!(process_style(&conn, true), base);
+        assert_eq!(process_style(&conn, CellPaint::FRESH), base);
 
         // Unnamed processes never hash the placeholder.
         conn.process_name = None;
-        assert_eq!(process_style(&conn, true), base);
+        assert_eq!(process_style(&conn, CellPaint::FRESH), base);
+    }
+
+    #[test]
+    fn fading_rows_keep_per_cell_colors() {
+        // A connection deep into its staleness window: no whole-row
+        // override, cells stay colored and carry the fade instead.
+        let mut conn = tcp_conn(TcpState::Established);
+        conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
+        let (row_override, paint) = staleness_style(&conn, false);
+        assert_eq!(row_override, None);
+        assert!(paint.colored());
+        assert!(paint.fade > 0.5, "fade was {}", paint.fade);
+
+        // Historic rows still hand the signal to the whole-row gray.
+        conn.is_historic = true;
+        let (row_override, paint) = staleness_style(&conn, false);
+        assert_eq!(row_override, Some(theme::historic_row()));
+        assert!(!paint.colored());
+    }
+
+    #[test]
+    fn signal_columns_never_fade_on_a_stale_row() {
+        let mut conn = tcp_conn(TcpState::Established);
+        conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
+        let (_, paint) = staleness_style(&conn, false);
+        assert!(paint.fade > 0.0);
+
+        // Signal cells drop the fade but keep their colors.
+        let signal = paint.signal();
+        assert!(signal.colored());
+        assert_eq!(signal.fade, 0.0);
+        assert_eq!(signal.style(theme::err()), theme::fg(theme::err()));
+
+        // The historic plain paint survives the signal conversion.
+        assert_eq!(CellPaint::PLAIN.signal(), CellPaint::PLAIN);
+    }
+
+    #[test]
+    fn grouped_child_process_cell_follows_the_row_fade() {
+        use ratatui::buffer::Buffer;
+        use ratatui::widgets::Widget;
+
+        // A stale grouped child: the PID span is raw (no foreground), so
+        // the staircase steps it down to the muted tier like any other
+        // context cell instead of leaving it at full terminal foreground.
+        let mut conn = tcp_conn(TcpState::Established);
+        conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
+        let (_, paint) = staleness_style(&conn, false);
+        assert!(paint.fade > 0.5, "fade was {}", paint.fade);
+
+        let render = |conn: &Connection| {
+            let columns = [Column::new(ColumnId::Process, PROCESS_WIDTH)];
+            let line = Line::from(vec![
+                Span::styled("└─ ", theme::fg(theme::muted())),
+                Span::raw("4242"),
+            ]);
+            let row = connection_row(conn, &columns, &UIState::default(), None, Some(line), false);
+            let area = Rect::new(0, 0, PROCESS_WIDTH, 1);
+            let mut buf = Buffer::empty(area);
+            Table::new(vec![row], [Constraint::Length(PROCESS_WIDTH)]).render(area, &mut buf);
+            let text: String = (0..PROCESS_WIDTH).map(|x| buf[(x, 0)].symbol()).collect();
+            let pid_x = text.find("4242").expect("PID rendered") as u16;
+            buf[(pid_x, 0)].fg
+        };
+
+        assert_eq!(render(&conn), theme::muted());
+
+        // Fresh child rows keep the raw PID at the terminal foreground.
+        conn.last_activity = SystemTime::now();
+        assert_eq!(render(&conn), Color::Reset);
+    }
+
+    #[test]
+    fn stale_stripe_marks_only_idle_stale_live_rows() {
+        // Fresh: blank gutter.
+        let mut conn = tcp_conn(TcpState::Established);
+        assert_eq!(stale_stripe(&conn), Span::raw(" "));
+
+        // Stale and idle: the stripe in the countdown's own color.
+        conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
+        let stripe = stale_stripe(&conn);
+        assert_eq!(stripe.content, STALE_STRIPE);
+        let fade = stale_window(&conn).expect("inside the window");
+        assert_eq!(stripe.style, theme::countdown_style(fade));
+
+        // Traffic, then history, both blank the gutter again.
+        conn.current_outgoing_rate_bps = 5.0;
+        assert_eq!(stale_stripe(&conn), Span::raw(" "));
+        conn.current_outgoing_rate_bps = 0.0;
+        conn.is_historic = true;
+        assert_eq!(stale_stripe(&conn), Span::raw(" "));
+    }
+
+    #[test]
+    fn countdown_only_for_idle_stale_live_rows() {
+        // Fresh: no countdown.
+        let mut conn = tcp_conn(TcpState::Established);
+        assert_eq!(countdown_text(&conn), None);
+
+        // Stale (300s timeout, 290s idle): counts down the ~10s left, deep
+        // into the red end of the glow.
+        conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
+        let (text, fade) = countdown_text(&conn).expect("stale idle row counts down");
+        assert!(text.ends_with("s left"), "got {text}");
+        assert!(fade > 0.8, "fade was {fade}");
+
+        // Traffic still moving: rates win over the countdown.
+        conn.current_incoming_rate_bps = 12.0;
+        assert_eq!(countdown_text(&conn), None);
+        conn.current_incoming_rate_bps = 0.0;
+
+        // Historic rows show "n/a" instead.
+        conn.is_historic = true;
+        assert_eq!(countdown_text(&conn), None);
     }
 
     #[test]

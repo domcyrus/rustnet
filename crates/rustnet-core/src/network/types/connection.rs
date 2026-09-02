@@ -685,7 +685,7 @@ impl Connection {
     /// Get the staleness level as a percentage (0.0 to 1.0+)
     /// Returns how close the connection is to being cleaned up
     /// - 0.0 = just created
-    /// - 0.75 = at warning threshold
+    /// - 0.5 = at warning threshold
     /// - 1.0 = will be cleaned up
     /// - >1.0 = should have been cleaned up already
     pub fn staleness_ratio(&self) -> f32 {

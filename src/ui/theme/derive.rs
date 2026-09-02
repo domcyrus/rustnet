@@ -73,6 +73,11 @@ pub struct Theme {
     pub(super) err_ramp: [(u8, u8, u8); 5],
     pub(super) special_ramp: [(u8, u8, u8); 5],
     pub(super) muted_ramp: [(u8, u8, u8); 5],
+    /// RGB reference for the muted token, used by the staleness fade to
+    /// blend truecolor foregrounds toward the muted tier (the token itself
+    /// may resolve to a plain ANSI color).
+    pub(super) muted_seed: (u8, u8, u8),
+    /// Warn-to-err glow for the removal countdown of a stale row.
     pub(super) expiry_ramp: [(u8, u8, u8); 5],
 
     /// 3-stop accent shimmer for the loading screen; `None` (static accent)
@@ -188,6 +193,7 @@ impl Theme {
             err_ramp: signal_ramp(seed(spec.err)),
             special_ramp: signal_ramp(seed(spec.special)),
             muted_ramp: signal_ramp(seed(spec.muted)),
+            muted_seed: seed(spec.muted),
             expiry_ramp: expiry_ramp(seed(spec.warn), seed(spec.err)),
             shimmer_ramp: truecolor.then(|| shimmer_ramp(seed(spec.accent))),
             // Identity tints synthesize RGB directly, so they need a

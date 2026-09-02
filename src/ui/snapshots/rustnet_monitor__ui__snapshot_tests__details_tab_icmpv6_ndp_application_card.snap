@@ -4,9 +4,9 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
- Process                Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
+  Process               Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
                                                                                                                                             
-▌-                      [fe80::2]:0             [fe80::1]:0        -          ICMP                     ICMP_OTHER        - -             -/-
+▌ -                     [fe80::2]:0             [fe80::1]:0        -          ICMP                     ICMP_OTHER        - -             -/-
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

@@ -58,6 +58,21 @@ pub(super) fn format_rtt_compact(rtt: std::time::Duration) -> String {
     }
 }
 
+/// Compact time-left display for cleanup countdowns: whole seconds under
+/// a minute ("45s"), whole minutes under an hour ("2m"), whole hours
+/// beyond that ("3h"). Integer division, so the value never overstates
+/// what remains.
+pub(super) fn format_countdown(remaining: std::time::Duration) -> String {
+    let s = remaining.as_secs();
+    if s < 60 {
+        format!("{s}s")
+    } else if s < 3600 {
+        format!("{}m", s / 60)
+    } else {
+        format!("{}h", s / 3600)
+    }
+}
+
 /// Format bytes to human readable form
 pub(super) fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -111,7 +126,20 @@ pub(super) fn ellipsize_left(s: &str, max: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ellipsize_left;
+    use super::{ellipsize_left, format_countdown};
+    use std::time::Duration;
+
+    #[test]
+    fn countdown_buckets_round_down() {
+        assert_eq!(format_countdown(Duration::ZERO), "0s");
+        assert_eq!(format_countdown(Duration::from_secs(45)), "45s");
+        assert_eq!(format_countdown(Duration::from_secs(59)), "59s");
+        assert_eq!(format_countdown(Duration::from_secs(60)), "1m");
+        assert_eq!(format_countdown(Duration::from_secs(150)), "2m");
+        assert_eq!(format_countdown(Duration::from_secs(3599)), "59m");
+        assert_eq!(format_countdown(Duration::from_secs(3600)), "1h");
+        assert_eq!(format_countdown(Duration::from_secs(7199)), "1h");
+    }
 
     #[test]
     fn fitting_strings_are_returned_unchanged() {

@@ -33,7 +33,7 @@
 - **Annotated PCAPNG export**: `--pcapng-export` writes a Wireshark-ready capture with process, PID, direction, DPI/SNI, and GeoIP embedded as per-packet comments. Open it in Wireshark and every packet already names its owning process, with no post-processing. Classic `--pcap-export` with a JSONL sidecar for offline correlation is also available.
 - **Security sandboxing**: Landlock (Linux 5.13+), Seatbelt (macOS), token privilege drop + job-object child-process block (Windows). Drops privileges immediately after libpcap initializes. See [SECURITY.md](SECURITY.md).
 - **Network analytics**: Real-time round-trip times for TCP, QUIC handshakes, DNS responses, and ICMP echo, plus TCP retransmission, out-of-order, and fast-retransmit detection. Protocol-aware health badges surface TCP issues, explicit QUIC Retry/version events, and retries/timeouts for transaction-based UDP, with severity-first sorting in the Overview table.
-- **Smart connection lifecycle**: Protocol-aware timeouts with white → yellow → red staleness indicators. Toggle `t` to keep historic (closed) connections visible for forensics.
+- **Smart connection lifecycle**: Protocol-aware timeouts; idle rows get a yellow-to-red stripe and removal countdown and soften toward gray. Toggle `t` to keep historic (closed) connections visible for forensics.
 - **Vim/fzf-style filtering**: `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, `proto:`, plus regex via `/(?i)pattern/`.
 - **GeoIP enrichment**: Country lookups via local MaxMind GeoLite2. No network calls.
 - **LAN device identification**: MAC address and vendor (from the embedded IEEE OUI database) for on-link peers and the gateway, learned passively from ARP traffic and shown in the details pane.
@@ -289,9 +289,9 @@ See [USAGE.md](USAGE.md) for complete filtering syntax and sorting guide.
 RustNet uses smart timeouts and visual warnings before removing connections:
 
 **Visual staleness indicators:**
-- **White**: Active (< 75% of timeout)
-- **Yellow**: Stale (75-90% of timeout)
-- **Red**: Critical (> 90% of timeout)
+- **Full color**: Active (< 50% of timeout)
+- **Countdown**: Idle (50-100% of timeout); a `▎` stripe at the left edge and the time left in the bandwidth column run yellow through orange to red as removal nears, while the identifying columns soften toward gray
+- **Gray**: Historic, closed and archived, shown as a faint row with `closed` in the State column (toggle `t` to show)
 
 **Protocol-aware timeouts:**
 - **HTTP/HTTPS**: 10 minutes (supports keep-alive)
@@ -301,7 +301,7 @@ RustNet uses smart timeouts and visual warnings before removing connections:
 - **DNS**: 30 seconds
 - **TCP CLOSED**: 15-second archival grace
 
-Example: An HTTP connection turns yellow at 7.5 min, red at 9 min, and is removed at 10 min.
+Example: An HTTP connection shows its countdown from 5 min, is removed at 10 min, and then appears as a gray historic row when history is on.
 
 See [USAGE.md](USAGE.md) for complete timeout details.
 

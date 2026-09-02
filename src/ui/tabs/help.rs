@@ -197,8 +197,11 @@ const OVERVIEW_MOUSE: &[HelpRow] = &[
 // Shown for both Overview and Details: the Details tab keeps the
 // connection table (and its Health column) above the cards.
 const CONNECTION_DISPLAY: &[HelpRow] = &[
-    ("White", "Active connection"),
-    ("Yellow to red", "Connection approaching its timeout"),
+    ("Full color", "Active connection"),
+    (
+        "Countdown",
+        "Idle; the ▎ stripe and ↓/↑ countdown run yellow to red until removal",
+    ),
     ("Gray", "Historic closed connection"),
     ("~name", "Hostname inferred from an observed DNS response"),
     ("App column", "Application protocol, SNI, or HTTP Host"),

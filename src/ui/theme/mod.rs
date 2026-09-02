@@ -108,8 +108,10 @@ pub(super) fn tx() -> Color {
 // ramps. Callers must wrap the result in `fg()` so NO_COLOR still strips
 // these.
 
-const EXPIRY_WARNING_START: f32 = 0.75;
-const EXPIRY_CRITICAL_START: f32 = 0.90;
+/// Staleness ratio at which rows enter their staleness window: halfway
+/// through the timeout the stripe and countdown appear and the context
+/// cells begin softening toward the muted tier.
+const STALE_FADE_START: f32 = 0.5;
 
 /// RX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
 pub(super) fn rx_wave(t: f64) -> Color {
@@ -144,10 +146,29 @@ pub(super) fn special_wave(t: f64) -> Color {
 pub(super) fn muted_wave(t: f64) -> Color {
     five_stop(&active().muted_ramp, t)
 }
-/// Warn-to-err glow for connections nearing their removal timeout.
+/// Warn-to-err glow at fade intensity `t` (0 = yellow at the start of the
+/// staleness window, 1 = red at removal).
 pub(super) fn expiry_glow(t: f64) -> Color {
     five_stop(&active().expiry_ramp, t)
 }
+
+/// Style for the removal countdown of a stale row at fade intensity `t`
+/// from [`staleness_fade_intensity`]: the one lifecycle cell that borrows
+/// the warn/err hues, because its text ("2m left") says what the color
+/// means. It walks yellow through orange to red as removal nears and goes
+/// bold for the final stretch. NO_COLOR strips the color via `fg()`, so
+/// only the text and the late BOLD remain there.
+pub(super) fn countdown_style(t: f64) -> Style {
+    let color = expiry_glow(t);
+    if t >= COUNTDOWN_BOLD_START {
+        bold_fg(color)
+    } else {
+        fg(color)
+    }
+}
+
+/// Fade intensity from which the countdown turns bold.
+const COUNTDOWN_BOLD_START: f64 = 0.6;
 
 /// Accent shimmer at phase `t` (0 = the accent itself, 1 = its lightest
 /// step): a 3-stop lightness walk for animated text. Themes and terminals
@@ -160,15 +181,56 @@ pub(super) fn shimmer_wave(t: f64) -> Color {
     }
 }
 
-/// Map connection staleness to the expiry glow. The row turns yellow at 75%
-/// of its timeout, stays yellow through the warning window, then intensifies
-/// toward red during the final 10% before removal.
-pub(super) fn expiry_glow_intensity(staleness: f32) -> Option<f64> {
-    (staleness >= EXPIRY_WARNING_START).then(|| {
-        f64::from(
-            ((staleness - EXPIRY_CRITICAL_START) / (1.0 - EXPIRY_CRITICAL_START)).clamp(0.0, 1.0),
-        )
+/// Map connection staleness to a fade intensity. `None` below half of the
+/// timeout (the row stays fully colored); the intensity then walks linearly
+/// from 0 at the halfway point to 1 at the timeout, driving [`stale_fade`]
+/// and the countdown glow.
+pub(super) fn staleness_fade_intensity(staleness: f32) -> Option<f64> {
+    (staleness >= STALE_FADE_START).then(|| {
+        f64::from(((staleness - STALE_FADE_START) / (1.0 - STALE_FADE_START)).clamp(0.0, 1.0))
     })
+}
+
+/// Blend cap: a fully stale row fades only halfway to the muted tier.
+/// The three lifecycle looks form a strict ladder: live rows sit above
+/// the muted floor, stale rows never drop below it, and historic rows
+/// alone use the faint tier. With historic view on, a dying row and a
+/// dead one render side by side and must never converge.
+const STALE_FADE_MAX: f64 = 0.5;
+
+/// Staircase threshold for foregrounds that cannot blend: once the fade
+/// is halfway through, the cell steps down to the muted tier.
+const STALE_FADE_STEP: f64 = 0.5;
+
+/// Soften a style's foreground toward the muted tier at fade intensity `t`
+/// from [`staleness_fade_intensity`]. Cells keep their own semantic hue
+/// (a protocol-tinted Service cell keeps its hue while it softens) so the
+/// lifecycle cue is the row uniformly softening, never a color that could
+/// read as a health signal. Only context columns pass through this fade:
+/// signal cells (State, RTT, Health, Bandwidth) are never handed to it, so
+/// their colors always mean a signal. The blend is capped at
+/// [`STALE_FADE_MAX`], so a stale row stays above the muted floor and well
+/// clear of the faint tier historic rows use.
+///
+/// Only RGB foregrounds blend. ANSI foregrounds, `Reset` (the terminal's
+/// own foreground), and styles with no foreground step down to the muted
+/// token once `t` reaches [`STALE_FADE_STEP`]: on ANSI presets the
+/// terminal renders its own palette, so synthesizing RGB from a reference
+/// table would paint far darker than the live cells around it. NO_COLOR
+/// returns the style untouched: DIM stays a historic-only cue there, and
+/// the countdown and "closed"/"n/a" cell text carry the lifecycle instead.
+pub(super) fn stale_fade(style: Style, t: f64) -> Style {
+    if t <= 0.0 || super::NO_COLOR.load(super::Ordering::Relaxed) {
+        return style;
+    }
+    match style.fg {
+        Some(Color::Rgb(r, g, b)) => {
+            let (r, g, b) = derive::blend((r, g, b), active().muted_seed, STALE_FADE_MAX * t);
+            style.fg(Color::Rgb(r, g, b))
+        }
+        _ if t >= STALE_FADE_STEP => style.fg(muted()),
+        _ => style,
+    }
 }
 
 // --- Protocol aliases ---
@@ -314,10 +376,10 @@ pub(super) fn status_bar_default() -> Style {
 
 /// Accent-tinted selection band for table rows. Falls back to
 /// BOLD | REVERSED (with no fg override, so when REVERSED swaps fg and bg
-/// a red staleness row gets a red selection bar and the signal survives)
+/// each cell's own color becomes its band and the signal survives)
 /// whenever the theme has no truecolor selection tint. Built-ins leave
-/// `selection_fg` unset for the same reason: the row's own fg, including
-/// the expiry glow, survives selection.
+/// `selection_fg` unset for the same reason: the row's own cell colors
+/// survive selection.
 pub(super) fn selection_row() -> Style {
     if super::NO_COLOR.load(super::Ordering::Relaxed) {
         return Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED);
@@ -596,6 +658,54 @@ mod tests {
         // Backgrounds are untouched: only the text fades.
         let banded = edge_fade(Style::default().bg(Color::Blue));
         assert_eq!(banded.bg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn countdown_glow_walks_warn_to_err() {
+        // Endpoints of the muted theme's derived warn-to-err expiry ramp.
+        assert_eq!(expiry_glow(0.0), Color::Rgb(250, 164, 65));
+        assert_eq!(expiry_glow(0.5), Color::Rgb(247, 108, 59));
+        assert_eq!(expiry_glow(1.0), Color::Rgb(244, 52, 52));
+        assert_eq!(countdown_style(0.0), fg(Color::Rgb(250, 164, 65)));
+        assert_eq!(countdown_style(0.59).add_modifier, Modifier::empty());
+        assert_eq!(countdown_style(0.6), bold_fg(expiry_glow(0.6)));
+        assert_eq!(countdown_style(1.0), bold_fg(Color::Rgb(244, 52, 52)));
+    }
+
+    #[test]
+    fn stale_fade_softens_toward_the_muted_tier() {
+        // Zero intensity leaves the style untouched.
+        let style = fg(Color::Red);
+        assert_eq!(stale_fade(style, 0.0), style);
+
+        // RGB foregrounds blend toward the muted default's muted seed
+        // (#6B7280), capped halfway: a fully stale live row stays above
+        // the muted floor and never touches the faint historic tier.
+        assert_eq!(
+            stale_fade(fg(Color::Rgb(0, 0, 0)), 1.0).fg,
+            Some(Color::Rgb(54, 57, 64))
+        );
+        assert_eq!(
+            stale_fade(fg(Color::Rgb(0, 0, 0)), 0.5).fg,
+            Some(Color::Rgb(27, 29, 32))
+        );
+
+        // ANSI foregrounds never synthesize RGB: the terminal paints its
+        // own palette, so they step down to the muted token instead.
+        for ansi in [Color::Red, Color::LightGreen, Color::Gray, Color::Reset] {
+            assert_eq!(stale_fade(fg(ansi), 0.3), fg(ansi));
+            assert_eq!(stale_fade(fg(ansi), 0.49), fg(ansi));
+            let faded = stale_fade(fg(ansi), 0.5).fg;
+            assert_eq!(faded, Some(muted()));
+            assert!(!matches!(faded, Some(Color::Rgb(..))));
+            assert_eq!(stale_fade(fg(ansi), 1.0).fg, Some(muted()));
+        }
+        assert_eq!(stale_fade(Style::default(), 0.4).fg, None);
+        assert_eq!(stale_fade(Style::default(), 1.0).fg, Some(muted()));
+
+        // Modifiers ride through the fade.
+        let faded_bold = stale_fade(bold_fg(Color::Red), 1.0);
+        assert_eq!(faded_bold.add_modifier, Modifier::BOLD);
     }
 
     #[test]

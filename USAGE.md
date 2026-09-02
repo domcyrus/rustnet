@@ -217,8 +217,9 @@ Select the color theme preset:
 
 - **`muted`** (default): A restrained palette with one cyan accent. Addresses
   keep calm colors (remote = blue, local = cyan); everything else uses color
-  only for *signals*: transitional connection states, staleness (yellow/red
-  rows), and live bandwidth.
+  only for *signals*: transitional connection states, staleness (a removal
+  stripe and countdown running yellow to red while the row softens to gray),
+  and live bandwidth.
 - **`vivid`**: The same ANSI-16 palette as `muted`, but the chrome itself takes
   color: yellow headings and keys, magenta borders, and a distinct color per
   column.
@@ -1038,19 +1039,26 @@ The leading `~` glyph signals that the hostname was *inferred* from a DNS respon
 
 ### Visual Staleness Indicators
 
-Connections change color based on how close they are to being cleaned up:
+Idle rows announce their cleanup with a stripe and a countdown instead of recoloring the whole row:
 
-| Color | Meaning | Staleness |
-|-------|---------|-----------|
-| **White** (default) | Active connection | < 75% of timeout |
-| **Yellow** | Stale - approaching timeout | 75-90% of timeout |
-| **Red** | Critical - will be removed soon | > 90% of timeout |
+| Look | Meaning | Staleness |
+|------|---------|-----------|
+| **Full color** | Active connection | < 50% of timeout |
+| **Stripe + countdown** | Idle, approaching timeout; a `▎` stripe at the left edge of the row and the time left in the ↓/↑ column, e.g. `45s left`, run yellow through orange to red (bold for the final stretch), while Process, Remote, Local, Loc, Service, and App soften toward gray | 50-100% of timeout |
+| **Gray** | Historic, closed and archived; `closed` in State, `n/a` in ↓/↑ | after timeout (toggle `t`) |
+
+State, RTT, and Health never fade, so a red retransmit counter on an idle row
+is still a real problem. The stripe and the countdown are the only lifecycle
+cells that use yellow and red, and the countdown's text says what the color
+means, so those hues never recolor a whole row. The fade stops at the muted tier: the faint gray of
+historic rows is reserved for closed connections, so on dark and light
+terminals alike an idle row keeps its colored stripe, its countdown, and its colored
+signal cells while a historic row is uniformly gray.
 
 **Example**: An HTTP connection with a 10-minute timeout will:
-- Stay **white** for the first 7.5 minutes
-- Turn **yellow** from 7.5 to 9 minutes (warning)
-- Turn **red** after 9 minutes (critical)
-- Be removed at 10 minutes
+- Keep **full color** for the first 5 minutes
+- Show a `▎` **stripe** at its left edge and a **countdown** in the ↓/↑ column from 5 to 10 minutes, both turning from yellow to red, while its identifying columns soften
+- Be removed at 10 minutes, becoming a gray historic row marked `closed`
 
 This gives you advance warning when a connection is about to disappear from the list.
 

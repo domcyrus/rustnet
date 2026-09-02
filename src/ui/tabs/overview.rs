@@ -22,7 +22,7 @@ use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
     NONE_PLACEHOLDER, SortColumn, UIState, clear_all_with_confirmation,
     connection_table::{
-        Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
+        CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
         connection_row, render_row_table, select_columns, visible_window,
     },
     format::{format_bytes, truncate_with_ellipsis},
@@ -612,10 +612,11 @@ fn draw_grouped_connections_list(
             } => {
                 // The group header above carries the process name, so the
                 // child row's Process cell is just the tree connector + PID.
+                // connection_row prefixes the one-cell stripe gutter.
                 let connector = if *is_last_in_group {
-                    "  └─ "
+                    " └─ "
                 } else {
-                    "  ├─ "
+                    " ├─ "
                 };
                 let pid = connection
                     .pid
@@ -701,7 +702,7 @@ fn group_header_row<'a>(
             ColumnId::Bandwidth => bandwidth_cell(
                 stats.total_incoming_rate_bps,
                 stats.total_outgoing_rate_bps,
-                true,
+                CellPaint::FRESH,
             ),
             _ => Cell::from(""),
         })

@@ -5,7 +5,7 @@ expression: render_overview(true)
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ────────────━━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ▎ Process Aggregate                                                                                                                         
- Process                Remote                Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑  
+  Process               Remote                Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑  
                                                                                                                                             
 ▌▸ curl (1)                                                                                          TCP:1 UDP:0                       -/-  
  ▸ firefox (1)                                                                                       TCP:1 UDP:0                 3.1M/928K  

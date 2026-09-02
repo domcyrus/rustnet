@@ -35,7 +35,7 @@ use crate::ui::{
         SELECTION_BAR, build_header, column_constraints, connection_row, select_columns,
     },
     dpi_color, fade_line,
-    format::{ellipsize_left, format_bytes, format_rate, format_rtt_compact},
+    format::{ellipsize_left, format_bytes, format_countdown, format_rate, format_rtt_compact},
     non_dpi_app_color, section_header, state_color, theme, try_handle_connection_nav,
     try_handle_pane_wheel,
     widgets::badge::{chip, pill},
@@ -1009,17 +1009,28 @@ pub(in crate::ui) fn draw_connection_details(
     } else {
         // Mirror the historic Status line for active connections so the
         // user can see how recently traffic moved on this connection.
-        // Color follows the same staleness progression as the Overview row
-        // styling so the cue is consistent across views.
-        let active_display = format!(
-            "Active (last seen {})",
-            format_age(conn.last_activity.elapsed().unwrap_or_default())
-        );
-        let staleness = conn.staleness_ratio();
-        let active_color = theme::expiry_glow_intensity(staleness)
-            .map(theme::expiry_glow)
-            .unwrap_or_else(theme::ok);
-        details.field_styled("Status", active_display, theme::fg(active_color));
+        // Once the row enters its staleness window the line also counts
+        // down to cleanup and takes the Overview countdown's yellow-to-red
+        // glow, so the cue is consistent across views.
+        let age = format_age(conn.last_activity.elapsed().unwrap_or_default());
+        let fade = theme::staleness_fade_intensity(conn.staleness_ratio());
+        let active_display = match fade {
+            Some(_) => {
+                let remaining = conn
+                    .get_timeout()
+                    .saturating_sub(conn.cleanup_age(std::time::SystemTime::now()));
+                format!(
+                    "Active (last seen {age}, cleanup in {})",
+                    format_countdown(remaining)
+                )
+            }
+            None => format!("Active (last seen {age})"),
+        };
+        let active_style = match fade {
+            Some(fade) => theme::countdown_style(fade),
+            None => theme::fg(theme::ok()),
+        };
+        details.field_styled("Status", active_display, active_style);
     }
     details.field_styled(
         "Local Address",
@@ -1856,9 +1867,9 @@ pub(in crate::ui) fn draw_connection_details(
 
     // Continuity: the header band echoes the selected row so users feel
     // like they zoomed into the Overview entry rather than landed on a
-    // fresh view. Its color mirrors the row's staleness color from the
-    // connection table, so a stale/critical row stays stale/critical
-    // when zoomed into Details.
+    // fresh view. Historic rows keep the faint gray of the connection
+    // table; live rows stay plain bold, and the cleanup countdown lives
+    // in the Status line instead.
     let process_label = conn
         .process_name
         .as_deref()
@@ -1869,11 +1880,8 @@ pub(in crate::ui) fn draw_connection_details(
     } else {
         format!(" {} → {}", process_label, conn.remote_addr)
     };
-    let staleness = conn.staleness_ratio();
     let title_style = if conn.is_historic {
         theme::fg(theme::faint()).add_modifier(Modifier::DIM | Modifier::BOLD)
-    } else if let Some(intensity) = theme::expiry_glow_intensity(staleness) {
-        theme::bold_fg(theme::expiry_glow(intensity))
     } else {
         Style::default().add_modifier(Modifier::BOLD)
     };

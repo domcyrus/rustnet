@@ -1327,6 +1327,39 @@ mod snapshot_tests {
         insta::assert_snapshot!(render_overview(false));
     }
 
+    /// One idle HTTPS connection (600s timeout) 450s into its window:
+    /// the staleness ratio is 0.75, well past the halfway fade threshold,
+    /// and 150s remain, so the bandwidth cell reads "2m left" with a 30s
+    /// margin on either side of the minute bucket. Both margins absorb
+    /// clock jitter between the fixture and the render. Its RTT and Health
+    /// badges stay put: signal columns do not change on a stale row.
+    #[test]
+    fn overview_stale_connection() {
+        use crate::network::types::{ApplicationProtocol, DpiInfo, HttpsInfo};
+
+        let app = test_app();
+        let mut connections = overview_connections();
+        let stale = &mut connections[0];
+        stale.dpi_info = Some(DpiInfo {
+            application: ApplicationProtocol::Https(HttpsInfo { tls_info: None }),
+        });
+        stale.current_incoming_rate_bps = 0.0;
+        stale.current_outgoing_rate_bps = 0.0;
+        stale.last_activity = SystemTime::now() - Duration::from_secs(450);
+        app.set_connections_snapshot_for_test(connections.clone());
+        let ui_state = UIState {
+            show_system_panel: false,
+            visible_rows: 18,
+            ..Default::default()
+        };
+        let output = render_app(&app, &ui_state, &connections, None, 140, 26);
+        assert!(
+            output.contains("2m left"),
+            "expected a countdown, got:\n{output}"
+        );
+        insta::assert_snapshot!(output);
+    }
+
     #[test]
     fn overview_process_aggregate() {
         insta::assert_snapshot!(render_overview(true));
