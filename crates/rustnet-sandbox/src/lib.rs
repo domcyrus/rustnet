@@ -254,12 +254,9 @@ pub(crate) fn drop_root_step(
     };
     match privdrop::drop_to(target) {
         Ok(()) => {
-            log::info!(
-                "Dropped root privileges to uid {} gid {} (verified); {}",
-                target.uid,
-                target.gid,
-                attribution_note
-            );
+            // The target uid/gid are reported through the outcome message
+            // (shown in the Overview Security panel) rather than logged here.
+            log::info!("Dropped root privileges (verified); {}", attribution_note);
             Ok(UidDropOutcome {
                 dropped: true,
                 message: Some(format!(
