@@ -1,6 +1,5 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rustnet_core::network::merge::merge_packet_into_connection;
-use rustnet_monitor::network::parser::{TcpFlags, TcpHeaderInfo};
 use rustnet_monitor::network::types::*;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::SystemTime;
@@ -14,30 +13,7 @@ fn make_connection_with_samples(n_samples: usize) -> Connection {
 
 /// Create a minimal ParsedPacket for merge benchmarking.
 fn make_parsed_packet() -> rustnet_monitor::network::parser::ParsedPacket {
-    let mut packet = rustnet_monitor::network::parser::ParsedPacket::new(
-        Protocol::Tcp,
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321),
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
-        ProtocolState::Tcp(TcpState::Established),
-        true,
-        1400,
-        None,
-        None,
-    );
-    packet.tcp_header = Some(TcpHeaderInfo {
-        seq: 1000,
-        ack: 2000,
-        window: 65535,
-        flags: TcpFlags {
-            syn: false,
-            ack: true,
-            fin: false,
-            rst: false,
-        },
-        payload_len: 1400,
-        window_scale: None,
-    });
-    packet
+    common::make_packet(54321, 1000)
 }
 
 fn bench_merge(c: &mut Criterion) {

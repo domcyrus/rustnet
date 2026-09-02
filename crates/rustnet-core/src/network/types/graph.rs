@@ -337,20 +337,25 @@ impl TrafficHistory {
 
     /// Moving-average series of `value` as (negative age, value) pairs,
     /// falling back to raw points when there are fewer than `window` samples.
+    ///
+    /// `value` may be absent for an interval (RTT needs a handshake to
+    /// measure), so the moving average runs over the values present in each
+    /// window rather than a fixed divisor; a window with none yields no point.
     fn windowed_series(
         &self,
         now: Instant,
         window: usize,
-        value: fn(&TrafficSample) -> f64,
+        value: fn(&TrafficSample) -> Option<f64>,
     ) -> ChartData {
         if self.samples.len() < window {
             // Not enough data for smoothing, return raw
             return self
                 .samples
                 .iter()
-                .map(|s| {
+                .filter_map(|s| {
+                    let value = value(s)?;
                     let age = now.duration_since(s.timestamp).as_secs_f64();
-                    (-age, value(s))
+                    Some((-age, value))
                 })
                 .collect();
         }
@@ -358,9 +363,13 @@ impl TrafficHistory {
         let samples: Vec<_> = self.samples.iter().collect();
         samples
             .windows(window)
-            .map(|w| {
-                let avg: f64 = w.iter().map(|s| value(s)).sum::<f64>() / window as f64;
-                (-Self::avg_age(now, w), avg)
+            .filter_map(|w| {
+                let count = w.iter().filter_map(|s| value(s)).count();
+                if count == 0 {
+                    return None;
+                }
+                let sum: f64 = w.iter().filter_map(|s| value(s)).sum();
+                Some((-Self::avg_age(now, w), sum / count as f64))
             })
             .collect()
     }
@@ -371,36 +380,8 @@ impl TrafficHistory {
         let now = Instant::now();
         // Apply smoothing with window of 3
         let window = 3;
-        let loss = self.windowed_series(now, window, |s| s.packet_loss_pct as f64);
-
-        // RTT samples are optional per interval, so the moving average runs
-        // over the values present in each window rather than a fixed divisor.
-        let rtt: ChartData = if self.samples.len() < window {
-            self.samples
-                .iter()
-                .filter_map(|s| {
-                    s.avg_rtt_ms.map(|rtt| {
-                        let age = now.duration_since(s.timestamp).as_secs_f64();
-                        (-age, rtt)
-                    })
-                })
-                .collect()
-        } else {
-            let samples: Vec<_> = self.samples.iter().collect();
-            samples
-                .windows(window)
-                .filter_map(|w| {
-                    let rtts: Vec<f64> = w.iter().filter_map(|s| s.avg_rtt_ms).collect();
-                    if rtts.is_empty() {
-                        None
-                    } else {
-                        let avg_rtt: f64 = rtts.iter().sum::<f64>() / rtts.len() as f64;
-                        Some((-Self::avg_age(now, w), avg_rtt))
-                    }
-                })
-                .collect()
-        };
-
+        let loss = self.windowed_series(now, window, |s| Some(s.packet_loss_pct as f64));
+        let rtt = self.windowed_series(now, window, |s| s.avg_rtt_ms);
         (loss, rtt)
     }
 

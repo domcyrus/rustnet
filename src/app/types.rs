@@ -5,7 +5,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::fs::File;
 use std::sync::RwLock;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
 use crate::network::types::{Connection, GraphScale, Protocol};
@@ -204,6 +204,50 @@ impl Default for AppStats {
             pcapng_records_dropped: AtomicU64::new(0),
             pcapng_export_errors: AtomicU64::new(0),
         }
+    }
+}
+
+impl AppStats {
+    /// Every atomic counter, in declaration order. This is the single place
+    /// a new counter has to be registered so that snapshots and resets stay
+    /// complete.
+    fn counters(&self) -> [&AtomicU64; 15] {
+        [
+            &self.packets_processed,
+            &self.packets_dropped,
+            &self.connections_tracked,
+            &self.total_connections_created,
+            &self.total_connections_archived,
+            &self.total_tcp_retransmits,
+            &self.total_tcp_out_of_order,
+            &self.total_tcp_fast_retransmits,
+            &self.pcap_records_written,
+            &self.pcapng_records_queued,
+            &self.pcapng_records_written,
+            &self.pcapng_records_annotated,
+            &self.pcapng_records_unannotated,
+            &self.pcapng_records_dropped,
+            &self.pcapng_export_errors,
+        ]
+    }
+
+    /// Reset every counter to zero (the last-update timestamp is kept).
+    pub(crate) fn reset_counters(&self) {
+        for counter in self.counters() {
+            counter.store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// Copy of the current counter values and last-update timestamp.
+    pub(crate) fn snapshot(&self) -> AppStats {
+        let snapshot = AppStats {
+            last_update: RwLock::new(*self.last_update.read().unwrap()),
+            ..AppStats::default()
+        };
+        for (dst, src) in snapshot.counters().into_iter().zip(self.counters()) {
+            dst.store(src.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
+        snapshot
     }
 }
 

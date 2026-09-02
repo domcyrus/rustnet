@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 
 use crate::network::dns::DnsResolver;
 use crate::network::geoip::GeoIpInfo;
@@ -190,6 +191,35 @@ fn add_geoip_fields(event: &mut Value, geoip: &GeoIpInfo) {
     }
     if let Some(ref postal) = geoip.postal_code {
         event["geoip_postal_code"] = json!(postal);
+    }
+}
+
+/// Record a closed (archived or timed-out) connection: the
+/// `connection_closed` JSONL event when JSON logging is enabled and the PCAP
+/// sidecar line when PCAP export is enabled. The duration is measured from
+/// the connection's `created_at` up to `now`.
+pub(super) fn log_connection_closed(
+    conn: &Connection,
+    now: SystemTime,
+    json_log: Option<&JsonLineWriter>,
+    pcap_sidecar: Option<&JsonLineWriter>,
+    dns_resolver: Option<&DnsResolver>,
+) {
+    let duration_secs = now
+        .duration_since(conn.created_at)
+        .map(|duration| duration.as_secs())
+        .ok();
+    if let Some(writer) = json_log {
+        log_connection_event(
+            writer,
+            "connection_closed",
+            conn,
+            duration_secs,
+            dns_resolver,
+        );
+    }
+    if let Some(writer) = pcap_sidecar {
+        log_pcap_connection(writer, conn);
     }
 }
 

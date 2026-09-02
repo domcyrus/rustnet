@@ -31,6 +31,13 @@ rustnet-host = { version = "0.5.0", path = "crates/rustnet-host" }
 rustnet-sandbox = { version = "0.5.0", path = "crates/rustnet-sandbox" }
 anyhow = "1.0"
 log = "0.4"
+libc = "0.2"
+dashmap = "6.2"
+crossbeam = "0.8"
+pcap = "2.4.0"
+rustc-hash = "2"
+clap = { version = "4.6", features = ["derive"] }
+windows = "0.62"
 
 [package]
 name = "rustnet-monitor"
@@ -72,14 +79,14 @@ rustnet-capture.workspace = true
 rustnet-host.workspace = true
 rustnet-sandbox.workspace = true
 anyhow.workspace = true
-libc = "0.2"
+libc.workspace = true
 arboard = { version = "3.6", features = ["wayland-data-control"] }
 crossterm = "0.29"
-crossbeam = "0.8"
-dashmap = "6.2"
+crossbeam.workspace = true
+dashmap.workspace = true
 log.workspace = true
-pcap = "2.4.0"
-clap = { version = "4.6", features = ["derive"] }
+pcap.workspace = true
+clap.workspace = true
 simplelog = "0.12"
 chrono = "0.4"
 ratatui = { version = "0.30", features = ["all-widgets", "unstable-rendered-line-info"] }
@@ -95,7 +102,7 @@ regex-lite = "0.1"
 # landlock + caps moved to the rustnet-sandbox crate (sandboxing).
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = [
+windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
@@ -113,7 +120,7 @@ windows = { version = "0.62", features = [
 
 [build-dependencies]
 anyhow.workspace = true
-clap = { version = "4.6", features = ["derive"] }
+clap.workspace = true
 clap_complete = "4.6"
 clap_mangen = "0.3"
 
@@ -121,7 +128,7 @@ clap_mangen = "0.3"
 http_req = "0.14"
 zip = "8.6"
 sha2 = "0.11"
-windows = { version = "0.62", features = [
+windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
@@ -229,7 +236,7 @@ eula = false
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 insta = { version = "1", features = ["filters"] }
-rustc-hash = "2"
+rustc-hash.workspace = true
 
 [[bench]]
 name = "packet_parsing"

@@ -305,18 +305,9 @@ fn parse_client_hello(data: &[u8], info: &mut TlsInfo, opts: TlsParseOptions) {
         info.version = Some(version);
     }
 
-    // Need at least version (2) + random (32)
-    if data.len() < 34 {
+    let Some(mut offset) = skip_hello_prefix(data) else {
         return;
-    }
-    let mut offset = 34;
-
-    // Session ID
-    if offset >= data.len() {
-        return;
-    }
-    let session_id_len = data[offset] as usize;
-    offset += 1 + session_id_len;
+    };
 
     // Cipher suites
     if offset + 2 > data.len() {
@@ -333,15 +324,51 @@ fn parse_client_hello(data: &[u8], info: &mut TlsInfo, opts: TlsParseOptions) {
     offset += 1 + compression_len;
 
     // Extensions - this is what we really want
+    parse_extensions_block(data, offset, info, true, opts);
+}
+
+/// Skip the fields shared by ClientHello and ServerHello: legacy version
+/// (2 bytes), random (32 bytes) and session id (1 length byte plus the id).
+/// Returns the offset of the first hello-specific field, or `None` if the
+/// data ends inside the prefix.
+fn skip_hello_prefix(data: &[u8]) -> Option<usize> {
+    // Need at least version (2) + random (32)
+    if data.len() < 34 {
+        return None;
+    }
+    let offset = 34;
+
+    // Session ID
+    if offset >= data.len() {
+        return None;
+    }
+    let session_id_len = data[offset] as usize;
+    Some(offset + 1 + session_id_len)
+}
+
+/// Parse the extensions block at `offset` (u16 length followed by the
+/// extensions), clamping the declared length to the data actually present.
+fn parse_extensions_block(
+    data: &[u8],
+    offset: usize,
+    info: &mut TlsInfo,
+    is_client: bool,
+    opts: TlsParseOptions,
+) {
     if offset + 2 > data.len() {
         return;
     }
     let extensions_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
-    offset += 2;
+    let offset = offset + 2;
 
     let available_ext_len = (data.len() - offset).min(extensions_len);
     if available_ext_len > 0 {
-        parse_extensions(&data[offset..offset + available_ext_len], info, true, opts);
+        parse_extensions(
+            &data[offset..offset + available_ext_len],
+            info,
+            is_client,
+            opts,
+        );
     }
 }
 
@@ -356,17 +383,9 @@ fn parse_server_hello(data: &[u8], info: &mut TlsInfo, opts: TlsParseOptions) {
         info.version = version_from_bytes(data[0], data[1]);
     }
 
-    if data.len() < 34 {
+    let Some(mut offset) = skip_hello_prefix(data) else {
         return;
-    }
-    let mut offset = 34;
-
-    // Session ID
-    if offset >= data.len() {
-        return;
-    }
-    let session_id_len = data[offset] as usize;
-    offset += 1 + session_id_len;
+    };
 
     // Cipher suite (2 bytes)
     if offset + 2 > data.len() {
@@ -383,16 +402,7 @@ fn parse_server_hello(data: &[u8], info: &mut TlsInfo, opts: TlsParseOptions) {
     offset += 1;
 
     // Extensions (optional)
-    if offset + 2 > data.len() {
-        return;
-    }
-    let extensions_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
-    offset += 2;
-
-    let available_ext_len = (data.len() - offset).min(extensions_len);
-    if available_ext_len > 0 {
-        parse_extensions(&data[offset..offset + available_ext_len], info, false, opts);
-    }
+    parse_extensions_block(data, offset, info, false, opts);
 }
 
 fn parse_extensions(data: &[u8], info: &mut TlsInfo, is_client: bool, opts: TlsParseOptions) {
@@ -584,10 +594,34 @@ fn parse_supported_versions(data: &[u8], is_client: bool) -> Option<TlsVersion> 
     }
 }
 
-/// TLS wire-format builders shared by the TLS-family DPI tests: the QUIC
-/// parser reuses the SNI extension layout, so its tests encode it here.
+/// TLS wire-format builders and fixtures shared by the TLS-family DPI tests
+/// (`https`, `quic`): the QUIC parser reuses the SNI extension layout and both
+/// transports exercise the RFC 9001 ClientHello, so they are encoded here.
 #[cfg(test)]
 pub(crate) mod test_fixtures {
+    /// RFC 9001 Appendix A.2 ClientHello (the payload of the client Initial's
+    /// CRYPTO frame, 241 bytes): SNI example.com, ALPN "alpn", TLS 1.3 via
+    /// supported_versions.
+    pub(crate) const RFC9001_CLIENT_HELLO: &str = "
+        010000ed0303ebf8fa56f12939b9584a3896472ec40bb863cfd3e868
+        04fe3a47f06a2b69484c00000413011302010000c000000010000e00000b6578
+        616d706c652e636f6dff01000100000a00080006001d0017001800100007000504616c706e
+        0005000501000000000033002600
+        24001d00209370b2c9caa47fbabaf4559fedba753de171fa71f50f1ce15d43e9
+        94ec74d748002b0003020304000d0010000e04030503060302030804080508
+        06002d00020101001c00024001003900320408ffffffffffffffff0504800
+        0ffff07048000ffff0801100104800075300901100f088394c8f03e5157080
+        6048000ffff";
+
+    /// Decode a hex string, ignoring whitespace
+    pub(crate) fn from_hex(s: &str) -> Vec<u8> {
+        let cleaned: Vec<u8> = s.bytes().filter(u8::is_ascii_hexdigit).collect();
+        cleaned
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+            .collect()
+    }
+
     /// Build a minimal SNI extension structure for `hostname`.
     pub(crate) fn build_sni_extension(hostname: &str) -> Vec<u8> {
         let name_len = hostname.len() as u16;
@@ -601,11 +635,44 @@ pub(crate) mod test_fixtures {
         ext.extend_from_slice(hostname.as_bytes());
         ext
     }
+
+    /// Build a hello handshake message (type + length header included): the
+    /// shared prefix (legacy version TLS 1.2, zero random, empty session id),
+    /// the hello-specific `middle` bytes, then the extensions block.
+    fn build_hello(handshake_type: u8, middle: &[u8], extensions: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(&[0x03, 0x03]); // legacy version TLS 1.2
+        body.extend_from_slice(&[0u8; 32]); // random
+        body.push(0); // session id length
+        body.extend_from_slice(middle);
+        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+        body.extend_from_slice(extensions);
+
+        let mut msg = vec![handshake_type];
+        msg.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
+        msg.extend_from_slice(&body);
+        msg
+    }
+
+    /// Build a minimal ClientHello handshake message (type + length header
+    /// included) carrying the given extensions blob.
+    pub(crate) fn build_client_hello(extensions: &[u8]) -> Vec<u8> {
+        // Cipher suites: length 2, TLS_AES_128_GCM_SHA256; compression
+        // methods: length 1, null.
+        build_hello(0x01, &[0x00, 0x02, 0x13, 0x01, 0x01, 0x00], extensions)
+    }
+
+    /// Build a minimal ServerHello handshake message (type + length header
+    /// included) carrying the given extensions blob.
+    pub(crate) fn build_server_hello(extensions: &[u8]) -> Vec<u8> {
+        // Cipher suite TLS_AES_128_GCM_SHA256, null compression.
+        build_hello(0x02, &[0x13, 0x01, 0x00], extensions)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_fixtures::build_sni_extension;
+    use super::test_fixtures::{build_client_hello, build_server_hello, build_sni_extension};
     use super::*;
 
     #[test]
@@ -711,44 +778,6 @@ mod tests {
         assert!(!is_valid_hostname("ab")); // Too short
     }
 
-    /// Build a minimal ClientHello handshake message (type + length header
-    /// included) carrying the given extensions blob.
-    fn build_client_hello(extensions: &[u8]) -> Vec<u8> {
-        let mut body = Vec::new();
-        body.extend_from_slice(&[0x03, 0x03]); // legacy version TLS 1.2
-        body.extend_from_slice(&[0u8; 32]); // random
-        body.push(0); // session id length
-        body.extend_from_slice(&2u16.to_be_bytes()); // cipher suites length
-        body.extend_from_slice(&[0x13, 0x01]); // TLS_AES_128_GCM_SHA256
-        body.push(1); // compression methods length
-        body.push(0); // null compression
-        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
-        body.extend_from_slice(extensions);
-
-        let mut msg = vec![0x01];
-        msg.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
-        msg.extend_from_slice(&body);
-        msg
-    }
-
-    /// Build a minimal ServerHello handshake message (type + length header
-    /// included) carrying the given extensions blob.
-    fn build_server_hello(extensions: &[u8]) -> Vec<u8> {
-        let mut body = Vec::new();
-        body.extend_from_slice(&[0x03, 0x03]); // legacy version TLS 1.2
-        body.extend_from_slice(&[0u8; 32]); // random
-        body.push(0); // session id length
-        body.extend_from_slice(&[0x13, 0x01]); // TLS_AES_128_GCM_SHA256
-        body.push(0); // null compression
-        body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
-        body.extend_from_slice(extensions);
-
-        let mut msg = vec![0x02];
-        msg.extend_from_slice(&(body.len() as u32).to_be_bytes()[1..]);
-        msg.extend_from_slice(&body);
-        msg
-    }
-
     #[test]
     fn test_truncated_extension_clamp_vs_wait() {
         // One SNI extension whose declared length exceeds the available data:
@@ -815,29 +844,33 @@ mod tests {
         assert_eq!(info.sni, Some("www.example.com".to_string()));
     }
 
-    #[test]
-    fn test_supported_versions_assume_tls13_on_quic() {
-        // supported_versions extension present but with an unrecognized
-        // version: QUIC assumes TLS 1.3, TCP reports nothing.
-        let mut ext = Vec::new();
-        ext.extend_from_slice(&0x002bu16.to_be_bytes());
-        ext.extend_from_slice(&3u16.to_be_bytes());
-        ext.push(2); // list length
-        ext.extend_from_slice(&[0x7f, 0x1c]); // a draft version
-        let msg = build_client_hello(&ext);
-
+    /// Parse `msg` on both transports: QUIC must report TLS 1.3 from the
+    /// supported_versions extension regardless of its value, while TCP falls
+    /// back to the legacy version (TLS 1.2) from the hello body.
+    fn assert_quic_tls13_tcp_tls12(msg: &[u8]) {
         let mut quic_info = TlsInfo::new();
         assert!(parse_handshake(
-            &msg,
+            msg,
             &mut quic_info,
             TlsParseOptions::quic(false)
         ));
         assert_eq!(quic_info.version, Some(TlsVersion::Tls13));
 
         let mut tcp_info = TlsInfo::new();
-        assert!(parse_handshake(&msg, &mut tcp_info, TlsParseOptions::tcp()));
-        // TCP falls back to the legacy version from the ClientHello body
+        assert!(parse_handshake(msg, &mut tcp_info, TlsParseOptions::tcp()));
         assert_eq!(tcp_info.version, Some(TlsVersion::Tls12));
+    }
+
+    #[test]
+    fn test_supported_versions_assume_tls13_on_quic() {
+        // supported_versions extension present but with an unrecognized
+        // version: QUIC assumes TLS 1.3, TCP reports nothing from it.
+        let mut ext = Vec::new();
+        ext.extend_from_slice(&0x002bu16.to_be_bytes());
+        ext.extend_from_slice(&3u16.to_be_bytes());
+        ext.push(2); // list length
+        ext.extend_from_slice(&[0x7f, 0x1c]); // a draft version
+        assert_quic_tls13_tcp_tls12(&build_client_hello(&ext));
     }
 
     #[test]
@@ -848,19 +881,7 @@ mod tests {
             0x02, // version list length
             0x03, 0x03, // TLS 1.2, invalid for QUIC
         ];
-        let msg = build_client_hello(&extensions);
-
-        let mut quic_info = TlsInfo::new();
-        assert!(parse_handshake(
-            &msg,
-            &mut quic_info,
-            TlsParseOptions::quic(false)
-        ));
-        assert_eq!(quic_info.version, Some(TlsVersion::Tls13));
-
-        let mut tcp_info = TlsInfo::new();
-        assert!(parse_handshake(&msg, &mut tcp_info, TlsParseOptions::tcp()));
-        assert_eq!(tcp_info.version, Some(TlsVersion::Tls12));
+        assert_quic_tls13_tcp_tls12(&build_client_hello(&extensions));
     }
 
     #[test]
@@ -870,19 +891,7 @@ mod tests {
             0x00, 0x02, // extension length
             0x03, 0x03, // TLS 1.2, invalid for QUIC
         ];
-        let msg = build_server_hello(&extensions);
-
-        let mut quic_info = TlsInfo::new();
-        assert!(parse_handshake(
-            &msg,
-            &mut quic_info,
-            TlsParseOptions::quic(false)
-        ));
-        assert_eq!(quic_info.version, Some(TlsVersion::Tls13));
-
-        let mut tcp_info = TlsInfo::new();
-        assert!(parse_handshake(&msg, &mut tcp_info, TlsParseOptions::tcp()));
-        assert_eq!(tcp_info.version, Some(TlsVersion::Tls12));
+        assert_quic_tls13_tcp_tls12(&build_server_hello(&extensions));
     }
 
     #[test]

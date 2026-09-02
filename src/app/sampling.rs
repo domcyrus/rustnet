@@ -17,7 +17,7 @@ use crate::network::{
     types::{Connection, ConnectionLifecycleSample},
 };
 
-use super::logging::{log_connection_event, log_pcap_connection};
+use super::logging::log_connection_closed;
 use super::state::App;
 use super::{LIVE_RATE_INTERVAL, MIN_RATE_SAMPLE_SECONDS, TRAFFIC_HISTORY_CAPACITY};
 
@@ -453,27 +453,13 @@ impl App {
                     .fetch_add(removed.len() as u64, Ordering::Relaxed);
 
                 for conn in &removed {
-                    // Calculate connection duration
-                    let duration_secs = now
-                        .duration_since(conn.created_at)
-                        .map(|d| d.as_secs())
-                        .ok();
-
-                    // Log connection_closed event if JSON logging is enabled
-                    if let Some(writer) = &json_log_file {
-                        log_connection_event(
-                            writer,
-                            "connection_closed",
-                            conn,
-                            duration_secs,
-                            dns_resolver.as_deref(),
-                        );
-                    }
-
-                    // Log to PCAP sidecar file if PCAP export is enabled
-                    if let Some(writer) = &pcap_sidecar_file {
-                        log_pcap_connection(writer, conn);
-                    }
+                    log_connection_closed(
+                        conn,
+                        now,
+                        json_log_file.as_deref(),
+                        pcap_sidecar_file.as_deref(),
+                        dns_resolver.as_deref(),
+                    );
 
                     // Log cleanup reason for debugging
                     let conn_timeout = conn.get_timeout();

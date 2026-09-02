@@ -4,24 +4,22 @@ use log::debug;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey};
 use ring::{aead, hkdf};
 
-use super::packet::{initial_salt_for_version, is_quic_v2, parse_variable_length_int};
+use super::packet::{PacketLayout, initial_salt_for_version, is_quic_v2};
 
 /// Decrypt a QUIC Client Initial packet (prioritized for SNI extraction)
+///
+/// `layout` locates the packet number and declared `Length` inside `packet`,
+/// as parsed by [`super::packet::parse_long_header`].
 pub(super) fn decrypt_client_initial_packet(
     packet: &[u8],
     dcid: &[u8],
     version: u32,
+    layout: PacketLayout,
 ) -> Option<Vec<u8>> {
-    // Derive initial secret using HKDF
-    let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, initial_salt_for_version(version));
-    let initial_secret = salt.extract(dcid);
-
-    // Derive client initial secret
-    let mut client_secret = [0u8; 32];
-    if !derive_secret(&initial_secret, b"client in", &mut client_secret) {
+    let Some(client_secret) = derive_client_initial_secret(dcid, version) else {
         debug!("QUIC: Failed to derive client initial secret");
         return None;
-    }
+    };
 
     debug!(
         "QUIC: Attempting client Initial decryption with DCID len={}",
@@ -29,7 +27,7 @@ pub(super) fn decrypt_client_initial_packet(
     );
 
     // Try to decrypt as a client Initial packet
-    let result = try_decrypt_initial_with_secret(packet, &client_secret, version);
+    let result = try_decrypt_initial_with_secret(packet, &client_secret, version, layout);
     if result.is_none() {
         debug!("QUIC: Client Initial decryption failed");
     }
@@ -37,74 +35,27 @@ pub(super) fn decrypt_client_initial_packet(
 }
 
 /// Try to decrypt an Initial packet with a specific secret
-fn try_decrypt_initial_with_secret(packet: &[u8], secret: &[u8], version: u32) -> Option<Vec<u8>> {
+fn try_decrypt_initial_with_secret(
+    packet: &[u8],
+    secret: &[u8],
+    version: u32,
+    layout: PacketLayout,
+) -> Option<Vec<u8>> {
     // Derive key and IV for packet protection
-    let mut key = [0u8; 16];
-    let mut iv = [0u8; 12];
-    let mut hp_key = [0u8; 16];
-
-    if !derive_protection_material(secret, &mut key, version, ProtectionMaterial::Key)
-        || !derive_protection_material(secret, &mut iv, version, ProtectionMaterial::Iv)
-        || !derive_protection_material(
-            secret,
-            &mut hp_key,
-            version,
-            ProtectionMaterial::HeaderProtection,
-        )
-    {
+    let Some(InitialKeys {
+        key,
+        iv,
+        hp: hp_key,
+    }) = derive_initial_keys(secret, version)
+    else {
         debug!("QUIC: Failed to derive keys from secret");
         return None;
-    }
+    };
 
-    // Parse packet structure to find packet number offset
-    let mut offset = 5; // Skip first byte and version
-
-    // Skip DCID
-    if offset >= packet.len() {
-        debug!("QUIC: Packet too short for DCID length field");
-        return None;
-    }
-    let dcid_len = packet[offset] as usize;
-    offset += 1 + dcid_len;
-
-    if offset >= packet.len() {
-        debug!("QUIC: Packet too short after DCID");
-        return None;
-    }
-
-    // Skip SCID
-    let scid_len = packet[offset] as usize;
-    offset += 1 + scid_len;
-
-    if offset >= packet.len() {
-        debug!("QUIC: Packet too short after SCID");
-        return None;
-    }
-
-    debug!(
-        "QUIC: Parsed connection IDs - DCID len={}, SCID len={}, offset now={}",
-        dcid_len, scid_len, offset
-    );
-
-    // Parse token length (for Initial packets)
-    let (token_len, bytes_read) = parse_variable_length_int(&packet[offset..])?;
-    // QUIC variable-length ints go up to 2^62 — guard against overflow on
-    // 32-bit targets and against crafted token lengths that exceed the packet.
-    let token_len_usize = usize::try_from(token_len).ok()?;
-    offset = offset
-        .checked_add(bytes_read)?
-        .checked_add(token_len_usize)?;
-    if offset > packet.len() {
-        debug!("QUIC: token_len pushed offset past end of packet");
-        return None;
-    }
-
-    // Parse packet length
-    let (packet_payload_length, bytes_read) = parse_variable_length_int(&packet[offset..])?;
-    offset += bytes_read;
-
-    // Now offset points to the packet number field
-    let pn_offset = offset;
+    let PacketLayout {
+        pn_offset,
+        packet_length: packet_payload_length,
+    } = layout;
 
     // Sample is taken 4 bytes after the packet number offset
     let sample_offset = pn_offset + 4;
@@ -153,7 +104,7 @@ fn try_decrypt_initial_with_secret(packet: &[u8], secret: &[u8], version: u32) -
     // smaller than the packet-number length the subtraction would underflow
     // (panic in debug, wrap to a huge value in release that then slips past
     // the bounds check below and panics on the slice). Reject instead.
-    let ciphertext_len = (packet_payload_length as usize).checked_sub(pn_length)?;
+    let ciphertext_len = packet_payload_length.checked_sub(pn_length)?;
 
     if ciphertext_offset + ciphertext_len > packet.len() {
         debug!("QUIC: Ciphertext extends beyond packet");
@@ -181,8 +132,49 @@ fn try_decrypt_initial_with_secret(packet: &[u8], secret: &[u8], version: u32) -
     }
 }
 
+/// Derive the client initial secret for `dcid` (RFC 9001 Section 5.2):
+/// HKDF-Extract with the version-specific salt, then expand with the
+/// "client in" label.
+pub(super) fn derive_client_initial_secret(dcid: &[u8], version: u32) -> Option<[u8; 32]> {
+    let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, initial_salt_for_version(version));
+    let initial_secret = salt.extract(dcid);
+
+    let mut client_secret = [0u8; 32];
+    derive_secret(&initial_secret, b"client in", &mut client_secret).then_some(client_secret)
+}
+
+/// Packet protection material derived from an initial secret
+/// (RFC 9001 Section 5.1).
+pub(super) struct InitialKeys {
+    /// AEAD packet protection key
+    pub key: [u8; 16],
+    /// AEAD IV, XORed with the packet number to form the nonce
+    pub iv: [u8; 12],
+    /// Header protection key
+    pub hp: [u8; 16],
+}
+
+/// Derive the packet protection key, IV and header protection key from an
+/// initial secret using the version-specific HKDF labels.
+pub(super) fn derive_initial_keys(secret: &[u8], version: u32) -> Option<InitialKeys> {
+    let mut keys = InitialKeys {
+        key: [0u8; 16],
+        iv: [0u8; 12],
+        hp: [0u8; 16],
+    };
+    let ok = derive_protection_material(secret, &mut keys.key, version, ProtectionMaterial::Key)
+        && derive_protection_material(secret, &mut keys.iv, version, ProtectionMaterial::Iv)
+        && derive_protection_material(
+            secret,
+            &mut keys.hp,
+            version,
+            ProtectionMaterial::HeaderProtection,
+        );
+    ok.then_some(keys)
+}
+
 /// Derive a secret using HKDF
-pub(super) fn derive_secret(prk: &hkdf::Prk, label: &[u8], out: &mut [u8]) -> bool {
+fn derive_secret(prk: &hkdf::Prk, label: &[u8], out: &mut [u8]) -> bool {
     let info = build_hkdf_label(label, &[], out.len());
 
     prk.expand(&[&info], ArbitraryOutputLen(out.len()))
@@ -191,7 +183,7 @@ pub(super) fn derive_secret(prk: &hkdf::Prk, label: &[u8], out: &mut [u8]) -> bo
 }
 
 /// Packet protection material derivable from an initial secret
-pub(super) enum ProtectionMaterial {
+enum ProtectionMaterial {
     Key,
     Iv,
     HeaderProtection,
@@ -199,7 +191,7 @@ pub(super) enum ProtectionMaterial {
 
 /// Derive packet protection material (key, IV, or header protection key)
 /// using the version-specific HKDF label
-pub(super) fn derive_protection_material(
+fn derive_protection_material(
     secret: &[u8],
     out: &mut [u8],
     version: u32,
@@ -258,25 +250,7 @@ impl hkdf::KeyType for ArbitraryOutputLen {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_initial_packet_oversized_token_len_does_not_panic() {
-        // Crafted Initial packet whose declared token length pushes the parse
-        // offset past the end of the packet. Pre-fix this panicked when
-        // slicing &packet[offset..] in try_decrypt_initial_with_secret.
-        let mut packet = Vec::new();
-        packet.push(0xC0); // long header, type=Initial
-        packet.extend_from_slice(&1u32.to_be_bytes()); // version 1
-        packet.push(0); // DCID len = 0
-        packet.push(0); // SCID len = 0
-        // Token length: 2-byte QUIC varint encoding 1000 (top 2 bits = 01).
-        let token_varint: u16 = 1000 | 0x4000;
-        packet.extend_from_slice(&token_varint.to_be_bytes());
-        // Intentionally no token bytes follow — declared length far exceeds packet.
-
-        let secret = [0u8; 32];
-        let result = try_decrypt_initial_with_secret(&packet, &secret, 1);
-        assert!(result.is_none());
-    }
+    use super::super::packet::parse_long_header;
 
     #[test]
     fn test_initial_packet_short_length_does_not_underflow() {
@@ -297,9 +271,14 @@ mod tests {
         // (sample_offset + 16 must be within the packet).
         packet.extend(std::iter::repeat_n(0u8, 24));
 
+        let layout = parse_long_header(&packet)
+            .and_then(|header| header.layout)
+            .expect("header should parse up to the packet number");
+        assert_eq!(layout.packet_length, 0);
+
         let secret = [0u8; 32];
         // Must not panic in either debug or release.
-        let result = try_decrypt_initial_with_secret(&packet, &secret, 1);
+        let result = try_decrypt_initial_with_secret(&packet, &secret, 1, layout);
         assert!(result.is_none());
     }
 }

@@ -418,17 +418,8 @@ impl ProcessLookup for EnhancedLinuxProcessLookup {
 mod tests {
     use super::*;
     use crate::MatchQuality;
-    use rustnet_core::network::types::{ProtocolState, TcpState};
+    use crate::test_support::tcp_connection;
     use std::path::PathBuf;
-
-    fn connection(local: &str, remote: &str) -> Connection {
-        Connection::new(
-            Protocol::Tcp,
-            local.parse().unwrap(),
-            remote.parse().unwrap(),
-            ProtocolState::Tcp(TcpState::Established),
-        )
-    }
 
     /// A result carrying everything only eBPF can observe, so a cache round
     /// trip that drops any of it is visible.
@@ -442,7 +433,7 @@ mod tests {
     #[test]
     fn cached_results_keep_every_field_the_backend_reported() {
         let lookup = EnhancedLinuxProcessLookup::new().expect("procfs lookup must initialize");
-        let conn = connection("192.168.1.10:5000", "1.1.1.1:443");
+        let conn = tcp_connection("192.168.1.10:5000", "1.1.1.1:443");
         let expected = ebpf_attribution();
         lookup.seed_cache(ConnectionKey::from_connection(&conn), expected.clone());
 
@@ -458,7 +449,7 @@ mod tests {
     #[test]
     fn a_cached_relaxed_match_is_not_upgraded_to_exact() {
         let lookup = EnhancedLinuxProcessLookup::new().expect("procfs lookup must initialize");
-        let conn = connection("192.168.1.10:5001", "1.1.1.1:443");
+        let conn = tcp_connection("192.168.1.10:5001", "1.1.1.1:443");
         lookup.seed_cache(ConnectionKey::from_connection(&conn), ebpf_attribution());
 
         for _ in 0..3 {
@@ -471,7 +462,7 @@ mod tests {
     #[test]
     fn refresh_clears_the_cache() {
         let lookup = EnhancedLinuxProcessLookup::new().expect("procfs lookup must initialize");
-        let conn = connection("192.168.1.10:5003", "1.1.1.1:443");
+        let conn = tcp_connection("192.168.1.10:5003", "1.1.1.1:443");
         lookup.seed_cache(ConnectionKey::from_connection(&conn), ebpf_attribution());
         lookup.refresh().expect("refresh must succeed");
 

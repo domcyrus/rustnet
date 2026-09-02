@@ -5,8 +5,8 @@ use anyhow::Result;
 use crossbeam::channel::{self, Receiver, Sender};
 use log::{debug, error, info, warn};
 use std::ops::ControlFlow;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -17,7 +17,7 @@ use crate::network::{
     tracker::{ConnectionTracker, IngestOutcome},
 };
 
-use super::logging::{JsonLineWriter, log_connection_event, log_pcap_connection};
+use super::logging::{JsonLineWriter, log_connection_closed, log_connection_event};
 use super::pcapng_export::{PcapngRecord, send_pcapng_record};
 use super::state::App;
 use super::types::AppStats;
@@ -39,6 +39,41 @@ pub(super) enum CaptureStatus {
 impl CaptureStatus {
     pub(super) fn has_failed(&self) -> bool {
         matches!(self, Self::Failed(_))
+    }
+}
+
+/// Outcome of waiting for the capture thread to publish its linktype.
+pub(super) enum LinktypeWait {
+    Ready(i32),
+    /// Capture setup failed, so no linktype will ever be published.
+    CaptureFailed,
+    /// Shutdown was requested before the linktype became available.
+    Stopped,
+}
+
+/// Poll until the capture thread publishes the linktype, capture setup
+/// fails, or shutdown is requested. A poisoned capture-status lock counts
+/// as a failure.
+pub(super) fn wait_for_linktype(
+    linktype: &RwLock<Option<i32>>,
+    capture_status: &RwLock<CaptureStatus>,
+    should_stop: &AtomicBool,
+) -> LinktypeWait {
+    loop {
+        if let Some(linktype) = *linktype.read().unwrap() {
+            return LinktypeWait::Ready(linktype);
+        }
+        let capture_failed = capture_status
+            .read()
+            .map(|status| status.has_failed())
+            .unwrap_or(true);
+        if capture_failed {
+            return LinktypeWait::CaptureFailed;
+        }
+        if should_stop.load(Ordering::Relaxed) {
+            return LinktypeWait::Stopped;
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -499,25 +534,21 @@ impl App {
                 ));
 
                 // Wait for linktype to be available
-                let mut parser = loop {
-                    if let Some(linktype) = *linktype_storage.read().unwrap() {
-                        let mut parser = PacketParser::with_config(parser_config.clone())
-                            .with_linktype(linktype);
-                        if let Some(ref oui) = oui_lookup {
-                            parser = parser.with_oui_lookup(Arc::clone(oui));
+                let mut parser =
+                    match wait_for_linktype(&linktype_storage, &capture_status, &should_stop) {
+                        LinktypeWait::Ready(linktype) => {
+                            let mut parser = PacketParser::with_config(parser_config.clone())
+                                .with_linktype(linktype);
+                            if let Some(ref oui) = oui_lookup {
+                                parser = parser.with_oui_lookup(Arc::clone(oui));
+                            }
+                            parser
                         }
-                        break parser;
-                    }
-                    let capture_failed = capture_status
-                        .read()
-                        .map(|status| status.has_failed())
-                        .unwrap_or(true);
-                    if capture_failed || should_stop.load(Ordering::Relaxed) {
-                        info!("pcap_rx_{} exiting before linktype was available", id);
-                        return;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                };
+                        LinktypeWait::CaptureFailed | LinktypeWait::Stopped => {
+                            info!("pcap_rx_{} exiting before linktype was available", id);
+                            return;
+                        }
+                    };
                 let mut total_processed = 0u64;
                 let mut last_log = Instant::now();
                 const LOCAL_ADDRESS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -694,22 +725,13 @@ fn update_connection(
         stats
             .total_connections_archived
             .fetch_add(1, Ordering::Relaxed);
-        let duration_secs = now
-            .duration_since(conn.created_at)
-            .map(|duration| duration.as_secs())
-            .ok();
-        if let Some(writer) = json_log_file {
-            log_connection_event(
-                writer,
-                "connection_closed",
-                conn,
-                duration_secs,
-                dns_resolver,
-            );
-        }
-        if let Some(writer) = pcap_sidecar_file {
-            log_pcap_connection(writer, conn);
-        }
+        log_connection_closed(
+            conn,
+            now,
+            json_log_file.as_deref(),
+            pcap_sidecar_file.as_deref(),
+            dns_resolver,
+        );
         debug!(
             "Archived prior connection generation before creating a new one: {}",
             outcome.key
@@ -789,37 +811,18 @@ mod capture_failure_message_tests {
 }
 
 #[cfg(test)]
+#[path = "../test_support/scratch_dir.rs"]
+mod scratch_dir;
+
+#[cfg(test)]
 mod connection_lifecycle_tests {
     use super::*;
     use crate::network::types::{Protocol, ProtocolState, TcpState};
     use rustnet_core::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
     use std::net::SocketAddr;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
-    struct ScratchDir(PathBuf);
-
-    impl ScratchDir {
-        fn new(tag: &str) -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "rustnet-lifecycle-test-{}-{}",
-                std::process::id(),
-                tag
-            ));
-            let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for ScratchDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use super::scratch_dir::ScratchDir;
 
     fn tcp_packet(flags: TcpFlags) -> ParsedPacket {
         let mut packet = ParsedPacket::new(
@@ -905,7 +908,7 @@ mod connection_lifecycle_tests {
 
     #[test]
     fn retained_json_writers_record_connection_lifecycle() {
-        let dir = ScratchDir::new("writers");
+        let dir = ScratchDir::new("lifecycle", "writers");
         let events_path = dir.path().join("events.jsonl");
         let sidecar_path = dir.path().join("capture.pcap.connections.jsonl");
         let events = Some(json_writer(&events_path));

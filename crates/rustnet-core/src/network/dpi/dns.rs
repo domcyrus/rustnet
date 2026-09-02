@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::ops::Range;
 
 use crate::network::types::{DnsInfo, DnsQueryType};
 
@@ -152,41 +153,24 @@ fn walk_a_aaaa_records(
     let mut walked = 0;
     let count = count.min(MAX_ANSWERS_TO_PARSE);
     for _ in 0..count {
-        let after_name = match skip_dns_name(payload, offset) {
-            Some(o) => o,
-            None => return (offset, walked),
-        };
-        // Fixed-size RR fields: TYPE (2) + CLASS (2) + TTL (4) + RDLENGTH (2) = 10.
-        if after_name
-            .checked_add(10)
-            .map(|e| e > payload.len())
-            .unwrap_or(true)
-        {
+        let Some(rr) = parse_rr_header(payload, offset) else {
             return (offset, walked);
-        }
-        let atype = u16::from_be_bytes([payload[after_name], payload[after_name + 1]]);
-        let rdlength =
-            u16::from_be_bytes([payload[after_name + 8], payload[after_name + 9]]) as usize;
-        let rdata_start = after_name + 10;
-        let rdata_end = match rdata_start.checked_add(rdlength) {
-            Some(e) if e <= payload.len() => e,
-            _ => return (offset, walked),
         };
 
-        if queried_type.is_some() && queried_type == Some(DnsQueryType::from_wire(atype)) {
+        if queried_type.is_some() && queried_type == Some(DnsQueryType::from_wire(rr.rtype)) {
             *matched += 1;
         }
 
         if ips.len() < MAX_RESPONSE_IPS_PER_PACKET {
-            match (atype, rdlength) {
+            match (rr.rtype, rr.rdata.len()) {
                 (1, 4) => {
-                    let octets: [u8; 4] = payload[rdata_start..rdata_end]
+                    let octets: [u8; 4] = payload[rr.rdata.clone()]
                         .try_into()
                         .expect("rdlength==4 and bounds checked above");
                     ips.push(IpAddr::V4(Ipv4Addr::from(octets)));
                 }
                 (28, 16) => {
-                    let octets: [u8; 16] = payload[rdata_start..rdata_end]
+                    let octets: [u8; 16] = payload[rr.rdata.clone()]
                         .try_into()
                         .expect("rdlength==16 and bounds checked above");
                     ips.push(IpAddr::V6(Ipv6Addr::from(octets)));
@@ -197,10 +181,41 @@ fn walk_a_aaaa_records(
             }
         }
 
-        offset = rdata_end;
+        offset = rr.rdata.end;
         walked += 1;
     }
     (offset, walked)
+}
+
+/// Fixed fields of a resource record parsed by [`parse_rr_header`].
+struct RrHeader {
+    /// TYPE (A = 1, AAAA = 28, SOA = 6, ...)
+    rtype: u16,
+    /// Byte range of RDATA within the payload; `rdata.end` is where the next
+    /// record starts.
+    rdata: Range<usize>,
+}
+
+/// Skip the owner name at `offset` and read the fixed-size RR fields:
+/// TYPE (2) + CLASS (2) + TTL (4) + RDLENGTH (2) = 10 bytes, bounding RDATA
+/// by RDLENGTH. Returns `None` if the name is malformed or the header or
+/// rdata run off the end of the payload.
+fn parse_rr_header(payload: &[u8], offset: usize) -> Option<RrHeader> {
+    let after_name = skip_dns_name(payload, offset)?;
+    if after_name.checked_add(10)? > payload.len() {
+        return None;
+    }
+    let rtype = u16::from_be_bytes([payload[after_name], payload[after_name + 1]]);
+    let rdlength = u16::from_be_bytes([payload[after_name + 8], payload[after_name + 9]]) as usize;
+    let rdata_start = after_name + 10;
+    let rdata_end = rdata_start.checked_add(rdlength)?;
+    if rdata_end > payload.len() {
+        return None;
+    }
+    Some(RrHeader {
+        rtype,
+        rdata: rdata_start..rdata_end,
+    })
 }
 
 /// RFC 2308 §2.2: a NODATA response carries an SOA record in the authority
@@ -218,28 +233,13 @@ fn authority_marks_nodata(payload: &[u8], start: usize, count: usize) -> bool {
     let mut offset = start;
     let mut has_soa = false;
     for _ in 0..count {
-        let after_name = match skip_dns_name(payload, offset) {
-            Some(o) => o,
-            None => return false,
-        };
-        if after_name
-            .checked_add(10)
-            .map(|e| e > payload.len())
-            .unwrap_or(true)
-        {
+        let Some(rr) = parse_rr_header(payload, offset) else {
             return false;
-        }
-        let atype = u16::from_be_bytes([payload[after_name], payload[after_name + 1]]);
-        let rdlength =
-            u16::from_be_bytes([payload[after_name + 8], payload[after_name + 9]]) as usize;
-        let rdata_end = match (after_name + 10).checked_add(rdlength) {
-            Some(e) if e <= payload.len() => e,
-            _ => return false,
         };
-        if atype == 6 {
+        if rr.rtype == 6 {
             has_soa = true;
         }
-        offset = rdata_end;
+        offset = rr.rdata.end;
     }
     has_soa
 }
@@ -413,17 +413,7 @@ fn skip_records(payload: &[u8], start: usize, count: u16) -> Option<usize> {
     let mut offset = start;
     let count = (count as usize).min(MAX_ANSWERS_TO_PARSE);
     for _ in 0..count {
-        let after_name = skip_dns_name(payload, offset)?;
-        if after_name.checked_add(10)? > payload.len() {
-            return None;
-        }
-        let rdlength =
-            u16::from_be_bytes([payload[after_name + 8], payload[after_name + 9]]) as usize;
-        let rdata_end = after_name.checked_add(10)?.checked_add(rdlength)?;
-        if rdata_end > payload.len() {
-            return None;
-        }
-        offset = rdata_end;
+        offset = parse_rr_header(payload, offset)?.rdata.end;
     }
     Some(offset)
 }
@@ -442,25 +432,75 @@ pub(super) mod test_fixtures {
         packet.push(0x00);
     }
 
+    /// The 12-byte DNS header: `txid`, `flags` and the four section counts.
+    pub(crate) fn build_dns_header(
+        txid: u16,
+        flags: u16,
+        qdcount: u16,
+        ancount: u16,
+        nscount: u16,
+        arcount: u16,
+    ) -> Vec<u8> {
+        let mut packet = Vec::with_capacity(12);
+        for field in [txid, flags, qdcount, ancount, nscount, arcount] {
+            packet.extend_from_slice(&field.to_be_bytes());
+        }
+        packet
+    }
+
+    /// Append a question entry for `name` with `qtype` (class IN).
+    pub(crate) fn push_question(packet: &mut Vec<u8>, name: &str, qtype: u16) {
+        encode_name(packet, name);
+        packet.extend_from_slice(&qtype.to_be_bytes());
+        packet.extend_from_slice(&[0x00, 0x01]); // Class: IN
+    }
+
     /// A DNS packet with the given header `txid` and `flags`, one question
     /// for `name` with `qtype` (class IN), and empty remaining sections.
     pub(crate) fn build_dns_packet(txid: u16, flags: u16, name: &str, qtype: u16) -> Vec<u8> {
-        let mut packet = Vec::new();
-        packet.extend_from_slice(&txid.to_be_bytes());
-        packet.extend_from_slice(&flags.to_be_bytes());
-        packet.extend_from_slice(&[0x00, 0x01]); // Questions: 1
-        packet.extend_from_slice(&[0x00, 0x00]); // Answer RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Authority RRs: 0
-        packet.extend_from_slice(&[0x00, 0x00]); // Additional RRs: 0
-        encode_name(&mut packet, name);
-        packet.extend_from_slice(&qtype.to_be_bytes());
-        packet.extend_from_slice(&[0x00, 0x01]); // Class: IN
+        let mut packet = build_dns_header(txid, flags, 1, 0, 0, 0);
+        push_question(&mut packet, name, qtype);
         packet
+    }
+
+    /// Owner name of a resource record.
+    pub(crate) enum RrName<'a> {
+        /// Compression pointer to `offset`. Offset 12 is the first question's
+        /// name, the common wire shape for answers.
+        Ptr(u16),
+        /// Uncompressed labels.
+        Labels(&'a str),
+    }
+
+    /// Append a resource record: NAME, TYPE, CLASS IN, TTL, RDLENGTH, RDATA.
+    pub(crate) fn push_rr(packet: &mut Vec<u8>, name: RrName, rtype: u16, ttl: u32, rdata: &[u8]) {
+        match name {
+            RrName::Ptr(offset) => packet.extend_from_slice(&(0xC000 | offset).to_be_bytes()),
+            RrName::Labels(labels) => encode_name(packet, labels),
+        }
+        packet.extend_from_slice(&rtype.to_be_bytes());
+        packet.extend_from_slice(&[0x00, 0x01]); // Class: IN
+        packet.extend_from_slice(&ttl.to_be_bytes());
+        packet.extend_from_slice(&(rdata.len() as u16).to_be_bytes());
+        packet.extend_from_slice(rdata);
+    }
+
+    /// Append an A record (type 1) for `ip`.
+    pub(crate) fn push_a(packet: &mut Vec<u8>, name: RrName, ttl: u32, ip: [u8; 4]) {
+        push_rr(packet, name, 1, ttl, &ip);
+    }
+
+    /// Append an AAAA record (type 28) for `ip`.
+    pub(crate) fn push_aaaa(packet: &mut Vec<u8>, name: RrName, ttl: u32, ip: [u8; 16]) {
+        push_rr(packet, name, 28, ttl, &ip);
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::test_fixtures::{
+        RrName, build_dns_header, build_dns_packet, push_a, push_aaaa, push_question, push_rr,
+    };
     use super::*;
 
     #[test]
@@ -499,19 +539,8 @@ mod tests {
 
     #[test]
     fn test_normal_dns_query() {
-        // Build a simple query for "example.com"
-        let mut payload = vec![0u8; 12]; // DNS header
-        payload[5] = 1; // qdcount = 1
-        // "example" label
-        payload.push(7);
-        payload.extend_from_slice(b"example");
-        // "com" label
-        payload.push(3);
-        payload.extend_from_slice(b"com");
-        // null terminator
-        payload.push(0);
-        // QTYPE A (1), QCLASS IN (1)
-        payload.extend_from_slice(&[0, 1, 0, 1]);
+        // A simple query for "example.com" / A
+        let payload = build_dns_packet(0, 0, "example.com", 1);
 
         let info = analyze_dns(&payload).unwrap();
         assert_eq!(info.query_name, Some("example.com".to_string()));
@@ -521,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_query_parses_txid_and_has_no_rcode() {
-        let (mut payload, _) = make_example_question(false, 0);
+        let mut payload = make_example_question(false, 0);
         payload[0] = 0xAB;
         payload[1] = 0xCD;
 
@@ -535,7 +564,7 @@ mod tests {
 
     #[test]
     fn test_response_parses_txid_and_rcode() {
-        let (mut payload, _) = make_example_question(true, 0);
+        let mut payload = make_example_question(true, 0);
         payload[0] = 0xAB;
         payload[1] = 0xCD;
         payload[3] = 0x03; // RCODE = NXDOMAIN
@@ -551,7 +580,7 @@ mod tests {
 
     #[test]
     fn test_noerror_response_has_rcode_zero() {
-        let (payload, _) = make_example_question(true, 0);
+        let payload = make_example_question(true, 0);
         let info = analyze_dns(&payload).unwrap();
         assert_eq!(info.rcode, Some(0));
     }
@@ -581,32 +610,14 @@ mod tests {
         assert_eq!(info.query_name, Some("abc".to_string()));
     }
 
-    /// Helper: build a baseline question-section payload for `example.com / A`.
-    /// Returns the payload and the offset that points at the byte right after
-    /// the question section, where answer records start.
-    fn make_example_question(qr_bit: bool, ancount: u16) -> (Vec<u8>, usize) {
-        let mut payload = vec![0u8; 12];
-        // Flags: QR bit when this is a response
-        if qr_bit {
-            payload[2] = 0x80;
-        }
-        // qdcount = 1
-        payload[4] = 0;
-        payload[5] = 1;
-        // ancount
-        payload[6..8].copy_from_slice(&ancount.to_be_bytes());
-        // "example"
-        payload.push(7);
-        payload.extend_from_slice(b"example");
-        // "com"
-        payload.push(3);
-        payload.extend_from_slice(b"com");
-        // null terminator
-        payload.push(0);
-        // QTYPE A (1), QCLASS IN (1)
-        payload.extend_from_slice(&[0, 1, 0, 1]);
-        let answers_start = payload.len();
-        (payload, answers_start)
+    /// Helper: build a baseline question-section payload for `example.com / A`
+    /// (QR bit set when `qr_bit`, `ancount` answers promised). Answer records
+    /// start right after the question section.
+    fn make_example_question(qr_bit: bool, ancount: u16) -> Vec<u8> {
+        let flags = if qr_bit { 0x8000 } else { 0 };
+        let mut payload = build_dns_header(0, flags, 1, ancount, 0, 0);
+        push_question(&mut payload, "example.com", 1);
+        payload
     }
 
     #[test]
@@ -614,14 +625,8 @@ mod tests {
         // Response with one A record pointing to 93.184.216.34 (the public
         // example.com address). The answer name uses a compression pointer
         // back to the question, which is the common wire shape.
-        let (mut payload, _answers_start) = make_example_question(true, 1);
-
-        // NAME: pointer to offset 12 (start of question name).
-        payload.extend_from_slice(&[0xC0, 0x0C]);
-        // TYPE A, CLASS IN, TTL 60, RDLENGTH 4
-        payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
-        // RDATA: 93.184.216.34
-        payload.extend_from_slice(&[93, 184, 216, 34]);
+        let mut payload = make_example_question(true, 1);
+        push_a(&mut payload, RrName::Ptr(12), 60, [93, 184, 216, 34]);
 
         let info = analyze_dns(&payload).unwrap();
         assert!(info.is_response);
@@ -642,10 +647,9 @@ mod tests {
         // exists but has no record of the queried type (NODATA). This is
         // the shape of e.g. an HTTPS-type lookup for an aliased name with
         // no HTTPS record at the target.
-        let (mut payload, _) = make_example_question(true, 1);
-        payload.extend_from_slice(&[0xC0, 0x0C]); // NAME: pointer to question
-        payload.extend_from_slice(&[0, 5, 0, 1, 0, 0, 0, 60, 0, 2]); // CNAME, IN, TTL 60, RDLENGTH 2
-        payload.extend_from_slice(&[0xC0, 0x0C]); // RDATA: compressed name
+        let mut payload = make_example_question(true, 1);
+        // CNAME, IN, TTL 60; RDATA: compressed name pointer
+        push_rr(&mut payload, RrName::Ptr(12), 5, 60, &[0xC0, 0x0C]);
 
         let info = analyze_dns(&payload).unwrap();
         assert_eq!(info.rcode, Some(0));
@@ -657,13 +661,12 @@ mod tests {
     fn test_soa_authority_confirms_nodata() {
         // NOERROR, empty answer, SOA in authority: the canonical NODATA
         // shape (RFC 2308 §2.2 types 1 and 2).
-        let (mut payload, _) = make_example_question(true, 0);
+        let mut payload = make_example_question(true, 0);
         payload[8..10].copy_from_slice(&1u16.to_be_bytes()); // nscount = 1
-        payload.extend_from_slice(&[0xC0, 0x0C]); // NAME: pointer to question
         // SOA, IN, TTL 60, RDLENGTH 24: MNAME + RNAME as pointers + 5 u32 timers
-        payload.extend_from_slice(&[0, 6, 0, 1, 0, 0, 0, 60, 0, 24]);
-        payload.extend_from_slice(&[0xC0, 0x0C, 0xC0, 0x0C]);
-        payload.extend_from_slice(&[0u8; 20]);
+        let mut soa = vec![0xC0, 0x0C, 0xC0, 0x0C];
+        soa.extend_from_slice(&[0u8; 20]);
+        push_rr(&mut payload, RrName::Ptr(12), 6, 60, &soa);
 
         let info = analyze_dns(&payload).unwrap();
         assert_eq!(info.rcode, Some(0));
@@ -675,11 +678,10 @@ mod tests {
         // NOERROR with an empty answer and an NS record but no SOA in the
         // authority section is a referral (RFC 2308 §2.2), not NODATA: the
         // responder is pointing at another server, not denying the record.
-        let (mut payload, _) = make_example_question(true, 0);
+        let mut payload = make_example_question(true, 0);
         payload[8..10].copy_from_slice(&1u16.to_be_bytes()); // nscount = 1
-        payload.extend_from_slice(&[0xC0, 0x0C]); // NAME: pointer to question
-        payload.extend_from_slice(&[0, 2, 0, 1, 0, 0, 0, 60, 0, 2]); // NS, IN, TTL 60, RDLENGTH 2
-        payload.extend_from_slice(&[0xC0, 0x0C]); // RDATA: compressed name
+        // NS, IN, TTL 60; RDATA: compressed name pointer
+        push_rr(&mut payload, RrName::Ptr(12), 2, 60, &[0xC0, 0x0C]);
 
         let info = analyze_dns(&payload).unwrap();
         assert_eq!(info.rcode, Some(0));
@@ -690,7 +692,7 @@ mod tests {
     fn test_truncated_response_leaves_nodata_unset() {
         // TC=1 with an empty answer section: the full answer goes over TCP,
         // so the empty section proves nothing about the queried name.
-        let (mut payload, _) = make_example_question(true, 0);
+        let mut payload = make_example_question(true, 0);
         payload[2] |= 0x02; // TC bit
 
         let info = analyze_dns(&payload).unwrap();
@@ -703,7 +705,7 @@ mod tests {
         // ANCOUNT promises a record the payload does not carry (e.g. a
         // capture snap length cutting the packet without the TC bit set):
         // failing to parse records is not evidence of NODATA.
-        let (payload, _) = make_example_question(true, 1);
+        let payload = make_example_question(true, 1);
 
         let info = analyze_dns(&payload).unwrap();
         assert_eq!(info.rcode, Some(0));
@@ -713,14 +715,16 @@ mod tests {
 
     #[test]
     fn test_response_with_aaaa_record_populates_ipv6() {
-        let (mut payload, _) = make_example_question(true, 1);
-        payload.extend_from_slice(&[0xC0, 0x0C]); // pointer to question name
-        // TYPE AAAA (28), CLASS IN, TTL 60, RDLENGTH 16
-        payload.extend_from_slice(&[0, 28, 0, 1, 0, 0, 0, 60, 0, 16]);
-        payload.extend_from_slice(&[
-            0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x01,
-        ]);
+        let mut payload = make_example_question(true, 1);
+        push_aaaa(
+            &mut payload,
+            RrName::Ptr(12),
+            60,
+            [
+                0x20, 0x01, 0x0d, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x01,
+            ],
+        );
 
         let info = analyze_dns(&payload).unwrap();
         assert_eq!(info.response_ips.len(), 1);
@@ -732,22 +736,19 @@ mod tests {
         // Three answers: CNAME (skipped — not surfaced via response_ips),
         // A, AAAA. Order matters; the parser must walk past CNAME's
         // rdata correctly to reach the IP records.
-        let (mut payload, _) = make_example_question(true, 3);
+        let mut payload = make_example_question(true, 3);
 
         // 1) CNAME record. RDATA = pointer to "example.com" at offset 12 (2 bytes).
-        payload.extend_from_slice(&[0xC0, 0x0C]); // NAME
-        payload.extend_from_slice(&[0, 5, 0, 1, 0, 0, 0, 60, 0, 2]); // TYPE CNAME (5), CLASS IN, TTL, RDLENGTH 2
-        payload.extend_from_slice(&[0xC0, 0x0C]); // RDATA: compressed name pointer
-
+        push_rr(&mut payload, RrName::Ptr(12), 5, 60, &[0xC0, 0x0C]);
         // 2) A record 1.2.3.4
-        payload.extend_from_slice(&[0xC0, 0x0C]);
-        payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
-        payload.extend_from_slice(&[1, 2, 3, 4]);
-
+        push_a(&mut payload, RrName::Ptr(12), 60, [1, 2, 3, 4]);
         // 3) AAAA record ::1
-        payload.extend_from_slice(&[0xC0, 0x0C]);
-        payload.extend_from_slice(&[0, 28, 0, 1, 0, 0, 0, 60, 0, 16]);
-        payload.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        push_aaaa(
+            &mut payload,
+            RrName::Ptr(12),
+            60,
+            Ipv6Addr::LOCALHOST.octets(),
+        );
 
         let info = analyze_dns(&payload).unwrap();
         assert_eq!(
@@ -765,10 +766,8 @@ mod tests {
         // (malformed) packet stuffs answer-shaped bytes after the question,
         // the parser must not surface any IPs because the field is only
         // meaningful for resolver answers.
-        let (mut payload, _) = make_example_question(false, 1);
-        payload.extend_from_slice(&[0xC0, 0x0C]);
-        payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
-        payload.extend_from_slice(&[8, 8, 8, 8]);
+        let mut payload = make_example_question(false, 1);
+        push_a(&mut payload, RrName::Ptr(12), 60, [8, 8, 8, 8]);
 
         let info = analyze_dns(&payload).unwrap();
         assert!(!info.is_response);
@@ -780,10 +779,9 @@ mod tests {
     fn test_truncated_rdata_does_not_panic() {
         // Claims RDLENGTH 4 but only supplies 2 bytes of rdata. The walk
         // must stop cleanly, not panic on the slice access.
-        let (mut payload, _) = make_example_question(true, 1);
-        payload.extend_from_slice(&[0xC0, 0x0C]);
-        payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
-        payload.extend_from_slice(&[1, 2]); // only 2 bytes of rdata
+        let mut payload = make_example_question(true, 1);
+        push_a(&mut payload, RrName::Ptr(12), 60, [1, 2, 3, 4]);
+        payload.truncate(payload.len() - 2); // only 2 bytes of rdata
 
         let info = analyze_dns(&payload).unwrap();
         assert!(info.response_ips.is_empty());
@@ -797,28 +795,12 @@ mod tests {
         // either bailing out via skip_dns_name or, worse, surfacing bogus
         // IPs. With multi-question skipping the parser must land on the
         // real answer and return exactly one IP.
-        let mut payload = vec![0u8; 12];
-        payload[2] = 0x80; // QR bit
-        payload[5] = 2; // qdcount = 2
-        payload[7] = 1; // ancount = 1
-        // Q1: "example.com" / A
-        payload.push(7);
-        payload.extend_from_slice(b"example");
-        payload.push(3);
-        payload.extend_from_slice(b"com");
-        payload.push(0);
-        payload.extend_from_slice(&[0, 1, 0, 1]);
-        // Q2: "test.net" / AAAA
-        payload.push(4);
-        payload.extend_from_slice(b"test");
-        payload.push(3);
-        payload.extend_from_slice(b"net");
-        payload.push(0);
-        payload.extend_from_slice(&[0, 28, 0, 1]);
-        // Answer: pointer to Q1 name, A, IN, TTL 60, RDLENGTH 4, 1.2.3.4.
-        payload.extend_from_slice(&[0xC0, 0x0C]);
-        payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
-        payload.extend_from_slice(&[1, 2, 3, 4]);
+        // Header: response, qdcount = 2, ancount = 1
+        let mut payload = build_dns_header(0, 0x8000, 2, 1, 0, 0);
+        push_question(&mut payload, "example.com", 1); // Q1: A
+        push_question(&mut payload, "test.net", 28); // Q2: AAAA
+        // Answer: pointer to Q1 name, A, IN, TTL 60, 1.2.3.4.
+        push_a(&mut payload, RrName::Ptr(12), 60, [1, 2, 3, 4]);
 
         let info = analyze_dns(&payload).unwrap();
         // First question wins for query_name / query_type — matches the
@@ -838,11 +820,14 @@ mod tests {
         // The parser must surface at most MAX_RESPONSE_IPS_PER_PACKET IPs
         // even when ancount and the wire payload are both larger.
         let n: u16 = (MAX_RESPONSE_IPS_PER_PACKET as u16) + 4;
-        let (mut payload, _) = make_example_question(true, n);
+        let mut payload = make_example_question(true, n);
         for i in 0..n {
-            payload.extend_from_slice(&[0xC0, 0x0C]);
-            payload.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
-            payload.extend_from_slice(&[10, 0, 0, (i & 0xFF) as u8]);
+            push_a(
+                &mut payload,
+                RrName::Ptr(12),
+                60,
+                [10, 0, 0, (i & 0xFF) as u8],
+            );
         }
 
         let info = analyze_dns(&payload).unwrap();

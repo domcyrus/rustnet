@@ -27,7 +27,7 @@
 #[cfg(feature = "macos-sandbox")]
 mod seatbelt;
 
-use crate::{SandboxConfig, SandboxMode, SandboxReport, SandboxStatus, privdrop};
+use crate::{SandboxConfig, SandboxMode, SandboxReport, drop_root_step};
 
 /// Apply the sandbox: uid drop first, then Seatbelt (feature-gated).
 pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
@@ -42,39 +42,22 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     // Drop root privileges before Seatbelt so the profile does not need to
     // allow the setuid/setgid syscalls. Capture fds opened during
     // initialization (BPF/PKTAP) remain valid across the drop.
-    let mut uid_dropped = false;
-    let mut drop_message = String::new();
-    if let Some(target) = config.drop_uid {
-        match privdrop::drop_to(target) {
-            Ok(()) => {
-                uid_dropped = true;
-                drop_message = format!("; root dropped to uid {} gid {}", target.uid, target.gid);
-                log::info!(
-                    "Dropped root privileges to uid {} gid {} (verified); lsof-fallback \
-                     process attribution is now limited to that user's processes (PKTAP \
-                     attribution unaffected)",
-                    target.uid,
-                    target.gid
-                );
-            }
-            Err(e) => {
-                if config.mode == SandboxMode::Strict {
-                    return Err(e.context("Strict mode requires the root uid drop to succeed"));
-                }
-                log::warn!("Failed to drop root uid/gid: {}", e);
-                drop_message = format!("; root uid drop failed: {}", e);
-            }
-        }
-    }
+    let outcome = drop_root_step(
+        config,
+        "lsof-fallback process attribution is now limited to that user's processes \
+         (PKTAP attribution unaffected)",
+    )?;
 
     #[cfg(feature = "macos-sandbox")]
     {
+        use crate::SandboxStatus;
+
         match seatbelt::apply_seatbelt(config) {
             Ok(result) => {
                 // The uid drop counts towards enforcement: Seatbelt without
                 // a requested drop (or vice versa) is partial.
-                let drop_ok = config.drop_uid.is_none() || uid_dropped;
-                let status = match (result.applied, drop_ok, uid_dropped) {
+                let drop_ok = config.drop_uid.is_none() || outcome.dropped;
+                let status = match (result.applied, drop_ok, outcome.dropped) {
                     (true, true, _) => SandboxStatus::FullyEnforced,
                     (true, false, _) | (false, _, true) => SandboxStatus::PartiallyEnforced,
                     _ => SandboxStatus::NotApplied,
@@ -88,11 +71,11 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
 
                 Ok(SandboxReport {
                     status,
-                    message: format!("{}{}", result.message, drop_message),
+                    message: outcome.message_after(&result.message),
                     seatbelt_applied: result.applied,
                     fs_restricted: result.fs_restricted,
                     net_restricted: result.net_blocked,
-                    uid_dropped,
+                    uid_dropped: outcome.dropped,
                 })
             }
             Err(e) => {
@@ -103,16 +86,7 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
                     return Err(e.context("Strict mode requires Seatbelt sandboxing"));
                 }
 
-                Ok(SandboxReport {
-                    status: if uid_dropped {
-                        SandboxStatus::PartiallyEnforced
-                    } else {
-                        SandboxStatus::NotApplied
-                    },
-                    message: format!("{}{}", msg, drop_message),
-                    uid_dropped,
-                    ..SandboxReport::default()
-                })
+                Ok(SandboxReport::uid_drop_only(&msg, &outcome))
             }
         }
     }
@@ -120,15 +94,9 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     #[cfg(not(feature = "macos-sandbox"))]
     {
         log::warn!("Seatbelt feature not compiled in");
-        Ok(SandboxReport {
-            status: if uid_dropped {
-                SandboxStatus::PartiallyEnforced
-            } else {
-                SandboxStatus::NotApplied
-            },
-            message: format!("Seatbelt feature not compiled in{}", drop_message),
-            uid_dropped,
-            ..SandboxReport::default()
-        })
+        Ok(SandboxReport::uid_drop_only(
+            "Seatbelt feature not compiled in",
+            &outcome,
+        ))
     }
 }

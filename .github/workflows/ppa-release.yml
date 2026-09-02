@@ -63,21 +63,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            debhelper \
-            devscripts \
-            dput \
-            gnupg \
-            libpcap-dev \
-            libelf-dev \
-            elfutils \
-            zlib1g-dev \
-            clang \
-            llvm \
-            pkg-config
+      - name: Setup Linux dependencies
+        uses: ./.github/actions/setup-linux-deps
+        with:
+          extra-packages: debhelper devscripts dput gnupg elfutils
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member

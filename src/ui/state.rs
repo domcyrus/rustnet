@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use ratatui::layout::Rect;
 
-use crate::network::types::{Connection, Protocol};
+use crate::network::types::{Connection, Protocol, UNKNOWN_PROCESS_NAME};
 
 /// Traffic direction emphasized by the process activity view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -38,6 +38,56 @@ impl ActivityDirection {
             Self::Egress => "TX",
             Self::Ingress => "RX",
         }
+    }
+
+    /// Select the transmit or receive value for this direction.
+    pub fn pick<T>(self, tx: T, rx: T) -> T {
+        match self {
+            Self::Egress => tx,
+            Self::Ingress => rx,
+        }
+    }
+}
+
+/// A selection movement shared by the flat and grouped connection lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ui) enum Motion {
+    /// One row up, wrapping to the bottom from the first row.
+    Up,
+    /// One row down, wrapping to the top from the last row.
+    Down,
+    /// A page up, clamped at the first row.
+    PageUp(usize),
+    /// A page down, clamped at the last row.
+    PageDown(usize),
+    First,
+    Last,
+}
+
+/// Compute the index a motion lands on in a list of `len` rows.
+///
+/// `len` must be non-zero; callers guard against empty lists.
+fn step_index(current: usize, len: usize, motion: Motion) -> usize {
+    let last = len.saturating_sub(1);
+    match motion {
+        Motion::Up => {
+            if current > 0 {
+                current - 1
+            } else {
+                last
+            }
+        }
+        Motion::Down => {
+            if current < last {
+                current + 1
+            } else {
+                0
+            }
+        }
+        Motion::PageUp(page) => current.saturating_sub(page),
+        Motion::PageDown(page) => (current + page).min(last),
+        Motion::First => 0,
+        Motion::Last => last,
     }
 }
 
@@ -523,124 +573,52 @@ impl UIState {
         }
     }
 
-    /// Move selection up by one position
-    pub fn move_selection_up(&mut self, connections: &[Connection]) {
+    /// Apply a motion to the flat connection list selection.
+    pub(in crate::ui) fn move_selection(&mut self, connections: &[Connection], motion: Motion) {
         if connections.is_empty() {
-            log::debug!("move_selection_up: connections list is empty");
+            log::debug!("move_selection({motion:?}): connections list is empty");
             return;
         }
 
         let current_index = self.get_selected_index(connections).unwrap_or(0);
         let old_key = self.selected_connection_key.clone();
+        let new_index = step_index(current_index, connections.len(), motion);
+        self.set_selected_by_index(connections, new_index);
         log::debug!(
-            "move_selection_up: current_index={}, total_connections={}, current_key={:?}",
-            current_index,
+            "move_selection({motion:?}): moved from index {current_index} to {new_index} of {} (key: {old_key:?} -> {:?})",
             connections.len(),
-            old_key
+            self.selected_connection_key
         );
+    }
 
-        if current_index > 0 {
-            self.set_selected_by_index(connections, current_index - 1);
-            log::debug!(
-                "move_selection_up: moved from index {} to {} (key: {:?} -> {:?})",
-                current_index,
-                current_index - 1,
-                old_key,
-                self.selected_connection_key
-            );
-        } else {
-            // Wrap around to the bottom
-            self.set_selected_by_index(connections, connections.len() - 1);
-            log::debug!(
-                "move_selection_up: wrapped from index {} to bottom index {} (key: {:?} -> {:?})",
-                current_index,
-                connections.len() - 1,
-                old_key,
-                self.selected_connection_key
-            );
-        }
+    /// Move selection up by one position
+    pub fn move_selection_up(&mut self, connections: &[Connection]) {
+        self.move_selection(connections, Motion::Up);
     }
 
     /// Move selection down by one position
     pub fn move_selection_down(&mut self, connections: &[Connection]) {
-        if connections.is_empty() {
-            log::debug!("move_selection_down: connections list is empty");
-            return;
-        }
-
-        let current_index = self.get_selected_index(connections).unwrap_or(0);
-        let old_key = self.selected_connection_key.clone();
-        log::debug!(
-            "move_selection_down: current_index={}, total_connections={}, current_key={:?}",
-            current_index,
-            connections.len(),
-            old_key
-        );
-
-        if current_index < connections.len().saturating_sub(1) {
-            self.set_selected_by_index(connections, current_index + 1);
-            log::debug!(
-                "move_selection_down: moved from index {} to {} (key: {:?} -> {:?})",
-                current_index,
-                current_index + 1,
-                old_key,
-                self.selected_connection_key
-            );
-        } else {
-            // Wrap around to the top
-            self.set_selected_by_index(connections, 0);
-            log::debug!(
-                "move_selection_down: wrapped from index {} to top index 0 (key: {:?} -> {:?})",
-                current_index,
-                old_key,
-                self.selected_connection_key
-            );
-        }
+        self.move_selection(connections, Motion::Down);
     }
 
     /// Move selection up by one page
     pub fn move_selection_page_up(&mut self, connections: &[Connection], page_size: usize) {
-        if connections.is_empty() {
-            return;
-        }
-
-        let current_index = self.get_selected_index(connections).unwrap_or(0);
-        if current_index >= page_size {
-            self.set_selected_by_index(connections, current_index - page_size);
-        } else {
-            self.set_selected_by_index(connections, 0);
-        }
+        self.move_selection(connections, Motion::PageUp(page_size));
     }
 
     /// Move selection down by one page
     pub fn move_selection_page_down(&mut self, connections: &[Connection], page_size: usize) {
-        if connections.is_empty() {
-            return;
-        }
-
-        let current_index = self.get_selected_index(connections).unwrap_or(0);
-        let new_index = current_index + page_size;
-        if new_index < connections.len() {
-            self.set_selected_by_index(connections, new_index);
-        } else {
-            self.set_selected_by_index(connections, connections.len() - 1);
-        }
+        self.move_selection(connections, Motion::PageDown(page_size));
     }
 
     /// Move selection to the first connection (vim-style 'g')
     pub fn move_selection_to_first(&mut self, connections: &[Connection]) {
-        if connections.is_empty() {
-            return;
-        }
-        self.set_selected_by_index(connections, 0);
+        self.move_selection(connections, Motion::First);
     }
 
     /// Move selection to the last connection (vim-style 'G')
     pub fn move_selection_to_last(&mut self, connections: &[Connection]) {
-        if connections.is_empty() {
-            return;
-        }
-        self.set_selected_by_index(connections, connections.len() - 1);
+        self.move_selection(connections, Motion::Last);
     }
 
     /// Ensure we have a valid selection when connections list changes
@@ -902,34 +880,29 @@ impl UIState {
         }
     }
 
-    /// Move selection up in grouped view
-    pub fn move_selection_up_grouped(&mut self, grouped_rows: &[GroupedRow]) {
+    /// Apply a motion to the grouped row selection.
+    pub(in crate::ui) fn move_selection_grouped(
+        &mut self,
+        grouped_rows: &[GroupedRow],
+        motion: Motion,
+    ) {
         if grouped_rows.is_empty() {
             return;
         }
 
         let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
-        let new_index = if current_index > 0 {
-            current_index - 1
-        } else {
-            grouped_rows.len() - 1 // Wrap to bottom
-        };
+        let new_index = step_index(current_index, grouped_rows.len(), motion);
         self.set_selected_grouped_by_index(grouped_rows, new_index);
+    }
+
+    /// Move selection up in grouped view
+    pub fn move_selection_up_grouped(&mut self, grouped_rows: &[GroupedRow]) {
+        self.move_selection_grouped(grouped_rows, Motion::Up);
     }
 
     /// Move selection down in grouped view
     pub fn move_selection_down_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        if grouped_rows.is_empty() {
-            return;
-        }
-
-        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
-        let new_index = if current_index < grouped_rows.len() - 1 {
-            current_index + 1
-        } else {
-            0 // Wrap to top
-        };
-        self.set_selected_grouped_by_index(grouped_rows, new_index);
+        self.move_selection_grouped(grouped_rows, Motion::Down);
     }
 
     /// Move selection up by one page in grouped view
@@ -938,13 +911,7 @@ impl UIState {
         grouped_rows: &[GroupedRow],
         page_size: usize,
     ) {
-        if grouped_rows.is_empty() {
-            return;
-        }
-
-        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
-        let new_index = current_index.saturating_sub(page_size);
-        self.set_selected_grouped_by_index(grouped_rows, new_index);
+        self.move_selection_grouped(grouped_rows, Motion::PageUp(page_size));
     }
 
     /// Move selection down by one page in grouped view
@@ -953,27 +920,17 @@ impl UIState {
         grouped_rows: &[GroupedRow],
         page_size: usize,
     ) {
-        if grouped_rows.is_empty() {
-            return;
-        }
-
-        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
-        let new_index = (current_index + page_size).min(grouped_rows.len() - 1);
-        self.set_selected_grouped_by_index(grouped_rows, new_index);
+        self.move_selection_grouped(grouped_rows, Motion::PageDown(page_size));
     }
 
     /// Move selection to the first row in grouped view
     pub fn move_selection_to_first_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        if !grouped_rows.is_empty() {
-            self.set_selected_grouped_by_index(grouped_rows, 0);
-        }
+        self.move_selection_grouped(grouped_rows, Motion::First);
     }
 
     /// Move selection to the last row in grouped view
     pub fn move_selection_to_last_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        if !grouped_rows.is_empty() {
-            self.set_selected_grouped_by_index(grouped_rows, grouped_rows.len() - 1);
-        }
+        self.move_selection_grouped(grouped_rows, Motion::Last);
     }
 
     /// Ensure valid selection in grouped view
@@ -1008,12 +965,12 @@ pub(super) const UNKNOWN_PROCESS_GROUP: &str = "<unknown>";
 
 /// The process-group label for a connection. Attribution can fail two ways:
 /// no owner found at all (`process_name` is `None`), or an owner PID whose
-/// name lookup failed and stored the platform's "Unknown" placeholder
+/// name lookup failed and stored the [`UNKNOWN_PROCESS_NAME`] placeholder
 /// (protected processes, the pre-resolution ETW window). Both fold into one
 /// bucket so the UI never shows two different unknown groups side by side.
 pub fn process_group_label(conn: &Connection) -> &str {
     match conn.process_name.as_deref() {
-        None | Some("Unknown") => UNKNOWN_PROCESS_GROUP,
+        None | Some(UNKNOWN_PROCESS_NAME) => UNKNOWN_PROCESS_GROUP,
         Some(name) => name,
     }
 }
@@ -1105,17 +1062,31 @@ pub fn compute_grouped_rows<'a>(
 mod tests {
     use super::*;
     use crate::ui::TAB_COUNT;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use crate::ui::test_support::local_tcp;
 
-    fn test_connection(port: u16, process: &str) -> Connection {
-        let mut connection = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443),
-            crate::network::types::ProtocolState::Tcp(crate::network::types::TcpState::Established),
-        );
-        connection.process_name = Some(process.to_string());
-        connection
+    #[test]
+    fn step_index_wraps_and_clamps() {
+        assert_eq!(step_index(0, 5, Motion::Up), 4);
+        assert_eq!(step_index(3, 5, Motion::Up), 2);
+        assert_eq!(step_index(4, 5, Motion::Down), 0);
+        assert_eq!(step_index(1, 5, Motion::Down), 2);
+        assert_eq!(step_index(1, 5, Motion::PageUp(10)), 0);
+        assert_eq!(step_index(4, 5, Motion::PageUp(2)), 2);
+        assert_eq!(step_index(1, 5, Motion::PageDown(10)), 4);
+        assert_eq!(step_index(1, 5, Motion::PageDown(2)), 3);
+        assert_eq!(step_index(3, 5, Motion::First), 0);
+        assert_eq!(step_index(0, 5, Motion::Last), 4);
+        // A single row is a fixed point for every motion.
+        for motion in [
+            Motion::Up,
+            Motion::Down,
+            Motion::PageUp(3),
+            Motion::PageDown(3),
+            Motion::First,
+            Motion::Last,
+        ] {
+            assert_eq!(step_index(0, 1, motion), 0);
+        }
     }
 
     #[test]
@@ -1274,10 +1245,7 @@ mod tests {
 
     #[test]
     fn selection_hint_recovers_after_reordering() {
-        let mut connections = vec![
-            test_connection(1000, "first"),
-            test_connection(1001, "second"),
-        ];
+        let mut connections = vec![local_tcp(1000, "first"), local_tcp(1001, "second")];
         let mut ui = UIState::default();
         ui.set_selected_by_index(&connections, 1);
         assert_eq!(ui.selected_connection_index_hint.get(), Some(1));
@@ -1290,10 +1258,7 @@ mod tests {
 
     #[test]
     fn grouped_selection_hint_recovers_after_rows_shift() {
-        let connections = vec![
-            test_connection(1000, "alpha"),
-            test_connection(1001, "beta"),
-        ];
+        let connections = vec![local_tcp(1000, "alpha"), local_tcp(1001, "beta")];
         let expanded = HashSet::from(["alpha".to_string(), "beta".to_string()]);
         let rows = compute_grouped_rows(&connections, &expanded);
         let mut ui = UIState::default();
@@ -1318,7 +1283,7 @@ mod tests {
         // firefox exits while chrome remains: the highlight falls back to
         // row 0, and the selection state must follow it, or Space (and the
         // status bar hint) would keep acting on the vanished group.
-        let survivors = vec![test_connection(1000, "chrome")];
+        let survivors = vec![local_tcp(1000, "chrome")];
         let rows = compute_grouped_rows(&survivors, &ui.expanded_groups);
         assert_eq!(ui.ensure_valid_grouped_selection(&rows), Some(0));
         assert_eq!(ui.selected_group.as_deref(), Some("chrome"));
@@ -1330,10 +1295,10 @@ mod tests {
     /// group instead of showing "<unknown>" and "Unknown" side by side.
     #[test]
     fn unknown_placeholder_groups_with_unattributed_connections() {
-        let mut unattributed = test_connection(1000, "ignored");
+        let mut unattributed = local_tcp(1000, "ignored");
         unattributed.process_name = None;
-        let placeholder = test_connection(1001, "Unknown");
-        let named = test_connection(1002, "firefox");
+        let placeholder = local_tcp(1001, UNKNOWN_PROCESS_NAME);
+        let named = local_tcp(1002, "firefox");
         let connections = vec![unattributed, placeholder, named];
 
         let rows = compute_grouped_rows(&connections, &HashSet::new());
@@ -1364,10 +1329,7 @@ mod tests {
 
     #[test]
     fn collapsing_group_from_connection_selects_group_header() {
-        let connections = vec![
-            test_connection(1000, "alpha"),
-            test_connection(1001, "alpha"),
-        ];
+        let connections = vec![local_tcp(1000, "alpha"), local_tcp(1001, "alpha")];
         let mut ui = UIState {
             grouping_enabled: true,
             expanded_groups: HashSet::from(["alpha".to_string()]),

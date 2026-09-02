@@ -35,7 +35,8 @@
 
 use anyhow::Result;
 use rustnet_core::network::types::{
-    Connection, MAX_PROCESS_ANCESTORS, MatchQuality, ProcessAncestor, ProcessLineage, Protocol,
+    Connection, ConnectionKey, MAX_PROCESS_ANCESTORS, MatchQuality, ProcessAncestor,
+    ProcessLineage, Protocol,
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -65,6 +66,30 @@ pub enum HostTcpState {
     /// Windows exposes deletion of the TCP control block as a separate state.
     DeleteTcb,
     Unknown,
+}
+
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+impl HostTcpState {
+    /// Parse a state name as printed by `sockstat` or `lsof`, case
+    /// insensitively. The two tools spell a few states differently
+    /// (`SYN_RCVD` vs `SYN_RECV`, `FIN_WAIT_1` vs `FIN_WAIT1`); every
+    /// spelling is accepted, and anything else is [`Self::Unknown`].
+    pub(crate) fn parse_name(value: &str) -> Self {
+        match value.to_ascii_uppercase().as_str() {
+            "CLOSED" => Self::Closed,
+            "LISTEN" => Self::Listen,
+            "SYN_SENT" => Self::SynSent,
+            "SYN_RECEIVED" | "SYN_RCVD" | "SYN_RECV" => Self::SynReceived,
+            "ESTABLISHED" => Self::Established,
+            "FIN_WAIT_1" | "FIN_WAIT1" => Self::FinWait1,
+            "FIN_WAIT_2" | "FIN_WAIT2" => Self::FinWait2,
+            "CLOSE_WAIT" => Self::CloseWait,
+            "CLOSING" => Self::Closing,
+            "LAST_ACK" => Self::LastAck,
+            "TIME_WAIT" => Self::TimeWait,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 impl std::fmt::Display for HostTcpState {
@@ -368,6 +393,29 @@ where
     })
 }
 
+/// One pass over the operating system's socket table (`sockstat`, `lsof`):
+/// the attribution lookup keyed by connection tuple, plus every socket for
+/// the host snapshot.
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+#[derive(Default)]
+pub(crate) struct SocketScan {
+    pub(crate) lookup: HashMap<ConnectionKey, SocketOwner>,
+    pub(crate) sockets: Vec<HostSocket>,
+}
+
+/// The owner recorded for `key`: an exact tuple hit, else the best
+/// [`relaxed_lookup`] candidate.
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+pub(crate) fn owner_match(
+    cache: &HashMap<ConnectionKey, SocketOwner>,
+    key: &ConnectionKey,
+) -> Option<(SocketOwner, MatchQuality)> {
+    if let Some(owner) = cache.get(key) {
+        return Some((owner.clone(), MatchQuality::ExactTuple));
+    }
+    relaxed_lookup(cache, key).map(|(owner, quality)| (owner.clone(), quality))
+}
+
 /// Decode a NUL-terminated C char array (`ki_comm`, `pbi_comm`, ...) into a
 /// process name. `None` when the array is empty.
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
@@ -379,6 +427,20 @@ pub(crate) fn decode_process_name(chars: &[libc::c_char]) -> Option<String> {
         .map(|value| value as u8)
         .collect();
     (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The path a C API wrote into `buffer`: the first `returned` bytes, cut at
+/// the first NUL. `None` when the path is empty.
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+pub(crate) fn path_from_c_buffer(buffer: &[u8], returned: usize) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let returned = returned.min(buffer.len());
+    let path_len = buffer[..returned]
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(returned);
+    (path_len > 0).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&buffer[..path_len])))
 }
 
 /// Display name for a lineage ancestor: the OS-reported name, else the
@@ -596,6 +658,8 @@ impl DegradationReason {
     }
 }
 
+pub mod procfs;
+
 // Platform-specific modules (one cfg per platform instead of many)
 #[cfg(target_os = "freebsd")]
 mod freebsd;
@@ -710,36 +774,44 @@ pub(crate) fn relaxed_lookup<'map, V: PartialEq>(
     found
 }
 
-/// Connection identifier for lookups
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub(crate) struct ConnectionKey {
-    pub(crate) protocol: Protocol,
-    pub(crate) local_addr: SocketAddr,
-    pub(crate) remote_addr: SocketAddr,
-}
-
-impl ConnectionKey {
-    pub(crate) fn from_connection(conn: &Connection) -> Self {
-        Self {
-            protocol: conn.protocol,
-            local_addr: conn.local_addr,
-            remote_addr: conn.remote_addr,
-        }
-    }
-}
-
+/// Fixtures shared by the platform test modules. Not every platform uses
+/// each one, so unused fixtures are not an error.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
+#[allow(dead_code)]
+pub(crate) mod test_support {
+    use crate::ConnectionKey;
+    use rustnet_core::network::types::{Connection, Protocol, ProtocolState, TcpState};
 
-    fn key(protocol: Protocol, local: &str, remote: &str) -> ConnectionKey {
+    /// An established TCP connection between two `ip:port` literals.
+    pub(crate) fn tcp_connection(local: &str, remote: &str) -> Connection {
+        Connection::new(
+            Protocol::Tcp,
+            local.parse().unwrap(),
+            remote.parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        )
+    }
+
+    /// The lookup key for two `ip:port` literals under `protocol`.
+    pub(crate) fn connection_key(protocol: Protocol, local: &str, remote: &str) -> ConnectionKey {
         ConnectionKey {
             protocol,
             local_addr: local.parse().unwrap(),
             remote_addr: remote.parse().unwrap(),
         }
     }
+
+    /// The TCP lookup key for two `ip:port` literals.
+    pub(crate) fn tcp_key(local: &str, remote: &str) -> ConnectionKey {
+        connection_key(Protocol::Tcp, local, remote)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::connection_key as key;
+    use std::path::Path;
 
     fn owner(pid: u32, name: &str) -> (u32, String) {
         (pid, name.to_string())

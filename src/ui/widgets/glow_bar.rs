@@ -85,6 +85,7 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::test_support::spans_text;
     use ratatui::style::Color;
 
     fn flat_ramp(_t: f64) -> Color {
@@ -95,21 +96,17 @@ mod tests {
         spans.iter().map(|s| s.content.chars().count()).sum()
     }
 
-    fn text(spans: &[Span<'_>]) -> String {
-        spans.iter().map(|s| s.content.as_ref()).collect()
-    }
-
     #[test]
     fn empty_bar_is_all_track() {
         let s = spans(0.0, 4, flat_ramp);
-        assert_eq!(text(&s), "····");
+        assert_eq!(spans_text(&s), "····");
         assert_eq!(rendered_width(&s), 4);
     }
 
     #[test]
     fn full_bar_has_no_track() {
         let s = spans(1.0, 4, flat_ramp);
-        assert_eq!(text(&s), "████");
+        assert_eq!(spans_text(&s), "████");
         assert_eq!(rendered_width(&s), 4);
     }
 
@@ -117,7 +114,7 @@ mod tests {
     fn fractional_tip_uses_eighth_blocks() {
         // 2.5 cells over width 4: two full blocks, a half-block tip, one track cell.
         let s = spans(0.625, 4, flat_ramp);
-        assert_eq!(text(&s), "██▌·");
+        assert_eq!(spans_text(&s), "██▌·");
         assert_eq!(rendered_width(&s), 4);
     }
 
@@ -125,21 +122,21 @@ mod tests {
     fn tip_rounds_up_to_full_cell() {
         // 1.99 cells rounds to 2 full blocks, never a stray tip glyph.
         let s = spans(0.995, 2, flat_ramp);
-        assert_eq!(text(&s), "██");
+        assert_eq!(spans_text(&s), "██");
     }
 
     #[test]
     fn tiny_fraction_shows_one_eighth() {
         let s = spans(0.01, 10, flat_ramp);
-        assert_eq!(text(&s), "▏·········");
+        assert_eq!(spans_text(&s), "▏·········");
     }
 
     #[test]
     fn from_filled_stays_whole_cell() {
         let s = from_filled(2, 5, flat_ramp);
-        assert_eq!(text(&s), "██···");
+        assert_eq!(spans_text(&s), "██···");
         let overshoot = from_filled(9, 5, flat_ramp);
-        assert_eq!(text(&overshoot), "█████");
+        assert_eq!(spans_text(&overshoot), "█████");
     }
 
     #[test]

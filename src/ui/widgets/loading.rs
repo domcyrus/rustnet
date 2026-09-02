@@ -121,6 +121,7 @@ fn shimmer_spans(text: &str, secs: f64) -> Vec<Span<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::test_support::spans_text;
 
     #[test]
     fn shimmer_preserves_the_text() {
@@ -129,7 +130,7 @@ mod tests {
             spans.len(),
             "Loading network connections...".chars().count()
         );
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        let text = spans_text(&spans);
         assert_eq!(text, "Loading network connections...");
     }
 
@@ -137,7 +138,7 @@ mod tests {
     fn shimmer_is_char_safe() {
         let spans = shimmer_spans("héllo…", 1.5);
         assert_eq!(spans.len(), 6);
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        let text = spans_text(&spans);
         assert_eq!(text, "héllo…");
     }
 

@@ -3,6 +3,7 @@
 //! Provides non-blocking reverse DNS lookups with an LRU cache to avoid
 //! repeated lookups for the same IP address.
 
+use crate::network::bogon::{Scope, classify};
 use crossbeam::channel::{self, Receiver, Sender};
 use dashmap::DashMap;
 use dns_lookup::lookup_addr;
@@ -35,7 +36,23 @@ pub(crate) struct CachedHostname {
     pub state: ResolutionState,
 }
 
+/// How long a `Pending` entry is trusted before the lookup is considered
+/// lost and the address may be queued again.
+const PENDING_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl CachedHostname {
+    /// Whether this entry still answers for its address: resolved names live
+    /// for `cache_ttl`, failures for `negative_cache_ttl`, and in-flight
+    /// lookups for [`PENDING_TIMEOUT`].
+    fn is_fresh(&self, cache_ttl: Duration, negative_cache_ttl: Duration) -> bool {
+        let age = self.resolved_at.elapsed();
+        match self.state {
+            ResolutionState::Resolved => age < cache_ttl,
+            ResolutionState::Failed => age < negative_cache_ttl,
+            ResolutionState::Pending => age < PENDING_TIMEOUT,
+        }
+    }
+
     fn pending() -> Self {
         Self {
             hostname: None,
@@ -144,17 +161,13 @@ impl DnsResolver {
                     while !should_stop.load(Ordering::Relaxed) {
                         match rx.recv_timeout(Duration::from_millis(100)) {
                             Ok(ip) => {
-                                // Skip if already resolved or pending
-                                if let Some(entry) = cache.get(&ip) {
-                                    let age = entry.resolved_at.elapsed();
-                                    match entry.state {
-                                        ResolutionState::Pending => continue,
-                                        ResolutionState::Resolved if age < cache_ttl => continue,
-                                        ResolutionState::Failed if age < negative_cache_ttl => {
-                                            continue;
-                                        }
-                                        _ => {} // Expired, re-resolve
-                                    }
+                                // Skip if already resolved or pending;
+                                // expired entries are re-resolved.
+                                if cache
+                                    .get(&ip)
+                                    .is_some_and(|e| e.is_fresh(cache_ttl, negative_cache_ttl))
+                                {
+                                    continue;
                                 }
 
                                 // Mark as pending
@@ -203,15 +216,8 @@ impl DnsResolver {
                         break;
                     }
 
-                    // Remove expired entries
-                    cache.retain(|_, entry| {
-                        let age = entry.resolved_at.elapsed();
-                        match entry.state {
-                            ResolutionState::Resolved => age < cache_ttl,
-                            ResolutionState::Failed => age < negative_cache_ttl,
-                            ResolutionState::Pending => age < Duration::from_secs(30), // Timeout pending
-                        }
-                    });
+                    // Remove expired entries (including timed-out pending lookups)
+                    cache.retain(|_, entry| entry.is_fresh(cache_ttl, negative_cache_ttl));
 
                     // If cache is too large, remove oldest entries
                     if cache.len() > max_cache_size {
@@ -236,19 +242,17 @@ impl DnsResolver {
     /// Request resolution for an IP address (non-blocking)
     pub fn request_resolution(&self, ip: IpAddr) {
         // Don't resolve localhost or link-local
-        if ip.is_loopback() || is_link_local(&ip) {
+        if matches!(classify(ip), Scope::Loopback | Scope::LinkLocal) {
             return;
         }
 
         // Check if already in cache and not expired
-        if let Some(entry) = self.cache.get(&ip) {
-            let age = entry.resolved_at.elapsed();
-            match entry.state {
-                ResolutionState::Pending => return,
-                ResolutionState::Resolved if age < self.config.cache_ttl => return,
-                ResolutionState::Failed if age < self.config.negative_cache_ttl => return,
-                _ => {} // Expired
-            }
+        if self
+            .cache
+            .get(&ip)
+            .is_some_and(|e| e.is_fresh(self.config.cache_ttl, self.config.negative_cache_ttl))
+        {
+            return;
         }
 
         // Queue for resolution (ignore send errors - channel is unbounded)
@@ -282,18 +286,6 @@ impl Drop for DnsResolver {
     }
 }
 
-/// Check if IP is link-local
-fn is_link_local(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => v4.is_link_local(),
-        IpAddr::V6(v6) => {
-            // fe80::/10
-            let segments = v6.segments();
-            (segments[0] & 0xffc0) == 0xfe80
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,17 +303,6 @@ mod tests {
         let failed = CachedHostname::failed();
         assert_eq!(failed.state, ResolutionState::Failed);
         assert!(failed.hostname.is_none());
-    }
-
-    #[test]
-    fn test_link_local_detection() {
-        // IPv4 link-local
-        assert!(is_link_local(&"169.254.1.1".parse().unwrap()));
-        assert!(!is_link_local(&"192.168.1.1".parse().unwrap()));
-
-        // IPv6 link-local
-        assert!(is_link_local(&"fe80::1".parse().unwrap()));
-        assert!(!is_link_local(&"2001:db8::1".parse().unwrap()));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 //! initialization, when the BPF capture fds are open and nothing needs root
 //! anymore.
 
-use crate::{SandboxConfig, SandboxMode, SandboxReport, SandboxStatus, privdrop};
+use crate::{SandboxConfig, SandboxMode, SandboxReport, drop_root_step};
 
 /// Apply the sandbox: currently the uid drop only (Capsicum planned).
 pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
@@ -17,41 +17,13 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         });
     }
 
-    let mut uid_dropped = false;
-    let mut drop_message = String::new();
-    if let Some(target) = config.drop_uid {
-        match privdrop::drop_to(target) {
-            Ok(()) => {
-                uid_dropped = true;
-                drop_message = format!("; root dropped to uid {} gid {}", target.uid, target.gid);
-                log::info!(
-                    "Dropped root privileges to uid {} gid {} (verified); sockstat process \
-                     attribution is now limited to that user's processes",
-                    target.uid,
-                    target.gid
-                );
-            }
-            Err(e) => {
-                if config.mode == SandboxMode::Strict {
-                    return Err(e.context("Strict mode requires the root uid drop to succeed"));
-                }
-                log::warn!("Failed to drop root uid/gid: {}", e);
-                drop_message = format!("; root uid drop failed: {}", e);
-            }
-        }
-    }
+    let outcome = drop_root_step(
+        config,
+        "sockstat process attribution is now limited to that user's processes",
+    )?;
 
-    Ok(SandboxReport {
-        status: if uid_dropped {
-            SandboxStatus::PartiallyEnforced
-        } else {
-            SandboxStatus::NotApplied
-        },
-        message: format!(
-            "No sandbox on FreeBSD yet (Capsicum planned){}",
-            drop_message
-        ),
-        uid_dropped,
-        ..SandboxReport::default()
-    })
+    Ok(SandboxReport::uid_drop_only(
+        "No sandbox on FreeBSD yet (Capsicum planned)",
+        &outcome,
+    ))
 }

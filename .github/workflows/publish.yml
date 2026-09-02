@@ -15,10 +15,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
+      - name: Setup Linux dependencies
+        uses: ./.github/actions/setup-linux-deps
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member

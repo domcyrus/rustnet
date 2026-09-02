@@ -133,100 +133,98 @@ static __always_inline int track_accepted_socket(struct sock *accepted)
     return track_tcp_socket(accepted);
 }
 
-static __always_inline int track_udp_v4(struct sock *sk, struct msghdr *msg)
+/*
+ * Record a datagram send: the socket's own addresses, the destination taken
+ * from msg_name, and the ports. UDP sockets carry both ports and the
+ * destination port comes from msg_name; ping sockets only have the source
+ * (the ICMP identifier lives in skc_num). Every caller passes a literal
+ * proto, so the port branch folds away and each tracker keeps its own
+ * instruction stream for the verifier.
+ */
+static __always_inline int track_dgram_v4(struct sock *sk, struct msghdr *msg,
+                                          __u8 proto)
 {
     if (!sk || !msg)
         return 0;
 
     struct conn_key key = {};
     fill_socket_v4_addresses(sk, &key);
-    fill_socket_ports(sk, &key);
+    if (proto == IPPROTO_UDP)
+        fill_socket_ports(sk, &key);
+    else
+        key.sport = BPF_CORE_READ(sk, __sk_common.skc_num);
 
     struct sockaddr_in *dest = BPF_CORE_READ(msg, msg_name);
     if (dest)
     {
         bpf_probe_read_kernel(&key.daddr[0], sizeof(key.daddr[0]),
                               &dest->sin_addr.s_addr);
-        __u16 dport = 0;
-        bpf_probe_read_kernel(&dport, sizeof(dport), &dest->sin_port);
-        key.dport = bpf_ntohs(dport);
+        if (proto == IPPROTO_UDP)
+        {
+            __u16 dport = 0;
+            bpf_probe_read_kernel(&dport, sizeof(dport), &dest->sin_port);
+            key.dport = bpf_ntohs(dport);
+        }
     }
 
     if (key.daddr[0] == 0)
         return 0;
 
-    key.proto = IPPROTO_UDP;
+    key.proto = proto;
     key.family = AF_INET;
     return store_connection(&key);
+}
+
+static __always_inline int track_dgram_v6(struct sock *sk, struct msghdr *msg,
+                                          __u8 proto)
+{
+    if (!sk || !msg)
+        return 0;
+
+    struct conn_key key = {};
+    fill_socket_v6_addresses(sk, &key);
+    if (proto == IPPROTO_UDP)
+        fill_socket_ports(sk, &key);
+    else
+        key.sport = BPF_CORE_READ(sk, __sk_common.skc_num);
+
+    struct sockaddr_in6 *dest = BPF_CORE_READ(msg, msg_name);
+    if (dest)
+    {
+        struct in6_addr daddr = {};
+        bpf_probe_read_kernel(&daddr, sizeof(daddr), &dest->sin6_addr);
+        __builtin_memcpy(key.daddr, &daddr, sizeof(daddr));
+        if (proto == IPPROTO_UDP)
+        {
+            __u16 dport = 0;
+            bpf_probe_read_kernel(&dport, sizeof(dport), &dest->sin6_port);
+            key.dport = bpf_ntohs(dport);
+        }
+    }
+
+    key.proto = proto;
+    key.family = AF_INET6;
+    return store_connection(&key);
+}
+
+static __always_inline int track_udp_v4(struct sock *sk, struct msghdr *msg)
+{
+    return track_dgram_v4(sk, msg, IPPROTO_UDP);
 }
 
 static __always_inline int track_udp_v6(struct sock *sk, struct msghdr *msg)
 {
-    if (!sk || !msg)
-        return 0;
-
-    struct conn_key key = {};
-    fill_socket_v6_addresses(sk, &key);
-    fill_socket_ports(sk, &key);
-
-    struct sockaddr_in6 *dest = BPF_CORE_READ(msg, msg_name);
-    if (dest)
-    {
-        struct in6_addr daddr = {};
-        bpf_probe_read_kernel(&daddr, sizeof(daddr), &dest->sin6_addr);
-        __builtin_memcpy(key.daddr, &daddr, sizeof(daddr));
-        __u16 dport = 0;
-        bpf_probe_read_kernel(&dport, sizeof(dport), &dest->sin6_port);
-        key.dport = bpf_ntohs(dport);
-    }
-
-    key.proto = IPPROTO_UDP;
-    key.family = AF_INET6;
-    return store_connection(&key);
+    return track_dgram_v6(sk, msg, IPPROTO_UDP);
 }
 
 static __always_inline int track_ping_v4(struct sock *sk, struct msghdr *msg)
 {
-    if (!sk || !msg)
-        return 0;
-
-    struct conn_key key = {};
-    fill_socket_v4_addresses(sk, &key);
-    key.sport = BPF_CORE_READ(sk, __sk_common.skc_num);
-
-    struct sockaddr_in *dest = BPF_CORE_READ(msg, msg_name);
-    if (dest)
-        bpf_probe_read_kernel(&key.daddr[0], sizeof(key.daddr[0]),
-                              &dest->sin_addr.s_addr);
-
-    if (key.daddr[0] == 0)
-        return 0;
-
-    key.proto = IPPROTO_ICMP;
-    key.family = AF_INET;
-    return store_connection(&key);
+    return track_dgram_v4(sk, msg, IPPROTO_ICMP);
 }
 
 static __always_inline int track_ping_v6(struct sock *sk, struct msghdr *msg)
 {
-    if (!sk || !msg)
-        return 0;
-
-    struct conn_key key = {};
-    fill_socket_v6_addresses(sk, &key);
-    key.sport = BPF_CORE_READ(sk, __sk_common.skc_num);
-
-    struct sockaddr_in6 *dest = BPF_CORE_READ(msg, msg_name);
-    if (dest)
-    {
-        struct in6_addr daddr = {};
-        bpf_probe_read_kernel(&daddr, sizeof(daddr), &dest->sin6_addr);
-        __builtin_memcpy(key.daddr, &daddr, sizeof(daddr));
-    }
-
-    key.proto = IPPROTO_ICMPV6;
-    key.family = AF_INET6;
-    return store_connection(&key);
+    return track_dgram_v6(sk, msg, IPPROTO_ICMPV6);
 }
 
 #endif

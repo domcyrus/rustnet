@@ -22,7 +22,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{HostView, UIState, theme};
+use crate::ui::{HostView, UIState, format::truncate_with_ellipsis, theme};
 
 /// One keycap hint: the key as typed and the action it triggers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -285,14 +285,6 @@ pub(in crate::ui) fn status_bar_height(capture_error: Option<&str>, width: u16) 
     }
 }
 
-fn elide(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_string();
-    }
-    let kept: String = text.chars().take(width.saturating_sub(1)).collect();
-    format!("{}…", kept.trim_end())
-}
-
 /// Lay a capture failure out over the rows `status_bar_height` reserved: cause
 /// first, recovery hint below it. When only one row is available the cause is
 /// elided instead of the hint, which is the half the user can act on.
@@ -304,8 +296,8 @@ fn capture_error_text(cause: &str, width: u16, height: u16) -> String {
     if height >= 2 {
         return format!(
             "{}\n{}",
-            elide(&format!(" {cause} "), width as usize),
-            elide(&format!(" {CAPTURE_RECOVERY_HINT} "), width as usize),
+            truncate_with_ellipsis(&format!(" {cause} "), width as usize),
+            truncate_with_ellipsis(&format!(" {CAPTURE_RECOVERY_HINT} "), width as usize),
         );
     }
 
@@ -365,6 +357,7 @@ pub(in crate::ui) fn draw_status_bar(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::test_support::line_text;
 
     fn advertises(hints: &[Hint], key: &str) -> bool {
         hints.iter().any(|hint| hint.key == key)
@@ -375,13 +368,6 @@ mod tests {
             .iter()
             .find(|hint| hint.key == key)
             .unwrap_or_else(|| panic!("missing {key:?} hint"))
-    }
-
-    fn rendered(line: &Line<'_>) -> String {
-        line.spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect()
     }
 
     #[test]
@@ -471,7 +457,7 @@ mod tests {
     fn the_global_cluster_survives_every_width() {
         let context = context_hints(&UIState::default(), true);
         for width in [200u16, 120, 80, 60, 40, 24, 12] {
-            let line = rendered(&hint_line(&context, &GLOBAL_HINTS, width));
+            let line = line_text(&hint_line(&context, &GLOBAL_HINTS, width));
             assert!(line.contains('q'), "quit dropped at {width}: {line:?}");
             assert!(
                 line.chars().count() <= width as usize,
@@ -484,12 +470,12 @@ mod tests {
     fn labels_are_dropped_before_context_actions_are() {
         let context = context_hints(&UIState::default(), true);
         // Wide enough to spell every action out.
-        let wide = rendered(&hint_line(&context, &GLOBAL_HINTS, 120));
+        let wide = line_text(&hint_line(&context, &GLOBAL_HINTS, 120));
         assert!(wide.contains("filter"), "{wide:?}");
         assert!(wide.contains("quit"), "{wide:?}");
 
         // Too narrow for labels, yet every key is still there.
-        let narrow = rendered(&hint_line(&context, &GLOBAL_HINTS, 40));
+        let narrow = line_text(&hint_line(&context, &GLOBAL_HINTS, 40));
         assert!(!narrow.contains("filter"), "{narrow:?}");
         for hint in &context {
             assert!(
@@ -509,7 +495,7 @@ mod tests {
             ..Default::default()
         };
         let context = context_hints(&ui_state, true);
-        let line = rendered(&hint_line(&context, &GLOBAL_HINTS, 80));
+        let line = line_text(&hint_line(&context, &GLOBAL_HINTS, 80));
 
         for text in ["space expand", "select", "filter", "grouped", "history"] {
             assert!(line.contains(text), "{text:?} dropped: {line:?}");
@@ -532,7 +518,7 @@ mod tests {
             ..Default::default()
         };
         let context = context_hints(&ui_state, true);
-        let line = rendered(&hint_line(&context, &GLOBAL_HINTS, 80));
+        let line = line_text(&hint_line(&context, &GLOBAL_HINTS, 80));
         for text in ["clear filter", "grouped", "history"] {
             assert!(line.contains(text), "{text:?} dropped: {line:?}");
         }
@@ -548,7 +534,7 @@ mod tests {
             ..Default::default()
         };
         let context = context_hints(&ui_state, true);
-        let line = rendered(&hint_line(&context, &GLOBAL_HINTS, 80));
+        let line = line_text(&hint_line(&context, &GLOBAL_HINTS, 80));
         assert!(line.contains("clear filter"), "{line:?}");
         assert!(line.contains("select"), "{line:?}");
         assert!(line.ends_with("q quit "), "{line:?}");
@@ -602,7 +588,7 @@ mod tests {
 
     #[test]
     fn the_global_cluster_sits_flush_right() {
-        let line = rendered(&hint_line(
+        let line = line_text(&hint_line(
             &context_hints(&UIState::default(), true),
             &GLOBAL_HINTS,
             120,

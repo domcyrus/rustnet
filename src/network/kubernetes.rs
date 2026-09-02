@@ -18,6 +18,8 @@
 // hyphenated, lowercase canonical form so callers can compare against
 // `kubectl get pod ... metadata.uid` directly.
 
+use crate::network::types::{ConnectionKey, Protocol};
+
 /// Raw data recovered from a process's cgroup membership before pairing with
 /// pod metadata (which lives in `K8sInfo`). The parser only runs on Linux at
 /// runtime, but the pure logic is also compiled in tests so it stays
@@ -204,37 +206,9 @@ impl PodMetadata {
     /// not present (e.g. not running on a node, or the mount is missing).
     #[cfg(target_os = "linux")]
     pub fn load() -> Self {
-        let mut by_container_id = std::collections::HashMap::new();
-        if let Ok(dir) = std::fs::read_dir("/var/log/containers") {
-            for entry in dir.flatten() {
-                let name = entry.file_name();
-                let name = match name.to_str() {
-                    Some(s) => s,
-                    None => continue,
-                };
-                if let Some((cid, meta)) = parse_container_log_name(name) {
-                    by_container_id.insert(cid, meta);
-                }
-            }
-        }
-
-        let mut by_pod_uid = std::collections::HashMap::new();
-        if let Ok(dir) = std::fs::read_dir("/var/log/pods") {
-            for entry in dir.flatten() {
-                let name = entry.file_name();
-                let name = match name.to_str() {
-                    Some(s) => s,
-                    None => continue,
-                };
-                if let Some((uid, meta)) = parse_pod_dir_name(name) {
-                    by_pod_uid.insert(uid, meta);
-                }
-            }
-        }
-
         Self {
-            by_container_id,
-            by_pod_uid,
+            by_container_id: index_dir("/var/log/containers", parse_container_log_name),
+            by_pod_uid: index_dir("/var/log/pods", parse_pod_dir_name),
         }
     }
 
@@ -331,27 +305,12 @@ fn parse_pod_dir_name(name: &str) -> Option<(String, PodMeta)> {
 // enrichment refresh tick.
 // ---------------------------------------------------------------------------
 
-/// IP protocol distinction for the socket table key. We track TCP and UDP
-/// separately because the same 4-tuple can be reused across protocols.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum SocketProtocol {
-    Tcp,
-    Udp,
-}
-
-/// Lookup key matching what `network::types::ConnectionKey` would produce:
-/// the connection's 4-tuple plus its transport protocol.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct SocketKey {
-    pub protocol: SocketProtocol,
-    pub local: std::net::SocketAddr,
-    pub remote: std::net::SocketAddr,
-}
-
 /// Built from a sweep of `/proc/*/net/{tcp,tcp6,udp,udp6}` for kubepods PIDs.
-/// Provides O(1) lookup by socket 4-tuple to (pid, K8sInfo).
+/// Provides O(1) lookup by socket 4-tuple to (pid, K8sInfo). Keyed by the
+/// connection tracker's [`ConnectionKey`]: TCP and UDP are tracked separately
+/// because the same 4-tuple can be reused across protocols.
 pub struct KubernetesSocketTable {
-    by_key: std::collections::HashMap<SocketKey, (u32, crate::network::types::K8sInfo)>,
+    by_key: std::collections::HashMap<ConnectionKey, (u32, crate::network::types::K8sInfo)>,
 }
 
 impl KubernetesSocketTable {
@@ -379,13 +338,12 @@ impl KubernetesSocketTable {
                     Err(_) => continue,
                 };
                 let proto = if file.starts_with("tcp") {
-                    SocketProtocol::Tcp
+                    Protocol::Tcp
                 } else {
-                    SocketProtocol::Udp
+                    Protocol::Udp
                 };
-                let is_v6 = file.ends_with('6');
                 for line in contents.lines().skip(1) {
-                    if let Some(key) = parse_proc_net_line(line, proto, is_v6) {
+                    if let Some(key) = parse_proc_net_line(line, proto) {
                         by_key.entry(key).or_insert_with(|| (pid, k8s.clone()));
                     }
                 }
@@ -401,7 +359,7 @@ impl KubernetesSocketTable {
 
     /// Look up a (pid, K8sInfo) for the given socket 4-tuple. Returns `None`
     /// when the tuple isn't owned by any kubepods PID.
-    fn lookup(&self, key: &SocketKey) -> Option<&(u32, crate::network::types::K8sInfo)> {
+    fn lookup(&self, key: &ConnectionKey) -> Option<&(u32, crate::network::types::K8sInfo)> {
         self.by_key.get(key)
     }
 
@@ -413,22 +371,11 @@ impl KubernetesSocketTable {
         &self,
         conn: &crate::network::types::Connection,
     ) -> Option<(u32, crate::network::types::K8sInfo)> {
-        use crate::network::types::Protocol;
-        let protocol = match conn.protocol {
-            Protocol::Tcp => SocketProtocol::Tcp,
-            Protocol::Udp => SocketProtocol::Udp,
-            _ => return None,
-        };
-        let forward = SocketKey {
-            protocol,
-            local: conn.local_addr,
-            remote: conn.remote_addr,
-        };
-        let reverse = SocketKey {
-            protocol,
-            local: conn.remote_addr,
-            remote: conn.local_addr,
-        };
+        if !matches!(conn.protocol, Protocol::Tcp | Protocol::Udp) {
+            return None;
+        }
+        let forward = ConnectionKey::from_connection(conn);
+        let reverse = ConnectionKey::new(conn.protocol, conn.remote_addr, conn.local_addr);
         self.lookup(&forward)
             .or_else(|| self.lookup(&reverse))
             .cloned()
@@ -440,13 +387,7 @@ impl KubernetesSocketTable {
 /// a PID but not a name). Linux-only; returns `None` elsewhere.
 #[cfg(target_os = "linux")]
 pub fn read_process_name(pid: u32) -> Option<String> {
-    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-    let name = comm.trim();
-    if name.is_empty() {
-        None
-    } else {
-        Some(name.to_string())
-    }
+    rustnet_host::procfs::read_comm(pid)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -454,21 +395,36 @@ pub fn read_process_name(_pid: u32) -> Option<String> {
     None
 }
 
+/// File names of the entries in `path`, skipping non-UTF-8 names. Empty when
+/// the directory cannot be read (not on a node, or the mount is missing).
+#[cfg(target_os = "linux")]
+fn dir_entry_names(path: &str) -> impl Iterator<Item = String> {
+    std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+}
+
+/// Index the entries of `dir` by the key `parse` extracts from each file
+/// name. Unparseable names are skipped and a later duplicate key replaces an
+/// earlier one.
+#[cfg(target_os = "linux")]
+fn index_dir<T>(
+    dir: &str,
+    parse: impl Fn(&str) -> Option<(String, T)>,
+) -> std::collections::HashMap<String, T> {
+    dir_entry_names(dir)
+        .filter_map(|name| parse(&name))
+        .collect()
+}
+
 /// Enumerate numeric `/proc/<pid>` entries and return those whose
 /// `/proc/<pid>/cgroup` mentions `kubepods`.
 #[cfg(target_os = "linux")]
 fn discover_kubepods_pids() -> Vec<u32> {
     let mut pids = Vec::new();
-    let dir = match std::fs::read_dir("/proc") {
-        Ok(d) => d,
-        Err(_) => return pids,
-    };
-    for entry in dir.flatten() {
-        let name = entry.file_name();
-        let name = match name.to_str() {
-            Some(s) => s,
-            None => continue,
-        };
+    for name in dir_entry_names("/proc") {
         let pid: u32 = match name.parse() {
             Ok(p) => p,
             Err(_) => continue,
@@ -489,75 +445,37 @@ fn discover_kubepods_pids() -> Vec<u32> {
 ///
 ///   sl  local_address rem_address  st  tx_queue:rx_queue tr:tm->when retrnsmt uid timeout inode ...
 ///
-/// Address columns are hex-encoded. IPv4 is 8 hex chars representing a u32 in
-/// host byte order (the kernel printed the `__be32` value with `%08X`, so on
-/// little-endian boxes the byte order is reversed). IPv6 is 32 hex chars
-/// representing four u32s, each printed in host byte order.
+/// Address columns are hex-encoded; see `rustnet_host::procfs::parse_proc_net_addr`
+/// for the byte-order details. The address family is taken from the column
+/// width, so the same parser serves the `tcp`/`udp` and `tcp6`/`udp6` files.
 #[cfg(any(test, target_os = "linux"))]
-pub(crate) fn parse_proc_net_line(
-    line: &str,
-    protocol: SocketProtocol,
-    is_v6: bool,
-) -> Option<SocketKey> {
+pub(crate) fn parse_proc_net_line(line: &str, protocol: Protocol) -> Option<ConnectionKey> {
     let mut fields = line.split_whitespace();
     // Skip the "sl" column.
     fields.next()?;
     let local_raw = fields.next()?;
     let remote_raw = fields.next()?;
-    let local = parse_addr_port(local_raw, is_v6)?;
-    let remote = parse_addr_port(remote_raw, is_v6)?;
-    Some(SocketKey {
-        protocol,
-        local,
-        remote,
-    })
+    let local_addr = parse_addr_port(local_raw)?;
+    let remote_addr = parse_addr_port(remote_raw)?;
+    Some(ConnectionKey::new(protocol, local_addr, remote_addr))
 }
 
 #[cfg(any(test, target_os = "linux"))]
-fn parse_addr_port(field: &str, is_v6: bool) -> Option<std::net::SocketAddr> {
-    let (ip_hex, port_hex) = field.split_once(':')?;
-    let port = u16::from_str_radix(port_hex, 16).ok()?;
-    if is_v6 {
-        let ip = parse_ipv6_hex(ip_hex)?;
-        // Sockets bound to v6 may carry IPv4-mapped addresses (`::ffff:1.2.3.4`)
-        // for incoming v4 traffic. Normalise so the caller's 4-tuple match
-        // works whether the wire frame was v4 or v6.
-        let v4: Option<std::net::Ipv4Addr> = ip.to_ipv4_mapped();
-        let addr = match v4 {
-            Some(v4) => std::net::IpAddr::V4(v4),
-            None => std::net::IpAddr::V6(ip),
-        };
-        Some(std::net::SocketAddr::new(addr, port))
-    } else {
-        let ip = parse_ipv4_hex(ip_hex)?;
-        Some(std::net::SocketAddr::new(std::net::IpAddr::V4(ip), port))
+fn parse_addr_port(field: &str) -> Option<std::net::SocketAddr> {
+    let addr = rustnet_host::procfs::parse_proc_net_addr(field)?;
+    // Sockets bound to v6 may carry IPv4-mapped addresses (`::ffff:1.2.3.4`)
+    // for incoming v4 traffic. Normalise so the caller's 4-tuple match
+    // works whether the wire frame was v4 or v6.
+    match addr.ip() {
+        std::net::IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
+            Some(v4) => Some(std::net::SocketAddr::new(
+                std::net::IpAddr::V4(v4),
+                addr.port(),
+            )),
+            None => Some(addr),
+        },
+        std::net::IpAddr::V4(_) => Some(addr),
     }
-}
-
-#[cfg(any(test, target_os = "linux"))]
-fn parse_ipv4_hex(s: &str) -> Option<std::net::Ipv4Addr> {
-    if s.len() != 8 {
-        return None;
-    }
-    let val = u32::from_str_radix(s, 16).ok()?;
-    // The 8-hex-char field is `printf("%08X", be32)` on the wire. On a
-    // little-endian host that means the byte order is reversed relative to the
-    // network-order IP. Recover the original 4 bytes via `to_le_bytes`.
-    Some(std::net::Ipv4Addr::from(val.to_le_bytes()))
-}
-
-#[cfg(any(test, target_os = "linux"))]
-fn parse_ipv6_hex(s: &str) -> Option<std::net::Ipv6Addr> {
-    if s.len() != 32 {
-        return None;
-    }
-    let mut bytes = [0u8; 16];
-    for i in 0..4 {
-        let chunk = &s[i * 8..(i + 1) * 8];
-        let val = u32::from_str_radix(chunk, 16).ok()?;
-        bytes[i * 4..(i + 1) * 4].copy_from_slice(&val.to_le_bytes());
-    }
-    Some(std::net::Ipv6Addr::from(bytes))
 }
 
 /// `/proc/<pid>/cgroup` lines look like `12:cpu,cpuacct:/some/path` for v1
@@ -661,21 +579,26 @@ fn extract_container_id(segment: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Pod UID and container ID shared by the runtime-specific cgroup
+    /// fixtures below.
+    const DEMO_POD_UID: &str = "123e4567-e89b-12d3-a456-426614174000";
+    const DEMO_CONTAINER_ID: &str =
+        "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+    /// Assert that `line` parses to the demo pod UID and container ID.
+    fn assert_parses_demo_pod(line: &str) {
+        let info = parse_cgroup(line).expect("recognised");
+        assert_eq!(info.pod_uid.as_deref(), Some(DEMO_POD_UID));
+        assert_eq!(info.container_id.as_deref(), Some(DEMO_CONTAINER_ID));
+    }
+
     // 1. cgroup v1 systemd, containerd runtime (typical EKS / kind)
     #[test]
     fn parses_cgroup_v1_systemd_containerd() {
         let line = "12:cpu,cpuacct:/kubepods.slice/kubepods-besteffort.slice/\
                     kubepods-besteffort-pod123e4567_e89b_12d3_a456_426614174000.slice/\
                     cri-containerd-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789.scope";
-        let info = parse_cgroup(line).expect("recognised");
-        assert_eq!(
-            info.pod_uid.as_deref(),
-            Some("123e4567-e89b-12d3-a456-426614174000")
-        );
-        assert_eq!(
-            info.container_id.as_deref(),
-            Some("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
-        );
+        assert_parses_demo_pod(line);
     }
 
     // 2. cgroup v2 unified containerd
@@ -683,15 +606,7 @@ mod tests {
     fn parses_cgroup_v2_unified_containerd() {
         let line = "0::/kubepods/burstable/pod123e4567-e89b-12d3-a456-426614174000/\
              abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-        let info = parse_cgroup(line).expect("recognised");
-        assert_eq!(
-            info.pod_uid.as_deref(),
-            Some("123e4567-e89b-12d3-a456-426614174000")
-        );
-        assert_eq!(
-            info.container_id.as_deref(),
-            Some("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
-        );
+        assert_parses_demo_pod(line);
     }
 
     // 3. cri-o runtime
@@ -700,15 +615,7 @@ mod tests {
         let line = "0::/kubepods.slice/kubepods-besteffort.slice/\
                     kubepods-besteffort-pod123e4567_e89b_12d3_a456_426614174000.slice/\
                     crio-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789.scope";
-        let info = parse_cgroup(line).expect("recognised");
-        assert_eq!(
-            info.pod_uid.as_deref(),
-            Some("123e4567-e89b-12d3-a456-426614174000")
-        );
-        assert_eq!(
-            info.container_id.as_deref(),
-            Some("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
-        );
+        assert_parses_demo_pod(line);
     }
 
     // 4. legacy docker shim
@@ -717,15 +624,7 @@ mod tests {
         let line = "11:devices:/kubepods/burstable/\
                     pod123e4567-e89b-12d3-a456-426614174000/\
                     docker-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789.scope";
-        let info = parse_cgroup(line).expect("recognised");
-        assert_eq!(
-            info.pod_uid.as_deref(),
-            Some("123e4567-e89b-12d3-a456-426614174000")
-        );
-        assert_eq!(
-            info.container_id.as_deref(),
-            Some("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
-        );
+        assert_parses_demo_pod(line);
     }
 
     // 5. non-Kubernetes host returns None
@@ -786,10 +685,7 @@ mod tests {
                         cri-containerd-abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789.scope\n\
                         0::/system.slice/garbage.scope\n";
         let info = parse_cgroup(contents).expect("recognised");
-        assert_eq!(
-            info.pod_uid.as_deref(),
-            Some("123e4567-e89b-12d3-a456-426614174000")
-        );
+        assert_eq!(info.pod_uid.as_deref(), Some(DEMO_POD_UID));
     }
 
     // --- /proc/<pid>/net/* line parsing ----------------------------------
@@ -797,51 +693,17 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
     #[test]
-    fn ipv4_hex_is_little_endian() {
-        // 0100007F => 127.0.0.1 (kernel printed the be32 with %08X on LE host)
-        assert_eq!(
-            parse_ipv4_hex("0100007F"),
-            Some(Ipv4Addr::new(127, 0, 0, 1))
-        );
-        // 0F02000A => 10.0.2.15
-        assert_eq!(
-            parse_ipv4_hex("0F02000A"),
-            Some(Ipv4Addr::new(10, 0, 2, 15))
-        );
-        // 00000000 => 0.0.0.0 (listening wildcard)
-        assert_eq!(parse_ipv4_hex("00000000"), Some(Ipv4Addr::UNSPECIFIED));
-        // wrong length
-        assert_eq!(parse_ipv4_hex("0100"), None);
-    }
-
-    #[test]
-    fn ipv6_hex_chunked_little_endian() {
-        // ::1 loopback
-        assert_eq!(
-            parse_ipv6_hex("00000000000000000000000001000000"),
-            Some(Ipv6Addr::LOCALHOST)
-        );
-        // all zeros => ::
-        assert_eq!(
-            parse_ipv6_hex("00000000000000000000000000000000"),
-            Some(Ipv6Addr::UNSPECIFIED)
-        );
-        // wrong length
-        assert_eq!(parse_ipv6_hex("00"), None);
-    }
-
-    #[test]
     fn parses_tcp_v4_line() {
         // Real-shape line: listening on 0.0.0.0:8080 (1F90), no remote.
         let line = "  0: 00000000:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 12345 1 ...";
-        let key = parse_proc_net_line(line, SocketProtocol::Tcp, false).expect("parsed");
-        assert_eq!(key.protocol, SocketProtocol::Tcp);
+        let key = parse_proc_net_line(line, Protocol::Tcp).expect("parsed");
+        assert_eq!(key.protocol, Protocol::Tcp);
         assert_eq!(
-            key.local,
+            key.local_addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0x1F90)
         );
         assert_eq!(
-            key.remote,
+            key.remote_addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0)
         );
     }
@@ -850,13 +712,13 @@ mod tests {
     fn parses_tcp_v4_established_line() {
         // 127.0.0.1:51000 -> 127.0.0.1:443
         let line = "  1: 0100007F:C738 0100007F:01BB 01 00000000:00000000 00:00000000 00000000  1000 0 99999 1 ...";
-        let key = parse_proc_net_line(line, SocketProtocol::Tcp, false).expect("parsed");
+        let key = parse_proc_net_line(line, Protocol::Tcp).expect("parsed");
         assert_eq!(
-            key.local,
+            key.local_addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0xC738)
         );
         assert_eq!(
-            key.remote,
+            key.remote_addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443)
         );
     }
@@ -864,10 +726,10 @@ mod tests {
     #[test]
     fn parses_udp_v4_line() {
         let line = "  2: 0F02000A:0035 00000000:0000 07 00000000:00000000 00:00000000 00000000   101 0 54321 2 ...";
-        let key = parse_proc_net_line(line, SocketProtocol::Udp, false).expect("parsed");
-        assert_eq!(key.protocol, SocketProtocol::Udp);
+        let key = parse_proc_net_line(line, Protocol::Udp).expect("parsed");
+        assert_eq!(key.protocol, Protocol::Udp);
         assert_eq!(
-            key.local,
+            key.local_addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 2, 15)), 0x35)
         );
     }
@@ -877,9 +739,9 @@ mod tests {
         // ::1:8080 listening
         let line = "  0: 00000000000000000000000001000000:1F90 \
                     00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 12345 1 ...";
-        let key = parse_proc_net_line(line, SocketProtocol::Tcp, true).expect("parsed");
+        let key = parse_proc_net_line(line, Protocol::Tcp).expect("parsed");
         assert_eq!(
-            key.local,
+            key.local_addr,
             SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0x1F90)
         );
     }
@@ -890,20 +752,18 @@ mod tests {
         // 0x0F02000A] printed in host order: 00000000 00000000 0000FFFF 0F02000A
         let line = "  0: 0000000000000000FFFF00000F02000A:0050 \
                     00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 1 1 ...";
-        let key = parse_proc_net_line(line, SocketProtocol::Tcp, true).expect("parsed");
+        let key = parse_proc_net_line(line, Protocol::Tcp).expect("parsed");
         assert_eq!(
-            key.local,
+            key.local_addr,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 2, 15)), 80)
         );
     }
 
     #[test]
     fn rejects_malformed_lines() {
-        assert!(parse_proc_net_line("garbage", SocketProtocol::Tcp, false).is_none());
-        assert!(
-            parse_proc_net_line("  0: nocolon 00000000:0000", SocketProtocol::Tcp, false).is_none()
-        );
-        assert!(parse_proc_net_line("", SocketProtocol::Tcp, false).is_none());
+        assert!(parse_proc_net_line("garbage", Protocol::Tcp).is_none());
+        assert!(parse_proc_net_line("  0: nocolon 00000000:0000", Protocol::Tcp).is_none());
+        assert!(parse_proc_net_line("", Protocol::Tcp).is_none());
     }
 
     // --- kubelet log directory metadata parsing --------------------------

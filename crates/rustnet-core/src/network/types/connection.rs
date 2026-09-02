@@ -5,9 +5,17 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use super::identity::{
-    AddrKind, ArpOperation, MatchQuality, ProcessLineage, Protocol, ProtocolState, TcpState,
-    tcp_state_is_terminal,
+    AddrKind, ArpOperation, ConnectionKey, MatchQuality, ProcessLineage, Protocol, ProtocolState,
+    TcpState, tcp_state_is_terminal,
 };
+
+/// Placeholder stored as a connection's `process_name` when the owning PID is
+/// known but its name could not be resolved (protected processes, the window
+/// before an ETW process-start event arrives). Shared across crates so the
+/// enrichment loop keeps such connections eligible for an upgrade and the UI
+/// groups them with unattributed connections instead of showing two unknown
+/// buckets side by side.
+pub const UNKNOWN_PROCESS_NAME: &str = "Unknown";
 use super::protocol_info::{
     ApplicationProtocol, DpiInfo, QuicConnectionState, QuicInfo, QuicPacketType,
 };
@@ -323,21 +331,16 @@ impl Connection {
     /// Historic connections include `created_at` to disambiguate multiple
     /// closed connections that shared the same 4-tuple.
     pub fn key(&self) -> String {
+        let base = ConnectionKey::from_connection(self);
         if self.is_historic {
             let created_nanos = self
                 .created_at
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos();
-            format!(
-                "{:?}:{}-{:?}:{}:h:{}",
-                self.protocol, self.local_addr, self.protocol, self.remote_addr, created_nanos
-            )
+            format!("{base}:h:{created_nanos}")
         } else {
-            format!(
-                "{:?}:{}-{:?}:{}",
-                self.protocol, self.local_addr, self.protocol, self.remote_addr
-            )
+            base.to_string()
         }
     }
 
@@ -724,30 +727,27 @@ impl Connection {
 mod tests {
     use super::*;
     use crate::network::types::rates::RateSample;
+    use crate::network::types::test_support::{conn, dns_info, quic_dpi, udp_conn};
     use crate::network::types::{
-        ArpInfo, CryptoFrameReassembler, DnsInfo, DnsQueryType, ProcessAncestor, QuicCloseInfo,
-        TrafficHistory,
+        ArpInfo, CryptoFrameReassembler, ProcessAncestor, QuicCloseInfo, TrafficHistory,
     };
-    use std::net::{IpAddr, Ipv4Addr};
     use std::path::PathBuf;
 
     fn create_test_connection() -> Connection {
-        Connection::new(
+        conn(
             Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 80),
+            "127.0.0.1:12345",
+            "10.0.0.1:80",
             ProtocolState::Tcp(TcpState::Established),
         )
     }
 
     #[test]
     fn test_connection_snapshot_clone_preserves_cached_fields() {
-        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321);
-        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
-        let mut conn = Connection::new(
+        let mut conn = conn(
             Protocol::Tcp,
-            local,
-            remote,
+            "192.168.1.100:54321",
+            "93.184.216.34:443",
             ProtocolState::Tcp(TcpState::Established),
         );
         conn.bytes_sent = 1234;
@@ -776,10 +776,10 @@ mod tests {
     fn snapshot_clone_shares_process_attribution_allocations() {
         use std::path::Path;
 
-        let mut conn = Connection::new(
+        let mut conn = conn(
             Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
+            "192.168.1.100:54321",
+            "93.184.216.34:443",
             ProtocolState::Tcp(TcpState::Established),
         );
         let executable: Arc<Path> = Arc::from(Path::new("/usr/bin/curl"));
@@ -822,10 +822,10 @@ mod tests {
 
     #[test]
     fn new_connections_carry_no_attribution() {
-        let conn = Connection::new(
+        let conn = conn(
             Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 1),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 2),
+            "10.0.0.1:1",
+            "10.0.0.2:2",
             ProtocolState::Tcp(TcpState::Established),
         );
 
@@ -858,20 +858,13 @@ mod tests {
 
     #[test]
     fn test_enhanced_state_display_quic() {
-        let mut conn = Connection::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),
-            ProtocolState::Udp,
-        );
+        let mut conn = udp_conn("127.0.0.1:12345", "1.1.1.1:443");
 
         // Test QUIC with different states
         let mut quic_info = QuicInfo::new(0x00000001);
         quic_info.connection_state = QuicConnectionState::Initial;
 
-        let dpi_info = DpiInfo {
-            application: ApplicationProtocol::Quic(Box::new(quic_info.clone())),
-        };
+        let dpi_info = quic_dpi(quic_info.clone());
         conn.dpi_info = Some(dpi_info);
 
         assert_eq!(conn.state(), "QUIC_INITIAL");
@@ -879,39 +872,22 @@ mod tests {
         // Test connected state
         let mut quic_connected = quic_info.clone();
         quic_connected.connection_state = QuicConnectionState::Connected;
-        conn.dpi_info = Some(DpiInfo {
-            application: ApplicationProtocol::Quic(Box::new(quic_connected)),
-        });
+        conn.dpi_info = Some(quic_dpi(quic_connected));
         assert_eq!(conn.state(), "QUIC_CONNECTED");
 
         // Test draining state
         let mut quic_draining = quic_info.clone();
         quic_draining.connection_state = QuicConnectionState::Draining;
-        conn.dpi_info = Some(DpiInfo {
-            application: ApplicationProtocol::Quic(Box::new(quic_draining)),
-        });
+        conn.dpi_info = Some(quic_dpi(quic_draining));
         assert_eq!(conn.state(), "QUIC_DRAINING");
     }
 
     #[test]
     fn test_enhanced_state_display_dns() {
-        let mut conn = Connection::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
-            ProtocolState::Udp,
-        );
+        let mut conn = udp_conn("127.0.0.1:12345", "8.8.8.8:53");
 
         // Test DNS query
-        let dns_query = DnsInfo {
-            query_name: Some("example.com".to_string()),
-            query_type: Some(DnsQueryType::A),
-            response_ips: vec![],
-            is_response: false,
-            txid: 0x1234,
-            rcode: None,
-            nodata: None,
-        };
+        let dns_query = dns_info(false);
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_query),
@@ -919,15 +895,7 @@ mod tests {
         assert_eq!(conn.state(), "DNS_QUERY");
 
         // Test DNS response
-        let dns_response = DnsInfo {
-            query_name: Some("example.com".to_string()),
-            query_type: Some(DnsQueryType::A),
-            response_ips: vec!["93.184.216.34".parse().unwrap()],
-            is_response: true,
-            txid: 0x1234,
-            rcode: Some(0),
-            nodata: Some(false),
-        };
+        let dns_response = dns_info(true);
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_response),
@@ -937,12 +905,7 @@ mod tests {
 
     #[test]
     fn test_enhanced_state_display_regular_udp() {
-        let mut conn = Connection::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 8080),
-            ProtocolState::Udp,
-        );
+        let mut conn = udp_conn("127.0.0.1:12345", "10.0.0.1:8080");
 
         // No DPI info - should show activity-based state
         assert_eq!(conn.state(), "UDP_ACTIVE"); // Fresh connection
@@ -978,12 +941,7 @@ mod tests {
 
     #[test]
     fn test_dynamic_timeout_quic() {
-        let mut conn = Connection::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),
-            ProtocolState::Udp,
-        );
+        let mut conn = udp_conn("127.0.0.1:12345", "1.1.1.1:443");
 
         // Test QUIC with CONNECTION_CLOSE frame
         let mut quic_info = QuicInfo::new(0x00000001);
@@ -992,9 +950,7 @@ mod tests {
             error_code: 0,    // NO_ERROR
         });
 
-        conn.dpi_info = Some(DpiInfo {
-            application: ApplicationProtocol::Quic(Box::new(quic_info)),
-        });
+        conn.dpi_info = Some(quic_dpi(quic_info));
 
         assert_eq!(conn.get_timeout(), Duration::from_secs(15));
 
@@ -1005,31 +961,16 @@ mod tests {
             error_code: 1,
         });
 
-        conn.dpi_info = Some(DpiInfo {
-            application: ApplicationProtocol::Quic(Box::new(quic_app_close)),
-        });
+        conn.dpi_info = Some(quic_dpi(quic_app_close));
 
         assert_eq!(conn.get_timeout(), Duration::from_secs(15));
     }
 
     #[test]
     fn test_dynamic_timeout_dns() {
-        let mut conn = Connection::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 53),
-            ProtocolState::Udp,
-        );
+        let mut conn = udp_conn("127.0.0.1:12345", "8.8.8.8:53");
 
-        let dns_info = DnsInfo {
-            query_name: Some("example.com".to_string()),
-            query_type: Some(DnsQueryType::A),
-            response_ips: vec![],
-            is_response: false,
-            txid: 0x1234,
-            rcode: None,
-            nodata: None,
-        };
+        let dns_info = dns_info(false);
 
         conn.dpi_info = Some(DpiInfo {
             application: ApplicationProtocol::Dns(dns_info),
@@ -1141,10 +1082,10 @@ mod tests {
     #[test]
     fn test_icmp_and_arp_states() {
         // Test ICMP states
-        let mut conn = Connection::new(
+        let mut conn = conn(
             Protocol::Icmp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
+            "127.0.0.1:0",
+            "8.8.8.8:0",
             ProtocolState::Icmp {
                 icmp_type: 8,
                 icmp_id: Some(1234),

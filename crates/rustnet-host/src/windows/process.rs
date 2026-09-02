@@ -1,22 +1,23 @@
 // Windows ETW process attribution with an IP Helper API fallback.
 
 use super::etw::{EtwAttribution, EtwProcessCache};
+use super::{read_recovering, write_recovering};
 use crate::{
     ConnectionKey, DegradationReason, HostSocket, HostSocketState, HostTcpState, MatchQuality,
     ProcessAncestor, ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner,
     SocketSnapshot, collect_process_lineage, relaxed_lookup, remote_if_present,
 };
 use anyhow::{Context, Result};
-use rustnet_core::network::types::{Connection, Protocol};
+use rustnet_core::network::types::{Connection, Protocol, UNKNOWN_PROCESS_NAME};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::windows::ffi::OsStringExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, FILETIME, WIN32_ERROR,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, FILETIME, HANDLE, WIN32_ERROR,
 };
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
@@ -32,7 +33,7 @@ use windows::Win32::System::Threading::{
     QueryFullProcessImageNameW,
 };
 
-const UNKNOWN_PROCESS_NAME: &str = "Unknown";
+const CACHE_LOCK: &str = "Process cache";
 
 type ProcessMap = HashMap<ConnectionKey, (u32, String)>;
 // None marks a PID whose process no longer exists, so repeated rows for it
@@ -193,7 +194,7 @@ macro_rules! refresh_table {
                     }
                     let $state_row = $row;
                     let state = $state;
-                    let owner = cache_process(cache, process_names, key.clone(), $row.dwOwningPid);
+                    let owner = cache_process(cache, process_names, key, $row.dwOwningPid);
                     sockets.push(HostSocket {
                         protocol: key.protocol,
                         local_addr: key.local_addr,
@@ -482,13 +483,7 @@ impl WindowsProcessLookup {
         // the table has no row: processes that exited between refreshes.
         let mut table_is_fresh = false;
         {
-            let cache = match self.cache.read() {
-                Ok(cache) => cache,
-                Err(poisoned) => {
-                    log::warn!("Process cache lock was poisoned, recovering data");
-                    poisoned.into_inner()
-                }
-            };
+            let cache = read_recovering(&self.cache, CACHE_LOCK);
 
             if cache.last_refresh.elapsed() < Duration::from_secs(2) {
                 table_is_fresh = true;
@@ -538,13 +533,7 @@ impl WindowsProcessLookup {
 
         // Cache is stale or miss, refresh
         if self.refresh().is_ok() {
-            let cache = match self.cache.read() {
-                Ok(cache) => cache,
-                Err(poisoned) => {
-                    log::warn!("Process cache lock was poisoned after refresh, recovering data");
-                    poisoned.into_inner()
-                }
-            };
+            let cache = read_recovering(&self.cache, CACHE_LOCK);
             let result = cache.lookup.get(&key).cloned().or_else(|| {
                 relaxed_lookup(&cache.lookup, &key).map(|(process, _quality)| process.clone())
             });
@@ -594,13 +583,7 @@ impl ProcessLookup for WindowsProcessLookup {
             Err(error) => log::debug!("Windows process snapshot failed: {}", error),
         }
 
-        let mut cache = match self.cache.write() {
-            Ok(cache) => cache,
-            Err(poisoned) => {
-                log::warn!("Process cache write lock was poisoned, recovering and replacing cache");
-                poisoned.into_inner()
-            }
-        };
+        let mut cache = write_recovering(&self.cache, CACHE_LOCK);
 
         let total_entries = new_cache.len();
         cache.lookup = new_cache;
@@ -678,21 +661,40 @@ fn filetime_to_unix_ms(time: FILETIME) -> Option<u64> {
         .map(|unix_ticks| unix_ticks / 10_000)
 }
 
-fn query_process_runtime(pid: u32) -> Option<WindowsRuntimeDetails> {
-    // SAFETY: the process handle is valid after `OpenProcess`, all buffers
-    // have their exact lengths, and the handle is closed before returning.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut size = 32_768_u32;
-        let mut buffer = vec![0_u16; size as usize];
-        let executable = QueryFullProcessImageNameW(
+/// The full image path of the process behind `handle`, or `None` when the
+/// query fails or returns an empty path.
+///
+/// # Safety
+///
+/// `handle` must be an open process handle with at least
+/// `PROCESS_QUERY_LIMITED_INFORMATION` access.
+unsafe fn query_image_path(handle: HANDLE) -> Option<PathBuf> {
+    // QueryFullProcessImageNameW supports extended-length paths. A MAX_PATH
+    // buffer silently loses attribution for executables installed below a
+    // long path, so allocate the documented maximum Windows path instead.
+    let mut size: u32 = 32_768;
+    let mut buffer: Vec<u16> = vec![0; size as usize];
+
+    // SAFETY: the buffer has exactly `size` elements and the caller
+    // guarantees a valid process handle.
+    let result = unsafe {
+        QueryFullProcessImageNameW(
             handle,
             PROCESS_NAME_WIN32,
             windows::core::PWSTR(buffer.as_mut_ptr()),
             &mut size,
         )
-        .is_ok()
-        .then(|| PathBuf::from(OsString::from_wide(&buffer[..size as usize])));
+    };
+    (result.is_ok() && size > 0)
+        .then(|| PathBuf::from(OsString::from_wide(&buffer[..size as usize])))
+}
+
+fn query_process_runtime(pid: u32) -> Option<WindowsRuntimeDetails> {
+    // SAFETY: the process handle is valid after `OpenProcess`, all buffers
+    // have their exact lengths, and the handle is closed before returning.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let executable = query_image_path(handle);
 
         let mut creation = FILETIME::default();
         let mut exit = FILETIME::default();
@@ -782,31 +784,13 @@ fn query_process_name(pid: u32) -> ProcessNameLookup {
             }
         };
 
-        // Query process image name
-        // QueryFullProcessImageNameW supports extended-length paths. A MAX_PATH
-        // buffer silently loses attribution for executables installed below a
-        // long path, so allocate the documented maximum Windows path instead.
-        let mut size: u32 = 32_768;
-        let mut buffer: Vec<u16> = vec![0; size as usize];
-
-        let result = QueryFullProcessImageNameW(
-            handle,
-            PROCESS_NAME_WIN32,
-            windows::core::PWSTR(buffer.as_mut_ptr()),
-            &mut size,
-        );
+        let image_path = query_image_path(handle);
 
         let _ = CloseHandle(handle);
 
-        if result.is_ok() && size > 0 {
-            // Convert to OsString and then to String
-            let os_string = OsString::from_wide(&buffer[..size as usize]);
-            let path_str = os_string.to_string_lossy().to_string();
-
-            // Extract just the filename
-            if let Some(filename) = path_str.split('\\').next_back() {
-                return ProcessNameLookup::Named(filename.to_string());
-            }
+        // Only the file name is wanted
+        if let Some(filename) = image_path.as_deref().and_then(Path::file_name) {
+            return ProcessNameLookup::Named(filename.to_string_lossy().into_owned());
         }
 
         // The open succeeded, so the process is alive; only the name query

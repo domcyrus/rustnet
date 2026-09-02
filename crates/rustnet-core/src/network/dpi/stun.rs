@@ -22,18 +22,8 @@ const MAX_SOFTWARE_LEN: usize = 128;
 /// Returns `None` if the packet is too small, lacks the magic cookie,
 /// or has invalid structural properties.
 pub(super) fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
-    if payload.len() < STUN_HEADER_SIZE {
-        return None;
-    }
-
-    // First two bits must be 0b00 (distinguishes STUN from DTLS/RTP/RTCP)
-    if payload[0] & 0xC0 != 0x00 {
-        return None;
-    }
-
-    // Verify magic cookie at bytes 4-7
-    let cookie = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
-    if cookie != STUN_MAGIC_COOKIE {
+    // Header size, leading 0b00 bits and magic cookie
+    if !is_likely_stun(payload) {
         return None;
     }
 
@@ -92,15 +82,19 @@ pub(super) fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
     })
 }
 
-/// Check if a packet looks like STUN without full parsing.
-/// Used for non-standard port detection where we want a quick probe.
+/// Check if a packet looks like STUN without full parsing: a full 20-byte
+/// header, leading bits 0b00 (distinguishes STUN from DTLS/RTP/RTCP) and the
+/// magic cookie at bytes 4-7. Used for non-standard port detection where we
+/// want a quick probe, and as the prologue of [`analyze_stun`].
 pub(super) fn is_likely_stun(payload: &[u8]) -> bool {
     if payload.len() < STUN_HEADER_SIZE {
         return false;
     }
+    // First two bits must be 0b00
     if payload[0] & 0xC0 != 0x00 {
         return false;
     }
+    // Verify magic cookie at bytes 4-7
     let cookie = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
     cookie == STUN_MAGIC_COOKIE
 }

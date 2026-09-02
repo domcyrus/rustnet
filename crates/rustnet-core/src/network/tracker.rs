@@ -121,6 +121,20 @@ pub struct HistoricKey {
     pub created_nanos: u128,
 }
 
+impl HistoricKey {
+    /// The identity `conn` has (or will have) in the historic table.
+    pub fn for_connection(key: ConnectionKey, conn: &Connection) -> Self {
+        Self {
+            key,
+            created_nanos: conn
+                .created_at
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        }
+    }
+}
+
 impl std::fmt::Display for HistoricKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.key, self.created_nanos)
@@ -742,14 +756,8 @@ impl ConnectionTracker {
                         .checked_add(Duration::from_nanos(1))
                         .unwrap_or(replacement_now);
                 }
-                self.active_count.fetch_sub(1, Ordering::Relaxed);
                 self.archive_snapshot(key, &conn, now);
-                self.record_recently_closed(key, &conn, now);
-                self.remove_quic_mappings_for_key(key);
-                // Forget the archived generation's pending enrollment so the
-                // replacement enrolls with a fresh timestamp.
-                self.dns_attribution
-                    .forget_pending(conn.remote_addr.ip(), key);
+                self.retire(key, &conn, now);
                 conn
             })
         } else {
@@ -862,6 +870,11 @@ impl ConnectionTracker {
             })
     }
 
+    /// Archive a historic copy of `conn`, closed at `now`, when
+    /// `keep_historic` is set. The historic key includes created_at so
+    /// multiple closed connections sharing a 4-tuple don't clobber each
+    /// other. snapshot_clone: historic connections never refresh their rates,
+    /// so don't pin the (potentially large) sample buffer in the archive.
     fn archive_snapshot(&self, key: ConnectionKey, conn: &Connection, now: SystemTime) {
         if !self.config.keep_historic {
             return;
@@ -869,15 +882,29 @@ impl ConnectionTracker {
         let mut historic = conn.snapshot_clone();
         historic.is_historic = true;
         historic.closed_at = Some(now);
-        let historic_key = HistoricKey {
-            key,
-            created_nanos: conn
-                .created_at
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-        };
-        self.historic.insert(historic_key, historic);
+        // Cached rates describe live traffic. Carrying them into a closed
+        // record makes Overview and Details report traffic that can no longer
+        // occur, and leaves a moving fallback point after the live rate
+        // history is retired.
+        historic.current_incoming_rate_bps = 0.0;
+        historic.current_outgoing_rate_bps = 0.0;
+        self.historic
+            .insert(HistoricKey::for_connection(key, conn), historic);
+    }
+
+    /// Bookkeeping for a connection that has left the active table: the
+    /// active count, the recently-closed tombstone, its pending
+    /// DNS-attribution enrollment (so a later response cannot surface a dead
+    /// key, and a replacement generation enrolls with a fresh timestamp) and
+    /// any QUIC connection-ID mappings still pointing at it.
+    ///
+    /// Must not be called from inside a `connections` shard lock.
+    fn retire(&self, key: ConnectionKey, conn: &Connection, now: SystemTime) {
+        self.active_count.fetch_sub(1, Ordering::Relaxed);
+        self.record_recently_closed(key, conn, now);
+        self.dns_attribution
+            .forget_pending(conn.remote_addr.ip(), key);
+        self.remove_quic_mappings_for_key(key);
     }
 
     fn enforce_historic_limit(&self) {
@@ -957,69 +984,22 @@ impl ConnectionTracker {
         self.apply_request_health_events(request_health_events);
         let mut removed: Vec<Connection> = Vec::new();
         let mut removed_keys: Vec<ConnectionKey> = Vec::new();
-        let mut to_archive: Vec<(HistoricKey, Connection)> = Vec::new();
-        let keep_historic = self.config.keep_historic;
 
         self.connections.retain(|key, conn| {
             let should_keep = !conn.should_cleanup(now);
             if !should_keep {
                 removed_keys.push(*key);
                 removed.push(conn.clone());
-
-                // Archive a historic copy. The historic key includes created_at
-                // so multiple closed connections sharing a 4-tuple don't clobber
-                // each other. snapshot_clone: historic connections never refresh
-                // their rates, so don't pin the (potentially large) sample
-                // buffer in the archive.
-                if keep_historic {
-                    let mut historic = conn.snapshot_clone();
-                    historic.is_historic = true;
-                    historic.closed_at = Some(now);
-                    // Cached rates describe live traffic. Carrying them into a
-                    // closed record makes Overview and Details report traffic
-                    // that can no longer occur, and leaves a moving fallback
-                    // point after the live rate history is retired.
-                    historic.current_incoming_rate_bps = 0.0;
-                    historic.current_outgoing_rate_bps = 0.0;
-                    let historic_key = HistoricKey {
-                        key: *key,
-                        created_nanos: conn
-                            .created_at
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos(),
-                    };
-                    to_archive.push((historic_key, historic));
-                }
             }
             should_keep
         });
-        if !removed.is_empty() {
-            self.active_count
-                .fetch_sub(removed.len(), Ordering::Relaxed);
-            for (key, conn) in removed_keys.iter().zip(&removed) {
-                self.record_recently_closed(*key, conn, now);
-                // Drop any pending DNS-attribution enrollment so a later
-                // response cannot surface a dead key.
-                self.dns_attribution
-                    .forget_pending(conn.remote_addr.ip(), *key);
-            }
+        // Archive and retire outside the retain closure so no shard lock is
+        // held while the tracker's other locks are taken.
+        for (key, conn) in removed_keys.iter().zip(&removed) {
+            self.archive_snapshot(*key, conn, now);
+            self.retire(*key, conn, now);
         }
-
-        if keep_historic {
-            for (key, conn) in to_archive {
-                self.historic.insert(key, conn);
-            }
-
-            self.enforce_historic_limit();
-        }
-
-        // Clean up QUIC connection-ID mappings pointing at removed connections.
-        if !removed_keys.is_empty()
-            && let Ok(mut mapping) = self.quic_map.lock()
-        {
-            mapping.retain(|_, conn_key| !removed_keys.contains(conn_key));
-        }
+        self.enforce_historic_limit();
         self.prune_recently_closed(now);
         self.dns_attribution.cleanup_tick(std::time::Instant::now());
 
@@ -2289,6 +2269,10 @@ mod tests {
         let tracker = ConnectionTracker::new();
         let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         tracker.ingest_at(&tcp_packet(false, false, false, true, true), started);
+        for mut entry in tracker.connections().iter_mut() {
+            entry.current_incoming_rate_bps = 2048.0;
+            entry.current_outgoing_rate_bps = 1024.0;
+        }
 
         let outcome = tracker.ingest_at(&tcp_packet(true, false, false, false, true), started);
         assert!(outcome.created);
@@ -2313,6 +2297,11 @@ mod tests {
         assert_eq!(historic.created_at, started);
         assert!(historic.is_historic);
         assert_eq!(historic.closed_at, Some(started));
+        assert_eq!(
+            historic.current_incoming_rate_bps, 0.0,
+            "a superseded generation is archived with its rates zeroed, like cleanup"
+        );
+        assert_eq!(historic.current_outgoing_rate_bps, 0.0);
         drop(historic);
 
         tracker.cleanup(started + Duration::from_secs(61));

@@ -50,61 +50,16 @@ pub(super) fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> 
     // Using `saturating_sub(6)` stopped at `len - 7` and never inspected
     // the final 6-byte window, so a packet whose signature sat at the very
     // end of the payload (including a payload that is exactly 6 bytes) was
-    // missed.
-    let mut found_packet_state = false;
-    for i in 0..payload.len().saturating_sub(5) {
-        if payload.len() >= i + 6 {
-            // Validate this looks like a real SSH packet structure
-            if is_valid_ssh_packet_at_offset(payload, i) {
-                let msg_type = payload[i + 5];
+    // missed. (is_valid_ssh_packet_at_offset re-checks the 6-byte window.)
+    let packet_state = (0..payload.len().saturating_sub(5))
+        .filter(|&i| is_valid_ssh_packet_at_offset(payload, i))
+        .find_map(|i| ssh_msg_state(payload[i + 5]).map(|(state, label)| (i, state, label)));
 
-                match msg_type {
-                    20 => {
-                        info.connection_state = SshConnectionState::KeyExchange;
-                        debug!("SSH: Detected KEXINIT message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    21 => {
-                        info.connection_state = SshConnectionState::KeyExchange;
-                        debug!("SSH: Detected NEWKEYS message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    50 => {
-                        info.connection_state = SshConnectionState::Authentication;
-                        debug!("SSH: Detected USERAUTH_REQUEST message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    51 => {
-                        info.connection_state = SshConnectionState::Authentication;
-                        debug!("SSH: Detected USERAUTH_FAILURE message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    52 => {
-                        info.connection_state = SshConnectionState::Established;
-                        debug!("SSH: Detected USERAUTH_SUCCESS message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    90..=127 => {
-                        info.connection_state = SshConnectionState::Established;
-                        debug!("SSH: Detected connection protocol message at offset {}", i);
-                        found_packet_state = true;
-                        break;
-                    }
-                    _ => {
-                        // Continue searching
-                    }
-                }
-            }
-        }
-    }
-
-    // If we didn't find a packet state and we have banner info, default to Banner state
-    if !found_packet_state && (info.server_software.is_some() || info.client_software.is_some()) {
+    if let Some((offset, state, label)) = packet_state {
+        info.connection_state = state;
+        debug!("SSH: Detected {} message at offset {}", label, offset);
+    } else if info.server_software.is_some() || info.client_software.is_some() {
+        // No packet state found but we have banner info: default to Banner state
         info.connection_state = SshConnectionState::Banner;
     }
 
@@ -118,6 +73,21 @@ pub(super) fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> 
 
     debug!("SSH analysis result: {:?}", info);
     Some(info)
+}
+
+/// Map an SSH message number (RFC 4250 Section 4.1.2) to the connection state
+/// it implies, together with a label for logging. Message types that say
+/// nothing about the state (e.g. DISCONNECT, IGNORE, DEBUG) yield `None`.
+fn ssh_msg_state(msg_type: u8) -> Option<(SshConnectionState, &'static str)> {
+    match msg_type {
+        20 => Some((SshConnectionState::KeyExchange, "KEXINIT")),
+        21 => Some((SshConnectionState::KeyExchange, "NEWKEYS")),
+        50 => Some((SshConnectionState::Authentication, "USERAUTH_REQUEST")),
+        51 => Some((SshConnectionState::Authentication, "USERAUTH_FAILURE")),
+        52 => Some((SshConnectionState::Established, "USERAUTH_SUCCESS")),
+        90..=127 => Some((SshConnectionState::Established, "connection protocol")),
+        _ => None,
+    }
 }
 
 /// Check if payload might be SSH

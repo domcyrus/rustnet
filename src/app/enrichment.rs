@@ -11,19 +11,23 @@ use std::time::{Duration, Instant};
 
 use crate::network::platform::create_process_lookup;
 use crate::network::tracker::ConnectionTracker;
-use crate::network::types::{Connection, ProcessLineage};
+use crate::network::types::{Connection, ProcessLineage, UNKNOWN_PROCESS_NAME};
 
 use super::sampling::spawn_loop;
 use super::state::App;
 use super::types::ProcessDetectionStatus;
 
+/// Whether a connection needs no further process enrichment. A connection
+/// still carrying the [`UNKNOWN_PROCESS_NAME`] placeholder (a PID whose
+/// image name could not be resolved yet) stays eligible so the resolver can
+/// upgrade it once the real name is known.
 #[inline]
-fn process_enrichment_complete(conn: &Connection, unknown_process_name: &str) -> bool {
+fn process_enrichment_complete(conn: &Connection) -> bool {
     conn.pid.is_some()
         && conn
             .process_name
             .as_deref()
-            .is_some_and(|name| name != unknown_process_name)
+            .is_some_and(|name| name != UNKNOWN_PROCESS_NAME)
         && conn.attribution_quality.is_some()
 }
 
@@ -161,10 +165,6 @@ impl App {
         let full_pass_interval = Duration::from_secs(2);
         // Connections younger than this are retried on every fast tick.
         const YOUNG_CONNECTION_SECS: u64 = 10;
-        // Placeholder name that lookups store for a PID whose image name
-        // could not be resolved (yet). Kept eligible for re-enrichment so the
-        // resolver can upgrade it once the real name is known.
-        const UNKNOWN_PROCESS_NAME: &str = "Unknown";
         let mut last_full_pass = Instant::now() - full_pass_interval;
         // Executable paths are shared by every connection of a process, and
         // `Connection` is cloned in bulk on every snapshot tick. Interning here
@@ -255,7 +255,7 @@ impl App {
                 // attempt. Optional fields are best effort; requiring every
                 // one would retry permanent permission or process-exit failures
                 // on every fast tick.
-                if process_enrichment_complete(&entry, UNKNOWN_PROCESS_NAME) {
+                if process_enrichment_complete(&entry) {
                     continue;
                 }
                 // Fast ticks only retry young connections; older ones wait
@@ -436,6 +436,7 @@ impl App {
 mod process_enrichment_tests {
     use super::process_enrichment_complete;
     use crate::app::logging::process_lineage_json;
+    use crate::network::types::UNKNOWN_PROCESS_NAME;
     use crate::network::types::{
         Connection, MatchQuality, ProcessAncestor, ProcessLineage, Protocol, ProtocolState,
         TcpState,
@@ -458,10 +459,10 @@ mod process_enrichment_tests {
         conn.pid = Some(42);
         conn.process_name = Some("curl".to_string());
 
-        assert!(!process_enrichment_complete(&conn, "Unknown"));
+        assert!(!process_enrichment_complete(&conn));
 
         conn.attribution_quality = Some(MatchQuality::ExactTuple);
-        assert!(process_enrichment_complete(&conn, "Unknown"));
+        assert!(process_enrichment_complete(&conn));
     }
 
     #[test]
@@ -473,17 +474,17 @@ mod process_enrichment_tests {
 
         assert!(conn.executable.is_none());
         assert!(conn.process_uid.is_none());
-        assert!(process_enrichment_complete(&conn, "Unknown"));
+        assert!(process_enrichment_complete(&conn));
     }
 
     #[test]
     fn placeholder_identity_remains_eligible_for_an_upgrade() {
         let mut conn = connection();
         conn.pid = Some(42);
-        conn.process_name = Some("Unknown".to_string());
+        conn.process_name = Some(UNKNOWN_PROCESS_NAME.to_string());
         conn.attribution_quality = Some(MatchQuality::Unspecified);
 
-        assert!(!process_enrichment_complete(&conn, "Unknown"));
+        assert!(!process_enrichment_complete(&conn));
     }
 
     #[test]

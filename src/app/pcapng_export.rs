@@ -17,6 +17,7 @@ use crate::network::capture::CaptureConfig;
 use crate::network::tracker::ConnectionTracker;
 use crate::network::types::{Connection, ConnectionKey};
 
+use super::capture::{LinktypeWait, wait_for_linktype};
 use super::logging::dpi_domain;
 use super::state::App;
 use super::types::AppStats;
@@ -65,29 +66,23 @@ impl App {
             .name("pcapng-export".to_string())
             .spawn(move || {
                 info!("PCAPNG export thread starting: {}", export_path);
-                let linktype = loop {
-                    if let Some(linktype) = *linktype_storage.read().unwrap() {
-                        break Some(linktype);
-                    }
-                    let capture_failed = capture_status
-                        .read()
-                        .map(|status| status.has_failed())
-                        .unwrap_or(true);
-                    if capture_failed {
-                        warn!(
-                            "PCAPNG export could not observe capture linktype because capture setup failed; writing empty fallback section"
-                        );
-                        stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
-                        break None;
-                    }
-                    if should_stop.load(Ordering::Relaxed) {
-                        info!(
-                            "PCAPNG export did not observe capture linktype before shutdown; writing empty fallback section"
-                        );
-                        break None;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                };
+                let linktype =
+                    match wait_for_linktype(&linktype_storage, &capture_status, &should_stop) {
+                        LinktypeWait::Ready(linktype) => Some(linktype),
+                        LinktypeWait::CaptureFailed => {
+                            warn!(
+                                "PCAPNG export could not observe capture linktype because capture setup failed; writing empty fallback section"
+                            );
+                            stats.pcapng_export_errors.fetch_add(1, Ordering::Relaxed);
+                            None
+                        }
+                        LinktypeWait::Stopped => {
+                            info!(
+                                "PCAPNG export did not observe capture linktype before shutdown; writing empty fallback section"
+                            );
+                            None
+                        }
+                    };
                 let if_name = current_interface.read().unwrap().clone();
                 let linktype = linktype.map(pcapng::linktype_to_u16).unwrap_or(1);
                 let writer = std::io::BufWriter::new(file);
@@ -124,13 +119,6 @@ impl App {
                                 &mut pending_bytes,
                                 &stats,
                             );
-                            enforce_pcapng_retry_limits(
-                                &tracker,
-                                &mut writer,
-                                &mut pending,
-                                &mut pending_bytes,
-                                &stats,
-                            );
                         }
                         Err(crossbeam::channel::RecvTimeoutError::Timeout) => {}
                         Err(crossbeam::channel::RecvTimeoutError::Disconnected) => break,
@@ -152,13 +140,6 @@ impl App {
                 while let Ok(record) = rx.try_recv() {
                     handle_pcapng_record(
                         record,
-                        &tracker,
-                        &mut writer,
-                        &mut pending,
-                        &mut pending_bytes,
-                        &stats,
-                    );
-                    enforce_pcapng_retry_limits(
                         &tracker,
                         &mut writer,
                         &mut pending,
@@ -216,6 +197,8 @@ pub(super) fn send_pcapng_record(
     }
 }
 
+/// Queue one record, write out everything that is ready, then apply the
+/// retry-queue caps.
 fn handle_pcapng_record<W: Write>(
     record: PcapngRecord,
     tracker: &ConnectionTracker,
@@ -230,6 +213,7 @@ fn handle_pcapng_record<W: Write>(
     *pending_bytes = pending_bytes.saturating_add(record.data.len());
     pending.push_back(record);
     flush_ready_pcapng_records(tracker, writer, pending, pending_bytes, stats, false);
+    enforce_pcapng_retry_limits(tracker, writer, pending, pending_bytes, stats);
 }
 
 /// Write out pending records in FIFO order, stopping at the first record that
@@ -259,6 +243,8 @@ fn flush_ready_pcapng_records<W: Write>(
     }
 }
 
+/// Bound the retry queue: once it exceeds the record or byte cap, the oldest
+/// records are written out with whatever metadata is available.
 fn enforce_pcapng_retry_limits<W: Write>(
     tracker: &ConnectionTracker,
     writer: &mut PcapngWriter<W>,
@@ -306,34 +292,38 @@ fn write_pcapng_record<W: Write>(
     }
 }
 
-/// Comment for a record whose connection already has process attribution;
-/// `None` while attribution is still pending (or for keyless records).
-fn pcapng_comment(record: &PcapngRecord, tracker: &ConnectionTracker) -> Option<String> {
+/// The live connection a queued record belongs to, if it is still tracked.
+/// Rejects a connection whose `created_at` differs from the one the packet
+/// was queued under: live keys are tuple-only, so a rapidly reused tuple
+/// would otherwise annotate this packet with a later generation's metadata.
+fn live_connection<'a>(
+    record: &PcapngRecord,
+    tracker: &'a ConnectionTracker,
+) -> Option<impl std::ops::Deref<Target = Connection> + 'a> {
     let key = record.key?;
     let conn = tracker.connections().get(&key)?;
     if record.conn_created_at != Some(conn.created_at) {
         return None;
     }
+    Some(conn)
+}
+
+/// Comment for a record whose connection already has process attribution;
+/// `None` while attribution is still pending (or for keyless records).
+fn pcapng_comment(record: &PcapngRecord, tracker: &ConnectionTracker) -> Option<String> {
+    let conn = live_connection(record, tracker)?;
     if conn.pid.is_none() && conn.process_name.is_none() {
         return None;
     }
     build_pcapng_comment(&conn)
 }
 
-/// Like [`pcapng_comment`], but without requiring process attribution. Both
-/// lookups reject a connection whose `created_at` differs from the one the
-/// packet was queued under: live keys are tuple-only, so a rapidly reused
-/// tuple would otherwise annotate this packet with a later generation's
-/// metadata.
+/// Like [`pcapng_comment`], but without requiring process attribution.
 fn pcapng_comment_if_any_metadata(
     record: &PcapngRecord,
     tracker: &ConnectionTracker,
 ) -> Option<String> {
-    let key = record.key?;
-    let conn = tracker.connections().get(&key)?;
-    if record.conn_created_at != Some(conn.created_at) {
-        return None;
-    }
+    let conn = live_connection(record, tracker)?;
     build_pcapng_comment(&conn)
 }
 

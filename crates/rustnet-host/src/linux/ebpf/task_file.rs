@@ -1,5 +1,6 @@
 //! One-shot BPF task-file iterator for sockets that predate RustNet startup.
 
+use super::{TASK_COMM_LEN, decode_comm};
 use crate::SocketOwner;
 use crate::linux::process::StartupSocketOwners;
 use anyhow::{Context, Result, ensure};
@@ -16,7 +17,6 @@ mod socket_tracker_task_file {
 
 use socket_tracker_task_file::*;
 
-const TASK_COMM_LEN: usize = 16;
 const OWNER_RECORD_SIZE: usize = 32;
 const READ_BUFFER_SIZE: usize = 64 * 1024;
 
@@ -82,12 +82,7 @@ fn decode_owner_record(record: &[u8]) -> Option<(u64, SocketOwner)> {
     let inode = u64::from_ne_bytes(record[0..8].try_into().ok()?);
     let tgid = u32::from_ne_bytes(record[8..12].try_into().ok()?);
     let uid = u32::from_ne_bytes(record[12..16].try_into().ok()?);
-    let comm_bytes = &record[16..16 + TASK_COMM_LEN];
-    let comm_len = comm_bytes
-        .iter()
-        .position(|&byte| byte == 0)
-        .unwrap_or(TASK_COMM_LEN);
-    let comm = String::from_utf8_lossy(&comm_bytes[..comm_len]).to_string();
+    let comm = decode_comm(&record[16..16 + TASK_COMM_LEN]);
 
     if inode == 0 || tgid == 0 || comm.is_empty() {
         return None;

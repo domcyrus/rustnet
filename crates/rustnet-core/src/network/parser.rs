@@ -1171,26 +1171,6 @@ mod tests {
         assert!(parsed.is_none(), "Should reject truncated SLL2 packets");
     }
 
-    // ====== TCP Flags Tests ======
-
-    #[test]
-    fn test_tcp_flags_parsing() {
-        use crate::network::protocol::tcp::parse_tcp_flags;
-
-        let flags = parse_tcp_flags(0x02); // SYN
-        assert!(flags.syn);
-        assert!(!flags.ack);
-        assert!(!flags.fin);
-
-        let flags = parse_tcp_flags(0x12); // SYN + ACK
-        assert!(flags.syn);
-        assert!(flags.ack);
-
-        let flags = parse_tcp_flags(0x11); // FIN + ACK
-        assert!(flags.fin);
-        assert!(flags.ack);
-    }
-
     // ====== Parser Configuration Tests ======
 
     #[test]

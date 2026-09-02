@@ -18,9 +18,9 @@ use crate::network::types::{
     AppProtocolDistribution, Connection, Protocol, ProtocolState, TcpState, TrafficHistory,
 };
 use crate::ui::{
-    ClickableRegions, Component, ComponentContext,
+    ClickableRegions, Component, ComponentContext, draw_placeholder,
     format::format_rate,
-    section_header, theme,
+    section_header, section_title, theme,
     widgets::{braille_graph, glow_bar},
 };
 
@@ -86,11 +86,6 @@ fn tcp_state_index(state: &TcpState) -> usize {
         TcpState::Closed => 9,
         TcpState::Unknown => 10,
     }
-}
-
-/// Bold default-foreground title span for a graph section header.
-fn graph_title(text: &str) -> Span<'_> {
-    Span::styled(text, Style::default().add_modifier(Modifier::BOLD))
 }
 
 /// Read-only graph tab. Aggregates traffic history, protocol mix,
@@ -189,12 +184,10 @@ pub(in crate::ui) fn draw_graph_tab(
 /// a vertical gradient (bright crest, saturated base), each header
 /// showing the current rate, a trend arrow, and the 60s peak.
 fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let inner = section_header(f, area, graph_title(" Traffic Over Time (60s)"));
+    let inner = section_header(f, area, section_title(" Traffic Over Time (60s)"));
 
     if !history.has_enough_data() {
-        let placeholder =
-            Paragraph::new("Waiting for traffic data...").style(theme::fg(theme::muted()));
-        f.render_widget(placeholder, inner);
+        draw_placeholder(f, inner, "Waiting for traffic data...");
         return;
     }
 
@@ -232,12 +225,10 @@ fn draw_traffic_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
 }
 
 fn draw_connection_lifecycle(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let inner = section_header(f, area, graph_title(" Connection Lifecycle"));
+    let inner = section_header(f, area, section_title(" Connection Lifecycle"));
 
     if !history.has_enough_data() {
-        let placeholder =
-            Paragraph::new("Waiting for connection data...").style(theme::fg(theme::muted()));
-        f.render_widget(placeholder, inner);
+        draw_placeholder(f, inner, "Waiting for connection data...");
         return;
     }
 
@@ -370,7 +361,7 @@ fn format_lifecycle_rate(rate_tenths: u64) -> String {
 
 /// Draw application protocol distribution
 fn draw_app_distribution(f: &mut Frame, dist: &AppProtocolDistribution, area: Rect) {
-    let inner = section_header(f, area, graph_title(" Application Distribution"));
+    let inner = section_header(f, area, section_title(" Application Distribution"));
 
     let percentages = dist.as_percentages();
 
@@ -427,7 +418,7 @@ fn draw_app_distribution(f: &mut Frame, dist: &AppProtocolDistribution, area: Re
 
 /// Draw top processes by bandwidth
 fn draw_top_processes(f: &mut Frame, process_traffic: &HashMap<&str, f64>, area: Rect) {
-    let inner = section_header(f, area, graph_title(" Top Processes"));
+    let inner = section_header(f, area, section_title(" Top Processes"));
 
     let top_processes = select_top_processes(process_traffic, 5);
 
@@ -451,8 +442,7 @@ fn draw_top_processes(f: &mut Frame, process_traffic: &HashMap<&str, f64>, area:
         .collect();
 
     if rows.is_empty() {
-        let placeholder = Paragraph::new("No active processes").style(theme::fg(theme::muted()));
-        f.render_widget(placeholder, inner);
+        draw_placeholder(f, inner, "No active processes");
         return;
     }
 
@@ -487,12 +477,10 @@ fn select_top_processes<'a>(
 
 /// Draw the network health gauges with RTT and packet loss bars
 fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
-    let inner = section_header(f, area, graph_title(" Observed Network Health"));
+    let inner = section_header(f, area, section_title(" Observed Network Health"));
 
     if !history.has_enough_data() {
-        let placeholder =
-            Paragraph::new("Waiting for health data...").style(theme::fg(theme::muted()));
-        f.render_widget(placeholder, inner);
+        draw_placeholder(f, inner, "Waiting for health data...");
         return;
     }
 
@@ -528,13 +516,7 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
         let rtt_pct = (rtt / RTT_MAX).min(1.0);
         let filled = (rtt_pct * bar_width as f64) as usize;
 
-        let (color, ramp): (Color, fn(f64) -> Color) = if rtt < 50.0 {
-            (theme::ok(), theme::ok_wave)
-        } else if rtt < 150.0 {
-            (theme::warn(), theme::warn_wave)
-        } else {
-            (theme::err(), theme::err_wave)
-        };
+        let (color, ramp) = theme::rtt_tier(rtt);
 
         let mut spans = vec![Span::styled(
             "  RTT  ",
@@ -555,13 +537,7 @@ fn draw_health_chart(f: &mut Frame, history: &TrafficHistory, area: Rect) {
     let loss_pct = (current_loss / LOSS_MAX).min(1.0);
     let filled = (loss_pct * bar_width as f64) as usize;
 
-    let (loss_color, loss_ramp): (Color, fn(f64) -> Color) = if current_loss < 1.0 {
-        (theme::ok(), theme::ok_wave)
-    } else if current_loss < 5.0 {
-        (theme::warn(), theme::warn_wave)
-    } else {
-        (theme::err(), theme::err_wave)
-    };
+    let (loss_color, loss_ramp) = theme::tier(current_loss, 1.0, 5.0);
 
     let mut loss_spans = vec![Span::styled(
         "  Loss ",
@@ -604,32 +580,13 @@ fn draw_tcp_counters(f: &mut Frame, app: &App, area: Rect) {
     let out_of_order = stats.total_tcp_out_of_order.load(Ordering::Relaxed);
     let fast_retransmits = stats.total_tcp_fast_retransmits.load(Ordering::Relaxed);
 
-    let inner = section_header(f, area, graph_title(" TCP Counters"));
+    let inner = section_header(f, area, section_title(" TCP Counters"));
 
-    // Color based on counts (higher = more concerning)
-    let retrans_color = if retransmits == 0 {
-        theme::ok()
-    } else if retransmits < 100 {
-        theme::warn()
-    } else {
-        theme::err()
-    };
-
-    let ooo_color = if out_of_order == 0 {
-        theme::ok()
-    } else if out_of_order < 50 {
-        theme::warn()
-    } else {
-        theme::err()
-    };
-
-    let fast_color = if fast_retransmits == 0 {
-        theme::ok()
-    } else if fast_retransmits < 50 {
-        theme::warn()
-    } else {
-        theme::err()
-    };
+    // Color based on counts (higher = more concerning): zero is healthy,
+    // anything below the error threshold a warning.
+    let retrans_color = theme::tier_color(retransmits, 1, 100);
+    let ooo_color = theme::tier_color(out_of_order, 1, 50);
+    let fast_color = theme::tier_color(fast_retransmits, 1, 50);
 
     let lines = vec![
         Line::from(vec![
@@ -668,11 +625,10 @@ fn draw_tcp_states(f: &mut Frame, state_counts: &[usize; TCP_STATE_NAMES.len()],
         .filter_map(|(&name, &count)| (count > 0).then_some((name, count)))
         .collect();
 
-    let inner = section_header(f, area, graph_title(" Observed TCP States"));
+    let inner = section_header(f, area, section_title(" Observed TCP States"));
 
     if states.is_empty() {
-        let text = Paragraph::new("No TCP connections").style(theme::fg(theme::muted()));
-        f.render_widget(text, inner);
+        draw_placeholder(f, inner, "No TCP connections");
         return;
     }
 

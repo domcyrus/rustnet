@@ -15,7 +15,7 @@ use ratatui::{Frame, layout::Rect};
 
 use crate::app::{App, AppStats};
 use crate::network::types::Connection;
-use crate::ui::{ClickableRegions, GroupedRow, UIState};
+use crate::ui::{ClickableRegions, GroupedRow, UIState, state::Motion};
 
 /// Read-only bundle passed to every component's `draw`. Lifetime
 /// matches the borrow scope inside the main loop's `terminal.draw`
@@ -39,6 +39,42 @@ pub struct HandlerContext<'a> {
     pub connections: &'a [Connection],
     pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
     pub click_regions: &'a ClickableRegions,
+}
+
+/// A selection movement requested by a key or scroll event. Pages are
+/// sized from the rows currently visible when the move is applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionMove {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
+}
+
+impl HandlerContext<'_> {
+    /// Move the selection in whichever list is on screen: the grouped
+    /// rows while grouping is enabled and rows exist, the flat connection
+    /// list otherwise.
+    pub fn move_selection(&mut self, mv: SelectionMove) {
+        let page_size = self.ui_state.visible_rows.max(1);
+        let motion = match mv {
+            SelectionMove::Up => Motion::Up,
+            SelectionMove::Down => Motion::Down,
+            SelectionMove::PageUp => Motion::PageUp(page_size),
+            SelectionMove::PageDown => Motion::PageDown(page_size),
+            SelectionMove::First => Motion::First,
+            SelectionMove::Last => Motion::Last,
+        };
+        if self.ui_state.grouping_enabled
+            && let Some(rows) = self.grouped_rows
+        {
+            self.ui_state.move_selection_grouped(rows, motion);
+        } else {
+            self.ui_state.move_selection(self.connections, motion);
+        }
+    }
 }
 
 /// Cross-cutting effects a component can request from the main

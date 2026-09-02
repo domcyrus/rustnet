@@ -159,6 +159,51 @@ pub struct App {
     pub(super) sandbox_info: Arc<RwLock<SandboxReport>>,
 }
 
+/// Build the GeoIP resolver from explicit database paths when any are
+/// configured, otherwise by auto-discovery. Returns `None` when GeoIP is
+/// disabled or no database could be opened; a miss at explicitly configured
+/// paths is logged as a warning, an auto-discovery miss as info.
+fn build_geoip_resolver(config: &Config) -> Option<Arc<GeoIpResolver>> {
+    if config.disable_geoip {
+        info!("GeoIP resolution disabled by configuration");
+        return None;
+    }
+    let explicit = config.geoip_country_path.is_some()
+        || config.geoip_asn_path.is_some()
+        || config.geoip_city_path.is_some();
+    let resolver = if explicit {
+        // Use explicit paths from config
+        GeoIpResolver::new(GeoIpConfig {
+            country_db_path: config
+                .geoip_country_path
+                .as_ref()
+                .map(std::path::PathBuf::from),
+            asn_db_path: config.geoip_asn_path.as_ref().map(std::path::PathBuf::from),
+            city_db_path: config
+                .geoip_city_path
+                .as_ref()
+                .map(std::path::PathBuf::from),
+            ..Default::default()
+        })
+    } else {
+        GeoIpResolver::with_auto_discovery()
+    };
+    if resolver.is_available() {
+        let (has_country, has_asn, has_city) = resolver.get_status();
+        info!(
+            "GeoIP resolution enabled - Country: {}, ASN: {}, City: {}",
+            has_country, has_asn, has_city
+        );
+        Some(Arc::new(resolver))
+    } else if explicit {
+        warn!("GeoIP databases not found at specified paths - location display disabled");
+        None
+    } else {
+        info!("GeoIP databases not found - location display disabled");
+        None
+    }
+}
+
 impl App {
     /// Create an application instance with default output handles. Tests only:
     /// production goes through [`new_with_output_handles`](Self::new_with_output_handles).
@@ -223,54 +268,7 @@ impl App {
             None
         };
 
-        // Initialize GeoIP resolver
-        let geoip_resolver = if config.disable_geoip {
-            info!("GeoIP resolution disabled by configuration");
-            None
-        } else if config.geoip_country_path.is_some()
-            || config.geoip_asn_path.is_some()
-            || config.geoip_city_path.is_some()
-        {
-            // Use explicit paths from config
-            let geoip_config = GeoIpConfig {
-                country_db_path: config
-                    .geoip_country_path
-                    .as_ref()
-                    .map(std::path::PathBuf::from),
-                asn_db_path: config.geoip_asn_path.as_ref().map(std::path::PathBuf::from),
-                city_db_path: config
-                    .geoip_city_path
-                    .as_ref()
-                    .map(std::path::PathBuf::from),
-                ..Default::default()
-            };
-            let resolver = GeoIpResolver::new(geoip_config);
-            if resolver.is_available() {
-                let (has_country, has_asn, has_city) = resolver.get_status();
-                info!(
-                    "GeoIP resolution enabled - Country: {}, ASN: {}, City: {}",
-                    has_country, has_asn, has_city
-                );
-                Some(Arc::new(resolver))
-            } else {
-                warn!("GeoIP databases not found at specified paths - location display disabled");
-                None
-            }
-        } else {
-            // Auto-discover databases
-            let resolver = GeoIpResolver::with_auto_discovery();
-            if resolver.is_available() {
-                let (has_country, has_asn, has_city) = resolver.get_status();
-                info!(
-                    "GeoIP resolution enabled - Country: {}, ASN: {}, City: {}",
-                    has_country, has_asn, has_city
-                );
-                Some(Arc::new(resolver))
-            } else {
-                info!("GeoIP databases not found - location display disabled");
-                None
-            }
-        };
+        let geoip_resolver = build_geoip_resolver(&config);
 
         Ok(Self {
             config,
@@ -501,56 +499,7 @@ impl App {
 
     /// Get application statistics
     pub fn get_stats(&self) -> AppStats {
-        AppStats {
-            packets_processed: AtomicU64::new(self.stats.packets_processed.load(Ordering::Relaxed)),
-            packets_dropped: AtomicU64::new(self.stats.packets_dropped.load(Ordering::Relaxed)),
-            connections_tracked: AtomicU64::new(
-                self.stats.connections_tracked.load(Ordering::Relaxed),
-            ),
-            total_connections_created: AtomicU64::new(
-                self.stats.total_connections_created.load(Ordering::Relaxed),
-            ),
-            total_connections_archived: AtomicU64::new(
-                self.stats
-                    .total_connections_archived
-                    .load(Ordering::Relaxed),
-            ),
-            last_update: RwLock::new(*self.stats.last_update.read().unwrap()),
-            total_tcp_retransmits: AtomicU64::new(
-                self.stats.total_tcp_retransmits.load(Ordering::Relaxed),
-            ),
-            total_tcp_out_of_order: AtomicU64::new(
-                self.stats.total_tcp_out_of_order.load(Ordering::Relaxed),
-            ),
-            total_tcp_fast_retransmits: AtomicU64::new(
-                self.stats
-                    .total_tcp_fast_retransmits
-                    .load(Ordering::Relaxed),
-            ),
-            pcap_records_written: AtomicU64::new(
-                self.stats.pcap_records_written.load(Ordering::Relaxed),
-            ),
-            pcapng_records_queued: AtomicU64::new(
-                self.stats.pcapng_records_queued.load(Ordering::Relaxed),
-            ),
-            pcapng_records_written: AtomicU64::new(
-                self.stats.pcapng_records_written.load(Ordering::Relaxed),
-            ),
-            pcapng_records_annotated: AtomicU64::new(
-                self.stats.pcapng_records_annotated.load(Ordering::Relaxed),
-            ),
-            pcapng_records_unannotated: AtomicU64::new(
-                self.stats
-                    .pcapng_records_unannotated
-                    .load(Ordering::Relaxed),
-            ),
-            pcapng_records_dropped: AtomicU64::new(
-                self.stats.pcapng_records_dropped.load(Ordering::Relaxed),
-            ),
-            pcapng_export_errors: AtomicU64::new(
-                self.stats.pcapng_export_errors.load(Ordering::Relaxed),
-            ),
-        }
+        self.stats.snapshot()
     }
 
     /// Whether annotated PCAPNG export is active for this run.
@@ -819,37 +768,7 @@ impl App {
         drop(interface_history);
 
         // Reset statistics counters
-        self.stats.packets_processed.store(0, Ordering::Relaxed);
-        self.stats.packets_dropped.store(0, Ordering::Relaxed);
-        self.stats.connections_tracked.store(0, Ordering::Relaxed);
-        self.stats
-            .total_connections_created
-            .store(0, Ordering::Relaxed);
-        self.stats
-            .total_connections_archived
-            .store(0, Ordering::Relaxed);
-        self.stats.total_tcp_retransmits.store(0, Ordering::Relaxed);
-        self.stats
-            .total_tcp_out_of_order
-            .store(0, Ordering::Relaxed);
-        self.stats
-            .total_tcp_fast_retransmits
-            .store(0, Ordering::Relaxed);
-        self.stats.pcap_records_written.store(0, Ordering::Relaxed);
-        self.stats.pcapng_records_queued.store(0, Ordering::Relaxed);
-        self.stats
-            .pcapng_records_written
-            .store(0, Ordering::Relaxed);
-        self.stats
-            .pcapng_records_annotated
-            .store(0, Ordering::Relaxed);
-        self.stats
-            .pcapng_records_unannotated
-            .store(0, Ordering::Relaxed);
-        self.stats
-            .pcapng_records_dropped
-            .store(0, Ordering::Relaxed);
-        self.stats.pcapng_export_errors.store(0, Ordering::Relaxed);
+        self.stats.reset_counters();
 
         info!("All connections cleared successfully");
     }
@@ -911,13 +830,7 @@ mod activity_reset_tests {
 
     #[test]
     fn clear_resets_both_activity_coverage_windows() {
-        let app = App::new(Config {
-            enable_dpi: false,
-            resolve_dns: false,
-            disable_geoip: true,
-            ..Config::default()
-        })
-        .unwrap();
+        let app = crate::ui::test_support::test_app();
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         let mut conn = Connection::new(
             Protocol::Tcp,

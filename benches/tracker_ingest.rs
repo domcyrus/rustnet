@@ -1,42 +1,9 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use rustnet_monitor::network::parser::{ParsedPacket, TcpFlags, TcpHeaderInfo};
+use rustnet_monitor::network::parser::ParsedPacket;
 use rustnet_monitor::network::tracker::ConnectionTracker;
-use rustnet_monitor::network::types::*;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::SystemTime;
 
-/// Build a synthetic TCP data packet for one of `n_connections` flows.
-///
-/// Flows are distinguished by client port so the workload exercises the
-/// tracker's key hashing and DashMap sharding the same way live traffic does.
-fn make_packet(flow: u16, seq: u32) -> ParsedPacket {
-    let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 10000 + flow);
-    let remote_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
-    let mut packet = ParsedPacket::new(
-        Protocol::Tcp,
-        local_addr,
-        remote_addr,
-        ProtocolState::Tcp(TcpState::Established),
-        true,
-        1400,
-        None,
-        None,
-    );
-    packet.tcp_header = Some(TcpHeaderInfo {
-        seq,
-        ack: seq.wrapping_add(1),
-        window: 65535,
-        flags: TcpFlags {
-            syn: false,
-            ack: true,
-            fin: false,
-            rst: false,
-        },
-        payload_len: 1400,
-        window_scale: None,
-    });
-    packet
-}
+mod common;
 
 /// Interleaved packet stream: `flows` connections sending `packets_per_flow`
 /// packets round-robin, mimicking concurrent flows rather than one flow at a
@@ -45,7 +12,7 @@ fn make_workload(flows: u16, packets_per_flow: u32) -> Vec<ParsedPacket> {
     let mut packets = Vec::with_capacity(flows as usize * packets_per_flow as usize);
     for round in 0..packets_per_flow {
         for flow in 0..flows {
-            packets.push(make_packet(flow, round * 1460));
+            packets.push(common::make_packet(10000 + flow, round * 1460));
         }
     }
     packets

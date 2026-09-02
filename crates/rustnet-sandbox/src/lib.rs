@@ -191,6 +191,94 @@ impl SandboxReport {
             ..Self::default()
         }
     }
+
+    /// Report for a backend whose only enforcement was the root uid drop
+    /// (no platform sandbox available or compiled in): partially enforced
+    /// when the drop happened, not applied otherwise.
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
+    pub(crate) fn uid_drop_only(banner: &str, outcome: &UidDropOutcome) -> Self {
+        Self {
+            status: if outcome.dropped {
+                SandboxStatus::PartiallyEnforced
+            } else {
+                SandboxStatus::NotApplied
+            },
+            message: outcome.message_after(banner),
+            uid_dropped: outcome.dropped,
+            ..Self::default()
+        }
+    }
+}
+
+/// Outcome of the root uid drop step shared by the Linux, macOS and FreeBSD
+/// backends (see [`drop_root_step`]).
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+pub(crate) struct UidDropOutcome {
+    /// Whether the root uid/gid were dropped.
+    pub(crate) dropped: bool,
+    /// Human-readable summary of the step (success or non-strict failure);
+    /// `None` when no drop was requested.
+    pub(crate) message: Option<String>,
+}
+
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
+impl UidDropOutcome {
+    /// `banner`, followed by the step summary as a `; `-separated suffix when
+    /// a drop was attempted. (Linux folds the summary into its own message
+    /// list instead.)
+    pub(crate) fn message_after(&self, banner: &str) -> String {
+        match &self.message {
+            Some(message) => format!("{}; {}", banner, message),
+            None => banner.to_string(),
+        }
+    }
+}
+
+/// Drop the root uid/gid when `config.drop_uid` is set.
+///
+/// Capture fds opened during initialization remain valid across the drop.
+/// `attribution_note` names the platform's process-attribution fallback that
+/// is limited to the target user's processes afterwards; it is appended to
+/// the success log line. In [`SandboxMode::Strict`] a failed drop is an
+/// error; otherwise it is logged and reported in the outcome message.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+pub(crate) fn drop_root_step(
+    config: &SandboxConfig,
+    attribution_note: &str,
+) -> anyhow::Result<UidDropOutcome> {
+    let Some(target) = config.drop_uid else {
+        return Ok(UidDropOutcome {
+            dropped: false,
+            message: None,
+        });
+    };
+    match privdrop::drop_to(target) {
+        Ok(()) => {
+            log::info!(
+                "Dropped root privileges to uid {} gid {} (verified); {}",
+                target.uid,
+                target.gid,
+                attribution_note
+            );
+            Ok(UidDropOutcome {
+                dropped: true,
+                message: Some(format!(
+                    "root dropped to uid {} gid {}",
+                    target.uid, target.gid
+                )),
+            })
+        }
+        Err(e) => {
+            if config.mode == SandboxMode::Strict {
+                return Err(e.context("Strict mode requires the root uid drop to succeed"));
+            }
+            log::warn!("Failed to drop root uid/gid: {}", e);
+            Ok(UidDropOutcome {
+                dropped: false,
+                message: Some(format!("root uid drop failed: {}", e)),
+            })
+        }
+    }
 }
 
 /// Apply the sandbox with the given configuration.

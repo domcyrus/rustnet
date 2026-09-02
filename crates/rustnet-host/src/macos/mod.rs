@@ -86,15 +86,10 @@ pub fn create_process_lookup(use_pktap: bool) -> Result<Box<dyn ProcessLookup>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustnet_core::network::types::{Protocol, ProtocolState, TcpState};
+    use crate::test_support::tcp_connection;
 
     fn connection() -> Connection {
-        Connection::new(
-            Protocol::Tcp,
-            "127.0.0.1:5000".parse().unwrap(),
-            "1.1.1.1:443".parse().unwrap(),
-            ProtocolState::Tcp(TcpState::Established),
-        )
+        tcp_connection("127.0.0.1:5000", "1.1.1.1:443")
     }
 
     #[test]

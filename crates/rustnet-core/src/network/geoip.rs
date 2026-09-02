@@ -3,6 +3,7 @@
 //! Provides GeoIP lookups using MaxMind databases with an LRU cache
 //! to avoid repeated lookups for the same IP address.
 
+use crate::network::bogon::{Scope, classify};
 use dashmap::DashMap;
 use log::{debug, info, warn};
 use maxminddb::{Reader, geoip2};
@@ -93,53 +94,9 @@ pub struct GeoIpResolver {
 impl GeoIpResolver {
     /// Create a new GeoIP resolver with the given configuration
     pub fn new(config: GeoIpConfig) -> Self {
-        let country_reader =
-            config
-                .country_db_path
-                .as_ref()
-                .and_then(|path| match Reader::open_readfile(path) {
-                    Ok(reader) => {
-                        info!("Loaded GeoIP Country database from: {:?}", path);
-                        Some(reader)
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Failed to load GeoIP Country database from {:?}: {}",
-                            path, e
-                        );
-                        None
-                    }
-                });
-
-        let asn_reader =
-            config
-                .asn_db_path
-                .as_ref()
-                .and_then(|path| match Reader::open_readfile(path) {
-                    Ok(reader) => {
-                        info!("Loaded GeoIP ASN database from: {:?}", path);
-                        Some(reader)
-                    }
-                    Err(e) => {
-                        warn!("Failed to load GeoIP ASN database from {:?}: {}", path, e);
-                        None
-                    }
-                });
-
-        let city_reader =
-            config
-                .city_db_path
-                .as_ref()
-                .and_then(|path| match Reader::open_readfile(path) {
-                    Ok(reader) => {
-                        info!("Loaded GeoIP City database from: {:?}", path);
-                        Some(reader)
-                    }
-                    Err(e) => {
-                        warn!("Failed to load GeoIP City database from {:?}: {}", path, e);
-                        None
-                    }
-                });
+        let country_reader = Self::open_reader(config.country_db_path.as_ref(), "Country");
+        let asn_reader = Self::open_reader(config.asn_db_path.as_ref(), "ASN");
+        let city_reader = Self::open_reader(config.city_db_path.as_ref(), "City");
 
         Self {
             country_reader,
@@ -147,6 +104,26 @@ impl GeoIpResolver {
             city_reader,
             cache: Arc::new(DashMap::new()),
             config,
+        }
+    }
+
+    /// Open a MaxMind database at `path`, logging success or failure.
+    ///
+    /// Returns `None` when no path is configured or the database cannot be opened.
+    fn open_reader(path: Option<&PathBuf>, label: &str) -> Option<Reader<Vec<u8>>> {
+        let path = path?;
+        match Reader::open_readfile(path) {
+            Ok(reader) => {
+                info!("Loaded GeoIP {} database from: {:?}", label, path);
+                Some(reader)
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to load GeoIP {} database from {:?}: {}",
+                    label, path, e
+                );
+                None
+            }
         }
     }
 
@@ -158,35 +135,23 @@ impl GeoIpResolver {
         let search_paths = Self::get_search_paths();
 
         for base_path in search_paths {
-            // Try Country database
-            if config.country_db_path.is_none() {
-                let country_path = base_path.join("GeoLite2-Country.mmdb");
-                if country_path.exists() {
-                    config.country_db_path = Some(country_path);
-                }
-            }
+            let mut slots = [
+                ("GeoLite2-Country.mmdb", &mut config.country_db_path),
+                ("GeoLite2-ASN.mmdb", &mut config.asn_db_path),
+                ("GeoLite2-City.mmdb", &mut config.city_db_path),
+            ];
 
-            // Try ASN database
-            if config.asn_db_path.is_none() {
-                let asn_path = base_path.join("GeoLite2-ASN.mmdb");
-                if asn_path.exists() {
-                    config.asn_db_path = Some(asn_path);
-                }
-            }
-
-            // Try City database
-            if config.city_db_path.is_none() {
-                let city_path = base_path.join("GeoLite2-City.mmdb");
-                if city_path.exists() {
-                    config.city_db_path = Some(city_path);
+            for (file_name, slot) in slots.iter_mut() {
+                if slot.is_none() {
+                    let path = base_path.join(file_name);
+                    if path.exists() {
+                        **slot = Some(path);
+                    }
                 }
             }
 
             // Stop if all three found
-            if config.country_db_path.is_some()
-                && config.asn_db_path.is_some()
-                && config.city_db_path.is_some()
-            {
+            if slots.iter().all(|(_, slot)| slot.is_some()) {
                 break;
             }
         }
@@ -349,28 +314,12 @@ impl GeoIpResolver {
     }
 }
 
-/// Check if IP is private, local, or reserved
+/// Check if IP is private, local, or reserved.
+///
+/// Only globally routable addresses (and IPv4-mapped IPv6, which MaxMind
+/// handles) are worth a database lookup.
 fn is_private_or_local(ip: &IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_private()
-                || v4.is_loopback()
-                || v4.is_link_local()
-                || v4.is_broadcast()
-                || v4.is_documentation()
-                || v4.is_unspecified()
-                // 100.64.0.0/10 (CGNAT)
-                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 64)
-        }
-        IpAddr::V6(v6) => {
-            v6.is_loopback()
-                || v6.is_unspecified()
-                // Link-local (fe80::/10)
-                || ((v6.segments()[0] & 0xffc0) == 0xfe80)
-                // Unique local (fc00::/7)
-                || ((v6.segments()[0] & 0xfe00) == 0xfc00)
-        }
-    }
+    !matches!(classify(*ip), Scope::Public | Scope::Ipv4Mapped)
 }
 
 #[cfg(test)]

@@ -429,7 +429,7 @@ mod tests {
     }
 
     fn key_of(conn: &Connection) -> ConnectionKey {
-        ConnectionKey::new(conn.protocol, conn.local_addr, conn.remote_addr)
+        ConnectionKey::from_connection(conn)
     }
 
     fn tcp_connection() -> Connection {

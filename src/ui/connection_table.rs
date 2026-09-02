@@ -707,9 +707,9 @@ fn application_cell<'a>(conn: &Connection, width: u16, paint: CellPaint) -> Cell
 
 /// RTT cell: best available TCP, QUIC handshake, or ICMP echo RTT,
 /// right-aligned and colored by the same thresholds as the Details card
-/// (green < 50ms, yellow < 150ms, red above). ICMP echo flows use their
-/// latest paired request/reply RTT; protocols without a timing signal show
-/// the placeholder.
+/// (`theme::rtt_color`). ICMP echo flows use their latest paired
+/// request/reply RTT; protocols without a timing signal show the
+/// placeholder.
 fn rtt_cell<'a>(conn: &Connection, paint: CellPaint) -> Cell<'a> {
     let Some(rtt) = conn.current_rtt() else {
         let line = Line::from(NONE_PLACEHOLDER).right_aligned();
@@ -719,14 +719,7 @@ fn rtt_cell<'a>(conn: &Connection, paint: CellPaint) -> Cell<'a> {
     let ms = rtt.as_secs_f64() * 1000.0;
     let text = format_rtt_compact(rtt);
     let line = if paint.colored() {
-        let color = if ms < 50.0 {
-            theme::ok()
-        } else if ms < 150.0 {
-            theme::warn()
-        } else {
-            theme::err()
-        };
-        Line::from(Span::styled(text, paint.style(color)))
+        Line::from(Span::styled(text, paint.style(theme::rtt_color(ms))))
     } else {
         Line::from(text)
     };
@@ -960,6 +953,7 @@ mod tests {
         ApplicationProtocol, Connection, DnsInfo, DnsQueryType, DpiInfo, Protocol, ProtocolState,
         QuicInfo, TcpState,
     };
+    use crate::ui::test_support::local_tcp;
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
     fn ids(columns: &[Column]) -> Vec<ColumnId> {
@@ -1263,6 +1257,8 @@ mod tests {
     fn truncate_with_ellipsis_is_char_safe() {
         assert_eq!(truncate_with_ellipsis("short", 10), "short");
         assert_eq!(truncate_with_ellipsis("exactly-10", 10), "exactly-10");
+        // The ellipsis never floats after a space.
+        assert_eq!(truncate_with_ellipsis("hello world", 7), "hello…");
         assert_eq!(
             truncate_with_ellipsis("0123456789ab", 10),
             "012345678\u{2026}"
@@ -1276,15 +1272,9 @@ mod tests {
 
     #[test]
     fn process_text_formats_name_pid_and_placeholder() {
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            "[::1]:8080".parse().unwrap(),
-            "[::1]:443".parse().unwrap(),
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = local_tcp(8080, "firefox");
 
         // name + pid -> "name (pid)"
-        conn.process_name = Some("firefox".to_string());
         conn.pid = Some(1234);
         assert_eq!(process_text(&conn), "firefox (1234)");
 
@@ -1301,19 +1291,9 @@ mod tests {
         assert_eq!(process_text(&conn), format!("{NONE_PLACEHOLDER} (42)"));
     }
 
-    fn tcp_conn(state: TcpState) -> Connection {
-        Connection::new(
-            Protocol::Tcp,
-            "192.168.1.10:51234".parse().unwrap(),
-            "140.82.121.4:443".parse().unwrap(),
-            ProtocolState::Tcp(state),
-        )
-    }
-
     #[test]
     fn process_style_falls_back_without_identity_hues() {
-        let mut conn = tcp_conn(TcpState::Established);
-        conn.process_name = Some("firefox".to_string());
+        let mut conn = local_tcp(51234, "firefox");
 
         // The historic whole-row paint wins over any per-cell color.
         assert_eq!(process_style(&conn, CellPaint::PLAIN), Style::default());
@@ -1332,7 +1312,7 @@ mod tests {
     fn fading_rows_keep_per_cell_colors() {
         // A connection deep into its staleness window: no whole-row
         // override, cells stay colored and carry the fade instead.
-        let mut conn = tcp_conn(TcpState::Established);
+        let mut conn = local_tcp(51234, "firefox");
         conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
         let (row_override, paint) = staleness_style(&conn, false);
         assert_eq!(row_override, None);
@@ -1356,7 +1336,7 @@ mod tests {
 
     #[test]
     fn signal_columns_never_fade_on_a_stale_row() {
-        let mut conn = tcp_conn(TcpState::Established);
+        let mut conn = local_tcp(51234, "firefox");
         conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
         let (_, paint) = staleness_style(&conn, false);
         assert!(paint.fade > 0.0);
@@ -1379,7 +1359,7 @@ mod tests {
         // A stale grouped child: the PID span is raw (no foreground), so
         // the staircase steps it down to the muted tier like any other
         // context cell instead of leaving it at full terminal foreground.
-        let mut conn = tcp_conn(TcpState::Established);
+        let mut conn = local_tcp(51234, "firefox");
         conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
         let (_, paint) = staleness_style(&conn, false);
         assert!(paint.fade > 0.5, "fade was {}", paint.fade);
@@ -1409,7 +1389,7 @@ mod tests {
     #[test]
     fn stale_stripe_marks_only_idle_stale_live_rows() {
         // Fresh: blank gutter.
-        let mut conn = tcp_conn(TcpState::Established);
+        let mut conn = local_tcp(51234, "firefox");
         assert_eq!(stale_stripe(&conn), Span::raw(" "));
 
         // Stale and idle: the stripe in the countdown's own color.
@@ -1430,7 +1410,7 @@ mod tests {
     #[test]
     fn countdown_only_for_idle_stale_live_rows() {
         // Fresh: no countdown.
-        let mut conn = tcp_conn(TcpState::Established);
+        let mut conn = local_tcp(51234, "firefox");
         assert_eq!(countdown_text(&conn), None);
 
         // Stale (300s timeout, 290s idle): counts down the ~10s left, deep

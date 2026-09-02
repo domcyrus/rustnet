@@ -92,9 +92,7 @@ pub(super) fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsI
         if let Some(sni) = match_sni_extension_at(payload, offset, false, SniScanStrictness::Strict)
         {
             debug!("QUIC: Found SNI directly in packet: {}", sni);
-            let mut tls_info = TlsInfo::new();
-            tls_info.sni = Some(sni);
-            return Some(tls_info);
+            return Some(TlsInfo::with_sni(sni));
         }
 
         // Look for ALPN extension pattern (0x00 0x10 for ALPN type)

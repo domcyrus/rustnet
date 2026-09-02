@@ -112,10 +112,8 @@ fn try_extract_greedy_from_reassembler(reassembler: &CryptoFrameReassembler) -> 
     // Try greedy extraction on fragments
     for fragment_data in reassembler.get_fragments().values() {
         if let Some(sni) = scan_for_sni_extension(fragment_data, true, SniScanStrictness::Lenient) {
-            let mut tls_info = TlsInfo::new();
-            tls_info.sni = Some(sni);
             debug!("QUIC: Greedy extraction succeeded from fragment");
-            return Some(tls_info);
+            return Some(TlsInfo::with_sni(sni));
         }
     }
 
@@ -123,10 +121,8 @@ fn try_extract_greedy_from_reassembler(reassembler: &CryptoFrameReassembler) -> 
     if let Some(contiguous) = reassembler.get_contiguous_data()
         && let Some(sni) = scan_for_sni_extension(&contiguous, true, SniScanStrictness::Lenient)
     {
-        let mut tls_info = TlsInfo::new();
-        tls_info.sni = Some(sni);
         debug!("QUIC: Greedy extraction succeeded from contiguous data");
-        return Some(tls_info);
+        return Some(TlsInfo::with_sni(sni));
     }
 
     None
@@ -157,19 +153,14 @@ pub fn try_extract_tls_from_reassembler(
     }
 
     // Strategy 1: Try to parse contiguous data
-    if let Some(tls_info) = try_extract_from_contiguous(reassembler, allow_partial) {
-        if is_complete_sni(&tls_info.sni) {
-            reassembler.set_complete_tls_info(tls_info.clone());
-        }
-        return Some(tls_info);
-    }
-
     // Strategy 2: Try parsing individual fragments with TLS headers
-    if let Some(tls_info) = try_extract_from_fragments(reassembler, allow_partial) {
-        if is_complete_sni(&tls_info.sni) {
-            reassembler.set_complete_tls_info(tls_info.clone());
+    for strategy in [try_extract_from_contiguous, try_extract_from_fragments] {
+        if let Some(tls_info) = strategy(reassembler, allow_partial) {
+            if is_complete_sni(&tls_info.sni) {
+                reassembler.set_complete_tls_info(tls_info.clone());
+            }
+            return Some(tls_info);
         }
-        return Some(tls_info);
     }
 
     // Strategy 3: Try fragment reconstruction (requires reasonable data amount)
@@ -180,9 +171,8 @@ pub fn try_extract_tls_from_reassembler(
             total_fragment_size
         );
         if let Some(sni) = try_reconstruct_sni_from_fragments(reassembler) {
-            let mut tls_info = TlsInfo::new();
             let sni_is_complete = !is_partial_sni(&sni);
-            tls_info.sni = Some(sni);
+            let tls_info = TlsInfo::with_sni(sni);
             debug!(
                 "QUIC: Reconstructed SNI from fragmented data (complete={})",
                 sni_is_complete

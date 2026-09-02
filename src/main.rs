@@ -244,30 +244,14 @@ fn main() -> Result<()> {
     // applying the sandbox, which drops CAP_BPF and CAP_PERFMON.
     // Without this synchronization, the sandbox could drop these capabilities
     // before the background thread has finished loading eBPF programs.
-    match process_ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
-        Ok(()) => info!("Process detection initialized, safe to apply sandbox"),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            warn!("Timed out waiting for process detection init, applying sandbox anyway");
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            warn!("Process detection thread exited early, applying sandbox anyway");
-        }
-    }
+    wait_for_init(&process_ready_rx, "process detection");
 
     // Also wait for the capture thread to finish opening the capture device.
     // The open runs on a background thread and needs the startup privileges;
     // without this synchronization the uid drop (Linux/FreeBSD) or sandbox
     // could win the race and the open would fail with EPERM, leaving the UI
     // running with no traffic.
-    match capture_ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
-        Ok(()) => info!("Packet capture initialized, safe to apply sandbox"),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            warn!("Timed out waiting for packet capture init, applying sandbox anyway");
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            warn!("Capture thread exited early, applying sandbox anyway");
-        }
-    }
+    wait_for_init(&capture_ready_rx, "packet capture");
 
     // Apply the sandbox (rustnet-sandbox crate: Landlock + capability drops
     // on Linux, uid drop + Seatbelt on macOS, restricted token + job object
@@ -447,23 +431,9 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
     let log_file_path = log_dir.join(format!("rustnet_{}.log", timestamp));
 
-    // On Unix, open with O_NOFOLLOW so a symlink pre-planted at the (predictable,
-    // timestamped) path cannot redirect the write, and set the 0o600 mode at
-    // creation time to avoid a create-then-chmod window where the file is briefly
-    // world-readable.
-    #[cfg(unix)]
-    let log_file = {
-        use std::os::unix::fs::OpenOptionsExt;
-        fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .mode(0o600)
-            .open(&log_file_path)?
-    };
-    #[cfg(not(unix))]
-    let log_file = fs::File::create(&log_file_path)?;
+    // The path is predictable (timestamped), so it gets the same
+    // symlink-refusing, private-mode open as the other output files.
+    let log_file = open_private(&log_file_path, false)?;
 
     // Enable the `target` field on every log line so each entry carries
     // the originating module (e.g. `network::dpi::dns`). Combined with
@@ -491,6 +461,24 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     Ok(())
 }
 
+/// Wait up to 10 s for a background subsystem to signal that its
+/// privileged setup is done, so the sandbox can be applied. A timeout or an
+/// early thread exit is logged but does not block startup.
+fn wait_for_init(ready_rx: &std::sync::mpsc::Receiver<()>, what: &str) {
+    match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(()) => info!("{} initialized, safe to apply sandbox", what),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            warn!(
+                "Timed out waiting for {} init, applying sandbox anyway",
+                what
+            );
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            warn!("{} thread exited early, applying sandbox anyway", what);
+        }
+    }
+}
+
 /// Hand an output file over to the uid-drop target.
 ///
 /// Retained descriptors remain usable regardless of path traversal, but the
@@ -513,24 +501,31 @@ fn chown_to_uid_drop_target(
     }
 }
 
-fn precreate_private_file(path: &str) -> io::Result<fs::File> {
+/// Open a private output file, either truncating or appending.
+///
+/// On Unix, opens with O_NOFOLLOW so a symlink pre-planted at a predictable
+/// path cannot redirect the write, and sets the 0o600 mode at creation time
+/// to avoid a create-then-chmod window where the file is briefly
+/// world-readable.
+fn open_private(path: impl AsRef<Path>, append: bool) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(true);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-
-        fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .mode(0o600)
-            .open(path)
+        options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
     }
+    options.open(path)
+}
 
-    #[cfg(not(unix))]
-    {
-        fs::File::create(path)
-    }
+/// Create (or truncate) a private output file before privileges are reduced.
+fn precreate_private_file(path: &str) -> io::Result<fs::File> {
+    open_private(path, false)
 }
 
 /// Open an append-only private output before privileges are reduced.
@@ -538,61 +533,28 @@ fn precreate_private_file(path: &str) -> io::Result<fs::File> {
 /// Unlike [`precreate_private_file`], this preserves existing contents because
 /// `--json-log` has append semantics.
 fn open_private_append_file(path: &str) -> io::Result<fs::File> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .mode(0o600)
-            .open(path)
-    }
-
-    #[cfg(not(unix))]
-    {
-        fs::OpenOptions::new().create(true).append(true).open(path)
-    }
+    open_private(path, true)
 }
+
+#[cfg(test)]
+#[path = "test_support/scratch_dir.rs"]
+mod scratch_dir;
 
 #[cfg(all(test, unix))]
 mod output_file_tests {
     use super::open_private_append_file;
+    use super::scratch_dir::ScratchDir;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
 
-    struct ScratchDir(PathBuf);
-
-    impl ScratchDir {
-        fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "rustnet-output-test-{}-{}",
-                std::process::id(),
-                tag
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            ScratchDir(dir)
-        }
-
-        fn path(&self, name: &str) -> PathBuf {
-            self.0.join(name)
-        }
-    }
-
-    impl Drop for ScratchDir {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+    fn scratch(tag: &str) -> ScratchDir {
+        ScratchDir::new("output", tag)
     }
 
     #[test]
     fn creates_file_with_0600_permissions() {
-        let dir = ScratchDir::new("perms");
-        let path = dir.path("events.log");
+        let dir = scratch("perms");
+        let path = dir.join("events.log");
 
         let file =
             open_private_append_file(path.to_str().unwrap()).expect("fresh open should succeed");
@@ -602,8 +564,8 @@ mod output_file_tests {
 
     #[test]
     fn appends_rather_than_truncates() {
-        let dir = ScratchDir::new("append");
-        let path = dir.path("events.log");
+        let dir = scratch("append");
+        let path = dir.join("events.log");
         let path = path.to_str().unwrap();
 
         writeln!(open_private_append_file(path).unwrap(), "line1").unwrap();
@@ -614,23 +576,23 @@ mod output_file_tests {
 
     #[test]
     fn retained_descriptor_survives_inaccessible_parent() {
-        let dir = ScratchDir::new("retained");
-        let path = dir.path("events.log");
+        let dir = scratch("retained");
+        let path = dir.join("events.log");
         let mut file = open_private_append_file(path.to_str().unwrap()).unwrap();
 
-        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
         writeln!(file, "still writable").unwrap();
         file.sync_all().unwrap();
-        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
 
         assert_eq!(std::fs::read_to_string(path).unwrap(), "still writable\n");
     }
 
     #[test]
     fn refuses_symlinked_path() {
-        let dir = ScratchDir::new("symlink");
-        let target = dir.path("real_target.log");
-        let link = dir.path("evil.log");
+        let dir = scratch("symlink");
+        let target = dir.join("real_target.log");
+        let link = dir.join("evil.log");
         std::fs::write(&target, b"").unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
 

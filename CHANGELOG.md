@@ -35,8 +35,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Contextual Help Overlay**: Help now opens above the active tab and only
   shows controls and concepts relevant to that view. The tab bar now contains
   the five application views, with direct shortcuts `1` through `5`
+- **Internal Deduplication**: duplicated helpers, fixtures, and workflow steps
+  were consolidated across the workspace, removing about 2,000 lines with no
+  intended change in behaviour. Small visible differences: truncated names in
+  the connection table, Activity tab, and filter chip no longer leave a space
+  before the ellipsis, GeoIP lookups also skip multicast and reserved
+  addresses, hostnames stuck in a pending DNS state are retried after 30
+  seconds, a connection superseded by a new SYN is archived with its cached
+  rates zeroed like an expired one, the sandbox report uses one wording for a
+  failed root uid drop on every platform, and the release workflow no longer
+  rebuilds the aarch64 and Android static binaries in a second job
 
 ### Fixed
+- **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now
+  show as SYN received instead of an unknown state
 
 - **Bogus "unknown" Process Group on Linux**: a process that exited while
   RustNet scanned `/proc` was recorded under the literal name `unknown`, which

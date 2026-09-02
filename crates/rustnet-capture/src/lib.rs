@@ -71,6 +71,46 @@ impl Default for CaptureConfig {
     }
 }
 
+/// Interface name prefixes that are never picked automatically: Apple's `ap`
+/// and `awdl` (Wireless Direct) interfaces, `llw` (low latency WLAN),
+/// bridges and VM host adapters (`vmnet`). TUN/TAP interfaces (`utun`,
+/// `tun`, `tap`) are supported and deliberately not listed.
+const EXCLUDED_NAME_PREFIXES: [&str; 5] = ["ap", "awdl", "llw", "bridge", "vmnet"];
+
+/// Description markers (lower-case) that mark a virtual adapter in the
+/// first selection pass.
+const STRICT_VIRTUAL_MARKERS: [&str; 3] = ["hyper-v", "vmware", "virtualbox"];
+
+/// Broader marker set for the last-resort selection pass.
+const LOOSE_VIRTUAL_MARKERS: [&str; 5] = ["hyper-v", "virtual", "vmware", "virtualbox", "loopback"];
+
+/// Whether the device has a routable IPv4 address. IPv6-only devices are
+/// skipped for now.
+fn has_usable_ipv4(device: &Device) -> bool {
+    device.addresses.iter().any(|addr| match &addr.addr {
+        std::net::IpAddr::V4(v4) => {
+            !v4.is_link_local() && !v4.is_loopback() && !v4.is_unspecified()
+        }
+        std::net::IpAddr::V6(_) => false,
+    })
+}
+
+fn has_excluded_name_prefix(name: &str) -> bool {
+    EXCLUDED_NAME_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+/// Case-insensitive check of the device description against `markers`.
+fn desc_contains_any(device: &Device, markers: &[&str]) -> bool {
+    let desc_lower = device
+        .desc
+        .as_ref()
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    markers.iter().any(|marker| desc_lower.contains(marker))
+}
+
 /// Find the best active network device
 fn find_best_device() -> Result<Device> {
     let devices = Device::list().map_err(|e| {
@@ -114,31 +154,15 @@ fn find_best_device() -> Result<Device> {
         .iter()
         // First priority: up, running, has a valid IP address, and NOT virtual
         .find(|d| {
-            // Check if it's a virtual/problematic interface
-            let desc_lower = d
-                .desc
-                .as_ref()
-                .map(|s| s.to_lowercase())
-                .unwrap_or_default();
-            let is_virtual = desc_lower.contains("hyper-v")
-                || desc_lower.contains("vmware")
-                || desc_lower.contains("virtualbox");
-
             !d.name.starts_with("lo")
                 // Note: 'any' is excluded here because it's not a real interface
                 // Users can still specify '-i any' explicitly on Linux
                 && d.name != "any"
-                && !is_virtual  // Skip virtual adapters in first priority too
+                // Skip virtual adapters in first priority too
+                && !desc_contains_any(d, &STRICT_VIRTUAL_MARKERS)
                 && d.flags.is_up()
                 && d.flags.is_running()
-                && d.addresses.iter().any(|addr| {
-                    match &addr.addr {
-                        std::net::IpAddr::V4(v4) => {
-                            !v4.is_link_local() && !v4.is_loopback() && !v4.is_unspecified()
-                        }
-                        std::net::IpAddr::V6(_v6) => false, // Skip IPv6 for now
-                    }
-                })
+                && has_usable_ipv4(d)
         })
         // Second priority: common active interface names
         .or_else(|| {
@@ -151,31 +175,15 @@ fn find_best_device() -> Result<Device> {
         // Third priority: any up interface with valid addresses (excluding problematic ones)
         .or_else(|| {
             devices.iter().find(|d| {
-                // Check if it's a virtual/problematic interface
-                let desc_lower = d
-                    .desc
-                    .as_ref()
-                    .map(|s| s.to_lowercase())
-                    .unwrap_or_default();
-                let is_virtual = desc_lower.contains("hyper-v")
-                    || desc_lower.contains("virtual")
-                    || desc_lower.contains("vmware")
-                    || desc_lower.contains("virtualbox")
-                    || desc_lower.contains("loopback");
-
-                !d.name.starts_with("lo") &&
-                !d.name.starts_with("ap") &&     // Skip Apple's ap interfaces
-                !d.name.starts_with("awdl") &&   // Skip Apple Wireless Direct
-                !d.name.starts_with("llw") &&    // Skip Low latency WLAN
-                !d.name.starts_with("bridge") && // Skip bridges
-                // TUN/TAP interfaces now supported - removed utun/tun/tap exclusion
-                !d.name.starts_with("vmnet") &&  // Skip VM interfaces
-                // Note: 'any' is excluded here because it's not a real interface
-                // Users can still specify '-i any' explicitly on Linux
-                d.name != "any" &&
-                !is_virtual &&                    // Skip virtual adapters
-                d.flags.is_up() &&
-                !d.addresses.is_empty()
+                !d.name.starts_with("lo")
+                    && !has_excluded_name_prefix(&d.name)
+                    // Note: 'any' is excluded here because it's not a real interface
+                    // Users can still specify '-i any' explicitly on Linux
+                    && d.name != "any"
+                    // Skip virtual adapters
+                    && !desc_contains_any(d, &LOOSE_VIRTUAL_MARKERS)
+                    && d.flags.is_up()
+                    && !d.addresses.is_empty()
             })
         })
         .cloned();
@@ -505,23 +513,11 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                     );
 
                     // Check if the default device is actually active
-                    let has_valid_ip = device.addresses.iter().any(|addr| {
-                        match &addr.addr {
-                            std::net::IpAddr::V4(v4) => {
-                                !v4.is_link_local() && !v4.is_loopback() && !v4.is_unspecified()
-                            }
-                            std::net::IpAddr::V6(_v6) => false, // Skip IPv6 for now
-                        }
-                    });
+                    let has_valid_ip = has_usable_ipv4(&device);
 
                     // Check if it's a problematic interface type
                     // Note: 'any' is excluded on non-Linux platforms where it doesn't work
-                    let is_problematic = device.name.starts_with("ap")
-                        || device.name.starts_with("awdl")
-                        || device.name.starts_with("llw")
-                        || device.name.starts_with("bridge")
-                        // TUN/TAP interfaces now supported - removed utun/tun/tap check
-                        || device.name.starts_with("vmnet")
+                    let is_problematic = has_excluded_name_prefix(&device.name)
                         || (device.name == "any" && !cfg!(target_os = "linux"))
                         || device.flags.is_loopback();
 

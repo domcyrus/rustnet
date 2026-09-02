@@ -13,6 +13,19 @@ pub(super) use tracker_libbpf::LibbpfSocketTracker as EbpfSocketTracker;
 
 use crate::MatchQuality;
 
+/// Size of the kernel's `task_struct.comm` buffer, NUL terminator included.
+pub(super) const TASK_COMM_LEN: usize = 16;
+
+/// Decode a `comm` buffer as the kernel fills it: the bytes before the
+/// first NUL, or the whole buffer when no NUL is present.
+pub(super) fn decode_comm(comm: &[u8]) -> String {
+    let len = comm
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(comm.len());
+    String::from_utf8_lossy(&comm[..len]).into_owned()
+}
+
 /// Process information from eBPF
 #[derive(Debug, Clone)]
 pub(super) struct ProcessInfo {

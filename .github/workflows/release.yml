@@ -18,6 +18,12 @@ name: Release
 # 2. Create a Developer ID Application certificate in your Apple Developer account
 # 3. Create an App Store Connect API key with "Developer" role
 # 4. Export certificate as .p12, encode with: base64 -i certificate.p12 | pbcopy
+#
+# Backfilling assets on an existing release (for example after a static build
+# failed to upload): run this workflow via workflow_dispatch on the release tag
+# with skip_downstream=true. create-release skips creation when the release
+# already exists and re-uploads every build-* artifact with --clobber, so no
+# separate per-target upload workflow is needed.
 
 on:
   push:
@@ -117,262 +123,6 @@ jobs:
             gh release upload ${{ github.ref_name }} "$artifact" --clobber
           done
 
-  # aarch64 static: JS actions don't work in Alpine containers on ARM runners,
-  # so the reusable workflow can't upload artifacts. Build and upload here instead,
-  # where we have contents: write from the workflow-level permissions.
-  upload-arm-static:
-    name: upload-arm-static
-    runs-on: ubuntu-24.04-arm
-    needs: create-release
-    container:
-      image: rust:alpine
-    steps:
-      - name: Checkout repository (ARM workaround)
-        run: |
-          apk add --no-cache git
-          git config --global --add safe.directory /__w/rustnet/rustnet
-          git clone --depth 1 "https://github.com/${{ github.repository }}.git" .
-          # shellcheck disable=SC2193
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            git fetch --depth 1 origin tag "${{ github.ref_name }}"
-            git checkout "${{ github.ref_name }}"
-          fi
-
-      - name: Install dependencies
-        run: |
-          apk add --no-cache \
-            musl-dev libpcap-dev pkgconfig build-base perl \
-            elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
-            clang llvm linux-headers
-          rustup component add rustfmt
-
-      - name: Build static binary
-        env:
-          CFLAGS: "-mno-outline-atomics"
-          CXXFLAGS: "-mno-outline-atomics"
-          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-        run: cargo build --release
-
-      - name: Verify static linking
-        run: |
-          file target/release/rustnet
-          file target/release/rustnet | grep -q "static.* linked" || \
-            (echo "ERROR: Binary is not statically linked" && exit 1)
-
-      - name: Create and upload release archive
-        run: |
-          staging="rustnet-${{ github.ref_name }}-aarch64-unknown-linux-musl"
-          mkdir -p "$staging/assets"
-
-          cp target/release/rustnet "$staging/"
-          cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
-          cp README.md "$staging/"
-          cp LICENSE "$staging/" 2>/dev/null || true
-
-          tar czf "$staging.tar.gz" "$staging"
-
-          apk add --no-cache github-cli
-          gh release upload "${{ github.ref_name }}" "$staging.tar.gz" --clobber
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-  upload-android-static:
-    name: upload-${{ matrix.arch }}-android-static
-    runs-on: ${{ matrix.runner }}
-    needs: create-release
-    container:
-      image: rust:alpine
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
-            artifact: aarch64-linux-android-musl
-          - arch: x86_64
-            runner: ubuntu-latest
-            artifact: x86_64-linux-android-musl
-          - arch: armv7
-            runner: ubuntu-latest
-            artifact: armv7-linux-android-musl
-          - arch: x86
-            runner: ubuntu-latest
-            artifact: i686-linux-android-musl
-
-    steps:
-      # aarch64: JS actions don't work in Alpine containers on ARM runners
-      - name: Checkout repository (aarch64 workaround)
-        if: matrix.arch == 'aarch64'
-        run: |
-          apk add --no-cache git
-          git config --global --add safe.directory /__w/rustnet/rustnet
-          git clone --depth 1 "https://github.com/${{ github.repository }}.git" .
-          # shellcheck disable=SC2193
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            git fetch --depth 1 origin tag "${{ github.ref_name }}"
-            git checkout "${{ github.ref_name }}"
-          fi
-
-      - name: Checkout repository
-        if: matrix.arch != 'aarch64'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install common dependencies
-        run: |
-          apk add --no-cache \
-            musl-dev pkgconfig build-base perl \
-            zlib-dev zlib-static \
-            clang llvm linux-headers github-cli curl
-          rustup component add rustfmt
-
-      # aarch64/x86_64: libpcap-dev provides a native static libpcap.
-      # zstd-static is required because Alpine's libpcap-dev links against zstd.
-      - name: Install libpcap (native)
-        if: matrix.arch == 'aarch64' || matrix.arch == 'x86_64'
-        run: apk add --no-cache libpcap-dev elfutils-dev zstd-dev zstd-static
-
-      # armv7: use zig cc as the cross-compiler (no external toolchain download needed).
-      # zig bundles musl libc for all targets, so no -l:libzstd.a needed.
-      - name: Install cross-compiler and libpcap (armv7)
-        if: matrix.arch == 'armv7'
-        run: |
-          rustup target add armv7-unknown-linux-musleabihf
-          apk add zig flex bison bash
-
-          # zig cc wrapper: cc-rs detects it as clang and passes --target=armv7-*
-          # which zig rejects (zig uses 'arm' not 'armv7'). Filter those args out.
-          # shellcheck disable=SC2016
-          printf '%s\n' \
-            '#!/bin/bash' \
-            'args=()' \
-            'for arg in "$@"; do' \
-            '  case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac' \
-            'done' \
-            'exec zig cc -target arm-linux-musleabihf "${args[@]}"' \
-            > /usr/local/bin/arm-linux-musleabihf-gcc
-          chmod +x /usr/local/bin/arm-linux-musleabihf-gcc
-
-          # libpcap is pinned by version + sha256 (Dependabot does not track
-          # tarballs fetched in run steps, so bump the URL and the hash together).
-          curl -fsSL --retry 3 --retry-delay 5 \
-            -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
-          echo "37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  libpcap.tar.gz" | sha256sum -c -
-          tar xzf libpcap.tar.gz
-          cd libpcap-1.10.5
-          CC=arm-linux-musleabihf-gcc \
-            ./configure --host=arm-linux-musleabihf \
-              --disable-shared --enable-static \
-              --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
-              --prefix=/arm-sysroot
-          make -j"$(nproc)" && make install
-          cd ..
-
-      # x86: use zig cc as the cross-compiler (no external toolchain download needed).
-      # zig bundles musl libc for all targets, so no -l:libzstd.a needed.
-      - name: Install cross-compiler and libpcap (x86/i686)
-        if: matrix.arch == 'x86'
-        run: |
-          rustup target add i686-unknown-linux-musl
-          apk add zig flex bison bash
-
-          # zig cc wrapper: cc-rs passes --target=i686-* which zig doesn't accept;
-          # filter those args and use -target x86-linux-musl instead.
-          # shellcheck disable=SC2016
-          printf '%s\n' \
-            '#!/bin/bash' \
-            'args=()' \
-            'for arg in "$@"; do' \
-            '  case "$arg" in --target=*) ;; -Wl,-melf_i386) ;; *) args+=("$arg") ;; esac' \
-            'done' \
-            'exec zig cc -target x86-linux-musl "${args[@]}"' \
-            > /usr/local/bin/i686-linux-musl-gcc
-          chmod +x /usr/local/bin/i686-linux-musl-gcc
-
-          # libpcap is pinned by version + sha256 (Dependabot does not track
-          # tarballs fetched in run steps, so bump the URL and the hash together).
-          curl -fsSL --retry 3 --retry-delay 5 \
-            -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
-          echo "37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  libpcap.tar.gz" | sha256sum -c -
-          tar xzf libpcap.tar.gz
-          cd libpcap-1.10.5
-          CC=i686-linux-musl-gcc \
-            ./configure --host=i686-linux-musl \
-              --disable-shared --enable-static \
-              --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
-              --prefix=/x86-sysroot
-          make -j"$(nproc)" && make install
-          cd ..
-
-      - name: Build static binary (aarch64)
-        if: matrix.arch == 'aarch64'
-        env:
-          CFLAGS: "-mno-outline-atomics"
-          CXXFLAGS: "-mno-outline-atomics"
-          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-        run: cargo build --release --no-default-features
-
-      - name: Build static binary (x86_64)
-        if: matrix.arch == 'x86_64'
-        env:
-          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-        run: cargo build --release --no-default-features
-
-      - name: Build static binary (armv7)
-        if: matrix.arch == 'armv7'
-        env:
-          # link-self-contained=no: let zig provide musl CRT (avoid duplicate _start
-          # when both Rust's self-contained crt1.o and zig's crt1.o are linked)
-          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
-          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: arm-linux-musleabihf-gcc
-          PKG_CONFIG_PATH: /arm-sysroot/lib/pkgconfig
-          PKG_CONFIG_SYSROOT_DIR: /arm-sysroot
-          PKG_CONFIG_ALLOW_CROSS: "1"
-        run: cargo build --release --target armv7-unknown-linux-musleabihf --no-default-features
-
-      - name: Build static binary (x86/i686)
-        if: matrix.arch == 'x86'
-        env:
-          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
-          CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_LINKER: i686-linux-musl-gcc
-          PKG_CONFIG_PATH: /x86-sysroot/lib/pkgconfig
-          PKG_CONFIG_SYSROOT_DIR: /x86-sysroot
-          PKG_CONFIG_ALLOW_CROSS: "1"
-        run: cargo build --release --target i686-unknown-linux-musl --no-default-features
-
-      - name: Verify static linking
-        run: |
-          BIN="${{ (matrix.arch == 'armv7' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
-          file "$BIN"
-          file "$BIN" | grep -q "static.* linked" || \
-            (echo "ERROR: Binary is not statically linked" && exit 1)
-
-      - name: Create release archive
-        run: |
-          VERSION="${{ github.ref_name }}"
-          ARTIFACT="${{ matrix.artifact }}"
-
-          case "${{ matrix.arch }}" in
-            armv7) BIN="target/armv7-unknown-linux-musleabihf/release/rustnet" ;;
-            x86)   BIN="target/i686-unknown-linux-musl/release/rustnet" ;;
-            *)     BIN="target/release/rustnet" ;;
-          esac
-
-          staging="rustnet-${VERSION}-${ARTIFACT}"
-          mkdir -p "$staging/assets"
-          cp "$BIN" "$staging/rustnet"
-          cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
-          cp README.md "$staging/"
-          cp LICENSE "$staging/" 2>/dev/null || true
-          tar czf "$staging.tar.gz" "$staging"
-
-      - name: Upload to release
-        run: |
-          VERSION="${{ github.ref_name }}"
-          ARCHIVE="rustnet-${VERSION}-${{ matrix.artifact }}.tar.gz"
-          gh release upload "$VERSION" "$ARCHIVE" --repo "${{ github.repository }}" --clobber
-        env:
-          GH_TOKEN: ${{ github.token }}
-
   # Publish the release (un-draft) after all assets are uploaded.
   # This ensures downstream jobs (Homebrew, Chocolatey) can download assets.
   publish-release:
@@ -380,8 +130,6 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - create-release
-      - upload-arm-static
-      - upload-android-static
       - package-installers
       - package-macos
       - package-windows
@@ -500,50 +248,50 @@ jobs:
         run: |
           cargo install cargo-deb cargo-generate-rpm
 
-      - name: Package Debian packages
+      - name: Package Linux installers
         run: |
+          VERSION="${{ github.ref_name }}"
           mkdir -p installers
+
+          # Extract binary and assets from the build archive into the layout
+          # cargo deb --no-build and cargo generate-rpm expect.
+          unpack() {
+            local target="$1"
+            tar -xzf "artifacts/build-$target/rustnet-$VERSION-$target.tar.gz"
+            mkdir -p "target/$target/release"
+            cp "rustnet-$VERSION-$target/rustnet" "target/$target/release/"
+
+            # Ensure services file exists for packaging
+            mkdir -p crates/rustnet-core/assets
+            if [ -f "rustnet-$VERSION-$target/assets/services" ]; then
+              cp "rustnet-$VERSION-$target/assets/services" crates/rustnet-core/assets/
+            fi
+          }
+
+          # Clean up for next iteration
+          cleanup() {
+            local target="$1"
+            rm -rf "rustnet-$VERSION-$target" "target/$target"
+          }
+
           for arch in amd64 arm64 armhf; do
             case "$arch" in
               amd64) target="x86_64-unknown-linux-gnu" ;;
               arm64) target="aarch64-unknown-linux-gnu" ;;
               armhf) target="armv7-unknown-linux-gnueabihf" ;;
             esac
-
-            # Extract binary and assets from artifact
-            tar -xzf "artifacts/build-$target/rustnet-${{ github.ref_name }}-$target.tar.gz"
-            mkdir -p "target/$target/release"
-            cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
-
-            # Ensure services file exists for packaging
-            mkdir -p crates/rustnet-core/assets
-            if [ -f "rustnet-${{ github.ref_name }}-$target/assets/services" ]; then
-              cp "rustnet-${{ github.ref_name }}-$target/assets/services" crates/rustnet-core/assets/
-            fi
+            unpack "$target"
 
             # Create deb package
             cargo deb --no-build --no-strip --target "$target"
             mv "target/$target/debian"/*.deb "installers/Rustnet_LinuxDEB_$arch.deb"
 
-            # Clean up for next iteration
-            rm -rf "rustnet-${{ github.ref_name }}-$target" "target/$target"
+            cleanup "$target"
           done
 
-      - name: Package RPM packages
-        run: |
           for arch in x86_64 aarch64; do
             target="$arch-unknown-linux-gnu"
-
-            # Extract binary and assets from artifact
-            tar -xzf "artifacts/build-$target/rustnet-${{ github.ref_name }}-$target.tar.gz"
-            mkdir -p "target/$target/release"
-            cp "rustnet-${{ github.ref_name }}-$target/rustnet" "target/$target/release/"
-
-            # Ensure services file exists for packaging
-            mkdir -p crates/rustnet-core/assets
-            if [ -f "rustnet-${{ github.ref_name }}-$target/assets/services" ]; then
-              cp "rustnet-${{ github.ref_name }}-$target/assets/services" crates/rustnet-core/assets/
-            fi
+            unpack "$target"
 
             # Fix library linking if needed
             patchelf --replace-needed libpcap.so.0.8 libpcap.so.1 "target/$target/release/rustnet" 2>/dev/null || true
@@ -552,8 +300,7 @@ jobs:
             cargo generate-rpm --target "$target"
             mv "target/$target/generate-rpm"/*.rpm "installers/Rustnet_LinuxRPM_$arch.rpm"
 
-            # Clean up for next iteration
-            rm -rf "rustnet-${{ github.ref_name }}-$target" "target/$target"
+            cleanup "$target"
           done
 
       - name: Upload installer packages

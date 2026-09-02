@@ -108,99 +108,103 @@ jobs:
       # For release builds: create archive with README/LICENSE
       - name: Create release archive
         if: ${{ inputs.create-archives }}
-        shell: bash
-        env:
-          RUSTNET_BIN: ${{ contains(matrix.os, 'windows') && 'rustnet.exe' || 'rustnet' }}
-        run: |
-          staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
-          mkdir -p "$staging"
-
-          cp "target/${{ matrix.target }}/release/$RUSTNET_BIN" "$staging/"
-
-          if [ -d "crates/rustnet-core/assets" ] && [ -f "crates/rustnet-core/assets/services" ]; then
-            mkdir -p "$staging/assets"
-            cp "crates/rustnet-core/assets/services" "$staging/assets/"
-          fi
-
-          cp README.md "$staging/"
-          cp LICENSE "$staging/" 2>/dev/null || true
-
-          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            7z a "$staging.zip" "$staging"
-            echo "ASSET=$staging.zip" >> $GITHUB_ENV
-          else
-            tar czf "$staging.tar.gz" "$staging"
-            echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
-          fi
+        id: archive
+        uses: ./.github/actions/package-archive
+        with:
+          binary: target/${{ matrix.target }}/release/rustnet${{ contains(matrix.os, 'windows') && '.exe' || '' }}
+          target: ${{ matrix.target }}
+          version: ${{ inputs.version }}
+          format: ${{ contains(matrix.os, 'windows') && 'zip' || 'tar' }}
 
       - name: Upload release archive
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-${{ matrix.target }}
-          path: ${{ env.ASSET }}
+          path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
 
+  # x86_64 and the native Android build link against Alpine's static libpcap.
+  # armv7 and x86 (i686) are cross-compiled with zig cc as the C compiler and
+  # linker (no external toolchain download needed): the `Install cross toolchain`
+  # step runs for matrix entries that set `zig-target` and builds a static
+  # libpcap for them under /cross-sysroot.
   build-static:
     permissions:
       contents: read
     name: build-linux-static-${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
+          # -C strip=symbols: strip debug symbols for a smaller binary.
+          # -C link-arg=-l:libzstd.a: fix elfutils 0.189+ zstd dependency
+          # (libbpf/bpftool#152); Alpine's libpcap-dev links against zstd too.
           - arch: x86_64
-            runner: ubuntu-latest
             target: x86_64-unknown-linux-musl
+            bin: target/release/rustnet
+            rustflags: '-C strip=symbols -C link-arg=-l:libzstd.a'
           - arch: x86_64-android
-            runner: ubuntu-latest
             target: x86_64-linux-android-musl
             features: '--no-default-features'
+            bin: target/release/rustnet
+            rustflags: '-C strip=symbols -C link-arg=-l:libzstd.a'
+          # -C link-self-contained=no: let zig provide the musl CRT (avoids a
+          # duplicate _start when both Rust's self-contained crt1.o and zig's
+          # crt1.o are linked). zig bundles musl libc for all targets, so no
+          # -l:libzstd.a is needed. `cross-host` is the config.sub-style triple
+          # used for the compiler wrapper name and libpcap's --host.
           - arch: armv7-android
-            runner: ubuntu-latest
             target: armv7-linux-android-musl
             features: '--no-default-features'
+            rust-target: armv7-unknown-linux-musleabihf
+            zig-target: arm-linux-musleabihf
+            cross-host: arm-linux-musleabihf
+            bin: target/armv7-unknown-linux-musleabihf/release/rustnet
+            rustflags: '-C strip=symbols -C link-self-contained=no'
           - arch: x86-android
-            runner: ubuntu-latest
             target: i686-linux-android-musl
             features: '--no-default-features'
+            rust-target: i686-unknown-linux-musl
+            zig-target: x86-linux-musl
+            cross-host: i686-linux-musl
+            bin: target/i686-unknown-linux-musl/release/rustnet
+            rustflags: '-C strip=symbols -C link-self-contained=no'
     container:
       image: rust:alpine
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # x86_64: use composite action
-      - name: Build static binary
-        if: matrix.arch == 'x86_64'
-        uses: ./.github/actions/build-static
-
-      # android: inline build (composite actions don't work with the zig wrapper easily here)
-      - name: Install dependencies (Android)
-        if: matrix.arch != 'x86_64'
+      - name: Install dependencies
         run: |
           apk add --no-cache \
             musl-dev libpcap-dev pkgconfig build-base perl \
             elfutils-dev zlib-dev zlib-static zstd-dev zstd-static \
-            clang llvm linux-headers curl
+            clang llvm linux-headers curl git bash
           rustup component add rustfmt
 
-      - name: Install cross-compiler and libpcap (armv7)
-        if: matrix.arch == 'armv7-android'
+      - name: Install cross toolchain
+        if: matrix.zig-target
         run: |
-          rustup target add armv7-unknown-linux-musleabihf
+          rustup target add ${{ matrix.rust-target }}
           apk add zig flex bison bash
 
+          # zig cc wrapper: cc-rs detects it as clang and passes --target=<rust triple>
+          # (armv7-*, i686-*) which zig rejects (zig spells them arm and x86), so
+          # filter those args out and pass the zig target instead. cc-rs also emits
+          # -Wl,-melf_i386 for i686, which zig's linker does not accept.
+          # shellcheck disable=SC2016
           printf '%s\n' \
             '#!/bin/bash' \
             'args=()' \
             'for arg in "$@"; do' \
-            '  case "$arg" in --target=*) ;; *) args+=("$arg") ;; esac' \
+            '  case "$arg" in --target=*|-Wl,-melf_i386) ;; *) args+=("$arg") ;; esac' \
             'done' \
-            'exec zig cc -target arm-linux-musleabihf "${args[@]}"' \
-            > /usr/local/bin/arm-linux-musleabihf-gcc
-          chmod +x /usr/local/bin/arm-linux-musleabihf-gcc
+            'exec zig cc -target ${{ matrix.zig-target }} "${args[@]}"' \
+            > /usr/local/bin/${{ matrix.cross-host }}-gcc
+          chmod +x /usr/local/bin/${{ matrix.cross-host }}-gcc
 
           # libpcap is pinned by version + sha256 (Dependabot does not track
           # tarballs fetched in run steps, so bump the URL and the hash together).
@@ -209,77 +213,33 @@ jobs:
           echo "37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  libpcap.tar.gz" | sha256sum -c -
           tar xzf libpcap.tar.gz
           cd libpcap-1.10.5
-          CC=arm-linux-musleabihf-gcc \
-            ./configure --host=arm-linux-musleabihf \
+          CC=${{ matrix.cross-host }}-gcc \
+            ./configure --host=${{ matrix.cross-host }} \
               --disable-shared --enable-static \
               --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
-              --prefix=/arm-sysroot
-          make -j$(nproc) && make install
+              --prefix=/cross-sysroot
+          make -j"$(nproc)" && make install
           cd ..
 
-      - name: Install cross-compiler and libpcap (x86/i686)
-        if: matrix.arch == 'x86-android'
+          # Point cargo at the wrapper and pkg-config at the cross libpcap.
+          linker_var="CARGO_TARGET_$(echo '${{ matrix.rust-target }}' | tr 'a-z-' 'A-Z_')_LINKER"
+          {
+            echo "$linker_var=${{ matrix.cross-host }}-gcc"
+            echo "PKG_CONFIG_PATH=/cross-sysroot/lib/pkgconfig"
+            echo "PKG_CONFIG_SYSROOT_DIR=/cross-sysroot"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Build static binary
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo build --release ${{ matrix.features }} ${{ matrix.rust-target && format('--target {0}', matrix.rust-target) || '' }}
+
+      - name: Verify static linking
         run: |
-          rustup target add i686-unknown-linux-musl
-          apk add zig flex bison bash
-
-          printf '%s\n' \
-            '#!/bin/bash' \
-            'args=()' \
-            'for arg in "$@"; do' \
-            '  case "$arg" in --target=*) ;; -Wl,-melf_i386) ;; *) args+=("$arg") ;; esac' \
-            'done' \
-            'exec zig cc -target x86-linux-musl "${args[@]}"' \
-            > /usr/local/bin/i686-linux-musl-gcc
-          chmod +x /usr/local/bin/i686-linux-musl-gcc
-
-          # libpcap is pinned by version + sha256 (Dependabot does not track
-          # tarballs fetched in run steps, so bump the URL and the hash together).
-          curl -fsSL --retry 3 --retry-delay 5 \
-            -o libpcap.tar.gz https://www.tcpdump.org/release/libpcap-1.10.5.tar.gz
-          echo "37ced90a19a302a7f32e458224a00c365c117905c2cd35ac544b6880a81488f0  libpcap.tar.gz" | sha256sum -c -
-          tar xzf libpcap.tar.gz
-          cd libpcap-1.10.5
-          CC=i686-linux-musl-gcc \
-            ./configure --host=i686-linux-musl \
-              --disable-shared --enable-static \
-              --disable-usb --disable-dbus --disable-bluetooth --disable-remote \
-              --prefix=/x86-sysroot
-          make -j$(nproc) && make install
-          cd ..
-
-      - name: Build static binary (x86_64 Android)
-        if: matrix.arch == 'x86_64-android'
-        env:
-          RUSTFLAGS: "-C strip=symbols -C link-arg=-l:libzstd.a"
-        run: cargo build --release ${{ matrix.features }}
-
-      - name: Build static binary (armv7-android)
-        if: matrix.arch == 'armv7-android'
-        env:
-          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
-          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: arm-linux-musleabihf-gcc
-          PKG_CONFIG_PATH: /arm-sysroot/lib/pkgconfig
-          PKG_CONFIG_SYSROOT_DIR: /arm-sysroot
-          PKG_CONFIG_ALLOW_CROSS: "1"
-        run: cargo build --release --target armv7-unknown-linux-musleabihf ${{ matrix.features }}
-
-      - name: Build static binary (x86-android)
-        if: matrix.arch == 'x86-android'
-        env:
-          RUSTFLAGS: "-C strip=symbols -C link-self-contained=no"
-          CARGO_TARGET_I686_UNKNOWN_LINUX_MUSL_LINKER: i686-linux-musl-gcc
-          PKG_CONFIG_PATH: /x86-sysroot/lib/pkgconfig
-          PKG_CONFIG_SYSROOT_DIR: /x86-sysroot
-          PKG_CONFIG_ALLOW_CROSS: "1"
-        run: cargo build --release --target i686-unknown-linux-musl ${{ matrix.features }}
-
-      - name: Verify static linking (Android)
-        if: matrix.arch != 'x86_64'
-        run: |
-          BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
-          file "$BIN"
-          file "$BIN" | grep -q "static.* linked" || \
+          file "${{ matrix.bin }}"
+          # Use file command to verify (ldd behaves differently inside Alpine)
+          file "${{ matrix.bin }}" | grep -q "static.* linked" || \
             (echo "ERROR: Binary is not statically linked" && exit 1)
 
       # For test builds: upload raw binary
@@ -288,31 +248,25 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: rustnet-linux-static-${{ matrix.arch }}
-          path: ${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}
+          path: ${{ matrix.bin }}
           if-no-files-found: error
 
       # For release builds: create archive
       - name: Create release archive
         if: ${{ inputs.create-archives }}
-        run: |
-          BIN="${{ (matrix.arch == 'armv7-android' && 'target/armv7-unknown-linux-musleabihf/release/rustnet') || (matrix.arch == 'x86-android' && 'target/i686-unknown-linux-musl/release/rustnet') || 'target/release/rustnet' }}"
-
-          staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
-          mkdir -p "$staging/assets"
-
-          cp "$BIN" "$staging/rustnet"
-          cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
-          cp README.md "$staging/"
-          cp LICENSE "$staging/" 2>/dev/null || true
-
-          tar czf "$staging.tar.gz" "$staging"
+        id: archive
+        uses: ./.github/actions/package-archive
+        with:
+          binary: ${{ matrix.bin }}
+          target: ${{ matrix.target }}
+          version: ${{ inputs.version }}
 
       - name: Upload release archive
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-${{ matrix.target }}
-          path: rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz
+          path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
 
   # aarch64 static builds run on a native ARM runner WITHOUT a job-level container:
@@ -374,22 +328,18 @@ jobs:
       # For release builds: create archive
       - name: Create release archive
         if: ${{ inputs.create-archives }}
-        run: |
-          staging="rustnet-${{ inputs.version }}-${{ matrix.target }}"
-          mkdir -p "$staging/assets"
-
-          cp target/release/rustnet "$staging/"
-          cp crates/rustnet-core/assets/services "$staging/assets/" 2>/dev/null || true
-          cp README.md "$staging/"
-          cp LICENSE "$staging/" 2>/dev/null || true
-
-          tar czf "$staging.tar.gz" "$staging"
+        id: archive
+        uses: ./.github/actions/package-archive
+        with:
+          binary: target/release/rustnet
+          target: ${{ matrix.target }}
+          version: ${{ inputs.version }}
 
       - name: Upload release archive
         if: ${{ inputs.create-archives }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: build-${{ matrix.target }}
-          path: rustnet-${{ inputs.version }}-${{ matrix.target }}.tar.gz
+          path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
 

@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::fmt;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,15 +10,12 @@ pub enum SshConnectionState {
     Established,
 }
 
-impl fmt::Display for SshConnectionState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            SshConnectionState::Banner => "Banner",
-            SshConnectionState::KeyExchange => "Key Exchange",
-            SshConnectionState::Authentication => "Authentication",
-            SshConnectionState::Established => "Established",
-        };
-        f.write_str(name)
+static_names! {
+    SshConnectionState {
+        Banner => "Banner",
+        KeyExchange => "Key Exchange",
+        Authentication => "Authentication",
+        Established => "Established",
     }
 }
 
@@ -39,13 +35,10 @@ pub enum SshVersion {
     V2,
 }
 
-impl fmt::Display for SshVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            SshVersion::V1 => "SSH-1",
-            SshVersion::V2 => "SSH-2",
-        };
-        f.write_str(name)
+static_names! {
+    SshVersion {
+        V1 => "SSH-1",
+        V2 => "SSH-2",
     }
 }
 
@@ -56,13 +49,11 @@ pub enum BitTorrentType {
     Utp,
 }
 
-impl fmt::Display for BitTorrentType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            BitTorrentType::Peer => write!(f, "Peer"),
-            BitTorrentType::Dht => write!(f, "DHT"),
-            BitTorrentType::Utp => write!(f, "uTP"),
-        }
+static_names! {
+    BitTorrentType {
+        Peer => "Peer",
+        Dht => "DHT",
+        Utp => "uTP",
     }
 }
 
@@ -96,25 +87,23 @@ pub enum MqttPacketType {
     Auth,
 }
 
-impl fmt::Display for MqttPacketType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MqttPacketType::Connect => write!(f, "CONNECT"),
-            MqttPacketType::Connack => write!(f, "CONNACK"),
-            MqttPacketType::Publish => write!(f, "PUBLISH"),
-            MqttPacketType::Puback => write!(f, "PUBACK"),
-            MqttPacketType::Pubrec => write!(f, "PUBREC"),
-            MqttPacketType::Pubrel => write!(f, "PUBREL"),
-            MqttPacketType::Pubcomp => write!(f, "PUBCOMP"),
-            MqttPacketType::Subscribe => write!(f, "SUBSCRIBE"),
-            MqttPacketType::Suback => write!(f, "SUBACK"),
-            MqttPacketType::Unsubscribe => write!(f, "UNSUBSCRIBE"),
-            MqttPacketType::Unsuback => write!(f, "UNSUBACK"),
-            MqttPacketType::Pingreq => write!(f, "PINGREQ"),
-            MqttPacketType::Pingresp => write!(f, "PINGRESP"),
-            MqttPacketType::Disconnect => write!(f, "DISCONNECT"),
-            MqttPacketType::Auth => write!(f, "AUTH"),
-        }
+static_names! {
+    MqttPacketType {
+        Connect => "CONNECT",
+        Connack => "CONNACK",
+        Publish => "PUBLISH",
+        Puback => "PUBACK",
+        Pubrec => "PUBREC",
+        Pubrel => "PUBREL",
+        Pubcomp => "PUBCOMP",
+        Subscribe => "SUBSCRIBE",
+        Suback => "SUBACK",
+        Unsubscribe => "UNSUBSCRIBE",
+        Unsuback => "UNSUBACK",
+        Pingreq => "PINGREQ",
+        Pingresp => "PINGRESP",
+        Disconnect => "DISCONNECT",
+        Auth => "AUTH",
     }
 }
 
@@ -125,13 +114,11 @@ pub enum MqttVersion {
     V50,
 }
 
-impl fmt::Display for MqttVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MqttVersion::V31 => write!(f, "3.1"),
-            MqttVersion::V311 => write!(f, "3.1.1"),
-            MqttVersion::V50 => write!(f, "5.0"),
-        }
+static_names! {
+    MqttVersion {
+        V31 => "3.1",
+        V311 => "3.1.1",
+        V50 => "5.0",
     }
 }
 
@@ -152,15 +139,12 @@ pub enum WireGuardPacketType {
     TransportData,
 }
 
-impl fmt::Display for WireGuardPacketType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            WireGuardPacketType::HandshakeInitiation => "Handshake Initiation",
-            WireGuardPacketType::HandshakeResponse => "Handshake Response",
-            WireGuardPacketType::CookieReply => "Cookie Reply",
-            WireGuardPacketType::TransportData => "Transport Data",
-        };
-        f.write_str(name)
+static_names! {
+    WireGuardPacketType {
+        HandshakeInitiation => "Handshake Initiation",
+        HandshakeResponse => "Handshake Response",
+        CookieReply => "Cookie Reply",
+        TransportData => "Transport Data",
     }
 }
 
@@ -182,20 +166,17 @@ pub enum OpenVpnPacketType {
     ControlWithWrappedKey,
 }
 
-impl fmt::Display for OpenVpnPacketType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            OpenVpnPacketType::ControlSoftReset => "Control Soft Reset",
-            OpenVpnPacketType::Control => "Control",
-            OpenVpnPacketType::Ack => "ACK",
-            OpenVpnPacketType::DataV1 => "Data v1",
-            OpenVpnPacketType::DataV2 => "Data v2",
-            OpenVpnPacketType::ControlHardResetClientV2 => "Client Hard Reset v2",
-            OpenVpnPacketType::ControlHardResetServerV2 => "Server Hard Reset v2",
-            OpenVpnPacketType::ControlHardResetClientV3 => "Client Hard Reset v3",
-            OpenVpnPacketType::ControlWithWrappedKey => "Control with Wrapped Key",
-        };
-        f.write_str(name)
+static_names! {
+    OpenVpnPacketType {
+        ControlSoftReset => "Control Soft Reset",
+        Control => "Control",
+        Ack => "ACK",
+        DataV1 => "Data v1",
+        DataV2 => "Data v2",
+        ControlHardResetClientV2 => "Client Hard Reset v2",
+        ControlHardResetServerV2 => "Server Hard Reset v2",
+        ControlHardResetClientV3 => "Client Hard Reset v3",
+        ControlWithWrappedKey => "Control with Wrapped Key",
     }
 }
 
@@ -272,140 +253,74 @@ impl ApplicationProtocol {
     }
 }
 
+/// Write `label (detail)`, or just `label` when there is no detail.
+fn labeled(
+    f: &mut std::fmt::Formatter<'_>,
+    label: impl std::fmt::Display,
+    detail: Option<impl std::fmt::Display>,
+) -> std::fmt::Result {
+    match detail {
+        Some(detail) => write!(f, "{label} ({detail})"),
+        None => write!(f, "{label}"),
+    }
+}
+
 impl std::fmt::Display for ApplicationProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ApplicationProtocol::Http(info) => {
-                if let Some(host) = &info.host {
-                    write!(f, "HTTP ({})", host)
-                } else {
-                    write!(f, "HTTP")
-                }
-            }
-            ApplicationProtocol::Https(info) => {
-                if let Some(tls) = &info.tls_info {
-                    if let Some(sni) = &tls.sni {
-                        write!(f, "HTTPS ({})", sni)
-                    } else {
-                        write!(f, "HTTPS")
-                    }
-                } else {
-                    write!(f, "HTTPS")
-                }
-            }
-            ApplicationProtocol::Dns(info) => {
-                if let Some(query) = &info.query_name {
-                    write!(f, "DNS ({})", query)
-                } else {
-                    write!(f, "DNS")
-                }
-            }
+            ApplicationProtocol::Http(_)
+            | ApplicationProtocol::Https(_)
+            | ApplicationProtocol::Quic(_) => labeled(f, self.sort_key(), self.hostname()),
+            ApplicationProtocol::Dns(info) => labeled(f, "DNS", info.query_name.as_deref()),
             ApplicationProtocol::Ssh(info) => {
-                if let Some(software) = info
+                // Extract just the software name without version details
+                let software = info
                     .server_software
-                    .as_ref()
-                    .or(info.client_software.as_ref())
-                {
-                    // Extract just the software name without version details
-                    let software_name = software.split('_').next().unwrap_or(software);
-                    write!(f, "SSH ({})", software_name)
-                } else {
-                    write!(f, "SSH")
-                }
-            }
-            ApplicationProtocol::Quic(info) => {
-                if let Some(tls_info) = &info.tls_info {
-                    if let Some(sni) = &tls_info.sni {
-                        write!(f, "QUIC ({})", sni)
-                    } else {
-                        write!(f, "QUIC")
-                    }
-                } else {
-                    write!(f, "QUIC")
-                }
+                    .as_deref()
+                    .or(info.client_software.as_deref())
+                    .map(|software| software.split('_').next().unwrap_or(software));
+                labeled(f, "SSH", software)
             }
             ApplicationProtocol::Ntp(info) => {
                 write!(f, "NTP (v{} {})", info.version, info.mode)
             }
-            ApplicationProtocol::Mdns(info) => {
-                if let Some(name) = &info.query_name {
-                    write!(f, "mDNS ({})", name)
-                } else {
-                    write!(f, "mDNS")
-                }
-            }
-            ApplicationProtocol::Llmnr(info) => {
-                if let Some(name) = &info.query_name {
-                    write!(f, "LLMNR ({})", name)
-                } else {
-                    write!(f, "LLMNR")
-                }
-            }
-            ApplicationProtocol::Dhcp(info) => {
-                if let Some(hostname) = &info.hostname {
-                    write!(f, "DHCP {} ({})", info.message_type, hostname)
-                } else {
-                    write!(f, "DHCP {}", info.message_type)
-                }
-            }
-            ApplicationProtocol::Snmp(info) => {
-                if let Some(community) = &info.community {
-                    write!(f, "SNMP {} {} ({})", info.version, info.pdu_type, community)
-                } else {
-                    write!(f, "SNMP {} {}", info.version, info.pdu_type)
-                }
-            }
-            ApplicationProtocol::Ssdp(info) => {
-                if let Some(st) = &info.service_type {
-                    write!(f, "SSDP {} ({})", info.method, st)
-                } else {
-                    write!(f, "SSDP {}", info.method)
-                }
-            }
-            ApplicationProtocol::NetBios(info) => {
-                if let Some(name) = &info.name {
-                    write!(f, "NetBIOS {} ({})", info.service, name)
-                } else {
-                    write!(f, "NetBIOS {}", info.service)
-                }
-            }
+            ApplicationProtocol::Mdns(info) => labeled(f, "mDNS", info.query_name.as_deref()),
+            ApplicationProtocol::Llmnr(info) => labeled(f, "LLMNR", info.query_name.as_deref()),
+            ApplicationProtocol::Dhcp(info) => labeled(
+                f,
+                format_args!("DHCP {}", info.message_type),
+                info.hostname.as_deref(),
+            ),
+            ApplicationProtocol::Snmp(info) => labeled(
+                f,
+                format_args!("SNMP {} {}", info.version, info.pdu_type),
+                info.community.as_deref(),
+            ),
+            ApplicationProtocol::Ssdp(info) => labeled(
+                f,
+                format_args!("SSDP {}", info.method),
+                info.service_type.as_deref(),
+            ),
+            ApplicationProtocol::NetBios(info) => labeled(
+                f,
+                format_args!("NetBIOS {}", info.service),
+                info.name.as_deref(),
+            ),
             ApplicationProtocol::BitTorrent(info) => match info.protocol_type {
-                BitTorrentType::Peer => {
-                    if let Some(client) = &info.client {
-                        write!(f, "BitTorrent ({})", client)
-                    } else {
-                        write!(f, "BitTorrent")
-                    }
-                }
-                BitTorrentType::Dht => {
-                    if let Some(method) = &info.dht_method {
-                        write!(f, "BT DHT ({})", method)
-                    } else {
-                        write!(f, "BT DHT")
-                    }
-                }
+                BitTorrentType::Peer => labeled(f, "BitTorrent", info.client.as_deref()),
+                BitTorrentType::Dht => labeled(f, "BT DHT", info.dht_method.as_deref()),
                 BitTorrentType::Utp => write!(f, "BT uTP"),
             },
-            ApplicationProtocol::Stun(info) => {
-                if let Some(software) = &info.software {
-                    write!(
-                        f,
-                        "STUN {} {} ({})",
-                        info.method, info.message_class, software
-                    )
-                } else {
-                    write!(f, "STUN {} {}", info.method, info.message_class)
-                }
-            }
-            ApplicationProtocol::Mqtt(info) => {
-                if let Some(topic) = &info.topic {
-                    write!(f, "MQTT {} ({})", info.packet_type, topic)
-                } else if let Some(client_id) = &info.client_id {
-                    write!(f, "MQTT {} ({})", info.packet_type, client_id)
-                } else {
-                    write!(f, "MQTT {}", info.packet_type)
-                }
-            }
+            ApplicationProtocol::Stun(info) => labeled(
+                f,
+                format_args!("STUN {} {}", info.method, info.message_class),
+                info.software.as_deref(),
+            ),
+            ApplicationProtocol::Mqtt(info) => labeled(
+                f,
+                format_args!("MQTT {}", info.packet_type),
+                info.topic.as_deref().or(info.client_id.as_deref()),
+            ),
             ApplicationProtocol::Ftp(info) => match info.message_type {
                 FtpMessageType::Request => {
                     if let Some(cmd) = &info.command {
@@ -440,17 +355,14 @@ pub enum FtpMessageType {
     Response,
 }
 
-impl fmt::Display for FtpMessageType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // The protocol-name prefix is already in the surrounding column /
-        // panel context, so the variant only needs to disambiguate
-        // request-vs-response. Emitting "FTP_REQUEST" / "FTP_RESPONSE" here
-        // produced "FTP / Message Type: FTP_REQUEST" in the details panel.
-        let name = match self {
-            FtpMessageType::Request => "Request",
-            FtpMessageType::Response => "Response",
-        };
-        write!(f, "{}", name)
+// The protocol-name prefix is already in the surrounding column /
+// panel context, so the variant only needs to disambiguate
+// request-vs-response. Emitting "FTP_REQUEST" / "FTP_RESPONSE" here
+// produced "FTP / Message Type: FTP_REQUEST" in the details panel.
+static_names! {
+    FtpMessageType {
+        Request => "Request",
+        Response => "Response",
     }
 }
 
@@ -486,14 +398,11 @@ pub enum HttpVersion {
     Http2,
 }
 
-impl fmt::Display for HttpVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            HttpVersion::Http10 => "HTTP/1.0",
-            HttpVersion::Http11 => "HTTP/1.1",
-            HttpVersion::Http2 => "HTTP/2",
-        };
-        f.write_str(name)
+static_names! {
+    HttpVersion {
+        Http10 => "HTTP/1.0",
+        Http11 => "HTTP/1.1",
+        Http2 => "HTTP/2",
     }
 }
 
@@ -502,7 +411,7 @@ pub struct HttpsInfo {
     pub tls_info: Option<TlsInfo>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TlsInfo {
     pub version: Option<TlsVersion>,
     pub sni: Option<String>,
@@ -510,20 +419,9 @@ pub struct TlsInfo {
     pub cipher_suite: Option<u16>,
 }
 
-impl Default for TlsInfo {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl TlsInfo {
     pub fn new() -> Self {
-        Self {
-            version: None,
-            sni: None,
-            alpn: Vec::new(),
-            cipher_suite: None,
-        }
+        Self::default()
     }
 
     /// Format the cipher suite with name and hex code
@@ -547,14 +445,12 @@ pub enum TlsVersion {
     Tls13,
 }
 
-impl fmt::Display for TlsVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TlsVersion::Tls10 => write!(f, "TLS 1.0"),
-            TlsVersion::Tls11 => write!(f, "TLS 1.1"),
-            TlsVersion::Tls12 => write!(f, "TLS 1.2"),
-            TlsVersion::Tls13 => write!(f, "TLS 1.3"),
-        }
+static_names! {
+    TlsVersion {
+        Tls10 => "TLS 1.0",
+        Tls11 => "TLS 1.1",
+        Tls12 => "TLS 1.2",
+        Tls13 => "TLS 1.3",
     }
 }
 
@@ -739,18 +635,16 @@ pub enum NtpMode {
     Private,
 }
 
-impl std::fmt::Display for NtpMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NtpMode::Reserved => write!(f, "Reserved"),
-            NtpMode::SymmetricActive => write!(f, "SymActive"),
-            NtpMode::SymmetricPassive => write!(f, "SymPassive"),
-            NtpMode::Client => write!(f, "Client"),
-            NtpMode::Server => write!(f, "Server"),
-            NtpMode::Broadcast => write!(f, "Broadcast"),
-            NtpMode::Control => write!(f, "Control"),
-            NtpMode::Private => write!(f, "Private"),
-        }
+static_names! {
+    NtpMode {
+        Reserved => "Reserved",
+        SymmetricActive => "SymActive",
+        SymmetricPassive => "SymPassive",
+        Client => "Client",
+        Server => "Server",
+        Broadcast => "Broadcast",
+        Control => "Control",
+        Private => "Private",
     }
 }
 
@@ -868,13 +762,11 @@ pub enum SnmpVersion {
     V3,
 }
 
-impl std::fmt::Display for SnmpVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SnmpVersion::V1 => write!(f, "v1"),
-            SnmpVersion::V2c => write!(f, "v2c"),
-            SnmpVersion::V3 => write!(f, "v3"),
-        }
+static_names! {
+    SnmpVersion {
+        V1 => "v1",
+        V2c => "v2c",
+        V3 => "v3",
     }
 }
 
@@ -893,20 +785,18 @@ pub enum SnmpPduType {
     Encrypted,
 }
 
-impl std::fmt::Display for SnmpPduType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SnmpPduType::GetRequest => write!(f, "GET"),
-            SnmpPduType::GetNextRequest => write!(f, "GETNEXT"),
-            SnmpPduType::GetResponse => write!(f, "RESPONSE"),
-            SnmpPduType::SetRequest => write!(f, "SET"),
-            SnmpPduType::Trap => write!(f, "TRAP"),
-            SnmpPduType::GetBulkRequest => write!(f, "GETBULK"),
-            SnmpPduType::InformRequest => write!(f, "INFORM"),
-            SnmpPduType::TrapV2 => write!(f, "TRAPv2"),
-            SnmpPduType::Report => write!(f, "REPORT"),
-            SnmpPduType::Encrypted => write!(f, "ENCRYPTED"),
-        }
+static_names! {
+    SnmpPduType {
+        GetRequest => "GET",
+        GetNextRequest => "GETNEXT",
+        GetResponse => "RESPONSE",
+        SetRequest => "SET",
+        Trap => "TRAP",
+        GetBulkRequest => "GETBULK",
+        InformRequest => "INFORM",
+        TrapV2 => "TRAPv2",
+        Report => "REPORT",
+        Encrypted => "ENCRYPTED",
     }
 }
 
@@ -924,13 +814,11 @@ pub enum SsdpMethod {
     Response,
 }
 
-impl std::fmt::Display for SsdpMethod {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            SsdpMethod::MSearch => write!(f, "M-SEARCH"),
-            SsdpMethod::Notify => write!(f, "NOTIFY"),
-            SsdpMethod::Response => write!(f, "RESPONSE"),
-        }
+static_names! {
+    SsdpMethod {
+        MSearch => "M-SEARCH",
+        Notify => "NOTIFY",
+        Response => "RESPONSE",
     }
 }
 
@@ -1005,12 +893,10 @@ impl std::fmt::Display for NetBiosResponseStatus {
     }
 }
 
-impl std::fmt::Display for NetBiosService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            NetBiosService::NameService => write!(f, "NS"),
-            NetBiosService::DatagramService => write!(f, "DGM"),
-        }
+static_names! {
+    NetBiosService {
+        NameService => "NS",
+        DatagramService => "DGM",
     }
 }
 
@@ -1062,14 +948,12 @@ pub enum StunMessageClass {
     ErrorResponse,
 }
 
-impl std::fmt::Display for StunMessageClass {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            StunMessageClass::Request => write!(f, "Request"),
-            StunMessageClass::Indication => write!(f, "Indication"),
-            StunMessageClass::SuccessResponse => write!(f, "Success"),
-            StunMessageClass::ErrorResponse => write!(f, "Error"),
-        }
+static_names! {
+    StunMessageClass {
+        Request => "Request",
+        Indication => "Indication",
+        SuccessResponse => "Success",
+        ErrorResponse => "Error",
     }
 }
 
@@ -1143,17 +1027,15 @@ pub enum QuicPacketType {
     Unknown,
 }
 
-impl fmt::Display for QuicPacketType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            QuicPacketType::Initial => write!(f, "Initial"),
-            QuicPacketType::ZeroRtt => write!(f, "0-RTT"),
-            QuicPacketType::Handshake => write!(f, "Handshake"),
-            QuicPacketType::Retry => write!(f, "Retry"),
-            QuicPacketType::VersionNegotiation => write!(f, "Version Negotiation"),
-            QuicPacketType::OneRtt => write!(f, "1-RTT"),
-            QuicPacketType::Unknown => write!(f, "Unknown"),
-        }
+static_names! {
+    QuicPacketType {
+        Initial => "Initial",
+        ZeroRtt => "0-RTT",
+        Handshake => "Handshake",
+        Retry => "Retry",
+        VersionNegotiation => "Version Negotiation",
+        OneRtt => "1-RTT",
+        Unknown => "Unknown",
     }
 }
 
@@ -1183,16 +1065,14 @@ impl QuicConnectionState {
     }
 }
 
-impl fmt::Display for QuicConnectionState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            QuicConnectionState::Initial => write!(f, "Initial"),
-            QuicConnectionState::Handshaking => write!(f, "Handshaking"),
-            QuicConnectionState::Connected => write!(f, "Connected"),
-            QuicConnectionState::Draining => write!(f, "Draining"),
-            QuicConnectionState::Closed => write!(f, "Closed"),
-            QuicConnectionState::Unknown => write!(f, "Unknown"),
-        }
+static_names! {
+    QuicConnectionState {
+        Initial => "Initial",
+        Handshaking => "Handshaking",
+        Connected => "Connected",
+        Draining => "Draining",
+        Closed => "Closed",
+        Unknown => "Unknown",
     }
 }
 
@@ -1367,6 +1247,17 @@ impl CryptoFrameReassembler {
 #[derive(Debug, Clone)]
 pub struct DpiInfo {
     pub application: ApplicationProtocol,
+}
+
+impl TlsInfo {
+    /// A `TlsInfo` carrying only the given SNI, as produced by the salvage
+    /// paths that recover a hostname without a full handshake parse.
+    pub fn with_sni(sni: String) -> Self {
+        Self {
+            sni: Some(sni),
+            ..Self::new()
+        }
+    }
 }
 
 #[cfg(test)]

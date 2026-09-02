@@ -269,7 +269,7 @@ impl WindowSample {
 }
 
 /// TCP analytics for tracking retransmissions and connection quality
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TcpAnalytics {
     // Highest sequence number seen in each direction, i.e. the next byte the
     // stream is expected to reach. Tracking the high-water mark rather than a
@@ -321,26 +321,7 @@ pub struct TcpAnalytics {
 
 impl TcpAnalytics {
     pub fn new() -> Self {
-        Self {
-            highest_seq_outbound: 0,
-            highest_seq_inbound: 0,
-            seen_outbound: false,
-            seen_inbound: false,
-            last_ack_received: 0,
-            seen_ack: false,
-            dup_ack_run: 0,
-            duplicate_ack_count: 0,
-            retransmit_count: 0,
-            out_of_order_count: 0,
-            fast_retransmit_count: 0,
-            last_window_out: None,
-            last_window_in: None,
-            window_scale_out: None,
-            window_scale_in: None,
-            window_scaling_disabled: false,
-            rtt_probe: None,
-            smoothed_rtt: None,
-        }
+        Self::default()
     }
 
     /// Whether the window scaling in effect is known: both SYNs were seen,
@@ -388,12 +369,6 @@ impl TcpAnalytics {
             }
             _ => 0,
         }
-    }
-}
-
-impl Default for TcpAnalytics {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
