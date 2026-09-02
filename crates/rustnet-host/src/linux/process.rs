@@ -1078,7 +1078,7 @@ mod tests {
         let k = key("192.168.1.10:44444", "203.0.113.5:443");
         let mut snapshot = HashMap::new();
         snapshot.insert(
-            k.clone(),
+            k,
             SnapshotOwner {
                 pid: 4242,
                 name: "old-owner".to_string(),

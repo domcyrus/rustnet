@@ -815,7 +815,7 @@ mod tests {
         let mut cache = ProcessMap::new();
         let mut process_names = ProcessNameCache::new();
 
-        let _ = cache_process(&mut cache, &mut process_names, key.clone(), u32::MAX);
+        let _ = cache_process(&mut cache, &mut process_names, key, u32::MAX);
 
         assert_eq!(cache.get(&key), None);
     }
@@ -833,7 +833,7 @@ mod tests {
         // PID 4 is the System process: always alive, but its image name is
         // not queryable via QueryFullProcessImageNameW, so it is named
         // directly rather than cached as the Unknown placeholder.
-        let _ = cache_process(&mut cache, &mut process_names, key.clone(), 4);
+        let _ = cache_process(&mut cache, &mut process_names, key, 4);
 
         assert_eq!(cache.get(&key), Some(&(4, "System".to_string())));
     }
