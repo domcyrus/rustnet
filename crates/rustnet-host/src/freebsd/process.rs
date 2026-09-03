@@ -1,17 +1,15 @@
-// network/platform/freebsd/process.rs - FreeBSD sockstat-based process lookup
+//! FreeBSD sockstat-based process lookup.
 
 use crate::{
     ConnectionKey, HostSocket, HostSocketState, HostTcpState, MatchQuality, ProcessAncestor,
-    ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketSnapshot,
-    ancestor_display_name, collect_process_lineage, decode_process_name, memoized,
-    parse_socket_addr_text, relaxed_lookup, remote_if_present,
+    ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketScan, SocketSnapshot,
+    ancestor_display_name, collect_process_lineage, decode_process_name, memoized, owner_match,
+    parse_socket_addr_text, path_from_c_buffer, remote_if_present,
 };
 use anyhow::{Context, Result};
 use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::mem::{MaybeUninit, size_of};
-use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::RwLock;
@@ -20,23 +18,11 @@ const SOCKSTAT_PATH: &str = "/usr/bin/sockstat";
 
 pub(super) struct FreeBSDProcessLookup {
     // Cache: ConnectionKey -> socket owner
-    cache: RwLock<HashMap<ConnectionKey, FreeBsdProcessInfo>>,
+    cache: RwLock<HashMap<ConnectionKey, SocketOwner>>,
     // A process may own many sockets. Resolve its metadata through sysctl once
     // per refresh generation rather than once per connection.
     process_details: RwLock<HashMap<u32, Option<FreeBsdProcessDetails>>>,
     socket_snapshot: RwLock<SocketSnapshot>,
-}
-
-struct FreeBsdSocketScan {
-    lookup: HashMap<ConnectionKey, FreeBsdProcessInfo>,
-    sockets: Vec<HostSocket>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FreeBsdProcessInfo {
-    pid: u32,
-    name: String,
-    uid: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,15 +45,10 @@ impl FreeBSDProcessLookup {
         })
     }
 
-    fn lookup_match(&self, conn: &Connection) -> Option<(FreeBsdProcessInfo, MatchQuality)> {
+    fn lookup_match(&self, conn: &Connection) -> Option<(SocketOwner, MatchQuality)> {
         let key = ConnectionKey::from_connection(conn);
         let cache = self.cache.read().expect("process cache lock poisoned");
-
-        if let Some(process) = cache.get(&key) {
-            return Some((process.clone(), MatchQuality::ExactTuple));
-        }
-
-        relaxed_lookup(&cache, &key).map(|(process, quality)| (process.clone(), quality))
+        owner_match(&cache, &key)
     }
 
     fn resolve_executable(pid: libc::pid_t) -> Option<PathBuf> {
@@ -96,15 +77,7 @@ impl FreeBSDProcessLookup {
             return None;
         }
 
-        let returned = buffer_len.min(buffer.len());
-        let path_len = buffer[..returned]
-            .iter()
-            .position(|byte| *byte == 0)
-            .unwrap_or(returned);
-        if path_len == 0 {
-            return None;
-        }
-        Some(PathBuf::from(OsStr::from_bytes(&buffer[..path_len])))
+        path_from_c_buffer(&buffer, buffer_len)
     }
 
     fn read_process_details(pid: u32) -> Option<FreeBsdProcessDetails> {
@@ -191,87 +164,57 @@ impl FreeBSDProcessLookup {
         })
     }
 
-    /// Build connection -> process mapping using sysctl
-    fn build_process_map() -> Result<FreeBsdSocketScan> {
-        let mut process_map = HashMap::new();
-        let mut sockets = Vec::new();
+    /// Build connection -> process mapping using sockstat. The TCP, TCP6,
+    /// UDP and UDP6 tables are scanned in that order, so a later table wins
+    /// when two report the same tuple.
+    fn build_process_map() -> Result<SocketScan> {
+        let mut scan = SocketScan::default();
 
-        // Parse TCP connections
-        if let Ok(tcp_connections) = Self::parse_sockstat_output("tcp") {
-            process_map.extend(tcp_connections.lookup);
-            sockets.extend(tcp_connections.sockets);
+        for (protocol, ipv6) in [
+            (Protocol::Tcp, false),
+            (Protocol::Tcp, true),
+            (Protocol::Udp, false),
+            (Protocol::Udp, true),
+        ] {
+            if let Ok(table) = Self::parse_sockstat_output(protocol, ipv6) {
+                scan.lookup.extend(table.lookup);
+                scan.sockets.extend(table.sockets);
+            }
         }
 
-        // Parse TCP6 connections
-        if let Ok(tcp6_connections) = Self::parse_sockstat_output("tcp6") {
-            process_map.extend(tcp6_connections.lookup);
-            sockets.extend(tcp6_connections.sockets);
-        }
-
-        // Parse UDP connections
-        if let Ok(udp_connections) = Self::parse_sockstat_output("udp") {
-            process_map.extend(udp_connections.lookup);
-            sockets.extend(udp_connections.sockets);
-        }
-
-        // Parse UDP6 connections
-        if let Ok(udp6_connections) = Self::parse_sockstat_output("udp6") {
-            process_map.extend(udp6_connections.lookup);
-            sockets.extend(udp6_connections.sockets);
-        }
-
-        Ok(FreeBsdSocketScan {
-            lookup: process_map,
-            sockets,
-        })
+        Ok(scan)
     }
 
-    /// Parse sockstat output for a given protocol
-    /// Format: user command pid fd proto local_addr foreign_addr
-    fn parse_sockstat_output(proto: &str) -> Result<FreeBsdSocketScan> {
+    /// Parse sockstat output for a given protocol and address family.
+    fn parse_sockstat_output(protocol: Protocol, ipv6: bool) -> Result<SocketScan> {
         use std::process::Command;
 
-        // Determine protocol type
-        let protocol = if proto.starts_with("tcp") {
-            Protocol::Tcp
-        } else {
-            Protocol::Udp
-        };
+        let is_tcp = protocol == Protocol::Tcp;
 
-        // Run sockstat command
-        // -4: IPv4, -6: IPv6, -c: connected sockets, -l: listening sockets, -n: numeric
-        let ipv6_flag = proto.ends_with('6');
-
+        // -4/-6: address family, -n: numeric UIDs, -s: TCP state column,
+        // -P: protocol filter
         let output = Command::new(SOCKSTAT_PATH)
-            .arg(if ipv6_flag { "-6" } else { "-4" })
-            .arg("-n") // numeric UIDs
-            .args(proto.starts_with("tcp").then_some("-s"))
+            .arg(if ipv6 { "-6" } else { "-4" })
+            .arg("-n")
+            .args(is_tcp.then_some("-s"))
             .arg("-P")
-            .arg(if proto.starts_with("tcp") {
-                "tcp"
-            } else {
-                "udp"
-            })
+            .arg(if is_tcp { "tcp" } else { "udp" })
             .output()
             .context("Failed to execute sockstat")?;
 
         if !output.status.success() {
-            return Ok(FreeBsdSocketScan {
-                lookup: HashMap::new(),
-                sockets: Vec::new(),
-            });
+            return Ok(SocketScan::default());
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(Self::parse_sockstat_rows(&stdout, protocol))
     }
 
-    fn parse_sockstat_rows(stdout: &str, protocol: Protocol) -> FreeBsdSocketScan {
+    fn parse_sockstat_rows(stdout: &str, protocol: Protocol) -> SocketScan {
         let mut result = HashMap::new();
         let mut sockets = Vec::new();
 
         for line in stdout.lines().skip(1) {
-            // Skip header
             let parts: Vec<&str> = line.split_whitespace().collect();
 
             // Expected format:
@@ -282,18 +225,15 @@ impl FreeBSDProcessLookup {
                 continue;
             }
 
-            // Extract fields
             let uid = parts[0].parse::<u32>().ok();
             let process_name = parts[1].to_string();
             let pid = parts[2].parse::<u32>().ok();
 
-            // Parse local address (index 5)
             let local_addr = match parse_socket_addr_text(parts[5]) {
                 Some(addr) => addr,
                 None => continue,
             };
 
-            // Parse foreign address (index 6)
             let foreign_addr = match parse_socket_addr_text(parts[6]) {
                 Some(addr) => addr,
                 None => continue,
@@ -314,20 +254,13 @@ impl FreeBSDProcessLookup {
                 uid: Some(uid),
             });
             if let Some(owner) = &owner {
-                result.insert(
-                    key,
-                    FreeBsdProcessInfo {
-                        pid: owner.pid,
-                        name: owner.name.clone(),
-                        uid: owner.uid.expect("FreeBSD socket owner has a numeric UID"),
-                    },
-                );
+                result.insert(key, owner.clone());
             }
 
             let state = match protocol {
                 Protocol::Tcp => HostSocketState::Tcp(parts.get(7).map_or_else(
                     || infer_tcp_state(foreign_addr),
-                    |value| parse_tcp_state(value),
+                    |value| HostTcpState::parse_name(value),
                 )),
                 Protocol::Udp => HostSocketState::UdpBound,
                 _ => continue,
@@ -342,27 +275,10 @@ impl FreeBSDProcessLookup {
             });
         }
 
-        FreeBsdSocketScan {
+        SocketScan {
             lookup: result,
             sockets,
         }
-    }
-}
-
-fn parse_tcp_state(value: &str) -> HostTcpState {
-    match value.to_ascii_uppercase().as_str() {
-        "CLOSED" => HostTcpState::Closed,
-        "LISTEN" => HostTcpState::Listen,
-        "SYN_SENT" => HostTcpState::SynSent,
-        "SYN_RECEIVED" | "SYN_RCVD" => HostTcpState::SynReceived,
-        "ESTABLISHED" => HostTcpState::Established,
-        "FIN_WAIT_1" => HostTcpState::FinWait1,
-        "FIN_WAIT_2" => HostTcpState::FinWait2,
-        "CLOSE_WAIT" => HostTcpState::CloseWait,
-        "CLOSING" => HostTcpState::Closing,
-        "LAST_ACK" => HostTcpState::LastAck,
-        "TIME_WAIT" => HostTcpState::TimeWait,
-        _ => HostTcpState::Unknown,
     }
 }
 
@@ -378,7 +294,7 @@ impl ProcessLookup for FreeBSDProcessLookup {
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
         let (process, quality) = self.lookup_match(conn)?;
         let mut attribution = ProcessAttribution::new(process.pid, process.name, quality);
-        attribution.uid = Some(process.uid);
+        attribution.uid = process.uid;
         if let Some(details) = self.process_details(process.pid) {
             let lineage = self.process_lineage(process.pid, details.ppid);
             attribution = attribution.with_details(
@@ -422,16 +338,7 @@ impl ProcessLookup for FreeBSDProcessLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustnet_core::network::types::{ProtocolState, TcpState};
-
-    fn tcp_connection(local: &str, remote: &str) -> Connection {
-        Connection::new(
-            Protocol::Tcp,
-            local.parse().unwrap(),
-            remote.parse().unwrap(),
-            ProtocolState::Tcp(TcpState::Established),
-        )
-    }
+    use crate::test_support::tcp_connection;
 
     #[test]
     fn sockstat_numeric_uid_reaches_attribution_without_process_details() {

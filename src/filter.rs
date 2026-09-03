@@ -11,7 +11,7 @@ use regex_lite::Regex;
 /// How to match a text field (case-insensitive for literals; regex handles its own flags)
 #[derive(Debug, Clone)]
 enum FilterValue {
-    /// Case-insensitive substring match (existing default)
+    /// Case-insensitive substring match (default)
     Literal(String),
     /// Pre-compiled regex (compiled with (?i) prefix for case-insensitive matching)
     Regex(Regex),
@@ -20,9 +20,9 @@ enum FilterValue {
 /// How to match a port number
 #[derive(Debug, Clone)]
 enum PortMatch {
-    /// Exact equality — default when the filter value is all digits
+    /// Exact equality, the default when the filter value is all digits
     Exact(u16),
-    /// Substring match — fallback for non-numeric, non-regex values
+    /// Substring match, the fallback for non-numeric, non-regex values
     Partial(String),
     /// Pre-compiled regex
     Regex(Regex),
@@ -122,8 +122,16 @@ fn match_text(haystack: &str, fv: &FilterValue) -> bool {
     }
 }
 
+/// True when any of the present (`Some`) optional text fields matches the
+/// filter value; absent fields are skipped.
+fn any_text_matches<'a>(
+    fv: &FilterValue,
+    fields: impl IntoIterator<Item = Option<&'a str>>,
+) -> bool {
+    fields.into_iter().flatten().any(|s| match_text(s, fv))
+}
+
 impl ConnectionFilter {
-    /// Parse filter query string into filter criteria
     pub fn parse(query: &str) -> Self {
         let mut criteria = Vec::new();
 
@@ -131,7 +139,6 @@ impl ConnectionFilter {
             return Self { criteria };
         }
 
-        // Split by whitespace and process each part
         let parts: Vec<&str> = query.split_whitespace().collect();
 
         for part in parts {
@@ -191,7 +198,6 @@ impl ConnectionFilter {
                     }
                 }
             } else {
-                // General text search
                 criteria.push(FilterCriteria::General(parse_filter_value(
                     &part.to_lowercase(),
                 )));
@@ -201,13 +207,11 @@ impl ConnectionFilter {
         Self { criteria }
     }
 
-    /// Check if a connection matches all filter criteria
     pub fn matches(&self, connection: &Connection) -> bool {
         if self.criteria.is_empty() {
             return true;
         }
 
-        // All criteria must match (AND operation)
         self.criteria.iter().all(|criterion| match criterion {
             FilterCriteria::General(fv) => self.matches_general(connection, fv),
             FilterCriteria::Port(pm) => {
@@ -259,64 +263,41 @@ impl ConnectionFilter {
         })
     }
 
-    /// Check if connection matches general text search across all fields
+    /// General text search across basic connection info, process, service,
+    /// DPI details, the DNS-attributed hostname and ARP vendor names.
     fn matches_general(&self, connection: &Connection, fv: &FilterValue) -> bool {
-        // Check basic connection info
-        if match_text(connection.protocol.as_str(), fv)
+        let (arp_sender_vendor, arp_target_vendor) = match connection.protocol_state {
+            ProtocolState::Arp(ref arp_info) => (
+                arp_info.sender_vendor.as_deref(),
+                arp_info.target_vendor.as_deref(),
+            ),
+            _ => (None, None),
+        };
+
+        match_text(connection.protocol.as_str(), fv)
             || match_text(&connection.local_addr.to_string(), fv)
             || match_text(&connection.remote_addr.to_string(), fv)
-        {
-            return true;
-        }
-
-        // Check process info
-        if let Some(ref process_name) = connection.process_name
-            && match_text(process_name, fv)
-        {
-            return true;
-        }
-
-        // Check service info
-        if let Some(ref service_name) = connection.service_name
-            && match_text(service_name, fv)
-        {
-            return true;
-        }
-
-        // Check DPI info
-        if let Some(ref dpi_info) = connection.dpi_info
-            && self.matches_dpi_general(&dpi_info.application, fv)
-        {
-            return true;
-        }
-
-        // Check DNS-attributed hostname
-        if let Some(ref att) = connection.attributed_hostname
-            && match_text(&att.name, fv)
-        {
-            return true;
-        }
-
-        // Check ARP vendor names
-        if let ProtocolState::Arp(ref arp_info) = connection.protocol_state {
-            if let Some(ref vendor) = arp_info.sender_vendor
-                && match_text(vendor, fv)
-            {
-                return true;
-            }
-            if let Some(ref vendor) = arp_info.target_vendor
-                && match_text(vendor, fv)
-            {
-                return true;
-            }
-        }
-
-        false
+            || any_text_matches(
+                fv,
+                [
+                    connection.process_name.as_deref(),
+                    connection.service_name.as_deref(),
+                    connection
+                        .attributed_hostname
+                        .as_ref()
+                        .map(|att| att.name.as_str()),
+                    arp_sender_vendor,
+                    arp_target_vendor,
+                ],
+            )
+            || connection
+                .dpi_info
+                .as_ref()
+                .is_some_and(|dpi_info| self.matches_dpi_general(&dpi_info.application, fv))
     }
 
-    /// Check if SNI or a DNS-attributed hostname matches the filter
-    /// value (DNS query names are not considered; use the DNS-aware
-    /// filters for those)
+    /// SNI or DNS-attributed hostname match (DNS query names are not
+    /// considered; use the DNS-aware filters for those).
     fn matches_sni(&self, connection: &Connection, fv: &FilterValue) -> bool {
         if let Some(ref dpi_info) = connection.dpi_info
             && let Some(hostname) = dpi_info.application.hostname()
@@ -330,7 +311,6 @@ impl ConnectionFilter {
             .is_some_and(|att| match_text(&att.name, fv))
     }
 
-    /// Check if application protocol matches the filter value
     fn matches_application(&self, connection: &Connection, fv: &FilterValue) -> bool {
         if let Some(ref dpi_info) = connection.dpi_info {
             match_text(&dpi_info.application.to_string(), fv)
@@ -339,211 +319,81 @@ impl ConnectionFilter {
         }
     }
 
-    /// Check if DPI info matches general search
     fn matches_dpi_general(&self, application: &ApplicationProtocol, fv: &FilterValue) -> bool {
-        // Check the application type display
         if match_text(&application.to_string(), fv) {
             return true;
         }
 
-        // Check specific protocol details
         match application {
-            ApplicationProtocol::Http(info) => {
-                if let Some(ref host) = info.host
-                    && match_text(host, fv)
-                {
-                    return true;
-                }
-                if let Some(ref path) = info.path
-                    && match_text(path, fv)
-                {
-                    return true;
-                }
-                if let Some(ref method) = info.method
-                    && match_text(method, fv)
-                {
-                    return true;
-                }
-            }
+            ApplicationProtocol::Http(info) => any_text_matches(
+                fv,
+                [
+                    info.host.as_deref(),
+                    info.path.as_deref(),
+                    info.method.as_deref(),
+                ],
+            ),
             ApplicationProtocol::Https(_) | ApplicationProtocol::Quic(_) => {
-                if let Some(tls_info) = application.tls_info() {
-                    if let Some(ref sni) = tls_info.sni
-                        && match_text(sni, fv)
-                    {
-                        return true;
-                    }
-                    // Check ALPN protocols
-                    for alpn in &tls_info.alpn {
-                        if match_text(alpn, fv) {
-                            return true;
-                        }
-                    }
-                }
+                application.tls_info().is_some_and(|tls_info| {
+                    any_text_matches(
+                        fv,
+                        std::iter::once(tls_info.sni.as_deref())
+                            .chain(tls_info.alpn.iter().map(|alpn| Some(alpn.as_str()))),
+                    )
+                })
             }
-            ApplicationProtocol::Dns(info) => {
-                if let Some(ref query_name) = info.query_name
-                    && match_text(query_name, fv)
-                {
-                    return true;
-                }
-            }
+            ApplicationProtocol::Dns(info) => any_text_matches(fv, [info.query_name.as_deref()]),
             ApplicationProtocol::Ssh(info) => {
-                if match_text("ssh", fv) {
-                    return true;
-                }
-
-                // Check software names
-                if let Some(ref software) = info.server_software
-                    && match_text(software, fv)
-                {
-                    return true;
-                }
-                if let Some(ref software) = info.client_software
-                    && match_text(software, fv)
-                {
-                    return true;
-                }
-
-                // Check connection state
                 let state_str = format!("{:?}", info.connection_state).to_lowercase();
-                if match_text(&state_str, fv) {
-                    return true;
-                }
-
-                // Check algorithms
-                for algo in &info.algorithms {
-                    if match_text(algo, fv) {
-                        return true;
-                    }
-                }
+                match_text("ssh", fv)
+                    || any_text_matches(
+                        fv,
+                        [
+                            info.server_software.as_deref(),
+                            info.client_software.as_deref(),
+                            Some(state_str.as_str()),
+                        ]
+                        .into_iter()
+                        .chain(info.algorithms.iter().map(|algo| Some(algo.as_str()))),
+                    )
             }
-            ApplicationProtocol::Ntp(_) => {
-                if match_text("ntp", fv) {
-                    return true;
-                }
-            }
+            ApplicationProtocol::Ntp(_) => match_text("ntp", fv),
             ApplicationProtocol::Ftp(info) => {
-                if match_text("ftp", fv) {
-                    return true;
-                }
-                if let Some(ref cmd) = info.command
-                    && match_text(cmd, fv)
-                {
-                    return true;
-                }
-                if let Some(ref user) = info.username
-                    && match_text(user, fv)
-                {
-                    return true;
-                }
-                if let Some(ref sw) = info.server_software
-                    && match_text(sw, fv)
-                {
-                    return true;
-                }
-                if let Some(ref sys) = info.system_type
-                    && match_text(sys, fv)
-                {
-                    return true;
-                }
-                if let Some(code) = info.response_code
-                    && match_text(&code.to_string(), fv)
-                {
-                    return true;
-                }
+                let response_code = info.response_code.map(|code| code.to_string());
+                match_text("ftp", fv)
+                    || any_text_matches(
+                        fv,
+                        [
+                            info.command.as_deref(),
+                            info.username.as_deref(),
+                            info.server_software.as_deref(),
+                            info.system_type.as_deref(),
+                            response_code.as_deref(),
+                        ],
+                    )
             }
-            ApplicationProtocol::Mdns(info) => {
-                if let Some(ref query_name) = info.query_name
-                    && match_text(query_name, fv)
-                {
-                    return true;
-                }
-            }
-            ApplicationProtocol::Llmnr(info) => {
-                if let Some(ref query_name) = info.query_name
-                    && match_text(query_name, fv)
-                {
-                    return true;
-                }
-            }
-            ApplicationProtocol::Dhcp(info) => {
-                if let Some(ref hostname) = info.hostname
-                    && match_text(hostname, fv)
-                {
-                    return true;
-                }
-            }
-            ApplicationProtocol::Snmp(info) => {
-                if let Some(ref community) = info.community
-                    && match_text(community, fv)
-                {
-                    return true;
-                }
-            }
-            ApplicationProtocol::Ssdp(info) => {
-                if let Some(ref service_type) = info.service_type
-                    && match_text(service_type, fv)
-                {
-                    return true;
-                }
-            }
-            ApplicationProtocol::NetBios(info) => {
-                if let Some(ref name) = info.name
-                    && match_text(name, fv)
-                {
-                    return true;
-                }
-            }
+            ApplicationProtocol::Mdns(info) => any_text_matches(fv, [info.query_name.as_deref()]),
+            ApplicationProtocol::Llmnr(info) => any_text_matches(fv, [info.query_name.as_deref()]),
+            ApplicationProtocol::Dhcp(info) => any_text_matches(fv, [info.hostname.as_deref()]),
+            ApplicationProtocol::Snmp(info) => any_text_matches(fv, [info.community.as_deref()]),
+            ApplicationProtocol::Ssdp(info) => any_text_matches(fv, [info.service_type.as_deref()]),
+            ApplicationProtocol::NetBios(info) => any_text_matches(fv, [info.name.as_deref()]),
             ApplicationProtocol::BitTorrent(info) => {
-                if match_text("bittorrent", fv) {
-                    return true;
-                }
-                if let Some(ref client) = info.client
-                    && match_text(client, fv)
-                {
-                    return true;
-                }
+                match_text("bittorrent", fv) || any_text_matches(fv, [info.client.as_deref()])
             }
             ApplicationProtocol::Stun(info) => {
-                if match_text("stun", fv) {
-                    return true;
-                }
-                if let Some(ref software) = info.software
-                    && match_text(software, fv)
-                {
-                    return true;
-                }
+                match_text("stun", fv) || any_text_matches(fv, [info.software.as_deref()])
             }
             ApplicationProtocol::Mqtt(info) => {
-                if match_text("mqtt", fv) {
-                    return true;
-                }
-                if let Some(ref client_id) = info.client_id
-                    && match_text(client_id, fv)
-                {
-                    return true;
-                }
-                if let Some(ref topic) = info.topic
-                    && match_text(topic, fv)
-                {
-                    return true;
-                }
+                match_text("mqtt", fv)
+                    || any_text_matches(fv, [info.client_id.as_deref(), info.topic.as_deref()])
             }
-            ApplicationProtocol::WireGuard(info) => {
-                if match_text(&info.packet_type.to_string(), fv) {
-                    return true;
-                }
-            }
+            ApplicationProtocol::WireGuard(info) => match_text(&info.packet_type.to_string(), fv),
             ApplicationProtocol::OpenVpn(info) => {
-                if match_text(&info.packet_type.to_string(), fv)
+                match_text(&info.packet_type.to_string(), fv)
                     || match_text(&info.key_id.to_string(), fv)
-                {
-                    return true;
-                }
             }
         }
-
-        false
     }
 }
 

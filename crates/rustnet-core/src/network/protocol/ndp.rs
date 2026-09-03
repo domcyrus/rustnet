@@ -14,7 +14,7 @@ use std::net::{IpAddr, Ipv6Addr};
 /// the ICMPv6 header.
 ///
 /// The caller must verify the enclosing IPv6 hop limit is 255 before calling:
-/// RFC 4861 receivers require it, and it proves the packet was not routed —
+/// RFC 4861 receivers require it, and it proves the packet was not routed,
 /// the on-link property ARP gets for free from not being routable.
 pub fn extract_neighbor(
     icmpv6_data: &[u8],
@@ -58,11 +58,11 @@ fn target_address(icmpv6_data: &[u8]) -> Option<IpAddr> {
 /// address option and format its MAC. Option lengths count 8-octet units.
 /// RFC 4861 (§4.6, §7.1.1) requires the whole message to be discarded when
 /// any included option is malformed, so the walk always continues to the end
-/// of the list and the candidate is returned only after every option — a
+/// of the list and the candidate is returned only after every option: a
 /// zero length, a declared length running past the packet, or a trailing
 /// partial option rejects the message even when the wanted option came
 /// first. A matching option is used only at length 1 (2 header bytes +
-/// 6 address bytes), the Ethernet form — other link layers use other sizes.
+/// 6 address bytes), the Ethernet form; other link layers use other sizes.
 fn find_link_layer_option(mut options: &[u8], wanted: u8) -> Option<String> {
     let mut mac = None;
     while !options.is_empty() {
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn truncated_advertisement_is_rejected() {
-        // Type/code/checksum only — no target address, no options.
+        // Type/code/checksum only: no target address, no options.
         assert!(extract_neighbor(&[136, 0, 0, 0], ip("fe80::2"), None).is_none());
     }
 }

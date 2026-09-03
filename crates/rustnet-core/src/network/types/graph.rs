@@ -1,10 +1,6 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-// ============================================================================
-// Traffic History Types (for graph visualization)
-// ============================================================================
-
 /// Chart data points as (time_offset, value) pairs
 pub type ChartData = Vec<(f64, f64)>;
 
@@ -292,8 +288,7 @@ impl TrafficHistory {
     /// Last `count` values of `pick`, oldest first (newest last).
     ///
     /// `samples` is filled push_back/pop_front, so `iter()` is already
-    /// oldest→newest. Skip past everything but the last `count` instead of
-    /// the rev→take→collect→rev→collect dance, which allocated twice.
+    /// oldest→newest. Skip past everything but the last `count`.
     fn sparkline(&self, count: usize, pick: fn(&TrafficSample) -> u64) -> Vec<u64> {
         let skip = self.samples.len().saturating_sub(count);
         self.samples.iter().skip(skip).map(pick).collect()
@@ -337,20 +332,25 @@ impl TrafficHistory {
 
     /// Moving-average series of `value` as (negative age, value) pairs,
     /// falling back to raw points when there are fewer than `window` samples.
+    ///
+    /// `value` may be absent for an interval (RTT needs a handshake to
+    /// measure), so the moving average runs over the values present in each
+    /// window rather than a fixed divisor; a window with none yields no point.
     fn windowed_series(
         &self,
         now: Instant,
         window: usize,
-        value: fn(&TrafficSample) -> f64,
+        value: fn(&TrafficSample) -> Option<f64>,
     ) -> ChartData {
         if self.samples.len() < window {
             // Not enough data for smoothing, return raw
             return self
                 .samples
                 .iter()
-                .map(|s| {
+                .filter_map(|s| {
+                    let value = value(s)?;
                     let age = now.duration_since(s.timestamp).as_secs_f64();
-                    (-age, value(s))
+                    Some((-age, value))
                 })
                 .collect();
         }
@@ -358,9 +358,13 @@ impl TrafficHistory {
         let samples: Vec<_> = self.samples.iter().collect();
         samples
             .windows(window)
-            .map(|w| {
-                let avg: f64 = w.iter().map(|s| value(s)).sum::<f64>() / window as f64;
-                (-Self::avg_age(now, w), avg)
+            .filter_map(|w| {
+                let count = w.iter().filter_map(|s| value(s)).count();
+                if count == 0 {
+                    return None;
+                }
+                let sum: f64 = w.iter().filter_map(|s| value(s)).sum();
+                Some((-Self::avg_age(now, w), sum / count as f64))
             })
             .collect()
     }
@@ -369,38 +373,9 @@ impl TrafficHistory {
     /// Time offset is negative seconds from now
     pub fn get_health_chart_data(&self) -> (ChartData, ChartData) {
         let now = Instant::now();
-        // Apply smoothing with window of 3
         let window = 3;
-        let loss = self.windowed_series(now, window, |s| s.packet_loss_pct as f64);
-
-        // RTT samples are optional per interval, so the moving average runs
-        // over the values present in each window rather than a fixed divisor.
-        let rtt: ChartData = if self.samples.len() < window {
-            self.samples
-                .iter()
-                .filter_map(|s| {
-                    s.avg_rtt_ms.map(|rtt| {
-                        let age = now.duration_since(s.timestamp).as_secs_f64();
-                        (-age, rtt)
-                    })
-                })
-                .collect()
-        } else {
-            let samples: Vec<_> = self.samples.iter().collect();
-            samples
-                .windows(window)
-                .filter_map(|w| {
-                    let rtts: Vec<f64> = w.iter().filter_map(|s| s.avg_rtt_ms).collect();
-                    if rtts.is_empty() {
-                        None
-                    } else {
-                        let avg_rtt: f64 = rtts.iter().sum::<f64>() / rtts.len() as f64;
-                        Some((-Self::avg_age(now, w), avg_rtt))
-                    }
-                })
-                .collect()
-        };
-
+        let loss = self.windowed_series(now, window, |s| Some(s.packet_loss_pct as f64));
+        let rtt = self.windowed_series(now, window, |s| s.avg_rtt_ms);
         (loss, rtt)
     }
 
@@ -590,10 +565,6 @@ mod tests {
         assert_eq!(history.tx_scale.target, 1_024);
     }
 
-    // ========================================================================
-    // Traffic History Health Data Tests
-    // ========================================================================
-
     #[test]
     fn test_traffic_sample_packet_loss_calculation() {
         let mut history = TrafficHistory::new(60);
@@ -603,14 +574,10 @@ mod tests {
 
         let (loss_data, rtt_data) = history.get_health_chart_data();
 
-        // Should have at least one data point
         assert!(!loss_data.is_empty());
-        // Loss percentage should be 5%
         assert!((loss_data[0].1 - 5.0).abs() < 0.01);
 
-        // Should have RTT data
         assert!(!rtt_data.is_empty());
-        // RTT should be around 25ms
         assert!((rtt_data[0].1 - 25.0).abs() < 0.01);
     }
 
@@ -623,11 +590,9 @@ mod tests {
 
         let (loss_data, rtt_data) = history.get_health_chart_data();
 
-        // Should have data with 0% loss
         assert!(!loss_data.is_empty());
         assert!((loss_data[0].1).abs() < 0.01);
 
-        // No RTT data
         assert!(rtt_data.is_empty());
     }
 
@@ -651,7 +616,6 @@ mod tests {
 
         let (loss_data, rtt_data) = history.get_health_chart_data();
 
-        // Should have smoothed data points
         assert!(loss_data.len() >= 2);
         assert!(rtt_data.len() >= 2);
     }

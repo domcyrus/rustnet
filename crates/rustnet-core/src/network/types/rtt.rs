@@ -7,10 +7,6 @@ use super::protocol_info::{
     LlmnrInfo, NetBiosInfo, NetBiosService, NtpInfo, NtpMode, StunMessageClass,
 };
 
-// ============================================================================
-// RTT Tracking Types (for latency measurement)
-// ============================================================================
-
 /// Capture time of a pending entry, for staleness pruning.
 trait PendingStamp {
     fn stamp(&self) -> SystemTime;
@@ -86,34 +82,59 @@ impl<K: Eq + std::hash::Hash, V: PendingStamp + Copy> PendingTable<K, V> {
     }
 }
 
+/// Which half of a timed request/response exchange a packet carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExchangeHalf {
+    Request,
+    Response,
+    /// Neither: a STUN indication, a NetBIOS WACK, an NTP broadcast.
+    Untimed,
+}
+
+impl ExchangeHalf {
+    /// For protocols where every packet is a query or a response (DNS, LLMNR).
+    fn from_is_response(is_response: bool) -> Self {
+        if is_response {
+            Self::Response
+        } else {
+            Self::Request
+        }
+    }
+}
+
 impl<K: Eq + std::hash::Hash> PendingTable<K, (SystemTime, ConnectionKey)> {
     /// Record the client side of a request/response exchange, or complete it
     /// when the matching response arrives. The connection key is retained so
     /// multicast or broadcast requests can be updated when their unicast
     /// response is stored under a different connection.
+    ///
+    /// Only the client role is timed: an outgoing request starts the timer
+    /// and an incoming response stops it. Requests that expired by `at` are
+    /// noted as timeouts in `events`, and a re-sent pending request as a
+    /// retry.
     fn record_exchange(
         &mut self,
+        events: &mut RequestHealthEvents,
         pending_key: K,
         connection_key: ConnectionKey,
         is_outgoing: bool,
-        is_request: bool,
-        is_response: bool,
+        half: ExchangeHalf,
         at: SystemTime,
-    ) -> (Option<(Duration, ConnectionKey)>, bool) {
-        if is_outgoing && is_request {
-            let retried = self.start(pending_key, (at, connection_key));
-            return (None, retried);
+    ) -> Option<(Duration, ConnectionKey)> {
+        events.note_timeouts(self.prune(at));
+        match (is_outgoing, half) {
+            (true, ExchangeHalf::Request) => {
+                if self.start(pending_key, (at, connection_key)) {
+                    events.retries.push(connection_key);
+                }
+                None
+            }
+            (false, ExchangeHalf::Response) => {
+                let (sent_at, request_key) = self.complete(&pending_key)?;
+                Some((at.duration_since(sent_at).unwrap_or_default(), request_key))
+            }
+            _ => None,
         }
-        if !is_outgoing && is_response {
-            let Some((sent_at, request_key)) = self.complete(&pending_key) else {
-                return (None, false);
-            };
-            return (
-                Some((at.duration_since(sent_at).unwrap_or_default(), request_key)),
-                false,
-            );
-        }
-        (None, false)
     }
 }
 
@@ -122,6 +143,14 @@ impl<K: Eq + std::hash::Hash> PendingTable<K, (SystemTime, ConnectionKey)> {
 pub(crate) struct RequestHealthEvents {
     pub(crate) retries: Vec<ConnectionKey>,
     pub(crate) timeouts: Vec<ConnectionKey>,
+}
+
+impl RequestHealthEvents {
+    /// Note the requesting connection of every expired pending request.
+    fn note_timeouts(&mut self, expired: impl IntoIterator<Item = (SystemTime, ConnectionKey)>) {
+        self.timeouts
+            .extend(expired.into_iter().map(|(_, key)| key));
+    }
 }
 
 /// Correlation scope for protocols that use the DNS transaction ID.
@@ -141,7 +170,7 @@ enum DnsTransactionKey {
 /// Every pending timestamp here is the packet's **capture** time, supplied by
 /// the caller, never a clock read taken while processing. Capture threads hand
 /// packets to processing in batches of up to 100 (or every 100ms), so a
-/// handshake that completes inside one batch window — which is most of them —
+/// handshake that completes inside one batch window (which is most of them)
 /// is processed as a burst microseconds wide. Timing that burst measures the
 /// batch loop, not the network, and reports round trips as 0.0ms. Using capture
 /// time also makes RTTs correct when a saved pcap is replayed.
@@ -225,7 +254,7 @@ impl RttTracker {
     /// Record a QUIC long-header handshake packet, returning the RTT when it
     /// completes a round trip with the peer.
     ///
-    /// QUIC has no SYN/SYN-ACK flag to key on, so direction stands in for it —
+    /// QUIC has no SYN/SYN-ACK flag to key on, so direction stands in for it,
     /// but only in one order. rustnet observes from an endpoint, not from a
     /// midpoint, so the timer must start on a packet leaving this host and stop
     /// on the peer's answer coming back: that spans the network twice. Timing
@@ -273,20 +302,16 @@ impl RttTracker {
         is_response: bool,
         at: SystemTime,
     ) -> Option<Duration> {
-        let expired = self.pending_dns.prune(at);
-        self.note_request_timeouts(expired);
-        let (completed, retried) = self.pending_dns.record_exchange(
-            DnsTransactionKey::Unicast(key, txid),
-            key,
-            is_outgoing,
-            !is_response,
-            is_response,
-            at,
-        );
-        if retried {
-            self.request_health_events.retries.push(key);
-        }
-        completed.map(|(rtt, _)| rtt)
+        self.pending_dns
+            .record_exchange(
+                &mut self.request_health_events,
+                DnsTransactionKey::Unicast(key, txid),
+                key,
+                is_outgoing,
+                ExchangeHalf::from_is_response(is_response),
+                at,
+            )
+            .map(|(rtt, _)| rtt)
     }
 
     /// Record an LLMNR packet and return the first response time together with
@@ -304,20 +329,14 @@ impl RttTracker {
         is_outgoing: bool,
         at: SystemTime,
     ) -> Option<(Duration, ConnectionKey)> {
-        let expired = self.pending_dns.prune(at);
-        self.note_request_timeouts(expired);
-        let (completed, retried) = self.pending_dns.record_exchange(
+        self.pending_dns.record_exchange(
+            &mut self.request_health_events,
             DnsTransactionKey::Llmnr(key.local_addr, info.txid),
             key,
             is_outgoing,
-            !info.is_response,
-            info.is_response,
+            ExchangeHalf::from_is_response(info.is_response),
             at,
-        );
-        if retried {
-            self.request_health_events.retries.push(key);
-        }
-        completed
+        )
     }
 
     /// Record a NetBIOS packet and, when an incoming final response matches an
@@ -338,21 +357,22 @@ impl RttTracker {
         is_outgoing: bool,
         at: SystemTime,
     ) -> Option<(Duration, ConnectionKey)> {
-        let pending_key = (key.local_addr, info.service, info.transaction_id);
-        let expired = self.pending_netbios.prune(at);
-        self.note_request_timeouts(expired);
-        let (completed, retried) = self.pending_netbios.record_exchange(
-            pending_key,
+        // WACK is neither: a later final response completes the request.
+        let half = if info.is_request() {
+            ExchangeHalf::Request
+        } else if info.is_response {
+            ExchangeHalf::Response
+        } else {
+            ExchangeHalf::Untimed
+        };
+        self.pending_netbios.record_exchange(
+            &mut self.request_health_events,
+            (key.local_addr, info.service, info.transaction_id),
             key,
             is_outgoing,
-            info.is_request(),
-            info.is_response,
+            half,
             at,
-        );
-        if retried {
-            self.request_health_events.retries.push(key);
-        }
-        completed
+        )
     }
 
     /// Record an ICMP echo packet, returning the RTT when an incoming reply
@@ -405,22 +425,23 @@ impl RttTracker {
         class: StunMessageClass,
         at: SystemTime,
     ) -> Option<Duration> {
-        let expired = self.pending_stun.prune(at);
-        self.note_request_timeouts(expired);
-        let pending_key = (key, transaction_id);
-        match (is_outgoing, class) {
-            (true, StunMessageClass::Request) => {
-                if self.pending_stun.start(pending_key, (at, key)) {
-                    self.request_health_events.retries.push(key);
-                }
-                None
+        let half = match class {
+            StunMessageClass::Request => ExchangeHalf::Request,
+            StunMessageClass::SuccessResponse | StunMessageClass::ErrorResponse => {
+                ExchangeHalf::Response
             }
-            (false, StunMessageClass::SuccessResponse | StunMessageClass::ErrorResponse) => {
-                let (sent_at, _) = self.pending_stun.complete(&pending_key)?;
-                Some(at.duration_since(sent_at).unwrap_or_default())
-            }
-            _ => None,
-        }
+            StunMessageClass::Indication => ExchangeHalf::Untimed,
+        };
+        self.pending_stun
+            .record_exchange(
+                &mut self.request_health_events,
+                (key, transaction_id),
+                key,
+                is_outgoing,
+                half,
+                at,
+            )
+            .map(|(rtt, _)| rtt)
     }
 
     /// Record an NTP packet, returning the round trip when an incoming
@@ -437,45 +458,37 @@ impl RttTracker {
         is_outgoing: bool,
         at: SystemTime,
     ) -> Option<Duration> {
-        let expired = self.pending_ntp.prune(at);
-        self.note_request_timeouts(expired);
-        match (is_outgoing, info.mode) {
-            (true, NtpMode::Client) => {
-                if self
-                    .pending_ntp
-                    .start((key, info.transmit_timestamp), (at, key))
-                {
-                    self.request_health_events.retries.push(key);
-                }
-                None
-            }
-            (false, NtpMode::Server) => {
-                let (sent_at, _) = self.pending_ntp.complete(&(key, info.origin_timestamp))?;
-                Some(at.duration_since(sent_at).unwrap_or_default())
-            }
-            _ => None,
-        }
-    }
-
-    fn note_request_timeouts(
-        &mut self,
-        expired: impl IntoIterator<Item = (SystemTime, ConnectionKey)>,
-    ) {
-        self.request_health_events
-            .timeouts
-            .extend(expired.into_iter().map(|(_, key)| key));
+        let half = match info.mode {
+            NtpMode::Client => ExchangeHalf::Request,
+            NtpMode::Server => ExchangeHalf::Response,
+            _ => ExchangeHalf::Untimed,
+        };
+        // Our request is keyed by what we transmitted; the server's response
+        // is keyed by the originate echo of it.
+        let timestamp = if is_outgoing {
+            info.transmit_timestamp
+        } else {
+            info.origin_timestamp
+        };
+        self.pending_ntp
+            .record_exchange(
+                &mut self.request_health_events,
+                (key, timestamp),
+                key,
+                is_outgoing,
+                half,
+                at,
+            )
+            .map(|(rtt, _)| rtt)
     }
 
     /// Expire all tracked request protocols and return their health events.
     pub(crate) fn expire_requests(&mut self, now: SystemTime) -> RequestHealthEvents {
-        let dns = self.pending_dns.prune(now);
-        let netbios = self.pending_netbios.prune(now);
-        let stun = self.pending_stun.prune(now);
-        let ntp = self.pending_ntp.prune(now);
-        self.note_request_timeouts(dns);
-        self.note_request_timeouts(netbios);
-        self.note_request_timeouts(stun);
-        self.note_request_timeouts(ntp);
+        let events = &mut self.request_health_events;
+        events.note_timeouts(self.pending_dns.prune(now));
+        events.note_timeouts(self.pending_netbios.prune(now));
+        events.note_timeouts(self.pending_stun.prune(now));
+        events.note_timeouts(self.pending_ntp.prune(now));
         self.take_request_health_events()
     }
 
@@ -540,14 +553,10 @@ impl Default for RttTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::types::test_support::{addr, key};
     use crate::network::types::{
         DnsQueryType, LlmnrInfo, NetBiosOpcode, NetBiosResponseStatus, Protocol,
     };
-    use std::net::{IpAddr, Ipv4Addr};
-
-    // ========================================================================
-    // RTT Tracker Tests
-    // ========================================================================
 
     /// Capture time `millis` into a synthetic trace. RTT is the difference
     /// between two packets' capture timestamps, so tests supply them directly
@@ -595,11 +604,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_record_syn() {
         let mut tracker = RttTracker::new();
-        let key = ConnectionKey::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
-        );
+        let key = key(Protocol::Tcp, "192.168.1.1:12345", "93.184.216.34:443");
 
         tracker.record_syn(key, rtt_capture_time(0));
         assert_eq!(tracker.pending_syns.map.len(), 1);
@@ -609,11 +614,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_record_syn_ack_no_match() {
         let mut tracker = RttTracker::new();
-        let key = ConnectionKey::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443),
-        );
+        let key = key(Protocol::Tcp, "192.168.1.1:12345", "93.184.216.34:443");
 
         // Try to record SYN-ACK without prior SYN
         let rtt = tracker.record_syn_ack(&key, rtt_capture_time(0));
@@ -623,8 +624,8 @@ mod tests {
     #[test]
     fn test_rtt_tracker_record_syn_ack_match() {
         let mut tracker = RttTracker::new();
-        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345);
-        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+        let local = addr("192.168.1.1:12345");
+        let remote = addr("93.184.216.34:443");
 
         // Record SYN (outgoing: local -> remote)
         let syn_key = ConnectionKey::new(Protocol::Tcp, local, remote);
@@ -646,12 +647,13 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_syns_capped() {
         let mut tracker = RttTracker::new();
-        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+        let local = addr("192.168.1.1:10000");
+        let remote = addr("93.184.216.34:443");
 
         for port in 0..MAX_PENDING as u16 {
             let key = ConnectionKey::new(
                 Protocol::Tcp,
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 10_000 + port),
+                SocketAddr::new(local.ip(), 10_000 + port),
                 remote,
             );
             tracker.record_syn(key, rtt_capture_time(0));
@@ -659,22 +661,14 @@ mod tests {
         assert_eq!(tracker.pending_syns.map.len(), MAX_PENDING);
 
         // One more distinct SYN is rejected...
-        let overflow_key = ConnectionKey::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 10_000),
-            remote,
-        );
+        let overflow_key = ConnectionKey::new(Protocol::Tcp, addr("192.168.1.2:10000"), remote);
         tracker.record_syn(overflow_key, rtt_capture_time(1));
         assert_eq!(tracker.pending_syns.map.len(), MAX_PENDING);
         let rtt = tracker.record_syn_ack(&overflow_key, rtt_capture_time(20));
         assert!(rtt.is_none(), "a rejected SYN has no pending timestamp");
 
         // ...but a retransmit of a tracked SYN still restarts its timer.
-        let tracked_key = ConnectionKey::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 10_000),
-            remote,
-        );
+        let tracked_key = ConnectionKey::new(Protocol::Tcp, addr("192.168.1.1:10000"), remote);
         tracker.record_syn(tracked_key, rtt_capture_time(1_000));
         let rtt = tracker.record_syn_ack(&tracked_key, rtt_capture_time(1_015));
         assert_eq!(rtt, Some(Duration::from_millis(15)));
@@ -683,23 +677,20 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_quic_handshakes_capped() {
         let mut tracker = RttTracker::new();
-        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(142, 250, 74, 78)), 443);
+        let local = addr("192.168.1.1:10000");
+        let remote = addr("142.250.74.78:443");
 
         for port in 0..MAX_PENDING as u16 {
             let key = ConnectionKey::new(
                 Protocol::Udp,
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 10_000 + port),
+                SocketAddr::new(local.ip(), 10_000 + port),
                 remote,
             );
             tracker.record_quic_handshake(key, true, rtt_capture_time(0));
         }
         assert_eq!(tracker.pending_quic_handshakes.map.len(), MAX_PENDING);
 
-        let overflow_key = ConnectionKey::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 2)), 10_000),
-            remote,
-        );
+        let overflow_key = ConnectionKey::new(Protocol::Udp, addr("192.168.1.2:10000"), remote);
         tracker.record_quic_handshake(overflow_key, true, rtt_capture_time(1));
         assert_eq!(tracker.pending_quic_handshakes.map.len(), MAX_PENDING);
         let rtt = tracker.record_quic_handshake(overflow_key, false, rtt_capture_time(20));
@@ -708,11 +699,7 @@ mod tests {
             "a rejected handshake has no pending timestamp"
         );
 
-        let tracked_key = ConnectionKey::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 10_000),
-            remote,
-        );
+        let tracked_key = ConnectionKey::new(Protocol::Udp, addr("192.168.1.1:10000"), remote);
         tracker.record_quic_handshake(tracked_key, true, rtt_capture_time(1_000));
         let rtt = tracker.record_quic_handshake(tracked_key, false, rtt_capture_time(1_015));
         assert_eq!(rtt, Some(Duration::from_millis(15)));
@@ -721,10 +708,9 @@ mod tests {
     #[test]
     fn test_rtt_tracker_take_average_rtt() {
         let mut tracker = RttTracker::new();
-        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 12345);
-        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
+        let local = addr("192.168.1.1:12345");
+        let remote = addr("93.184.216.34:443");
 
-        // Record multiple RTT measurements
         for port in 12345..12348 {
             let local_with_port = SocketAddr::new(local.ip(), port);
             let key = ConnectionKey::new(Protocol::Tcp, local_with_port, remote);
@@ -732,7 +718,6 @@ mod tests {
             tracker.record_syn_ack(&key, rtt_capture_time(5));
         }
 
-        // Get average RTT
         let avg = tracker.take_average_rtt(60);
         assert!(avg.is_some());
         let avg = avg.unwrap();
@@ -745,11 +730,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_dns_expires() {
         let mut tracker = RttTracker::new();
-        let key = ConnectionKey::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 40_000),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 53),
-        );
+        let key = key(Protocol::Udp, "192.168.1.1:40000", "9.9.9.9:53");
 
         tracker.record_dns_packet(key, 0x1234, true, false, rtt_capture_time(0));
         let rtt = tracker.record_dns_packet(key, 0x1234, false, true, rtt_capture_time(11_000));
@@ -763,8 +744,8 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_dns_capped() {
         let mut tracker = RttTracker::new();
-        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 40_000);
-        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 53);
+        let local = addr("192.168.1.1:40000");
+        let remote = addr("9.9.9.9:53");
         let key = ConnectionKey::new(Protocol::Udp, local, remote);
 
         for txid in 0..MAX_PENDING as u16 {
@@ -789,22 +770,12 @@ mod tests {
     #[test]
     fn test_rtt_tracker_llmnr_pairs_first_unicast_response() {
         let mut tracker = RttTracker::new();
-        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 40_000);
-        let query_key = ConnectionKey::new(
-            Protocol::Udp,
-            local,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 252)), 5355),
-        );
-        let first_response_key = ConnectionKey::new(
-            Protocol::Udp,
-            local,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 5355),
-        );
-        let second_response_key = ConnectionKey::new(
-            Protocol::Udp,
-            local,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 21)), 5355),
-        );
+        let local = addr("192.168.1.1:40000");
+        let query_key = ConnectionKey::new(Protocol::Udp, local, addr("224.0.0.252:5355"));
+        let first_response_key =
+            ConnectionKey::new(Protocol::Udp, local, addr("192.168.1.20:5355"));
+        let second_response_key =
+            ConnectionKey::new(Protocol::Udp, local, addr("192.168.1.21:5355"));
         let query = llmnr_test_info(0x1234, false);
         let response = llmnr_test_info(0x1234, true);
 
@@ -829,17 +800,9 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_llmnr_expires() {
         let mut tracker = RttTracker::new();
-        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 40_000);
-        let query_key = ConnectionKey::new(
-            Protocol::Udp,
-            local,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(224, 0, 0, 252)), 5355),
-        );
-        let response_key = ConnectionKey::new(
-            Protocol::Udp,
-            local,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 5355),
-        );
+        let local = addr("192.168.1.1:40000");
+        let query_key = ConnectionKey::new(Protocol::Udp, local, addr("224.0.0.252:5355"));
+        let response_key = ConnectionKey::new(Protocol::Udp, local, addr("192.168.1.20:5355"));
 
         tracker.record_llmnr_packet(
             query_key,
@@ -860,11 +823,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_netbios_expires() {
         let mut tracker = RttTracker::new();
-        let key = ConnectionKey::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 137),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)), 137),
-        );
+        let key = key(Protocol::Udp, "192.168.1.1:137", "192.168.1.255:137");
         let request = netbios_test_info(NetBiosService::NameService, 0x1234, false);
         let response = netbios_test_info(NetBiosService::NameService, 0x1234, true);
 
@@ -877,8 +836,8 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_netbios_capped() {
         let mut tracker = RttTracker::new();
-        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 137);
-        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 255)), 137);
+        let local = addr("192.168.1.1:137");
+        let remote = addr("192.168.1.255:137");
         let key = ConnectionKey::new(Protocol::Udp, local, remote);
 
         for transaction_id in 0..MAX_PENDING as u16 {
@@ -918,11 +877,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_icmp_echo_expires() {
         let mut tracker = RttTracker::new();
-        let key = ConnectionKey::new(
-            Protocol::Icmp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 0),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
-        );
+        let key = key(Protocol::Icmp, "192.168.1.1:0", "8.8.8.8:0");
 
         tracker.record_icmp_echo(key, (7, 1), true, false, rtt_capture_time(0));
         let rtt = tracker.record_icmp_echo(key, (7, 1), false, true, rtt_capture_time(11_000));
@@ -933,11 +888,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_icmp_echo_is_capped() {
         let mut tracker = RttTracker::new();
-        let key = ConnectionKey::new(
-            Protocol::Icmp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 0),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 0),
-        );
+        let key = key(Protocol::Icmp, "192.168.1.1:0", "8.8.8.8:0");
 
         for sequence in 0..MAX_PENDING as u16 {
             tracker.record_icmp_echo(key, (7, sequence), true, false, rtt_capture_time(0));
@@ -969,11 +920,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_stun_pairs_by_transaction_id() {
         let mut tracker = RttTracker::new();
-        let key = ConnectionKey::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 54_000),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478),
-        );
+        let key = key(Protocol::Udp, "192.168.1.1:54000", "203.0.113.5:3478");
         let txid = [7u8; 12];
 
         tracker.record_stun(
@@ -1006,11 +953,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_stun_expires() {
         let mut tracker = RttTracker::new();
-        let key = ConnectionKey::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 54_000),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)), 3478),
-        );
+        let key = key(Protocol::Udp, "192.168.1.1:54000", "203.0.113.5:3478");
         let txid = [7u8; 12];
 
         tracker.record_stun(
@@ -1044,11 +987,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_ntp_pairs_by_originate_timestamp() {
         let mut tracker = RttTracker::new();
-        let key = ConnectionKey::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 47_000),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123),
-        );
+        let key = key(Protocol::Udp, "192.168.1.1:47000", "203.0.113.9:123");
 
         tracker.record_ntp(
             key,
@@ -1078,11 +1017,7 @@ mod tests {
     #[test]
     fn test_rtt_tracker_pending_ntp_expires() {
         let mut tracker = RttTracker::new();
-        let key = ConnectionKey::new(
-            Protocol::Udp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 47_000),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 9)), 123),
-        );
+        let key = key(Protocol::Udp, "192.168.1.1:47000", "203.0.113.9:123");
 
         tracker.record_ntp(
             key,

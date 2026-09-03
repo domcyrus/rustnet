@@ -11,24 +11,29 @@ use std::time::{Duration, Instant};
 
 use crate::network::platform::create_process_lookup;
 use crate::network::tracker::ConnectionTracker;
-use crate::network::types::{Connection, ProcessLineage};
+use crate::network::types::{Connection, ProcessLineage, UNKNOWN_PROCESS_NAME};
 
 use super::sampling::spawn_loop;
 use super::state::App;
 use super::types::ProcessDetectionStatus;
 
+/// Whether a connection needs no further process enrichment. A connection
+/// still carrying the [`UNKNOWN_PROCESS_NAME`] placeholder (a PID whose
+/// image name could not be resolved yet) stays eligible so the resolver can
+/// upgrade it once the real name is known.
 #[inline]
-fn process_enrichment_complete(conn: &Connection, unknown_process_name: &str) -> bool {
+fn process_enrichment_complete(conn: &Connection) -> bool {
     conn.pid.is_some()
         && conn
             .process_name
             .as_deref()
-            .is_some_and(|name| name != unknown_process_name)
+            .is_some_and(|name| name != UNKNOWN_PROCESS_NAME)
         && conn.attribution_quality.is_some()
 }
 
 impl App {
-    /// Start process enrichment thread conditionally based on PKTAP status
+    /// Spawn the process enrichment thread; on macOS it first waits for PKTAP
+    /// detection to decide between libproc and lsof.
     pub(super) fn start_process_enrichment_conditional(
         &self,
         tracker: Arc<ConnectionTracker>,
@@ -44,16 +49,14 @@ impl App {
         thread::Builder::new()
             .name("process-enrichment".to_string())
             .spawn(move || {
-            // On macOS, wait for PKTAP detection to avoid unnecessary lsof calls
             #[cfg(target_os = "macos")]
             {
-                // Wait up to 5 seconds for PKTAP detection with shorter polling intervals
+                // Wait up to 5 seconds for PKTAP so lsof is not spawned needlessly.
                 let wait_start = Instant::now();
                 while wait_start.elapsed() < Duration::from_secs(5)
                     && !should_stop.load(Ordering::Relaxed)
                     && !pktap_active.load(Ordering::Relaxed)
                 {
-                    // Check more frequently for faster detection
                     thread::sleep(Duration::from_millis(50));
                 }
 
@@ -74,7 +77,6 @@ impl App {
                 }
             }
 
-            // Start the actual process enrichment
             if let Err(e) = Self::run_process_enrichment(
                 tracker,
                 should_stop,
@@ -93,7 +95,6 @@ impl App {
         Ok(())
     }
 
-    /// Run the actual process enrichment logic
     fn run_process_enrichment(
         tracker: Arc<ConnectionTracker>,
         should_stop: Arc<AtomicBool>,
@@ -105,7 +106,6 @@ impl App {
     ) -> Result<()> {
         use crate::network::platform::DegradationReason;
 
-        // Check PKTAP status before creating process lookup
         let use_pktap = pktap_active.load(Ordering::Relaxed);
 
         let process_lookup = create_process_lookup(use_pktap)?;
@@ -121,8 +121,8 @@ impl App {
         // capabilities before loading eBPF, so drop the ones it will not use
         // again. CAP_BPF and CAP_PERFMON deliberately stay: this thread keeps
         // reading the eBPF socket map for the process lifetime, and with
-        // kernel.unprivileged_bpf_disabled set every bpf(2) call — map lookups
-        // included — is rejected without CAP_BPF.
+        // kernel.unprivileged_bpf_disabled set every bpf(2) call (map lookups
+        // included) is rejected without CAP_BPF.
         #[cfg(all(target_os = "linux", feature = "landlock"))]
         rustnet_sandbox::capabilities::drop_thread_cap_net_raw("process enrichment thread");
 
@@ -151,7 +151,7 @@ impl App {
 
         // Fast/slow enrichment cadence. Young connections are retried on a
         // quick tick so their process name appears almost immediately (the
-        // eBPF map entry exists from the moment the socket connects — a
+        // eBPF map entry exists from the moment the socket connects; a
         // slower cadence only buys a visible "-" in the UI). Older
         // stragglers (e.g. NAT-translated container traffic the lookup can
         // never resolve) are retried only on the full pass so the fast
@@ -161,10 +161,6 @@ impl App {
         let full_pass_interval = Duration::from_secs(2);
         // Connections younger than this are retried on every fast tick.
         const YOUNG_CONNECTION_SECS: u64 = 10;
-        // Placeholder name that lookups store for a PID whose image name
-        // could not be resolved (yet). Kept eligible for re-enrichment so the
-        // resolver can upgrade it once the real name is known.
-        const UNKNOWN_PROCESS_NAME: &str = "Unknown";
         let mut last_full_pass = Instant::now() - full_pass_interval;
         // Executable paths are shared by every connection of a process, and
         // `Connection` is cloned in bulk on every snapshot tick. Interning here
@@ -175,8 +171,7 @@ impl App {
         // the map is cleared on every full pass.
         let mut lineages: HashMap<u32, Arc<ProcessLineage>> = HashMap::new();
 
-        // Build and set the detection status from the process lookup implementation
-        // Only set if not already detected as pktap (to handle race conditions)
+        // A PKTAP status set by the startup wait wins over the lookup's own.
         if let Ok(mut status) = process_detection_status.write()
             && status.method != "pktap"
         {
@@ -222,7 +217,6 @@ impl App {
                 info!("PKTAP became active, switched process enrichment from lsof to libproc");
             }
 
-            // Refresh process lookup periodically
             if last_refresh.elapsed() > Duration::from_secs(5) {
                 if let Err(e) = process_lookup.refresh() {
                     debug!("Process lookup refresh failed: {}", e);
@@ -246,7 +240,6 @@ impl App {
                 lineages.clear();
             }
 
-            // Enrich connections without process info
             let mut enriched = 0;
             for mut entry in tracker.connections().iter_mut() {
                 // Match quality is also the completion marker for rich
@@ -255,7 +248,7 @@ impl App {
                 // attempt. Optional fields are best effort; requiring every
                 // one would retry permanent permission or process-exit failures
                 // on every fast tick.
-                if process_enrichment_complete(&entry, UNKNOWN_PROCESS_NAME) {
+                if process_enrichment_complete(&entry) {
                     continue;
                 }
                 // Fast ticks only retry young connections; older ones wait
@@ -271,7 +264,7 @@ impl App {
                     }
                 }
 
-                // Allow partial enrichment - fill in missing pieces without overwriting existing data
+                // Partial enrichment: fill missing pieces without overwriting.
                 if let Some(attribution) = process_lookup.get_process_attribution(&entry) {
                     let pid = attribution.tgid;
                     let name = attribution.name;
@@ -391,7 +384,6 @@ impl App {
         Ok(())
     }
 
-    /// Start GeoIP enrichment thread to populate location/ASN info for connections
     pub(super) fn start_geoip_enrichment_thread(
         &self,
         tracker: Arc<ConnectionTracker>,
@@ -408,7 +400,6 @@ impl App {
             Duration::from_millis(500),
             Arc::clone(&self.should_stop),
             move || {
-                // Enrich connections without GeoIP info
                 let mut enriched = 0;
                 for mut entry in tracker.connections().iter_mut() {
                     if entry.geoip_info.is_none() {
@@ -436,6 +427,7 @@ impl App {
 mod process_enrichment_tests {
     use super::process_enrichment_complete;
     use crate::app::logging::process_lineage_json;
+    use crate::network::types::UNKNOWN_PROCESS_NAME;
     use crate::network::types::{
         Connection, MatchQuality, ProcessAncestor, ProcessLineage, Protocol, ProtocolState,
         TcpState,
@@ -458,10 +450,10 @@ mod process_enrichment_tests {
         conn.pid = Some(42);
         conn.process_name = Some("curl".to_string());
 
-        assert!(!process_enrichment_complete(&conn, "Unknown"));
+        assert!(!process_enrichment_complete(&conn));
 
         conn.attribution_quality = Some(MatchQuality::ExactTuple);
-        assert!(process_enrichment_complete(&conn, "Unknown"));
+        assert!(process_enrichment_complete(&conn));
     }
 
     #[test]
@@ -473,17 +465,17 @@ mod process_enrichment_tests {
 
         assert!(conn.executable.is_none());
         assert!(conn.process_uid.is_none());
-        assert!(process_enrichment_complete(&conn, "Unknown"));
+        assert!(process_enrichment_complete(&conn));
     }
 
     #[test]
     fn placeholder_identity_remains_eligible_for_an_upgrade() {
         let mut conn = connection();
         conn.pid = Some(42);
-        conn.process_name = Some("Unknown".to_string());
+        conn.process_name = Some(UNKNOWN_PROCESS_NAME.to_string());
         conn.attribution_quality = Some(MatchQuality::Unspecified);
 
-        assert!(!process_enrichment_complete(&conn, "Unknown"));
+        assert!(!process_enrichment_complete(&conn));
     }
 
     #[test]

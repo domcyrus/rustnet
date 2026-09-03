@@ -20,7 +20,6 @@ impl ServiceLookup {
         }
     }
 
-    // Load services from embedded data.
     pub fn from_embedded() -> Result<Self> {
         let mut services = HashMap::new();
 
@@ -41,7 +40,6 @@ impl ServiceLookup {
             let service_name = parts[0];
             let port_protocol = parts[1];
 
-            // Parse port/protocol
             let port_parts: Vec<&str> = port_protocol.split('/').collect();
             if port_parts.len() != 2 {
                 continue;
@@ -58,7 +56,6 @@ impl ServiceLookup {
                 _ => continue,
             };
 
-            // Store the service
             services
                 .entry((port, protocol))
                 .or_insert_with(|| service_name.to_string());

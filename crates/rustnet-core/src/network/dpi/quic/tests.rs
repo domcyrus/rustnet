@@ -1,23 +1,12 @@
+use ring::aead;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey};
-use ring::{aead, hkdf};
 
 use super::crypto::{
-    ProtectionMaterial, aes_ecb_encrypt, derive_protection_material, derive_secret,
+    InitialKeys, aes_ecb_encrypt, derive_client_initial_secret, derive_initial_keys,
 };
-use super::packet::{
-    INITIAL_SALT_V1, initial_salt_for_version, parse_long_header_packet_with_length,
-    parse_quic_packet,
-};
+use super::packet::{parse_long_header_packet_with_length, parse_quic_packet};
+use crate::network::dpi::tls_common::test_fixtures::{RFC9001_CLIENT_HELLO, from_hex};
 use crate::network::types::{QuicConnectionState, QuicPacketType, TlsVersion};
-
-/// Decode a hex string, ignoring whitespace
-fn from_hex(s: &str) -> Vec<u8> {
-    let cleaned: Vec<u8> = s.bytes().filter(u8::is_ascii_hexdigit).collect();
-    cleaned
-        .chunks(2)
-        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-        .collect()
-}
 
 /// RFC 9001 Appendix A.2: the complete protected client Initial packet
 /// (DCID 0x8394c8f03e515708, packet number 2, 1200 bytes).
@@ -61,20 +50,6 @@ const RFC9001_CLIENT_INITIAL: &str = "
     7e78bfe706ca4cf5e9c5453e9f7cfd2b8b4c8d169a44e55c88d4a9a7f9474241
     e221af44860018ab0856972e194cd934";
 
-/// RFC 9001 Appendix A.2: the CRYPTO frame carried by the client Initial
-/// (frame header 06 00 40 f1 followed by a 241-byte ClientHello with
-/// SNI example.com and ALPN "alpn").
-const RFC9001_CLIENT_CRYPTO_FRAME: &str = "
-    060040f1010000ed0303ebf8fa56f12939b9584a3896472ec40bb863cfd3e868
-    04fe3a47f06a2b69484c00000413011302010000c000000010000e00000b6578
-    616d706c652e636f6dff01000100000a00080006001d0017001800100007000504616c706e
-    0005000501000000000033002600
-    24001d00209370b2c9caa47fbabaf4559fedba753de171fa71f50f1ce15d43e9
-    94ec74d748002b0003020304000d0010000e04030503060302030804080508
-    06002d00020101001c00024001003900320408ffffffffffffffff0504800
-    0ffff07048000ffff0801100104800075300901100f088394c8f03e5157080
-    6048000ffff";
-
 /// RFC 9001 Appendix A.3: the protected server Initial packet
 /// (zero-length DCID, SCID 0xf067a5502a4262b5).
 const RFC9001_SERVER_INITIAL: &str = "
@@ -91,44 +66,22 @@ const RFC9001_RETRY: &str =
 #[test]
 fn test_rfc9001_a1_initial_key_derivation() {
     let dcid = from_hex("8394c8f03e515708");
-    let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, initial_salt_for_version(1));
-    let initial_secret = salt.extract(&dcid);
-
-    let mut client_secret = [0u8; 32];
-    assert!(derive_secret(
-        &initial_secret,
-        b"client in",
-        &mut client_secret
-    ));
+    let client_secret = derive_client_initial_secret(&dcid, 1).expect("client secret");
     assert_eq!(
         client_secret.to_vec(),
         from_hex("c00cf151ca5be075ed0ebfb5c80323c42d6b7db67881289af4008f1f6c357aea")
     );
 
-    let mut key = [0u8; 16];
-    let mut iv = [0u8; 12];
-    let mut hp = [0u8; 16];
-    assert!(derive_protection_material(
-        &client_secret,
-        &mut key,
-        1,
-        ProtectionMaterial::Key
-    ));
-    assert!(derive_protection_material(
-        &client_secret,
-        &mut iv,
-        1,
-        ProtectionMaterial::Iv
-    ));
-    assert!(derive_protection_material(
-        &client_secret,
-        &mut hp,
-        1,
-        ProtectionMaterial::HeaderProtection
-    ));
-    assert_eq!(key.to_vec(), from_hex("1f369613dd76d5467730efcbe3b1a22d"));
-    assert_eq!(iv.to_vec(), from_hex("fa044b2f42a3fd3b46fb255c"));
-    assert_eq!(hp.to_vec(), from_hex("9f50449e04a0e810283a1e9933adedd2"));
+    let keys = derive_initial_keys(&client_secret, 1).expect("initial keys");
+    assert_eq!(
+        keys.key.to_vec(),
+        from_hex("1f369613dd76d5467730efcbe3b1a22d")
+    );
+    assert_eq!(keys.iv.to_vec(), from_hex("fa044b2f42a3fd3b46fb255c"));
+    assert_eq!(
+        keys.hp.to_vec(),
+        from_hex("9f50449e04a0e810283a1e9933adedd2")
+    );
 }
 
 #[test]
@@ -179,9 +132,9 @@ fn test_retry_packet_consumes_rest_of_datagram() {
         "Retry has no Length field, must consume the whole datagram"
     );
 
-    // Retry token bytes must not be misparsed as coalesced packets. A
-    // token byte with the short-header bit pattern previously flipped the
-    // connection state to Connected.
+    // Retry token bytes must not be misparsed as coalesced packets: a token
+    // byte with the short-header bit pattern must not flip the connection
+    // state to Connected.
     let mut datagram = retry.clone();
     datagram.extend_from_slice(&[0x42; 32]);
     let info = parse_quic_packet(&datagram).expect("datagram should parse");
@@ -193,35 +146,8 @@ fn test_retry_packet_consumes_rest_of_datagram() {
 /// the way a real client would, so tests can exercise decryption end to
 /// end (RFC 9001 §5.3, §5.4).
 fn protect_client_initial(dcid: &[u8], packet_number: u32, frames: &[u8]) -> Vec<u8> {
-    let salt = hkdf::Salt::new(hkdf::HKDF_SHA256, INITIAL_SALT_V1);
-    let initial_secret = salt.extract(dcid);
-    let mut client_secret = [0u8; 32];
-    assert!(derive_secret(
-        &initial_secret,
-        b"client in",
-        &mut client_secret
-    ));
-    let mut key = [0u8; 16];
-    let mut iv = [0u8; 12];
-    let mut hp = [0u8; 16];
-    assert!(derive_protection_material(
-        &client_secret,
-        &mut key,
-        1,
-        ProtectionMaterial::Key
-    ));
-    assert!(derive_protection_material(
-        &client_secret,
-        &mut iv,
-        1,
-        ProtectionMaterial::Iv
-    ));
-    assert!(derive_protection_material(
-        &client_secret,
-        &mut hp,
-        1,
-        ProtectionMaterial::HeaderProtection
-    ));
+    let client_secret = derive_client_initial_secret(dcid, 1).expect("client secret");
+    let InitialKeys { key, iv, hp } = derive_initial_keys(&client_secret, 1).expect("initial keys");
 
     let mut header = vec![0xc3]; // long header, Initial, pn_len = 4
     header.extend_from_slice(&1u32.to_be_bytes());
@@ -263,8 +189,7 @@ fn protect_client_initial(dcid: &[u8], packet_number: u32, frames: &[u8]) -> Vec
 /// extracting the SNI - neither packet alone contains the full hostname.
 #[test]
 fn test_coalesced_initials_with_split_crypto_yield_sni() {
-    let crypto_frame = from_hex(RFC9001_CLIENT_CRYPTO_FRAME);
-    let client_hello = &crypto_frame[4..]; // strip frame header 06 00 40 f1
+    let client_hello = from_hex(RFC9001_CLIENT_HELLO);
 
     // Split inside the SNI hostname so packet 1 alone cannot yield it
     let split = 60;

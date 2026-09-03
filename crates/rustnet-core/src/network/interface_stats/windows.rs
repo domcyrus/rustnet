@@ -1,4 +1,4 @@
-// interface_stats/windows.rs - Windows IP Helper API interface stats
+//! Windows IP Helper API interface stats.
 
 use super::{InterfaceStats, InterfaceStatsProvider};
 use std::collections::HashMap;
@@ -89,8 +89,6 @@ impl InterfaceStatsProvider for WindowsStatsProvider {
                     timestamp: SystemTime::now(),
                 };
 
-                // Use InterfaceLuid.Value as unique key to prevent duplicates
-                // This ensures each physical interface appears only once
                 let luid_value = row.InterfaceLuid.Value;
                 stats_map.insert(luid_value, stat);
             }

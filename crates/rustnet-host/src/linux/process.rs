@@ -1,5 +1,6 @@
-// network/platform/linux/process.rs - Linux procfs-based process lookup
+//! Linux procfs-based process lookup.
 
+use crate::procfs::{parse_proc_net_addr, read_comm, read_comm_in};
 use crate::{
     ConnectionKey, HostSocket, HostSocketState, HostTcpState, MatchQuality, ProcessAncestor,
     ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketSnapshot,
@@ -9,7 +10,6 @@ use anyhow::Result;
 use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -32,22 +32,6 @@ pub(crate) fn resolve_executable(tgid: u32) -> Option<PathBuf> {
 pub(crate) fn resolve_credentials(tgid: u32) -> Option<(u32, u32)> {
     let metadata = fs::metadata(format!("/proc/{tgid}")).ok()?;
     Some((metadata.uid(), metadata.gid()))
-}
-
-/// Read a process's name from `/proc/<pid>/comm`, given the process directory.
-///
-/// Returns `None` when comm is unreadable or empty, which happens when the
-/// process exits mid-scan. Callers skip such a process rather than storing a
-/// placeholder name: the fd scan has nothing left to read either, and a
-/// placeholder would surface as its own process group in the UI and outrank
-/// the eBPF-captured comm via the PID name cache.
-fn read_process_name(proc_dir: &Path) -> Option<String> {
-    let comm = fs::read_to_string(proc_dir.join("comm")).ok()?;
-    let name = comm.trim();
-    if name.is_empty() {
-        return None;
-    }
-    Some(name.to_string())
 }
 
 /// Recover a comm-truncated process name from the executable's file name.
@@ -226,6 +210,15 @@ type PidNameMap = ();
 /// Map of connection key to (PID, process name)
 type ConnectionProcessMap = HashMap<ConnectionKey, (u32, String)>;
 
+/// The procfs socket tables, in scan order: a later table wins when two
+/// report the same tuple.
+const PROC_NET_TABLES: [(&str, Protocol); 4] = [
+    ("/proc/net/tcp", Protocol::Tcp),
+    ("/proc/net/tcp6", Protocol::Tcp),
+    ("/proc/net/udp", Protocol::Udp),
+    ("/proc/net/udp6", Protocol::Udp),
+];
+
 /// Owner recorded by the BPF or privileged procfs startup scan for one
 /// pre-existing socket, keyed by its exact 4-tuple. The inode pins the
 /// attribution to the socket object itself, not merely the tuple.
@@ -304,9 +297,7 @@ fn build_startup_snapshot(
 /// since reused by a different program, including one that renamed itself to
 /// impersonate the original.
 fn snapshot_owner_still_matches(owner: &SnapshotOwner) -> bool {
-    let name_matches = fs::read_to_string(format!("/proc/{}/comm", owner.pid))
-        .map(|comm| comm.trim() == owner.name)
-        .unwrap_or(false);
+    let name_matches = read_comm(owner.pid).as_deref() == Some(owner.name.as_str());
 
     name_matches
         && match owner.start_ticks {
@@ -343,7 +334,7 @@ pub(super) struct LinuxProcessLookup {
     // attributable. The live cache always wins; the snapshot only fills
     // holes, so a reused 4-tuple visible to the rescan is never shadowed.
     startup_snapshot: HashMap<ConnectionKey, SnapshotOwner>,
-    // Cache: PID -> process_name (for resolving eBPF thread names to main process names)
+    // PID -> process_name, for resolving eBPF thread names to main process names.
     #[cfg(feature = "ebpf")]
     pid_names: RwLock<HashMap<u32, String>>,
     // Memo: TGID -> lineage, so many connections of one process walk /proc
@@ -363,8 +354,7 @@ impl LinuxProcessLookup {
     }
 
     fn new_with_startup_socket_owners(owners: StartupSocketOwners) -> Result<Self> {
-        // Populate the cache immediately so early connections have process names available.
-        // This ensures the PID→name cache is ready before packet capture starts.
+        // Populate the cache immediately so it is ready before packet capture starts.
         let (process_map, _pid_names, socket_snapshot, shared_inodes) =
             Self::build_process_map(owners)?;
 
@@ -394,8 +384,8 @@ impl LinuxProcessLookup {
 
     /// Get process name by PID. Tries the cached procfs scan first, then
     /// falls back to reading `/proc/<pid>/comm` directly: the cache only
-    /// refreshes every few seconds, so a freshly started process — exactly
-    /// the case for short-lived tools like curl/dig — is often missing
+    /// refreshes every few seconds, so a freshly started process (exactly
+    /// the case for short-lived tools like curl/dig) is often missing
     /// from it while still being perfectly readable from /proc. One tiny
     /// file read; the result is cached so repeated lookups stay cheap.
     /// Returns None if the process has already exited and was never scanned.
@@ -411,12 +401,7 @@ impl LinuxProcessLookup {
             return Some(name);
         }
 
-        let comm = fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-        let comm = comm.trim();
-        if comm.is_empty() {
-            return None;
-        }
-        let name = comm.to_string();
+        let name = read_comm(pid)?;
         self.pid_names
             .write()
             .expect("pid_names lock poisoned")
@@ -430,10 +415,9 @@ impl LinuxProcessLookup {
     /// a proven 4-tuple hit from a relaxed guess. Ambiguous relaxed matches
     /// (two candidates, two different owners) yield `None`.
     ///
-    /// Simple cache lookup with no refresh on cache miss. The enrichment thread
-    /// handles periodic refresh every 5 seconds.
-    /// IMPORTANT: Do NOT refresh here as it caused high CPU usage when called for every
-    /// connection without process info (flamegraph showed this was the main bottleneck).
+    /// Never refreshes on a miss: the enrichment thread refreshes every few
+    /// seconds, and refreshing here runs once per unattributed connection,
+    /// which is a CPU hotspot.
     fn lookup_match(&self, conn: &Connection) -> Option<(u32, String, MatchQuality)> {
         let key = ConnectionKey::from_connection(conn);
         let cache = self.cache.read().expect("process cache lock poisoned");
@@ -457,12 +441,11 @@ impl LinuxProcessLookup {
         // connections that already existed at launch but whose owner the
         // post-uid-drop rescan can no longer see. Exact 4-tuple hits only:
         // relaxed matching against the snapshot would let a stale listener
-        // entry claim new
-        // inbound connections indefinitely. The hit is only trusted while
-        // (a) the very same socket, by inode, still occupies the tuple in
-        // the periodically refreshed socket inventory (which stays readable
-        // after the uid drop even when owners do not), so a closed-and-
-        // reused tuple is rejected; and (b) the recorded owner is
+        // entry claim new inbound connections indefinitely. The hit is only
+        // trusted while (a) the very same socket, by inode, still occupies
+        // the tuple in the periodically refreshed socket inventory (which
+        // stays readable after the uid drop even when owners do not), so a
+        // closed-and-reused tuple is rejected; and (b) the recorded owner is
         // verifiably still the same process. The refresh cadence bounds the
         // reuse-detection window to one refresh interval.
         let owner = self.startup_snapshot.get(&key)?;
@@ -535,38 +518,17 @@ impl LinuxProcessLookup {
         let mut process_map = HashMap::new();
         let mut sockets = Vec::new();
 
-        // First, build inode -> process mapping and PID -> name mapping
         let (inode_to_process, pid_names, shared_inodes) = Self::build_inode_map(startup_owners)?;
 
-        // Then, parse network files to map connections -> inodes -> processes
-        Self::parse_and_map(
-            "/proc/net/tcp",
-            Protocol::Tcp,
-            &inode_to_process,
-            &mut process_map,
-            &mut sockets,
-        )?;
-        Self::parse_and_map(
-            "/proc/net/tcp6",
-            Protocol::Tcp,
-            &inode_to_process,
-            &mut process_map,
-            &mut sockets,
-        )?;
-        Self::parse_and_map(
-            "/proc/net/udp",
-            Protocol::Udp,
-            &inode_to_process,
-            &mut process_map,
-            &mut sockets,
-        )?;
-        Self::parse_and_map(
-            "/proc/net/udp6",
-            Protocol::Udp,
-            &inode_to_process,
-            &mut process_map,
-            &mut sockets,
-        )?;
+        for (path, protocol) in PROC_NET_TABLES {
+            Self::parse_and_map(
+                path,
+                protocol,
+                &inode_to_process,
+                &mut process_map,
+                &mut sockets,
+            )?;
+        }
 
         Ok((
             process_map,
@@ -601,18 +563,16 @@ impl LinuxProcessLookup {
                 }
 
                 // Get process name, skipping the process when comm is
-                // unreadable (see `read_process_name`).
-                let Some(process_name) = read_process_name(&path) else {
+                // unreadable (see `procfs::read_comm_in`).
+                let Some(process_name) = read_comm_in(&path) else {
                     continue;
                 };
 
-                // Store PID -> name mapping for all processes
                 #[cfg(feature = "ebpf")]
                 pid_names.insert(pid, process_name.clone());
 
                 let uid = fs::metadata(&path).ok().map(|metadata| metadata.uid());
 
-                // Check file descriptors for socket inodes
                 let fd_dir = path.join("fd");
                 if let Ok(fd_entries) = fs::read_dir(&fd_dir) {
                     for fd_entry in fd_entries.flatten() {
@@ -664,7 +624,7 @@ impl LinuxProcessLookup {
     ) {
         for (i, line) in content.lines().enumerate() {
             if i == 0 {
-                continue; // Skip header
+                continue;
             }
 
             let parts: Vec<&str> = line.split_whitespace().collect();
@@ -672,13 +632,12 @@ impl LinuxProcessLookup {
                 continue;
             }
 
-            // Parse addresses
-            let local_addr = match Self::parse_hex_address(parts[1]) {
+            let local_addr = match parse_proc_net_addr(parts[1]) {
                 Some(addr) => addr,
                 None => continue,
             };
 
-            let remote_addr = match Self::parse_hex_address(parts[2]) {
+            let remote_addr = match parse_proc_net_addr(parts[2]) {
                 Some(addr) => addr,
                 None => continue,
             };
@@ -711,35 +670,6 @@ impl LinuxProcessLookup {
                 owner,
                 native_id: inode,
             });
-        }
-    }
-
-    fn parse_hex_address(hex_addr: &str) -> Option<SocketAddr> {
-        let parts: Vec<&str> = hex_addr.split(':').collect();
-        if parts.len() != 2 {
-            return None;
-        }
-
-        let ip_hex = parts[0];
-        let port = u16::from_str_radix(parts[1], 16).ok()?;
-
-        if ip_hex.len() == 8 {
-            // IPv4
-            let ip_bytes = u32::from_str_radix(ip_hex, 16).ok()?;
-            let ip = Ipv4Addr::from(ip_bytes.to_le_bytes());
-            Some(SocketAddr::new(IpAddr::V4(ip), port))
-        } else if ip_hex.len() == 32 {
-            // IPv6
-            let mut bytes = [0u8; 16];
-            for i in 0..4 {
-                let chunk = &ip_hex[i * 8..(i + 1) * 8];
-                let value = u32::from_str_radix(chunk, 16).ok()?;
-                bytes[i * 4..(i + 1) * 4].copy_from_slice(&value.to_le_bytes());
-            }
-            let ip = Ipv6Addr::from(bytes);
-            Some(SocketAddr::new(IpAddr::V6(ip), port))
-        } else {
-            None
         }
     }
 
@@ -796,38 +726,8 @@ impl ProcessLookup for LinuxProcessLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{tcp_connection, tcp_key as key};
     use rustnet_core::network::types::{ProtocolState, TcpState};
-
-    #[test]
-    fn process_name_comes_from_comm() {
-        let name = read_process_name(Path::new("/proc/self")).expect("own comm is readable");
-        assert!(!name.is_empty());
-        assert_eq!(name, name.trim());
-    }
-
-    #[test]
-    fn no_process_name_when_comm_is_unreadable() {
-        // A PID that cannot exist: the process directory is gone, as it is
-        // for a process that exits between the /proc listing and the read.
-        assert_eq!(read_process_name(Path::new("/proc/0")), None);
-    }
-
-    fn connection(local: &str, remote: &str) -> Connection {
-        Connection::new(
-            Protocol::Tcp,
-            local.parse().unwrap(),
-            remote.parse().unwrap(),
-            ProtocolState::Tcp(TcpState::Established),
-        )
-    }
-
-    fn key(local: &str, remote: &str) -> ConnectionKey {
-        ConnectionKey {
-            protocol: Protocol::Tcp,
-            local_addr: local.parse().unwrap(),
-            remote_addr: remote.parse().unwrap(),
-        }
-    }
 
     #[test]
     fn startup_socket_owners_report_a_shared_inode_without_losing_its_owner() {
@@ -1053,7 +953,7 @@ mod tests {
             vec![host_socket("192.168.1.10:44444", "203.0.113.5:22", 777)],
         );
 
-        let conn = connection("192.168.1.10:44444", "203.0.113.5:22");
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:22");
         let (got_pid, got_name, quality) =
             lookup.lookup_match(&conn).expect("snapshot should match");
         assert_eq!(got_pid, own_pid());
@@ -1077,7 +977,7 @@ mod tests {
             vec![host_socket("192.168.1.10:44444", "203.0.113.5:22", 778)],
         );
 
-        let conn = connection("192.168.1.10:44444", "203.0.113.5:22");
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:22");
         assert!(lookup.lookup_match(&conn).is_none());
     }
 
@@ -1095,7 +995,7 @@ mod tests {
             Vec::new(),
         );
 
-        let conn = connection("192.168.1.10:44444", "203.0.113.5:22");
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:22");
         assert!(lookup.lookup_match(&conn).is_none());
     }
 
@@ -1114,7 +1014,7 @@ mod tests {
             vec![host_socket("192.168.1.10:44444", "203.0.113.5:22", 777)],
         );
 
-        let conn = connection("192.168.1.10:44444", "203.0.113.5:22");
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:22");
         assert!(lookup.lookup_match(&conn).is_none());
     }
 
@@ -1146,7 +1046,7 @@ mod tests {
             )])),
         };
 
-        let conn = connection("192.168.1.10:44444", "203.0.113.5:22");
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:22");
         assert!(lookup.lookup_match(&conn).is_none());
     }
 
@@ -1159,7 +1059,7 @@ mod tests {
             vec![host_socket("192.168.1.10:80", "203.0.113.5:50000", 900)],
         );
 
-        let conn = connection("192.168.1.10:80", "203.0.113.5:50000");
+        let conn = tcp_connection("192.168.1.10:80", "203.0.113.5:50000");
         assert!(lookup.lookup_match(&conn).is_none());
     }
 
@@ -1170,7 +1070,7 @@ mod tests {
         let k = key("192.168.1.10:44444", "203.0.113.5:443");
         let mut snapshot = HashMap::new();
         snapshot.insert(
-            k.clone(),
+            k,
             SnapshotOwner {
                 pid: 4242,
                 name: "old-owner".to_string(),
@@ -1190,7 +1090,7 @@ mod tests {
             socket_snapshot: RwLock::new(SocketSnapshot::default()),
         };
 
-        let conn = connection("192.168.1.10:44444", "203.0.113.5:443");
+        let conn = tcp_connection("192.168.1.10:44444", "203.0.113.5:443");
         let (pid, name, quality) = lookup.lookup_match(&conn).expect("live table should match");
         assert_eq!(pid, 5555);
         assert_eq!(name, "curl");
@@ -1368,7 +1268,7 @@ mod tests {
         let lookup = LinuxProcessLookup::with_socket_table(table);
 
         let attribution = lookup
-            .get_process_attribution(&connection("192.168.1.10:5000", "1.1.1.1:443"))
+            .get_process_attribution(&tcp_connection("192.168.1.10:5000", "1.1.1.1:443"))
             .expect("exact tuple must match");
 
         assert_eq!(attribution.tgid, own_pid());
@@ -1401,7 +1301,7 @@ mod tests {
         let lookup = LinuxProcessLookup::with_socket_table(table);
 
         let attribution = lookup
-            .get_process_attribution(&connection("192.168.1.10:8080", "203.0.113.5:44321"))
+            .get_process_attribution(&tcp_connection("192.168.1.10:8080", "203.0.113.5:44321"))
             .expect("wildcard listener must match");
 
         assert_eq!(attribution.tgid, own_pid());
@@ -1422,7 +1322,7 @@ mod tests {
         );
         let lookup = LinuxProcessLookup::with_socket_table(table);
 
-        let conn = connection("192.168.1.10:8080", "203.0.113.5:44321");
+        let conn = tcp_connection("192.168.1.10:8080", "203.0.113.5:44321");
         assert!(lookup.get_process_attribution(&conn).is_none());
     }
 

@@ -24,10 +24,10 @@ path = "src/lib.rs"
 [dependencies]
 anyhow.workspace = true
 log.workspace = true
-pcap = "2.4.0"
+pcap.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62", features = [
+windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",

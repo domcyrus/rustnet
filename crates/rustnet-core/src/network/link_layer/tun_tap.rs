@@ -181,7 +181,6 @@ mod tests {
 
         // The family header's first byte (0x02) has IP version nibble 0, so
         // parsing the frame as raw IP without stripping the header drops it.
-        // This is exactly what the old DLT_NULL arm did.
         assert!(
             raw_ip::parse(&null_frame, &parser, None, None).is_none(),
             "raw IP parse must fail when the 4-byte family header is not stripped",

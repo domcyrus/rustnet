@@ -326,10 +326,12 @@ fn lerp_channel(a: u8, b: u8, t: f64) -> u8 {
     (a as f64 + (b as f64 - a as f64) * t).round() as u8
 }
 
-/// Walk a 5-stop color ramp at `t` ∈ [0, 1] (4 linear segments).
-pub(super) fn five_stop(stops: &[(u8, u8, u8); 5], t: f64) -> Color {
-    let seg = t.clamp(0.0, 1.0) * 4.0;
-    let i = (seg as usize).min(3);
+/// Walk an `N`-stop color ramp at `t` ∈ [0, 1] (`N - 1` linear segments).
+/// The theme's wave ramps have five stops, the shimmer ramp three.
+pub(super) fn walk_ramp<const N: usize>(stops: &[(u8, u8, u8); N], t: f64) -> Color {
+    const { assert!(N >= 2, "a ramp needs at least two stops") };
+    let seg = t.clamp(0.0, 1.0) * (N - 1) as f64;
+    let i = (seg as usize).min(N - 2);
     let (r, g, b) = blend(stops[i], stops[i + 1], seg - i as f64);
     Color::Rgb(r, g, b)
 }
@@ -508,14 +510,6 @@ pub(super) fn shimmer_ramp(seed: (u8, u8, u8)) -> [(u8, u8, u8); 3] {
     ]
 }
 
-/// Walk a 3-stop color ramp at `t` ∈ [0, 1] (2 linear segments).
-pub(super) fn three_stop(stops: &[(u8, u8, u8); 3], t: f64) -> Color {
-    let seg = t.clamp(0.0, 1.0) * 2.0;
-    let i = (seg as usize).min(1);
-    let (r, g, b) = blend(stops[i], stops[i + 1], seg - i as f64);
-    Color::Rgb(r, g, b)
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::definitions::{ThemePreset, ThemeSpec};
@@ -673,13 +667,13 @@ mod tests {
         assert!(lightness[1] > lightness[0], "{ramp:?}");
         assert!(lightness[2] > lightness[1], "{ramp:?}");
         // Endpoints land exactly on their stops, midpoint interpolates.
-        assert_eq!(three_stop(&ramp, 0.0), Color::Rgb(seed.0, seed.1, seed.2));
+        assert_eq!(walk_ramp(&ramp, 0.0), Color::Rgb(seed.0, seed.1, seed.2));
         assert_eq!(
-            three_stop(&ramp, 1.0),
+            walk_ramp(&ramp, 1.0),
             Color::Rgb(ramp[2].0, ramp[2].1, ramp[2].2)
         );
         assert_eq!(
-            three_stop(&ramp, 0.5),
+            walk_ramp(&ramp, 0.5),
             Color::Rgb(ramp[1].0, ramp[1].1, ramp[1].2)
         );
     }

@@ -28,7 +28,6 @@ use caps::{CapSet, Capability};
 /// - `Ok(false)` if CAP_NET_RAW was not held (nothing to drop)
 /// - `Err` if dropping failed
 pub(crate) fn drop_cap_net_raw() -> Result<bool> {
-    // Check if we have CAP_NET_RAW in the effective set
     let has_cap = caps::has_cap(None, CapSet::Effective, Capability::CAP_NET_RAW)
         .context("Failed to check CAP_NET_RAW in effective set")?;
 
@@ -37,14 +36,12 @@ pub(crate) fn drop_cap_net_raw() -> Result<bool> {
         return Ok(false);
     }
 
-    // Drop from effective set first
     caps::drop(None, CapSet::Effective, Capability::CAP_NET_RAW)
         .context("Failed to drop CAP_NET_RAW from effective set")?;
 
     log::debug!("Dropped CAP_NET_RAW from effective set");
 
-    // Also drop from permitted set to prevent re-acquiring
-    // This is optional but provides stronger security
+    // Also drop from permitted set so it cannot be re-acquired.
     if caps::has_cap(None, CapSet::Permitted, Capability::CAP_NET_RAW).unwrap_or(false) {
         if let Err(e) = caps::drop(None, CapSet::Permitted, Capability::CAP_NET_RAW) {
             // Not fatal - we already dropped from effective
@@ -144,22 +141,17 @@ mod tests {
 
     #[test]
     fn test_has_cap_net_raw_does_not_panic() {
-        // This should not panic regardless of capabilities
         let _ = has_cap_net_raw();
     }
 
     #[test]
     fn test_drop_cap_net_raw_without_capability() {
-        // If we don't have CAP_NET_RAW, drop should return Ok(false)
-        // This test may behave differently depending on test environment
         let result = drop_cap_net_raw();
-        // Should not error, just return whether it was dropped
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_drop_ebpf_caps_does_not_panic() {
-        // Should not panic regardless of capabilities held
         let result = drop_ebpf_caps();
         assert!(result.is_ok());
     }

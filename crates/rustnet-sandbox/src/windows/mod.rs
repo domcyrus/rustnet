@@ -37,7 +37,6 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     let mut privileges_succeeded = false;
     let mut job_object_applied = false;
 
-    // Step 1: Remove dangerous privileges
     match restricted::remove_dangerous_privileges() {
         Ok(result) => {
             privileges_removed = result.privileges_removed;
@@ -53,7 +52,6 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         }
     }
 
-    // Step 2: Apply job object to prevent child process creation
     match restricted::apply_job_object() {
         Ok(result) => {
             job_object_applied = result.applied;

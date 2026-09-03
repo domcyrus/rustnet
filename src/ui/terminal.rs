@@ -11,7 +11,7 @@ pub type Terminal<B> = RatatuiTerminal<B>;
 /// Also installs a panic hook (chained ahead of the previous one) that
 /// restores the terminal before the panic message is printed. Without
 /// it, a panic anywhere in the app leaves the terminal in raw mode on
-/// the alternate screen with mouse capture on — a garbled shell that
+/// the alternate screen with mouse capture on: a garbled shell that
 /// needs `tput reset`. `ratatui::init()` installs an equivalent hook,
 /// but it does not enable mouse capture, which rustnet relies on for
 /// its clickable hit-test regions, so we keep the manual setup and add
@@ -52,7 +52,7 @@ where
 /// Crossterm-level teardown that needs no `Terminal` handle: disable raw
 /// mode, leave the alternate screen, disable mouse capture, and show the
 /// cursor. Shared by the normal teardown path and the panic hook (which
-/// cannot borrow the `Terminal`). Best-effort — errors are ignored when
+/// cannot borrow the `Terminal`). Best-effort: errors are ignored when
 /// called from the panic hook since we are already unwinding.
 fn restore_terminal_raw() -> Result<()> {
     crossterm::terminal::disable_raw_mode()?;

@@ -98,25 +98,12 @@ static CIPHER_SUITE_MAP: LazyLock<HashMap<u16, &'static str>> = LazyLock::new(||
 });
 
 /// Get the human-readable name for a cipher suite code
-///
-/// # Arguments
-/// * `code` - The cipher suite code (u16)
-///
-/// # Returns
-/// * Some(name) if the cipher suite is known
-/// * None if the cipher suite is not in our mapping
 pub(super) fn get_cipher_suite_name(code: u16) -> Option<&'static str> {
     CIPHER_SUITE_MAP.get(&code).copied()
 }
 
-/// Format a cipher suite code with its name if known
-///
-/// # Arguments
-/// * `code` - The cipher suite code (u16)
-///
-/// # Returns
-/// * A formatted string like "TLS_AES_128_GCM_SHA256 (0x1301)" if known
-/// * Just the hex code like "0x1234" if unknown
+/// Format a cipher suite code with its name if known, e.g.
+/// "TLS_AES_128_GCM_SHA256 (0x1301)", or just "0x1234" when unknown
 pub fn format_cipher_suite(code: u16) -> String {
     match get_cipher_suite_name(code) {
         Some(name) => format!("{} (0x{:04X})", name, code),
@@ -125,13 +112,6 @@ pub fn format_cipher_suite(code: u16) -> String {
 }
 
 /// Check if a cipher suite is considered secure by modern standards
-///
-/// # Arguments
-/// * `code` - The cipher suite code (u16)
-///
-/// # Returns
-/// * true if the cipher suite is considered secure
-/// * false if it's deprecated or insecure
 pub fn is_secure_cipher_suite(code: u16) -> bool {
     match code {
         // TLS 1.3 suites are all secure
@@ -200,7 +180,7 @@ mod tests {
             get_cipher_suite_name(0xc03d),
             Some("TLS_RSA_WITH_ARIA_256_CBC_SHA384")
         );
-        // 0xC060/0xC061 are ECDHE_RSA ARIA GCM (already correct).
+        // 0xC060/0xC061 are ECDHE_RSA ARIA GCM.
         assert_eq!(
             get_cipher_suite_name(0xc060),
             Some("TLS_ECDHE_RSA_WITH_ARIA_128_GCM_SHA256")

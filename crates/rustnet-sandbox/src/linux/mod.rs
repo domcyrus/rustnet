@@ -19,8 +19,8 @@
 //!   the invoking user (SUDO_UID/SUDO_GID) or `nobody`, see
 //!   [`privdrop`](crate::privdrop). Disable with `--no-uid-drop`.
 //! - Privileges: PR_SET_NO_NEW_PRIVS set by rustnet itself (no privilege
-//!   escalation via execve). This is applied unconditionally — even with
-//!   `--no-sandbox` or when Landlock is unavailable — since it is privilege
+//!   escalation via execve). This is applied unconditionally (even with
+//!   `--no-sandbox` or when Landlock is unavailable) since it is privilege
 //!   hygiene rather than sandboxing and rustnet never execs on Linux.
 //!
 //! # Application Order
@@ -43,7 +43,7 @@ pub mod capabilities;
 #[cfg(feature = "landlock")]
 mod landlock;
 
-use crate::{SandboxConfig, SandboxMode, SandboxReport, SandboxStatus, privdrop};
+use crate::{SandboxConfig, SandboxMode, SandboxReport, SandboxStatus, drop_root_step};
 
 /// Set PR_SET_NO_NEW_PRIVS: execve() can never grant new privileges
 /// (setuid/setgid bits, file capabilities). Irreversible and inherited by
@@ -61,13 +61,16 @@ fn set_no_new_privs() -> std::io::Result<()> {
 
 /// Apply the sandbox with the given configuration (see crate docs for the
 /// required application order).
-#[cfg(feature = "landlock")]
+///
+/// Without the `landlock` feature the capability drops and Landlock steps
+/// are compiled out; PR_SET_NO_NEW_PRIVS and the root uid drop still run.
 pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
+    #[cfg(feature = "landlock")]
     use anyhow::Context;
 
     // Set PR_SET_NO_NEW_PRIVS first, regardless of sandbox mode. This is
     // privilege hygiene (blocks setuid/file-caps escalation via execve), not
-    // sandboxing, and rustnet never execs on Linux — so it applies even with
+    // sandboxing, and rustnet never execs on Linux, so it applies even with
     // --no-sandbox.
     let no_new_privs = match set_no_new_privs() {
         Ok(()) => {
@@ -85,10 +88,11 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         ));
     }
 
-    // Check Landlock availability upfront
+    #[cfg(feature = "landlock")]
     let landlock_available = landlock::is_available();
+    #[cfg(not(feature = "landlock"))]
+    let landlock_available = false;
 
-    // Handle disabled mode
     if config.mode == SandboxMode::Disabled {
         log::info!("Sandbox disabled by configuration");
         let message = if no_new_privs {
@@ -118,102 +122,90 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         messages.push("no-new-privs could not be set".to_string());
     }
 
-    // Step 0: Clear ambient capability set
-    // Ambient caps survive execve() — clearing prevents child processes
-    // from inheriting any capabilities if fork/exec somehow succeeds.
-    if let Err(e) = capabilities::clear_ambient_caps() {
-        log::debug!("Could not clear ambient capabilities: {}", e);
-    }
+    #[cfg(feature = "landlock")]
+    {
+        // Ambient caps survive execve(): clearing prevents child processes
+        // from inheriting any capabilities if fork/exec somehow succeeds.
+        if let Err(e) = capabilities::clear_ambient_caps() {
+            log::debug!("Could not clear ambient capabilities: {}", e);
+        }
 
-    // Step 1: Drop CAP_NET_RAW capability
-    // This prevents creating new raw sockets for exfiltration
-    match capabilities::drop_cap_net_raw() {
-        Ok(dropped) => {
-            if dropped {
-                // Verify the drop actually worked
-                if capabilities::has_cap_net_raw() {
-                    log::error!("CAP_NET_RAW drop reported success but capability still present!");
-                    result.cap_net_raw_dropped = false;
-                    messages.push("CAP_NET_RAW drop verification failed".to_string());
+        // Dropping CAP_NET_RAW prevents creating new raw sockets for exfiltration.
+        match capabilities::drop_cap_net_raw() {
+            Ok(dropped) => {
+                if dropped {
+                    if capabilities::has_cap_net_raw() {
+                        log::error!(
+                            "CAP_NET_RAW drop reported success but capability still present!"
+                        );
+                        result.cap_net_raw_dropped = false;
+                        messages.push("CAP_NET_RAW drop verification failed".to_string());
+                    } else {
+                        result.cap_net_raw_dropped = true;
+                        messages.push("CAP_NET_RAW dropped".to_string());
+                        log::info!("Dropped CAP_NET_RAW capability (verified)");
+                    }
                 } else {
-                    result.cap_net_raw_dropped = true;
-                    messages.push("CAP_NET_RAW dropped".to_string());
-                    log::info!("Dropped CAP_NET_RAW capability (verified)");
+                    messages.push("CAP_NET_RAW was not held".to_string());
+                    log::debug!("CAP_NET_RAW was not in effective set");
                 }
-            } else {
-                messages.push("CAP_NET_RAW was not held".to_string());
-                log::debug!("CAP_NET_RAW was not in effective set");
-            }
-        }
-        Err(e) => {
-            let msg = format!("Failed to drop CAP_NET_RAW: {}", e);
-            log::warn!("{}", msg);
-            messages.push(msg);
-            if config.mode == SandboxMode::Strict {
-                return Err(e).context("Strict mode requires CAP_NET_RAW to be droppable");
-            }
-            result.status = SandboxStatus::PartiallyEnforced;
-        }
-    }
-
-    // Step 2: Drop CAP_BPF and CAP_PERFMON
-    // These are only needed for loading eBPF programs (already done)
-    match capabilities::drop_ebpf_caps() {
-        Ok(count) => {
-            if count > 0 {
-                result.ebpf_caps_dropped = true;
-                messages.push(format!("eBPF capabilities dropped ({})", count));
-                log::info!("Dropped {} eBPF capabilities", count);
-            } else {
-                log::debug!("No eBPF capabilities were held");
-            }
-        }
-        Err(e) => {
-            let msg = format!("Failed to drop eBPF capabilities: {}", e);
-            log::warn!("{}", msg);
-            messages.push(msg);
-            if config.mode == SandboxMode::Strict {
-                return Err(e).context("Strict mode requires eBPF capabilities to be droppable");
-            }
-        }
-    }
-
-    // Step 3: Drop the root uid/gid (sudo case)
-    // Capabilities alone leave euid 0; on kernels without Landlock this drop
-    // is the main containment. Runs after the capability drops purely for
-    // reporting; transitioning all uids away from 0 clears the capability
-    // sets anyway. Runs before Landlock, which needs no privileges since
-    // PR_SET_NO_NEW_PRIVS is already set. The libc set*id wrappers apply the
-    // change to every thread, including those spawned before this point.
-    if let Some(target) = config.drop_uid {
-        match privdrop::drop_to(target) {
-            Ok(()) => {
-                result.uid_dropped = true;
-                messages.push(format!(
-                    "root dropped to uid {} gid {}",
-                    target.uid, target.gid
-                ));
-                log::info!(
-                    "Dropped root privileges to uid {} gid {} (verified); \
-                     procfs process attribution is now limited to that user's \
-                     processes (eBPF attribution unaffected)",
-                    target.uid,
-                    target.gid
-                );
             }
             Err(e) => {
-                let msg = format!("Failed to drop root uid/gid: {}", e);
+                let msg = format!("Failed to drop CAP_NET_RAW: {}", e);
                 log::warn!("{}", msg);
                 messages.push(msg);
                 if config.mode == SandboxMode::Strict {
-                    return Err(e).context("Strict mode requires the root uid drop to succeed");
+                    return Err(e).context("Strict mode requires CAP_NET_RAW to be droppable");
                 }
                 result.status = SandboxStatus::PartiallyEnforced;
             }
         }
+
+        // CAP_BPF and CAP_PERFMON are only needed for loading eBPF programs
+        // (already done).
+        match capabilities::drop_ebpf_caps() {
+            Ok(count) => {
+                if count > 0 {
+                    result.ebpf_caps_dropped = true;
+                    messages.push(format!("eBPF capabilities dropped ({})", count));
+                    log::info!("Dropped {} eBPF capabilities", count);
+                } else {
+                    log::debug!("No eBPF capabilities were held");
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to drop eBPF capabilities: {}", e);
+                log::warn!("{}", msg);
+                messages.push(msg);
+                if config.mode == SandboxMode::Strict {
+                    return Err(e)
+                        .context("Strict mode requires eBPF capabilities to be droppable");
+                }
+            }
+        }
     }
 
-    // Step 4: Apply Landlock restrictions
+    // Capabilities alone leave euid 0; on kernels without Landlock (or in
+    // builds without the landlock feature) this drop is the main containment.
+    // Runs after the capability drops purely for reporting; transitioning all
+    // uids away from 0 clears the capability sets anyway. Runs before
+    // Landlock, which needs no privileges since PR_SET_NO_NEW_PRIVS is
+    // already set. The libc set*id wrappers apply the change to every thread,
+    // including those spawned before this point.
+    let uid_drop = drop_root_step(
+        config,
+        "procfs process attribution is now limited to that user's processes \
+         (eBPF attribution unaffected)",
+    )?;
+    result.uid_dropped = uid_drop.dropped;
+    if let Some(msg) = uid_drop.message {
+        messages.push(msg);
+        if !uid_drop.dropped {
+            result.status = SandboxStatus::PartiallyEnforced;
+        }
+    }
+
+    #[cfg(feature = "landlock")]
     match landlock::apply_landlock(config) {
         Ok(ll_result) => {
             result.fs_restricted = ll_result.fs_applied;
@@ -241,11 +233,11 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
                 if result.status == SandboxStatus::FullyEnforced {
                     result.status = SandboxStatus::PartiallyEnforced;
                 }
-            } else if !ll_result.net_applied && config.block_network {
-                // Filesystem applied but network not available
-                if result.status == SandboxStatus::FullyEnforced {
-                    result.status = SandboxStatus::PartiallyEnforced;
-                }
+            } else if !ll_result.net_applied
+                && config.block_network
+                && result.status == SandboxStatus::FullyEnforced
+            {
+                result.status = SandboxStatus::PartiallyEnforced;
             }
         }
         Err(e) => {
@@ -259,7 +251,16 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         }
     }
 
-    // Determine final status
+    // Without the landlock feature there is nothing to enforce beyond the uid drop.
+    // Not a strict-mode error: builds without the feature (e.g. musl) are
+    // expected to run this way.
+    #[cfg(not(feature = "landlock"))]
+    {
+        log::warn!("Landlock feature not compiled in");
+        messages.push("Landlock feature not compiled in".to_string());
+        result.status = SandboxStatus::PartiallyEnforced;
+    }
+
     if !result.cap_net_raw_dropped
         && !result.uid_dropped
         && !result.fs_restricted
@@ -268,7 +269,6 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         result.status = SandboxStatus::NotApplied;
     }
 
-    // Use appropriate log level based on status
     match result.status {
         SandboxStatus::FullyEnforced => {
             log::info!("Sandbox fully enforced: {}", messages.join("; "));
@@ -284,75 +284,6 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     result.message = messages.join("; ");
 
     Ok(result)
-}
-
-/// Stub implementation when the Landlock feature is disabled
-#[cfg(not(feature = "landlock"))]
-pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
-    // PR_SET_NO_NEW_PRIVS is independent of Landlock support, so non-landlock
-    // builds still get the execve privilege lock.
-    let no_new_privs = match set_no_new_privs() {
-        Ok(()) => {
-            log::info!("PR_SET_NO_NEW_PRIVS set");
-            true
-        }
-        Err(e) => {
-            log::warn!("Failed to set PR_SET_NO_NEW_PRIVS: {}", e);
-            false
-        }
-    };
-    if !no_new_privs && config.mode == SandboxMode::Strict {
-        return Err(anyhow::anyhow!(
-            "Strict mode requires PR_SET_NO_NEW_PRIVS to be settable"
-        ));
-    }
-
-    // The uid drop needs only libc, so non-landlock builds still shed root
-    // after initialization (unless the sandbox is disabled entirely).
-    let mut uid_dropped = false;
-    let mut drop_message = String::new();
-    if config.mode != SandboxMode::Disabled
-        && let Some(target) = config.drop_uid
-    {
-        match privdrop::drop_to(target) {
-            Ok(()) => {
-                uid_dropped = true;
-                drop_message = format!("; root dropped to uid {} gid {}", target.uid, target.gid);
-                log::info!(
-                    "Dropped root privileges to uid {} gid {} (verified); \
-                     procfs process attribution is now limited to that user's \
-                     processes",
-                    target.uid,
-                    target.gid
-                );
-            }
-            Err(e) => {
-                log::warn!("Failed to drop root uid/gid: {}", e);
-                if config.mode == SandboxMode::Strict {
-                    return Err(e.context("Strict mode requires the root uid drop to succeed"));
-                }
-                drop_message = format!("; root uid drop failed: {}", e);
-            }
-        }
-    }
-
-    log::warn!("Landlock feature not compiled in");
-    let message = if no_new_privs {
-        "Landlock feature not compiled in (no-new-privs still set)"
-    } else {
-        "Landlock feature not compiled in"
-    };
-    Ok(SandboxReport {
-        status: if uid_dropped {
-            SandboxStatus::PartiallyEnforced
-        } else {
-            SandboxStatus::NotApplied
-        },
-        message: format!("{}{}", message, drop_message),
-        uid_dropped,
-        no_new_privs,
-        ..SandboxReport::default()
-    })
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ use std::fs::File;
 use std::io::Write;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 
 use crate::network::dns::DnsResolver;
 use crate::network::geoip::GeoIpInfo;
@@ -133,7 +134,6 @@ fn add_process_fields(event: &mut Value, conn: &Connection) {
         event["rtt_ms"] = json!((rtt.as_secs_f64() * 10_000.0).round() / 10.0);
     }
 
-    // Add Kubernetes attribution if the process is part of a pod
     #[cfg(feature = "kubernetes")]
     if let Some(k8s) = kubernetes_json(conn) {
         event["kubernetes"] = k8s;
@@ -168,10 +168,8 @@ fn kubernetes_json(conn: &Connection) -> Option<Value> {
 
 /// GeoIP fields, added only when they have actual values.
 ///
-/// The two callers historically inserted `city`/`postal_code` in opposite
-/// orders; the serialized output was identical anyway because
-/// `serde_json::Map` is a BTreeMap (no `preserve_order` feature), which
-/// serializes keys sorted.
+/// Key order is irrelevant: `serde_json::Map` is a BTreeMap (no
+/// `preserve_order` feature), so output is sorted.
 fn add_geoip_fields(event: &mut Value, geoip: &GeoIpInfo) {
     if let Some(ref cc) = geoip.country_code {
         event["geoip_country_code"] = json!(cc);
@@ -193,7 +191,36 @@ fn add_geoip_fields(event: &mut Value, geoip: &GeoIpInfo) {
     }
 }
 
-/// Helper function to log connection events as JSON
+/// Record a closed (archived or timed-out) connection: the
+/// `connection_closed` JSONL event when JSON logging is enabled and the PCAP
+/// sidecar line when PCAP export is enabled. The duration is measured from
+/// the connection's `created_at` up to `now`.
+pub(super) fn log_connection_closed(
+    conn: &Connection,
+    now: SystemTime,
+    json_log: Option<&JsonLineWriter>,
+    pcap_sidecar: Option<&JsonLineWriter>,
+    dns_resolver: Option<&DnsResolver>,
+) {
+    let duration_secs = now
+        .duration_since(conn.created_at)
+        .map(|duration| duration.as_secs())
+        .ok();
+    if let Some(writer) = json_log {
+        log_connection_event(
+            writer,
+            "connection_closed",
+            conn,
+            duration_secs,
+            dns_resolver,
+        );
+    }
+    if let Some(writer) = pcap_sidecar {
+        log_pcap_connection(writer, conn);
+    }
+}
+
+/// Log a connection event as JSON.
 pub(super) fn log_connection_event(
     writer: &JsonLineWriter,
     event_type: &str,
@@ -201,7 +228,6 @@ pub(super) fn log_connection_event(
     duration_secs: Option<u64>,
     dns_resolver: Option<&DnsResolver>,
 ) {
-    // Build JSON object based on event type
     let mut event = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "event": event_type,
@@ -220,8 +246,8 @@ pub(super) fn log_connection_event(
         "destination_is_gateway",
     );
 
-    // Add hostname fields if DNS resolution is enabled and hostnames are resolved
-    // Skip ARP connections to avoid feedback loop (DNS lookups generate ARP traffic)
+    // ARP connections are skipped: DNS lookups generate ARP traffic, so
+    // resolving them would feed back on itself.
     if let Some(resolver) = dns_resolver.filter(|_| conn.protocol != Protocol::Arp) {
         if let Some(hostname) = resolver.get_hostname(&conn.remote_addr.ip()) {
             event["destination_hostname"] = json!(hostname);
@@ -231,7 +257,6 @@ pub(super) fn log_connection_event(
         }
     }
 
-    // Add process information if available
     if let Some(pid) = conn.pid {
         event["pid"] = json!(pid);
     }
@@ -240,32 +265,27 @@ pub(super) fn log_connection_event(
     }
     add_process_fields(&mut event, conn);
 
-    // Add service name if available
     if let Some(service_name) = &conn.service_name {
         event["service_name"] = json!(service_name);
     }
 
-    // Add connection direction (only for TCP when we observed the handshake)
+    // Direction is only known for TCP when the handshake was observed.
     if let Some(is_outgoing) = conn.connection_direction {
         event["direction"] = json!(if is_outgoing { "outgoing" } else { "incoming" });
     }
 
-    // Add DPI information if available
     if let Some(dpi) = &conn.dpi_info {
         event["dpi_protocol"] = json!(dpi.application.to_string());
 
-        // Extract domain/hostname from DPI info
         if let Some(domain) = dpi_domain(&dpi.application) {
             event["dpi_domain"] = json!(domain);
         }
     }
 
-    // Add GeoIP information if available
     if let Some(ref geoip) = conn.geoip_info {
         add_geoip_fields(&mut event, geoip);
     }
 
-    // Add connection statistics for closed events
     if event_type == "connection_closed" {
         event["bytes_sent"] = json!(conn.bytes_sent);
         event["bytes_received"] = json!(conn.bytes_received);
@@ -277,9 +297,8 @@ pub(super) fn log_connection_event(
     writer.write(&event);
 }
 
-/// Helper function to log connection info to PCAP sidecar file (JSONL format)
+/// Log a connection to the PCAP sidecar (JSONL).
 pub(super) fn log_pcap_connection(writer: &JsonLineWriter, conn: &Connection) {
-    // Build base event without GeoIP fields
     let mut event = json!({
         "timestamp": chrono::Utc::now().to_rfc3339(),
         "protocol": conn.protocol.to_string(),

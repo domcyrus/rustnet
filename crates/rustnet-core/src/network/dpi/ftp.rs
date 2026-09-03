@@ -3,7 +3,7 @@
 //! Parses the plaintext FTP control channel (RFC 959, RFC 2389, RFC 2428).
 //! Detection is keyed off port 21 plus a cheap start-line signature so non-
 //! standard ports are still caught. The data channel (port 20 / passive) is
-//! deliberately not inspected — payloads are arbitrary file bytes.
+//! deliberately not inspected: payloads are arbitrary file bytes.
 
 use crate::network::types::{FtpInfo, FtpMessageType};
 
@@ -93,17 +93,17 @@ pub(super) fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
         // (`220-Welcome to the FTP service.\r\n220 ProFTPD ...\r\n`) because
         // the first line is human-greeting prose. vsftpd, ProFTPD, and
         // Pure-FTPd all emit multi-line greetings by default, so honouring
-        // the continuation marker is critical — without it we tag
+        // the continuation marker is critical; without it we tag
         // `server_software = "Welcome"` on most real servers.
         let server_software = if code == 220 && !is_continuation {
-            // RFC 959 §5.4 — service-ready greetings typically embed the
+            // RFC 959 §5.4: service-ready greetings typically embed the
             // FTP server software in the first whitespace-delimited token
             // (`220 ProFTPD 1.3.7 ...`).
             message.as_deref().map(extract_software_token)
         } else {
             None
         };
-        // RFC 959 §4.2 — code 215 carries the system / OS name (`UNIX`,
+        // RFC 959 §4.2: code 215 carries the system / OS name (`UNIX`,
         // `Windows_NT`), NOT the FTP server software. Keeping the two
         // separate avoids labelling "UNIX" under "Server Software" in the
         // TUI.
@@ -134,11 +134,8 @@ pub(super) fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
         return None;
     }
     // `first_token_upper` already proved every byte is ASCII alphabetic, so
-    // the UTF-8 validation inside `String::from_utf8` is a fast linear walk
-    // that always succeeds — but the `?` stays as a defensive guard against
-    // a future change that widens the accepted byte range. Taking the `Vec`
-    // by value avoids the redundant `.to_string()` copy that the previous
-    // `std::str::from_utf8(&upper).ok()?.to_string()` shape required.
+    // `String::from_utf8` always succeeds; the `?` stays as a defensive guard
+    // against a future change that widens the accepted byte range.
     let command = String::from_utf8(upper).ok()?;
     // Trim leading command + whitespace to expose the argument.
     let args = std::str::from_utf8(line)
@@ -151,7 +148,7 @@ pub(super) fn analyze_ftp(payload: &[u8]) -> Option<FtpInfo> {
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
     // RFC 959 §5.4: `USER` carries the login name, useful as a per-flow
-    // identity hint (plaintext anyway — FTP-AUTH/TLS encrypts later).
+    // identity hint (plaintext anyway; FTP-AUTH/TLS encrypts later).
     let username = if command == "USER" {
         args.clone()
     } else {
@@ -315,12 +312,8 @@ mod tests {
 
     #[test]
     fn parses_system_type_response() {
-        // RFC 959 §4.2: a `215` reply returns the OS / system type, NOT the
-        // FTP server software. Previously we tagged "UNIX" under
-        // `server_software`, which surfaced under the "Server Software"
-        // column in the TUI alongside greetings like "ProFTPD". They are
-        // different things; route 215 to a dedicated `system_type` field
-        // and confirm `server_software` stays unset for this reply.
+        // RFC 959 section 4.2: a 215 reply is the OS type, not the FTP
+        // server software.
         let payload = b"215 UNIX Type: L8\r\n";
         let info = analyze_ftp(payload).expect("should parse");
         assert_eq!(info.response_code, Some(215));

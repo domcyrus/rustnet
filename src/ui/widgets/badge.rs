@@ -82,16 +82,13 @@ fn bracketed(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn text_of(spans: &[Span<'_>]) -> String {
-        spans.iter().map(|s| s.content.as_ref()).collect()
-    }
+    use crate::ui::test_support::spans_text;
 
     #[test]
     fn pill_paints_a_band_on_rgb_backgrounds() {
         let bg = Color::Rgb(20, 120, 60);
         let spans = pill_spans("ESTABLISHED", bg, false);
-        assert_eq!(text_of(&spans), " ESTABLISHED ");
+        assert_eq!(spans_text(&spans), " ESTABLISHED ");
         let style = spans[0].style;
         assert_eq!(style.bg, Some(bg));
         assert_eq!(style.fg, Some(theme::on_color(bg)));
@@ -101,7 +98,7 @@ mod tests {
     #[test]
     fn pill_brackets_non_rgb_backgrounds() {
         let spans = pill_spans("CLOSED", Color::Red, false);
-        assert_eq!(text_of(&spans), "[CLOSED]");
+        assert_eq!(spans_text(&spans), "[CLOSED]");
         assert_eq!(spans[0].style.bg, None);
         assert_eq!(spans[0].style.fg, Some(Color::Red));
     }
@@ -109,21 +106,21 @@ mod tests {
     #[test]
     fn pill_is_plain_under_no_color() {
         let spans = pill_spans("ESTABLISHED", Color::Rgb(20, 120, 60), true);
-        assert_eq!(text_of(&spans), "[ESTABLISHED]");
+        assert_eq!(spans_text(&spans), "[ESTABLISHED]");
         assert_eq!(spans[0].style, Style::default());
     }
 
     #[test]
     fn chip_paints_the_selection_band_when_tinted() {
-        let spans = chip_spans("rtt 34 ms", true);
-        assert_eq!(text_of(&spans), " rtt 34 ms ");
+        let spans = chip_spans("RTT 34 ms", true);
+        assert_eq!(spans_text(&spans), " RTT 34 ms ");
         assert_eq!(spans[0].style, theme::selection_row());
     }
 
     #[test]
     fn chip_brackets_without_a_selection_tint() {
-        let spans = chip_spans("rtt 34 ms", false);
-        assert_eq!(text_of(&spans), "[rtt 34 ms]");
+        let spans = chip_spans("RTT 34 ms", false);
+        assert_eq!(spans_text(&spans), "[RTT 34 ms]");
         assert_eq!(spans[0].style.bg, None);
     }
 

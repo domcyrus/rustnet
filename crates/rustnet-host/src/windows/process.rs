@@ -1,22 +1,23 @@
 // Windows ETW process attribution with an IP Helper API fallback.
 
 use super::etw::{EtwAttribution, EtwProcessCache};
+use super::{read_recovering, write_recovering};
 use crate::{
     ConnectionKey, DegradationReason, HostSocket, HostSocketState, HostTcpState, MatchQuality,
     ProcessAncestor, ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner,
     SocketSnapshot, collect_process_lineage, relaxed_lookup, remote_if_present,
 };
 use anyhow::{Context, Result};
-use rustnet_core::network::types::{Connection, Protocol};
+use rustnet_core::network::types::{Connection, Protocol, UNKNOWN_PROCESS_NAME};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::windows::ffi::OsStringExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, FILETIME, WIN32_ERROR,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INSUFFICIENT_BUFFER, FILETIME, HANDLE, WIN32_ERROR,
 };
 use windows::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, GetExtendedUdpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
@@ -32,7 +33,7 @@ use windows::Win32::System::Threading::{
     QueryFullProcessImageNameW,
 };
 
-const UNKNOWN_PROCESS_NAME: &str = "Unknown";
+const CACHE_LOCK: &str = "Process cache";
 
 type ProcessMap = HashMap<ConnectionKey, (u32, String)>;
 // None marks a PID whose process no longer exists, so repeated rows for it
@@ -42,7 +43,7 @@ type ProcessNameCache = HashMap<u32, Option<String>>;
 enum ProcessNameLookup {
     Named(String),
     // The process exists but denies PROCESS_QUERY_LIMITED_INFORMATION
-    // (protected/system processes) — the kernel-provided owner PID is real.
+    // (protected/system processes); the kernel-provided owner PID is real.
     Denied,
     // OpenProcess says the PID is gone. IP Helper rows can outlive their
     // owner (TIME_WAIT, terminated UDP binders), and the PID may already
@@ -118,7 +119,6 @@ macro_rules! refresh_table {
             unsafe {
                 let mut size: u32 = 0;
 
-                // First call to get buffer size
                 let result = $api(None, &mut size, false, $family, $table_class, 0);
 
                 if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
@@ -126,16 +126,14 @@ macro_rules! refresh_table {
                         concat!($api_label, " returned no data or error: {}"),
                         result
                     );
-                    return Ok(()); // No connections or error
+                    return Ok(());
                 }
 
                 if size == 0 || size > 100_000_000 {
-                    // Sanity check: reject unreasonably large sizes (100MB limit)
                     log::warn!(concat!($api_label, " returned invalid size: {}"), size);
                     return Ok(());
                 }
 
-                // Allocate buffer and get actual data
                 let mut table = allocate_table_buffer(size);
                 let result = $api(
                     Some(table.as_mut_ptr() as *mut _),
@@ -148,20 +146,17 @@ macro_rules! refresh_table {
 
                 if result != 0 {
                     log::debug!(concat!($api_label, " second call failed: {}"), result);
-                    return Ok(()); // Error getting table
+                    return Ok(());
                 }
 
-                // Verify we have enough data for the header
                 if table_buffer_len(&table) < std::mem::size_of::<u32>() {
                     log::warn!(concat!($table_label, " table buffer too small for header"));
                     return Ok(());
                 }
 
-                // Parse the table
                 let parsed_table = &*(table.as_ptr() as *const $table_ty);
                 let num_entries = parsed_table.dwNumEntries as usize;
 
-                // Bounds check: ensure we have enough space for all entries
                 let required_size =
                     std::mem::size_of::<u32>() + num_entries * std::mem::size_of::<$row_ty>();
                 if table_buffer_len(&table) < required_size {
@@ -182,7 +177,6 @@ macro_rules! refresh_table {
                     num_entries
                 );
 
-                // Get pointer to the first entry
                 let rows_ptr = &parsed_table.table[0] as *const $row_ty;
 
                 for i in 0..num_entries {
@@ -193,7 +187,7 @@ macro_rules! refresh_table {
                     }
                     let $state_row = $row;
                     let state = $state;
-                    let owner = cache_process(cache, process_names, key.clone(), $row.dwOwningPid);
+                    let owner = cache_process(cache, process_names, key, $row.dwOwningPid);
                     sockets.push(HostSocket {
                         protocol: key.protocol,
                         local_addr: key.local_addr,
@@ -212,8 +206,7 @@ macro_rules! refresh_table {
 
 impl WindowsProcessLookup {
     pub(super) fn new() -> Result<Self> {
-        // Use a very old timestamp that's guaranteed to be before now
-        // by using checked_sub and falling back to epoch
+        // An old timestamp so the first lookup refreshes; shorter offsets on underflow.
         let now = Instant::now();
         let initial_refresh = now
             .checked_sub(Duration::from_secs(3600))
@@ -359,9 +352,7 @@ impl WindowsProcessLookup {
         process_names: &mut ProcessNameCache,
         sockets: &mut Vec<HostSocket>,
     ) -> Result<()> {
-        // IPv4 TCP connections
         self.refresh_tcp_table_v4(cache, process_names, sockets)?;
-        // IPv6 TCP connections
         self.refresh_tcp_table_v6(cache, process_names, sockets)?;
         Ok(())
     }
@@ -420,9 +411,7 @@ impl WindowsProcessLookup {
         process_names: &mut ProcessNameCache,
         sockets: &mut Vec<HostSocket>,
     ) -> Result<()> {
-        // IPv4 UDP connections
         self.refresh_udp_table_v4(cache, process_names, sockets)?;
-        // IPv6 UDP connections
         self.refresh_udp_table_v6(cache, process_names, sockets)?;
         Ok(())
     }
@@ -482,13 +471,7 @@ impl WindowsProcessLookup {
         // the table has no row: processes that exited between refreshes.
         let mut table_is_fresh = false;
         {
-            let cache = match self.cache.read() {
-                Ok(cache) => cache,
-                Err(poisoned) => {
-                    log::warn!("Process cache lock was poisoned, recovering data");
-                    poisoned.into_inner()
-                }
-            };
+            let cache = read_recovering(&self.cache, CACHE_LOCK);
 
             if cache.last_refresh.elapsed() < Duration::from_secs(2) {
                 table_is_fresh = true;
@@ -502,7 +485,7 @@ impl WindowsProcessLookup {
                     );
                     return Some(process_info.clone());
                 }
-                // Exact match missed — try wildcard fallback before declaring a miss
+                // Exact match missed: try the wildcard fallback before declaring a miss.
                 if let Some(result) =
                     relaxed_lookup(&cache.lookup, &key).map(|(process, _quality)| process.clone())
                 {
@@ -522,7 +505,7 @@ impl WindowsProcessLookup {
 
         if table_is_fresh {
             // The current table has no row for this tuple, so the socket is
-            // already gone — exactly the case the ETW cache exists for.
+            // already gone, exactly the case the ETW cache exists for.
             return self.etw_cache.lookup(&key);
         }
 
@@ -536,15 +519,8 @@ impl WindowsProcessLookup {
             return etw_process;
         }
 
-        // Cache is stale or miss, refresh
         if self.refresh().is_ok() {
-            let cache = match self.cache.read() {
-                Ok(cache) => cache,
-                Err(poisoned) => {
-                    log::warn!("Process cache lock was poisoned after refresh, recovering data");
-                    poisoned.into_inner()
-                }
-            };
+            let cache = read_recovering(&self.cache, CACHE_LOCK);
             let result = cache.lookup.get(&key).cloned().or_else(|| {
                 relaxed_lookup(&cache.lookup, &key).map(|(process, _quality)| process.clone())
             });
@@ -594,13 +570,7 @@ impl ProcessLookup for WindowsProcessLookup {
             Err(error) => log::debug!("Windows process snapshot failed: {}", error),
         }
 
-        let mut cache = match self.cache.write() {
-            Ok(cache) => cache,
-            Err(poisoned) => {
-                log::warn!("Process cache write lock was poisoned, recovering and replacing cache");
-                poisoned.into_inner()
-            }
-        };
+        let mut cache = write_recovering(&self.cache, CACHE_LOCK);
 
         let total_entries = new_cache.len();
         cache.lookup = new_cache;
@@ -678,21 +648,40 @@ fn filetime_to_unix_ms(time: FILETIME) -> Option<u64> {
         .map(|unix_ticks| unix_ticks / 10_000)
 }
 
-fn query_process_runtime(pid: u32) -> Option<WindowsRuntimeDetails> {
-    // SAFETY: the process handle is valid after `OpenProcess`, all buffers
-    // have their exact lengths, and the handle is closed before returning.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut size = 32_768_u32;
-        let mut buffer = vec![0_u16; size as usize];
-        let executable = QueryFullProcessImageNameW(
+/// The full image path of the process behind `handle`, or `None` when the
+/// query fails or returns an empty path.
+///
+/// # Safety
+///
+/// `handle` must be an open process handle with at least
+/// `PROCESS_QUERY_LIMITED_INFORMATION` access.
+unsafe fn query_image_path(handle: HANDLE) -> Option<PathBuf> {
+    // QueryFullProcessImageNameW supports extended-length paths. A MAX_PATH
+    // buffer silently loses attribution for executables installed below a
+    // long path, so allocate the documented maximum Windows path instead.
+    let mut size: u32 = 32_768;
+    let mut buffer: Vec<u16> = vec![0; size as usize];
+
+    // SAFETY: the buffer has exactly `size` elements and the caller
+    // guarantees a valid process handle.
+    let result = unsafe {
+        QueryFullProcessImageNameW(
             handle,
             PROCESS_NAME_WIN32,
             windows::core::PWSTR(buffer.as_mut_ptr()),
             &mut size,
         )
-        .is_ok()
-        .then(|| PathBuf::from(OsString::from_wide(&buffer[..size as usize])));
+    };
+    (result.is_ok() && size > 0)
+        .then(|| PathBuf::from(OsString::from_wide(&buffer[..size as usize])))
+}
+
+fn query_process_runtime(pid: u32) -> Option<WindowsRuntimeDetails> {
+    // SAFETY: the process handle is valid after `OpenProcess`, all buffers
+    // have their exact lengths, and the handle is closed before returning.
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let executable = query_image_path(handle);
 
         let mut creation = FILETIME::default();
         let mut exit = FILETIME::default();
@@ -763,14 +752,13 @@ pub(super) fn get_process_name_from_pid(pid: u32) -> Option<String> {
 
 fn query_process_name(pid: u32) -> ProcessNameLookup {
     // PID 4 is the kernel's System process, fixed since Windows XP. It owns
-    // real sockets (NetBIOS name service, SMB) but has no image to query —
-    // QueryFullProcessImageNameW has nothing to return — so without this it
+    // real sockets (NetBIOS name service, SMB) but has no image to query
+    // (QueryFullProcessImageNameW has nothing to return), so without this it
     // surfaces as the "Unknown" placeholder in every process list.
     if pid == 4 {
         return ProcessNameLookup::Named("System".to_string());
     }
     unsafe {
-        // Open process with query information access
         let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
             Ok(h) => h,
             Err(error) => {
@@ -782,31 +770,12 @@ fn query_process_name(pid: u32) -> ProcessNameLookup {
             }
         };
 
-        // Query process image name
-        // QueryFullProcessImageNameW supports extended-length paths. A MAX_PATH
-        // buffer silently loses attribution for executables installed below a
-        // long path, so allocate the documented maximum Windows path instead.
-        let mut size: u32 = 32_768;
-        let mut buffer: Vec<u16> = vec![0; size as usize];
-
-        let result = QueryFullProcessImageNameW(
-            handle,
-            PROCESS_NAME_WIN32,
-            windows::core::PWSTR(buffer.as_mut_ptr()),
-            &mut size,
-        );
+        let image_path = query_image_path(handle);
 
         let _ = CloseHandle(handle);
 
-        if result.is_ok() && size > 0 {
-            // Convert to OsString and then to String
-            let os_string = OsString::from_wide(&buffer[..size as usize]);
-            let path_str = os_string.to_string_lossy().to_string();
-
-            // Extract just the filename
-            if let Some(filename) = path_str.split('\\').next_back() {
-                return ProcessNameLookup::Named(filename.to_string());
-            }
+        if let Some(filename) = image_path.as_deref().and_then(Path::file_name) {
+            return ProcessNameLookup::Named(filename.to_string_lossy().into_owned());
         }
 
         // The open succeeded, so the process is alive; only the name query
@@ -831,7 +800,7 @@ mod tests {
         let mut cache = ProcessMap::new();
         let mut process_names = ProcessNameCache::new();
 
-        let _ = cache_process(&mut cache, &mut process_names, key.clone(), u32::MAX);
+        let _ = cache_process(&mut cache, &mut process_names, key, u32::MAX);
 
         assert_eq!(cache.get(&key), None);
     }
@@ -849,7 +818,7 @@ mod tests {
         // PID 4 is the System process: always alive, but its image name is
         // not queryable via QueryFullProcessImageNameW, so it is named
         // directly rather than cached as the Unknown placeholder.
-        let _ = cache_process(&mut cache, &mut process_names, key.clone(), 4);
+        let _ = cache_process(&mut cache, &mut process_names, key, 4);
 
         assert_eq!(cache.get(&key), Some(&(4, "System".to_string())));
     }

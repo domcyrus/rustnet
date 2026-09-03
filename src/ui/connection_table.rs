@@ -6,8 +6,8 @@
 //! Column order puts identifying info (process, addresses) on the left
 //! and status info (state, bandwidth) on the right.
 //!
-//! Widths are a pure function of the available table width — never of
-//! row content — so the layout is stable while scrolling and only
+//! Widths are a pure function of the available table width (never of
+//! row content), so the layout is stable while scrolling and only
 //! changes when the terminal is resized (or the sidebar is toggled).
 //! When the table is too narrow, whole columns are hidden in a fixed
 //! priority order; when there is width to spare, it is distributed to
@@ -30,14 +30,14 @@ use std::net::SocketAddr;
 use crate::network::dns::DnsResolver;
 use crate::network::types::{AddrKind, ApplicationProtocol, Connection, Protocol};
 use crate::ui::{
-    ClickAction, ClickableRegions, NONE_PLACEHOLDER, SortColumn, UIState, dpi_color,
+    ClickAction, ClickableRegions, NONE_PLACEHOLDER, SortColumn, UiState, dpi_color,
     format::{format_countdown, format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
     state_color, theme,
     widgets::scrollbar::draw_scrollbar,
 };
 
-// --- Column floors (cells). Flexible columns grow beyond their floor
-// --- when surplus width is distributed; fixed columns never do.
+// Column floors (cells). Flexible columns grow beyond their floor
+// when surplus width is distributed; fixed columns never do.
 /// Process column: a one-cell gutter for the stale stripe plus 21 cells of
 /// name and PID at the floor width (the column grows with the terminal).
 const PROCESS_WIDTH: u16 = 22;
@@ -66,7 +66,7 @@ const REMOTE_MIN_WIDTH: u16 = 21;
 pub(in crate::ui) const SELECTION_BAR: &str = "▌";
 
 /// One of the connection-table columns. Headers use short labels and
-/// single-cell glyphs (↓ ↑ ·) only — multi-width emoji are deliberately
+/// single-cell glyphs (↓ ↑ ·) only; multi-width emoji are deliberately
 /// avoided because double-width glyphs break ratatui column alignment
 /// in many terminals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +126,7 @@ fn table_chrome(column_count: usize) -> u16 {
 }
 
 /// Pick the visible column set for `available_width` (the table area's
-/// width, borders excluded). A pure function of the width — row content
+/// width, borders excluded). A pure function of the width: row content
 /// never affects the layout, so columns stay put while scrolling.
 ///
 /// Too narrow: whole columns are hidden in a fixed degradation order
@@ -137,7 +137,7 @@ fn table_chrome(column_count: usize) -> u16 {
 ///
 /// Width to spare: the surplus is distributed to the flexible columns
 /// proportionally to their weight (Remote 4 · App 3 · Process 2 ·
-/// Local 1), so the grid spans the full width — Bandwidth lands flush
+/// Local 1), so the grid spans the full width: Bandwidth lands flush
 /// against the right edge and the spare space reads as even breathing
 /// room between columns instead of one big gap.
 pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) -> Vec<Column> {
@@ -216,7 +216,7 @@ pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) ->
 }
 
 /// Map resolved columns to ratatui layout constraints. Every column is
-/// `Length` — the widths already account for the full table width via
+/// `Length`: the widths already account for the full table width via
 /// the weighted distribution in [`select_columns`].
 pub(in crate::ui) fn column_constraints(columns: &[Column]) -> Vec<Constraint> {
     columns
@@ -256,7 +256,7 @@ fn process_text(conn: &Connection) -> String {
 }
 
 /// Untruncated Service cell text: service name or port number.
-fn service_text<'a>(conn: &'a Connection, ui_state: &UIState) -> Cow<'a, str> {
+fn service_text<'a>(conn: &'a Connection, ui_state: &UiState) -> Cow<'a, str> {
     if ui_state.show_port_numbers {
         Cow::Owned(conn.remote_addr.port().to_string())
     } else {
@@ -306,7 +306,7 @@ fn endpoint_display(
 /// (that name already shows in the App column).
 fn remote_display(
     conn: &Connection,
-    ui_state: &UIState,
+    ui_state: &UiState,
     dns_resolver: Option<&DnsResolver>,
     max_width: usize,
 ) -> (String, bool) {
@@ -350,8 +350,8 @@ fn remote_display(
     )
 }
 
-/// Header label for a column. Short on purpose — no " Address" suffixes.
-fn header_label(id: ColumnId, ui_state: &UIState) -> &'static str {
+/// Header label for a column. Short on purpose, no " Address" suffixes.
+fn header_label(id: ColumnId, ui_state: &UiState) -> &'static str {
     match id {
         // Leading space mirrors the stripe gutter so the label sits over
         // the process names.
@@ -378,7 +378,7 @@ fn header_label(id: ColumnId, ui_state: &UIState) -> &'static str {
 /// underlined, and accent-colored with an ↑/↓ arrow appended; the
 /// Bandwidth header carries the rx/tx arrows ("Rx↓/Tx↑") so the data
 /// rows don't have to repeat them on every line.
-pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UIState) -> Row<'a> {
+pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UiState) -> Row<'a> {
     let sorting = ui_state.sort_column != SortColumn::CreatedAt;
     let sort_arrow = if ui_state.sort_ascending {
         "↑"
@@ -521,7 +521,7 @@ fn staleness_style(conn: &Connection, selected: bool) -> (Option<Style>, CellPai
 pub(in crate::ui) fn connection_row<'a>(
     conn: &'a Connection,
     columns: &[Column],
-    ui_state: &UIState,
+    ui_state: &UiState,
     dns_resolver: Option<&DnsResolver>,
     process_override: Option<Line<'a>>,
     selected: bool,
@@ -579,8 +579,7 @@ pub(in crate::ui) fn connection_row<'a>(
             ColumnId::Application => application_cell(conn, col.width, paint),
             ColumnId::State => {
                 // Historic connections show "closed" instead of their last
-                // TCP state — together with the DIM row style this is the
-                // NO_COLOR-safe replacement for the old hollow status dot.
+                // TCP state; DIM + "closed" is the NO_COLOR-safe cue.
                 if conn.is_historic {
                     Cell::from("closed").style(paint.signal().style(theme::tcp_closed()))
                 } else {
@@ -707,9 +706,9 @@ fn application_cell<'a>(conn: &Connection, width: u16, paint: CellPaint) -> Cell
 
 /// RTT cell: best available TCP, QUIC handshake, or ICMP echo RTT,
 /// right-aligned and colored by the same thresholds as the Details card
-/// (green < 50ms, yellow < 150ms, red above). ICMP echo flows use their
-/// latest paired request/reply RTT; protocols without a timing signal show
-/// the placeholder.
+/// (`theme::rtt_color`). ICMP echo flows use their latest paired
+/// request/reply RTT; protocols without a timing signal show the
+/// placeholder.
 fn rtt_cell<'a>(conn: &Connection, paint: CellPaint) -> Cell<'a> {
     let Some(rtt) = conn.current_rtt() else {
         let line = Line::from(NONE_PLACEHOLDER).right_aligned();
@@ -719,14 +718,7 @@ fn rtt_cell<'a>(conn: &Connection, paint: CellPaint) -> Cell<'a> {
     let ms = rtt.as_secs_f64() * 1000.0;
     let text = format_rtt_compact(rtt);
     let line = if paint.colored() {
-        let color = if ms < 50.0 {
-            theme::ok()
-        } else if ms < 150.0 {
-            theme::warn()
-        } else {
-            theme::err()
-        };
-        Line::from(Span::styled(text, paint.style(color)))
+        Line::from(Span::styled(text, paint.style(theme::rtt_color(ms))))
     } else {
         Line::from(text)
     };
@@ -913,7 +905,6 @@ pub(in crate::ui) fn render_row_table(
         visible_rows,
     } = window;
 
-    // Create table state with selection adjusted to windowed slice
     let mut state = ratatui::widgets::TableState::default();
     if let Some(selected_index) = selected {
         state.select(Some(selected_index.saturating_sub(scroll_offset)));
@@ -937,7 +928,6 @@ pub(in crate::ui) fn render_row_table(
     );
     draw_scrollbar(f, rows_area, total_rows, scroll_offset, visible_rows);
 
-    // Register click regions for visible rows
     click_regions.scroll_area = Some(area);
     let visible_start_y = area.y + header_height;
     let max_visible_rows = area.height.saturating_sub(header_height) as usize;
@@ -960,6 +950,7 @@ mod tests {
         ApplicationProtocol, Connection, DnsInfo, DnsQueryType, DpiInfo, Protocol, ProtocolState,
         QuicInfo, TcpState,
     };
+    use crate::ui::test_support::local_tcp;
     use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 
     fn ids(columns: &[Column]) -> Vec<ColumnId> {
@@ -1128,7 +1119,7 @@ mod tests {
             remote,
             ProtocolState::Tcp(TcpState::Established),
         );
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
 
         let full = conn.remote_addr.to_string();
         let full_len = full.chars().count();
@@ -1204,7 +1195,7 @@ mod tests {
             source: AttributionSource::CapturedDns,
             observed_at: std::time::SystemTime::now(),
         });
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
 
         // No authoritative name: the attributed hostname renders with a
         // `~` prefix and flags the cell, without needing a resolver.
@@ -1235,7 +1226,7 @@ mod tests {
 
         // Hostnames toggled off: plain IP even with an attribution.
         conn.dpi_info = None;
-        let hostnames_off = UIState {
+        let hostnames_off = UiState {
             show_hostnames: false,
             ..Default::default()
         };
@@ -1254,7 +1245,7 @@ mod tests {
             ProtocolState::Udp,
         );
         conn.remote_addr_kind = AddrKind::Multicast;
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
 
         assert_eq!(remote_display(&conn, &ui_state, None, 24).0, "mcast:5353");
     }
@@ -1263,6 +1254,8 @@ mod tests {
     fn truncate_with_ellipsis_is_char_safe() {
         assert_eq!(truncate_with_ellipsis("short", 10), "short");
         assert_eq!(truncate_with_ellipsis("exactly-10", 10), "exactly-10");
+        // The ellipsis never floats after a space.
+        assert_eq!(truncate_with_ellipsis("hello world", 7), "hello…");
         assert_eq!(
             truncate_with_ellipsis("0123456789ab", 10),
             "012345678\u{2026}"
@@ -1276,15 +1269,9 @@ mod tests {
 
     #[test]
     fn process_text_formats_name_pid_and_placeholder() {
-        let mut conn = Connection::new(
-            Protocol::Tcp,
-            "[::1]:8080".parse().unwrap(),
-            "[::1]:443".parse().unwrap(),
-            ProtocolState::Tcp(TcpState::Established),
-        );
+        let mut conn = local_tcp(8080, "firefox");
 
         // name + pid -> "name (pid)"
-        conn.process_name = Some("firefox".to_string());
         conn.pid = Some(1234);
         assert_eq!(process_text(&conn), "firefox (1234)");
 
@@ -1301,19 +1288,9 @@ mod tests {
         assert_eq!(process_text(&conn), format!("{NONE_PLACEHOLDER} (42)"));
     }
 
-    fn tcp_conn(state: TcpState) -> Connection {
-        Connection::new(
-            Protocol::Tcp,
-            "192.168.1.10:51234".parse().unwrap(),
-            "140.82.121.4:443".parse().unwrap(),
-            ProtocolState::Tcp(state),
-        )
-    }
-
     #[test]
     fn process_style_falls_back_without_identity_hues() {
-        let mut conn = tcp_conn(TcpState::Established);
-        conn.process_name = Some("firefox".to_string());
+        let mut conn = local_tcp(51234, "firefox");
 
         // The historic whole-row paint wins over any per-cell color.
         assert_eq!(process_style(&conn, CellPaint::PLAIN), Style::default());
@@ -1332,7 +1309,7 @@ mod tests {
     fn fading_rows_keep_per_cell_colors() {
         // A connection deep into its staleness window: no whole-row
         // override, cells stay colored and carry the fade instead.
-        let mut conn = tcp_conn(TcpState::Established);
+        let mut conn = local_tcp(51234, "firefox");
         conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
         let (row_override, paint) = staleness_style(&conn, false);
         assert_eq!(row_override, None);
@@ -1356,7 +1333,7 @@ mod tests {
 
     #[test]
     fn signal_columns_never_fade_on_a_stale_row() {
-        let mut conn = tcp_conn(TcpState::Established);
+        let mut conn = local_tcp(51234, "firefox");
         conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
         let (_, paint) = staleness_style(&conn, false);
         assert!(paint.fade > 0.0);
@@ -1379,7 +1356,7 @@ mod tests {
         // A stale grouped child: the PID span is raw (no foreground), so
         // the staircase steps it down to the muted tier like any other
         // context cell instead of leaving it at full terminal foreground.
-        let mut conn = tcp_conn(TcpState::Established);
+        let mut conn = local_tcp(51234, "firefox");
         conn.last_activity = SystemTime::now() - std::time::Duration::from_secs(290);
         let (_, paint) = staleness_style(&conn, false);
         assert!(paint.fade > 0.5, "fade was {}", paint.fade);
@@ -1390,7 +1367,7 @@ mod tests {
                 Span::styled("└─ ", theme::fg(theme::muted())),
                 Span::raw("4242"),
             ]);
-            let row = connection_row(conn, &columns, &UIState::default(), None, Some(line), false);
+            let row = connection_row(conn, &columns, &UiState::default(), None, Some(line), false);
             let area = Rect::new(0, 0, PROCESS_WIDTH, 1);
             let mut buf = Buffer::empty(area);
             Table::new(vec![row], [Constraint::Length(PROCESS_WIDTH)]).render(area, &mut buf);
@@ -1409,7 +1386,7 @@ mod tests {
     #[test]
     fn stale_stripe_marks_only_idle_stale_live_rows() {
         // Fresh: blank gutter.
-        let mut conn = tcp_conn(TcpState::Established);
+        let mut conn = local_tcp(51234, "firefox");
         assert_eq!(stale_stripe(&conn), Span::raw(" "));
 
         // Stale and idle: the stripe in the countdown's own color.
@@ -1430,7 +1407,7 @@ mod tests {
     #[test]
     fn countdown_only_for_idle_stale_live_rows() {
         // Fresh: no countdown.
-        let mut conn = tcp_conn(TcpState::Established);
+        let mut conn = local_tcp(51234, "firefox");
         assert_eq!(countdown_text(&conn), None);
 
         // Stale (300s timeout, 290s idle): counts down the ~10s left, deep

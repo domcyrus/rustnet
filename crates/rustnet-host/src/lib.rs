@@ -35,7 +35,8 @@
 
 use anyhow::Result;
 use rustnet_core::network::types::{
-    Connection, MAX_PROCESS_ANCESTORS, MatchQuality, ProcessAncestor, ProcessLineage, Protocol,
+    Connection, ConnectionKey, MAX_PROCESS_ANCESTORS, MatchQuality, ProcessAncestor,
+    ProcessLineage, Protocol,
 };
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -65,6 +66,30 @@ pub enum HostTcpState {
     /// Windows exposes deletion of the TCP control block as a separate state.
     DeleteTcb,
     Unknown,
+}
+
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+impl HostTcpState {
+    /// Parse a state name as printed by `sockstat` or `lsof`, case
+    /// insensitively. The two tools spell a few states differently
+    /// (`SYN_RCVD` vs `SYN_RECV`, `FIN_WAIT_1` vs `FIN_WAIT1`); every
+    /// spelling is accepted, and anything else is [`Self::Unknown`].
+    pub(crate) fn parse_name(value: &str) -> Self {
+        match value.to_ascii_uppercase().as_str() {
+            "CLOSED" => Self::Closed,
+            "LISTEN" => Self::Listen,
+            "SYN_SENT" => Self::SynSent,
+            "SYN_RECEIVED" | "SYN_RCVD" | "SYN_RECV" => Self::SynReceived,
+            "ESTABLISHED" => Self::Established,
+            "FIN_WAIT_1" | "FIN_WAIT1" => Self::FinWait1,
+            "FIN_WAIT_2" | "FIN_WAIT2" => Self::FinWait2,
+            "CLOSE_WAIT" => Self::CloseWait,
+            "CLOSING" => Self::Closing,
+            "LAST_ACK" => Self::LastAck,
+            "TIME_WAIT" => Self::TimeWait,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 impl std::fmt::Display for HostTcpState {
@@ -223,8 +248,7 @@ bitflags::bitflags! {
 /// supported platform can report parent process ids, executable paths, and a
 /// capped parent chain. Linux, macOS, and FreeBSD can report credentials.
 ///
-/// Marked `#[non_exhaustive]` because cgroup and container fields are expected
-/// to land here later.
+/// Marked `#[non_exhaustive]`: more fields are expected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ProcessAttribution {
@@ -368,6 +392,29 @@ where
     })
 }
 
+/// One pass over the operating system's socket table (`sockstat`, `lsof`):
+/// the attribution lookup keyed by connection tuple, plus every socket for
+/// the host snapshot.
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+#[derive(Default)]
+pub(crate) struct SocketScan {
+    pub(crate) lookup: HashMap<ConnectionKey, SocketOwner>,
+    pub(crate) sockets: Vec<HostSocket>,
+}
+
+/// The owner recorded for `key`: an exact tuple hit, else the best
+/// [`relaxed_lookup`] candidate.
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+pub(crate) fn owner_match(
+    cache: &HashMap<ConnectionKey, SocketOwner>,
+    key: &ConnectionKey,
+) -> Option<(SocketOwner, MatchQuality)> {
+    if let Some(owner) = cache.get(key) {
+        return Some((owner.clone(), MatchQuality::ExactTuple));
+    }
+    relaxed_lookup(cache, key).map(|(owner, quality)| (owner.clone(), quality))
+}
+
 /// Decode a NUL-terminated C char array (`ki_comm`, `pbi_comm`, ...) into a
 /// process name. `None` when the array is empty.
 #[cfg(any(target_os = "freebsd", target_os = "macos"))]
@@ -379,6 +426,20 @@ pub(crate) fn decode_process_name(chars: &[libc::c_char]) -> Option<String> {
         .map(|value| value as u8)
         .collect();
     (!bytes.is_empty()).then(|| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The path a C API wrote into `buffer`: the first `returned` bytes, cut at
+/// the first NUL. `None` when the path is empty.
+#[cfg(any(target_os = "freebsd", target_os = "macos"))]
+pub(crate) fn path_from_c_buffer(buffer: &[u8], returned: usize) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let returned = returned.min(buffer.len());
+    let path_len = buffer[..returned]
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(returned);
+    (path_len > 0).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(&buffer[..path_len])))
 }
 
 /// Display name for a lineage ancestor: the OS-reported name, else the
@@ -436,10 +497,8 @@ pub(crate) fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
         port_str.parse::<u16>().ok()
     }
 
-    // Handle wildcard addresses
     if let Some(port_str) = addr_str.strip_prefix("*:") {
         let port = parse_port(port_str)?;
-        // Use unspecified address for wildcards
         return Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
     }
 
@@ -449,19 +508,15 @@ pub(crate) fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
         return addr_str.parse().ok();
     }
 
-    // Split by last colon to handle addresses
     let last_colon = addr_str.rfind(':')?;
     let (ip_str, port_str) = addr_str.split_at(last_colon);
-    let port_str = &port_str[1..]; // Remove the colon
+    let port_str = &port_str[1..];
 
     let port = parse_port(port_str)?;
 
-    // Detect IPv6 (contains colons) vs IPv4
     let ip = if ip_str.contains(':') {
-        // IPv6 address without brackets (e.g., "::1" or "fe80::1")
         IpAddr::V6(ip_str.parse().ok()?)
     } else {
-        // IPv4 address
         IpAddr::V4(ip_str.parse().ok()?)
     };
 
@@ -471,7 +526,7 @@ pub(crate) fn parse_socket_addr_text(addr_str: &str) -> Option<SocketAddr> {
 /// Reasons why process detection may be degraded from optimal
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum DegradationReason {
-    /// No degradation - optimal method available
+    /// No degradation, the optimal method is available.
     #[default]
     None,
     // Linux eBPF reasons
@@ -526,7 +581,7 @@ pub enum DegradationReason {
 }
 
 impl DegradationReason {
-    /// Get human-readable description of what's needed
+    /// Human-readable description of what is needed to lift the degradation.
     pub fn description(&self) -> Cow<'_, str> {
         match self {
             Self::None => Cow::Borrowed(""),
@@ -571,7 +626,7 @@ impl DegradationReason {
         }
     }
 
-    /// Get the name of the unavailable feature
+    /// Name of the unavailable feature.
     pub fn unavailable_feature(&self) -> Option<&str> {
         match self {
             Self::None => None,
@@ -596,7 +651,8 @@ impl DegradationReason {
     }
 }
 
-// Platform-specific modules (one cfg per platform instead of many)
+pub mod procfs;
+
 #[cfg(target_os = "freebsd")]
 mod freebsd;
 #[cfg(target_os = "linux")]
@@ -606,7 +662,6 @@ mod macos;
 #[cfg(target_os = "windows")]
 mod windows;
 
-// Re-export the per-platform process-lookup factory.
 #[cfg(target_os = "freebsd")]
 pub use freebsd::create_process_lookup;
 #[cfg(target_os = "linux")]
@@ -616,15 +671,15 @@ pub use macos::{create_process_lookup, report_pktap_degradation};
 #[cfg(target_os = "windows")]
 pub use windows::create_process_lookup;
 
-/// Trait for platform-specific process lookup
+/// Platform-specific process lookup.
 pub trait ProcessLookup: Send + Sync {
     /// Rich attribution for a connection: identity, credentials, executable
     /// path, and the provenance of the match.
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution>;
 
-    /// Refresh internal caches if any (best-effort)
+    /// Refresh internal caches, if any (best effort).
     fn refresh(&self) -> Result<()> {
-        Ok(()) // Default no-op
+        Ok(())
     }
 
     /// Latest operating-system socket table, independent from packet capture.
@@ -635,13 +690,13 @@ pub trait ProcessLookup: Send + Sync {
         SocketSnapshot::default()
     }
 
-    /// Get the detection method name for display purposes
+    /// Detection method name for display.
     fn get_detection_method(&self) -> &str;
 
-    /// Get the reason why process detection is degraded (if any)
-    /// Returns DegradationReason::None if using optimal detection method
+    /// Why process detection is degraded; [`DegradationReason::None`] when
+    /// the optimal method is in use.
     fn get_degradation_reason(&self) -> DegradationReason {
-        DegradationReason::None // Default: no degradation
+        DegradationReason::None
     }
 }
 
@@ -649,9 +704,9 @@ pub trait ProcessLookup: Send + Sync {
 /// progressively relaxing the key, and report which shape matched.
 ///
 /// Three shapes actually appear in OS socket tables:
-///   1. (0:lport,  rip:rport) — wildcard-bound socket with a known remote
-///   2. (lip:lport, 0:0)      — listening on a specific local IP
-///   3. (0:lport,  0:0)       — listening on the wildcard address
+///   1. (0:lport,  rip:rport): wildcard-bound socket with a known remote
+///   2. (lip:lport, 0:0):      listening on a specific local IP
+///   3. (0:lport,  0:0):       listening on the wildcard address
 ///
 /// Candidates are tried most-specific first, so the reported
 /// [`MatchQuality`] describes the tightest shape that matched.
@@ -703,43 +758,51 @@ pub(crate) fn relaxed_lookup<'map, V: PartialEq>(
             match found {
                 None => found = Some((entry, quality)),
                 Some((existing, _)) if existing == entry => {} // same owner, no conflict
-                Some(_) => return None, // two different processes → ambiguous
+                Some(_) => return None,                        // two different processes: ambiguous
             }
         }
     }
     found
 }
 
-/// Connection identifier for lookups
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub(crate) struct ConnectionKey {
-    pub(crate) protocol: Protocol,
-    pub(crate) local_addr: SocketAddr,
-    pub(crate) remote_addr: SocketAddr,
-}
-
-impl ConnectionKey {
-    pub(crate) fn from_connection(conn: &Connection) -> Self {
-        Self {
-            protocol: conn.protocol,
-            local_addr: conn.local_addr,
-            remote_addr: conn.remote_addr,
-        }
-    }
-}
-
+/// Fixtures shared by the platform test modules. Not every platform uses
+/// each one, so unused fixtures are not an error.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
+#[allow(dead_code)]
+pub(crate) mod test_support {
+    use crate::ConnectionKey;
+    use rustnet_core::network::types::{Connection, Protocol, ProtocolState, TcpState};
 
-    fn key(protocol: Protocol, local: &str, remote: &str) -> ConnectionKey {
+    /// An established TCP connection between two `ip:port` literals.
+    pub(crate) fn tcp_connection(local: &str, remote: &str) -> Connection {
+        Connection::new(
+            Protocol::Tcp,
+            local.parse().unwrap(),
+            remote.parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        )
+    }
+
+    /// The lookup key for two `ip:port` literals under `protocol`.
+    pub(crate) fn connection_key(protocol: Protocol, local: &str, remote: &str) -> ConnectionKey {
         ConnectionKey {
             protocol,
             local_addr: local.parse().unwrap(),
             remote_addr: remote.parse().unwrap(),
         }
     }
+
+    /// The TCP lookup key for two `ip:port` literals.
+    pub(crate) fn tcp_key(local: &str, remote: &str) -> ConnectionKey {
+        connection_key(Protocol::Tcp, local, remote)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::connection_key as key;
+    use std::path::Path;
 
     fn owner(pid: u32, name: &str) -> (u32, String) {
         (pid, name.to_string())
@@ -995,7 +1058,7 @@ mod tests {
             parse_socket_addr_text("[fe80::1]:22"),
             Some(SocketAddr::new(IpAddr::V6("fe80::1".parse().unwrap()), 22))
         );
-        // Numeric scope id, accepted by the old macOS parser
+        // Numeric scope id
         assert_eq!(
             parse_socket_addr_text("[fe80::1%1]:22"),
             Some("[fe80::1%1]:22".parse().unwrap())

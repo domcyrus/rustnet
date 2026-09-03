@@ -22,18 +22,8 @@ const MAX_SOFTWARE_LEN: usize = 128;
 /// Returns `None` if the packet is too small, lacks the magic cookie,
 /// or has invalid structural properties.
 pub(super) fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
-    if payload.len() < STUN_HEADER_SIZE {
-        return None;
-    }
-
-    // First two bits must be 0b00 (distinguishes STUN from DTLS/RTP/RTCP)
-    if payload[0] & 0xC0 != 0x00 {
-        return None;
-    }
-
-    // Verify magic cookie at bytes 4-7
-    let cookie = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
-    if cookie != STUN_MAGIC_COOKIE {
+    // Header size, leading 0b00 bits and magic cookie
+    if !is_likely_stun(payload) {
         return None;
     }
 
@@ -53,8 +43,7 @@ pub(super) fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
 
     // Extract class bits: C1 is bit 8, C0 is bit 4 (RFC 5389 section 6).
     // Both extractions mask to a single bit, so `class_bits` is bounded
-    // to 0..=3 by construction — the 0b11 arm covers the only remaining
-    // value, which lets us drop the `unreachable!()` catch-all.
+    // to 0..=3 by construction, so the 0b11 arm is exhaustive.
     let c0 = ((msg_type >> 4) & 0x1) as u8;
     let c1 = ((msg_type >> 8) & 0x1) as u8;
     let class_bits = (c1 << 1) | c0;
@@ -92,15 +81,19 @@ pub(super) fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
     })
 }
 
-/// Check if a packet looks like STUN without full parsing.
-/// Used for non-standard port detection where we want a quick probe.
+/// Check if a packet looks like STUN without full parsing: a full 20-byte
+/// header, leading bits 0b00 (distinguishes STUN from DTLS/RTP/RTCP) and the
+/// magic cookie at bytes 4-7. Used for non-standard port detection where we
+/// want a quick probe, and as the prologue of [`analyze_stun`].
 pub(super) fn is_likely_stun(payload: &[u8]) -> bool {
     if payload.len() < STUN_HEADER_SIZE {
         return false;
     }
+    // First two bits must be 0b00
     if payload[0] & 0xC0 != 0x00 {
         return false;
     }
+    // Verify magic cookie at bytes 4-7
     let cookie = u32::from_be_bytes([payload[4], payload[5], payload[6], payload[7]]);
     cookie == STUN_MAGIC_COOKIE
 }
@@ -282,10 +275,10 @@ mod tests {
 
     #[test]
     fn test_class_bits_exhaustive_for_unknown_method() {
-        // Lock the invariant the refactor relies on: class_bits is bounded
-        // to 0..=3 by construction (each of c0/c1 is masked to one bit).
+        // class_bits is bounded to 0..=3 by construction (each of c0/c1 is
+        // masked to one bit).
         // Pair every class with a non-Binding method to confirm the class
-        // decode is independent of method recognition — otherwise a future
+        // decode is independent of method recognition; otherwise a future
         // change to method handling could mask a class-bit regression.
         for (class, expected) in [
             (0u8, StunMessageClass::Request),

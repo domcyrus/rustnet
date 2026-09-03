@@ -18,7 +18,9 @@ pub(super) fn analyze_llmnr(payload: &[u8]) -> Option<LlmnrInfo> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::dns::test_fixtures::{build_dns_packet, encode_name};
+    use super::super::dns::test_fixtures::{
+        RrName, build_dns_header, build_dns_packet, push_a, push_question,
+    };
     use super::*;
     use crate::network::types::DnsQueryType;
 
@@ -66,18 +68,11 @@ mod tests {
     /// Build an LLMNR response that echoes the question and supplies an A
     /// record. RFC 4795 §2.1: LLMNR responses re-include the question.
     fn build_llmnr_response_with_a(name: &str, ip: [u8; 4]) -> Vec<u8> {
-        let mut packet = Vec::new();
-        // Header: txid 1, flags response, qdcount=1, ancount=1, ns=0, ar=0.
-        packet.extend_from_slice(&[0x00, 0x01, 0x80, 0x00, 0x00, 0x01, 0x00, 0x01]);
-        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-        // Question (single label).
-        encode_name(&mut packet, name);
-        packet.extend_from_slice(&[0x00, 0x01, 0x00, 0x01]); // QTYPE A, QCLASS IN
-        // Answer: NAME pointer back to offset 12, TYPE A, CLASS IN, TTL, RDLENGTH 4, RDATA.
-        packet.extend_from_slice(&[
-            0xC0, 0x0C, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x78, 0x00, 0x04,
-        ]);
-        packet.extend_from_slice(&ip);
+        // Header: txid 1, flags response, qdcount=1, ancount=1; question
+        // (single label) for A; answer with NAME pointer back to offset 12.
+        let mut packet = build_dns_header(0x0001, 0x8000, 1, 1, 0, 0);
+        push_question(&mut packet, name, 1);
+        push_a(&mut packet, RrName::Ptr(12), 120, ip);
         packet
     }
 

@@ -17,8 +17,8 @@ unsafe impl Send for LibbpfSocketTracker {}
 unsafe impl Sync for LibbpfSocketTracker {}
 
 impl LibbpfSocketTracker {
-    /// Create a new eBPF socket tracker
-    /// Returns (Option<Self>, DegradationReason) - the reason explains why eBPF is unavailable
+    /// Create a new eBPF socket tracker. The returned [`DegradationReason`]
+    /// explains why eBPF is unavailable when the tracker is `None`.
     pub(crate) fn new() -> Result<(Option<Self>, DegradationReason)> {
         let (loader_opt, reason) = EbpfLoader::try_load()?;
         match loader_opt {
@@ -60,57 +60,11 @@ impl LibbpfSocketTracker {
             return None;
         }
 
-        let socket_map = self.loader.socket_map();
-
-        // Try exact match first
-        let key = ConnKey::new_v4(src_ip, dst_ip, src_port, dst_port, is_tcp);
-        match MapReader::lookup_connection(socket_map, key) {
-            Ok(Some(result)) => {
-                return Some(SocketMatch::new(result, MatchQuality::ExactTuple));
-            }
-            Ok(None) => {
-                log::debug!("eBPF exact lookup miss, trying with zero source address");
-            }
-            Err(e) => {
-                log::debug!("eBPF IPv4 lookup failed: {}", e);
-            }
-        }
-
-        // Try with zero source address (common for eBPF UDP/TCP entries)
-        let zero_src_key = ConnKey::new_v4(
-            Ipv4Addr::new(0, 0, 0, 0),
-            dst_ip,
-            src_port,
-            dst_port,
-            is_tcp,
-        );
-        log::debug!(
-            "eBPF zero-source key bytes: {:02x?}",
-            zero_src_key.as_bytes()
-        );
-        match MapReader::lookup_connection(socket_map, zero_src_key) {
-            Ok(Some(result)) => {
-                log::debug!(
-                    "eBPF lookup succeeded with zero source address: PID {}, comm {}",
-                    result.pid,
-                    result.comm
-                );
-                // Let cleanup handle entry deletion based on age
-                Some(SocketMatch::new(result, MatchQuality::WildcardLocalAddress))
-            }
-            Ok(None) => {
-                // Debug both keys for comparison
-                log::debug!("eBPF lookup missed with both exact and zero-source keys");
-                if let Err(e) = MapReader::debug_lookup_miss(socket_map, &key) {
-                    log::debug!("Failed to debug lookup: {}", e);
-                }
-                None
-            }
-            Err(e) => {
-                log::debug!("eBPF zero-source lookup failed: {}", e);
-                None
-            }
-        }
+        self.lookup_keys(
+            ConnKey::new_v4(src_ip, dst_ip, src_port, dst_port, is_tcp),
+            ConnKey::new_v4(Ipv4Addr::UNSPECIFIED, dst_ip, src_port, dst_port, is_tcp),
+            "IPv4",
+        )
     }
 
     /// Look up process information for a connection (IPv6)
@@ -131,37 +85,11 @@ impl LibbpfSocketTracker {
             return None;
         }
 
-        let key = ConnKey::new_v6(src_ip, dst_ip, src_port, dst_port, is_tcp);
-
-        let socket_map = self.loader.socket_map();
-        match MapReader::lookup_connection(socket_map, key) {
-            Ok(Some(result)) => {
-                // Let cleanup handle entry deletion based on age
-                return Some(SocketMatch::new(result, MatchQuality::ExactTuple));
-            }
-            Ok(None) => {
-                log::debug!("eBPF IPv6 exact lookup miss, trying zero source address");
-            }
-            Err(e) => {
-                log::debug!("eBPF IPv6 lookup failed: {}", e);
-            }
-        }
-
-        let zero_src_key =
-            ConnKey::new_v6(Ipv6Addr::UNSPECIFIED, dst_ip, src_port, dst_port, is_tcp);
-        match MapReader::lookup_connection(socket_map, zero_src_key) {
-            Ok(Some(result)) => Some(SocketMatch::new(result, MatchQuality::WildcardLocalAddress)),
-            Ok(None) => {
-                if let Err(e) = MapReader::debug_lookup_miss(socket_map, &key) {
-                    log::debug!("Failed to debug lookup: {}", e);
-                }
-                None
-            }
-            Err(e) => {
-                log::debug!("eBPF IPv6 zero-source lookup failed: {}", e);
-                None
-            }
-        }
+        self.lookup_keys(
+            ConnKey::new_v6(src_ip, dst_ip, src_port, dst_port, is_tcp),
+            ConnKey::new_v6(Ipv6Addr::UNSPECIFIED, dst_ip, src_port, dst_port, is_tcp),
+            "IPv6",
+        )
     }
 
     /// Look up process information for a connection (generic)
@@ -200,10 +128,10 @@ impl LibbpfSocketTracker {
                     .capabilities()
                     .contains(AttributionCapabilities::ICMP_V4_SEND) =>
             {
-                self.lookup_icmp_keys(
+                self.lookup_keys(
                     ConnKey::new_icmp_v4(src, dst, icmp_id),
                     ConnKey::new_icmp_v4(Ipv4Addr::UNSPECIFIED, dst, icmp_id),
-                    icmp_id,
+                    "ICMP",
                 )
             }
             (IpAddr::V6(src), IpAddr::V6(dst))
@@ -211,10 +139,10 @@ impl LibbpfSocketTracker {
                     .capabilities()
                     .contains(AttributionCapabilities::ICMP_V6_SEND) =>
             {
-                self.lookup_icmp_keys(
+                self.lookup_keys(
                     ConnKey::new_icmp_v6(src, dst, icmp_id),
                     ConnKey::new_icmp_v6(Ipv6Addr::UNSPECIFIED, dst, icmp_id),
-                    icmp_id,
+                    "ICMP",
                 )
             }
             (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_)) => None,
@@ -225,49 +153,55 @@ impl LibbpfSocketTracker {
         }
     }
 
-    fn lookup_icmp_keys(
+    /// Look up a socket by its exact key, then by the same key with a zero
+    /// source address, which is how unbound UDP, ICMP and pre-connect TCP
+    /// sockets commonly appear in the map. `label` only names the lookup in
+    /// debug logs.
+    fn lookup_keys(
         &self,
         exact_key: ConnKey,
         zero_src_key: ConnKey,
-        icmp_id: u16,
+        label: &str,
     ) -> Option<SocketMatch> {
         let socket_map = self.loader.socket_map();
 
-        // Try exact match first
         match MapReader::lookup_connection(socket_map, exact_key) {
             Ok(Some(result)) => return Some(SocketMatch::new(result, MatchQuality::ExactTuple)),
             Ok(None) => {
-                log::debug!("eBPF ICMP exact lookup miss, trying with zero source address");
+                log::debug!("eBPF {label} exact lookup miss, trying with zero source address");
             }
             Err(e) => {
-                log::debug!("eBPF ICMP lookup failed: {}", e);
+                log::debug!("eBPF {label} lookup failed: {e}");
             }
         }
 
-        // Try with a zero source address, as unbound ICMP sockets commonly
-        // appear in the map this way.
         match MapReader::lookup_connection(socket_map, zero_src_key) {
             Ok(Some(result)) => {
                 log::debug!(
-                    "eBPF ICMP lookup succeeded with zero source address! PID: {}, comm: {}",
+                    "eBPF {label} lookup succeeded with zero source address: PID {}, comm {}",
                     result.pid,
                     result.comm
                 );
+                // Let cleanup handle entry deletion based on age
                 Some(SocketMatch::new(result, MatchQuality::WildcardLocalAddress))
             }
             Ok(None) => {
-                log::debug!("eBPF ICMP lookup miss for ID: {}", icmp_id);
+                log::debug!("eBPF {label} lookup missed with both exact and zero-source keys");
+                if log::log_enabled!(log::Level::Debug)
+                    && let Err(e) = MapReader::debug_lookup_miss(socket_map, &exact_key)
+                {
+                    log::debug!("Failed to debug lookup: {e}");
+                }
                 None
             }
             Err(e) => {
-                log::debug!("eBPF ICMP zero-source lookup failed: {}", e);
+                log::debug!("eBPF {label} zero-source lookup failed: {e}");
                 None
             }
         }
     }
 
-    /// Clean up stale entries from the eBPF map
-    /// Returns the number of entries cleaned up
+    /// Remove stale entries from the eBPF map, returning how many were removed.
     pub(crate) fn cleanup_stale_entries(&mut self, stale_threshold_secs: u64) -> u32 {
         let socket_map = self.loader.socket_map();
         let stale_threshold_ns = stale_threshold_secs * 1_000_000_000;
@@ -489,8 +423,8 @@ mod integration_tests {
                 .contains(crate::linux::ebpf::loader::CORE_CAPABILITIES)
         );
 
-        // The v4-only accepted-socket TID assertion mirrors the original
-        // coverage; the v6 run keeps the rest of the scenario in sync.
+        // The accepted-socket TID assertion runs for v4 only; the v6 run
+        // covers the rest of the scenario.
         test_tcp(&mut tracker, Ipv4Addr::LOCALHOST.into(), true);
         test_tcp(&mut tracker, Ipv6Addr::LOCALHOST.into(), false);
         test_udp(&mut tracker, Ipv4Addr::LOCALHOST.into());

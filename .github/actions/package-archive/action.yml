@@ -1,0 +1,57 @@
+name: 'Package Release Archive'
+description: >-
+  Stage a built rustnet binary with the services asset, README and LICENSE in
+  the release-archive layout and pack it as tar.gz or zip.
+
+# The staging layout is a cross-job contract: package-installers, package-macos
+# and package-windows in release.yml (and the Homebrew formula) unpack
+# rustnet-<version>-<target>/{rustnet[.exe],assets/services,README.md,LICENSE},
+# so every release build must produce it through this action.
+
+inputs:
+  binary:
+    description: 'Path to the built binary (rustnet or rustnet.exe)'
+    required: true
+  target:
+    description: 'Target name used in the archive file name (e.g., x86_64-unknown-linux-gnu)'
+    required: true
+  version:
+    description: 'Version string used in the archive file name (e.g., v0.3.0)'
+    required: true
+  format:
+    description: 'Archive format: tar (produces .tar.gz) or zip'
+    required: false
+    default: 'tar'
+
+outputs:
+  asset:
+    description: 'Path of the created archive'
+    value: ${{ steps.archive.outputs.asset }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Create release archive
+      id: archive
+      shell: bash
+      run: |
+        staging="rustnet-${{ inputs.version }}-${{ inputs.target }}"
+        mkdir -p "$staging"
+
+        cp "${{ inputs.binary }}" "$staging/"
+
+        if [ -f "crates/rustnet-core/assets/services" ]; then
+          mkdir -p "$staging/assets"
+          cp "crates/rustnet-core/assets/services" "$staging/assets/"
+        fi
+
+        cp README.md "$staging/"
+        cp LICENSE "$staging/" 2>/dev/null || true
+
+        if [ "${{ inputs.format }}" = "zip" ]; then
+          7z a "$staging.zip" "$staging"
+          echo "asset=$staging.zip" >> "$GITHUB_OUTPUT"
+        else
+          tar czf "$staging.tar.gz" "$staging"
+          echo "asset=$staging.tar.gz" >> "$GITHUB_OUTPUT"
+        fi

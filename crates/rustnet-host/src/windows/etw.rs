@@ -7,13 +7,14 @@
 //! image names across process exit.
 
 use super::process::get_process_name_from_pid;
+use super::{read_recovering, write_recovering};
 use crate::ConnectionKey;
 use anyhow::{Result, anyhow};
 use ferrisetw::parser::Parser;
 use ferrisetw::provider::Provider;
 use ferrisetw::trace::{UserTrace, stop_trace_by_name};
 use ferrisetw::{EventRecord, SchemaLocator};
-use rustnet_core::network::types::Protocol;
+use rustnet_core::network::types::{Protocol, UNKNOWN_PROCESS_NAME};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
@@ -30,7 +31,7 @@ const PROCESS_KEYWORD_PROCESS: u64 = 0x10;
 const ENTRY_TTL: Duration = Duration::from_secs(60);
 const PROCESS_NAME_TTL: Duration = Duration::from_secs(120);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(5);
-const UNKNOWN_PROCESS_NAME: &str = "Unknown";
+const CACHE_LOCK: &str = "Windows ETW process cache";
 
 #[derive(Debug, Clone)]
 struct TimedProcess {
@@ -82,10 +83,7 @@ pub(super) struct EtwProcessCache {
 
 impl EtwProcessCache {
     pub(super) fn lookup(&self, key: &ConnectionKey) -> Option<(u32, String)> {
-        let inner = self.inner.read().unwrap_or_else(|poisoned| {
-            log::warn!("Windows ETW process cache lock was poisoned, recovering data");
-            poisoned.into_inner()
-        });
+        let inner = read_recovering(&self.inner, CACHE_LOCK);
         inner.connections.get(key).and_then(|entry| {
             (entry.seen.elapsed() <= ENTRY_TTL).then(|| (entry.pid, entry.name.clone()))
         })
@@ -97,10 +95,7 @@ impl EtwProcessCache {
         }
 
         let now = Instant::now();
-        let mut inner = self.inner.write().unwrap_or_else(|poisoned| {
-            log::warn!("Windows ETW process cache lock was poisoned, recovering data");
-            poisoned.into_inner()
-        });
+        let mut inner = write_recovering(&self.inner, CACHE_LOCK);
         inner.cleanup_if_due(now);
         let name = executable_name(&name);
         // Connections only carry the placeholder name when the pid resolved to
@@ -137,10 +132,7 @@ impl EtwProcessCache {
         // attributed, avoid a write lock and allocations until its retention
         // window expires.
         let known_name = {
-            let inner = self.inner.read().unwrap_or_else(|poisoned| {
-                log::warn!("Windows ETW process cache lock was poisoned, recovering data");
-                poisoned.into_inner()
-            });
+            let inner = read_recovering(&self.inner, CACHE_LOCK);
             if inner.connections.get(&key).is_some_and(|entry| {
                 entry.pid == pid && now.duration_since(entry.seen) <= ENTRY_TTL
             }) {
@@ -156,10 +148,7 @@ impl EtwProcessCache {
         // under the write lock; concurrent lookups would stall behind it.
         let resolved_name = known_name.or_else(|| get_process_name_from_pid(pid));
 
-        let mut inner = self.inner.write().unwrap_or_else(|poisoned| {
-            log::warn!("Windows ETW process cache lock was poisoned, recovering data");
-            poisoned.into_inner()
-        });
+        let mut inner = write_recovering(&self.inner, CACHE_LOCK);
         inner.cleanup_if_due(now);
 
         let name = resolved_name
@@ -181,7 +170,7 @@ impl EtwProcessCache {
             },
         );
         inner.connections.insert(
-            key.clone(),
+            key,
             TimedProcess {
                 pid,
                 name: name.clone(),
@@ -354,7 +343,7 @@ mod tests {
         };
         let pid = u32::MAX;
 
-        cache.remember_connection(key.clone(), pid);
+        cache.remember_connection(key, pid);
         assert_eq!(cache.lookup(&key), Some((pid, "Unknown".to_string())));
 
         cache.remember_process_name(pid, r"C:\Tools\short-lived.exe".to_string());

@@ -1,11 +1,10 @@
 //! eBPF map ABI and map interaction utilities.
 
-use super::ProcessInfo;
+use super::{ProcessInfo, TASK_COMM_LEN, decode_comm};
 use anyhow::Result;
 use libbpf_rs::MapCore;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
-const TASK_COMM_LEN: usize = 16;
 pub(super) const CONN_KEY_SIZE: usize = 40;
 pub(super) const CONN_INFO_SIZE: usize = 40;
 
@@ -157,19 +156,12 @@ impl ConnInfo {
 
 impl From<ConnInfo> for ProcessInfo {
     fn from(info: ConnInfo) -> Self {
-        let comm_len = info
-            .comm
-            .iter()
-            .position(|&byte| byte == 0)
-            .unwrap_or(TASK_COMM_LEN);
-        let comm = String::from_utf8_lossy(&info.comm[..comm_len]).to_string();
-
         Self {
             pid: info.tgid,
             tid: info.tid,
             uid: info.uid,
             gid: info.gid,
-            comm,
+            comm: decode_comm(&info.comm),
             timestamp: info.timestamp,
         }
     }

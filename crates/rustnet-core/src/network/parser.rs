@@ -1,4 +1,3 @@
-// network/parser.rs - Updated with DPI integration, PKTAP, and link_layer support
 use crate::network::dpi::DpiResult;
 use crate::network::link_layer;
 #[cfg(target_os = "macos")]
@@ -16,7 +15,6 @@ use std::time::{Duration, Instant};
 const AMBIGUOUS_ENDPOINT_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 const AMBIGUOUS_ENDPOINT_REFRESH_MAX_INTERVAL: Duration = Duration::from_secs(60);
 
-// Re-export TCP types
 pub use crate::network::protocol::tcp::{SynWindowScale, TcpFlags, TcpHeaderInfo};
 
 /// Result of parsing a packet
@@ -77,7 +75,7 @@ impl ParsedPacket {
 
     /// The flow identity this packet belongs to, derived from protocol and
     /// addresses. `ConnectionKey` is `Copy`, so this costs nothing on the
-    /// per-packet path (no allocation, unlike the former `String` key field).
+    /// per-packet path.
     #[inline]
     pub fn connection_key(&self) -> ConnectionKey {
         ConnectionKey::new(self.protocol, self.local_addr, self.remote_addr)
@@ -169,7 +167,6 @@ impl Default for ParserConfig {
             dpi_packet_limit: 10, // Only inspect first 10 packets
         };
 
-        // Log DPI configuration for debugging
         log::trace!(
             "ParserConfig: DPI {} (limit: {} packets per connection)",
             if config.enable_dpi {
@@ -180,28 +177,12 @@ impl Default for ParserConfig {
             config.dpi_packet_limit
         );
 
-        // Demonstrate usage: check if we should perform DPI on hypothetical packet counts
-        if config.enable_dpi {
-            log::trace!("  - Packet 0: DPI = {}", config.should_perform_dpi(0));
-            log::trace!(
-                "  - Packet {}: DPI = {}",
-                config.dpi_packet_limit - 1,
-                config.should_perform_dpi(config.dpi_packet_limit - 1)
-            );
-            log::trace!(
-                "  - Packet {}: DPI = {}",
-                config.dpi_packet_limit,
-                config.should_perform_dpi(config.dpi_packet_limit)
-            );
-        }
-
         config
     }
 }
 
 impl ParserConfig {
     /// Check if DPI should be performed based on packet count
-    /// Returns true if packet_count is less than dpi_packet_limit
     pub fn should_perform_dpi(&self, packet_count: usize) -> bool {
         let should_dpi = self.enable_dpi && packet_count < self.dpi_packet_limit;
         if !should_dpi && self.enable_dpi {
@@ -261,8 +242,8 @@ impl PacketParser {
     }
 
     /// Set the OUI lookup for MAC vendor resolution. Accepts either an owned
-    /// `OuiLookup` (as before) or an `Arc<OuiLookup>`, so the ~3 MB vendor
-    /// table can be shared between processor threads instead of cloned.
+    /// `OuiLookup` or an `Arc<OuiLookup>`, so the ~3 MB vendor table can be
+    /// shared between processor threads instead of cloned.
     pub fn with_oui_lookup(mut self, oui_lookup: impl Into<std::sync::Arc<OuiLookup>>) -> Self {
         self.oui_lookup = Some(oui_lookup.into());
         self
@@ -272,7 +253,6 @@ impl PacketParser {
     pub fn with_linktype(mut self, linktype: i32) -> Self {
         self.linktype = Some(linktype);
 
-        // Log linktype info for debugging, including TUN/TAP support
         let link_type = link_layer::LinkLayerType::from_dlt(linktype);
         if link_type.is_tunnel() {
             log::debug!(
@@ -281,7 +261,6 @@ impl PacketParser {
                 link_type
             );
 
-            // Log TUN/TAP parsing capabilities for documentation
             log::trace!("TUN/TAP parsing available via link_layer::tun_tap module");
             log::trace!("  - TUN interfaces (Layer 3): tun*, utun*");
             log::trace!("  - TAP interfaces (Layer 2): tap*");
@@ -361,7 +340,6 @@ impl PacketParser {
     /// Parse a raw packet using the appropriate link-layer parser
     fn parse_packet_link_layer(&self, data: &[u8]) -> Option<ParsedPacket> {
         if let Some(linktype) = self.linktype {
-            // Determine the link layer type
             let link_type = link_layer::LinkLayerType::from_dlt(linktype);
             log::trace!(
                 "Parsing packet with linktype {} ({:?})",
@@ -498,7 +476,6 @@ impl PacketParser {
             payload.len()
         );
 
-        // Now parse the inner packet based on the DLT type
         match pktap_header.inner_dlt() {
             1 => {
                 // DLT_EN10MB - Ethernet frame
@@ -544,7 +521,7 @@ impl PacketParser {
         let actual_packet_len = offset + ip_total_length;
 
         // Bytes 6-7: flags + fragment offset. A non-first fragment carries
-        // no transport header — parsing it would read mid-payload bytes as
+        // no transport header; parsing it would read mid-payload bytes as
         // ports and fabricate connections.
         let fragment_offset = u16::from_be_bytes([ip_data[6], ip_data[7]]) & 0x1FFF;
         if fragment_offset != 0 {
@@ -628,7 +605,6 @@ impl PacketParser {
 
         let next_header = ip_data[6];
 
-        // Extract IPv6 addresses
         let src_ip = IpAddr::V6(Ipv6Addr::new(
             u16::from_be_bytes([ip_data[8], ip_data[9]]),
             u16::from_be_bytes([ip_data[10], ip_data[11]]),
@@ -735,7 +711,6 @@ impl PacketParser {
             return None;
         }
 
-        // Extract MAC addresses
         let sender_mac = crate::network::oui::format_mac(&arp_data[8..14]);
         let target_mac = crate::network::oui::format_mac(&arp_data[18..24]);
 
@@ -811,7 +786,7 @@ impl PacketParser {
     /// Walk the IPv6 extension-header chain. Returns the final next-header
     /// value, the offset of the transport header, and whether a Fragment
     /// Header was traversed (a first/atomic fragment still carries the
-    /// transport header, but NDP must not be learned from it — RFC 6980).
+    /// transport header, but NDP must not be learned from it, RFC 6980).
     /// `None` for a non-first fragment: its "transport header" position
     /// holds mid-payload bytes that must not be parsed as ports.
     fn parse_ipv6_extension_headers(
@@ -910,7 +885,7 @@ mod tests {
         parser
     }
 
-    // Test fixture generators - inline versions of test packets
+    // Test fixture generators
     fn ethernet_ipv4_tcp_syn() -> Vec<u8> {
         vec![
             // Ethernet header
@@ -1017,8 +992,6 @@ mod tests {
         ]
     }
 
-    // ====== DLT_EN10MB (Ethernet) Tests ======
-
     #[test]
     fn test_ethernet_ipv4_tcp_parsing() {
         let parser = create_parser_with_linktype(1); // DLT_EN10MB
@@ -1121,8 +1094,6 @@ mod tests {
         assert!(parsed.is_none(), "Should reject unknown EtherType");
     }
 
-    // ====== DLT_LINUX_SLL Tests ======
-
     #[test]
     fn test_linux_sll_ipv4_tcp_parsing() {
         let parser = create_parser_with_linktype(113); // DLT_LINUX_SLL
@@ -1145,8 +1116,6 @@ mod tests {
         let parsed = parser.parse_packet(&truncated);
         assert!(parsed.is_none(), "Should reject truncated SLL packets");
     }
-
-    // ====== DLT_LINUX_SLL2 Tests ======
 
     #[test]
     fn test_linux_sll2_ipv4_udp_parsing() {
@@ -1171,28 +1140,6 @@ mod tests {
         assert!(parsed.is_none(), "Should reject truncated SLL2 packets");
     }
 
-    // ====== TCP Flags Tests ======
-
-    #[test]
-    fn test_tcp_flags_parsing() {
-        use crate::network::protocol::tcp::parse_tcp_flags;
-
-        let flags = parse_tcp_flags(0x02); // SYN
-        assert!(flags.syn);
-        assert!(!flags.ack);
-        assert!(!flags.fin);
-
-        let flags = parse_tcp_flags(0x12); // SYN + ACK
-        assert!(flags.syn);
-        assert!(flags.ack);
-
-        let flags = parse_tcp_flags(0x11); // FIN + ACK
-        assert!(flags.fin);
-        assert!(flags.ack);
-    }
-
-    // ====== Parser Configuration Tests ======
-
     #[test]
     fn test_parser_default_config() {
         let config = ParserConfig::default();
@@ -1205,8 +1152,6 @@ mod tests {
         let parser = PacketParser::with_config(ParserConfig::default()).with_linktype(1);
         assert_eq!(parser.linktype, Some(1));
     }
-
-    // ====== Local IP Detection Tests ======
 
     #[test]
     fn test_local_ip_detection() {
@@ -1455,8 +1400,6 @@ mod tests {
         assert!(!parser.local_ips.contains(&bogus));
     }
 
-    // ====== Edge Cases ======
-
     #[test]
     fn test_empty_packet() {
         let parser = create_parser_with_linktype(1);
@@ -1466,11 +1409,9 @@ mod tests {
 
     #[test]
     fn test_ipv6_extension_header_overflow_does_not_panic() {
-        // Regression: a crafted IPv6 extension header can declare a length
-        // that runs far past the captured bytes. The parser used to slice
-        // `transport_data[transport_offset..]` with `transport_offset` past
-        // the end, panicking the capture thread (one-packet DoS). It must now
-        // clamp and return cleanly instead.
+        // A crafted IPv6 extension header can declare a length that runs far
+        // past the captured bytes; the parser must clamp and return cleanly
+        // rather than slice past the end (one-packet DoS of the capture thread).
         let parser = create_parser_with_linktype(1);
         let mut packet = vec![
             // Ethernet (ethertype 0x86dd = IPv6)

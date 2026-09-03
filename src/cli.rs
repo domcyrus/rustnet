@@ -155,7 +155,7 @@ pub fn build_cli() -> Command {
                 .value_name("PATH")
                 .help(
                     "Path to GeoLite2-City.mmdb database (same search paths as --geoip-country; \
-                     superset of Country — provides city name and postal code in addition to country)",
+                     superset of Country: provides city name and postal code in addition to country)",
                 )
                 .required(false),
         )

@@ -35,8 +35,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Contextual Help Overlay**: Help now opens above the active tab and only
   shows controls and concepts relevant to that view. The tab bar now contains
   the five application views, with direct shortcuts `1` through `5`
+- **Internal Deduplication**: duplicated helpers, fixtures, and workflow steps
+  were consolidated across the workspace, removing about 2,000 lines with no
+  intended change in behaviour. Small visible differences: truncated names in
+  the connection table, Activity tab, and filter chip no longer leave a space
+  before the ellipsis, GeoIP lookups also skip multicast, reserved,
+  benchmarking, documentation, and discard addresses, hostnames stuck in a
+  pending DNS state are retried after 30 seconds, a connection superseded by
+  a new SYN is archived with its cached rates zeroed like an expired one, the
+  sandbox report uses one wording for a failed root uid drop on every
+  platform and, on builds without Landlock, for the success case as well, the
+  standalone aarch64 and Android static build workflows are removed since the
+  release workflow already produces those binaries, and dispatching the
+  release workflow with `skip_downstream` now also skips the crates.io,
+  Docker, COPR, PPA, and OBS publish jobs so a backfill cannot republish
+- **Release Backfills**: a re-run of the release workflow no longer overwrites
+  assets that are already on the release unless `overwrite_assets` is set,
+  since Chocolatey, Scoop, and the AUR binary package pin checksums of the
+  published files
+
+- **Acronym Casing**: the Details header chip reads `RTT` instead of `rtt`
+  and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now
+  show as SYN received instead of an unknown state
 
 - **Bogus "unknown" Process Group on Linux**: a process that exited while
   RustNet scanned `/proc` was recorded under the literal name `unknown`, which

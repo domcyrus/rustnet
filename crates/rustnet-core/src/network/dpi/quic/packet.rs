@@ -2,6 +2,7 @@ use crate::network::merge::merge_tls_info;
 use crate::network::types::{QuicConnectionState, QuicInfo, QuicPacketType, TlsInfo};
 use crate::network::util::hex_encode;
 use log::{debug, warn};
+use std::ops::Range;
 
 use super::crypto::decrypt_client_initial_packet;
 use super::tls::try_extract_tls_from_reassembler;
@@ -126,13 +127,11 @@ fn merge_quic_packet_info(existing: Option<QuicInfo>, new: QuicInfo) -> QuicInfo
             // Merge TLS info - prefer complete SNI over partial
             merge_tls_info(&mut existing.tls_info, &new.tls_info);
 
-            // Update connection ID if we have a better one
             if existing.connection_id.is_empty() && !new.connection_id.is_empty() {
                 existing.connection_id = new.connection_id;
                 existing.connection_id_hex = new.connection_id_hex;
             }
 
-            // Update version if we didn't have it
             if existing.version_string.is_none() && new.version_string.is_some() {
                 existing.version_string = new.version_string;
             }
@@ -175,18 +174,42 @@ fn merge_quic_packet_info(existing: Option<QuicInfo>, new: QuicInfo) -> QuicInfo
     }
 }
 
-/// Parse a QUIC long header packet and return both the info and the packet length
-/// This is needed for coalesced packet handling
-pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<QuicInfo>, usize) {
+/// Location of the protected part of a long header packet that carries a
+/// `Length` field (Initial, 0-RTT and Handshake, RFC 9000 Section 17.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PacketLayout {
+    /// Offset of the (header-protected) packet number field
+    pub pn_offset: usize,
+    /// Declared `Length`: packet number plus protected payload and AEAD tag
+    pub packet_length: usize,
+}
+
+/// Fields of a QUIC long header, parsed once and shared by the packet walker
+/// and the Initial-packet decryptor.
+pub(super) struct LongHeader {
+    pub version: u32,
+    pub packet_type: QuicPacketType,
+    /// Byte range of the Destination Connection ID within the packet.
+    /// Remembering the range lets callers reborrow the packet instead of
+    /// allocating an owned copy of the DCID.
+    pub dcid: Range<usize>,
+    /// `None` for Retry and Version Negotiation packets, which have no
+    /// `Length` field, and when the token or `Length` varint could not be
+    /// parsed. In both cases the packet extends to the end of the datagram.
+    pub layout: Option<PacketLayout>,
+}
+
+/// Parse the long header fields up to the packet number.
+///
+/// Returns `None` when the fixed fields or connection IDs are truncated,
+/// which means the packet cannot be interpreted at all.
+pub(super) fn parse_long_header(payload: &[u8]) -> Option<LongHeader> {
     if payload.len() < 6 {
-        return (None, 0);
+        return None;
     }
 
     let first_byte = payload[0];
     let version = u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]);
-
-    // Create QuicInfo with version
-    let mut quic_info = QuicInfo::new(version);
 
     // Determine packet type
     let packet_type = if version == 0 {
@@ -194,9 +217,7 @@ pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<Qu
     } else {
         get_long_packet_type(first_byte, version)
     };
-    quic_info.packet_type = packet_type;
 
-    // Parse connection IDs
     let mut offset = 5;
 
     // Destination Connection ID
@@ -205,7 +226,7 @@ pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<Qu
             "QUIC: Payload too short to read DCID length at offset {}",
             offset
         );
-        return (None, 0);
+        return None;
     }
     let dcid_len = payload[offset] as usize;
     offset += 1;
@@ -221,15 +242,9 @@ pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<Qu
             offset + dcid_len,
             payload.len()
         );
-        return (None, 0);
+        return None;
     }
-    // Remember the DCID byte-range so we can reborrow `payload` later instead
-    // of allocating a separate owned copy. The short-header path got the same
-    // fix in #317; the long-header path kept doing `to_vec().clone()` which
-    // allocated the DCID twice per packet.
-    let dcid_range = offset..offset + dcid_len;
-    quic_info.connection_id = payload[dcid_range.clone()].to_vec();
-    quic_info.connection_id_hex = None;
+    let dcid = offset..offset + dcid_len;
     offset += dcid_len;
 
     // Source Connection ID
@@ -238,7 +253,7 @@ pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<Qu
             "QUIC: Payload too short for SCID length at offset {}",
             offset
         );
-        return (None, 0);
+        return None;
     }
     let scid_len = payload[offset] as usize;
     offset += 1;
@@ -249,9 +264,16 @@ pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<Qu
             offset + scid_len,
             payload.len()
         );
-        return (None, 0);
+        return None;
     }
     offset += scid_len;
+
+    let mut header = LongHeader {
+        version,
+        packet_type,
+        dcid,
+        layout: None,
+    };
 
     // Retry and Version Negotiation packets have no Length field: the retry
     // token / supported-version list simply extends to the end of the
@@ -262,52 +284,80 @@ pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<Qu
         packet_type,
         QuicPacketType::Retry | QuicPacketType::VersionNegotiation
     ) {
-        extract_tls_from_long_header_packet(
-            payload,
-            &mut quic_info,
-            &payload[dcid_range],
-            version,
-            packet_type,
-        );
-        return (Some(quic_info), payload.len());
+        return Some(header);
     }
 
     // For Initial packets, parse token length
     if packet_type == QuicPacketType::Initial {
-        if let Some((token_len, bytes_read)) = parse_variable_length_int(&payload[offset..]) {
-            offset += bytes_read;
-            // Guard: a malformed/adversarial varint may decode to a value far
-            // larger than the remaining payload. Treat that as unparseable
-            // rather than panicking on the next slice access.
-            match (token_len as usize).checked_add(offset) {
-                Some(new_offset) if new_offset <= payload.len() => offset = new_offset,
-                _ => return (Some(quic_info), payload.len()),
+        let Some(token_len) = read_varint(payload, &mut offset) else {
+            return Some(header); // Can't parse, assume rest of datagram
+        };
+        // Guard: a malformed/adversarial varint may decode to a value far
+        // larger than the remaining payload (QUIC varints go up to 2^62, so
+        // also guard the usize conversion on 32-bit targets). Treat that as
+        // unparseable rather than panicking on the next slice access.
+        match usize::try_from(token_len)
+            .ok()
+            .and_then(|len| len.checked_add(offset))
+        {
+            Some(new_offset) if new_offset <= payload.len() => offset = new_offset,
+            _ => {
+                debug!("QUIC: token_len pushed offset past end of packet");
+                return Some(header);
             }
-        } else {
-            return (Some(quic_info), payload.len()); // Can't parse, assume rest of datagram
         }
     }
 
     // Parse packet length (variable-length integer)
-    if offset >= payload.len() {
-        return (Some(quic_info), payload.len());
-    }
-    let packet_length =
-        if let Some((pkt_len, bytes_read)) = parse_variable_length_int(&payload[offset..]) {
-            offset += bytes_read;
-            pkt_len as usize
-        } else {
-            // Can't parse packet length, assume rest of datagram
-            return (Some(quic_info), payload.len());
-        };
+    let Some(packet_length) = read_varint(payload, &mut offset) else {
+        // Can't parse packet length, assume rest of datagram
+        return Some(header);
+    };
 
-    // Total packet size = header (offset) + packet_length (includes pkt num + payload).
+    // Now offset points to the packet number field
+    header.layout = Some(PacketLayout {
+        pn_offset: offset,
+        packet_length: packet_length as usize,
+    });
+    Some(header)
+}
+
+/// Parse a QUIC long header packet and return both the info and the packet length
+/// This is needed for coalesced packet handling
+pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<QuicInfo>, usize) {
+    let Some(header) = parse_long_header(payload) else {
+        return (None, 0);
+    };
+
+    let mut quic_info = QuicInfo::new(header.version);
+    quic_info.packet_type = header.packet_type;
+    quic_info.connection_id = payload[header.dcid.clone()].to_vec();
+    quic_info.connection_id_hex = None;
+
+    let Some(layout) = header.layout else {
+        // The packet consumes the rest of the datagram. Retry and Version
+        // Negotiation carry no Length field and still classify the
+        // connection; an Initial / 0-RTT / Handshake packet whose token or
+        // Length could not be read is malformed, so its state is left alone.
+        if matches!(
+            header.packet_type,
+            QuicPacketType::Retry | QuicPacketType::VersionNegotiation
+        ) {
+            extract_tls_from_long_header_packet(payload, &mut quic_info, &header);
+        }
+        return (Some(quic_info), payload.len());
+    };
+
+    // Total packet size = header (pn_offset) + packet_length (includes pkt num + payload).
     // Use checked_add so an adversarial varint length can't overflow usize.
-    let total_packet_size = offset.checked_add(packet_length).unwrap_or(payload.len());
+    let total_packet_size = layout
+        .pn_offset
+        .checked_add(layout.packet_length)
+        .unwrap_or(payload.len());
 
     debug!(
         "QUIC: Long header packet - header_len={}, packet_length={}, total={}",
-        offset, packet_length, total_packet_size
+        layout.pn_offset, layout.packet_length, total_packet_size
     );
 
     // Now do the actual TLS extraction on this packet
@@ -317,30 +367,29 @@ pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<Qu
         payload // Use what we have if packet extends beyond datagram
     };
 
-    // Extract TLS info from this packet. The DCID lives inside `payload`, so
-    // pass a borrowed slice instead of cloning the owned `connection_id` Vec.
-    extract_tls_from_long_header_packet(
-        packet_data,
-        &mut quic_info,
-        &payload[dcid_range],
-        version,
-        packet_type,
-    );
+    extract_tls_from_long_header_packet(packet_data, &mut quic_info, &header);
 
     (Some(quic_info), total_packet_size.min(payload.len()))
 }
 
 /// Extract TLS information from a long header packet
+///
+/// The DCID lives inside `payload`, so it is reborrowed from the header's
+/// range instead of cloning the owned `connection_id` Vec.
 fn extract_tls_from_long_header_packet(
     payload: &[u8],
     quic_info: &mut QuicInfo,
-    dcid: &[u8],
-    version: u32,
-    packet_type: QuicPacketType,
+    header: &LongHeader,
 ) {
+    let LongHeader {
+        version,
+        packet_type,
+        layout,
+        ..
+    } = *header;
+    let dcid = &payload[header.dcid.clone()];
     let dcid_len = dcid.len();
 
-    // Set connection state based on packet type
     quic_info.connection_state = match packet_type {
         QuicPacketType::Initial => QuicConnectionState::Initial,
         QuicPacketType::Handshake => QuicConnectionState::Handshaking,
@@ -365,7 +414,9 @@ fn extract_tls_from_long_header_packet(
             // own DCID field. A server Initial's DCID is the client's SCID,
             // so deriving keys from it can never succeed without
             // connection-level state that remembers the original DCID.
-            if let Some(decrypted_payload) = decrypt_client_initial_packet(payload, dcid, version) {
+            if let Some(decrypted_payload) = layout
+                .and_then(|layout| decrypt_client_initial_packet(payload, dcid, version, layout))
+            {
                 debug!("QUIC: Successfully decrypted Client Initial packet");
                 // Extract TLS info from decrypted payload using reassembly
                 if let Some(tls_info) =
@@ -431,7 +482,7 @@ fn parse_short_header_packet(payload: &[u8]) -> Option<QuicInfo> {
     quic_info.packet_type = QuicPacketType::OneRtt;
     quic_info.connection_state = QuicConnectionState::Connected;
 
-    // For short header, connection ID length is not in the packet — use a
+    // For short header, connection ID length is not in the packet; use a
     // common 8-byte size as a heuristic. Move the slice straight into
     // `connection_id`; the long-header path keeps a local `dcid` because it
     // re-borrows for TLS decryption, but here nothing else reads it.
@@ -506,49 +557,29 @@ fn scan_packet_frames(
                 // ACK or ACK_ECN frame
                 debug!("QUIC: Found ACK frame");
 
-                // Parse and skip ACK frame fields
-                let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
+                // Parse and skip ACK frame fields: Largest Acknowledged,
+                // ACK Delay, ACK Range Count, First ACK Range
+                skip_varints(payload, &mut offset, 2)?;
+                let ack_range_count = read_varint(payload, &mut offset)?;
+                read_varint(payload, &mut offset)?;
 
-                let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
-
-                let (ack_range_count, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
-
-                let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
-
-                for _ in 0..ack_range_count {
-                    let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                    offset += bytes_read;
-                    let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                    offset += bytes_read;
-                }
+                // Each ACK Range is a Gap plus an ACK Range Length
+                skip_varints(payload, &mut offset, ack_range_count.saturating_mul(2))?;
 
                 if frame_type_byte == 0x03 {
                     // ECN counts
-                    for _ in 0..3 {
-                        let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                        offset += bytes_read;
-                    }
+                    skip_varints(payload, &mut offset, 3)?;
                 }
             }
 
             0x04 => {
                 // RESET_STREAM frame
-                for _ in 0..3 {
-                    let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                    offset += bytes_read;
-                }
+                skip_varints(payload, &mut offset, 3)?;
             }
 
             0x05 => {
                 // STOP_SENDING frame
-                for _ in 0..2 {
-                    let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                    offset += bytes_read;
-                }
+                skip_varints(payload, &mut offset, 2)?;
             }
 
             0x06 => {
@@ -557,11 +588,8 @@ fn scan_packet_frames(
                 *found_crypto_frames = true;
                 quic_info.has_crypto_frame = true;
 
-                let (crypto_offset, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
-
-                let (crypto_length, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
+                let crypto_offset = read_varint(payload, &mut offset)?;
+                let crypto_length = read_varint(payload, &mut offset)?;
 
                 debug!(
                     "QUIC: CRYPTO frame - offset={}, length={}",
@@ -586,10 +614,8 @@ fn scan_packet_frames(
 
             0x07 => {
                 // NEW_TOKEN frame
-                let (token_length, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset = offset
-                    .checked_add(bytes_read)?
-                    .checked_add(token_length as usize)?;
+                let token_length = read_varint(payload, &mut offset)?;
+                offset = offset.checked_add(token_length as usize)?;
                 if offset > payload.len() {
                     break;
                 }
@@ -600,18 +626,14 @@ fn scan_packet_frames(
                 let has_offset = (frame_type_byte & 0x04) != 0;
                 let has_length = (frame_type_byte & 0x02) != 0;
 
-                let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
+                read_varint(payload, &mut offset)?; // Stream ID
 
                 if has_offset {
-                    let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                    offset += bytes_read;
+                    read_varint(payload, &mut offset)?;
                 }
 
                 let stream_data_len = if has_length {
-                    let (length, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                    offset += bytes_read;
-                    length as usize
+                    read_varint(payload, &mut offset)? as usize
                 } else {
                     payload.len() - offset
                 };
@@ -629,20 +651,12 @@ fn scan_packet_frames(
                     0x11 | 0x15 => 2,
                     _ => 0,
                 };
-
-                for _ in 0..num_vars {
-                    let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                    offset += bytes_read;
-                }
+                skip_varints(payload, &mut offset, num_vars)?;
             }
 
             0x18 => {
-                // NEW_CONNECTION_ID frame
-                let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
-
-                let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
+                // NEW_CONNECTION_ID frame: Sequence Number, Retire Prior To
+                skip_varints(payload, &mut offset, 2)?;
 
                 if offset >= payload.len() {
                     break;
@@ -656,8 +670,7 @@ fn scan_packet_frames(
 
             0x19 => {
                 // RETIRE_CONNECTION_ID frame
-                let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
+                read_varint(payload, &mut offset)?;
             }
 
             0x1a | 0x1b => {
@@ -667,18 +680,14 @@ fn scan_packet_frames(
 
             0x1c | 0x1d => {
                 // CONNECTION_CLOSE frame - extract detailed information
-                let (error_code, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
+                let error_code = read_varint(payload, &mut offset)?;
 
                 // 0x1c has an additional frame type field, 0x1d does not
                 if frame_type_byte == 0x1c {
-                    let (_, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                    offset += bytes_read;
+                    read_varint(payload, &mut offset)?;
                 }
 
-                // Extract reason phrase if present
-                let (reason_length, bytes_read) = parse_variable_length_int(&payload[offset..])?;
-                offset += bytes_read;
+                let reason_length = read_varint(payload, &mut offset)?;
 
                 let reason_len = reason_length as usize;
                 let reason_end = offset.checked_add(reason_len)?;
@@ -699,7 +708,6 @@ fn scan_packet_frames(
                     error_code,
                 });
 
-                // Update connection state based on close frame
                 quic_info.connection_state = if error_code == 0 {
                     // NO_ERROR - graceful close, enter draining
                     crate::network::types::QuicConnectionState::Draining
@@ -742,8 +750,25 @@ fn scan_packet_frames(
     Some(())
 }
 
+/// Read a variable-length integer at `*offset` and advance past it.
+/// Returns `None` (leaving `offset` untouched) if the varint is truncated or
+/// `offset` is already past the end of `payload`.
+fn read_varint(payload: &[u8], offset: &mut usize) -> Option<u64> {
+    let (value, bytes_read) = parse_variable_length_int(payload.get(*offset..)?)?;
+    *offset += bytes_read;
+    Some(value)
+}
+
+/// Skip `count` consecutive variable-length integers starting at `*offset`.
+fn skip_varints(payload: &[u8], offset: &mut usize, count: u64) -> Option<()> {
+    for _ in 0..count {
+        read_varint(payload, offset)?;
+    }
+    Some(())
+}
+
 /// Parse a variable-length integer (QUIC encoding)
-pub(super) fn parse_variable_length_int(data: &[u8]) -> Option<(u64, usize)> {
+fn parse_variable_length_int(data: &[u8]) -> Option<(u64, usize)> {
     if data.is_empty() {
         return None;
     }
@@ -827,10 +852,8 @@ pub(in crate::network::dpi) fn is_quic_packet(payload: &[u8]) -> bool {
 
     // Check for QUIC long header (bit 7 set)
     if (first_byte & 0x80) != 0 {
-        // Check version
         let version = u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]);
 
-        // Check for known QUIC versions
         let known_versions = [
             0x00000001, // QUIC v1 (RFC 9000)
             0x6b3343cf, // QUIC v2
@@ -876,11 +899,9 @@ pub(in crate::network::dpi) fn is_quic_packet(payload: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    /// Regression test for a panic in parse_long_header_packet_with_length:
-    /// a malformed Initial packet whose token_length varint decodes to a
-    /// value far larger than the payload used to push `offset` past
-    /// `payload.len()`, causing the next slice access at line 408 to panic
-    /// with "range start index ... out of range for slice of length ...".
+    /// A malformed Initial packet whose token_length varint decodes to a
+    /// value far larger than the payload must not push `offset` past
+    /// `payload.len()` and panic on the next slice access.
     #[test]
     fn test_long_header_huge_token_length_does_not_panic() {
         // Build a QUIC v1 Initial long-header packet.
@@ -890,7 +911,7 @@ mod tests {
         //   SCID len:   0
         //   token len varint: 8-byte form with a huge value (0xC8 8C ...)
         // That varint decodes (with the top 2 bits masked) to
-        // 0x08c8c8c8c8c8ca67 — the exact value from the observed panic.
+        // 0x08c8c8c8c8c8ca67, the exact value from the observed panic.
         let mut pkt = Vec::new();
         pkt.push(0xC0);
         pkt.extend_from_slice(&0x0000_0001u32.to_be_bytes());
@@ -908,6 +929,34 @@ mod tests {
             pkt.len(),
             "unparseable token length should cause us to treat the rest of the datagram as consumed"
         );
+    }
+
+    /// A declared token length that exceeds the packet makes the header
+    /// parser report the packet number offset as unknown, so decryption is
+    /// never attempted and `&packet[offset..]` is never sliced.
+    #[test]
+    fn test_initial_packet_oversized_token_len_does_not_panic() {
+        let mut packet = Vec::new();
+        packet.push(0xC0); // long header, type=Initial
+        packet.extend_from_slice(&1u32.to_be_bytes()); // version 1
+        packet.push(0); // DCID len = 0
+        packet.push(0); // SCID len = 0
+        // Token length: 2-byte QUIC varint encoding 1000 (top 2 bits = 01).
+        let token_varint: u16 = 1000 | 0x4000;
+        packet.extend_from_slice(&token_varint.to_be_bytes());
+        // Intentionally no token bytes follow: declared length far exceeds packet.
+
+        let header = parse_long_header(&packet).expect("fixed fields should parse");
+        assert_eq!(header.packet_type, QuicPacketType::Initial);
+        assert!(header.layout.is_none());
+
+        let (info, consumed) = parse_long_header_packet_with_length(&packet);
+        assert!(
+            info.expect("should still surface a QuicInfo")
+                .tls_info
+                .is_none()
+        );
+        assert_eq!(consumed, packet.len());
     }
 
     #[test]

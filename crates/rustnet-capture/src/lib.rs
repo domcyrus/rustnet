@@ -7,10 +7,10 @@
 //! [`PacketReader`] that yields raw link-layer frames.
 //!
 //! It is deliberately separate from the analysis core (`rustnet-core`) and the
-//! `rustnet` application so that alternative front-ends — e.g. a headless
-//! Prometheus exporter — can pair capture with `rustnet-core` without pulling
+//! `rustnet` application so that alternative front-ends (e.g. a headless
+//! Prometheus exporter) can pair capture with `rustnet-core` without pulling
 //! in the TUI, and so that platforms wanting a bespoke capture path (e.g. a
-//! root-free macOS pktap helper) can swap this crate out entirely.
+//! root-free macOS PKTAP helper) can swap this crate out entirely.
 //!
 //! Capture yields raw bytes plus the libpcap data-link type (DLT); parsing
 //! those bytes is `rustnet-core`'s job.
@@ -31,7 +31,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub enum PktapUnavailable {
     /// Could not open the BPF device (typically a permission issue).
     NoBpfDeviceAccess,
-    /// PKTAP device creation failed — almost always missing root privileges.
+    /// PKTAP device creation failed, almost always missing root privileges.
     MissingRootPrivileges,
     /// A specific interface was requested; PKTAP only works on the default path.
     InterfaceSpecified,
@@ -71,6 +71,46 @@ impl Default for CaptureConfig {
     }
 }
 
+/// Interface name prefixes that are never picked automatically: Apple's `ap`
+/// and `awdl` (Wireless Direct) interfaces, `llw` (low latency WLAN),
+/// bridges and VM host adapters (`vmnet`). TUN/TAP interfaces (`utun`,
+/// `tun`, `tap`) are supported and deliberately not listed.
+const EXCLUDED_NAME_PREFIXES: [&str; 5] = ["ap", "awdl", "llw", "bridge", "vmnet"];
+
+/// Description markers (lower-case) that mark a virtual adapter in the
+/// first selection pass.
+const STRICT_VIRTUAL_MARKERS: [&str; 3] = ["hyper-v", "vmware", "virtualbox"];
+
+/// Broader marker set for the last-resort selection pass.
+const LOOSE_VIRTUAL_MARKERS: [&str; 5] = ["hyper-v", "virtual", "vmware", "virtualbox", "loopback"];
+
+/// Whether the device has a routable IPv4 address; IPv6-only devices never
+/// qualify.
+fn has_usable_ipv4(device: &Device) -> bool {
+    device.addresses.iter().any(|addr| match &addr.addr {
+        std::net::IpAddr::V4(v4) => {
+            !v4.is_link_local() && !v4.is_loopback() && !v4.is_unspecified()
+        }
+        std::net::IpAddr::V6(_) => false,
+    })
+}
+
+fn has_excluded_name_prefix(name: &str) -> bool {
+    EXCLUDED_NAME_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+/// Case-insensitive check of the device description against `markers`.
+fn desc_contains_any(device: &Device, markers: &[&str]) -> bool {
+    let desc_lower = device
+        .desc
+        .as_ref()
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    markers.iter().any(|marker| desc_lower.contains(marker))
+}
+
 /// Find the best active network device
 fn find_best_device() -> Result<Device> {
     let devices = Device::list().map_err(|e| {
@@ -85,7 +125,6 @@ fn find_best_device() -> Result<Device> {
         devices.len()
     );
 
-    // Log all devices for debugging
     for d in &devices {
         let has_valid_ip = d.addresses.iter().any(|addr| match &addr.addr {
             std::net::IpAddr::V4(v4) => {
@@ -109,36 +148,18 @@ fn find_best_device() -> Result<Device> {
         return Err(anyhow!("No network devices found"));
     }
 
-    // Find the best active device
     let suitable_device = devices
         .iter()
         // First priority: up, running, has a valid IP address, and NOT virtual
         .find(|d| {
-            // Check if it's a virtual/problematic interface
-            let desc_lower = d
-                .desc
-                .as_ref()
-                .map(|s| s.to_lowercase())
-                .unwrap_or_default();
-            let is_virtual = desc_lower.contains("hyper-v")
-                || desc_lower.contains("vmware")
-                || desc_lower.contains("virtualbox");
-
             !d.name.starts_with("lo")
                 // Note: 'any' is excluded here because it's not a real interface
                 // Users can still specify '-i any' explicitly on Linux
                 && d.name != "any"
-                && !is_virtual  // Skip virtual adapters in first priority too
+                && !desc_contains_any(d, &STRICT_VIRTUAL_MARKERS)
                 && d.flags.is_up()
                 && d.flags.is_running()
-                && d.addresses.iter().any(|addr| {
-                    match &addr.addr {
-                        std::net::IpAddr::V4(v4) => {
-                            !v4.is_link_local() && !v4.is_loopback() && !v4.is_unspecified()
-                        }
-                        std::net::IpAddr::V6(_v6) => false, // Skip IPv6 for now
-                    }
-                })
+                && has_usable_ipv4(d)
         })
         // Second priority: common active interface names
         .or_else(|| {
@@ -151,31 +172,12 @@ fn find_best_device() -> Result<Device> {
         // Third priority: any up interface with valid addresses (excluding problematic ones)
         .or_else(|| {
             devices.iter().find(|d| {
-                // Check if it's a virtual/problematic interface
-                let desc_lower = d
-                    .desc
-                    .as_ref()
-                    .map(|s| s.to_lowercase())
-                    .unwrap_or_default();
-                let is_virtual = desc_lower.contains("hyper-v")
-                    || desc_lower.contains("virtual")
-                    || desc_lower.contains("vmware")
-                    || desc_lower.contains("virtualbox")
-                    || desc_lower.contains("loopback");
-
-                !d.name.starts_with("lo") &&
-                !d.name.starts_with("ap") &&     // Skip Apple's ap interfaces
-                !d.name.starts_with("awdl") &&   // Skip Apple Wireless Direct
-                !d.name.starts_with("llw") &&    // Skip Low latency WLAN
-                !d.name.starts_with("bridge") && // Skip bridges
-                // TUN/TAP interfaces now supported - removed utun/tun/tap exclusion
-                !d.name.starts_with("vmnet") &&  // Skip VM interfaces
-                // Note: 'any' is excluded here because it's not a real interface
-                // Users can still specify '-i any' explicitly on Linux
-                d.name != "any" &&
-                !is_virtual &&                    // Skip virtual adapters
-                d.flags.is_up() &&
-                !d.addresses.is_empty()
+                !d.name.starts_with("lo")
+                    && !has_excluded_name_prefix(&d.name)
+                    && d.name != "any"
+                    && !desc_contains_any(d, &LOOSE_VIRTUAL_MARKERS)
+                    && d.flags.is_up()
+                    && !d.addresses.is_empty()
             })
         })
         .cloned();
@@ -240,7 +242,6 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                             }
                         );
 
-                        // Apply BPF filter if specified
                         if let Some(filter) = &config.filter {
                             log::info!("Applying BPF filter to PKTAP: {}", filter);
                             cap.filter(filter, true)?;
@@ -257,7 +258,6 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                         log::info!(
                             "Falling back to regular capture (process detection will use lsof)"
                         );
-                        // Store degradation reason - failed to open (permission issue)
                         let _ = PKTAP_DEGRADATION_REASON.set(PktapUnavailable::NoBpfDeviceAccess);
                     }
                 }
@@ -268,29 +268,25 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                     "PKTAP requires root privileges - run with 'sudo' for process metadata support"
                 );
                 log::info!("Falling back to regular capture (process detection will use lsof)");
-                // Store degradation reason - failed to create device (permission issue)
                 let _ = PKTAP_DEGRADATION_REASON.set(PktapUnavailable::MissingRootPrivileges);
             }
         }
     }
 
-    // Track PKTAP degradation reasons for macOS
     #[cfg(target_os = "macos")]
     {
         if config.interface.is_some() {
-            // Specific interface requested - PKTAP can't be used
             let _ = PKTAP_DEGRADATION_REASON.set(PktapUnavailable::InterfaceSpecified);
         }
         if config.filter.is_some() {
             log::warn!(
                 "BPF filter specified - using regular capture instead of PKTAP (BPF filters don't work with PKTAP)"
             );
-            // Store degradation reason - BPF filter incompatible
             let _ = PKTAP_DEGRADATION_REASON.set(PktapUnavailable::BpfFilterIncompatible);
         }
     }
 
-    // Fallback to regular capture (original code)
+    // Fallback to regular capture
     log::info!("Setting up regular packet capture");
     let device = find_capture_device(&config.interface)?;
 
@@ -322,8 +318,7 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
 
     let device_name = device.name.clone();
 
-    // Create capture handle with promiscuous mode disabled
-    // We use non-promiscuous mode (read-only packet capture) which only requires CAP_NET_RAW
+    // Non-promiscuous mode (read-only packet capture) only requires CAP_NET_RAW.
     let cap = Capture::from_device(device)?
         .promisc(false)
         .snaplen(config.snaplen)
@@ -331,10 +326,8 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
         .timeout(config.timeout_ms)
         .immediate_mode(true); // Parse packets ASAP
 
-    // Open the capture
     let mut cap = cap.open()?;
 
-    // Apply BPF filter if specified
     if let Some(filter) = &config.filter {
         log::info!("Applying BPF filter: {}", filter);
         cap.filter(filter, true)?;
@@ -350,7 +343,6 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
 /// This is useful for failing fast before starting capture threads
 pub fn validate_interface(interface_name: &Option<String>) -> Result<()> {
     if let Some(name) = interface_name {
-        // This will return an error if the interface doesn't exist
         find_capture_device(&Some(name.clone()))?;
     }
     Ok(())
@@ -412,7 +404,6 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
         Some(name) => {
             log::info!("Looking for interface: {}", name);
 
-            // Special handling for 'any' interface
             if name == "any" {
                 #[cfg(not(target_os = "linux"))]
                 {
@@ -429,15 +420,12 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                 }
             }
 
-            // List all devices
             let devices = Device::list()?;
 
-            // Find exact match first
             if let Some(device) = devices.iter().find(|d| d.name == *name) {
                 return Ok(device.clone());
             }
 
-            // Try case-insensitive match
             let name_lower = name.to_lowercase();
             if let Some(device) = devices.iter().find(|d| d.name.to_lowercase() == name_lower) {
                 return Ok(device.clone());
@@ -495,7 +483,6 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
             }
             log::info!("Fallback: using libpcap default device logic");
 
-            // Try to get default device
             match Device::lookup() {
                 Ok(Some(device)) => {
                     log::info!(
@@ -504,24 +491,10 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                         device.desc.as_deref().unwrap_or("no description")
                     );
 
-                    // Check if the default device is actually active
-                    let has_valid_ip = device.addresses.iter().any(|addr| {
-                        match &addr.addr {
-                            std::net::IpAddr::V4(v4) => {
-                                !v4.is_link_local() && !v4.is_loopback() && !v4.is_unspecified()
-                            }
-                            std::net::IpAddr::V6(_v6) => false, // Skip IPv6 for now
-                        }
-                    });
+                    let has_valid_ip = has_usable_ipv4(&device);
 
-                    // Check if it's a problematic interface type
                     // Note: 'any' is excluded on non-Linux platforms where it doesn't work
-                    let is_problematic = device.name.starts_with("ap")
-                        || device.name.starts_with("awdl")
-                        || device.name.starts_with("llw")
-                        || device.name.starts_with("bridge")
-                        // TUN/TAP interfaces now supported - removed utun/tun/tap check
-                        || device.name.starts_with("vmnet")
+                    let is_problematic = has_excluded_name_prefix(&device.name)
                         || (device.name == "any" && !cfg!(target_os = "linux"))
                         || device.flags.is_loopback();
 
@@ -543,7 +516,6 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
                         );
                         log::info!("Looking for a better interface...");
 
-                        // Fall through to the device selection logic below
                         find_best_device()
                     }
                 }
@@ -600,7 +572,6 @@ impl PacketReader {
             if_dropped: stats.if_dropped,
         };
 
-        // Log dropped packets if any occurred
         if capture_stats.total_dropped() > 0 {
             log::debug!(
                 "Total {} packets dropped (kernel: {}, interface: {})",
@@ -652,6 +623,6 @@ mod tests {
     fn test_default_config() {
         let config = CaptureConfig::default();
         assert_eq!(config.snaplen, 1514);
-        assert!(config.filter.is_none()); // Default starts without filter
+        assert!(config.filter.is_none());
     }
 }

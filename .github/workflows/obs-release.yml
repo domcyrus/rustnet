@@ -32,16 +32,13 @@ jobs:
 
       - name: Setup Linux dependencies
         uses: ./.github/actions/setup-linux-deps
+        with:
+          extra-packages: osc obs-build build-essential
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable # unpinned: maintained branch by Rust team member
         with:
           toolchain: stable
-
-      - name: Install OBS dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y osc obs-build build-essential
 
       - name: Configure OBS credentials
         run: |

@@ -1,40 +1,26 @@
-// network/platform/macos/process.rs - macOS lsof-based process lookup
+//! macOS lsof-based process lookup.
 
 use crate::{
     ConnectionKey, DegradationReason, HostSocket, HostSocketState, HostTcpState, MatchQuality,
-    ProcessAncestor, ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner,
+    ProcessAncestor, ProcessAttribution, ProcessLineage, ProcessLookup, SocketOwner, SocketScan,
     SocketSnapshot, ancestor_display_name, collect_process_lineage, decode_process_name,
-    parse_socket_addr_text, relaxed_lookup, remote_if_present,
+    owner_match, parse_socket_addr_text, path_from_c_buffer, remote_if_present,
 };
 use anyhow::Result;
 use log::{debug, error, info, warn};
 use rustnet_core::network::types::{Connection, Protocol};
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::mem::{MaybeUninit, size_of};
 use std::net::SocketAddr;
-use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::RwLock;
 
 const LSOF_PATH: &str = "/usr/sbin/lsof";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct MacOSProcessInfo {
-    pid: u32,
-    name: String,
-    uid: u32,
-}
-
 pub(super) struct MacOSProcessLookup {
-    cache: RwLock<HashMap<ConnectionKey, MacOSProcessInfo>>,
+    cache: RwLock<HashMap<ConnectionKey, SocketOwner>>,
     socket_snapshot: RwLock<SocketSnapshot>,
-}
-
-struct MacOSSocketScan {
-    lookup: HashMap<ConnectionKey, MacOSProcessInfo>,
-    sockets: Vec<HostSocket>,
 }
 
 pub(super) struct ProcessDetails {
@@ -61,16 +47,7 @@ pub(super) fn resolve_executable(pid: u32) -> Option<PathBuf> {
         return None;
     }
 
-    let returned = usize::try_from(length).ok()?.min(buffer.len());
-    let path_length = buffer[..returned]
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(returned);
-    if path_length == 0 {
-        return None;
-    }
-
-    Some(PathBuf::from(OsStr::from_bytes(&buffer[..path_length])))
+    path_from_c_buffer(&buffer, usize::try_from(length).ok()?)
 }
 
 pub(super) fn resolve_process_details(pid: u32) -> Option<ProcessDetails> {
@@ -160,10 +137,7 @@ impl MacOSProcessLookup {
         // refresh a few seconds later.
         let scan = Self::parse_lsof().unwrap_or_else(|e| {
             warn!("Initial lsof scan failed, deferring to periodic refresh: {e}");
-            MacOSSocketScan {
-                lookup: HashMap::new(),
-                sockets: Vec::new(),
-            }
+            SocketScan::default()
         });
         Ok(Self {
             cache: RwLock::new(scan.lookup),
@@ -179,10 +153,9 @@ impl MacOSProcessLookup {
         }
     }
 
-    fn parse_lsof() -> Result<MacOSSocketScan> {
+    fn parse_lsof() -> Result<SocketScan> {
         info!("Running lsof to get network connections");
 
-        // Run lsof to get network connections
         let output = Command::new(LSOF_PATH)
             .args(["-i", "-n", "-P", "-l", "+c", "0"])
             .output()?;
@@ -190,17 +163,14 @@ impl MacOSProcessLookup {
         if !output.status.success() {
             error!("lsof command failed with status: {}", output.status);
             error!("stderr: {}", String::from_utf8_lossy(&output.stderr));
-            return Ok(MacOSSocketScan {
-                lookup: HashMap::new(),
-                sockets: Vec::new(),
-            });
+            return Ok(SocketScan::default());
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok(Self::parse_lsof_output(&stdout))
     }
 
-    fn parse_lsof_output(stdout: &str) -> MacOSSocketScan {
+    fn parse_lsof_output(stdout: &str) -> SocketScan {
         let mut lookup = HashMap::new();
         let mut sockets = Vec::new();
         let lines: Vec<&str> = stdout.lines().collect();
@@ -208,7 +178,7 @@ impl MacOSProcessLookup {
 
         if lines.is_empty() {
             warn!("lsof returned no output");
-            return MacOSSocketScan { lookup, sockets };
+            return SocketScan { lookup, sockets };
         }
 
         debug!("lsof header: {}", lines.first().unwrap_or(&""));
@@ -251,11 +221,10 @@ impl MacOSProcessLookup {
             debug!("  Process: {} (PID: {})", process_name, pid);
             debug!("  Parts: {:?}", parts);
 
-            // Check TYPE field (usually parts[4]) to determine protocol
+            // TYPE (parts[4]) says IPv4/IPv6; NODE (parts[7]) carries the protocol.
             let protocol_hint = if parts.len() > 4 {
                 match parts[4] {
                     "IPv4" | "IPv6" => {
-                        // Need to look at NODE field for protocol
                         if parts.len() > 7 && (parts[7] == "TCP" || parts[7].contains("TCP")) {
                             debug!("  Detected TCP from NODE field: {}", parts[7]);
                             Some(Protocol::Tcp)
@@ -281,20 +250,16 @@ impl MacOSProcessLookup {
                 None
             };
 
-            // For lsof output, the connection info can be in different places:
-            // If the last field looks like a state (starts with "(" and ends with ")"),
-            // then the connection info is in the second-to-last field.
-            // Otherwise, it's in the last field.
+            // A trailing "(STATE)" field pushes the connection info to the
+            // second-to-last field; otherwise it is the last field.
             let last_field = parts.last().map_or("", |v| v);
             let connection_field = if last_field.starts_with('(') && last_field.ends_with(')') {
-                // Connection address is in the second-to-last field (before the state)
                 if parts.len() >= 2 {
                     parts[parts.len() - 2]
                 } else {
                     last_field
                 }
             } else {
-                // Connection info is in the last field
                 last_field
             };
 
@@ -316,14 +281,12 @@ impl MacOSProcessLookup {
                     "  Successfully parsed connection: {:?} -> {} ({})",
                     key, process_name, pid
                 );
-                lookup.insert(
-                    key.clone(),
-                    MacOSProcessInfo {
-                        pid,
-                        name: process_name.clone(),
-                        uid,
-                    },
-                );
+                let owner = SocketOwner {
+                    pid,
+                    name: process_name,
+                    uid: Some(uid),
+                };
+                lookup.insert(key, owner.clone());
                 let state = match protocol {
                     Protocol::Tcp => HostSocketState::Tcp(parse_lsof_tcp_state(last_field)),
                     Protocol::Udp => HostSocketState::UdpBound,
@@ -334,11 +297,7 @@ impl MacOSProcessLookup {
                     local_addr: local,
                     remote_addr: remote_if_present(remote),
                     state,
-                    owner: Some(SocketOwner {
-                        pid,
-                        name: process_name,
-                        uid: Some(uid),
-                    }),
+                    owner: Some(owner),
                     native_id: parts.get(5).and_then(|value| parse_lsof_native_id(value)),
                 });
                 successful_parsers += 1;
@@ -353,27 +312,30 @@ impl MacOSProcessLookup {
         );
         info!("Total connections in lookup table: {}", lookup.len());
 
-        MacOSSocketScan { lookup, sockets }
+        SocketScan { lookup, sockets }
     }
 
-    fn lookup_match(&self, conn: &Connection) -> Option<(MacOSProcessInfo, MatchQuality)> {
+    fn lookup_match(&self, conn: &Connection) -> Option<(SocketOwner, MatchQuality)> {
         let key = ConnectionKey::from_connection(conn);
         let cache = self.cache.read().expect("cache lock poisoned");
 
-        if let Some(result) = cache.get(&key).cloned() {
-            debug!("Found process info for connection {:?}: {:?}", key, result);
-            Some((result, MatchQuality::ExactTuple))
-        } else {
-            debug!("No process info found for connection {:?}", key);
-            debug!("Available keys in cache:");
-            for (cached_key, process) in cache.iter().take(10) {
-                debug!("  {:?} -> {} ({})", cached_key, process.name, process.pid);
+        let matched = owner_match(&cache, &key);
+        match &matched {
+            Some((owner, MatchQuality::ExactTuple)) => {
+                debug!("Found process info for connection {:?}: {:?}", key, owner);
             }
-            if cache.len() > 10 {
-                debug!("  ... and {} more entries", cache.len() - 10);
+            _ => {
+                debug!("No process info found for connection {:?}", key);
+                debug!("Available keys in cache:");
+                for (cached_key, process) in cache.iter().take(10) {
+                    debug!("  {:?} -> {} ({})", cached_key, process.name, process.pid);
+                }
+                if cache.len() > 10 {
+                    debug!("  ... and {} more entries", cache.len() - 10);
+                }
             }
-            relaxed_lookup(&cache, &key).map(|(process, quality)| (process.clone(), quality))
         }
+        matched
     }
 }
 
@@ -382,7 +344,7 @@ impl ProcessLookup for MacOSProcessLookup {
         let (process, quality) = self.lookup_match(conn)?;
         let mut attribution = ProcessAttribution::new(process.pid, process.name, quality)
             .with_executable(resolve_executable(process.pid));
-        attribution.uid = Some(process.uid);
+        attribution.uid = process.uid;
         if let Some(details) = resolve_process_details(process.pid) {
             attribution = attribution.with_details(
                 details.ppid,
@@ -429,18 +391,16 @@ fn parse_lsof_connection_with_hint(
     name: &str,
     protocol_hint: Option<Protocol>,
 ) -> Option<(Protocol, SocketAddr, SocketAddr)> {
-    // Parse lsof NAME field format:
+    // lsof NAME field formats:
     // "192.168.1.1:443->10.0.0.1:12345" (TCP)
     // "192.168.1.1:53" (UDP)
     // "*:80" (listening)
-
     debug!(
         "    Parsing NAME field: '{}' with hint: {:?}",
         name, protocol_hint
     );
 
     if name.contains("->") {
-        // Established connection with remote address
         let parts: Vec<&str> = name.split("->").collect();
         if parts.len() != 2 {
             debug!("    Failed: arrow connection doesn't have exactly 2 parts");
@@ -454,7 +414,7 @@ fn parse_lsof_connection_with_hint(
         let local = parse_socket_addr_text(parts[0])?;
         let remote = parse_socket_addr_text(parts[1])?;
 
-        // Use hint if available, otherwise assume TCP for established connections
+        // Without a hint, an established connection is assumed to be TCP.
         let protocol = protocol_hint.unwrap_or(Protocol::Tcp);
         debug!(
             "    Success: {:?} {}:{} -> {}:{}",
@@ -466,17 +426,16 @@ fn parse_lsof_connection_with_hint(
         );
         Some((protocol, local, remote))
     } else if name.contains(":") {
-        // UDP or listening socket
         debug!("    Parsing single address: '{}'", name);
         let local = parse_socket_addr_text(name)?;
 
-        // For UDP or listening, we create a dummy remote address
+        // UDP and listening sockets get an unspecified remote address.
         let remote = match local {
             SocketAddr::V4(_) => "0.0.0.0:0".parse().ok()?,
             SocketAddr::V6(_) => "[::]:0".parse().ok()?,
         };
 
-        // Use hint if available, otherwise assume UDP for single address
+        // Without a hint, a single address is assumed to be UDP.
         let protocol = protocol_hint.unwrap_or(Protocol::Udp);
         debug!(
             "    Success: {:?} {}:{} (listening/UDP)",
@@ -491,21 +450,9 @@ fn parse_lsof_connection_with_hint(
     }
 }
 
+/// lsof prints the TCP state in parentheses, such as `(ESTABLISHED)`.
 fn parse_lsof_tcp_state(value: &str) -> HostTcpState {
-    match value.trim_matches(['(', ')']).to_ascii_uppercase().as_str() {
-        "CLOSED" => HostTcpState::Closed,
-        "LISTEN" => HostTcpState::Listen,
-        "SYN_SENT" => HostTcpState::SynSent,
-        "SYN_RECEIVED" | "SYN_RECV" => HostTcpState::SynReceived,
-        "ESTABLISHED" => HostTcpState::Established,
-        "FIN_WAIT_1" | "FIN_WAIT1" => HostTcpState::FinWait1,
-        "FIN_WAIT_2" | "FIN_WAIT2" => HostTcpState::FinWait2,
-        "CLOSE_WAIT" => HostTcpState::CloseWait,
-        "CLOSING" => HostTcpState::Closing,
-        "LAST_ACK" => HostTcpState::LastAck,
-        "TIME_WAIT" => HostTcpState::TimeWait,
-        _ => HostTcpState::Unknown,
-    }
+    HostTcpState::parse_name(value.trim_matches(['(', ')']))
 }
 
 fn parse_lsof_native_id(value: &str) -> Option<u64> {
@@ -514,8 +461,8 @@ fn parse_lsof_native_id(value: &str) -> Option<u64> {
         .and_then(|hex| u64::from_str_radix(hex, 16).ok())
 }
 
-/// Robust normalization of process names to match PKTAP normalization
-/// (shared with rustnet-core so both sides stay identical)
+/// Normalize a process name the same way PKTAP names are normalized
+/// (shared with rustnet-core so both sides stay identical).
 fn normalize_process_name_robust(name: &str) -> String {
     let normalized = rustnet_core::network::link_layer::pktap::normalize_process_name(name);
 
@@ -526,17 +473,15 @@ fn normalize_process_name_robust(name: &str) -> String {
     normalized
 }
 
-/// Decode lsof escape sequences like \x20 back to regular characters
+/// Decode lsof escape sequences like `\x20` back to regular characters.
 fn decode_lsof_string(input: &str) -> String {
     let mut result = String::new();
     let mut chars = input.chars().peekable();
 
     while let Some(ch) = chars.next() {
         if ch == '\\' && chars.peek() == Some(&'x') {
-            // Skip the 'x'
             chars.next();
 
-            // Try to read two hex digits
             let hex_digits: String = chars.by_ref().take(2).collect();
             if hex_digits.len() == 2
                 && let Ok(byte_val) = u8::from_str_radix(&hex_digits, 16)
@@ -546,7 +491,6 @@ fn decode_lsof_string(input: &str) -> String {
                 continue;
             }
 
-            // If decoding failed, push the original characters
             result.push('\\');
             result.push('x');
             result.push_str(&hex_digits);
@@ -561,16 +505,7 @@ fn decode_lsof_string(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustnet_core::network::types::{ProtocolState, TcpState};
-
-    fn tcp_connection(local: &str, remote: &str) -> Connection {
-        Connection::new(
-            Protocol::Tcp,
-            local.parse().unwrap(),
-            remote.parse().unwrap(),
-            ProtocolState::Tcp(TcpState::Established),
-        )
-    }
+    use crate::test_support::tcp_connection;
 
     #[test]
     fn lsof_numeric_uid_and_exact_match_reach_rich_attribution() {
@@ -703,49 +638,40 @@ client 44 1000 5u IPv4 0x3 0t0 UDP *:0 (Unbound)
 
     #[test]
     fn test_decode_lsof_string() {
-        // Test basic space decoding
         assert_eq!(
             decode_lsof_string("Microsoft\\x20Teams\\x20WebView\\x20Helper"),
             "Microsoft Teams WebView Helper"
         );
 
-        // Test single word with space
         assert_eq!(decode_lsof_string("Brave\\x20Browser"), "Brave Browser");
 
-        // Test process name without escaping
         assert_eq!(decode_lsof_string("firefox"), "firefox");
 
-        // Test process name with single escaped space
         assert_eq!(decode_lsof_string("App\\x20Name"), "App Name");
 
-        // Test empty string
         assert_eq!(decode_lsof_string(""), "");
 
-        // Test string with no escape sequences
         assert_eq!(decode_lsof_string("launchd"), "launchd");
 
-        // Test malformed escape sequence (should be preserved)
+        // Malformed escape sequences are preserved.
         assert_eq!(
             decode_lsof_string("App\\x2G"),
-            "App\\x2G" // Invalid hex, should remain unchanged
+            "App\\x2G" // Invalid hex
         );
 
-        // Test incomplete escape sequence at end
         assert_eq!(
             decode_lsof_string("App\\x2"),
-            "App\\x2" // Incomplete, should remain unchanged
+            "App\\x2" // Incomplete escape at the end
         );
 
-        // Test multiple different escape sequences
         assert_eq!(
             decode_lsof_string("Test\\x20App\\x2D\\x2EExe"),
             "Test App-.Exe" // \x20 = space, \x2D = hyphen, \x2E = period
         );
 
-        // Test backslash without escape sequence
         assert_eq!(
             decode_lsof_string("App\\Normal"),
-            "App\\Normal" // Should preserve non-escape backslashes
+            "App\\Normal" // Non-escape backslashes are preserved
         );
     }
 }

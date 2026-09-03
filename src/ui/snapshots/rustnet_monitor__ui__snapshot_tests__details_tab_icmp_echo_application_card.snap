@@ -10,7 +10,7 @@ expression: output
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             
-▎ ping → 8.8.8.8:0 [ECHO_REQ(4660)] [rtt 8.7ms] · click a field to copy                                                                     
+▎ ping → 8.8.8.8:0 [ECHO_REQ(4660)] [RTT 8.7ms] · click a field to copy                                                                     
 Connection                                                            Application: ICMP                                                    ▐
 Protocol              ICMP                                            Message               Echo Request                                   ▐
 Status                Active (last seen <T> ago)                       Echo ID               4660                                           ▐

@@ -1,4 +1,4 @@
-//! Details tab — full record for the selected connection: protocol
+//! Details tab: the full record for the selected connection (protocol
 //! header, TCP analytics, traffic stats, and protocol-specific DPI
 //! info. Also owns the DetailsBuilder / register_detail_clicks
 //! helpers that build the label/value lines and the click-to-copy
@@ -23,6 +23,20 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 
+/// The DPI application payload of `$conn` when it was classified as the
+/// given `ApplicationProtocol` variant.
+macro_rules! app_info {
+    ($conn:expr, $variant:ident) => {
+        $conn
+            .dpi_info
+            .as_ref()
+            .and_then(|dpi| match &dpi.application {
+                crate::network::types::ApplicationProtocol::$variant(info) => Some(info),
+                _ => None,
+            })
+    };
+}
+
 use crate::network::dns::DnsResolver;
 use crate::network::types::{
     AddrKind, Connection, MatchQuality, ProcessLineage, Protocol, ProtocolState, TcpAnalytics,
@@ -35,10 +49,10 @@ use crate::ui::{
         SELECTION_BAR, build_header, cleanup_remaining, column_constraints, connection_row,
         select_columns, stale_window,
     },
-    dpi_color, fade_line,
+    dpi_color, fade_scroll_edges,
     format::{ellipsize_left, format_bytes, format_countdown, format_rate, format_rtt_compact},
-    non_dpi_app_color, section_header, state_color, theme, try_handle_connection_nav,
-    try_handle_pane_wheel,
+    non_dpi_app_color, section_header, section_title, state_color, theme,
+    try_handle_connection_nav, try_handle_pane_wheel,
     widgets::badge::{chip, pill},
     widgets::braille_graph,
     widgets::scrollbar::draw_scrollbar,
@@ -55,7 +69,7 @@ pub(in crate::ui) const DETAIL_LABEL_WIDTH: usize = 22;
 const DETAILS_SPLIT_MIN_WIDTH: u16 = 100;
 
 /// Rows scrolled per Ctrl+D / Ctrl+U press in the info panes. A fixed
-/// step rather than a half page — the pane height isn't known in the
+/// step rather than a half page: the pane height isn't known in the
 /// key handler, and a small constant feels consistent across sizes.
 const DETAILS_SCROLL_STEP: u16 = 5;
 
@@ -80,7 +94,7 @@ const APPLICATION_CARD_ROWS: usize = 11;
 /// dashboard.
 const TRANSPORT_CARD_ROWS: usize = 9;
 
-/// Details tab. Pulls DNS resolver per-render from the app — no
+/// Details tab. Pulls the DNS resolver per render from the app; no
 /// per-tab state today.
 pub(in crate::ui) struct DetailsTab;
 
@@ -113,7 +127,7 @@ impl Component for DetailsTab {
             _ => {}
         }
         // In grouped mode, flip through the grouped view's connection
-        // sequence, skipping group headers — a header has no record to
+        // sequence, skipping group headers, since a header has no record to
         // show on this tab. Falls through to the shared flat-list
         // helper when grouping is off (or the sequence is empty).
         if let Some(effects) = try_handle_grouped_details_nav(key, ctx) {
@@ -177,6 +191,35 @@ impl<'a> DetailsBuilder<'a> {
         self.field_with_copy(label, value.clone(), value, value_style);
     }
 
+    /// [`Self::field`] rendering an absent value as [`NONE_PLACEHOLDER`].
+    fn field_opt(&mut self, label: &str, value: Option<String>) {
+        self.field_styled_opt(label, value, Style::default());
+    }
+
+    /// [`Self::field_styled`] rendering an absent value as
+    /// [`NONE_PLACEHOLDER`].
+    fn field_styled_opt(&mut self, label: &str, value: Option<String>, value_style: Style) {
+        self.field_styled(
+            label,
+            value.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            value_style,
+        );
+    }
+
+    /// [`Self::field_with_copy`] over an optional `(display, copy)` pair,
+    /// rendering an absent value as [`NONE_PLACEHOLDER`].
+    fn field_with_copy_opt(
+        &mut self,
+        label: &str,
+        value: Option<(String, String)>,
+        value_style: Style,
+    ) {
+        match value {
+            Some((display, copy)) => self.field_with_copy(label, display, copy, value_style),
+            None => self.field_styled_opt(label, None, value_style),
+        }
+    }
+
     /// Push a label-value line whose rendered value differs from what
     /// click-to-copy yields (a shortened path, say).
     fn field_with_copy(&mut self, label: &str, display: String, copy: String, value_style: Style) {
@@ -196,28 +239,20 @@ impl<'a> DetailsBuilder<'a> {
     /// availability.
     fn app_rows(&mut self, rows: &[(&str, Option<String>)]) {
         for (label, value) in rows {
-            self.field(
-                label,
-                value
-                    .clone()
-                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            );
+            self.field_opt(label, value.clone());
         }
     }
 
-    /// Push an RTT field with the value colored by latency (green < 50ms,
-    /// yellow < 150ms, red above), or the "-" placeholder when unmeasured.
+    /// Push an RTT field with the value colored by latency
+    /// (`theme::rtt_color`), or the "-" placeholder when unmeasured.
     fn rtt_field(&mut self, label: &str, rtt: Option<std::time::Duration>) {
         if let Some(rtt) = rtt {
             let rtt_ms = rtt.as_secs_f64() * 1000.0;
-            let rtt_color = if rtt_ms < 50.0 {
-                theme::ok()
-            } else if rtt_ms < 150.0 {
-                theme::warn()
-            } else {
-                theme::err()
-            };
-            self.field_styled(label, format!("{:.1}ms", rtt_ms), theme::fg(rtt_color));
+            self.field_styled(
+                label,
+                format!("{:.1}ms", rtt_ms),
+                theme::fg(theme::rtt_color(rtt_ms)),
+            );
         } else {
             self.field(label, NONE_PLACEHOLDER.to_string());
         }
@@ -284,7 +319,7 @@ fn format_window_sizes(counters: Option<&TcpAnalytics>) -> String {
     ) {
         // Nothing sizeable in either direction: one line saying so reads
         // better than a pair of placeholders. Which of the two it is still
-        // matters — nothing observed at all, or observed but unscalable.
+        // matters: nothing observed at all, or observed but unscalable.
         (None, None) => {
             if counters.last_window_out.is_none() && counters.last_window_in.is_none() {
                 NONE_PLACEHOLDER.to_string()
@@ -561,31 +596,6 @@ fn fit_badges(mut badges: Vec<Vec<Span<'static>>>, room: usize) -> Vec<Vec<Span<
     badges
 }
 
-/// Dim the boundary rows of a scrolled pane: the first visible row when
-/// content continues above it, the last when content continues below.
-/// Nothing is inserted or removed, so the panes' fixed row positions and
-/// the click-to-copy registry stay in step with the rendered lines.
-fn fade_scroll_edges(lines: &mut [Line<'_>], scroll: u16, height: u16) {
-    if height == 0 {
-        return;
-    }
-    let (top, height) = (scroll as usize, height as usize);
-    let bottom = top + height - 1;
-    if top > 0 {
-        fade_at(lines, top);
-    }
-    if bottom + 1 < lines.len() {
-        fade_at(lines, bottom);
-    }
-}
-
-/// Apply the shared edge fade to the line at `index`, if it exists.
-fn fade_at(lines: &mut [Line<'_>], index: usize) {
-    if let Some(line) = lines.get_mut(index) {
-        fade_line(line);
-    }
-}
-
 /// Component-aware middle ellipsis: `/nix/store/…/bin/hello`.
 fn fit_path_middle(display: &str, max_width: usize) -> String {
     let width = |s: &str| s.chars().count();
@@ -645,7 +655,7 @@ fn format_idle_timeout(timeout: std::time::Duration) -> String {
 
 /// Format a QUIC CONNECTION_CLOSE frame. Frame type 0x1d carries an
 /// application-level error code (an HTTP/3 code, say), anything else is a
-/// transport-level one, and the two number spaces are unrelated — so the
+/// transport-level one, and the two number spaces are unrelated, so the
 /// origin has to be shown alongside the code (RFC 9000 §19.19).
 fn format_quic_close(close: &crate::network::types::QuicCloseInfo) -> String {
     let origin = if close.frame_type == 0x1d {
@@ -977,7 +987,6 @@ pub(in crate::ui) fn draw_connection_details(
     };
     let value_width = (pane_width as usize).saturating_sub(DETAIL_LABEL_WIDTH);
 
-    // Connection details - build lines and field entries in parallel for click-to-copy.
     // All sections share a single label_style (muted gray); visual grouping comes
     // from the bold section headings inserted by DetailsBuilder::section.
     let label_style = theme::fg(theme::label());
@@ -1052,24 +1061,15 @@ pub(in crate::ui) fn draw_connection_details(
         conn.state().into_owned(),
         theme::fg(state_color(conn)),
     );
-    details.field_styled(
+    details.field_styled_opt(
         "Process",
-        conn.process_name
-            .clone()
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        conn.process_name.clone(),
         theme::fg(theme::field_process()),
     );
-    details.field(
-        "PID",
-        conn.pid
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-    );
-    details.field_styled(
+    details.field_opt("PID", conn.pid.map(|p| p.to_string()));
+    details.field_styled_opt(
         "Service",
-        conn.service_name
-            .clone()
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        conn.service_name.clone(),
         theme::fg(theme::field_service()),
     );
 
@@ -1118,47 +1118,39 @@ pub(in crate::ui) fn draw_connection_details(
             conn.geoip_info
                 .as_ref()
                 .and_then(|geoip| geoip.country_code.clone())
-        })
-        .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+        });
     let city = conn
         .geoip_info
         .as_ref()
-        .and_then(|geoip| geoip.city.clone())
-        .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
-    let asn = conn
-        .geoip_info
-        .as_ref()
-        .and_then(|geoip| {
-            geoip.asn.map(|asn| {
-                geoip
-                    .as_org
-                    .as_ref()
-                    .map(|org| format!("AS{} ({})", asn, org))
-                    .unwrap_or_else(|| format!("AS{}", asn))
-            })
+        .and_then(|geoip| geoip.city.clone());
+    let asn = conn.geoip_info.as_ref().and_then(|geoip| {
+        geoip.asn.map(|asn| {
+            geoip
+                .as_org
+                .as_ref()
+                .map(|org| format!("AS{} ({})", asn, org))
+                .unwrap_or_else(|| format!("AS{}", asn))
         })
-        .unwrap_or_else(|| NONE_PLACEHOLDER.to_string());
+    });
 
     details.section("Network Context");
-    details.field_styled(
+    details.field_styled_opt(
         "Local Hostname",
-        local_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        local_hostname,
         theme::fg(theme::field_local_addr()),
     );
     // MAC and attribution rows always render, with a placeholder when
     // unresolved, so the cards below keep static positions while navigating,
     // for every protocol including ARP. The details pane scrolls, so the
     // fixed rows cannot make content unreachable on short terminals.
-    details.field_styled(
+    details.field_styled_opt(
         "Local MAC",
-        local_mac
-            .map(format_mac)
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        local_mac.map(format_mac),
         theme::fg(theme::field_local_addr()),
     );
-    details.field_styled(
+    details.field_styled_opt(
         "Remote Hostname",
-        remote_hostname.unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        remote_hostname,
         theme::fg(theme::field_remote_addr()),
     );
     // Hostname inferred from a DNS response observed on the wire, with
@@ -1191,17 +1183,15 @@ pub(in crate::ui) fn draw_connection_details(
         attributed_via,
         theme::fg(theme::field_attributed_hostname()),
     );
-    details.field_styled(
+    details.field_styled_opt(
         "Remote MAC",
-        remote_mac
-            .map(format_mac)
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        remote_mac.map(format_mac),
         theme::fg(theme::field_remote_addr()),
     );
     let location_value_style = theme::fg(theme::field_location());
-    details.field_styled("Country", country, location_value_style);
-    details.field_styled("City", city, location_value_style);
-    details.field_styled("ASN", asn, location_value_style);
+    details.field_styled_opt("Country", country, location_value_style);
+    details.field_styled_opt("City", city, location_value_style);
+    details.field_styled_opt("ASN", asn, location_value_style);
 
     // Richer process attribution. Every row renders with a placeholder when
     // the platform's lookup could not resolve it, so the cards below keep
@@ -1213,55 +1203,39 @@ pub(in crate::ui) fn draw_connection_details(
     let process_value_style = theme::fg(theme::field_process());
     details.section("Attribution");
 
-    details.field_styled(
+    details.field_styled_opt(
         "PID",
-        conn.pid
-            .map(|pid| pid.to_string())
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        conn.pid.map(|pid| pid.to_string()),
         process_value_style,
     );
-    details.field_styled(
+    details.field_styled_opt(
         "PPID",
-        conn.process_ppid
-            .map(|ppid| ppid.to_string())
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        conn.process_ppid.map(|ppid| ppid.to_string()),
         process_value_style,
     );
-    if let (Some(lineage), Some(owner_name)) = (&conn.process_lineage, conn.process_name.as_deref())
-    {
-        details.field_with_copy(
-            "Process Tree",
-            process_tree_value(lineage, owner_name, value_width),
-            process_tree_value(lineage, owner_name, usize::MAX),
-            process_value_style,
-        );
-    } else {
-        details.field_styled(
-            "Process Tree",
-            NONE_PLACEHOLDER.to_string(),
-            process_value_style,
-        );
-    }
-    if let Some(ref executable) = conn.executable {
+    let process_tree = conn
+        .process_lineage
+        .as_ref()
+        .zip(conn.process_name.as_deref())
+        .map(|(lineage, owner_name)| {
+            (
+                process_tree_value(lineage, owner_name, value_width),
+                process_tree_value(lineage, owner_name, usize::MAX),
+            )
+        });
+    details.field_with_copy_opt("Process Tree", process_tree, process_value_style);
+    let executable = conn.executable.as_ref().map(|executable| {
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        details.field_with_copy(
-            "Executable",
+        (
             shorten_executable_path(executable, home.as_deref(), value_width),
             executable.display().to_string(),
-            process_value_style,
-        );
-    } else {
-        details.field_styled(
-            "Executable",
-            NONE_PLACEHOLDER.to_string(),
-            process_value_style,
-        );
-    }
-    details.field(
+        )
+    });
+    details.field_with_copy_opt("Executable", executable, process_value_style);
+    details.field_opt(
         "User",
         conn.process_uid
-            .map(|uid| format_user_group(uid, conn.process_gid))
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            .map(|uid| format_user_group(uid, conn.process_gid)),
     );
     // A relaxed match is a plausible owner, not a proven one, so it
     // reads as a warning rather than as confirmed fact.
@@ -1270,11 +1244,9 @@ pub(in crate::ui) fn draw_connection_details(
         Some(MatchQuality::Unspecified) | None => theme::muted(),
         Some(_) => theme::warn(),
     };
-    details.field_styled(
+    details.field_styled_opt(
         "Match",
-        conn.attribution_quality
-            .map(|quality| quality.to_string())
-            .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+        conn.attribution_quality.map(|quality| quality.to_string()),
         theme::fg(quality_color),
     );
 
@@ -1295,47 +1267,26 @@ pub(in crate::ui) fn draw_connection_details(
             (None, _) => NONE_PLACEHOLDER.to_string(),
         };
         details.field_styled("Pod", pod_display, k8s_value_style);
-        details.field_styled(
-            "Pod UID",
-            k8s.pod_uid
-                .clone()
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            k8s_value_style,
-        );
-        details.field_styled(
-            "Container",
-            k8s.container_name
-                .clone()
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            k8s_value_style,
-        );
+        details.field_styled_opt("Pod UID", k8s.pod_uid.clone(), k8s_value_style);
+        details.field_styled_opt("Container", k8s.container_name.clone(), k8s_value_style);
         // Container IDs are 64 hex chars; truncate to the short form
         // typically shown by `kubectl get pod ... -o wide`.
-        details.field_styled(
+        details.field_styled_opt(
             "Container ID",
-            k8s.container_id
-                .as_deref()
-                .map(|cid| {
-                    if cid.len() >= 12 {
-                        cid[..12].to_string()
-                    } else {
-                        cid.to_string()
-                    }
-                })
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            k8s.container_id.as_deref().map(|cid| {
+                if cid.len() >= 12 {
+                    cid[..12].to_string()
+                } else {
+                    cid.to_string()
+                }
+            }),
             k8s_value_style,
         );
-        details.field(
-            "Cgroup",
-            k8s.cgroup_path
-                .clone()
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        );
+        details.field_opt("Cgroup", k8s.cgroup_path.clone());
     }
 
-    // Add DPI / application protocol information. Section heading carries
-    // both the label and the protocol so we don't need a redundant
-    // "Application: <proto>" field below.
+    // The section heading carries both the label and the protocol, so no
+    // redundant "Application: <proto>" field is needed below.
     let application_start = details.rows();
     if let Some(dpi) = &conn.dpi_info {
         details.section_styled(
@@ -1655,68 +1606,24 @@ pub(in crate::ui) fn draw_connection_details(
     // Rendering them as empty TCP labels read as "rustnet failed to measure
     // this". Each branch pads to TRANSPORT_CARD_ROWS so the geometry still
     // holds still when flipping between connections.
-    let quic_info = conn
-        .dpi_info
-        .as_ref()
-        .and_then(|dpi| match &dpi.application {
-            crate::network::types::ApplicationProtocol::Quic(info) => Some(info.as_ref()),
-            _ => None,
-        });
+    let is_udp = conn.protocol == Protocol::Udp;
+    let quic_info = app_info!(conn, Quic);
     // Unicast UDP DNS is timeable without a handshake: queries and responses
     // pair up by transaction ID. TCP DNS keeps the TCP counters branch.
-    let dns_info = (conn.protocol == Protocol::Udp)
-        .then(|| {
-            conn.dpi_info
-                .as_ref()
-                .and_then(|dpi| match &dpi.application {
-                    crate::network::types::ApplicationProtocol::Dns(info) => Some(info),
-                    _ => None,
-                })
-        })
-        .flatten();
+    let dns_info = app_info!(conn, Dns).filter(|_| is_udp);
     // LLMNR multicast queries and unicast responses share a transaction ID,
     // so the first response provides a resolver timing despite using another
     // connection row.
-    let llmnr_info = (conn.protocol == Protocol::Udp)
-        .then(|| {
-            conn.dpi_info
-                .as_ref()
-                .and_then(|dpi| match &dpi.application {
-                    crate::network::types::ApplicationProtocol::Llmnr(info) => Some(info),
-                    _ => None,
-                })
-        })
-        .flatten();
+    let llmnr_info = app_info!(conn, Llmnr).filter(|_| is_udp);
     // NetBIOS requests and responses pair by transaction ID, including
     // broadcast requests answered from a host's unicast address.
-    let netbios_info = (conn.protocol == Protocol::Udp)
-        .then(|| {
-            conn.dpi_info
-                .as_ref()
-                .and_then(|dpi| match &dpi.application {
-                    crate::network::types::ApplicationProtocol::NetBios(info) => Some(info),
-                    _ => None,
-                })
-        })
-        .flatten();
+    let netbios_info = app_info!(conn, NetBios).filter(|_| is_udp);
     // STUN requests carry a transaction ID their response echoes, so a UDP
     // flow with no handshake still has a timeable exchange.
-    let stun_info = conn
-        .dpi_info
-        .as_ref()
-        .and_then(|dpi| match &dpi.application {
-            crate::network::types::ApplicationProtocol::Stun(info) => Some(info),
-            _ => None,
-        });
+    let stun_info = app_info!(conn, Stun);
     // NTP responses echo the client's transmit timestamp, so polls are
     // timeable the same way.
-    let ntp_info = conn
-        .dpi_info
-        .as_ref()
-        .and_then(|dpi| match &dpi.application {
-            crate::network::types::ApplicationProtocol::Ntp(info) => Some(info),
-            _ => None,
-        });
+    let ntp_info = app_info!(conn, Ntp);
     let icmp_echo_sequence = match &conn.protocol_state {
         crate::network::types::ProtocolState::Icmp {
             icmp_type: 0 | 8 | 128 | 129,
@@ -1818,18 +1725,10 @@ pub(in crate::ui) fn draw_connection_details(
                 .quic_version_negotiation_count
                 .to_string(),
         );
-        details.field(
-            "Idle Timeout",
-            quic.idle_timeout
-                .map(format_idle_timeout)
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-        );
-        details.field(
+        details.field_opt("Idle Timeout", quic.idle_timeout.map(format_idle_timeout));
+        details.field_opt(
             "Connection Close",
-            quic.connection_close
-                .as_ref()
-                .map(format_quic_close)
-                .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
+            quic.connection_close.as_ref().map(format_quic_close),
         );
         // Separated from the fields above so it reads as a footnote on the
         // card rather than another value that failed to resolve.
@@ -1849,12 +1748,7 @@ pub(in crate::ui) fn draw_connection_details(
                 counters.map(|a| a.fast_retransmit_count),
             ),
         ] {
-            details.field(
-                label,
-                value
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| NONE_PLACEHOLDER.to_string()),
-            );
+            details.field_opt(label, value.map(|v| v.to_string()));
         }
         details.field("Window Size", format_window_sizes(counters));
     }
@@ -1904,11 +1798,11 @@ pub(in crate::ui) fn draw_connection_details(
         )));
     }
     if let Some(rtt) = conn.current_rtt() {
-        badges.push(chip(&format!("rtt {}", format_rtt_compact(rtt))));
+        badges.push(chip(&format!("RTT {}", format_rtt_compact(rtt))));
     }
 
     // One header band across the whole info area; the panes below it
-    // are borderless. When grouping is on, say so — the strip above and
+    // are borderless. When grouping is on, say so: the strip above and
     // the j/k navigation follow the grouped view's order, mirroring the
     // "Grouped by Process" suffix in the Overview title.
     let mut suffix: Vec<Span<'static>> = Vec::new();
@@ -1952,7 +1846,7 @@ pub(in crate::ui) fn draw_connection_details(
     // if the connection has no DPI / TCP analytics, so the layout stays
     // consistent across connection types. Below the width threshold the
     // panel collapses back to a single column so narrow terminals stay
-    // readable. The right pane needs no title of its own — its content
+    // readable. The right pane needs no title of its own; its content
     // starts with the bold Application and Transport Health headings.
     let split_horizontally = info_area.width >= DETAILS_SPLIT_MIN_WIDTH;
     // The builder is done; the drain below reshuffles raw lines and fields.
@@ -2051,7 +1945,6 @@ pub(in crate::ui) fn draw_connection_details(
         info_h as usize,
     );
 
-    // Traffic details - also track fields for click-to-copy
     let mut traffic = DetailsBuilder::new(label_style);
 
     let rx_value_style = theme::fg(theme::rx());
@@ -2108,14 +2001,7 @@ pub(in crate::ui) fn draw_connection_details(
         info_area.width,
         (traffic_bottom - traffic_top).min(TRAFFIC_HEIGHT),
     );
-    let traffic_area = section_header(
-        f,
-        traffic_full,
-        Span::styled(
-            " Traffic Statistics",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    );
+    let traffic_area = section_header(f, traffic_full, section_title(" Traffic Statistics"));
 
     if split_horizontally {
         // Reuse the exact dashboard rectangles rather than recomputing a
@@ -2256,17 +2142,16 @@ pub(in crate::ui) fn draw_connection_details(
 
 #[cfg(test)]
 mod header_band_tests {
-    use super::{fade_scroll_edges, fit_badges, span_cells};
-    use crate::ui::theme;
+    use super::{fit_badges, span_cells};
     use crate::ui::widgets::badge::{chip, pill};
     use ratatui::style::Color;
-    use ratatui::text::{Line, Span};
+    use ratatui::text::Span;
 
     fn badges() -> Vec<Vec<Span<'static>>> {
         vec![
             pill("ESTABLISHED", Color::Rgb(0x4c, 0xaf, 0x50)),
             chip("1.20 KB/s in · 340 B/s out"),
-            chip("rtt 34ms"),
+            chip("RTT 34ms"),
         ]
     }
 
@@ -2294,38 +2179,6 @@ mod header_band_tests {
         assert_eq!(span_cells(&fitted[0]), span_cells(&badges()[0]));
         // One cell short of the pill: the band keeps its hints instead.
         assert!(fit_badges(badges(), pill_cells - 1).is_empty());
-    }
-
-    #[test]
-    fn only_the_cut_rows_of_a_scrolled_pane_fade() {
-        let plain = theme::fg(theme::text());
-        let mut lines: Vec<Line<'static>> = (0..6)
-            .map(|i| Line::from(Span::styled(format!("row {i}"), plain)))
-            .collect();
-        // Rows 1..=3 visible: content continues above and below.
-        fade_scroll_edges(&mut lines, 1, 3);
-        let faded = theme::edge_fade(plain);
-        assert_eq!(lines[1].spans[0].style, faded, "top boundary must fade");
-        assert_eq!(lines[3].spans[0].style, faded, "bottom boundary must fade");
-        for index in [0, 2, 4, 5] {
-            assert_eq!(
-                lines[index].spans[0].style, plain,
-                "row {index} is not a boundary and must keep its style"
-            );
-        }
-    }
-
-    #[test]
-    fn a_pane_that_does_not_scroll_keeps_every_row() {
-        let plain = theme::fg(theme::text());
-        let mut lines: Vec<Line<'static>> = (0..3)
-            .map(|i| Line::from(Span::styled(format!("row {i}"), plain)))
-            .collect();
-        fade_scroll_edges(&mut lines, 0, 3);
-        assert!(lines.iter().all(|line| line.spans[0].style == plain));
-        // A zero-height pane has no boundary rows to fade.
-        fade_scroll_edges(&mut lines, 0, 0);
-        assert!(lines.iter().all(|line| line.spans[0].style == plain));
     }
 }
 

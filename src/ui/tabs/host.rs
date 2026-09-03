@@ -7,16 +7,16 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::Modifier,
     text::{Line, Span},
-    widgets::{Cell, Paragraph, Row, Table},
+    widgets::{Cell, Paragraph, Row},
 };
 use rustnet_host::{HostSocket, HostSocketState, HostTcpState};
 
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, HandlerContext, HostView,
-    format::format_rtt_compact, section_header, theme, try_handle_pane_scroll,
-    try_handle_pane_wheel, widgets::scrollbar::draw_scrollbar,
+    format::format_rtt_compact, section_header, section_title, theme, try_handle_pane_scroll,
+    try_handle_pane_wheel, widgets::scrollbar::render_scrolled_table,
 };
 
 use super::interfaces::draw_interface_stats;
@@ -137,14 +137,7 @@ fn draw_socket_summary(
     sockets: &[HostSocket],
     connections: &[crate::network::types::Connection],
 ) {
-    let inner = section_header(
-        f,
-        area,
-        Span::styled(
-            " Host Socket States",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    );
+    let inner = section_header(f, area, section_title(" Host Socket States"));
     let tcp_total = sockets
         .iter()
         .filter(|socket| matches!(socket.state, HostSocketState::Tcp(_)))
@@ -237,53 +230,58 @@ fn draw_endpoint_table(
         f,
         area,
         Line::from(vec![
-            Span::styled(
-                " Listening and Bound Endpoints",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
+            section_title(" Listening and Bound Endpoints"),
             Span::styled(
                 format!("  {} rows", endpoints.len()),
                 theme::fg(theme::muted()),
             ),
         ]),
     );
-    let viewport = inner.height.saturating_sub(1) as usize;
-    let max_scroll = (endpoints.len() as u16).saturating_sub(viewport as u16);
-    let scroll = ctx
-        .ui_state
-        .host_sockets_scroll
-        .clamp_for_render(max_scroll) as usize;
-
-    let rows = endpoints.iter().skip(scroll).map(|socket| {
-        let state = match socket.state {
-            HostSocketState::Tcp(state) => state.to_string(),
-            HostSocketState::UdpBound => "BOUND".to_string(),
-        };
-        let service = ctx
-            .app
-            .get_service_name(socket.local_addr.port(), socket.protocol)
-            .unwrap_or("-");
-        let (pid, process) = socket.owner.as_ref().map_or_else(
-            || ("-".to_string(), "-".to_string()),
-            |owner| (owner.pid.to_string(), owner.name.clone()),
-        );
-        Row::new(vec![
-            Cell::from(socket.protocol.to_string()),
-            Cell::from(state),
-            Cell::from(socket.local_addr.to_string()),
-            Cell::from(
-                socket
-                    .remote_addr
-                    .map_or_else(|| "-".to_string(), |peer| peer.to_string()),
-            ),
-            Cell::from(service.to_string()),
-            Cell::from(Line::from(pid).right_aligned()),
-            Cell::from(process),
-        ])
-    });
-    let table = Table::new(
+    let rows: Vec<Row> = endpoints
+        .iter()
+        .map(|socket| {
+            let state = match socket.state {
+                HostSocketState::Tcp(state) => state.to_string(),
+                HostSocketState::UdpBound => "BOUND".to_string(),
+            };
+            let service = ctx
+                .app
+                .get_service_name(socket.local_addr.port(), socket.protocol)
+                .unwrap_or("-");
+            let (pid, process) = socket.owner.as_ref().map_or_else(
+                || ("-".to_string(), "-".to_string()),
+                |owner| (owner.pid.to_string(), owner.name.clone()),
+            );
+            Row::new(vec![
+                Cell::from(socket.protocol.to_string()),
+                Cell::from(state),
+                Cell::from(socket.local_addr.to_string()),
+                Cell::from(
+                    socket
+                        .remote_addr
+                        .map_or_else(|| "-".to_string(), |peer| peer.to_string()),
+                ),
+                Cell::from(service.to_string()),
+                Cell::from(Line::from(pid).right_aligned()),
+                Cell::from(process),
+            ])
+        })
+        .collect();
+    let header = Row::new([
+        "Proto",
+        "State",
+        "Local endpoint",
+        "Peer",
+        "Service",
+        "PID",
+        "Process",
+    ]);
+    render_scrolled_table(
+        f,
+        inner,
+        header,
         rows,
-        [
+        &[
             Constraint::Length(7),
             Constraint::Length(10),
             Constraint::Min(22),
@@ -292,31 +290,6 @@ fn draw_endpoint_table(
             Constraint::Length(8),
             Constraint::Length(20),
         ],
-    )
-    .header(
-        Row::new([
-            "Proto",
-            "State",
-            "Local endpoint",
-            "Peer",
-            "Service",
-            "PID",
-            "Process",
-        ])
-        .style(theme::fg(theme::heading())),
+        &ctx.ui_state.host_sockets_scroll,
     );
-    let table_area = Rect::new(
-        inner.x,
-        inner.y,
-        inner.width.saturating_sub(2),
-        inner.height,
-    );
-    f.render_widget(table, table_area);
-    let rows_area = Rect::new(
-        inner.x,
-        inner.y + 1,
-        inner.width,
-        inner.height.saturating_sub(1),
-    );
-    draw_scrollbar(f, rows_area, endpoints.len(), scroll, viewport);
 }

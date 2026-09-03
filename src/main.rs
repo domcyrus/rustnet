@@ -9,7 +9,6 @@ use std::path::Path;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    // Parse command line arguments
     let matches = cli::build_cli().get_matches();
 
     // Clap handles --help and --version before this point, so both remain
@@ -18,7 +17,6 @@ fn main() -> Result<()> {
     #[cfg(target_os = "windows")]
     initialize_windows_npcap()?;
 
-    // Set up logging only if log-level was provided
     if let Some(log_level_str) = matches.get_one::<String>("log-level") {
         let log_level = log_level_str
             .parse::<LevelFilter>()
@@ -29,7 +27,6 @@ fn main() -> Result<()> {
     // Check privileges BEFORE initializing TUI (so error messages are visible)
     check_privileges_early()?;
 
-    // Build configuration from command line arguments
     let mut config = app::Config::default();
 
     if let Some(interface) = matches.get_one::<String>("interface") {
@@ -128,7 +125,6 @@ fn main() -> Result<()> {
     }
     ui::set_theme(ui::Theme::resolve(&spec, ui::detect_truecolor()));
 
-    // GeoIP configuration
     if matches.get_flag("no-geoip") {
         config.disable_geoip = true;
         info!("GeoIP lookups disabled");
@@ -230,12 +226,10 @@ fn main() -> Result<()> {
         output_handles.pcapng_export = Some(file);
     }
 
-    // Set up terminal
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;
     info!("Terminal UI initialized");
 
-    // Create and start the application
     let mut app = app::App::new_with_output_handles(config.clone(), output_handles)?;
     let (process_ready_rx, capture_ready_rx) = app.start()?;
     info!("Application started");
@@ -244,30 +238,14 @@ fn main() -> Result<()> {
     // applying the sandbox, which drops CAP_BPF and CAP_PERFMON.
     // Without this synchronization, the sandbox could drop these capabilities
     // before the background thread has finished loading eBPF programs.
-    match process_ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
-        Ok(()) => info!("Process detection initialized, safe to apply sandbox"),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            warn!("Timed out waiting for process detection init, applying sandbox anyway");
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            warn!("Process detection thread exited early, applying sandbox anyway");
-        }
-    }
+    wait_for_init(&process_ready_rx, "process detection");
 
     // Also wait for the capture thread to finish opening the capture device.
     // The open runs on a background thread and needs the startup privileges;
     // without this synchronization the uid drop (Linux/FreeBSD) or sandbox
     // could win the race and the open would fail with EPERM, leaving the UI
     // running with no traffic.
-    match capture_ready_rx.recv_timeout(std::time::Duration::from_secs(10)) {
-        Ok(()) => info!("Packet capture initialized, safe to apply sandbox"),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            warn!("Timed out waiting for packet capture init, applying sandbox anyway");
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            warn!("Capture thread exited early, applying sandbox anyway");
-        }
-    }
+    wait_for_init(&capture_ready_rx, "packet capture");
 
     // Apply the sandbox (rustnet-sandbox crate: Landlock + capability drops
     // on Linux, uid drop + Seatbelt on macOS, restricted token + job object
@@ -396,15 +374,12 @@ fn main() -> Result<()> {
     // a compromise in a DPI parser is contained even when running as root.
     app.start_workers()?;
 
-    // Run the UI loop
     install_signal_handlers();
     let res = run_ui_loop(&mut terminal, &app);
 
-    // Cleanup
     app.stop();
     ui::restore_terminal(&mut terminal)?;
 
-    // Return any error that occurred
     if let Err(err) = res {
         error!("Application error: {}", err);
         println!("Error: {}", err);
@@ -443,40 +418,22 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
         }
     }
 
-    // Create timestamped log file name
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
     let log_file_path = log_dir.join(format!("rustnet_{}.log", timestamp));
 
-    // On Unix, open with O_NOFOLLOW so a symlink pre-planted at the (predictable,
-    // timestamped) path cannot redirect the write, and set the 0o600 mode at
-    // creation time to avoid a create-then-chmod window where the file is briefly
-    // world-readable.
-    #[cfg(unix)]
-    let log_file = {
-        use std::os::unix::fs::OpenOptionsExt;
-        fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .mode(0o600)
-            .open(&log_file_path)?
-    };
-    #[cfg(not(unix))]
-    let log_file = fs::File::create(&log_file_path)?;
+    // The path is predictable (timestamped), so it gets the same
+    // symlink-refusing, private-mode open as the other output files.
+    let log_file = open_private(&log_file_path, false)?;
 
-    // Enable the `target` field on every log line so each entry carries
-    // the originating module (e.g. `network::dpi::dns`). Combined with
-    // the startup-banner lines below, this addresses #310 — users now
-    // see both the program identity (name/version/pid) at the top of
-    // the file and which subsystem emitted each subsequent line.
+    // `target` names the emitting subsystem (e.g. `network::dpi::dns`); the
+    // banner below identifies the binary.
     let config = ConfigBuilder::new()
         .set_target_level(LevelFilter::Error)
         .build();
 
     WriteLogger::init(level, config, log_file)?;
 
-    // Startup banner — one identifying header so a user grepping a
+    // Startup banner: one identifying header so a user grepping a
     // long-lived log file can immediately see which binary, which
     // version, and which pid produced these lines. The `pkg_name` is
     // the cargo package name (`rustnet-monitor`), not `argv[0]`, so it
@@ -489,6 +446,24 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// Wait up to 10 s for a background subsystem to signal that its
+/// privileged setup is done, so the sandbox can be applied. A timeout or an
+/// early thread exit is logged but does not block startup.
+fn wait_for_init(ready_rx: &std::sync::mpsc::Receiver<()>, what: &str) {
+    match ready_rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(()) => info!("{} initialized, safe to apply sandbox", what),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            warn!(
+                "Timed out waiting for {} init, applying sandbox anyway",
+                what
+            );
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            warn!("{} thread exited early, applying sandbox anyway", what);
+        }
+    }
 }
 
 /// Hand an output file over to the uid-drop target.
@@ -513,24 +488,31 @@ fn chown_to_uid_drop_target(
     }
 }
 
-fn precreate_private_file(path: &str) -> io::Result<fs::File> {
+/// Open a private output file, either truncating or appending.
+///
+/// On Unix, opens with O_NOFOLLOW so a symlink pre-planted at a predictable
+/// path cannot redirect the write, and sets the 0o600 mode at creation time
+/// to avoid a create-then-chmod window where the file is briefly
+/// world-readable.
+fn open_private(path: impl AsRef<Path>, append: bool) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.create(true);
+    if append {
+        options.append(true);
+    } else {
+        options.write(true).truncate(true);
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-
-        fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .mode(0o600)
-            .open(path)
+        options.custom_flags(libc::O_NOFOLLOW).mode(0o600);
     }
+    options.open(path)
+}
 
-    #[cfg(not(unix))]
-    {
-        fs::File::create(path)
-    }
+/// Create (or truncate) a private output file before privileges are reduced.
+fn precreate_private_file(path: &str) -> io::Result<fs::File> {
+    open_private(path, false)
 }
 
 /// Open an append-only private output before privileges are reduced.
@@ -538,61 +520,28 @@ fn precreate_private_file(path: &str) -> io::Result<fs::File> {
 /// Unlike [`precreate_private_file`], this preserves existing contents because
 /// `--json-log` has append semantics.
 fn open_private_append_file(path: &str) -> io::Result<fs::File> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-
-        fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .mode(0o600)
-            .open(path)
-    }
-
-    #[cfg(not(unix))]
-    {
-        fs::OpenOptions::new().create(true).append(true).open(path)
-    }
+    open_private(path, true)
 }
+
+#[cfg(test)]
+#[path = "test_support/scratch_dir.rs"]
+mod scratch_dir;
 
 #[cfg(all(test, unix))]
 mod output_file_tests {
     use super::open_private_append_file;
+    use super::scratch_dir::ScratchDir;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
 
-    struct ScratchDir(PathBuf);
-
-    impl ScratchDir {
-        fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "rustnet-output-test-{}-{}",
-                std::process::id(),
-                tag
-            ));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            ScratchDir(dir)
-        }
-
-        fn path(&self, name: &str) -> PathBuf {
-            self.0.join(name)
-        }
-    }
-
-    impl Drop for ScratchDir {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+    fn scratch(tag: &str) -> ScratchDir {
+        ScratchDir::new("output", tag)
     }
 
     #[test]
     fn creates_file_with_0600_permissions() {
-        let dir = ScratchDir::new("perms");
-        let path = dir.path("events.log");
+        let dir = scratch("perms");
+        let path = dir.join("events.log");
 
         let file =
             open_private_append_file(path.to_str().unwrap()).expect("fresh open should succeed");
@@ -602,8 +551,8 @@ mod output_file_tests {
 
     #[test]
     fn appends_rather_than_truncates() {
-        let dir = ScratchDir::new("append");
-        let path = dir.path("events.log");
+        let dir = scratch("append");
+        let path = dir.join("events.log");
         let path = path.to_str().unwrap();
 
         writeln!(open_private_append_file(path).unwrap(), "line1").unwrap();
@@ -614,23 +563,23 @@ mod output_file_tests {
 
     #[test]
     fn retained_descriptor_survives_inaccessible_parent() {
-        let dir = ScratchDir::new("retained");
-        let path = dir.path("events.log");
+        let dir = scratch("retained");
+        let path = dir.join("events.log");
         let mut file = open_private_append_file(path.to_str().unwrap()).unwrap();
 
-        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
         writeln!(file, "still writable").unwrap();
         file.sync_all().unwrap();
-        std::fs::set_permissions(&dir.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
 
         assert_eq!(std::fs::read_to_string(path).unwrap(), "still writable\n");
     }
 
     #[test]
     fn refuses_symlinked_path() {
-        let dir = ScratchDir::new("symlink");
-        let target = dir.path("real_target.log");
-        let link = dir.path("evil.log");
+        let dir = scratch("symlink");
+        let target = dir.join("real_target.log");
+        let link = dir.join("evil.log");
         std::fs::write(&target, b"").unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
@@ -645,7 +594,6 @@ mod output_file_tests {
     }
 }
 
-/// Sort connections based on the specified column and direction
 use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
 
 /// Set from the signal handler; the UI loop exits through its normal
@@ -699,12 +647,12 @@ where
     let mut last_tick = std::time::Instant::now();
     let mut last_draw = std::time::Instant::now();
     let mut needs_redraw = true; // first frame
-    let mut ui_state = ui::UIState::default();
+    let mut ui_state = ui::UiState::default();
     let (has_country_db, _, _) = app.get_geoip_status();
     ui_state.has_geoip = has_country_db;
     let mut click_regions = ui::ClickableRegions::default();
 
-    // Data state persists across loop iterations — only refreshed on timer tick
+    // Data state persists across loop iterations; only refreshed on timer tick
     // or when an event changes the underlying data (filter, sort, historic toggle, etc.)
     let mut connections: Vec<network::types::Connection> = Vec::new();
     let mut grouped_rows: Vec<ui::GroupedRow<'_>> = Vec::new();
@@ -842,7 +790,6 @@ where
             .unwrap_or(Duration::from_secs(0))
             .min(idle_redraw.saturating_sub(last_draw.elapsed()));
 
-        // Clear clipboard message after timeout
         if let Some((_, time)) = &ui_state.clipboard_message
             && time.elapsed().as_secs() >= 3
         {
@@ -861,7 +808,7 @@ where
                 crossterm::event::Event::Mouse(mouse) => {
                     use crossterm::event::{MouseButton, MouseEventKind};
 
-                    // Active tab's Component gets first crack — currently
+                    // Active tab's Component gets first crack; currently
                     // only OverviewTab claims (scroll wheel inside the
                     // scroll area). Click events fall through to the
                     // global ClickableRegions dispatch below.
@@ -978,16 +925,15 @@ where
                 crossterm::event::Event::Key(key) => {
                     use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
-                    // On Windows, crossterm reports both Press and Release events
-                    // On Linux/macOS, only Press events are reported
-                    // Filter to only handle Press events for consistent cross-platform behavior
+                    // Windows crossterm reports Release events too; only
+                    // Press is handled so all platforms behave the same.
                     if key.kind != KeyEventKind::Press {
                         continue 'events;
                     }
                     needs_redraw = true;
 
                     // Give the active tab's Component first crack
-                    // at the key (including filter-mode input — OverviewTab
+                    // at the key (including filter-mode input; OverviewTab
                     // owns that). If it claims (returns Some), the loop
                     // skips its fallback match. The per-key confirmation
                     // reset happens here for both branches so q / x can
@@ -1037,11 +983,8 @@ where
                         // and quit/help/interface-toggle live here, plus
                         // cross-tab fallbacks for x (clear) and Esc which
                         // would otherwise stop working on non-Overview
-                        // tabs. Per-arm confirmation clearing is no longer
-                        // needed — the dispatcher above already applied
-                        // the per-key reset rule.
+                        // tabs.
                         match (key.code, key.modifiers) {
-                            // Quit with confirmation
                             (KeyCode::Char('q'), _) => {
                                 if ui_state.quit_confirmation {
                                     info!("User confirmed application exit");
@@ -1052,19 +995,16 @@ where
                                 }
                             }
 
-                            // Ctrl+C always quits immediately
                             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                                 info!("User requested immediate exit with Ctrl+C");
                                 break 'main;
                             }
 
-                            // Tab navigation (forward)
                             (KeyCode::Tab, KeyModifiers::NONE)
                             | (KeyCode::Char(']'), KeyModifiers::NONE) => {
                                 ui_state.next_tab();
                             }
 
-                            // Shift+Tab navigation (backward)
                             (KeyCode::BackTab, _)
                             | (KeyCode::Tab, KeyModifiers::SHIFT)
                             | (KeyCode::Char('['), KeyModifiers::NONE) => {
@@ -1127,7 +1067,6 @@ where
 fn check_privileges_early() -> Result<()> {
     match network::privileges::check_packet_capture_privileges() {
         Ok(status) if !status.has_privileges => {
-            // Print error to stderr before TUI starts
             eprintln!(
                 "\n╔═══════════════════════════════════════════════════════════════════════════╗"
             );
@@ -1145,13 +1084,10 @@ fn check_privileges_early() -> Result<()> {
             ));
         }
         Err(e) => {
-            // Privilege check failed - warn but continue
             eprintln!("Warning: Failed to check privileges: {}", e);
             eprintln!("Continuing anyway, but packet capture may fail...\n");
         }
-        _ => {
-            // Privileges OK
-        }
+        _ => {}
     }
 
     Ok(())

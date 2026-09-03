@@ -1,8 +1,8 @@
-//! Shared input actions that mutate `UIState` and trigger side
-//! effects on `App`. These live here (not on `UIState` directly)
+//! Shared input actions that mutate `UiState` and trigger side
+//! effects on `App`. These live here (not on `UiState` directly)
 //! because they touch both. Used by `OverviewTab::handle_key` for
 //! the Overview-active case and by main.rs's fallback match for
-//! the cross-tab case — keeping a single source of truth so both
+//! the cross-tab case, keeping a single source of truth so both
 //! callers stay in lockstep when the action's semantics evolve.
 
 use std::time::Instant;
@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKi
 use log::info;
 
 use crate::app::App;
-use crate::ui::{Effect, HandlerContext, PaneScroll, UIState};
+use crate::ui::{Effect, HandlerContext, PaneScroll, SelectionMove, UiState};
 
 /// Connection-list navigation + copy that's meaningful on both
 /// Overview and Details. Navigation flips which connection has
@@ -26,71 +26,30 @@ pub fn try_handle_connection_nav(
 ) -> Option<Vec<Effect>> {
     match (key.code, key.modifiers) {
         (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
-            if ctx.ui_state.grouping_enabled
-                && let Some(rows) = ctx.grouped_rows
-            {
-                ctx.ui_state.move_selection_up_grouped(rows);
-            } else {
-                ctx.ui_state.move_selection_up(ctx.connections);
-            }
+            ctx.move_selection(SelectionMove::Up);
             Some(Vec::new())
         }
         (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
-            if ctx.ui_state.grouping_enabled
-                && let Some(rows) = ctx.grouped_rows
-            {
-                ctx.ui_state.move_selection_down_grouped(rows);
-            } else {
-                ctx.ui_state.move_selection_down(ctx.connections);
-            }
+            ctx.move_selection(SelectionMove::Down);
             Some(Vec::new())
         }
         (KeyCode::PageUp, _) | (KeyCode::Char('b'), KeyModifiers::CONTROL) => {
-            let page_size = ctx.ui_state.visible_rows.max(1);
-            if ctx.ui_state.grouping_enabled
-                && let Some(rows) = ctx.grouped_rows
-            {
-                ctx.ui_state.move_selection_page_up_grouped(rows, page_size);
-            } else {
-                ctx.ui_state
-                    .move_selection_page_up(ctx.connections, page_size);
-            }
+            ctx.move_selection(SelectionMove::PageUp);
             Some(Vec::new())
         }
         (KeyCode::PageDown, _) | (KeyCode::Char('f'), KeyModifiers::CONTROL) => {
-            let page_size = ctx.ui_state.visible_rows.max(1);
-            if ctx.ui_state.grouping_enabled
-                && let Some(rows) = ctx.grouped_rows
-            {
-                ctx.ui_state
-                    .move_selection_page_down_grouped(rows, page_size);
-            } else {
-                ctx.ui_state
-                    .move_selection_page_down(ctx.connections, page_size);
-            }
+            ctx.move_selection(SelectionMove::PageDown);
             Some(Vec::new())
         }
         (KeyCode::Char('g'), KeyModifiers::NONE) => {
-            if ctx.ui_state.grouping_enabled
-                && let Some(rows) = ctx.grouped_rows
-            {
-                ctx.ui_state.move_selection_to_first_grouped(rows);
-            } else {
-                ctx.ui_state.move_selection_to_first(ctx.connections);
-            }
+            ctx.move_selection(SelectionMove::First);
             Some(Vec::new())
         }
         (KeyCode::Char('G'), _) | (KeyCode::Char('g'), KeyModifiers::SHIFT) => {
-            if ctx.ui_state.grouping_enabled
-                && let Some(rows) = ctx.grouped_rows
-            {
-                ctx.ui_state.move_selection_to_last_grouped(rows);
-            } else {
-                ctx.ui_state.move_selection_to_last(ctx.connections);
-            }
+            ctx.move_selection(SelectionMove::Last);
             Some(Vec::new())
         }
-        // Copy selected connection's remote address — works wherever
+        // Copy selected connection's remote address, works wherever
         // there's a selection (Overview list focus or Details record).
         (KeyCode::Char('c'), KeyModifiers::NONE) => {
             if let Some(idx) = ctx.ui_state.get_selected_index(ctx.connections)
@@ -152,9 +111,9 @@ pub fn try_handle_pane_wheel(mouse: MouseEvent, scroll: &mut PaneScroll) -> Opti
 /// confirmation. First press flips `clear_confirmation` on; the
 /// second press (while it's on) actually clears.
 ///
-/// Returns `true` when the clear happened — caller should treat
+/// Returns `true` when the clear happened; caller should treat
 /// this as a data-refresh signal.
-pub fn clear_all_with_confirmation(ui_state: &mut UIState, app: &App) -> bool {
+pub fn clear_all_with_confirmation(ui_state: &mut UiState, app: &App) -> bool {
     if ui_state.clear_confirmation {
         info!("User confirmed clear all connections");
         app.clear_all_connections();
@@ -172,46 +131,27 @@ pub fn clear_all_with_confirmation(ui_state: &mut UIState, app: &App) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
     use super::*;
-    use crate::{
-        app::Config,
-        network::types::{Connection, Protocol, ProtocolState, TcpState},
-        ui::{ClickableRegions, GroupedRow, compute_grouped_rows},
+    use crate::ui::{
+        ClickableRegions, GroupedRow, compute_grouped_rows,
+        test_support::{local_tcp, test_app},
     };
-
-    fn test_connection(port: u16, process: &str) -> Connection {
-        let mut connection = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443),
-            ProtocolState::Tcp(TcpState::Established),
-        );
-        connection.process_name = Some(process.to_string());
-        connection
-    }
 
     #[test]
     fn grouped_boundary_navigation_uses_visible_rows() {
-        let app = App::new(Config {
-            resolve_dns: false,
-            disable_geoip: true,
-            ..Config::default()
-        })
-        .expect("create app");
+        let app = test_app();
         let connections = vec![
-            test_connection(1000, "beta"),
-            test_connection(1001, "alpha"),
-            test_connection(1002, "beta"),
-            test_connection(1003, "alpha"),
+            local_tcp(1000, "beta"),
+            local_tcp(1001, "alpha"),
+            local_tcp(1002, "beta"),
+            local_tcp(1003, "alpha"),
         ];
-        let mut ui_state = UIState {
+        let mut ui_state = UiState {
             grouping_enabled: true,
             expanded_groups: ["alpha".to_string(), "beta".to_string()]
                 .into_iter()
                 .collect(),
-            ..UIState::default()
+            ..UiState::default()
         };
         let grouped_rows = compute_grouped_rows(&connections, &ui_state.expanded_groups);
         let click_regions = ClickableRegions::default();

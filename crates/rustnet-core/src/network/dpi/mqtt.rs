@@ -17,7 +17,7 @@ pub(super) fn is_mqtt_packet(payload: &[u8]) -> bool {
 
     // Validate flags for packet types with fixed flag requirements (MQTT
     // spec §2.1.2): every type except PUBLISH(3), whose flags carry
-    // DUP/QoS/RETAIN, has reserved flags — 0x02 for PUBREL(6),
+    // DUP/QoS/RETAIN, has reserved flags: 0x02 for PUBREL(6),
     // SUBSCRIBE(8), and UNSUBSCRIBE(10), 0x00 for the rest.
     if packet_type != 3 {
         let expected = match packet_type {
@@ -147,30 +147,37 @@ fn has_mqtt_protocol_name(payload: &[u8]) -> bool {
     let var_start = 1 + header_len;
 
     // Protocol name is a length-prefixed string
-    if var_start + 2 > payload.len() {
-        return false;
-    }
+    matches!(
+        read_mqtt_string(payload, var_start),
+        Some((b"MQTT" | b"MQIsdp", _))
+    )
+}
 
-    let name_len = u16::from_be_bytes([payload[var_start], payload[var_start + 1]]) as usize;
-    let name_start = var_start + 2;
-    let name_end = name_start + name_len;
+/// Read an MQTT UTF-8 encoded string at `offset`: a 2-byte big-endian length
+/// prefix followed by that many bytes. Returns the bytes and the offset just
+/// past them, or `None` if the prefix or the body is cut off.
+fn read_mqtt_string(payload: &[u8], offset: usize) -> Option<(&[u8], usize)> {
+    let len_bytes = payload.get(offset..offset + 2)?;
+    let len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
+    let start = offset + 2;
+    let end = start + len;
+    Some((payload.get(start..end)?, end))
+}
 
-    if name_end > payload.len() {
-        return false;
-    }
-
-    let name = &payload[name_start..name_end];
-    name == b"MQTT" || name == b"MQIsdp"
+/// Like [`read_mqtt_string`], but only accepts non-empty valid UTF-8 and
+/// returns an owned `String`.
+fn read_mqtt_str(payload: &[u8], offset: usize) -> Option<(String, usize)> {
+    let (bytes, end) = read_mqtt_string(payload, offset)?;
+    let s = std::str::from_utf8(bytes).ok()?;
+    (!s.is_empty()).then(|| (s.to_string(), end))
 }
 
 /// Parse a CONNECT packet to extract version, client ID.
 fn parse_connect(payload: &[u8], var_start: usize, info: &mut MqttInfo) {
     // Protocol Name (length-prefixed string)
-    if var_start + 2 > payload.len() {
+    let Some((_, after_name)) = read_mqtt_string(payload, var_start) else {
         return;
-    }
-    let name_len = u16::from_be_bytes([payload[var_start], payload[var_start + 1]]) as usize;
-    let after_name = var_start + 2 + name_len;
+    };
 
     // Protocol Level byte
     if after_name >= payload.len() {
@@ -195,43 +202,15 @@ fn parse_connect(payload: &[u8], var_start: usize, info: &mut MqttInfo) {
     };
 
     // Client ID (length-prefixed string)
-    if payload_start + 2 > payload.len() {
-        return;
-    }
-    let client_id_len =
-        u16::from_be_bytes([payload[payload_start], payload[payload_start + 1]]) as usize;
-    let client_id_start = payload_start + 2;
-    let client_id_end = client_id_start + client_id_len;
-
-    if client_id_end > payload.len() {
-        return;
-    }
-
-    if let Ok(client_id) = std::str::from_utf8(&payload[client_id_start..client_id_end])
-        && !client_id.is_empty()
-    {
-        info.client_id = Some(client_id.to_string());
+    if let Some((client_id, _)) = read_mqtt_str(payload, payload_start) {
+        info.client_id = Some(client_id);
     }
 }
 
 /// Parse the topic from a PUBLISH packet.
 fn parse_publish_topic(payload: &[u8], var_start: usize, info: &mut MqttInfo) {
-    if var_start + 2 > payload.len() {
-        return;
-    }
-
-    let topic_len = u16::from_be_bytes([payload[var_start], payload[var_start + 1]]) as usize;
-    let topic_start = var_start + 2;
-    let topic_end = topic_start + topic_len;
-
-    if topic_end > payload.len() {
-        return;
-    }
-
-    if let Ok(topic) = std::str::from_utf8(&payload[topic_start..topic_end])
-        && !topic.is_empty()
-    {
-        info.topic = Some(topic.to_string());
+    if let Some((topic, _)) = read_mqtt_str(payload, var_start) {
+        info.topic = Some(topic);
     }
 }
 
@@ -505,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_invalid_remaining_length() {
-        // All continuation bits set (> 4 bytes) — invalid
+        // All continuation bits set (> 4 bytes): invalid
         let pkt = vec![0x20, 0x80, 0x80, 0x80, 0x80, 0x01];
         assert!(!is_mqtt_packet(&pkt));
     }

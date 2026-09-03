@@ -19,7 +19,34 @@ pub use background::detect_light_background;
 pub use definitions::{ThemePreset, ThemeSpec, TokenColor, detect_truecolor};
 pub use derive::Theme;
 
-use derive::{ON_COLOR_DARK, ON_COLOR_LIGHT, five_stop, three_stop};
+use derive::{ON_COLOR_DARK, ON_COLOR_LIGHT, walk_ramp};
+
+/// Define `pub(super) fn NAME() -> Color` accessors that read the field of
+/// the same name from the active theme. Doc comments on an entry carry over
+/// to the generated function.
+macro_rules! color_accessors {
+    ($($(#[$meta:meta])* $name:ident),* $(,)?) => {
+        $(
+            $(#[$meta])*
+            pub(super) fn $name() -> Color {
+                active().$name
+            }
+        )*
+    };
+}
+
+/// Define `pub(super) fn NAME(t: f64) -> Color` accessors that walk the
+/// named ramp of the active theme at intensity `t`.
+macro_rules! ramp_accessors {
+    ($($(#[$meta:meta])* $name:ident => $ramp:ident),* $(,)?) => {
+        $(
+            $(#[$meta])*
+            pub(super) fn $name(t: f64) -> Color {
+                walk_ramp(&active().$ramp, t)
+            }
+        )*
+    };
+}
 
 /// The resolved theme in effect. Set once at startup; reads are lock-free
 /// after first use and default to the muted preset (snapshot tests never
@@ -44,31 +71,17 @@ pub(super) fn is_vivid() -> bool {
 }
 
 // --- Base color accessors ---
-pub(super) fn ok() -> Color {
-    active().ok
-}
-pub(super) fn warn() -> Color {
-    active().warn
-}
-pub(super) fn err() -> Color {
-    active().err
-}
-pub(super) fn accent() -> Color {
-    active().accent
-}
-pub(super) fn muted() -> Color {
-    active().muted
-}
-pub(super) fn info() -> Color {
-    active().info
-}
-/// Dimmest tier: historic rows, disabled chrome.
-pub(super) fn faint() -> Color {
-    active().faint
-}
-/// Default body text (the terminal's own foreground on every built-in).
-pub(super) fn text() -> Color {
-    active().text
+color_accessors! {
+    ok,
+    warn,
+    err,
+    accent,
+    muted,
+    info,
+    /// Dimmest tier: historic rows, disabled chrome.
+    faint,
+    /// Default body text (the terminal's own foreground on every built-in).
+    text,
 }
 
 // --- UI element aliases ---
@@ -85,20 +98,10 @@ pub(super) fn text() -> Color {
 pub(super) fn primary() -> Style {
     bold_fg(accent())
 }
-pub(super) fn label() -> Color {
-    active().label
-}
-pub(super) fn heading() -> Color {
-    active().heading
-}
+color_accessors! { label, heading }
 
 // --- Network aliases ---
-pub(super) fn rx() -> Color {
-    active().rx
-}
-pub(super) fn tx() -> Color {
-    active().tx
-}
+color_accessors! { rx, tx }
 
 // --- Traffic wave gradients (Graph tab) ---
 //
@@ -113,43 +116,27 @@ pub(super) fn tx() -> Color {
 /// cells begin softening toward the muted tier.
 const STALE_FADE_START: f32 = 0.5;
 
-/// RX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
-pub(super) fn rx_wave(t: f64) -> Color {
-    five_stop(&active().rx_ramp, t)
-}
-/// TX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
-pub(super) fn tx_wave(t: f64) -> Color {
-    five_stop(&active().tx_ramp, t)
-}
-/// Accent wave gradient for non-directional graphs like the connection
-/// count, at intensity `t` (0 = dim base, 1 = crest).
-pub(super) fn accent_wave(t: f64) -> Color {
-    five_stop(&active().accent_ramp, t)
-}
-/// Green gradient for healthy/success bars (derived from the ok token).
-pub(super) fn ok_wave(t: f64) -> Color {
-    five_stop(&active().ok_ramp, t)
-}
-/// Amber gradient for caution bars.
-pub(super) fn warn_wave(t: f64) -> Color {
-    five_stop(&active().warn_ramp, t)
-}
-/// Red gradient for critical bars.
-pub(super) fn err_wave(t: f64) -> Color {
-    five_stop(&active().err_ramp, t)
-}
-/// Fuchsia gradient for special/distinct bars (DNS).
-pub(super) fn special_wave(t: f64) -> Color {
-    five_stop(&active().special_ramp, t)
-}
-/// Gray gradient for secondary/inactive bars.
-pub(super) fn muted_wave(t: f64) -> Color {
-    five_stop(&active().muted_ramp, t)
-}
-/// Warn-to-err glow at fade intensity `t` (0 = yellow at the start of the
-/// staleness window, 1 = red at removal).
-pub(super) fn expiry_glow(t: f64) -> Color {
-    five_stop(&active().expiry_ramp, t)
+ramp_accessors! {
+    /// RX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
+    rx_wave => rx_ramp,
+    /// TX wave gradient color at intensity `t` (0 = dim base, 1 = crest).
+    tx_wave => tx_ramp,
+    /// Accent wave gradient for non-directional graphs like the connection
+    /// count, at intensity `t` (0 = dim base, 1 = crest).
+    accent_wave => accent_ramp,
+    /// Green gradient for healthy/success bars (derived from the ok token).
+    ok_wave => ok_ramp,
+    /// Amber gradient for caution bars.
+    warn_wave => warn_ramp,
+    /// Red gradient for critical bars.
+    err_wave => err_ramp,
+    /// Fuchsia gradient for special/distinct bars (DNS).
+    special_wave => special_ramp,
+    /// Gray gradient for secondary/inactive bars.
+    muted_wave => muted_ramp,
+    /// Warn-to-err glow at fade intensity `t` (0 = yellow at the start of the
+    /// staleness window, 1 = red at removal).
+    expiry_glow => expiry_ramp,
 }
 
 /// Style for the removal countdown of a stale row at fade intensity `t`
@@ -176,7 +163,7 @@ const COUNTDOWN_BOLD_START: f64 = 0.6;
 /// gracefully becomes a static one.
 pub(super) fn shimmer_wave(t: f64) -> Color {
     match &active().shimmer_ramp {
-        Some(ramp) => three_stop(ramp, t),
+        Some(ramp) => walk_ramp(ramp, t),
         None => accent(),
     }
 }
@@ -233,75 +220,81 @@ pub(super) fn stale_fade(style: Style, t: f64) -> Style {
     }
 }
 
+// --- Threshold tiers ---
+//
+// Shared ok / warn / err ladders so a value grades the same everywhere it
+// appears (the RTT column, the Details card and the Graph gauge).
+
+/// RTT below this many milliseconds reads as healthy.
+pub(super) const RTT_OK_MS: f64 = 50.0;
+/// RTT below this many milliseconds reads as a warning; anything above is
+/// an error.
+pub(super) const RTT_WARN_MS: f64 = 150.0;
+
+/// `ok()` below `warn_at`, `warn()` below `err_at`, `err()` otherwise.
+pub(super) fn tier_color<T: PartialOrd>(value: T, warn_at: T, err_at: T) -> Color {
+    tier(value, warn_at, err_at).0
+}
+
+/// The `(color, wave ramp)` pair for a value graded like [`tier_color`].
+pub(super) fn tier<T: PartialOrd>(value: T, warn_at: T, err_at: T) -> (Color, fn(f64) -> Color) {
+    if value < warn_at {
+        (ok(), ok_wave)
+    } else if value < err_at {
+        (warn(), warn_wave)
+    } else {
+        (err(), err_wave)
+    }
+}
+
+/// The `(color, wave ramp)` pair for a round-trip time in milliseconds.
+pub(super) fn rtt_tier(ms: f64) -> (Color, fn(f64) -> Color) {
+    tier(ms, RTT_OK_MS, RTT_WARN_MS)
+}
+
+/// Color for a round-trip time in milliseconds: green below
+/// [`RTT_OK_MS`], yellow below [`RTT_WARN_MS`], red above.
+pub(super) fn rtt_color(ms: f64) -> Color {
+    rtt_tier(ms).0
+}
+
 // --- Protocol aliases ---
-pub(super) fn proto_https() -> Color {
-    active().proto_https
-}
-pub(super) fn proto_quic() -> Color {
-    active().proto_quic
-}
-pub(super) fn proto_http() -> Color {
-    active().proto_http
-}
-pub(super) fn proto_dns() -> Color {
-    active().proto_dns
-}
-pub(super) fn proto_ssh() -> Color {
-    active().proto_ssh
-}
-pub(super) fn proto_other() -> Color {
-    active().proto_other
+color_accessors! {
+    proto_https,
+    proto_quic,
+    proto_http,
+    proto_dns,
+    proto_ssh,
+    proto_other,
 }
 
 // --- TCP state aliases ---
 // Non-vivid themes: ESTABLISHED is the common case and reads as plain
 // text; only transitional states (a genuine signal) keep an attention color.
-pub(super) fn tcp_established() -> Color {
-    active().tcp_established
-}
-pub(super) fn tcp_opening() -> Color {
-    active().tcp_opening
-}
-pub(super) fn tcp_closing() -> Color {
-    active().tcp_closing
-}
-pub(super) fn tcp_waiting() -> Color {
-    active().tcp_waiting
-}
-pub(super) fn tcp_closed() -> Color {
-    active().tcp_closed
+color_accessors! {
+    tcp_established,
+    tcp_opening,
+    tcp_closing,
+    tcp_waiting,
+    tcp_closed,
 }
 
 // --- Field-level aliases (same color used everywhere a field appears) ---
 // Non-vivid themes: addresses keep a calm color (they're the data being
 // monitored), the other identifying fields render as body text, supporting
 // context fades to the muted tier. Same address roles in every theme.
-pub(super) fn field_local_addr() -> Color {
-    active().field_local_addr
-}
-pub(super) fn field_remote_addr() -> Color {
-    active().field_remote_addr
-}
-pub(super) fn field_state() -> Color {
-    active().field_state
-}
-pub(super) fn field_service() -> Color {
-    active().field_service
-}
-pub(super) fn field_location() -> Color {
-    active().field_location
-}
-pub(super) fn field_process() -> Color {
-    active().field_process
-}
-pub(super) fn field_application() -> Color {
-    active().field_application
-}
-/// Color for hostnames inferred from a recently observed DNS resolution
-/// (shown with a `~` prefix). Dimmer than `field_remote_addr` so the
-/// inference is visually distinct from authoritative SNI / Host data.
-pub(super) fn field_attributed_hostname() -> Color {
-    active().field_attributed_hostname
+color_accessors! {
+    field_local_addr,
+    field_remote_addr,
+    field_state,
+    field_service,
+    field_location,
+    field_process,
+    field_application,
+    /// Color for hostnames inferred from a recently observed DNS resolution
+    /// (shown with a `~` prefix). Dimmer than `field_remote_addr` so the
+    /// inference is visually distinct from authoritative SNI / Host data.
+    field_attributed_hostname,
 }
 
 // --- Historic (closed) connection rows ---
@@ -319,9 +312,7 @@ pub(super) fn historic_row() -> Style {
 }
 
 // --- Panel border ---
-pub(super) fn border() -> Color {
-    active().border
-}
+color_accessors! { border }
 
 // --- Status bar styles ---
 // Every state rides `status_bar_hints()`: the theme's status_bg tint when it
@@ -558,9 +549,20 @@ mod tests {
     }
 
     #[test]
+    fn tiers_grade_against_their_thresholds() {
+        assert_eq!(tier_color(0u64, 1, 100), ok());
+        assert_eq!(tier_color(1u64, 1, 100), warn());
+        assert_eq!(tier_color(100u64, 1, 100), err());
+        assert_eq!(rtt_color(RTT_OK_MS - 0.1), ok());
+        assert_eq!(rtt_color(RTT_OK_MS), warn());
+        assert_eq!(rtt_color(RTT_WARN_MS), err());
+        assert_eq!(rtt_tier(10.0).1(0.5), ok_wave(0.5));
+    }
+
+    #[test]
     fn heading_outranks_label_in_default_theme() {
-        // The hierarchy fix: heading (Reset, terminal default fg) must not
-        // collapse into the label tier (Gray).
+        // The heading tier (Reset, terminal default fg) must not collapse
+        // into the label tier (Gray).
         assert_ne!(heading(), label());
         assert_eq!(heading(), Color::Reset);
         assert_eq!(label(), Color::Gray);

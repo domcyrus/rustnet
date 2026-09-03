@@ -16,7 +16,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{ClickAction, ClickableRegions, UIState, theme};
+use crate::ui::{ClickAction, ClickableRegions, UiState, theme};
 
 pub(crate) const TAB_TITLES: [&str; 5] = ["Overview", "Details", "Activity", "Graph", "Host"];
 /// Total number of tabs (kept in sync with `TAB_TITLES`).
@@ -89,7 +89,7 @@ fn cluster_width(spans: &[Span<'static>]) -> usize {
 
 pub(in crate::ui) fn draw_tabs(
     f: &mut Frame,
-    ui_state: &UIState,
+    ui_state: &UiState,
     capture: &CaptureCluster<'_>,
     area: Rect,
     click_regions: &mut ClickableRegions,
@@ -182,10 +182,7 @@ pub(in crate::ui) fn draw_tabs(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn text_of(spans: &[Span<'_>]) -> String {
-        spans.iter().map(|span| span.content.as_ref()).collect()
-    }
+    use crate::ui::test_support::spans_text;
 
     #[test]
     fn cluster_is_empty_without_an_interface() {
@@ -201,7 +198,7 @@ mod tests {
             failed: false,
         };
         let spans = capture_cluster_spans(&capture, 40).expect("cluster fits");
-        assert_eq!(text_of(&spans), "● eth0 · Ethernet");
+        assert_eq!(spans_text(&spans), "● eth0 · Ethernet");
     }
 
     #[test]
@@ -212,7 +209,7 @@ mod tests {
             failed: false,
         };
         let spans = capture_cluster_spans(&capture, 6).expect("interface alone fits");
-        assert_eq!(text_of(&spans), "● eth0");
+        assert_eq!(spans_text(&spans), "● eth0");
     }
 
     #[test]

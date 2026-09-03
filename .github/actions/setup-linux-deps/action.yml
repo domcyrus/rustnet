@@ -1,6 +1,12 @@
 name: 'Setup Linux Build Dependencies'
 description: 'Install dependencies required for building RustNet on Linux'
 
+inputs:
+  extra-packages:
+    description: 'Additional apt packages to install alongside the build dependencies (space separated)'
+    required: false
+    default: ''
+
 runs:
   using: 'composite'
   steps:
@@ -8,4 +14,5 @@ runs:
       shell: bash
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config
+        # shellcheck disable=SC2086
+        sudo apt-get install -y libpcap-dev libelf-dev zlib1g-dev clang llvm pkg-config ${{ inputs.extra-packages }}

@@ -81,8 +81,8 @@ pub(super) fn analyze_udp_bittorrent(payload: &[u8]) -> Option<BitTorrentInfo> {
 /// Analyze a UDP payload for BitTorrent DHT (bencoded dictionary messages).
 ///
 /// DHT messages are bencoded dicts containing:
-/// - `y`: message type — `q` (query), `r` (response), `e` (error)
-/// - `q`: method name (for queries) — `ping`, `find_node`, `get_peers`, `announce_peer`
+/// - `y`: message type, `q` (query), `r` (response), `e` (error)
+/// - `q`: method name (for queries), `ping`, `find_node`, `get_peers`, `announce_peer`
 /// - `t`: transaction ID
 fn analyze_dht(payload: &[u8]) -> Option<BitTorrentInfo> {
     // Must start with 'd' (bencoded dict) and end with 'e'
@@ -100,7 +100,6 @@ fn analyze_dht(payload: &[u8]) -> Option<BitTorrentInfo> {
         return None;
     }
 
-    // Extract DHT method for queries
     let dht_method = if msg_type_char == b'q' {
         extract_dht_method(payload)
     } else if msg_type_char == b'r' {
@@ -191,7 +190,7 @@ fn analyze_utp(payload: &[u8]) -> Option<BitTorrentInfo> {
     }
 
     // Real uTP connection IDs are randomly generated, so 0 is effectively
-    // never seen — but bytes 2-3 == 0 is exactly what a WireGuard handshake
+    // never seen, but bytes 2-3 == 0 is exactly what a WireGuard handshake
     // initiation looks like here (type byte 0x01 followed by three reserved
     // zero bytes). Since this check runs on every unmatched UDP packet,
     // require a non-zero connection ID so WireGuard rekeys are not
@@ -201,7 +200,7 @@ fn analyze_utp(payload: &[u8]) -> Option<BitTorrentInfo> {
         return None;
     }
 
-    // Window size sanity check — 0 is valid for ST_RESET but otherwise should be non-zero
+    // Window size sanity check: 0 is valid for ST_RESET but otherwise should be non-zero
     let wnd_size = u32::from_be_bytes([payload[12], payload[13], payload[14], payload[15]]);
     if pkt_type != 3 && wnd_size == 0 {
         // ST_SYN with zero window is also suspicious

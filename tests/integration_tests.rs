@@ -6,7 +6,6 @@ mod linux_tests {
 
     #[test]
     fn test_process_lookup_creation() {
-        // Test that we can create a process lookup without panicking
         let result = create_process_lookup(false);
         assert!(result.is_ok(), "Should be able to create process lookup");
     }
@@ -14,15 +13,12 @@ mod linux_tests {
     #[cfg(feature = "ebpf")]
     #[test]
     fn test_ebpf_enhanced_lookup() {
-        // This test verifies that the enhanced lookup can be created
-        // when eBPF feature is enabled
         let result = create_process_lookup(false);
         assert!(
             result.is_ok(),
             "Enhanced lookup should be created successfully"
         );
 
-        // Just verify we got a lookup instance that can be refreshed
         let lookup = result.unwrap();
         let refresh_result = lookup.refresh();
         assert!(refresh_result.is_ok(), "Refresh should work");
@@ -35,7 +31,6 @@ mod other_platforms {
 
     #[test]
     fn test_other_platform_lookup() {
-        // Test that other platforms can create process lookups
         let result = create_process_lookup(false);
         assert!(result.is_ok(), "Should work on other platforms too");
     }

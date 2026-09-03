@@ -6,12 +6,12 @@
 //! existing active and bounded historic rows into compact one-second and
 //! rolling-window metrics for user interfaces and exporters.
 
-use crate::network::types::{Connection, ConnectionKey};
+use crate::network::tracker::HistoricKey;
+use crate::network::types::{Connection, ConnectionKey, UNKNOWN_PROCESS_NAME};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::time::{Duration, SystemTime};
 
-const UNKNOWN_NAME: &str = "Unknown";
 const OTHER_NAME: &str = "Other";
 
 /// Bounds for retained process accounting.
@@ -55,7 +55,7 @@ impl ProcessIdentity {
             name: conn
                 .process_name
                 .clone()
-                .unwrap_or_else(|| UNKNOWN_NAME.to_string()),
+                .unwrap_or_else(|| UNKNOWN_PROCESS_NAME.to_string()),
             attributed,
         }
     }
@@ -66,7 +66,7 @@ impl ProcessIdentity {
             name: if attributed {
                 OTHER_NAME.to_string()
             } else {
-                UNKNOWN_NAME.to_string()
+                UNKNOWN_PROCESS_NAME.to_string()
             },
             attributed,
         }
@@ -192,24 +192,10 @@ impl FlowActivity {
 
 /// Fixed-size identity used to detect byte growth without retaining a second
 /// copy of each full connection. Creation time distinguishes historic flows
-/// that reused the same protocol and socket tuple.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct FlowIdentity {
-    key: ConnectionKey,
-    created_nanos: u128,
-}
-
-impl FlowIdentity {
-    fn from_connection(conn: &Connection) -> Self {
-        Self {
-            key: ConnectionKey::new(conn.protocol, conn.local_addr, conn.remote_addr),
-            created_nanos: conn
-                .created_at
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-        }
-    }
+/// that reused the same protocol and socket tuple, which is exactly what the
+/// tracker's historic key encodes.
+fn flow_identity(conn: &Connection) -> HistoricKey {
+    HistoricKey::for_connection(ConnectionKey::from_connection(conn), conn)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -400,11 +386,11 @@ impl ProcessHistory {
 }
 
 fn observe_flow_delta(
-    flow_counters: &mut HashMap<FlowIdentity, FlowCounters>,
+    flow_counters: &mut HashMap<HistoricKey, FlowCounters>,
     conn: &Connection,
     generation: u64,
 ) -> TrafficDelta {
-    let identity = FlowIdentity::from_connection(conn);
+    let identity = flow_identity(conn);
     match flow_counters.entry(identity) {
         std::collections::hash_map::Entry::Occupied(mut entry) => {
             let counters = entry.get_mut();
@@ -435,7 +421,7 @@ fn observe_flow_delta(
 pub struct ProcessActivityTracker {
     config: ProcessActivityConfig,
     sample: HashMap<ProcessIdentity, ProcessAccumulator>,
-    flow_counters: HashMap<FlowIdentity, FlowCounters>,
+    flow_counters: HashMap<HistoricKey, FlowCounters>,
     sample_generation: u64,
     histories: HashMap<ProcessIdentity, ProcessHistory>,
     snapshot: ProcessActivitySnapshot,

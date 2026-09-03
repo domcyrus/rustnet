@@ -9,9 +9,6 @@ use crate::network::dpi::tls_common::{is_partial_sni, is_valid_hostname, parse_a
 /// Try to extract TLS information from unencrypted parts of QUIC packets
 /// Some QUIC implementations may have plaintext or partially encrypted data
 pub(super) fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsInfo> {
-    // This is a best-effort attempt to find TLS ClientHello in the packet
-    // Look for TLS handshake patterns in the payload
-
     debug!(
         "QUIC: Searching for unencrypted TLS data in {} byte payload",
         payload.len()
@@ -19,13 +16,12 @@ pub(super) fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsI
 
     let mut offset = 0;
     while offset + 10 < payload.len() {
-        // Need at least 10 bytes for meaningful TLS data
-        // Look for TLS handshake record header (0x16 0x03 0x01-0x04)
+        // TLS handshake record header: 0x16 0x03 0x01-0x04
         if payload[offset] == 0x16 && offset + 5 < payload.len() {
             let tls_version_major = payload[offset + 1];
             let tls_version_minor = payload[offset + 2];
 
-            // Check for reasonable TLS version (3.1 = TLS 1.0, 3.2 = TLS 1.1, 3.3 = TLS 1.2, 3.4 = TLS 1.3)
+            // 3.1 = TLS 1.0, 3.2 = TLS 1.1, 3.3 = TLS 1.2, 3.4 = TLS 1.3
             if tls_version_major == 0x03 && (0x01..=0x04).contains(&tls_version_minor) {
                 let record_length =
                     u16::from_be_bytes([payload[offset + 3], payload[offset + 4]]) as usize;
@@ -38,7 +34,7 @@ pub(super) fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsI
                 if offset + 5 + record_length <= payload.len() {
                     let handshake_data = &payload[offset + 5..offset + 5 + record_length];
 
-                    // Check if this is a ClientHello (handshake type 0x01)
+                    // Handshake type 0x01 is ClientHello
                     if !handshake_data.is_empty() && handshake_data[0] == 0x01 {
                         debug!("QUIC: Found potential TLS ClientHello at offset {}", offset);
 
@@ -87,17 +83,14 @@ pub(super) fn try_parse_unencrypted_crypto_frames(payload: &[u8]) -> Option<TlsI
             }
         }
 
-        // Look for SNI extension pattern directly (0x00 0x00 for SNI type)
         // Strict validation reduces false positives from encrypted data
         if let Some(sni) = match_sni_extension_at(payload, offset, false, SniScanStrictness::Strict)
         {
             debug!("QUIC: Found SNI directly in packet: {}", sni);
-            let mut tls_info = TlsInfo::new();
-            tls_info.sni = Some(sni);
-            return Some(tls_info);
+            return Some(TlsInfo::with_sni(sni));
         }
 
-        // Look for ALPN extension pattern (0x00 0x10 for ALPN type)
+        // ALPN extension type is 0x00 0x10
         if offset + 10 < payload.len() && payload[offset] == 0x00 && payload[offset + 1] == 0x10 {
             let ext_len = u16::from_be_bytes([payload[offset + 2], payload[offset + 3]]) as usize;
             if ext_len > 2 && offset + 4 + ext_len <= payload.len() {
@@ -198,14 +191,12 @@ pub(super) fn try_reconstruct_sni_from_fragments(
 
                 // Gaps in the first 100 bytes are critical as they likely contain SNI
                 // The SNI extension typically appears between bytes 70-200 of the ClientHello
-                // Relaxed threshold from 20 to 50 bytes to be less aggressive
                 if expected_offset < 100 && gap_size > 50 {
                     has_significant_gaps = true;
                     debug!("QUIC: Gap in critical ClientHello region - SNI might be incomplete");
                 }
 
                 // Large gaps anywhere might indicate missing data
-                // Relaxed threshold from 200 to 300 bytes
                 if gap_size > 300 {
                     has_significant_gaps = true;
                     debug!(
@@ -216,7 +207,6 @@ pub(super) fn try_reconstruct_sni_from_fragments(
 
                 // For smaller gaps, add minimal padding to maintain data alignment
                 if gap_size <= 100 && !all_data.is_empty() {
-                    // Add minimal padding to maintain structure
                     all_data.resize(all_data.len() + gap_size as usize, 0);
                     debug!("QUIC: Added {} bytes of padding for small gap", gap_size);
                 }
@@ -244,13 +234,10 @@ pub(super) fn try_reconstruct_sni_from_fragments(
     // Process candidates to detect truncation and mark incomplete ones
     let mut processed_candidates = Vec::new();
 
-    // If we have significant gaps (missing fragments), don't trust ANY hostname candidates
-    // as they are likely incomplete or corrupted
+    // With missing fragments, only very long, complete-looking hostnames are trusted.
     if has_significant_gaps {
         debug!("QUIC: Not returning any hostname candidates due to significant gaps in fragments");
-        // We could still look for very long, complete-looking hostnames, but it's safer to wait
         for candidate in &candidates {
-            // Only accept very long, complete-looking hostnames when gaps exist
             if candidate.len() >= 15 && candidate.matches('.').count() >= 2 {
                 debug!(
                     "QUIC: Accepting long candidate '{}' despite gaps",
@@ -304,13 +291,11 @@ fn find_hostname_candidates(data: &[u8]) -> Vec<String> {
 
     let mut i = 0;
     while i < data.len() {
-        // Look for sequences that might be hostnames
         if data[i].is_ascii_alphanumeric() {
             let mut end = i;
             let mut has_dot = false;
             let mut dot_count = 0;
 
-            // Extend while we have valid hostname characters
             while end < data.len()
                 && (data[end].is_ascii_alphanumeric() || data[end] == b'.' || data[end] == b'-')
             {
@@ -321,38 +306,34 @@ fn find_hostname_candidates(data: &[u8]) -> Vec<String> {
                 end += 1;
             }
 
-            // Extract potential hostname if it looks reasonable
-            if end > i + 3 && has_dot && dot_count <= 10 {
-                // At least 4 chars with a dot, max 10 dots
-                if let Ok(candidate) = String::from_utf8(data[i..end].to_vec()) {
-                    // Clean up the candidate
-                    let cleaned = candidate
-                        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-');
+            // At least 4 chars with a dot, max 10 dots
+            if end > i + 3
+                && has_dot
+                && dot_count <= 10
+                && let Ok(candidate) = String::from_utf8(data[i..end].to_vec())
+            {
+                let cleaned = candidate
+                    .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-');
 
-                    // Additional validation: check for reasonable hostname structure
-                    if !cleaned.is_empty()
-                        && !cleaned.starts_with('.')
-                        && !cleaned.ends_with('.')
-                        && !cleaned.contains("..")
-                    {
-                        debug!("QUIC: Found hostname candidate: {}", cleaned);
-                        candidates.push(cleaned.to_string());
+                // Additional validation: check for reasonable hostname structure
+                if !cleaned.is_empty()
+                    && !cleaned.starts_with('.')
+                    && !cleaned.ends_with('.')
+                    && !cleaned.contains("..")
+                {
+                    debug!("QUIC: Found hostname candidate: {}", cleaned);
+                    candidates.push(cleaned.to_string());
 
-                        // Also look for sub-patterns within longer strings
-                        // This helps catch cases where we have "prefix.hostname.suffix"
-                        let parts: Vec<&str> = cleaned.split('.').collect();
-                        if parts.len() > 2 {
-                            // Try combinations of consecutive parts
-                            for start_idx in 0..parts.len() {
-                                for end_idx in (start_idx + 2)..=parts.len() {
-                                    let sub_candidate = parts[start_idx..end_idx].join(".");
-                                    if sub_candidate != cleaned && sub_candidate.len() >= 4 {
-                                        debug!(
-                                            "QUIC: Found sub-hostname candidate: {}",
-                                            sub_candidate
-                                        );
-                                        candidates.push(sub_candidate);
-                                    }
+                    // Also look for sub-patterns within longer strings
+                    // This helps catch cases where we have "prefix.hostname.suffix"
+                    let parts: Vec<&str> = cleaned.split('.').collect();
+                    if parts.len() > 2 {
+                        for start_idx in 0..parts.len() {
+                            for end_idx in (start_idx + 2)..=parts.len() {
+                                let sub_candidate = parts[start_idx..end_idx].join(".");
+                                if sub_candidate != cleaned && sub_candidate.len() >= 4 {
+                                    debug!("QUIC: Found sub-hostname candidate: {}", sub_candidate);
+                                    candidates.push(sub_candidate);
                                 }
                             }
                         }

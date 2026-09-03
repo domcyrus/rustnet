@@ -1,5 +1,5 @@
-//! UIState, ClickableRegions, ClickAction, SortColumn, GroupedRow, and
-//! the selection/scroll helpers — everything tracking what the user is
+//! UiState, ClickableRegions, ClickAction, SortColumn, GroupedRow, and
+//! the selection/scroll helpers: everything tracking what the user is
 //! looking at and acting on. No rendering happens here; tabs and widgets
 //! read these to know what to draw.
 
@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use ratatui::layout::Rect;
 
-use crate::network::types::{Connection, Protocol};
+use crate::network::types::{Connection, Protocol, UNKNOWN_PROCESS_NAME};
 
 /// Traffic direction emphasized by the process activity view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -38,6 +38,56 @@ impl ActivityDirection {
             Self::Egress => "TX",
             Self::Ingress => "RX",
         }
+    }
+
+    /// Select the transmit or receive value for this direction.
+    pub fn pick<T>(self, tx: T, rx: T) -> T {
+        match self {
+            Self::Egress => tx,
+            Self::Ingress => rx,
+        }
+    }
+}
+
+/// A selection movement shared by the flat and grouped connection lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ui) enum Motion {
+    /// One row up, wrapping to the bottom from the first row.
+    Up,
+    /// One row down, wrapping to the top from the last row.
+    Down,
+    /// A page up, clamped at the first row.
+    PageUp(usize),
+    /// A page down, clamped at the last row.
+    PageDown(usize),
+    First,
+    Last,
+}
+
+/// Compute the index a motion lands on in a list of `len` rows.
+///
+/// `len` must be non-zero; callers guard against empty lists.
+fn step_index(current: usize, len: usize, motion: Motion) -> usize {
+    let last = len.saturating_sub(1);
+    match motion {
+        Motion::Up => {
+            if current > 0 {
+                current - 1
+            } else {
+                last
+            }
+        }
+        Motion::Down => {
+            if current < last {
+                current + 1
+            } else {
+                0
+            }
+        }
+        Motion::PageUp(page) => current.saturating_sub(page),
+        Motion::PageDown(page) => (current + page).min(last),
+        Motion::First => 0,
+        Motion::Last => last,
     }
 }
 
@@ -103,8 +153,8 @@ impl ActivitySort {
 /// Scroll state for a pane that only learns its content and viewport
 /// size at render time (Details info panes, Help overlay, Host tables).
 /// Event handlers mutate `offset`; the draw path reports the
-/// real maximum through [`Self::clamp_for_render`] — a `Cell`, because
-/// drawing only holds `&UIState` — so the next scroll input clamps
+/// real maximum through [`Self::clamp_for_render`] (a `Cell`, because
+/// drawing only holds `&UiState`), so the next scroll input clamps
 /// against what is actually on screen.
 #[derive(Debug, Default)]
 pub struct PaneScroll {
@@ -165,8 +215,7 @@ impl PaneScroll {
 }
 
 /// Sort column options for the connections table.
-/// Protocol (TCP/UDP) has no dedicated column anymore — it's merged into
-/// Application, whose comparator tie-breaks on protocol.
+/// Protocol is merged into Application, whose comparator tie-breaks on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortColumn {
     #[default]
@@ -188,7 +237,7 @@ impl SortColumn {
     /// order: identifying columns first, status columns last). When
     /// `has_location` is true, Location is included after Local Address.
     ///
-    /// Columns hidden at narrow widths stay in the cycle — the active sort
+    /// Columns hidden at narrow widths stay in the cycle: the active sort
     /// is always named in the table's section title, so sorting by an
     /// off-screen column is still discoverable.
     pub fn next(self, has_location: bool) -> Self {
@@ -235,7 +284,6 @@ impl SortColumn {
         }
     }
 
-    /// Get the display name for the sort column
     pub fn display_name(self) -> &'static str {
         match self {
             Self::CreatedAt => "Time",
@@ -332,7 +380,7 @@ impl ClickableRegions {
 }
 
 /// UI state for managing the interface
-pub struct UIState {
+pub struct UiState {
     pub selected_tab: usize,
     pub selected_connection_key: Option<String>,
     /// Cached positions for the selected key. Each lookup validates the hint
@@ -393,7 +441,7 @@ pub struct UIState {
     pub activity_sort_ascending: bool,
 }
 
-impl Default for UIState {
+impl Default for UiState {
     fn default() -> Self {
         Self {
             selected_tab: 0,
@@ -446,11 +494,9 @@ pub fn compute_scroll_offset(
     let max_offset = total_rows.saturating_sub(visible_rows);
     let mut offset = current_offset.min(max_offset);
 
-    // Scroll up if selection is above viewport
     if selected_index < offset {
         offset = selected_index;
     }
-    // Scroll down if selection is below viewport
     if selected_index >= offset + visible_rows {
         offset = selected_index - visible_rows + 1;
     }
@@ -458,7 +504,7 @@ pub fn compute_scroll_offset(
     offset.min(max_offset)
 }
 
-impl UIState {
+impl UiState {
     /// Whether the query changes the displayed connection set.
     pub fn has_active_filter(&self) -> bool {
         !self.filter_query.trim().is_empty()
@@ -492,7 +538,6 @@ impl UIState {
         self.selected_connection_key = key;
     }
 
-    /// Get the current selected connection index, if any
     pub fn get_selected_index(&self, connections: &[Connection]) -> Option<usize> {
         if let Some(ref selected_key) = self.selected_connection_key {
             if let Some(index) = self.selected_connection_index_hint.get()
@@ -515,7 +560,6 @@ impl UIState {
         }
     }
 
-    /// Set the selected connection to the one at the given index
     pub fn set_selected_by_index(&mut self, connections: &[Connection], index: usize) {
         if let Some(conn) = connections.get(index) {
             self.set_connection_key(Some(conn.key()));
@@ -523,124 +567,30 @@ impl UIState {
         }
     }
 
-    /// Move selection up by one position
+    /// Apply a motion to the flat connection list selection.
+    pub(in crate::ui) fn move_selection(&mut self, connections: &[Connection], motion: Motion) {
+        if connections.is_empty() {
+            log::debug!("move_selection({motion:?}): connections list is empty");
+            return;
+        }
+
+        let current_index = self.get_selected_index(connections).unwrap_or(0);
+        let old_key = self.selected_connection_key.clone();
+        let new_index = step_index(current_index, connections.len(), motion);
+        self.set_selected_by_index(connections, new_index);
+        log::debug!(
+            "move_selection({motion:?}): moved from index {current_index} to {new_index} of {} (key: {old_key:?} -> {:?})",
+            connections.len(),
+            self.selected_connection_key
+        );
+    }
+
     pub fn move_selection_up(&mut self, connections: &[Connection]) {
-        if connections.is_empty() {
-            log::debug!("move_selection_up: connections list is empty");
-            return;
-        }
-
-        let current_index = self.get_selected_index(connections).unwrap_or(0);
-        let old_key = self.selected_connection_key.clone();
-        log::debug!(
-            "move_selection_up: current_index={}, total_connections={}, current_key={:?}",
-            current_index,
-            connections.len(),
-            old_key
-        );
-
-        if current_index > 0 {
-            self.set_selected_by_index(connections, current_index - 1);
-            log::debug!(
-                "move_selection_up: moved from index {} to {} (key: {:?} -> {:?})",
-                current_index,
-                current_index - 1,
-                old_key,
-                self.selected_connection_key
-            );
-        } else {
-            // Wrap around to the bottom
-            self.set_selected_by_index(connections, connections.len() - 1);
-            log::debug!(
-                "move_selection_up: wrapped from index {} to bottom index {} (key: {:?} -> {:?})",
-                current_index,
-                connections.len() - 1,
-                old_key,
-                self.selected_connection_key
-            );
-        }
+        self.move_selection(connections, Motion::Up);
     }
 
-    /// Move selection down by one position
     pub fn move_selection_down(&mut self, connections: &[Connection]) {
-        if connections.is_empty() {
-            log::debug!("move_selection_down: connections list is empty");
-            return;
-        }
-
-        let current_index = self.get_selected_index(connections).unwrap_or(0);
-        let old_key = self.selected_connection_key.clone();
-        log::debug!(
-            "move_selection_down: current_index={}, total_connections={}, current_key={:?}",
-            current_index,
-            connections.len(),
-            old_key
-        );
-
-        if current_index < connections.len().saturating_sub(1) {
-            self.set_selected_by_index(connections, current_index + 1);
-            log::debug!(
-                "move_selection_down: moved from index {} to {} (key: {:?} -> {:?})",
-                current_index,
-                current_index + 1,
-                old_key,
-                self.selected_connection_key
-            );
-        } else {
-            // Wrap around to the top
-            self.set_selected_by_index(connections, 0);
-            log::debug!(
-                "move_selection_down: wrapped from index {} to top index 0 (key: {:?} -> {:?})",
-                current_index,
-                old_key,
-                self.selected_connection_key
-            );
-        }
-    }
-
-    /// Move selection up by one page
-    pub fn move_selection_page_up(&mut self, connections: &[Connection], page_size: usize) {
-        if connections.is_empty() {
-            return;
-        }
-
-        let current_index = self.get_selected_index(connections).unwrap_or(0);
-        if current_index >= page_size {
-            self.set_selected_by_index(connections, current_index - page_size);
-        } else {
-            self.set_selected_by_index(connections, 0);
-        }
-    }
-
-    /// Move selection down by one page
-    pub fn move_selection_page_down(&mut self, connections: &[Connection], page_size: usize) {
-        if connections.is_empty() {
-            return;
-        }
-
-        let current_index = self.get_selected_index(connections).unwrap_or(0);
-        let new_index = current_index + page_size;
-        if new_index < connections.len() {
-            self.set_selected_by_index(connections, new_index);
-        } else {
-            self.set_selected_by_index(connections, connections.len() - 1);
-        }
-    }
-
-    /// Move selection to the first connection (vim-style 'g')
-    pub fn move_selection_to_first(&mut self, connections: &[Connection]) {
-        if connections.is_empty() {
-            return;
-        }
-        self.set_selected_by_index(connections, 0);
-    }
-
-    /// Move selection to the last connection (vim-style 'G')
-    pub fn move_selection_to_last(&mut self, connections: &[Connection]) {
-        if connections.is_empty() {
-            return;
-        }
-        self.set_selected_by_index(connections, connections.len() - 1);
+        self.move_selection(connections, Motion::Down);
     }
 
     /// Ensure we have a valid selection when connections list changes
@@ -658,7 +608,6 @@ impl UIState {
             connections.len()
         );
 
-        // If no selection or selection is no longer valid, select first connection
         if self.selected_connection_key.is_none() || current_index.is_none() {
             log::debug!("ensure_valid_selection: selecting first connection (index 0)");
             self.set_selected_by_index(connections, 0);
@@ -668,13 +617,11 @@ impl UIState {
         }
     }
 
-    /// Enter filter mode
     pub fn enter_filter_mode(&mut self) {
         self.filter_mode = true;
         self.filter_cursor_position = self.filter_query.len();
     }
 
-    /// Exit filter mode
     pub fn exit_filter_mode(&mut self) {
         if !self.has_active_filter() {
             self.filter_query.clear();
@@ -683,19 +630,16 @@ impl UIState {
         self.filter_cursor_position = 0;
     }
 
-    /// Clear filter and exit filter mode
     pub fn clear_filter(&mut self) {
         self.filter_query.clear();
         self.exit_filter_mode();
     }
 
-    /// Add character to filter query at cursor position
     pub fn filter_add_char(&mut self, c: char) {
         self.filter_query.insert(self.filter_cursor_position, c);
         self.filter_cursor_position += 1;
     }
 
-    /// Remove character before cursor position in filter query
     pub fn filter_backspace(&mut self) {
         if self.filter_cursor_position > 0 {
             self.filter_cursor_position -= 1;
@@ -703,14 +647,12 @@ impl UIState {
         }
     }
 
-    /// Move cursor left in filter query
     pub fn filter_cursor_left(&mut self) {
         if self.filter_cursor_position > 0 {
             self.filter_cursor_position -= 1;
         }
     }
 
-    /// Move cursor right in filter query
     pub fn filter_cursor_right(&mut self) {
         if self.filter_cursor_position < self.filter_query.len() {
             self.filter_cursor_position += 1;
@@ -754,14 +696,11 @@ impl UIState {
         }
     }
 
-    /// Cycle to the next sort column.
     pub fn cycle_sort_column(&mut self) {
         self.sort_column = self.sort_column.next(self.has_geoip);
-        // Reset to the default direction for the new column
         self.sort_ascending = self.sort_column.default_direction();
     }
 
-    /// Toggle the sort direction for the current column
     pub fn toggle_sort_direction(&mut self) {
         self.sort_ascending = !self.sort_ascending;
     }
@@ -784,10 +723,8 @@ impl UIState {
         self.grouped_scroll_offset = 0;
     }
 
-    /// Toggle grouping mode
     pub fn toggle_grouping(&mut self) {
         self.grouping_enabled = !self.grouping_enabled;
-        // When toggling grouping on, clear group selection to start fresh
         if self.grouping_enabled {
             self.selected_group = None;
             self.grouped_scroll_offset = 0;
@@ -805,7 +742,6 @@ impl UIState {
             .map(|group| self.expanded_groups.contains(group))
     }
 
-    /// Toggle expansion of the currently selected group
     pub fn toggle_group_expansion(&mut self) {
         match self.selected_group_expansion() {
             Some(true) => self.collapse_selected_group(),
@@ -814,14 +750,12 @@ impl UIState {
         }
     }
 
-    /// Expand the currently selected group
     pub fn expand_selected_group(&mut self) {
         if let Some(ref group_name) = self.selected_group {
             self.expanded_groups.insert(group_name.clone());
         }
     }
 
-    /// Collapse the currently selected group
     pub fn collapse_selected_group(&mut self) {
         if let Some(group_name) = self.selected_group.clone()
             && self.expanded_groups.remove(&group_name)
@@ -830,7 +764,6 @@ impl UIState {
         }
     }
 
-    /// Get the current selected index in the grouped rows
     pub fn get_selected_grouped_index(&self, grouped_rows: &[GroupedRow]) -> Option<usize> {
         if grouped_rows.is_empty() {
             self.selected_grouped_index_hint.set(None);
@@ -902,78 +835,19 @@ impl UIState {
         }
     }
 
-    /// Move selection up in grouped view
-    pub fn move_selection_up_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        if grouped_rows.is_empty() {
-            return;
-        }
-
-        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
-        let new_index = if current_index > 0 {
-            current_index - 1
-        } else {
-            grouped_rows.len() - 1 // Wrap to bottom
-        };
-        self.set_selected_grouped_by_index(grouped_rows, new_index);
-    }
-
-    /// Move selection down in grouped view
-    pub fn move_selection_down_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        if grouped_rows.is_empty() {
-            return;
-        }
-
-        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
-        let new_index = if current_index < grouped_rows.len() - 1 {
-            current_index + 1
-        } else {
-            0 // Wrap to top
-        };
-        self.set_selected_grouped_by_index(grouped_rows, new_index);
-    }
-
-    /// Move selection up by one page in grouped view
-    pub fn move_selection_page_up_grouped(
+    /// Apply a motion to the grouped row selection.
+    pub(in crate::ui) fn move_selection_grouped(
         &mut self,
         grouped_rows: &[GroupedRow],
-        page_size: usize,
+        motion: Motion,
     ) {
         if grouped_rows.is_empty() {
             return;
         }
 
         let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
-        let new_index = current_index.saturating_sub(page_size);
+        let new_index = step_index(current_index, grouped_rows.len(), motion);
         self.set_selected_grouped_by_index(grouped_rows, new_index);
-    }
-
-    /// Move selection down by one page in grouped view
-    pub fn move_selection_page_down_grouped(
-        &mut self,
-        grouped_rows: &[GroupedRow],
-        page_size: usize,
-    ) {
-        if grouped_rows.is_empty() {
-            return;
-        }
-
-        let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
-        let new_index = (current_index + page_size).min(grouped_rows.len() - 1);
-        self.set_selected_grouped_by_index(grouped_rows, new_index);
-    }
-
-    /// Move selection to the first row in grouped view
-    pub fn move_selection_to_first_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        if !grouped_rows.is_empty() {
-            self.set_selected_grouped_by_index(grouped_rows, 0);
-        }
-    }
-
-    /// Move selection to the last row in grouped view
-    pub fn move_selection_to_last_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        if !grouped_rows.is_empty() {
-            self.set_selected_grouped_by_index(grouped_rows, grouped_rows.len() - 1);
-        }
     }
 
     /// Ensure valid selection in grouped view
@@ -996,24 +870,22 @@ impl UIState {
         Some(index)
     }
 
-    /// Check if the current selection is on a group header
     pub fn is_group_selected(&self) -> bool {
         self.selected_group.is_some() && self.selected_connection_key.is_none()
     }
 }
 
-/// Compute grouped rows from a list of connections
 /// Group label shown for connections without a resolved process name.
 pub(super) const UNKNOWN_PROCESS_GROUP: &str = "<unknown>";
 
 /// The process-group label for a connection. Attribution can fail two ways:
 /// no owner found at all (`process_name` is `None`), or an owner PID whose
-/// name lookup failed and stored the platform's "Unknown" placeholder
+/// name lookup failed and stored the [`UNKNOWN_PROCESS_NAME`] placeholder
 /// (protected processes, the pre-resolution ETW window). Both fold into one
 /// bucket so the UI never shows two different unknown groups side by side.
 pub fn process_group_label(conn: &Connection) -> &str {
     match conn.process_name.as_deref() {
-        None | Some("Unknown") => UNKNOWN_PROCESS_GROUP,
+        None | Some(UNKNOWN_PROCESS_NAME) => UNKNOWN_PROCESS_GROUP,
         Some(name) => name,
     }
 }
@@ -1105,26 +977,40 @@ pub fn compute_grouped_rows<'a>(
 mod tests {
     use super::*;
     use crate::ui::TAB_COUNT;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use crate::ui::test_support::local_tcp;
 
-    fn test_connection(port: u16, process: &str) -> Connection {
-        let mut connection = Connection::new(
-            Protocol::Tcp,
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), 443),
-            crate::network::types::ProtocolState::Tcp(crate::network::types::TcpState::Established),
-        );
-        connection.process_name = Some(process.to_string());
-        connection
+    #[test]
+    fn step_index_wraps_and_clamps() {
+        assert_eq!(step_index(0, 5, Motion::Up), 4);
+        assert_eq!(step_index(3, 5, Motion::Up), 2);
+        assert_eq!(step_index(4, 5, Motion::Down), 0);
+        assert_eq!(step_index(1, 5, Motion::Down), 2);
+        assert_eq!(step_index(1, 5, Motion::PageUp(10)), 0);
+        assert_eq!(step_index(4, 5, Motion::PageUp(2)), 2);
+        assert_eq!(step_index(1, 5, Motion::PageDown(10)), 4);
+        assert_eq!(step_index(1, 5, Motion::PageDown(2)), 3);
+        assert_eq!(step_index(3, 5, Motion::First), 0);
+        assert_eq!(step_index(0, 5, Motion::Last), 4);
+        // A single row is a fixed point for every motion.
+        for motion in [
+            Motion::Up,
+            Motion::Down,
+            Motion::PageUp(3),
+            Motion::PageDown(3),
+            Motion::First,
+            Motion::Last,
+        ] {
+            assert_eq!(step_index(0, 1, motion), 0);
+        }
     }
 
     #[test]
     fn whitespace_only_filter_is_inactive_and_cleared_on_exit() {
-        let mut ui = UIState {
+        let mut ui = UiState {
             filter_mode: true,
             filter_query: "   ".to_string(),
             filter_cursor_position: 3,
-            ..UIState::default()
+            ..UiState::default()
         };
 
         assert!(!ui.has_active_filter());
@@ -1137,26 +1023,26 @@ mod tests {
 
     #[test]
     fn is_filtering_covers_both_typing_and_a_persisted_query() {
-        assert!(!UIState::default().is_filtering());
+        assert!(!UiState::default().is_filtering());
 
         // Filter mode with an empty query still counts: the user is typing.
-        let typing = UIState {
+        let typing = UiState {
             filter_mode: true,
-            ..UIState::default()
+            ..UiState::default()
         };
         assert!(typing.is_filtering());
 
         // A persisted query counts after filter mode is left.
-        let persisted = UIState {
+        let persisted = UiState {
             filter_query: "port:443".to_string(),
-            ..UIState::default()
+            ..UiState::default()
         };
         assert!(persisted.is_filtering());
 
         // Whitespace alone narrows nothing.
-        let blank = UIState {
+        let blank = UiState {
             filter_query: "   ".to_string(),
-            ..UIState::default()
+            ..UiState::default()
         };
         assert!(!blank.is_filtering());
     }
@@ -1166,9 +1052,9 @@ mod tests {
         // Tab selection and overlay visibility are independent so help can
         // describe the view that remains underneath it.
         for idx in 0..TAB_COUNT {
-            let mut ui = UIState {
+            let mut ui = UiState {
                 show_help: true,
-                ..UIState::default()
+                ..UiState::default()
             };
             ui.jump_to_tab(idx);
             assert_eq!(
@@ -1182,12 +1068,12 @@ mod tests {
     #[test]
     fn jump_to_tab_ignores_out_of_range() {
         // Lock the invariant that the public API does not silently corrupt
-        // `selected_tab` to a value outside `0..TAB_COUNT` — `tabs_bar.rs`
+        // `selected_tab` to a value outside `0..TAB_COUNT`; `tabs_bar.rs`
         // indexes into `TAB_TITLES` by that value when drawing.
-        let mut ui = UIState {
+        let mut ui = UiState {
             selected_tab: 2,
             show_help: false,
-            ..UIState::default()
+            ..UiState::default()
         };
         ui.jump_to_tab(TAB_COUNT);
         assert_eq!(ui.selected_tab, 2);
@@ -1199,7 +1085,7 @@ mod tests {
 
     #[test]
     fn next_tab_cycles_and_wraps() {
-        let mut ui = UIState::default();
+        let mut ui = UiState::default();
         assert_eq!(ui.selected_tab, 0);
         for expected in 1..TAB_COUNT {
             ui.next_tab();
@@ -1212,7 +1098,7 @@ mod tests {
 
     #[test]
     fn prev_tab_wraps_from_first_to_last() {
-        let mut ui = UIState::default();
+        let mut ui = UiState::default();
         ui.prev_tab();
         assert_eq!(ui.selected_tab, TAB_COUNT - 1);
         ui.prev_tab();
@@ -1256,7 +1142,7 @@ mod tests {
 
     #[test]
     fn details_scroll_resets_when_selection_changes() {
-        let mut ui = UIState::default();
+        let mut ui = UiState::default();
         ui.details_scroll.clamp_for_render(20);
         ui.details_scroll.scroll_down(7);
 
@@ -1274,11 +1160,8 @@ mod tests {
 
     #[test]
     fn selection_hint_recovers_after_reordering() {
-        let mut connections = vec![
-            test_connection(1000, "first"),
-            test_connection(1001, "second"),
-        ];
-        let mut ui = UIState::default();
+        let mut connections = vec![local_tcp(1000, "first"), local_tcp(1001, "second")];
+        let mut ui = UiState::default();
         ui.set_selected_by_index(&connections, 1);
         assert_eq!(ui.selected_connection_index_hint.get(), Some(1));
 
@@ -1290,13 +1173,10 @@ mod tests {
 
     #[test]
     fn grouped_selection_hint_recovers_after_rows_shift() {
-        let connections = vec![
-            test_connection(1000, "alpha"),
-            test_connection(1001, "beta"),
-        ];
+        let connections = vec![local_tcp(1000, "alpha"), local_tcp(1001, "beta")];
         let expanded = HashSet::from(["alpha".to_string(), "beta".to_string()]);
         let rows = compute_grouped_rows(&connections, &expanded);
-        let mut ui = UIState::default();
+        let mut ui = UiState::default();
         ui.set_selected_grouped_by_index(&rows, 3);
         assert_eq!(ui.selected_grouped_index_hint.get(), Some(3));
 
@@ -1308,17 +1188,17 @@ mod tests {
 
     #[test]
     fn vanished_group_is_repaired_to_the_row_actually_highlighted() {
-        let mut ui = UIState {
+        let mut ui = UiState {
             grouping_enabled: true,
             selected_group: Some("firefox".to_string()),
-            ..UIState::default()
+            ..UiState::default()
         };
         ui.expanded_groups.insert("firefox".to_string());
 
         // firefox exits while chrome remains: the highlight falls back to
         // row 0, and the selection state must follow it, or Space (and the
         // status bar hint) would keep acting on the vanished group.
-        let survivors = vec![test_connection(1000, "chrome")];
+        let survivors = vec![local_tcp(1000, "chrome")];
         let rows = compute_grouped_rows(&survivors, &ui.expanded_groups);
         assert_eq!(ui.ensure_valid_grouped_selection(&rows), Some(0));
         assert_eq!(ui.selected_group.as_deref(), Some("chrome"));
@@ -1330,10 +1210,10 @@ mod tests {
     /// group instead of showing "<unknown>" and "Unknown" side by side.
     #[test]
     fn unknown_placeholder_groups_with_unattributed_connections() {
-        let mut unattributed = test_connection(1000, "ignored");
+        let mut unattributed = local_tcp(1000, "ignored");
         unattributed.process_name = None;
-        let placeholder = test_connection(1001, "Unknown");
-        let named = test_connection(1002, "firefox");
+        let placeholder = local_tcp(1001, UNKNOWN_PROCESS_NAME);
+        let named = local_tcp(1002, "firefox");
         let connections = vec![unattributed, placeholder, named];
 
         let rows = compute_grouped_rows(&connections, &HashSet::new());
@@ -1364,14 +1244,11 @@ mod tests {
 
     #[test]
     fn collapsing_group_from_connection_selects_group_header() {
-        let connections = vec![
-            test_connection(1000, "alpha"),
-            test_connection(1001, "alpha"),
-        ];
-        let mut ui = UIState {
+        let connections = vec![local_tcp(1000, "alpha"), local_tcp(1001, "alpha")];
+        let mut ui = UiState {
             grouping_enabled: true,
             expanded_groups: HashSet::from(["alpha".to_string()]),
-            ..UIState::default()
+            ..UiState::default()
         };
         let rows = compute_grouped_rows(&connections, &ui.expanded_groups);
         ui.set_selected_grouped_by_index(&rows, 1);

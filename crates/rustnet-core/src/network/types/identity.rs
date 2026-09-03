@@ -1,6 +1,7 @@
-use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+
+use super::connection::Connection;
 
 /// How closely a process attribution matched the connection it was asked about.
 ///
@@ -44,19 +45,6 @@ impl MatchQuality {
         matches!(self, Self::ExactTuple | Self::ProcfsExact)
     }
 
-    /// Human-readable label, for display to a person.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::ExactTuple => "exact tuple",
-            Self::WildcardLocalAddress => "wildcard local address",
-            Self::ListenerSocket => "listener socket",
-            Self::ProcfsExact => "procfs exact",
-            Self::ProcfsRelaxed => "procfs relaxed",
-            Self::StartupSnapshot => "startup snapshot",
-            Self::Unspecified => "unspecified",
-        }
-    }
-
     /// Stable machine-readable token for exports.
     ///
     /// Separate from [`MatchQuality::as_str`] on purpose: the prose there is
@@ -76,9 +64,16 @@ impl MatchQuality {
     }
 }
 
-impl fmt::Display for MatchQuality {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+static_names! {
+    /// Human-readable label, for display to a person.
+    MatchQuality {
+        ExactTuple => "exact tuple",
+        WildcardLocalAddress => "wildcard local address",
+        ListenerSocket => "listener socket",
+        ProcfsExact => "procfs exact",
+        ProcfsRelaxed => "procfs relaxed",
+        StartupSnapshot => "startup snapshot",
+        Unspecified => "unspecified",
     }
 }
 
@@ -115,25 +110,17 @@ pub enum Protocol {
     Arp,
 }
 
-impl Protocol {
+static_names! {
     /// The protocol's display name as a `&'static str`. Hot paths (the
     /// connection-table render and the filter matcher) want the name as a
     /// borrowed string; going through `Display`/`to_string` there allocates a
     /// fresh `String` per row / per connection for no reason.
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Protocol::Tcp => "TCP",
-            Protocol::Udp => "UDP",
-            Protocol::Icmp => "ICMP",
-            Protocol::Igmp => "IGMP",
-            Protocol::Arp => "ARP",
-        }
-    }
-}
-
-impl std::fmt::Display for Protocol {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+    Protocol {
+        Tcp => "TCP",
+        Udp => "UDP",
+        Icmp => "ICMP",
+        Igmp => "IGMP",
+        Arp => "ARP",
     }
 }
 
@@ -152,27 +139,19 @@ pub enum TcpState {
     Unknown,
 }
 
-impl TcpState {
-    pub(super) const fn as_str(self) -> &'static str {
-        match self {
-            Self::SynSent => "SYN_SENT",
-            Self::SynReceived => "SYN_RECV",
-            Self::Established => "ESTABLISHED",
-            Self::FinWait1 => "FIN_WAIT1",
-            Self::FinWait2 => "FIN_WAIT2",
-            Self::CloseWait => "CLOSE_WAIT",
-            Self::LastAck => "LAST_ACK",
-            Self::TimeWait => "TIME_WAIT",
-            Self::Closing => "CLOSING",
-            Self::Closed => "CLOSED",
-            Self::Unknown => "TCP_UNKNOWN",
-        }
-    }
-}
-
-impl fmt::Display for TcpState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+static_names! {
+    TcpState {
+        SynSent => "SYN_SENT",
+        SynReceived => "SYN_RECV",
+        Established => "ESTABLISHED",
+        FinWait1 => "FIN_WAIT1",
+        FinWait2 => "FIN_WAIT2",
+        CloseWait => "CLOSE_WAIT",
+        LastAck => "LAST_ACK",
+        TimeWait => "TIME_WAIT",
+        Closing => "CLOSING",
+        Closed => "CLOSED",
+        Unknown => "TCP_UNKNOWN",
     }
 }
 
@@ -194,7 +173,7 @@ pub enum ProtocolState {
         /// IP-to-MAC mapping carried by an NDP message's link-layer address
         /// option (ICMPv6 only), extracted by the parser when the enclosing
         /// IPv6 header proved on-link origin (hop limit 255, no Fragment
-        /// Header — RFC 4861, RFC 6980). Feeds the tracker's neighbor cache,
+        /// Header; RFC 4861, RFC 6980). Feeds the tracker's neighbor cache,
         /// the IPv6 analogue of [`ProtocolState::Arp`].
         ndp_neighbor: Option<NdpNeighbor>,
     },
@@ -278,7 +257,7 @@ pub fn igmp_message_name(igmp_type: u8) -> std::borrow::Cow<'static, str> {
 }
 
 /// One IP-to-MAC mapping extracted from an NDP (IPv6 Neighbor Discovery,
-/// RFC 4861) message's link-layer address option — the IPv6 analogue of what
+/// RFC 4861) message's link-layer address option, the IPv6 analogue of what
 /// [`ArpInfo`] carries for IPv4.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NdpNeighbor {
@@ -291,10 +270,6 @@ pub struct NdpNeighbor {
     /// OUI vendor, resolved at parse time when the database is loaded.
     pub vendor: Option<String>,
 }
-
-// ============================================================================
-// Connection Key
-// ============================================================================
 
 /// Compact identity of a flow: protocol plus local/remote socket addresses.
 ///
@@ -317,6 +292,13 @@ impl ConnectionKey {
             local_addr,
             remote_addr,
         }
+    }
+
+    /// The key a connection is tracked under: its protocol and 4-tuple as
+    /// observed, without the historic disambiguation of
+    /// [`Connection::key`].
+    pub fn from_connection(conn: &Connection) -> Self {
+        Self::new(conn.protocol, conn.local_addr, conn.remote_addr)
     }
 }
 
@@ -357,23 +339,6 @@ impl AddrKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn protocol_as_str_matches_display() {
-        for p in [
-            Protocol::Tcp,
-            Protocol::Udp,
-            Protocol::Icmp,
-            Protocol::Igmp,
-            Protocol::Arp,
-        ] {
-            // Display now delegates to as_str — they must stay identical so
-            // nothing reading protocol names (UI cells, filter, JSON) shifts.
-            assert_eq!(p.as_str(), p.to_string());
-        }
-        assert_eq!(Protocol::Tcp.as_str(), "TCP");
-        assert_eq!(Protocol::Arp.as_str(), "ARP");
-    }
 
     /// Export tokens are what users grep and filter on, so they are pinned
     /// here: the prose in `as_str` may be reworded, these may not.

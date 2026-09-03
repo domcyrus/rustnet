@@ -5,7 +5,6 @@ use crate::network::parser::{ParsedPacket, ParserConfig};
 use crate::network::protocol::{TransportParams, orient_endpoints};
 use crate::network::types::{Protocol, ProtocolState, TcpState};
 
-// Define TCP flags as bit masks
 const TCP_FIN: u8 = 0x01;
 const TCP_SYN: u8 = 0x02;
 const TCP_RST: u8 = 0x04;
@@ -109,7 +108,6 @@ pub(crate) fn parse(
     let src_port = u16::from_be_bytes([transport_data[0], transport_data[1]]);
     let dst_port = u16::from_be_bytes([transport_data[2], transport_data[3]]);
 
-    // Extract TCP header fields
     let seq = u32::from_be_bytes([
         transport_data[4],
         transport_data[5],
@@ -128,7 +126,7 @@ pub(crate) fn parse(
     let tcp_flags = parse_tcp_flags(flags);
 
     // Calculate actual TCP payload length. A data offset below 5 is invalid
-    // (RFC 9293 §3.1) — treating it as a header length would make the
+    // (RFC 9293 §3.1); treating it as a header length would make the
     // payload overlap the header itself.
     let tcp_header_len = ((transport_data[12] >> 4) as usize) * 4;
     if tcp_header_len < 20 {
@@ -160,7 +158,6 @@ pub(crate) fn parse(
         window_scale,
     };
 
-    // Log TCP flags for debugging
     log::trace!(
         "TCP flags: FIN={} SYN={} RST={} ACK={}",
         tcp_flags.fin,
@@ -172,7 +169,6 @@ pub(crate) fn parse(
     let (local_addr, remote_addr, is_outgoing) =
         orient_endpoints(&params, src_port, dst_port, local_ips);
 
-    // Perform DPI if enabled and there's payload
     let dpi_result = if config.enable_dpi {
         if transport_data.len() > tcp_header_len {
             let payload = &transport_data[tcp_header_len..];

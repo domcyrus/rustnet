@@ -4,7 +4,6 @@
 //! the parent module's `NONE_PLACEHOLDER` ("-") for zero/absent
 //! values so the UI reads consistently.
 
-/// Format rate to human readable form
 pub(super) fn format_rate(bytes_per_second: f64) -> String {
     const KB_PER_SEC: f64 = 1024.0;
     const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
@@ -73,7 +72,6 @@ pub(super) fn format_countdown(remaining: std::time::Duration) -> String {
     }
 }
 
-/// Format bytes to human readable form
 pub(super) fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -90,7 +88,9 @@ pub(super) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Char-safe truncation to `width` cells, ending in "…" when cut.
+/// Char-safe truncation to `width` cells, ending in "…" when cut. Trailing
+/// whitespace on the kept prefix is dropped so the ellipsis never floats
+/// after a space.
 pub(super) fn truncate_with_ellipsis(s: &str, width: usize) -> String {
     if s.chars().count() <= width {
         return s.to_string();
@@ -98,9 +98,8 @@ pub(super) fn truncate_with_ellipsis(s: &str, width: usize) -> String {
     if width <= 1 {
         return "…".to_string();
     }
-    let mut out: String = s.chars().take(width - 1).collect();
-    out.push('…');
-    out
+    let kept: String = s.chars().take(width - 1).collect();
+    format!("{}…", kept.trim_end())
 }
 
 /// Truncation to `max` chars that keeps the *end* of the string,

@@ -18,10 +18,6 @@ pub use types::{AppOutputHandles, AppStats, Config};
 
 use std::time::Duration;
 
-// Connection-table limits (max connections, historic retention, QUIC mappings)
-// now live in `rustnet_core::network::tracker::TrackerConfig`, which the
-// `ConnectionTracker` enforces. The defaults match the previous constants.
-
 /// Maximum queued packets before backpressure drops packets.
 /// At ~1500 bytes per packet, 10,000 packets ≈ 15 MB of buffer.
 const MAX_PACKET_QUEUE: usize = 10_000;

@@ -5,8 +5,8 @@ use anyhow::Result;
 use crossbeam::channel::{self, Receiver, Sender};
 use log::{debug, error, info, warn};
 use std::ops::ControlFlow;
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -17,7 +17,7 @@ use crate::network::{
     tracker::{ConnectionTracker, IngestOutcome},
 };
 
-use super::logging::{JsonLineWriter, log_connection_event, log_pcap_connection};
+use super::logging::{JsonLineWriter, log_connection_closed, log_connection_event};
 use super::pcapng_export::{PcapngRecord, send_pcapng_record};
 use super::state::App;
 use super::types::AppStats;
@@ -39,6 +39,41 @@ pub(super) enum CaptureStatus {
 impl CaptureStatus {
     pub(super) fn has_failed(&self) -> bool {
         matches!(self, Self::Failed(_))
+    }
+}
+
+/// Outcome of waiting for the capture thread to publish its linktype.
+pub(super) enum LinktypeWait {
+    Ready(i32),
+    /// Capture setup failed, so no linktype will ever be published.
+    CaptureFailed,
+    /// Shutdown was requested before the linktype became available.
+    Stopped,
+}
+
+/// Poll until the capture thread publishes the linktype, capture setup
+/// fails, or shutdown is requested. A poisoned capture-status lock counts
+/// as a failure.
+pub(super) fn wait_for_linktype(
+    linktype: &RwLock<Option<i32>>,
+    capture_status: &RwLock<CaptureStatus>,
+    should_stop: &AtomicBool,
+) -> LinktypeWait {
+    loop {
+        if let Some(linktype) = *linktype.read().unwrap() {
+            return LinktypeWait::Ready(linktype);
+        }
+        let capture_failed = capture_status
+            .read()
+            .map(|status| status.has_failed())
+            .unwrap_or(true);
+        if capture_failed {
+            return LinktypeWait::CaptureFailed;
+        }
+        if should_stop.load(Ordering::Relaxed) {
+            return LinktypeWait::Stopped;
+        }
+        thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -97,20 +132,18 @@ fn system_time_to_timeval(timestamp: SystemTime) -> libc::timeval {
 }
 
 impl App {
-    /// Phase 1 of the capture pipeline: create the packet channel and start the
-    /// capture thread (which opens the raw socket). The receiver is stashed in
-    /// `self.packet_rx` for [`App::start_packet_processors`], which runs in the
-    /// worker phase after the sandbox has been applied.
+    /// Privileged half of capture startup: opens the raw socket. The receiver
+    /// is stashed in `self.packet_rx` for [`App::start_packet_processors`],
+    /// which runs after the sandbox has been applied.
     ///
     /// Returns a receiver that fires once the capture thread has finished its
     /// privileged setup (capture device opened, or setup failed).
     pub(super) fn start_packet_capture_pipeline(
         &mut self,
     ) -> Result<std::sync::mpsc::Receiver<()>> {
-        // Create packet channel — sender batches packets, receiver gets Vec<CapturedPacket> per batch
+        // Sender batches; receiver gets one Vec per batch.
         let (packet_tx, packet_rx) = channel::bounded::<Vec<CapturedPacket>>(MAX_PACKET_QUEUE);
 
-        // Start capture thread
         let capture_ready_rx = self.start_capture_thread(packet_tx)?;
 
         // Stash the receiver; the processor threads are spawned post-sandbox.
@@ -130,7 +163,6 @@ impl App {
             anyhow::anyhow!("packet receiver missing; start() must run before start_workers()")
         })?;
 
-        // Start multiple packet processing threads
         let num_processors = thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -179,7 +211,6 @@ impl App {
             .spawn(move || {
             match setup_packet_capture(capture_config) {
                 Ok((capture, device_name, linktype)) => {
-                    // Store the actual interface name and linktype being used
                     *current_interface.write().unwrap() = Some(device_name.clone());
                     *linktype_storage.write().unwrap() = Some(linktype);
 
@@ -189,7 +220,6 @@ impl App {
                         "capture thread",
                     );
 
-                    // Check if PKTAP is active (linktype 149 or 258)
                     #[cfg(target_os = "macos")]
                     {
                         use crate::network::link_layer::pktap;
@@ -199,7 +229,7 @@ impl App {
                         } else {
                             // PKTAP not active: bridge the capture layer's reason into
                             // the process-attribution degradation reason. This keeps
-                            // rustnet-host decoupled from rustnet-capture — the app
+                            // rustnet-host decoupled from rustnet-capture; the app
                             // (which orchestrates both) does the translation.
                             use crate::network::capture::PktapUnavailable;
                             use crate::network::platform::{
@@ -313,7 +343,6 @@ impl App {
 
                                 packets_read += 1;
 
-                                // Log first packet immediately
                                 if packets_read == 1 {
                                     info!(
                                         "First packet captured! Size: {} bytes",
@@ -329,7 +358,6 @@ impl App {
                                     last_log = Instant::now();
                                 }
 
-                                // Write to PCAP file if enabled
                                 if let Some(ref mut savefile) = pcap_savefile {
                                     let ts = system_time_to_timeval(packet.timestamp);
                                     let header = pcap::PacketHeader {
@@ -346,7 +374,6 @@ impl App {
 
                                 batch.push(packet);
 
-                                // Send batch when full or deadline reached
                                 if (batch.len() >= 100 || Instant::now() >= batch_deadline)
                                     && send_batch(&mut batch, &mut batch_deadline, "sending")
                                         .is_break()
@@ -371,7 +398,6 @@ impl App {
                                     break;
                                 }
 
-                                // Check stats every second
                                 if last_stats_check.elapsed() > Duration::from_secs(1) {
                                     if let Ok(capture_stats) = reader.stats() {
                                         if capture_stats.received > 0 {
@@ -421,7 +447,6 @@ impl App {
                         }
                     }
 
-                    // Flush PCAP savefile before exiting
                     if let Some(ref mut savefile) = pcap_savefile {
                         if let Err(e) = savefile.flush() {
                             error!("Failed to flush PCAP savefile: {}", e);
@@ -442,7 +467,6 @@ impl App {
                     let _ = capture_ready_tx.send(());
                     let error_msg = format!("{}", e);
 
-                    // Check if this is a privilege error
                     if error_msg.contains("Insufficient privileges") {
                         error!("Failed to start packet capture due to insufficient privileges:");
                         // The error message already contains detailed instructions
@@ -465,7 +489,6 @@ impl App {
         Ok(capture_ready_rx)
     }
 
-    /// Start a packet processor thread
     fn start_packet_processor(
         &self,
         id: usize,
@@ -498,26 +521,21 @@ impl App {
                     "processor thread {id}"
                 ));
 
-                // Wait for linktype to be available
-                let mut parser = loop {
-                    if let Some(linktype) = *linktype_storage.read().unwrap() {
-                        let mut parser = PacketParser::with_config(parser_config.clone())
-                            .with_linktype(linktype);
-                        if let Some(ref oui) = oui_lookup {
-                            parser = parser.with_oui_lookup(Arc::clone(oui));
+                let mut parser =
+                    match wait_for_linktype(&linktype_storage, &capture_status, &should_stop) {
+                        LinktypeWait::Ready(linktype) => {
+                            let mut parser = PacketParser::with_config(parser_config.clone())
+                                .with_linktype(linktype);
+                            if let Some(ref oui) = oui_lookup {
+                                parser = parser.with_oui_lookup(Arc::clone(oui));
+                            }
+                            parser
                         }
-                        break parser;
-                    }
-                    let capture_failed = capture_status
-                        .read()
-                        .map(|status| status.has_failed())
-                        .unwrap_or(true);
-                    if capture_failed || should_stop.load(Ordering::Relaxed) {
-                        info!("pcap_rx_{} exiting before linktype was available", id);
-                        return;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                };
+                        LinktypeWait::CaptureFailed | LinktypeWait::Stopped => {
+                            info!("pcap_rx_{} exiting before linktype was available", id);
+                            return;
+                        }
+                    };
                 let mut total_processed = 0u64;
                 let mut last_log = Instant::now();
                 const LOCAL_ADDRESS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -549,7 +567,7 @@ impl App {
                     // Connections are stamped with each packet's own capture
                     // time, not one clock read shared by the batch. Handshake
                     // RTT is the gap between two packets' timestamps, and a
-                    // batch spans up to 100 packets or 100ms — wide enough to
+                    // batch spans up to 100 packets or 100ms, wide enough to
                     // swallow a whole handshake and report its round trip as
                     // zero. libpcap already hands us the kernel's timestamp, so
                     // this costs no extra clock reads.
@@ -620,7 +638,6 @@ impl App {
                         .packets_processed
                         .fetch_add(batch_len as u64, Ordering::Relaxed);
 
-                    // Log progress
                     if total_processed.is_multiple_of(10000)
                         || last_log.elapsed() > Duration::from_secs(5)
                     {
@@ -658,7 +675,6 @@ fn update_connection(
 ) -> IngestOutcome {
     let outcome = tracker.ingest_at(&parsed, now);
 
-    // Fold TCP anomaly counts into the global statistics.
     if outcome.retransmits > 0 {
         stats
             .total_tcp_retransmits
@@ -694,29 +710,19 @@ fn update_connection(
         stats
             .total_connections_archived
             .fetch_add(1, Ordering::Relaxed);
-        let duration_secs = now
-            .duration_since(conn.created_at)
-            .map(|duration| duration.as_secs())
-            .ok();
-        if let Some(writer) = json_log_file {
-            log_connection_event(
-                writer,
-                "connection_closed",
-                conn,
-                duration_secs,
-                dns_resolver,
-            );
-        }
-        if let Some(writer) = pcap_sidecar_file {
-            log_pcap_connection(writer, conn);
-        }
+        log_connection_closed(
+            conn,
+            now,
+            json_log_file.as_deref(),
+            pcap_sidecar_file.as_deref(),
+            dns_resolver,
+        );
         debug!(
             "Archived prior connection generation before creating a new one: {}",
             outcome.key
         );
     }
 
-    // Log a new-connection event if JSON logging is enabled.
     if outcome.created {
         stats
             .total_connections_created
@@ -789,37 +795,18 @@ mod capture_failure_message_tests {
 }
 
 #[cfg(test)]
+#[path = "../test_support/scratch_dir.rs"]
+mod scratch_dir;
+
+#[cfg(test)]
 mod connection_lifecycle_tests {
     use super::*;
     use crate::network::types::{Protocol, ProtocolState, TcpState};
     use rustnet_core::network::protocol::tcp::{TcpFlags, TcpHeaderInfo};
     use std::net::SocketAddr;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
-    struct ScratchDir(PathBuf);
-
-    impl ScratchDir {
-        fn new(tag: &str) -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "rustnet-lifecycle-test-{}-{}",
-                std::process::id(),
-                tag
-            ));
-            let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for ScratchDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use super::scratch_dir::ScratchDir;
 
     fn tcp_packet(flags: TcpFlags) -> ParsedPacket {
         let mut packet = ParsedPacket::new(
@@ -905,7 +892,7 @@ mod connection_lifecycle_tests {
 
     #[test]
     fn retained_json_writers_record_connection_lifecycle() {
-        let dir = ScratchDir::new("writers");
+        let dir = ScratchDir::new("lifecycle", "writers");
         let events_path = dir.path().join("events.jsonl");
         let sidecar_path = dir.path().join("capture.pcap.connections.jsonl");
         let events = Some(json_writer(&events_path));

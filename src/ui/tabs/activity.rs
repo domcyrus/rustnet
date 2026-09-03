@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Cell, Paragraph, Row, Table},
 };
@@ -15,9 +15,9 @@ use crate::app::App;
 use crate::network::process_activity::{ProcessActivity, ProcessActivitySnapshot, ProcessIdentity};
 use crate::ui::{
     ActivityDirection, ActivitySort, ClickableRegions, Component, ComponentContext, Effect,
-    HandlerContext, UIState,
+    HandlerContext, UiState, draw_placeholder,
     format::{format_bytes, format_rate, format_rate_compact, truncate_with_ellipsis},
-    section_header, theme,
+    section_header, section_title, theme,
     widgets::glow_bar,
 };
 
@@ -92,7 +92,7 @@ fn interface_basis(app: &App) -> InterfaceBasis {
 pub(in crate::ui) fn draw_activity(
     f: &mut Frame,
     app: &App,
-    ui_state: &UIState,
+    ui_state: &UiState,
     area: Rect,
 ) -> Result<()> {
     let snapshot = app.get_process_activity_snapshot();
@@ -120,10 +120,6 @@ pub(in crate::ui) fn draw_activity(
     draw_interface_pulse(f, app, ui_state.activity_direction, bottom[1]);
 
     Ok(())
-}
-
-fn title(text: impl Into<String>) -> Span<'static> {
-    Span::styled(text.into(), Style::default().add_modifier(Modifier::BOLD))
 }
 
 /// The "now / 60s captured" summary line and the coverage bar for one
@@ -191,7 +187,7 @@ fn draw_traffic_pulse(
     basis: &InterfaceBasis,
     area: Rect,
 ) {
-    let inner = section_header(f, area, title(" Traffic Pulse"));
+    let inner = section_header(f, area, section_title(" Traffic Pulse"));
     if inner.height == 0 {
         return;
     }
@@ -323,80 +319,47 @@ fn unknown_style(bytes: u64) -> Style {
 }
 
 fn direction_ramp(direction: ActivityDirection) -> fn(f64) -> Color {
-    match direction {
-        ActivityDirection::Egress => theme::tx_wave,
-        ActivityDirection::Ingress => theme::rx_wave,
-    }
+    direction.pick(theme::tx_wave, theme::rx_wave)
 }
 
 fn direction_color(direction: ActivityDirection) -> Color {
-    match direction {
-        ActivityDirection::Egress => theme::tx(),
-        ActivityDirection::Ingress => theme::rx(),
-    }
+    direction.pick(theme::tx(), theme::rx())
 }
 
 fn current_rate(process: &ProcessActivity, direction: ActivityDirection) -> f64 {
-    match direction {
-        ActivityDirection::Egress => process.current_tx_bps,
-        ActivityDirection::Ingress => process.current_rx_bps,
-    }
+    direction.pick(process.current_tx_bps, process.current_rx_bps)
 }
 
 fn peak_rate(process: &ProcessActivity, direction: ActivityDirection) -> f64 {
-    match direction {
-        ActivityDirection::Egress => process.peak_tx_bps,
-        ActivityDirection::Ingress => process.peak_rx_bps,
-    }
+    direction.pick(process.peak_tx_bps, process.peak_rx_bps)
 }
 
 fn window_bytes(process: &ProcessActivity, direction: ActivityDirection) -> u64 {
-    match direction {
-        ActivityDirection::Egress => process.window_tx_bytes,
-        ActivityDirection::Ingress => process.window_rx_bytes,
-    }
+    direction.pick(process.window_tx_bytes, process.window_rx_bytes)
 }
 
 fn retained_bytes(process: &ProcessActivity, direction: ActivityDirection) -> u64 {
-    match direction {
-        ActivityDirection::Egress => process.retained_tx_bytes,
-        ActivityDirection::Ingress => process.retained_rx_bytes,
-    }
+    direction.pick(process.retained_tx_bytes, process.retained_rx_bytes)
 }
 
 fn window_share(process: &ProcessActivity, direction: ActivityDirection) -> f64 {
-    match direction {
-        ActivityDirection::Egress => process.window_tx_share,
-        ActivityDirection::Ingress => process.window_rx_share,
-    }
+    direction.pick(process.window_tx_share, process.window_rx_share)
 }
 
 fn retained_share(process: &ProcessActivity, direction: ActivityDirection) -> f64 {
-    match direction {
-        ActivityDirection::Egress => process.retained_tx_share,
-        ActivityDirection::Ingress => process.retained_rx_share,
-    }
+    direction.pick(process.retained_tx_share, process.retained_rx_share)
 }
 
 fn snapshot_window_bytes(snapshot: &ProcessActivitySnapshot, direction: ActivityDirection) -> u64 {
-    match direction {
-        ActivityDirection::Egress => snapshot.window_tx_bytes,
-        ActivityDirection::Ingress => snapshot.window_rx_bytes,
-    }
+    direction.pick(snapshot.window_tx_bytes, snapshot.window_rx_bytes)
 }
 
 fn snapshot_current_bps(snapshot: &ProcessActivitySnapshot, direction: ActivityDirection) -> f64 {
-    match direction {
-        ActivityDirection::Egress => snapshot.current_tx_bps,
-        ActivityDirection::Ingress => snapshot.current_rx_bps,
-    }
+    direction.pick(snapshot.current_tx_bps, snapshot.current_rx_bps)
 }
 
 fn interface_window_bytes(basis: &InterfaceBasis, direction: ActivityDirection) -> u64 {
-    match direction {
-        ActivityDirection::Egress => basis.tx_window_bytes,
-        ActivityDirection::Ingress => basis.rx_window_bytes,
-    }
+    direction.pick(basis.tx_window_bytes, basis.rx_window_bytes)
 }
 
 fn top_destination(
@@ -453,7 +416,7 @@ fn draw_process_table(
     f: &mut Frame,
     snapshot: &ProcessActivitySnapshot,
     basis: &InterfaceBasis,
-    ui_state: &UIState,
+    ui_state: &UiState,
     area: Rect,
 ) {
     let sort_direction = if ui_state.activity_sort_ascending {
@@ -466,7 +429,7 @@ fn draw_process_table(
         f,
         area,
         Line::from(vec![
-            title(format!(
+            section_title(format!(
                 " Top Processes: {}",
                 traffic_direction.display_name_with_rate()
             )),
@@ -481,10 +444,7 @@ fn draw_process_table(
     );
 
     if snapshot.processes.is_empty() {
-        f.render_widget(
-            Paragraph::new("Waiting for process traffic...").style(theme::fg(theme::muted())),
-            inner,
-        );
+        draw_placeholder(f, inner, "Waiting for process traffic...");
         return;
     }
 
@@ -665,16 +625,13 @@ fn draw_traffic_share(
     let inner = section_header(
         f,
         area,
-        title(format!(
+        section_title(format!(
             " {} Share (60s)",
             direction.display_name_with_rate()
         )),
     );
     if snapshot.processes.is_empty() {
-        f.render_widget(
-            Paragraph::new("Waiting for traffic...").style(theme::fg(theme::muted())),
-            inner,
-        );
+        draw_placeholder(f, inner, "Waiting for traffic...");
         return;
     }
 
@@ -719,35 +676,26 @@ fn draw_interface_pulse(f: &mut Frame, app: &App, direction: ActivityDirection, 
     let inner = section_header(
         f,
         area,
-        title(format!(" Interface Pulse: {}", direction.rate_label())),
+        section_title(format!(" Interface Pulse: {}", direction.rate_label())),
     );
     let rates = app.get_interface_rates();
     if rates.is_empty() {
-        f.render_widget(
-            Paragraph::new("Waiting for interface counters...").style(theme::fg(theme::muted())),
-            inner,
-        );
+        draw_placeholder(f, inner, "Waiting for interface counters...");
         return;
     }
 
+    let rate_of = |rate: &crate::network::interface_stats::InterfaceRates| {
+        direction.pick(rate.tx_bytes_per_sec, rate.rx_bytes_per_sec)
+    };
     let mut rates: Vec<_> = rates.into_iter().collect();
     rates.sort_by(|a, b| {
-        let a_total = match direction {
-            ActivityDirection::Egress => a.1.tx_bytes_per_sec,
-            ActivityDirection::Ingress => a.1.rx_bytes_per_sec,
-        };
-        let b_total = match direction {
-            ActivityDirection::Egress => b.1.tx_bytes_per_sec,
-            ActivityDirection::Ingress => b.1.rx_bytes_per_sec,
-        };
-        b_total.cmp(&a_total).then_with(|| a.0.cmp(&b.0))
+        rate_of(&b.1)
+            .cmp(&rate_of(&a.1))
+            .then_with(|| a.0.cmp(&b.0))
     });
     let peak = rates
         .iter()
-        .map(|(_, rate)| match direction {
-            ActivityDirection::Egress => rate.tx_bytes_per_sec,
-            ActivityDirection::Ingress => rate.rx_bytes_per_sec,
-        })
+        .map(|(_, rate)| rate_of(rate))
         .max()
         .unwrap_or(1)
         .max(1);
@@ -759,10 +707,7 @@ fn draw_interface_pulse(f: &mut Frame, app: &App, direction: ActivityDirection, 
         .into_iter()
         .take(inner.height as usize)
         .map(|(name, rate)| {
-            let selected_rate = match direction {
-                ActivityDirection::Egress => rate.tx_bytes_per_sec,
-                ActivityDirection::Ingress => rate.rx_bytes_per_sec,
-            };
+            let selected_rate = rate_of(&rate);
             let mut spans = vec![Span::styled(
                 format!(
                     "{:<name_width$} ",

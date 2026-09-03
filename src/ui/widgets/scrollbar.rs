@@ -4,11 +4,11 @@
 
 use ratatui::{
     Frame,
-    layout::Rect,
-    widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
+    layout::{Constraint, Rect},
+    widgets::{Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table},
 };
 
-use crate::ui::theme;
+use crate::ui::{PaneScroll, theme};
 
 /// Scrollbar thumb: a right half block, so the bar reads as a thin rule on
 /// the outer edge of its column instead of a full-width slab.
@@ -62,23 +62,54 @@ pub(in crate::ui) fn draw_scrollbar(
     f.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
 
+/// Render a heading-styled `header` plus `rows` as a table scrolled by
+/// `scroll`, with the scrollbar beside the row region. The header takes
+/// the first row of `inner`, so the viewport is one row shorter, and the
+/// two rightmost columns stay free for a blank gap plus the scrollbar,
+/// mirroring the Overview table. `scroll` learns this render's extent.
+pub(in crate::ui) fn render_scrolled_table(
+    f: &mut Frame,
+    inner: Rect,
+    header: Row<'_>,
+    rows: Vec<Row<'_>>,
+    widths: &[Constraint],
+    scroll: &PaneScroll,
+) {
+    let total_rows = rows.len();
+    let viewport = inner.height.saturating_sub(1) as usize;
+    let max_scroll = (total_rows as u16).saturating_sub(viewport as u16);
+    let scroll = scroll.clamp_for_render(max_scroll) as usize;
+
+    let table = Table::new(rows.into_iter().skip(scroll), widths.iter().copied())
+        .header(header.style(theme::fg(theme::heading())));
+    let table_area = Rect::new(
+        inner.x,
+        inner.y,
+        inner.width.saturating_sub(2),
+        inner.height,
+    );
+    f.render_widget(table, table_area);
+
+    let rows_area = Rect::new(
+        inner.x,
+        inner.y + 1,
+        inner.width,
+        inner.height.saturating_sub(1),
+    );
+    draw_scrollbar(f, rows_area, total_rows, scroll, viewport);
+}
+
 #[cfg(test)]
 mod tests {
     /// Glyphs `draw_scrollbar` paints down the rightmost column (the
     /// scrollbar track/thumb sits on the right border).
     fn scrollbar_glyphs(total_rows: usize, position: usize, viewport: usize) -> Vec<String> {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+        use crate::ui::test_support::render_buffer;
         use ratatui::layout::Rect;
 
-        let backend = TestBackend::new(20, 12);
-        let mut terminal = Terminal::new(backend).expect("test terminal");
-        terminal
-            .draw(|f| {
-                super::draw_scrollbar(f, Rect::new(0, 0, 20, 12), total_rows, position, viewport)
-            })
-            .expect("draw scrollbar");
-        let buffer = terminal.backend().buffer();
+        let buffer = render_buffer(20, 12, |f| {
+            super::draw_scrollbar(f, Rect::new(0, 0, 20, 12), total_rows, position, viewport)
+        });
         let right_x = 19;
         (0..12)
             .map(|y| buffer[(right_x, y)].symbol().to_string())

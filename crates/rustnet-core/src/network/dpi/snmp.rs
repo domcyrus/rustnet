@@ -37,48 +37,22 @@ pub(super) fn analyze_snmp(payload: &[u8]) -> Option<SnmpInfo> {
         return None;
     }
 
-    // Parse SEQUENCE length
     let (seq_len, mut offset) = parse_ber_length(&payload[1..])?;
     offset += 1; // Account for SEQUENCE tag
 
-    // Check we have enough data
     if offset + seq_len > payload.len() {
         return None;
     }
 
-    // Parse version (INTEGER)
-    if offset >= payload.len() || payload[offset] != BER_INTEGER {
-        return None;
-    }
-    offset += 1;
-
-    let (version_len, len_bytes) = parse_ber_length(&payload[offset..])?;
-    offset += len_bytes;
-
-    if offset + version_len > payload.len() {
-        return None;
-    }
-
-    let version = parse_version(&payload[offset..offset + version_len])?;
-    offset += version_len;
+    let (version_bytes, offset) = read_tlv(payload, offset, BER_INTEGER)?;
+    let version = parse_version(version_bytes)?;
 
     // Parse community string for v1/v2c (OCTET STRING). It is mandatory in
     // both versions (RFC 1157 §4, RFC 3416), so its absence means the
     // payload is not SNMP.
     let (community, pdu_type) = match version {
         SnmpVersion::V1 | SnmpVersion::V2c => {
-            if offset >= payload.len() || payload[offset] != BER_OCTET_STRING {
-                return None;
-            }
-            offset += 1;
-            let (comm_len, len_bytes) = parse_ber_length(&payload[offset..])?;
-            offset += len_bytes;
-
-            if offset + comm_len > payload.len() {
-                return None;
-            }
-            let community_bytes = &payload[offset..offset + comm_len];
-            offset += comm_len;
+            let (community_bytes, offset) = read_tlv(payload, offset, BER_OCTET_STRING)?;
             let community = std::str::from_utf8(community_bytes)
                 .ok()
                 .map(|s| s.to_string());
@@ -142,7 +116,7 @@ fn parse_version(data: &[u8]) -> Option<SnmpVersion> {
     }
 }
 
-/// Read the PDU tag expected at exactly `offset`. Structural — never scans:
+/// Read the PDU tag expected at exactly `offset`. Structural, never scans:
 /// a byte in the 0xA0-0xA8 range inside a length or INTEGER value (e.g. a
 /// request-id) must not be mistaken for a PDU tag.
 fn pdu_type_at(payload: &[u8], offset: usize) -> Option<SnmpPduType> {
@@ -163,8 +137,8 @@ fn pdu_type_at(payload: &[u8], offset: usize) -> Option<SnmpPduType> {
 
 /// Walk the SNMPv3 message structure (RFC 3412 §6) to the PDU tag:
 /// msgGlobalData (SEQUENCE) and msgSecurityParameters (OCTET STRING) are
-/// skipped whole, then msgData is either a plaintext ScopedPDU — a SEQUENCE
-/// holding contextEngineID, contextName, and the PDU — or an encrypted
+/// skipped whole, then msgData is either a plaintext ScopedPDU (a SEQUENCE
+/// holding contextEngineID, contextName, and the PDU) or an encrypted
 /// OCTET STRING, in which case the PDU type is not visible.
 fn v3_pdu_type(payload: &[u8], offset: usize) -> Option<SnmpPduType> {
     let offset = skip_tlv(payload, offset, BER_SEQUENCE)?; // msgGlobalData
@@ -186,42 +160,52 @@ fn v3_pdu_type(payload: &[u8], offset: usize) -> Option<SnmpPduType> {
     }
 }
 
-/// Skip one TLV with the expected tag, returning the offset just past it.
-fn skip_tlv(payload: &[u8], offset: usize, expected_tag: u8) -> Option<usize> {
+/// Read one TLV with the expected tag at exactly `offset`, returning its
+/// value bytes and the offset just past it. Structural, never scans.
+fn read_tlv(payload: &[u8], offset: usize, expected_tag: u8) -> Option<(&[u8], usize)> {
     if *payload.get(offset)? != expected_tag {
         return None;
     }
     let offset = offset + 1;
     let (len, len_bytes) = parse_ber_length(&payload[offset..])?;
-    let end = offset.checked_add(len_bytes)?.checked_add(len)?;
-    (end <= payload.len()).then_some(end)
+    let start = offset.checked_add(len_bytes)?;
+    let end = start.checked_add(len)?;
+    (end <= payload.len()).then(|| (&payload[start..end], end))
+}
+
+/// Skip one TLV with the expected tag, returning the offset just past it.
+fn skip_tlv(payload: &[u8], offset: usize, expected_tag: u8) -> Option<usize> {
+    read_tlv(payload, offset, expected_tag).map(|(_, end)| end)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn build_snmp_v1_get(community: &str) -> Vec<u8> {
+    /// Build a community-based (v1 / v2c) SNMP message: `version` is the
+    /// INTEGER value (0 = v1, 1 = v2c), `pdu_tag` the PDU's context-specific
+    /// tag. The PDU carries request-id 1, error-status 0, error-index 0 and
+    /// empty variable bindings.
+    fn build_snmp_community_msg(version: u8, pdu_tag: u8, community: &str) -> Vec<u8> {
         let mut packet = Vec::new();
 
         // SEQUENCE
         packet.push(BER_SEQUENCE);
-        // We'll update length later
         let len_pos = packet.len();
-        packet.push(0x00); // Placeholder
+        packet.push(0x00); // Placeholder, patched below
 
-        // Version: INTEGER 0 (v1)
+        // Version: INTEGER
         packet.push(BER_INTEGER);
         packet.push(0x01);
-        packet.push(0x00);
+        packet.push(version);
 
         // Community: OCTET STRING
         packet.push(BER_OCTET_STRING);
         packet.push(community.len() as u8);
         packet.extend_from_slice(community.as_bytes());
 
-        // GetRequest PDU
-        packet.push(PDU_GET_REQUEST);
+        // PDU
+        packet.push(pdu_tag);
         packet.push(0x10); // PDU length
         // Request ID
         packet.push(BER_INTEGER);
@@ -239,47 +223,17 @@ mod tests {
         packet.push(BER_SEQUENCE);
         packet.push(0x00);
 
-        // Update length
         packet[len_pos] = (packet.len() - len_pos - 1) as u8;
 
         packet
     }
 
+    fn build_snmp_v1_get(community: &str) -> Vec<u8> {
+        build_snmp_community_msg(0x00, PDU_GET_REQUEST, community)
+    }
+
     fn build_snmp_v2c_response(community: &str) -> Vec<u8> {
-        let mut packet = Vec::new();
-
-        packet.push(BER_SEQUENCE);
-        let len_pos = packet.len();
-        packet.push(0x00);
-
-        // Version: 1 (v2c)
-        packet.push(BER_INTEGER);
-        packet.push(0x01);
-        packet.push(0x01);
-
-        // Community
-        packet.push(BER_OCTET_STRING);
-        packet.push(community.len() as u8);
-        packet.extend_from_slice(community.as_bytes());
-
-        // GetResponse PDU
-        packet.push(PDU_GET_RESPONSE);
-        packet.push(0x10);
-        packet.push(BER_INTEGER);
-        packet.push(0x04);
-        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
-        packet.push(BER_INTEGER);
-        packet.push(0x01);
-        packet.push(0x00);
-        packet.push(BER_INTEGER);
-        packet.push(0x01);
-        packet.push(0x00);
-        packet.push(BER_SEQUENCE);
-        packet.push(0x00);
-
-        packet[len_pos] = (packet.len() - len_pos - 1) as u8;
-
-        packet
+        build_snmp_community_msg(0x01, PDU_GET_RESPONSE, community)
     }
 
     #[test]
@@ -345,8 +299,7 @@ mod tests {
         packet.push(0x03);
 
         // msgGlobalData SEQUENCE: msgID, msgMaxSize, msgFlags, msgSecurityModel.
-        // The msgID value 0x12A34456 deliberately contains a 0xA3 byte — the
-        // old scanning detector misread it as a SetRequest PDU tag.
+        // msgID contains a 0xA3 byte, which must not be read as a PDU tag.
         packet.push(BER_SEQUENCE);
         packet.push(0x10);
         packet.push(BER_INTEGER);
@@ -414,7 +367,7 @@ mod tests {
     #[test]
     fn test_pdu_tag_not_scanned_from_value_bytes() {
         // A v1 message whose community is followed by a non-PDU byte must be
-        // rejected — the detector must not scan ahead for a 0xA0-0xA8 byte.
+        // rejected; the detector must not scan ahead for a 0xA0-0xA8 byte.
         let mut packet = build_snmp_v1_get("public");
         // Overwrite the PDU tag with an INTEGER tag: still not SNMP.
         let pdu_pos = packet.iter().position(|&b| b == PDU_GET_REQUEST).unwrap();

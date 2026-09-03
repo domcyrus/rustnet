@@ -27,7 +27,7 @@ anyhow.workspace = true
 log.workspace = true
 bitflags = { version = "2", optional = true }
 # Used by the Linux eBPF loader (geteuid etc.), macOS lsof path, and FreeBSD.
-libc = "0.2"
+libc.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 procfs = "0.18"
@@ -35,7 +35,7 @@ libbpf-rs = { version = "0.27", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 ferrisetw = "1.2"
-windows = { version = "0.62", features = [
+windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Networking_WinSock",

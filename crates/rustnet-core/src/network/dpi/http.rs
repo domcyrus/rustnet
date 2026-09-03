@@ -15,17 +15,11 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
         user_agent: None,
     };
 
-    // Safe string conversion for HTTP parsing
     let text = String::from_utf8_lossy(payload);
-    // Drive the line iterator directly: the request/status line is the first
-    // element and headers are everything after it. Collecting into a `Vec<&str>`
-    // just to index `[0]` and `skip(1)` allocates one heap slice per parse.
     let mut lines = text.lines();
     let first_line = lines.next()?;
-    // Consume the first-line tokens lazily via iterator to avoid the
-    // `split_whitespace().collect::<Vec<_>>()` heap allocation. Requests
-    // have exactly 3 SP-delimited tokens; responses have 2 or 3 since the
-    // reason phrase is optional (RFC 9112 §4).
+    // Requests have exactly 3 SP-delimited tokens; responses have 2 or 3
+    // since the reason phrase is optional (RFC 9112 §4).
     let mut tokens = first_line.split_whitespace();
     let (tok0, tok1) = match (tokens.next(), tokens.next()) {
         (Some(a), Some(b)) => (a, b),
@@ -33,7 +27,7 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
     };
 
     if first_line.starts_with("HTTP/") {
-        // Response line: HTTP/1.1 200 OK — the reason phrase may be empty,
+        // Response line: HTTP/1.1 200 OK. The reason phrase may be empty,
         // but the status code must be a 3-digit number.
         info.version = parse_http_version(tok0)?;
         info.status_code = Some(
@@ -53,8 +47,7 @@ pub(super) fn analyze_http(payload: &[u8]) -> Option<HttpInfo> {
     }
 
     // Parse headers. HTTP field-names are case-insensitive (RFC 7230 §3.2),
-    // so compare in place with `eq_ignore_ascii_case` instead of allocating a
-    // lowercased copy of every header name just to match two ASCII literals.
+    // so compare with `eq_ignore_ascii_case` rather than lowercasing.
     for line in lines {
         if line.is_empty() {
             break; // End of headers
@@ -138,8 +131,7 @@ mod tests {
 
     #[test]
     fn test_http_start_line_token_extraction() {
-        // Lock the lazy-iterator token extraction: all three tokens from a
-        // well-formed request line must be parsed without a Vec allocation.
+        // All three tokens from a well-formed request line must be parsed.
         let req = b"POST /api/v1/upload HTTP/1.1\r\nHost: api.example.com\r\n\r\n";
         let info = analyze_http(req).expect("POST request should parse");
         assert_eq!(info.method.as_deref(), Some("POST"));
@@ -188,11 +180,7 @@ mod tests {
 
     #[test]
     fn test_http_mixed_case_host_and_user_agent_headers() {
-        // HTTP/1.1 §3.2 makes field-names case-insensitive. Real-world traffic
-        // varies in capitalisation (`Host`, `HOST`, `host`, etc.) and the
-        // `eq_ignore_ascii_case` refactor relies on this invariant — lock it
-        // here so a future change that drops the case-insensitive compare
-        // fails this test instead of silently regressing.
+        // HTTP/1.1 §3.2 makes field-names case-insensitive.
         let host_variants: [&[u8]; 4] = [
             b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n",
             b"GET / HTTP/1.1\r\nhost: example.com\r\n\r\n",

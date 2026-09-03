@@ -2,7 +2,7 @@
 //!
 //! [`ConnectionTracker`] folds parsed packets into a long-lived, lifecycle-
 //! managed table of [`Connection`]s. It owns everything needed to turn a stream
-//! of [`ParsedPacket`]s into the same connection view the `rustnet` TUI shows —
+//! of [`ParsedPacket`]s into the same connection view the `rustnet` TUI shows:
 //! the active table, an archive of recently-closed ("historic") connections,
 //! RTT estimation from TCP, QUIC handshakes, and ICMP echo, plus DNS-shaped
 //! response timing, QUIC connection-ID coalescing, and timeout-based cleanup,
@@ -85,7 +85,7 @@ fn is_quic_handshake_packet(packet_type: QuicPacketType) -> bool {
 }
 
 /// Whether a UDP packet's DPI classification is one the RTT tracker times.
-/// Gates the rtt lock in `measure_timings` so untimed UDP traffic (QUIC 1-RTT
+/// Gates the RTT lock in `measure_timings` so untimed UDP traffic (QUIC 1-RTT
 /// bulk data, SSDP, mDNS, ...) never touches the mutex on the packet path.
 fn udp_application_is_timed(application: &ApplicationProtocol) -> bool {
     match application {
@@ -101,7 +101,7 @@ fn udp_application_is_timed(application: &ApplicationProtocol) -> bool {
 
 /// The active connection table: flow key -> connection.
 ///
-/// Keys are compact `Copy` structs, and the map uses FxHash — with a small
+/// Keys are compact `Copy` structs, and the map uses FxHash; with a small
 /// fixed-size key, hashing is a handful of multiplies instead of SipHash over
 /// a formatted string. (Hash-flooding resistance isn't needed here: the table
 /// is bounded by `max_connections` and keyed by addresses, not attacker-chosen
@@ -119,6 +119,20 @@ pub type HistoricMap = DashMap<HistoricKey, Connection, FxBuildHasher>;
 pub struct HistoricKey {
     pub key: ConnectionKey,
     pub created_nanos: u128,
+}
+
+impl HistoricKey {
+    /// The identity `conn` has (or will have) in the historic table.
+    pub fn for_connection(key: ConnectionKey, conn: &Connection) -> Self {
+        Self {
+            key,
+            created_nanos: conn
+                .created_at
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        }
+    }
 }
 
 impl std::fmt::Display for HistoricKey {
@@ -166,8 +180,8 @@ impl Default for TrackerConfig {
 /// What happened when a packet was ingested via
 /// [`ingest_at`](ConnectionTracker::ingest_at).
 ///
-/// Returned so callers can layer their own concerns — global statistics,
-/// structured logging, DNS enrichment — on top of the core table update without
+/// Returned so callers can layer their own concerns (global statistics,
+/// structured logging, DNS enrichment) on top of the core table update without
 /// the tracker needing to know about them.
 #[derive(Debug, Clone)]
 pub struct IngestOutcome {
@@ -341,7 +355,7 @@ pub struct ConnectionTracker {
     /// Lets the per-packet `max_connections` check be a single atomic load
     /// instead of a `DashMap::len()` (which read-locks every shard) plus an
     /// extra `contains_key` lookup. May transiently lag `connections.len()`
-    /// by a few entries under concurrent ingest near the limit — acceptable
+    /// by a few entries under concurrent ingest near the limit, acceptable
     /// for a flood-protection bound.
     active_count: AtomicUsize,
     /// IP -> MAC/vendor mappings learned passively from ingested ARP (IPv4)
@@ -509,7 +523,7 @@ impl ConnectionTracker {
                     measured_rtt = tracker.record_quic_handshake(base_key, parsed.is_outgoing, now);
                 }
                 // Time DNS query→response pairs by transaction ID. Port-53
-                // gating already happened in DPI dispatch, so any Dns result
+                // gating already happened in DPI dispatch, so any DNS result
                 // here is unicast DNS (mDNS/LLMNR map to their own variants).
                 ApplicationProtocol::Dns(dns) => {
                     dns_response_time = tracker.record_dns_packet(
@@ -659,7 +673,7 @@ impl ConnectionTracker {
         // limit new connections; existing ones always get updated. The fast
         // path is a single atomic load; only when at the cap do we pay a
         // lookup to distinguish update-existing from drop-new. (Never call
-        // `len()` here or while holding an entry guard — it read-locks every
+        // `len()` here or while holding an entry guard; it read-locks every
         // shard.)
         if self.active_count.load(Ordering::Relaxed) >= self.config.max_connections
             && !self.connections.contains_key(&key)
@@ -742,14 +756,8 @@ impl ConnectionTracker {
                         .checked_add(Duration::from_nanos(1))
                         .unwrap_or(replacement_now);
                 }
-                self.active_count.fetch_sub(1, Ordering::Relaxed);
                 self.archive_snapshot(key, &conn, now);
-                self.record_recently_closed(key, &conn, now);
-                self.remove_quic_mappings_for_key(key);
-                // Forget the archived generation's pending enrollment so the
-                // replacement enrolls with a fresh timestamp.
-                self.dns_attribution
-                    .forget_pending(conn.remote_addr.ip(), key);
+                self.retire(key, &conn, now);
                 conn
             })
         } else {
@@ -862,6 +870,11 @@ impl ConnectionTracker {
             })
     }
 
+    /// Archive a historic copy of `conn`, closed at `now`, when
+    /// `keep_historic` is set. The historic key includes created_at so
+    /// multiple closed connections sharing a 4-tuple don't clobber each
+    /// other. snapshot_clone: historic connections never refresh their rates,
+    /// so don't pin the (potentially large) sample buffer in the archive.
     fn archive_snapshot(&self, key: ConnectionKey, conn: &Connection, now: SystemTime) {
         if !self.config.keep_historic {
             return;
@@ -869,15 +882,29 @@ impl ConnectionTracker {
         let mut historic = conn.snapshot_clone();
         historic.is_historic = true;
         historic.closed_at = Some(now);
-        let historic_key = HistoricKey {
-            key,
-            created_nanos: conn
-                .created_at
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-        };
-        self.historic.insert(historic_key, historic);
+        // Cached rates describe live traffic. Carrying them into a closed
+        // record makes Overview and Details report traffic that can no longer
+        // occur, and leaves a moving fallback point after the live rate
+        // history is retired.
+        historic.current_incoming_rate_bps = 0.0;
+        historic.current_outgoing_rate_bps = 0.0;
+        self.historic
+            .insert(HistoricKey::for_connection(key, conn), historic);
+    }
+
+    /// Bookkeeping for a connection that has left the active table: the
+    /// active count, the recently-closed tombstone, its pending
+    /// DNS-attribution enrollment (so a later response cannot surface a dead
+    /// key, and a replacement generation enrolls with a fresh timestamp) and
+    /// any QUIC connection-ID mappings still pointing at it.
+    ///
+    /// Must not be called from inside a `connections` shard lock.
+    fn retire(&self, key: ConnectionKey, conn: &Connection, now: SystemTime) {
+        self.active_count.fetch_sub(1, Ordering::Relaxed);
+        self.record_recently_closed(key, conn, now);
+        self.dns_attribution
+            .forget_pending(conn.remote_addr.ip(), key);
+        self.remove_quic_mappings_for_key(key);
     }
 
     fn enforce_historic_limit(&self) {
@@ -957,69 +984,22 @@ impl ConnectionTracker {
         self.apply_request_health_events(request_health_events);
         let mut removed: Vec<Connection> = Vec::new();
         let mut removed_keys: Vec<ConnectionKey> = Vec::new();
-        let mut to_archive: Vec<(HistoricKey, Connection)> = Vec::new();
-        let keep_historic = self.config.keep_historic;
 
         self.connections.retain(|key, conn| {
             let should_keep = !conn.should_cleanup(now);
             if !should_keep {
                 removed_keys.push(*key);
                 removed.push(conn.clone());
-
-                // Archive a historic copy. The historic key includes created_at
-                // so multiple closed connections sharing a 4-tuple don't clobber
-                // each other. snapshot_clone: historic connections never refresh
-                // their rates, so don't pin the (potentially large) sample
-                // buffer in the archive.
-                if keep_historic {
-                    let mut historic = conn.snapshot_clone();
-                    historic.is_historic = true;
-                    historic.closed_at = Some(now);
-                    // Cached rates describe live traffic. Carrying them into a
-                    // closed record makes Overview and Details report traffic
-                    // that can no longer occur, and leaves a moving fallback
-                    // point after the live rate history is retired.
-                    historic.current_incoming_rate_bps = 0.0;
-                    historic.current_outgoing_rate_bps = 0.0;
-                    let historic_key = HistoricKey {
-                        key: *key,
-                        created_nanos: conn
-                            .created_at
-                            .duration_since(SystemTime::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_nanos(),
-                    };
-                    to_archive.push((historic_key, historic));
-                }
             }
             should_keep
         });
-        if !removed.is_empty() {
-            self.active_count
-                .fetch_sub(removed.len(), Ordering::Relaxed);
-            for (key, conn) in removed_keys.iter().zip(&removed) {
-                self.record_recently_closed(*key, conn, now);
-                // Drop any pending DNS-attribution enrollment so a later
-                // response cannot surface a dead key.
-                self.dns_attribution
-                    .forget_pending(conn.remote_addr.ip(), *key);
-            }
+        // Archive and retire outside the retain closure so no shard lock is
+        // held while the tracker's other locks are taken.
+        for (key, conn) in removed_keys.iter().zip(&removed) {
+            self.archive_snapshot(*key, conn, now);
+            self.retire(*key, conn, now);
         }
-
-        if keep_historic {
-            for (key, conn) in to_archive {
-                self.historic.insert(key, conn);
-            }
-
-            self.enforce_historic_limit();
-        }
-
-        // Clean up QUIC connection-ID mappings pointing at removed connections.
-        if !removed_keys.is_empty()
-            && let Ok(mut mapping) = self.quic_map.lock()
-        {
-            mapping.retain(|_, conn_key| !removed_keys.contains(conn_key));
-        }
+        self.enforce_historic_limit();
         self.prune_recently_closed(now);
         self.dns_attribution.cleanup_tick(std::time::Instant::now());
 
@@ -1029,7 +1009,7 @@ impl ConnectionTracker {
     /// A point-in-time copy of the active connections.
     ///
     /// Note: this is a full clone, including each connection's rate-sample
-    /// buffer — the buffer is shared via `Arc`, so the *next* per-packet
+    /// buffer; the buffer is shared via `Arc`, so the *next* per-packet
     /// update on a live connection pays a copy-on-write deep copy. Callers
     /// that only need the cached `current_*_rate_bps` fields (any read-only
     /// view) should prefer [`Connection::snapshot_clone`] over the entries of
@@ -1102,7 +1082,7 @@ impl ConnectionTracker {
     /// Use this for in-place enrichment (e.g. attaching process, DNS, or GeoIP
     /// information via `iter_mut`) or custom reads. Lifecycle changes should go
     /// through [`ingest_at`](Self::ingest_at) and [`cleanup`](Self::cleanup) so the
-    /// connection-count limit, RTT, and QUIC coalescing stay consistent —
+    /// connection-count limit, RTT, and QUIC coalescing stay consistent;
     /// inserting or removing entries directly desyncs the internal counter
     /// backing the `max_connections` check.
     pub fn connections(&self) -> &ConnectionMap {
@@ -1160,7 +1140,7 @@ mod tests {
         f.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]);
         f.extend_from_slice(&[0x08, 0x00]);
         // IPv4 header (20 bytes)
-        let ip_total_len = (20 + 8u16).to_be_bytes(); // ip header + udp header
+        let ip_total_len = (20 + 8u16).to_be_bytes(); // IP header + UDP header
         f.extend_from_slice(&[0x45, 0x00]);
         f.extend_from_slice(&ip_total_len);
         f.extend_from_slice(&[0, 0, 0, 0]); // id, flags/frag
@@ -1454,7 +1434,7 @@ mod tests {
     }
 
     /// Ingesting an NDP neighbor advertisement must populate the neighbor
-    /// cache for the advertised target address — but only when the frame
+    /// cache for the advertised target address, but only when the frame
     /// arrived with hop limit 255, which proves it was not routed (RFC 4861).
     #[test]
     fn ndp_ingest_learns_advertised_target_at_hop_limit_255_only() {
@@ -1545,7 +1525,7 @@ mod tests {
     }
 
     /// rustnet watches from an endpoint, so an arriving packet followed by this
-    /// host's own answer spans no network at all — it times the local stack's
+    /// host's own answer spans no network at all; it times the local stack's
     /// turnaround. Only an outbound packet may start the clock.
     ///
     /// A server's first flight is several datagrams, so this ordering shows up
@@ -2035,7 +2015,7 @@ mod tests {
         let conn = tracker
             .connections()
             .get(&response.key)
-            .expect("stun connection should exist")
+            .expect("STUN connection should exist")
             .clone();
         assert_eq!(conn.stun_rtt, Some(Duration::from_millis(31)));
     }
@@ -2085,7 +2065,7 @@ mod tests {
         let conn = tracker
             .connections()
             .get(&response.key)
-            .expect("ntp connection should exist")
+            .expect("NTP connection should exist")
             .clone();
         assert_eq!(conn.ntp_rtt, Some(Duration::from_millis(21)));
     }
@@ -2289,6 +2269,10 @@ mod tests {
         let tracker = ConnectionTracker::new();
         let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
         tracker.ingest_at(&tcp_packet(false, false, false, true, true), started);
+        for mut entry in tracker.connections().iter_mut() {
+            entry.current_incoming_rate_bps = 2048.0;
+            entry.current_outgoing_rate_bps = 1024.0;
+        }
 
         let outcome = tracker.ingest_at(&tcp_packet(true, false, false, false, true), started);
         assert!(outcome.created);
@@ -2313,6 +2297,11 @@ mod tests {
         assert_eq!(historic.created_at, started);
         assert!(historic.is_historic);
         assert_eq!(historic.closed_at, Some(started));
+        assert_eq!(
+            historic.current_incoming_rate_bps, 0.0,
+            "a superseded generation is archived with its rates zeroed, like cleanup"
+        );
+        assert_eq!(historic.current_outgoing_rate_bps, 0.0);
         drop(historic);
 
         tracker.cleanup(started + Duration::from_secs(61));
@@ -2516,7 +2505,7 @@ mod tests {
     #[test]
     fn ingest_at_uses_supplied_time_for_cleanup() {
         // A packet ingested "in the past" must be eligible for cleanup at a
-        // `now` only slightly later than its supplied capture time — proving the
+        // `now` only slightly later than its supplied capture time, proving the
         // tracker stamps the connection with the caller's time, not the wall
         // clock. (Wall-clock stamping would make `created_at` ~= real now, so a
         // cleanup at trace-time + a few minutes would NOT expire it.)
