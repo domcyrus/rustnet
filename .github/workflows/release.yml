@@ -20,13 +20,12 @@ name: Release
 # 4. Export certificate as .p12, encode with: base64 -i certificate.p12 | pbcopy
 #
 # Backfilling assets on an existing release (for example after a static build
-# failed to upload): dispatch this workflow from main with tag=<release tag>
-# and skip_downstream=true. Dispatching from main runs the current workflow
-# (a run dispatched on an old tag would use that tag's release.yml), while
-# every checkout, build and archive name uses the given tag. create-release
-# skips creation when the release already exists and uploads only the assets
-# that are missing; existing assets are kept unless overwrite_assets=true,
-# because Chocolatey, Scoop and the AUR binary package pin their checksums.
+# failed to upload): dispatch this workflow on the release tag with
+# skip_downstream=true. GitHub runs the release.yml stored at that tag, so this
+# works for tags created after these guards landed. create-release skips
+# creation when the release already exists and uploads only the assets that
+# are missing; existing assets are kept unless overwrite_assets=true, because
+# Chocolatey, Scoop and the AUR binary package pin their checksums.
 # skip_downstream keeps the publish and package-trigger jobs from running.
 
 on:
@@ -35,10 +34,6 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing release tag to rebuild assets for (dispatch from main). Leave empty to release the dispatched ref."
-        type: string
-        default: ""
       overwrite_assets:
         description: "Replace assets that already exist on the release. Leave off unless the existing files are known to be broken; downstream packages pin their checksums."
         type: boolean
@@ -57,8 +52,7 @@ permissions:
 env:
   RUST_BACKTRACE: 1
   RUSTNET_ASSET_DIR: assets
-  # The release being built: the dispatched tag for a backfill, else the pushed tag.
-  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  RELEASE_TAG: ${{ github.ref_name }}
 
 jobs:
   # Build all platforms using shared workflow
@@ -67,8 +61,7 @@ jobs:
     with:
       create-archives: true
       strip-symbols: true
-      version: ${{ inputs.tag || github.ref_name }}
-      ref: ${{ inputs.tag }}
+      version: ${{ github.ref_name }}
 
   create-release:
     name: create-release
@@ -77,8 +70,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.tag }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -191,7 +182,7 @@ jobs:
           gh api repos/domcyrus/rustnet-bsd/dispatches \
             -f event_type=freebsd-build \
             -f "client_payload[tag]=$RELEASE_TAG" \
-            -f "client_payload[rustnet_ref]=${{ inputs.tag || github.sha }}"
+            -f "client_payload[rustnet_ref]=${{ github.sha }}"
         env:
           GH_TOKEN: ${{ secrets.BSD_DISPATCH_TOKEN }}
 
@@ -249,8 +240,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.tag }}
 
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -347,8 +336,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.tag }}
 
       - name: Install packaging tools
         run: |
@@ -466,8 +453,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.tag }}
 
       - name: Install dependencies
         shell: powershell

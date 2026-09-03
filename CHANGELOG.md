@@ -49,11 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release workflow already produces those binaries, and dispatching the
   release workflow with `skip_downstream` now also skips the crates.io,
   Docker, COPR, PPA, and OBS publish jobs so a backfill cannot republish
-- **Release Backfills**: the release workflow can be dispatched from `main`
-  with a `tag` input to rebuild assets for an existing release using the
-  current workflow, and it no longer overwrites assets that are already on
-  the release unless `overwrite_assets` is set, since Chocolatey, Scoop, and
-  the AUR binary package pin checksums of the published files
+- **Release Backfills**: a re-run of the release workflow no longer overwrites
+  assets that are already on the release unless `overwrite_assets` is set,
+  since Chocolatey, Scoop, and the AUR binary package pin checksums of the
+  published files
 
 - **Acronym Casing**: the Details header chip reads `RTT` instead of `rtt`
   and PCAPNG export errors spell the format in uppercase

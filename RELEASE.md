@@ -170,16 +170,15 @@ If a fix is needed after tagging, **create a patch release** (e.g., `v1.1.1`) in
 ## Backfilling Assets on an Existing Release
 
 If a release is missing an asset (for example a static build failed to upload),
-rebuild it with the current workflow from `main`:
+dispatch the release workflow on that tag:
 
 ```bash
-gh workflow run release.yml --ref main -f tag=v1.6.0 -f skip_downstream=true
+gh workflow run release.yml --ref v1.7.0 -f skip_downstream=true
 ```
 
-The `tag` input makes every checkout, build, and archive name use that tag while
-the workflow definition comes from `main`. Do not dispatch the workflow on the
-old tag itself: GitHub runs the `release.yml` stored at the selected ref, so an
-older tag runs its older workflow without the current safety guards.
+GitHub runs the `release.yml` stored at the selected tag, so this applies to
+tags created after the backfill guards landed (v1.7.0 onwards). For older tags
+build the missing asset locally and upload it with `gh release upload`.
 
 Only missing assets are uploaded. Assets already on the release are kept, because
 Chocolatey, Scoop, and the AUR binary package pin checksums of the published
