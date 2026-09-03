@@ -442,7 +442,16 @@ mod tests {
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         let worker_release = Arc::clone(&release);
 
-        runtime.register(thread::spawn(|| panic!("worker failed")));
+        let panicking_worker = thread::spawn(|| panic!("worker failed"));
+        let panic_deadline = Instant::now() + Duration::from_secs(5);
+        while !panicking_worker.is_finished() {
+            assert!(
+                Instant::now() < panic_deadline,
+                "panicking test worker did not finish"
+            );
+            thread::yield_now();
+        }
+        runtime.register(panicking_worker);
         runtime.register(thread::spawn(move || {
             started_tx.send(()).unwrap();
             let (lock, wake) = &*worker_release;
