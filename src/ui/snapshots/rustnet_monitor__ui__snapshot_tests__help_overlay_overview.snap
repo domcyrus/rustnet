@@ -1,6 +1,5 @@
 ---
 source: src/ui/mod.rs
-assertion_line: 703
 expression: output
 ---
                                                                                                     
@@ -32,10 +31,10 @@ expression: output
     │   r       Reset grouping, sorting, filter, and history                                   │    
     │                                                                                          │    
     │ ▎ Connection Display                                                                     │    
-    │   White          Active connection                                                       │    
-    │   Yellow to red  Connection approaching its timeout                                      │    
-    │   Gray           Historic closed connection                                              │    
-    │   ~name          Hostname inferred from an observed DNS response                         │    
-    │   App column     Application protocol, SNI, or HTTP Host                                 │    
-    │   R3/O1          Health for TCP: retransmits and out-of-order packets                    │    
+    │   Full color  Active connection                                                          │    
+    │   Countdown   Idle; the ▎ stripe and ↓/↑ countdown run yellow to red until removal       │    
+    │   Gray        Historic closed connection                                                 │    
+    │   ~name       Hostname inferred from an observed DNS response                            │    
+    │   App column  Application protocol, SNI, or HTTP Host                                    │    
+    │   R3/O1       Health for TCP: retransmits and out-of-order packets                       │    
     ╰──────────────────────────────────────────────────────────────────────────────────────────╯

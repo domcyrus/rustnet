@@ -4,9 +4,9 @@ expression: output
 ---
  rustnet    1 Overview   2 Details   3 Activity   4 Graph   5 Host                                                                    ● eth0
 ─────────────────────────━━━━━━━━━──────────────────────────────────────────────────────────────────────────────────────────────────────────
- Process                Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
+  Process               Remote                  Local              Service    App                      State           RTT Hlth      Rx↓/Tx↑
                                                                                                                                             
-▌proc (4242)            203.0.113.7:4433        192.168.1.10:50000 -          TCP·SSH (OpenSSH)        ESTABLISHED       - ok            -/-
+▌ proc (4242)           203.0.113.7:4433        192.168.1.10:50000 -          TCP·SSH (OpenSSH)        ESTABLISHED       - ok            -/-
                                                                                                                                             
                                                                                                                                             
                                                                                                                                             

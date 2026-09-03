@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Staleness Cue**: idle connection rows now show a stripe at their left
+  edge and a removal countdown in the bandwidth column from halfway through
+  their timeout (previously 75%), both running yellow to red as cleanup
+  nears, while the rest of the row softens toward gray
+  instead of recoloring whole rows, so Health, RTT, and State keep their
+  colors and stale rows stay distinct from gray historic rows on dark
+  terminals
 - **Responsive System Sidebar**: Traffic now appears before the static Security
   details, which collapse to the sandbox status when terminal height is limited
 - **Contextual Help Overlay**: Help now opens above the active tab and only
