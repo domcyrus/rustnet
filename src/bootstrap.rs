@@ -10,11 +10,22 @@ use simplelog::{ConfigBuilder, WriteLogger};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::app::{App, AppOutputHandles, Config};
+use crate::headless::sink::EventSink;
 use crate::network;
+
+/// Which front-end is starting. Decides where diagnostics go: the TUI owns
+/// the terminal, so its log goes to `logs/`; the headless stream owns
+/// stdout, so its log goes to stderr and no log directory is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Frontend {
+    Tui,
+    Headless,
+}
 
 /// Everything resolved before the application starts: the [`Config`], the
 /// retained output descriptors, and the sandbox policy. The privileged
@@ -29,9 +40,9 @@ pub struct Prepared {
 
 /// Run the unprivileged startup steps: Npcap delay-load (Windows), logging,
 /// the privilege check (its banner goes to stderr), the [`Config`], the uid
-/// drop target, the output files, and the sandbox policy.
-/// `show_startup_splash` is forwarded to [`Config::show_startup_splash`].
-pub fn prepare(matches: &ArgMatches, show_startup_splash: bool) -> Result<Prepared> {
+/// drop target, the output files, and the sandbox policy. Only the TUI gets
+/// the startup splash.
+pub fn prepare(matches: &ArgMatches, frontend: Frontend) -> Result<Prepared> {
     // Clap handles --help and --version before this point, so both remain
     // available even when Npcap is not installed. The Npcap DLLs are
     // delay-loaded so Windows can enter main() before resolving those imports.
@@ -42,14 +53,14 @@ pub fn prepare(matches: &ArgMatches, show_startup_splash: bool) -> Result<Prepar
         let log_level = log_level_str
             .parse::<LevelFilter>()
             .map_err(|_| anyhow::anyhow!("Invalid log level: {}", log_level_str))?;
-        setup_logging(log_level)?;
+        setup_logging(log_level, frontend)?;
     }
 
     // Check privileges before any front-end takes over the terminal, so the
     // error message stays visible.
     check_privileges_early()?;
 
-    let config = build_config(matches, show_startup_splash);
+    let config = build_config(matches, frontend == Frontend::Tui);
 
     // Resolve the identity to drop root to after privileged init (Linux,
     // macOS, and FreeBSD): the invoking sudo user, or nobody when started as
@@ -121,7 +132,7 @@ pub fn prepare(matches: &ArgMatches, show_startup_splash: bool) -> Result<Prepar
         output_handles.pcapng_export = Some(file);
     }
 
-    let (read_paths, write_paths) = sandbox_paths(matches, &config);
+    let (read_paths, write_paths) = sandbox_paths(matches, &config, frontend);
     let sandbox_config = SandboxConfig {
         mode: SandboxMode::from_flags(
             matches.get_flag("no-sandbox"),
@@ -146,11 +157,24 @@ pub fn prepare(matches: &ArgMatches, show_startup_splash: bool) -> Result<Prepar
 }
 
 impl Prepared {
+    /// Add a destination for the connection events, alongside `--json-log`.
+    pub(crate) fn add_event_sink(&mut self, sink: Arc<dyn EventSink>) {
+        self.output_handles.event_sinks.push(sink);
+    }
+
     /// Start the privileged subsystems, wait for them, apply the sandbox on
     /// the calling thread, then start the worker threads and install the
     /// shutdown signal handlers. Must run on the main thread: the sandbox
     /// restrictions are per-thread state that the workers inherit from it.
     pub(crate) fn launch(self) -> Result<App> {
+        self.launch_with(|_| {})
+    }
+
+    /// [`launch`](Self::launch) with a hook that runs once the capture
+    /// device is open and the sandbox is applied, but before any worker
+    /// thread exists: nothing has been emitted to the event sinks yet, so
+    /// a line written from the hook is the first one in every stream.
+    pub(crate) fn launch_with(self, before_workers: impl FnOnce(&App)) -> Result<App> {
         let mut app = App::new_with_output_handles(self.config, self.output_handles)?;
         let (process_ready_rx, capture_ready_rx) = app.start()?;
         info!("Application started");
@@ -185,6 +209,8 @@ impl Prepared {
                 app.set_sandbox_info(SandboxReport::from_error(&e));
             }
         }
+
+        before_workers(&app);
 
         // Now that the sandbox has been applied on the main thread, start the worker
         // threads (DPI packet processors, enrichment, snapshot, cleanup, collectors).
@@ -294,7 +320,11 @@ fn build_config(matches: &ArgMatches, show_startup_splash: bool) -> Config {
 }
 
 /// The filesystem paths the sandbox must keep readable and writable.
-fn sandbox_paths(matches: &ArgMatches, config: &Config) -> (Vec<PathBuf>, Vec<PathBuf>) {
+fn sandbox_paths(
+    matches: &ArgMatches,
+    config: &Config,
+    frontend: Frontend,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     // Collect read paths (GeoIP databases). Exclude the bare current-directory
     // entry: a Landlock PathBeneath rule on "." grants recursive read access to
     // the entire CWD subtree (e.g. all of $HOME when rustnet is launched from
@@ -361,7 +391,7 @@ fn sandbox_paths(matches: &ArgMatches, config: &Config) -> (Vec<PathBuf>, Vec<Pa
     // every configured output file (JSON log, PCAP export + its sidecar
     // JSONL, PCAPNG export). Ignored by backends without filesystem rules.
     let mut write_paths: Vec<PathBuf> = Vec::new();
-    if matches.get_one::<String>("log-level").is_some() {
+    if frontend == Frontend::Tui && matches.get_one::<String>("log-level").is_some() {
         write_paths.push(PathBuf::from("logs"));
     }
     if let Some(json_log_path) = &config.json_log_file {
@@ -378,7 +408,36 @@ fn sandbox_paths(matches: &ArgMatches, config: &Config) -> (Vec<PathBuf>, Vec<Pa
     (read_paths, write_paths)
 }
 
-fn setup_logging(level: LevelFilter) -> Result<()> {
+/// Install the logger: a timestamped file under `logs/` for the TUI, stderr
+/// for the headless stream (stdout carries the events).
+fn setup_logging(level: LevelFilter, frontend: Frontend) -> Result<()> {
+    // `target` names the emitting subsystem (e.g. `network::dpi::dns`); the
+    // banner below identifies the binary.
+    let config = ConfigBuilder::new()
+        .set_target_level(LevelFilter::Error)
+        .build();
+
+    match frontend {
+        Frontend::Tui => WriteLogger::init(level, config, open_log_file()?)?,
+        Frontend::Headless => WriteLogger::init(level, config, io::stderr())?,
+    }
+
+    // Startup banner: one identifying header so a user grepping a
+    // long-lived log file can immediately see which binary, which
+    // version, and which pid produced these lines. The `pkg_name` is
+    // the cargo package name (`rustnet-monitor`), not `argv[0]`, so it
+    // stays correct when the binary is renamed or symlinked.
+    info!(
+        "{} v{} starting (pid {})",
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        std::process::id()
+    );
+
+    Ok(())
+}
+
+fn open_log_file() -> Result<fs::File> {
     // The log directory is resolved relative to the current working directory.
     // rustnet typically runs as root, so a pre-planted symlink at `logs/` (e.g.
     // `logs -> /etc`) would let an attacker who controls the launch directory
@@ -412,29 +471,7 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
 
     // The path is predictable (timestamped), so it gets the same
     // symlink-refusing, private-mode open as the other output files.
-    let log_file = open_private(&log_file_path, false)?;
-
-    // `target` names the emitting subsystem (e.g. `network::dpi::dns`); the
-    // banner below identifies the binary.
-    let config = ConfigBuilder::new()
-        .set_target_level(LevelFilter::Error)
-        .build();
-
-    WriteLogger::init(level, config, log_file)?;
-
-    // Startup banner: one identifying header so a user grepping a
-    // long-lived log file can immediately see which binary, which
-    // version, and which pid produced these lines. The `pkg_name` is
-    // the cargo package name (`rustnet-monitor`), not `argv[0]`, so it
-    // stays correct when the binary is renamed or symlinked.
-    info!(
-        "{} v{} starting (pid {})",
-        env!("CARGO_PKG_NAME"),
-        env!("CARGO_PKG_VERSION"),
-        std::process::id()
-    );
-
-    Ok(())
+    Ok(open_private(&log_file_path, false)?)
 }
 
 /// Wait up to 10 s for a background subsystem to signal that its

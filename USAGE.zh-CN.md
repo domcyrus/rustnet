@@ -84,32 +84,58 @@ rustnet --help
 Usage: rustnet [OPTIONS]
 
 Options:
-  -i, --interface <INTERFACE>            要监控的网络接口
-      --no-localhost                     过滤掉 localhost 连接（默认：已过滤）
-      --show-localhost                   显示 localhost 连接（覆盖默认过滤）
-  -r, --refresh-interval <MILLISECONDS>  UI 刷新间隔，单位为毫秒 [默认：500]
-      --no-dpi                           禁用深度包检测
-      --no-resolve-dns                   禁用反向 DNS 查找（默认启用）
-      --show-ptr-lookups                 显示 PTR 查找连接（默认隐藏）
-  -l, --log-level <LEVEL>                设置日志级别（如果未提供，则不启用日志）
-      --json-log <FILE>                  将连接事件以 JSON 格式记录到指定文件
-      --pcap-export <FILE>               将捕获的数据包导出到 PCAP 文件供 Wireshark 分析
-      --pcapng-export <FILE>             将捕获的数据包导出为带注释的 PCAPNG 文件供 Wireshark 分析
-      --no-color                         禁用 UI 中的所有颜色（同时尊重 NO_COLOR 环境变量）
-      --theme <PRESET>                   颜色主题：muted（默认）、vivid、catppuccin-mocha、
-                                         tokyo-night、gruvbox、nord。优先于配置文件
-                                         （~/.config/rustnet/config.toml）中设置的主题
-      --geoip-country <PATH>             GeoLite2-Country.mmdb 的路径（未指定时自动发现）
-      --geoip-asn <PATH>                 GeoLite2-ASN.mmdb 的路径（未指定时自动发现）
-      --geoip-city <PATH>                GeoLite2-City.mmdb 的路径（未指定时自动发现）
-      --no-geoip                         完全禁用 GeoIP 查询
-  -f, --bpf-filter <FILTER>              用于数据包捕获的 BPF 过滤器表达式
-      --no-sandbox                       禁用 Landlock 沙箱（仅限 Linux）
-      --sandbox-strict                   要求完整沙箱强制执行，否则退出（仅限 Linux）
-      --no-uid-drop                      初始化后保持 root 运行，不降权到
-                                         SUDO_UID/SUDO_GID（或 nobody）（仅限 Linux、macOS 和 FreeBSD）
-  -h, --help                             打印帮助
-  -V, --version                          打印版本
+  -i, --interface <INTERFACE>
+          要监控的网络接口
+      --no-localhost
+          过滤掉 localhost 连接
+      --show-localhost
+          显示 localhost 连接（覆盖默认过滤）
+  -r, --refresh-interval <MILLISECONDS>
+          UI 刷新间隔，单位为毫秒 [默认：500]
+      --no-dpi
+          禁用深度包检测
+  -l, --log-level <LEVEL>
+          设置日志级别（如果未提供，则不启用日志）
+      --json-log <FILE>
+          将连接事件以 JSON 格式记录到指定文件
+      --headless
+          不启动终端 UI，将连接事件以 JSON 行的形式流式输出到 stdout（日志输出到 stderr）
+      --snapshot-interval <SECONDS>
+          每隔 SECONDS 秒发出一个包含完整连接表的 snapshot 事件（仅限无头模式）
+      --filter <QUERY>
+          仅输出匹配 QUERY 的连接，语法与交互式 / 过滤器相同（仅限无头模式）
+      --pcap-export <FILE>
+          将捕获的数据包导出到 PCAP 文件供 Wireshark 分析
+      --pcapng-export <FILE>
+          将捕获的数据包导出为带注释的 PCAPNG 文件供 Wireshark 分析
+  -f, --bpf-filter <FILTER>
+          用于数据包捕获的 BPF 过滤器表达式（例如 "tcp port 443"）。注意：使用 BPF 过滤器会禁用 PKTAP（进程信息回退到 lsof）
+      --no-resolve-dns
+          禁用 IP 地址的反向 DNS 解析（默认启用；显示主机名而非 IP）
+      --show-ptr-lookups
+          在 UI 中显示 PTR 查找连接（启用 DNS 解析时默认隐藏）
+      --no-color
+          禁用 UI 中的所有颜色（同时尊重 NO_COLOR 环境变量）
+      --theme <PRESET>
+          颜色主题：muted（默认）、vivid、catppuccin-mocha、tokyo-night、gruvbox、nord。优先于配置文件（~/.config/rustnet/config.toml）中设置的主题 [可选值：muted、vivid、catppuccin-mocha、tokyo-night、gruvbox、nord]
+      --geoip-country <PATH>
+          GeoLite2-Country.mmdb 数据库的路径。自动从以下位置发现：./resources/geoip2、$XDG_DATA_HOME/rustnet/geoip、~/.local/share/rustnet/geoip、/usr/share/GeoIP、/usr/local/share/GeoIP、/opt/homebrew/share/GeoIP、/var/lib/GeoIP
+      --geoip-asn <PATH>
+          GeoLite2-ASN.mmdb 数据库的路径（搜索路径与 --geoip-country 相同）
+      --geoip-city <PATH>
+          GeoLite2-City.mmdb 数据库的路径（搜索路径与 --geoip-country 相同；是 Country 的超集：除国家外还提供城市名和邮政编码）
+      --no-geoip
+          完全禁用 GeoIP 查询
+      --no-sandbox
+          禁用沙箱（在 Linux 上仍会设置 PR_SET_NO_NEW_PRIVS）
+      --sandbox-strict
+          要求完整沙箱强制执行，否则退出
+      --no-uid-drop
+          初始化后保持 root 运行，不降权到 SUDO_UID/SUDO_GID（或 nobody）。保持 root 可让 lsof 回退方案在 PKTAP 不可用时归属其他用户的进程
+  -h, --help
+          打印帮助
+  -V, --version
+          打印版本
 ```
 
 使用可选 `kubernetes` feature 编译的版本（包括官方 Docker 镜像）还会提供 `--kubernetes <MODE>`。详见下文的 [`--kubernetes`](#--kubernetes-mode-optional-feature)。
@@ -313,7 +339,33 @@ rustnet --bpf-filter "not port 22"
 - `debug` —— 详细的调试信息
 - `trace` —— 非常详细的输出（包含数据包级详情）
 
-日志文件创建于 `logs/` 目录，带时间戳：`rustnet_YYYY-MM-DD_HH-MM-SS.log`
+日志文件创建于 `logs/` 目录，带时间戳：`rustnet_YYYY-MM-DD_HH-MM-SS.log`。在[无头模式](#headless-mode)下，日志改为输出到 stderr。
+
+#### `--headless`<a id="--headless"></a>
+
+不启动终端 UI，将连接事件以 JSON 行的形式流式输出到 stdout。启动流程、沙箱、uid 降权和数据富化与 TUI 完全相同，仅输出方式不同。配合 `--log-level` 时，日志行输出到 stderr，而不是写入 `logs/` 下的文件。事件格式详见[无头模式](#headless-mode)。
+
+```bash
+# 流式输出所有连接事件，并漂亮打印
+sudo rustnet --headless | jq .
+```
+
+#### `--snapshot-interval <SECONDS>`<a id="--snapshot-interval-seconds"></a>
+
+仅限无头模式。在逐连接事件之外，每隔 `SECONDS` 秒（正整数）发出一个包含完整连接表的 `snapshot` 事件。第一个快照在经过一个完整间隔后写出。需要 `--headless`。
+
+```bash
+sudo rustnet --headless --snapshot-interval 10
+```
+
+#### `--filter <QUERY>`<a id="--filter-query"></a>
+
+仅限无头模式。仅流式输出匹配 `QUERY` 的连接，语法与交互式 `/` 过滤器相同（见[过滤](#filtering)）：关键字项（如 `port:443` 或 `process:curl`）、自由文本，以及 `/regex/` 值，用空格组合（AND）。查询在捕获开始前进行检查；没有值的关键字（`port:`）或无效的正则表达式会报错退出。需要 `--headless`。
+
+```bash
+sudo rustnet --headless --filter 'port:443'
+sudo rustnet --headless --filter 'proto:udp dport:53'
+```
 
 #### `--kubernetes <MODE>`（可选 feature）<a id="--kubernetes-mode-optional-feature"></a>
 
@@ -330,7 +382,7 @@ rustnet --bpf-filter "not port 22"
 归属信息会出现在：
 
 - **详情标签页**的 Kubernetes 区域，包括 pod 名、namespace、pod UID、container 名和 container ID
-- **JSON 日志**（`--json-log`）和 `--pcap-export` sidecar JSONL 中，每个连接事件包含一个 `kubernetes` 对象
+- **JSON 日志**（`--json-log`）、`--headless` 事件流及其 `snapshot` 记录，以及 `--pcap-export` sidecar JSONL 中，每个连接事件包含一个 `kubernetes` 对象
 - **PCAPNG 数据包注释**（`--pcapng-export`）中，使用 `pod=`、`ns=`、`pod_uid=`、`container=` 和 `container_id=` 字段
 - `pod:`、`ns:` 和 `container:` [过滤关键字](#keyword-filters)
 
@@ -1210,9 +1262,83 @@ du -sh logs/
 
 对于性能问题，trace 级别日志提供最详细的细节，但会快速生成大量日志文件。
 
+### 无头模式<a id="headless-mode"></a>
+
+`--headless` 在不启动终端 UI 的情况下运行捕获管线，并将连接事件以 JSON 行（JSONL，每行一个对象）的形式流式输出到 stdout。它适用于通过管道交给 `jq` 或日志采集器处理，以及在没有 TTY 的服务管理器或容器中运行。
+
+```bash
+# 漂亮打印所有事件
+sudo rustnet --headless | jq .
+
+# 仅输出 HTTPS 连接的目的 IP
+sudo rustnet --headless --filter 'port:443' | jq -r '.destination_ip'
+
+# 每个已关闭连接的进程和发送字节数，丢弃日志输出
+sudo rustnet --headless 2>/dev/null | jq -c 'select(.event=="connection_closed") | {process_name,bytes_sent}'
+```
+
+**启动：** 无头模式经历与 TUI 相同的启动流程：权限检查、捕获和 eBPF 初始化、沙箱，以及 root uid 降权，随后是同样的进程归属、DPI、DNS 和 GeoIP 富化。不会触碰终端。stdout 只承载事件；权限提示横幅，以及配合 `--log-level` 时的日志行，都输出到 stderr 而不是 `logs/` 下的文件，因此 `rustnet --headless 2>/dev/null` 是一条干净的 JSONL 流。仅影响 UI 的选项（`--theme`、`--no-color`）不起作用。
+
+**事件类型：**
+
+| 事件 | 时机 | 字段 |
+|-------|------|--------|
+| `startup` | 仅一次，作为第一行，在捕获设备打开且沙箱应用之后 | 见下文 |
+| `new_connection` | 首次检测到某个连接时 | 与 [JSON 日志](#json-logging)相同 |
+| `connection_closed` | 连接在变为不活跃后被清理时 | 与 [JSON 日志](#json-logging)相同，包含 `bytes_sent`、`bytes_received` 和 `duration_secs` |
+| `snapshot` | 每隔 `--snapshot-interval` 秒 | 见下文 |
+
+每一行都包含 `timestamp`（RFC3339 UTC）和 `event`。`new_connection` 和 `connection_closed` 行与 `--json-log` 写入的内容相同；其字段在 [JSON 日志](#json-logging)中有说明。`new_connection` 行在看到连接的第一个数据包时即写出，此时进程归属、GeoIP 和 DPI 详情通常尚不可用，因此需要 `pid` 或 `process_name` 的消费者应使用 `connection_closed` 或 `snapshot` 事件，或按五元组（`protocol`、`source_ip`、`source_port`、`destination_ip`、`destination_port`）匹配各行。
+
+`startup` 字段：
+
+| 字段 | 类型 | 描述 |
+|-------|------|-------------|
+| `timestamp` | string | RFC3339 UTC 时间戳 |
+| `event` | string | `startup` |
+| `version` | string | RustNet 版本 |
+| `pid` | number | 此 RustNet 实例的进程 ID |
+| `interface` | string | 捕获接口（未知时省略） |
+| `link_type` | string | 捕获的链路层：`Ethernet`、`RawIp`、`LinuxSll`、`LinuxSll2`、`Pktap`、`Tun`、`Tap` 或 `Unknown` |
+| `sandbox` | string | 沙箱状态：`Fully enforced`、`Partially enforced`、`Not applied` 或 `Error`（Linux、Windows，以及启用 `macos-sandbox` feature 的 macOS 构建） |
+| `process_detection` | string | 正在使用的进程归属方法：Linux 为 `eBPF fentry/fexit + procfs`、`eBPF kprobe + procfs` 或 `procfs`；macOS 为 `pktap` 或 `lsof`；Windows 为 `windows-etw+iphlpapi` 或 `windows-iphlpapi`；FreeBSD 为 `sockstat`。该值为启动时报告的值，若进程归属在启动等待时间内尚未就绪，则可能为 `initializing...` |
+| `filter` | string | `--filter` 查询（未指定时省略） |
+| `snapshot_interval_secs` | number | `--snapshot-interval` 的值（未指定时省略） |
+
+`snapshot` 字段：
+
+| 字段 | 类型 | 描述 |
+|-------|------|-------------|
+| `timestamp` | string | RFC3339 UTC 时间戳 |
+| `event` | string | `snapshot` |
+| `connections` | array | 当前连接表中每个连接一个对象，字段与 `new_connection` 行相同，但不含 `timestamp` 和 `event` |
+
+快照中的表就是 TUI 显示的那张表：除非指定 `--show-localhost`，否则排除 localhost 连接；除非指定 `--show-ptr-lookups`，否则隐藏 DNS PTR 查找；并且每隔 `--refresh-interval` 毫秒刷新一次。第一个快照在经过一个完整间隔后写出，以便反映真实流量而非空表。
+
+**过滤：** `--filter QUERY` 将 `new_connection`、`connection_closed` 和 `snapshot` 表限制为匹配 `QUERY` 的连接；`startup` 行始终写出。语法与交互式 `/` 过滤器相同（见[过滤](#filtering)）：关键字项、自由文本，以及 `/regex/` 值，用空格组合（AND）。查询在捕获开始前进行检查，因此没有值的关键字（`port:`）或无效的正则表达式会立即失败，并在 stderr 上输出错误。
+
+```bash
+# 任意进程的 DNS 流量
+sudo rustnet --headless --filter 'proto:udp dport:53'
+
+# Firefox 到任意 github.com 主机的连接
+sudo rustnet --headless --filter 'process:firefox sni:/github\.com$/'
+```
+
+**背压：** stdout 由一个专用线程通过容量为 10,000 行的队列写入。如果消费者跟不上，事件会被丢弃，而不是阻塞数据包处理；丢弃的行数会以警告形式记录到日志（使用 `--log-level warn` 或更高级别可见）。
+
+**退出：**
+
+- `SIGINT`（Ctrl+C）、`SIGTERM` 或 `SIGHUP` 会停止流，写出队列中的行，并以状态码 0 退出。Windows 上尚未接入控制台控制处理程序，因此 Ctrl+C 或关闭控制台会直接结束进程，不会写出队列中的行。
+- 当消费者关闭管道时（例如 `rustnet --headless | head -n 20`），下一次写入失败，RustNet 以状态码 0 退出。
+- 数据包捕获失败时以状态码 1 退出，并在 stderr 上输出错误。
+- 未知选项、未配合 `--headless` 使用的 `--snapshot-interval` 或 `--filter`，或无效的 `--filter` 查询，会在捕获开始前报错退出。
+
+**与其他输出组合：** `--json-log FILE` 仍可与 `--headless` 一同使用，并接收所有 `new_connection` 和 `connection_closed` 事件，不受过滤影响；`--filter` 仅作用于 stdout。`--pcap-export` 和 `--pcapng-export` 与 TUI 中的行为相同。
+
 ### JSON 日志<a id="json-logging"></a>
 
-`--json-log` 选项启用将连接事件以结构化 JSON 格式记录到文件。每行是一个独立的 JSON 对象（JSONL 格式）。
+`--json-log` 选项启用将连接事件以结构化 JSON 格式记录到文件。每行是一个独立的 JSON 对象（JSONL 格式）。若要将同样的事件流式输出到 stdout 而非文件，请参阅[无头模式](#headless-mode)。
 
 ```bash
 # 启用 JSON 日志
@@ -1250,7 +1376,7 @@ sudo rustnet -i eth0 --json-log ~/network-events.json
 **示例输出：**<a id="example-output"></a>
 
 ```json
-{"timestamp":"2025-01-15T10:30:00Z","event":"new_connection","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","direction":"outgoing","dpi_protocol":"HTTPS","dpi_domain":"example.com"}
+{"timestamp":"2025-01-15T10:30:00Z","event":"new_connection","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","direction":"outgoing","dpi_protocol":"HTTPS (example.com)","dpi_domain":"example.com"}
 {"timestamp":"2025-01-15T10:30:05Z","event":"connection_closed","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","direction":"outgoing","bytes_sent":1024,"bytes_received":4096,"duration_secs":5}
 ```
 

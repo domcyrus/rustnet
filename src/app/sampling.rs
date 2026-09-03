@@ -27,7 +27,7 @@ use super::{LIVE_RATE_INTERVAL, MIN_RATE_SAMPLE_SECONDS, TRAFFIC_HISTORY_CAPACIT
 const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Sleep for `interval`, returning early once shutdown is requested.
-fn sleep_unless_stopped(should_stop: &AtomicBool, interval: Duration) {
+pub(crate) fn sleep_unless_stopped(should_stop: &AtomicBool, interval: Duration) {
     let deadline = Instant::now() + interval;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -426,7 +426,7 @@ impl App {
     }
 
     pub(super) fn start_cleanup_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
-        let json_log_file = self.json_log_file.clone();
+        let event_sinks = self.event_sinks.clone();
         let pcap_sidecar_file = self.pcap_sidecar_file.clone();
         let dns_resolver = self.dns_resolver.clone();
         let stats = Arc::clone(&self.stats);
@@ -450,7 +450,7 @@ impl App {
                     log_connection_closed(
                         conn,
                         now,
-                        json_log_file.as_deref(),
+                        &event_sinks,
                         pcap_sidecar_file.as_deref(),
                         dns_resolver.as_deref(),
                     );

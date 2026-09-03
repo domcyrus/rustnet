@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Headless Mode**: `rustnet --headless` runs the full capture pipeline
+  without a terminal and streams `startup`, `new_connection`, and
+  `connection_closed` events as JSON lines to stdout, with `--log-level`
+  output going to stderr. `--snapshot-interval SECONDS` adds periodic
+  `snapshot` events with the whole connection table, and `--filter QUERY`
+  restricts the stream using the interactive filter syntax (#9)
 - **Inline Connection Health**: connection rows now show compact TCP
   retransmit/out-of-order, QUIC Retry/version, and transactional UDP
   retry/timeout badges, with a severity-first Health sort. The Details

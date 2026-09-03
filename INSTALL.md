@@ -582,6 +582,9 @@ docker run --rm -it --net=host ghcr.io/domcyrus/rustnet:latest -i eth0
 docker run --rm -it --privileged --net=host \
   ghcr.io/domcyrus/rustnet:latest
 
+# Headless JSONL stream (no TTY needed, so no -it)
+docker run --rm --net=host ghcr.io/domcyrus/rustnet:latest --headless | jq .
+
 # View available options
 docker run --rm ghcr.io/domcyrus/rustnet:latest --help
 ```

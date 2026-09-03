@@ -11,8 +11,8 @@
 //! [`network`] holds capture, parsers, DPI, DNS, GeoIP, interface stats, and
 //! platform process lookup; [`ui`] holds the ratatui rendering and keyboard
 //! handling. [`bootstrap`] runs the front-end independent startup sequence
-//! (logging, privileges, output files, sandboxing) and [`tui`] drives the
-//! terminal front-end on top of it.
+//! (logging, privileges, output files, sandboxing); [`tui`] drives the
+//! terminal front-end on top of it and [`headless`] the JSONL event stream.
 //!
 //! The library surface is unstable and intended for internal use; the
 //! supported product is the `rustnet` binary.
@@ -23,6 +23,7 @@ pub mod cli;
 pub mod config;
 pub(crate) mod export;
 pub(crate) mod filter;
+pub mod headless;
 pub mod network;
 pub mod tui;
 pub mod ui;

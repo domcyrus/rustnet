@@ -24,6 +24,7 @@ RustNet は、各接続を所有するプロセス、通信量、状態、アプ
 - Host タブに TCP LISTEN ソケット、UDP BOUND エンドポイント、TCP 状態集計、観測 RTT、所有プロセス、インターフェース統計を表示
 - `port:`、`process:`、`sni:`、`state:` などのフィルター
 - 注釈付き PCAPNG、PCAP と JSONL sidecar、JSON ログの出力
+- ヘッドレスモード: `--headless` は端末を使わずに同じパイプラインを実行し、`startup`、`new_connection`、`connection_closed`、および任意の `snapshot` イベントを JSON Lines として標準出力に出力します。`--filter` には対話型フィルターと同じ構文を使用できます。`jq` やログシッパーにパイプしたり、サービスマネージャー配下で実行したりできます。詳細は [USAGE.md](USAGE.md#headless-mode) を参照してください
 - ローカル GeoIP データベースによる国、ASN、都市情報
 - ARP トラフィックから受動的に学習した LAN 機器・ゲートウェイの MAC アドレスとベンダー表示（内蔵 IEEE OUI データベース）
 - Linux Landlock、macOS Seatbelt、Windows の権限削減によるサンドボックス
@@ -97,6 +98,7 @@ rustnet --no-resolve-dns                # 逆引き DNS を無効化
 rustnet --no-dpi                        # 深層パケット解析を無効化
 rustnet --theme tokyo-night             # カラーテーマ（muted［既定］、vivid、catppuccin-mocha、tokyo-night、gruvbox、nord）
 rustnet --pcapng-export capture.pcapng  # 注釈付き PCAPNG を出力
+rustnet --headless --filter 'port:443' | jq .  # TUI なしの JSONL イベントストリーム
 ```
 
 テーマと各色の上書きは `~/.config/rustnet/config.toml` でも設定できます（`--theme` が優先）。詳細は [USAGE.md](USAGE.md#--theme-preset) を参照してください。

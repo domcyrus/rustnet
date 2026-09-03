@@ -7,6 +7,7 @@
 
 use crate::network::types::{ApplicationProtocol, Connection, ProtocolState};
 use regex_lite::Regex;
+use std::fmt;
 
 /// How to match a text field (case-insensitive for literals; regex handles its own flags)
 #[derive(Debug, Clone)]
@@ -69,13 +70,44 @@ pub struct ConnectionFilter {
     criteria: Vec<FilterCriteria>,
 }
 
+/// A mistake in a filter query that the interactive parser tolerates (it
+/// runs on every keystroke) but a query given once, up front, should not
+/// silently get past.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FilterError {
+    /// A known keyword with nothing after the colon, such as `port:`.
+    EmptyValue(String),
+    /// A `/pattern/` literal that does not compile.
+    InvalidRegex { pattern: String, message: String },
+}
+
+impl fmt::Display for FilterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyValue(term) => write!(f, "\"{term}\" has no value after the colon"),
+            Self::InvalidRegex { pattern, message } => {
+                write!(f, "invalid regex /{pattern}/: {message}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FilterError {}
+
+/// The pattern inside a `/pattern/` regex literal.
+fn regex_literal(value: &str) -> Option<&str> {
+    value
+        .strip_prefix('/')
+        .and_then(|rest| rest.strip_suffix('/'))
+        .filter(|pattern| !pattern.is_empty())
+}
+
 /// Parse a filter value string into a `PortMatch`.
 /// - `/pattern/`  → regex
 /// - all-digit    → exact u16 equality
 /// - anything else → substring contains
 fn parse_port_match(value: &str) -> PortMatch {
-    if value.starts_with('/') && value.ends_with('/') && value.len() > 2 {
-        let pattern = &value[1..value.len() - 1];
+    if let Some(pattern) = regex_literal(value) {
         match Regex::new(pattern) {
             Ok(re) => PortMatch::Regex(re),
             Err(_) => PortMatch::Partial(value.to_string()),
@@ -94,8 +126,7 @@ fn parse_port_match(value: &str) -> PortMatch {
 /// - `/pattern/`  → case-insensitive regex
 /// - anything else → case-insensitive literal contains
 fn parse_filter_value(value: &str) -> FilterValue {
-    if value.starts_with('/') && value.ends_with('/') && value.len() > 2 {
-        let pattern = &value[1..value.len() - 1];
+    if let Some(pattern) = regex_literal(value) {
         match Regex::new(&format!("(?i){pattern}")) {
             Ok(re) => FilterValue::Regex(re),
             Err(_) => FilterValue::Literal(value.to_string()),
@@ -103,6 +134,35 @@ fn parse_filter_value(value: &str) -> FilterValue {
     } else {
         FilterValue::Literal(value.to_string())
     }
+}
+
+/// The criterion for a lowercased `keyword:value` term, or `None` when the
+/// keyword is not one of the filter's (the term is then a general search,
+/// which keeps `10.0.0.1:443` and IPv6 literals usable).
+fn keyword_criterion(keyword: &str, value: &str) -> Option<FilterCriteria> {
+    let criterion = match keyword {
+        "port" => FilterCriteria::Port(parse_port_match(value)),
+        "sport" | "srcport" | "source-port" => FilterCriteria::SourcePort(parse_port_match(value)),
+        "dport" | "dstport" | "dest-port" | "destination-port" => {
+            FilterCriteria::DestinationPort(parse_port_match(value))
+        }
+        "src" | "source" => FilterCriteria::SourceIp(parse_filter_value(value)),
+        "dst" | "dest" | "destination" => FilterCriteria::DestinationIp(parse_filter_value(value)),
+        "proto" | "protocol" => FilterCriteria::Protocol(parse_filter_value(value)),
+        "process" | "proc" => FilterCriteria::Process(parse_filter_value(value)),
+        "service" | "svc" => FilterCriteria::Service(parse_filter_value(value)),
+        "sni" | "host" | "hostname" => FilterCriteria::Sni(parse_filter_value(value)),
+        "app" | "application" => FilterCriteria::Application(parse_filter_value(value)),
+        "state" => FilterCriteria::State(parse_filter_value(value)),
+        #[cfg(feature = "kubernetes")]
+        "pod" => FilterCriteria::Pod(parse_filter_value(value)),
+        #[cfg(feature = "kubernetes")]
+        "ns" | "namespace" => FilterCriteria::Namespace(parse_filter_value(value)),
+        #[cfg(feature = "kubernetes")]
+        "container" | "cont" => FilterCriteria::Container(parse_filter_value(value)),
+        _ => return None,
+    };
+    Some(criterion)
 }
 
 /// Match a port number against a `PortMatch`.
@@ -133,78 +193,48 @@ fn any_text_matches<'a>(
 
 impl ConnectionFilter {
     pub fn parse(query: &str) -> Self {
-        let mut criteria = Vec::new();
-
-        if query.trim().is_empty() {
-            return Self { criteria };
-        }
-
-        let parts: Vec<&str> = query.split_whitespace().collect();
-
-        for part in parts {
-            if let Some((keyword, value)) = part.split_once(':') {
-                let value = value.to_lowercase();
-                match keyword.to_lowercase().as_str() {
-                    "port" => {
-                        criteria.push(FilterCriteria::Port(parse_port_match(&value)));
-                    }
-                    "sport" | "srcport" | "source-port" => {
-                        criteria.push(FilterCriteria::SourcePort(parse_port_match(&value)));
-                    }
-                    "dport" | "dstport" | "dest-port" | "destination-port" => {
-                        criteria.push(FilterCriteria::DestinationPort(parse_port_match(&value)));
-                    }
-                    "src" | "source" => {
-                        criteria.push(FilterCriteria::SourceIp(parse_filter_value(&value)));
-                    }
-                    "dst" | "dest" | "destination" => {
-                        criteria.push(FilterCriteria::DestinationIp(parse_filter_value(&value)));
-                    }
-                    "proto" | "protocol" => {
-                        criteria.push(FilterCriteria::Protocol(parse_filter_value(&value)));
-                    }
-                    "process" | "proc" => {
-                        criteria.push(FilterCriteria::Process(parse_filter_value(&value)));
-                    }
-                    "service" | "svc" => {
-                        criteria.push(FilterCriteria::Service(parse_filter_value(&value)));
-                    }
-                    "sni" | "host" | "hostname" => {
-                        criteria.push(FilterCriteria::Sni(parse_filter_value(&value)));
-                    }
-                    "app" | "application" => {
-                        criteria.push(FilterCriteria::Application(parse_filter_value(&value)));
-                    }
-                    "state" => {
-                        criteria.push(FilterCriteria::State(parse_filter_value(&value)));
-                    }
-                    #[cfg(feature = "kubernetes")]
-                    "pod" => {
-                        criteria.push(FilterCriteria::Pod(parse_filter_value(&value)));
-                    }
-                    #[cfg(feature = "kubernetes")]
-                    "ns" | "namespace" => {
-                        criteria.push(FilterCriteria::Namespace(parse_filter_value(&value)));
-                    }
-                    #[cfg(feature = "kubernetes")]
-                    "container" | "cont" => {
-                        criteria.push(FilterCriteria::Container(parse_filter_value(&value)));
-                    }
-                    _ => {
-                        // Unknown keyword, treat as general search
-                        criteria.push(FilterCriteria::General(parse_filter_value(
-                            &part.to_lowercase(),
-                        )));
-                    }
-                }
-            } else {
-                criteria.push(FilterCriteria::General(parse_filter_value(
-                    &part.to_lowercase(),
-                )));
-            }
-        }
+        let criteria = query
+            .split_whitespace()
+            .map(|part| {
+                part.split_once(':')
+                    .and_then(|(keyword, value)| {
+                        keyword_criterion(&keyword.to_lowercase(), &value.to_lowercase())
+                    })
+                    .unwrap_or_else(|| {
+                        FilterCriteria::General(parse_filter_value(&part.to_lowercase()))
+                    })
+            })
+            .collect();
 
         Self { criteria }
+    }
+
+    /// Check a query for the mistakes [`parse`](Self::parse) papers over: a
+    /// known keyword with no value (`port:`) and an unparsable `/regex/`
+    /// literal.
+    pub fn validate(query: &str) -> Result<(), FilterError> {
+        for part in query.split_whitespace() {
+            let value = match part.split_once(':') {
+                Some((keyword, value))
+                    if keyword_criterion(&keyword.to_lowercase(), value).is_some() =>
+                {
+                    if value.is_empty() {
+                        return Err(FilterError::EmptyValue(part.to_string()));
+                    }
+                    value
+                }
+                _ => part,
+            };
+            if let Some(pattern) = regex_literal(value)
+                && let Err(e) = Regex::new(pattern)
+            {
+                return Err(FilterError::InvalidRegex {
+                    pattern: pattern.to_string(),
+                    message: e.to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 
     pub fn matches(&self, connection: &Connection) -> bool {
@@ -633,6 +663,32 @@ mod tests {
             FilterCriteria::Port(PortMatch::Partial(_)) => {}
             _ => panic!("Expected fallback to Partial for invalid regex"),
         }
+    }
+
+    #[test]
+    fn validate_rejects_empty_keyword_values_and_bad_regexes() {
+        assert_eq!(ConnectionFilter::validate(""), Ok(()));
+        assert_eq!(ConnectionFilter::validate("port:443 proc:curl"), Ok(()));
+        assert_eq!(ConnectionFilter::validate("sni:/goo.*le/"), Ok(()));
+        // A term without a known keyword is a general search, colon included.
+        assert_eq!(ConnectionFilter::validate("10.0.0.1:443 ::1"), Ok(()));
+
+        assert_eq!(
+            ConnectionFilter::validate("port:"),
+            Err(FilterError::EmptyValue("port:".to_string()))
+        );
+        assert_eq!(
+            ConnectionFilter::validate("PROC:"),
+            Err(FilterError::EmptyValue("PROC:".to_string()))
+        );
+        assert!(matches!(
+            ConnectionFilter::validate("port:/[invalid/"),
+            Err(FilterError::InvalidRegex { pattern, .. }) if pattern == "[invalid"
+        ));
+        assert!(matches!(
+            ConnectionFilter::validate("/(unclosed/"),
+            Err(FilterError::InvalidRegex { .. })
+        ));
     }
 
     #[cfg(feature = "kubernetes")]

@@ -83,6 +83,29 @@ pub fn build_cli() -> Command {
                 .required(false),
         )
         .arg(
+            Arg::new("headless")
+                .long("headless")
+                .help("Run without the terminal UI and stream connection events as JSON lines to stdout (log output goes to stderr)")
+                .action(clap::ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("snapshot-interval")
+                .long("snapshot-interval")
+                .value_name("SECONDS")
+                .help("Emit a snapshot event with the full connection table every SECONDS seconds (headless only)")
+                .value_parser(clap::value_parser!(u64).range(1..))
+                .requires("headless")
+                .required(false),
+        )
+        .arg(
+            Arg::new("filter")
+                .long("filter")
+                .value_name("QUERY")
+                .help("Only stream connections matching QUERY, using the same syntax as the interactive / filter (headless only)")
+                .requires("headless")
+                .required(false),
+        )
+        .arg(
             Arg::new("pcap-export")
                 .long("pcap-export")
                 .value_name("FILE")
@@ -234,6 +257,46 @@ mod tests {
             .expect("default CLI arguments should parse");
 
         assert_eq!(matches.get_one::<u64>("refresh-interval"), Some(&500));
+    }
+
+    #[test]
+    fn headless_only_flags_require_headless() {
+        for args in [
+            ["rustnet", "--snapshot-interval", "5"],
+            ["rustnet", "--filter", "port:443"],
+        ] {
+            let err = build_cli()
+                .try_get_matches_from(args)
+                .expect_err("headless-only flag without --headless must be rejected");
+            assert!(
+                err.to_string().contains("--headless"),
+                "error should name --headless: {err}"
+            );
+        }
+
+        let matches = build_cli()
+            .try_get_matches_from([
+                "rustnet",
+                "--headless",
+                "--snapshot-interval",
+                "5",
+                "--filter",
+                "port:443",
+            ])
+            .expect("headless flags should parse together");
+        assert!(matches.get_flag("headless"));
+        assert_eq!(matches.get_one::<u64>("snapshot-interval"), Some(&5));
+        assert_eq!(
+            matches.get_one::<String>("filter").map(String::as_str),
+            Some("port:443")
+        );
+
+        assert!(
+            build_cli()
+                .try_get_matches_from(["rustnet", "--headless", "--snapshot-interval", "0"])
+                .is_err(),
+            "a zero-second snapshot interval must be rejected"
+        );
     }
 
     #[test]

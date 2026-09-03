@@ -12,6 +12,7 @@ mod sampling;
 mod state;
 mod types;
 
+pub(crate) use sampling::sleep_unless_stopped;
 pub use state::App;
 pub(crate) use types::ConnectionCounts;
 pub use types::{AppOutputHandles, AppStats, Config, UNKNOWN_PROCESS_GROUP, process_group_label};

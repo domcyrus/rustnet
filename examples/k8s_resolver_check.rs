@@ -26,19 +26,9 @@ fn main() {
         Some(info) => {
             println!("--- resolver output ---");
             println!("{info:#?}");
-            // Mirror the JSON shape that log_connection_event would emit.
-            let mut obj = serde_json::Map::new();
-            if let Some(v) = info.pod_uid {
-                obj.insert("pod_uid".into(), serde_json::json!(v));
-            }
-            if let Some(v) = info.container_id {
-                obj.insert("container_id".into(), serde_json::json!(v));
-            }
-            if let Some(v) = info.cgroup_path {
-                obj.insert("cgroup_path".into(), serde_json::json!(v));
-            }
+            let block = rustnet_monitor::headless::events::KubernetesRecord::from_info(&info);
             println!("--- JSONL 'kubernetes' block ---");
-            println!("{}", serde_json::to_string(&obj).unwrap());
+            println!("{}", serde_json::to_string(&block).unwrap());
         }
         None => {
             println!("--- resolver returned None (no kubepods cgroup) ---");

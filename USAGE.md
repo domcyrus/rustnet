@@ -84,32 +84,58 @@ rustnet --help
 Usage: rustnet [OPTIONS]
 
 Options:
-  -i, --interface <INTERFACE>            Network interface to monitor
-      --no-localhost                     Filter out localhost connections (default: filtered)
-      --show-localhost                   Show localhost connections (overrides default filtering)
-  -r, --refresh-interval <MILLISECONDS>  UI refresh interval in milliseconds [default: 500]
-      --no-dpi                           Disable deep packet inspection
-      --no-resolve-dns                   Disable reverse DNS lookups (enabled by default)
-      --show-ptr-lookups                 Show PTR lookup connections (hidden by default)
-  -l, --log-level <LEVEL>                Set the log level (if not provided, no logging will be enabled)
-      --json-log <FILE>                  Enable JSON logging of connection events to specified file
-      --pcap-export <FILE>               Export captured packets to PCAP file for Wireshark analysis
-      --pcapng-export <FILE>             Export captured packets to annotated PCAPNG file for Wireshark analysis
-      --no-color                         Disable all colors in the UI (also respects NO_COLOR env var)
-      --theme <PRESET>                   Color theme: muted (default), vivid, catppuccin-mocha,
-                                         tokyo-night, gruvbox, nord. Overrides the theme set in the
-                                         config file (~/.config/rustnet/config.toml)
-      --geoip-country <PATH>             Path to GeoLite2-Country.mmdb (auto-discovered if not specified)
-      --geoip-asn <PATH>                 Path to GeoLite2-ASN.mmdb (auto-discovered if not specified)
-      --geoip-city <PATH>                Path to GeoLite2-City.mmdb (auto-discovered if not specified)
-      --no-geoip                         Disable GeoIP lookups entirely
-  -f, --bpf-filter <FILTER>              BPF filter expression for packet capture
-      --no-sandbox                       Disable Landlock sandboxing (Linux only)
-      --sandbox-strict                   Require full sandbox enforcement or exit (Linux only)
-      --no-uid-drop                      Keep running as root instead of dropping to
-                                         SUDO_UID/SUDO_GID (or nobody) after initialization (Linux, macOS, and FreeBSD)
-  -h, --help                             Print help
-  -V, --version                          Print version
+  -i, --interface <INTERFACE>
+          Network interface to monitor
+      --no-localhost
+          Filter out localhost connections
+      --show-localhost
+          Show localhost connections (overrides default filtering)
+  -r, --refresh-interval <MILLISECONDS>
+          UI refresh interval in milliseconds [default: 500]
+      --no-dpi
+          Disable deep packet inspection
+  -l, --log-level <LEVEL>
+          Set the log level (if not provided, no logging will be enabled)
+      --json-log <FILE>
+          Enable JSON logging of connection events to specified file
+      --headless
+          Run without the terminal UI and stream connection events as JSON lines to stdout (log output goes to stderr)
+      --snapshot-interval <SECONDS>
+          Emit a snapshot event with the full connection table every SECONDS seconds (headless only)
+      --filter <QUERY>
+          Only stream connections matching QUERY, using the same syntax as the interactive / filter (headless only)
+      --pcap-export <FILE>
+          Export captured packets to PCAP file for Wireshark analysis
+      --pcapng-export <FILE>
+          Export captured packets to annotated PCAPNG file for Wireshark analysis
+  -f, --bpf-filter <FILTER>
+          BPF filter expression for packet capture (e.g., "tcp port 443"). Note: Using a BPF filter disables PKTAP (process info falls back to lsof)
+      --no-resolve-dns
+          Disable reverse DNS resolution for IP addresses (enabled by default; shows hostnames instead of IPs)
+      --show-ptr-lookups
+          Show PTR lookup connections in UI (hidden by default when DNS resolution is enabled)
+      --no-color
+          Disable all colors in the UI (also respects NO_COLOR env var)
+      --theme <PRESET>
+          Color theme: muted (default), vivid, catppuccin-mocha, tokyo-night, gruvbox, nord. Overrides the theme set in the config file (~/.config/rustnet/config.toml) [possible values: muted, vivid, catppuccin-mocha, tokyo-night, gruvbox, nord]
+      --geoip-country <PATH>
+          Path to GeoLite2-Country.mmdb database. Auto-discovered from: ./resources/geoip2, $XDG_DATA_HOME/rustnet/geoip, ~/.local/share/rustnet/geoip, /usr/share/GeoIP, /usr/local/share/GeoIP, /opt/homebrew/share/GeoIP, /var/lib/GeoIP
+      --geoip-asn <PATH>
+          Path to GeoLite2-ASN.mmdb database (same search paths as --geoip-country)
+      --geoip-city <PATH>
+          Path to GeoLite2-City.mmdb database (same search paths as --geoip-country; superset of Country: provides city name and postal code in addition to country)
+      --no-geoip
+          Disable GeoIP lookups entirely
+      --no-sandbox
+          Disable sandboxing (on Linux, PR_SET_NO_NEW_PRIVS is still set)
+      --sandbox-strict
+          Require full sandbox enforcement or exit
+      --no-uid-drop
+          Keep running as root instead of dropping to SUDO_UID/SUDO_GID (or nobody) after initialization. Keeping root lets the lsof fallback attribute other users' processes when PKTAP is unavailable
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 
 Builds compiled with the optional `kubernetes` feature (including the official Docker image) additionally expose `--kubernetes <MODE>`. See [`--kubernetes`](#--kubernetes-mode-optional-feature) below.
@@ -321,7 +347,33 @@ Enable logging with the specified level. Logging is **disabled by default**.
 - `debug` - Detailed debugging information
 - `trace` - Very verbose output (includes packet-level details)
 
-Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`
+Log files are created in the `logs/` directory with timestamp: `rustnet_YYYY-MM-DD_HH-MM-SS.log`. In [headless mode](#headless-mode) the log goes to stderr instead.
+
+#### `--headless`
+
+Run without the terminal UI and stream connection events as JSON lines to stdout. Startup, sandboxing, uid drop, and enrichment are the same as in the TUI; only the output differs. With `--log-level`, log lines go to stderr instead of a file under `logs/`. See [Headless Mode](#headless-mode) for the event format.
+
+```bash
+# Stream every connection event, pretty-printed
+sudo rustnet --headless | jq .
+```
+
+#### `--snapshot-interval <SECONDS>`
+
+Headless only. Emit a `snapshot` event with the full connection table every `SECONDS` seconds (a positive integer), in addition to the per-connection events. The first snapshot is written after one full interval. Requires `--headless`.
+
+```bash
+sudo rustnet --headless --snapshot-interval 10
+```
+
+#### `--filter <QUERY>`
+
+Headless only. Stream only the connections matching `QUERY`, using the same syntax as the interactive `/` filter (see [Filtering](#filtering)): keyword terms such as `port:443` or `process:curl`, free text, and `/regex/` values, combined with spaces (AND). The query is checked before capture starts; a keyword with no value (`port:`) or an invalid regex exits with an error. Requires `--headless`.
+
+```bash
+sudo rustnet --headless --filter 'port:443'
+sudo rustnet --headless --filter 'proto:udp dport:53'
+```
 
 #### `--kubernetes <MODE>` (optional feature)
 
@@ -338,7 +390,7 @@ When active, RustNet maps each connection's PID to its pod UID and container ID 
 Attribution is surfaced in:
 
 - The **Details tab**, as a "Kubernetes" section showing pod name, namespace, pod UID, container name, and container ID
-- **JSON logs** (`--json-log`) and the `--pcap-export` sidecar JSONL, as a `kubernetes` object per connection event
+- **JSON logs** (`--json-log`), the `--headless` event stream and its `snapshot` records, and the `--pcap-export` sidecar JSONL, as a `kubernetes` object per connection event
 - **PCAPNG packet comments** (`--pcapng-export`), as `pod=`, `ns=`, `pod_uid=`, `container=`, and `container_id=` fields
 - The `pod:`, `ns:`, and `container:` [filter keywords](#keyword-filters)
 
@@ -1242,9 +1294,83 @@ When reporting issues:
 
 For performance issues, trace-level logging provides the most detail but generates large log files quickly.
 
+### Headless Mode
+
+`--headless` runs the capture pipeline without the terminal UI and streams connection events to stdout as JSON lines (JSONL, one object per line). It is meant for piping into `jq` or a log shipper, and for running under a service manager or in a container where there is no TTY.
+
+```bash
+# Pretty-print every event
+sudo rustnet --headless | jq .
+
+# Destination IPs of HTTPS connections only
+sudo rustnet --headless --filter 'port:443' | jq -r '.destination_ip'
+
+# Process and bytes sent for every closed connection, log output discarded
+sudo rustnet --headless 2>/dev/null | jq -c 'select(.event=="connection_closed") | {process_name,bytes_sent}'
+```
+
+**Startup:** headless mode goes through the same startup sequence as the TUI: privilege check, capture and eBPF initialization, sandboxing, and the root uid drop, followed by the same process attribution, DPI, DNS, and GeoIP enrichment. No terminal is touched. stdout carries only events; the privilege banner and, with `--log-level`, the log lines go to stderr instead of a file under `logs/`, so `rustnet --headless 2>/dev/null` is a clean JSONL stream. Options that only affect the UI (`--theme`, `--no-color`) have no effect.
+
+**Event types:**
+
+| Event | When | Fields |
+|-------|------|--------|
+| `startup` | Once, as the first line, after the capture device is open and the sandbox is applied | See below |
+| `new_connection` | A connection is first seen | Same as [JSON Logging](#json-logging) |
+| `connection_closed` | A connection is cleaned up after becoming inactive | Same as [JSON Logging](#json-logging), including `bytes_sent`, `bytes_received`, and `duration_secs` |
+| `snapshot` | Every `--snapshot-interval` seconds | See below |
+
+Every line has `timestamp` (RFC3339 UTC) and `event`. The `new_connection` and `connection_closed` lines are the same as the ones `--json-log` writes; their fields are documented under [JSON Logging](#json-logging). A `new_connection` line is emitted when the first packet of a connection is seen, before process attribution, GeoIP, or DPI details are usually available, so consumers that need `pid` or `process_name` should use `connection_closed` or `snapshot` events, or match the lines on their 5-tuple (`protocol`, `source_ip`, `source_port`, `destination_ip`, `destination_port`).
+
+`startup` fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `timestamp` | string | RFC3339 UTC timestamp |
+| `event` | string | `startup` |
+| `version` | string | RustNet version |
+| `pid` | number | Process ID of this RustNet instance |
+| `interface` | string | Capture interface (omitted if unknown) |
+| `link_type` | string | Link layer of the capture: `Ethernet`, `RawIp`, `LinuxSll`, `LinuxSll2`, `Pktap`, `Tun`, `Tap`, or `Unknown` |
+| `sandbox` | string | Sandbox status: `Fully enforced`, `Partially enforced`, `Not applied`, or `Error` (Linux, Windows, and macOS builds with the `macos-sandbox` feature) |
+| `process_detection` | string | Process attribution method in use: `eBPF fentry/fexit + procfs`, `eBPF kprobe + procfs`, or `procfs` on Linux; `pktap` or `lsof` on macOS; `windows-etw+iphlpapi` or `windows-iphlpapi` on Windows; `sockstat` on FreeBSD. The value is the one reported at startup, so it can be `initializing...` if attribution was not ready within the startup wait |
+| `filter` | string | The `--filter` query (omitted when none) |
+| `snapshot_interval_secs` | number | The `--snapshot-interval` value (omitted when none) |
+
+`snapshot` fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `timestamp` | string | RFC3339 UTC timestamp |
+| `event` | string | `snapshot` |
+| `connections` | array | One object per connection currently in the table, with the same fields as a `new_connection` line minus `timestamp` and `event` |
+
+The snapshot table is the one the TUI shows: localhost connections are excluded unless `--show-localhost` is given, DNS PTR lookups are hidden unless `--show-ptr-lookups` is given, and it is refreshed every `--refresh-interval` milliseconds. The first snapshot is written after one full interval so it reflects real traffic rather than an empty table.
+
+**Filtering:** `--filter QUERY` restricts `new_connection`, `connection_closed`, and the `snapshot` table to connections matching `QUERY`; the `startup` line is always written. The syntax is that of the interactive `/` filter (see [Filtering](#filtering)): keyword terms, free text, and `/regex/` values, combined with spaces (AND). The query is checked before capture starts, so a keyword with no value (`port:`) or an invalid regex fails immediately with an error on stderr.
+
+```bash
+# DNS traffic from any process
+sudo rustnet --headless --filter 'proto:udp dport:53'
+
+# Firefox connections to any github.com host
+sudo rustnet --headless --filter 'process:firefox sni:/github\.com$/'
+```
+
+**Backpressure:** stdout is written by a dedicated thread through a queue of 10,000 lines. If the consumer falls behind, events are dropped rather than stalling packet processing; the number of dropped lines is logged as a warning (visible with `--log-level warn` or higher).
+
+**Exiting:**
+
+- `SIGINT` (Ctrl+C), `SIGTERM`, or `SIGHUP` stops the stream, writes out the queued lines, and exits with status 0. On Windows the console control handler is not wired yet, so Ctrl+C or closing the console ends the process without draining the queued lines.
+- When the consumer closes the pipe (for example `rustnet --headless | head -n 20`), the next write fails and RustNet exits with status 0.
+- A packet capture failure exits with status 1 with the error on stderr.
+- An unknown option, a `--snapshot-interval` or `--filter` without `--headless`, or an invalid `--filter` query exits with an error before capture starts.
+
+**Combining with other outputs:** `--json-log FILE` still works alongside `--headless` and receives every `new_connection` and `connection_closed` event, unfiltered; `--filter` only applies to stdout. `--pcap-export` and `--pcapng-export` work as in the TUI.
+
 ### JSON Logging
 
-The `--json-log` option enables structured JSON logging of connection events to a file. Each line is a separate JSON object (JSONL format).
+The `--json-log` option enables structured JSON logging of connection events to a file. Each line is a separate JSON object (JSONL format). To stream the same events to stdout instead of a file, see [Headless Mode](#headless-mode).
 
 ```bash
 # Enable JSON logging
@@ -1282,7 +1408,7 @@ sudo rustnet -i eth0 --json-log ~/network-events.json
 **Example output:**
 
 ```json
-{"timestamp":"2025-01-15T10:30:00Z","event":"new_connection","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","direction":"outgoing","dpi_protocol":"HTTPS","dpi_domain":"example.com"}
+{"timestamp":"2025-01-15T10:30:00Z","event":"new_connection","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","direction":"outgoing","dpi_protocol":"HTTPS (example.com)","dpi_domain":"example.com"}
 {"timestamp":"2025-01-15T10:30:05Z","event":"connection_closed","protocol":"TCP","source_ip":"192.168.1.100","source_port":54321,"destination_ip":"93.184.216.34","destination_port":443,"pid":1234,"process_name":"curl","service_name":"https","direction":"outgoing","bytes_sent":1024,"bytes_received":4096,"duration_secs":5}
 ```
 

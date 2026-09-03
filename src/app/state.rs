@@ -16,6 +16,7 @@ use std::time::SystemTime;
 use std::time::{Duration, Instant};
 
 use crate::filter::ConnectionFilter;
+use crate::headless::sink::{EventSink, FileSink};
 #[cfg(test)]
 use crate::network::parser::ParsedPacket;
 use crate::network::{
@@ -32,7 +33,7 @@ use crate::network::{
 };
 
 use super::capture::CaptureStatus;
-use super::logging::{JsonLineWriter, log_pcap_connection};
+use super::logging::log_pcap_connection;
 use super::types::{
     AppOutputHandles, AppStats, Config, ConnRateHistory, ConnRateHistorySnapshot, ConnectionCounts,
     ProcessDetectionStatus,
@@ -145,11 +146,12 @@ pub struct App {
     /// the sandbox is applied so they inherit it). Taken by `start_workers`.
     pub(super) packet_rx: Option<Receiver<Vec<CapturedPacket>>>,
 
-    /// JSONL outputs opened before sandboxing and uid drop. Worker threads
-    /// share these handles so they never need to traverse the configured path
-    /// after privileges have been reduced.
-    pub(super) json_log_file: Option<Arc<JsonLineWriter>>,
-    pub(super) pcap_sidecar_file: Option<Arc<JsonLineWriter>>,
+    /// Connection-event sinks: the `--json-log` file and any stream the
+    /// front-end added. Worker threads share these handles so they never
+    /// need to traverse a configured path after privileges have been reduced.
+    pub(super) event_sinks: Vec<Arc<dyn EventSink>>,
+    /// The PCAP sidecar JSONL, opened before sandboxing and uid drop.
+    pub(super) pcap_sidecar_file: Option<Arc<FileSink>>,
 
     /// Pre-created PCAPNG output file. Held until worker startup so the writer
     /// thread can use the exact file handle allowed by the sandbox.
@@ -218,28 +220,34 @@ impl App {
 
     pub fn new_with_output_handles(
         config: Config,
-        mut output_handles: AppOutputHandles,
+        output_handles: AppOutputHandles,
     ) -> Result<Self> {
-        if config.json_log_file.is_some() != output_handles.json_log.is_some() {
+        let AppOutputHandles {
+            json_log,
+            pcap_sidecar,
+            pcapng_export,
+            mut event_sinks,
+        } = output_handles;
+        if config.json_log_file.is_some() != json_log.is_some() {
             anyhow::bail!("JSON logging requires exactly one matching pre-opened output handle");
         }
-        if config.pcap_export_file.is_some() != output_handles.pcap_sidecar.is_some() {
+        if config.pcap_export_file.is_some() != pcap_sidecar.is_some() {
             anyhow::bail!(
                 "PCAP export requires exactly one matching pre-opened sidecar output handle"
             );
         }
-        if config.pcapng_export_file.is_some() != output_handles.pcapng_export.is_some() {
+        if config.pcapng_export_file.is_some() != pcapng_export.is_some() {
             anyhow::bail!("PCAPNG export requires exactly one matching pre-opened output handle");
         }
 
-        let json_log_file = output_handles.json_log.take().map(|file| {
-            Arc::new(JsonLineWriter::new(
+        if let Some(file) = json_log {
+            event_sinks.push(Arc::new(FileSink::new(
                 file,
                 config.json_log_file.clone().unwrap_or_default(),
-            ))
-        });
-        let pcap_sidecar_file = output_handles.pcap_sidecar.take().map(|file| {
-            Arc::new(JsonLineWriter::new(
+            )));
+        }
+        let pcap_sidecar_file = pcap_sidecar.map(|file| {
+            Arc::new(FileSink::new(
                 file,
                 config
                     .pcap_export_file
@@ -301,9 +309,9 @@ impl App {
             dns_resolver,
             geoip_resolver,
             packet_rx: None,
-            json_log_file,
+            event_sinks,
             pcap_sidecar_file,
-            pcapng_export_file: output_handles.pcapng_export.take(),
+            pcapng_export_file: pcapng_export,
             sandbox_info: Arc::new(RwLock::new(SandboxReport::default())),
             workers: Mutex::new(Vec::new()),
         })
@@ -362,6 +370,10 @@ impl App {
     /// untrusted-input DPI parsers inside the Landlock domain on Linux.
     pub fn start_workers(&mut self) -> Result<()> {
         let tracker = Arc::clone(&self.tracker);
+
+        for sink in &self.event_sinks {
+            sink.start();
+        }
 
         let pcapng_tx = self.start_pcapng_export_thread(tracker.clone())?;
 
@@ -779,33 +791,48 @@ impl App {
         }
 
         self.join_workers();
+
+        // Producers are gone, so the sinks' writer threads see the complete
+        // event stream before they drain and exit.
+        let mut sink_threads: Vec<JoinHandle<()>> = self
+            .event_sinks
+            .iter()
+            .filter_map(|sink| sink.shutdown())
+            .collect();
+        join_with_timeout(&mut sink_threads);
     }
 
     fn join_workers(&self) {
         let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
-        let deadline = Instant::now() + WORKER_JOIN_TIMEOUT;
-        loop {
-            for handle in workers.extract_if(.., |handle| handle.is_finished()) {
-                let name = thread_label(&handle);
-                if handle.join().is_err() {
-                    warn!("Worker thread {name} panicked");
-                }
+        join_with_timeout(&mut workers);
+    }
+}
+
+/// Join every finished thread, waiting at most [`WORKER_JOIN_TIMEOUT`] for
+/// the rest; whatever is still running is detached.
+fn join_with_timeout(threads: &mut Vec<JoinHandle<()>>) {
+    let deadline = Instant::now() + WORKER_JOIN_TIMEOUT;
+    loop {
+        for handle in threads.extract_if(.., |handle| handle.is_finished()) {
+            let name = thread_label(&handle);
+            if handle.join().is_err() {
+                warn!("Worker thread {name} panicked");
             }
-            if workers.is_empty() || Instant::now() >= deadline {
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
         }
-        if !workers.is_empty() {
-            let names: Vec<String> = workers.iter().map(thread_label).collect();
-            warn!(
-                "Worker threads still running after {:?}, exiting without them: {}",
-                WORKER_JOIN_TIMEOUT,
-                names.join(", ")
-            );
-            // Dropping the handles detaches the threads; process exit reaps them.
-            workers.clear();
+        if threads.is_empty() || Instant::now() >= deadline {
+            break;
         }
+        thread::sleep(Duration::from_millis(10));
+    }
+    if !threads.is_empty() {
+        let names: Vec<String> = threads.iter().map(thread_label).collect();
+        warn!(
+            "Worker threads still running after {:?}, exiting without them: {}",
+            WORKER_JOIN_TIMEOUT,
+            names.join(", ")
+        );
+        // Dropping the handles detaches the threads; process exit reaps them.
+        threads.clear();
     }
 }
 

@@ -13,12 +13,12 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::export::pcapng::{self, PcapngWriter};
+use crate::headless::events::dpi_domain;
 use crate::network::capture::CaptureConfig;
 use crate::network::tracker::ConnectionTracker;
 use crate::network::types::{Connection, ConnectionKey};
 
 use super::capture::{LinktypeWait, wait_for_linktype};
-use super::logging::dpi_domain;
 use super::state::App;
 use super::types::AppStats;
 use super::{MAX_PCAPNG_QUEUE, MAX_PCAPNG_RETRY_BYTES, MAX_PCAPNG_RETRY_RECORDS};

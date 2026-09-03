@@ -4,10 +4,11 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::fs::File;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime};
 
+use crate::headless::sink::EventSink;
 use crate::network::types::{Connection, GraphScale, Protocol, UNKNOWN_PROCESS_NAME};
 
 /// Process detection status information for UI display
@@ -113,11 +114,15 @@ impl Default for Config {
     }
 }
 
+/// Output descriptors opened by the front-end before sandboxing and uid
+/// drop, plus any extra connection-event sinks (a stdout stream, for
+/// instance) that receive the same events as `json_log`.
 #[derive(Default)]
 pub struct AppOutputHandles {
     pub json_log: Option<File>,
     pub pcap_sidecar: Option<File>,
     pub pcapng_export: Option<File>,
+    pub event_sinks: Vec<Arc<dyn EventSink>>,
 }
 
 /// Group label shown for connections without a resolved process name.

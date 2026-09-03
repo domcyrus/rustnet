@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::headless::sink::{EventSink, FileSink};
 use crate::network::{
     capture::{CaptureConfig, CapturedPacket, PacketReader, setup_packet_capture},
     dns::DnsResolver,
@@ -17,7 +18,7 @@ use crate::network::{
     tracker::{ConnectionTracker, IngestOutcome},
 };
 
-use super::logging::{JsonLineWriter, log_connection_closed, log_connection_event};
+use super::logging::{log_connection_closed, log_new_connection};
 use super::pcapng_export::{PcapngRecord, send_pcapng_record};
 use super::state::App;
 use super::types::AppStats;
@@ -501,7 +502,7 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let linktype_storage = Arc::clone(&self.linktype);
         let capture_status = Arc::clone(&self.capture_status);
-        let json_log_file = self.json_log_file.clone();
+        let event_sinks = self.event_sinks.clone();
         let pcap_sidecar_file = self.pcap_sidecar_file.clone();
         let dns_resolver = self.dns_resolver.clone();
         let oui_lookup = self.oui_lookup.clone();
@@ -590,8 +591,8 @@ impl App {
                                     parsed,
                                     packet_timestamp,
                                     &stats,
-                                    &json_log_file,
-                                    &pcap_sidecar_file,
+                                    &event_sinks,
+                                    pcap_sidecar_file.as_deref(),
                                     dns_resolver.as_deref(),
                                 );
                                 parsed_count += 1;
@@ -671,8 +672,8 @@ fn update_connection(
     parsed: ParsedPacket,
     now: SystemTime,
     stats: &AppStats,
-    json_log_file: &Option<Arc<JsonLineWriter>>,
-    pcap_sidecar_file: &Option<Arc<JsonLineWriter>>,
+    event_sinks: &[Arc<dyn EventSink>],
+    pcap_sidecar: Option<&FileSink>,
     dns_resolver: Option<&DnsResolver>,
 ) -> IngestOutcome {
     let outcome = tracker.ingest_at(&parsed, now);
@@ -712,13 +713,7 @@ fn update_connection(
         stats
             .total_connections_archived
             .fetch_add(1, Ordering::Relaxed);
-        log_connection_closed(
-            conn,
-            now,
-            json_log_file.as_deref(),
-            pcap_sidecar_file.as_deref(),
-            dns_resolver,
-        );
+        log_connection_closed(conn, now, event_sinks, pcap_sidecar, dns_resolver);
         debug!(
             "Archived prior connection generation before creating a new one: {}",
             outcome.key
@@ -730,10 +725,10 @@ fn update_connection(
             .total_connections_created
             .fetch_add(1, Ordering::Relaxed);
         debug!("New connection detected: {}", outcome.key);
-        if let Some(writer) = json_log_file
+        if !event_sinks.is_empty()
             && let Some(conn) = tracker.connections().get(&outcome.key)
         {
-            log_connection_event(writer, "new_connection", conn.value(), None, dns_resolver);
+            log_new_connection(event_sinks, conn.value(), dns_resolver);
         }
     }
 
@@ -837,23 +832,19 @@ mod connection_lifecycle_tests {
         }
     }
 
-    fn json_writer(path: &Path) -> Arc<JsonLineWriter> {
+    fn json_writer(path: &Path) -> FileSink {
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(path)
             .unwrap();
-        Arc::new(JsonLineWriter::new(
-            file,
-            path.to_string_lossy().into_owned(),
-        ))
+        FileSink::new(file, path.to_string_lossy().into_owned())
     }
 
     #[test]
     fn lifecycle_counters_record_new_and_replaced_generations() {
         let tracker = ConnectionTracker::new();
         let stats = AppStats::default();
-        let no_log = None;
         let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
 
         update_connection(
@@ -861,8 +852,8 @@ mod connection_lifecycle_tests {
             tcp_packet(flags(true, false)),
             started,
             &stats,
-            &no_log,
-            &no_log,
+            &[],
+            None,
             None,
         );
         update_connection(
@@ -870,8 +861,8 @@ mod connection_lifecycle_tests {
             tcp_packet(flags(false, true)),
             started + Duration::from_secs(1),
             &stats,
-            &no_log,
-            &no_log,
+            &[],
+            None,
             None,
         );
         update_connection(
@@ -879,8 +870,8 @@ mod connection_lifecycle_tests {
             tcp_packet(flags(true, false)),
             started + Duration::from_secs(2),
             &stats,
-            &no_log,
-            &no_log,
+            &[],
+            None,
             None,
         );
 
@@ -893,8 +884,8 @@ mod connection_lifecycle_tests {
         let dir = ScratchDir::new("lifecycle", "writers");
         let events_path = dir.path().join("events.jsonl");
         let sidecar_path = dir.path().join("capture.pcap.connections.jsonl");
-        let events = Some(json_writer(&events_path));
-        let sidecar = Some(json_writer(&sidecar_path));
+        let events: Vec<Arc<dyn EventSink>> = vec![Arc::new(json_writer(&events_path))];
+        let sidecar = json_writer(&sidecar_path);
         let tracker = ConnectionTracker::new();
         let stats = AppStats::default();
         let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
@@ -905,7 +896,7 @@ mod connection_lifecycle_tests {
             started,
             &stats,
             &events,
-            &sidecar,
+            Some(&sidecar),
             None,
         );
         update_connection(
@@ -914,7 +905,7 @@ mod connection_lifecycle_tests {
             started + Duration::from_secs(1),
             &stats,
             &events,
-            &sidecar,
+            Some(&sidecar),
             None,
         );
         update_connection(
@@ -923,7 +914,7 @@ mod connection_lifecycle_tests {
             started + Duration::from_secs(2),
             &stats,
             &events,
-            &sidecar,
+            Some(&sidecar),
             None,
         );
 

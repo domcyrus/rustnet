@@ -16,7 +16,7 @@
 
 ## Crate 结构<a id="crate-structure"></a>
 
-RustNet 是一个由五个 crate 组成的 Cargo 工作区。分析逻辑、捕获后端、进程归属和沙箱各自位于独立的可复用库 crate 中；二进制 crate 将它们组合成 TUI 应用。
+RustNet 是一个由五个 crate 组成的 Cargo 工作区。分析逻辑、捕获后端、进程归属和沙箱各自位于独立的可复用库 crate 中；二进制 crate 将它们组合成应用。
 
 | Crate | 类型 | 职责 |
 | --- | --- | --- |
@@ -24,9 +24,11 @@ RustNet 是一个由五个 crate 组成的 Cargo 工作区。分析逻辑、捕�
 | [`rustnet-capture`](crates/rustnet-capture) | 库 | 基于 libpcap/Npcap 的数据包捕获后端：设备选择、BPF 过滤器、macOS PKTAP、TUN/TAP，以及原始帧 `PacketReader`。 |
 | [`rustnet-host`](crates/rustnet-host) | 库 | 按连接进程归属及主机 TCP/UDP 套接字清单：Linux 上的 eBPF/procfs、macOS 上的 PKTAP/lsof、Windows 上的 ETW/IP Helper，以及 FreeBSD 上的 `sockstat`。负责 eBPF 构建工具链及内置的 `vmlinux.h`。 |
 | [`rustnet-sandbox`](crates/rustnet-sandbox) | 库 | 初始化完成后的沙箱与 root 权限降级，统一入口 `apply_sandbox`：Linux 上的 Landlock + 能力降级、macOS 上的 Seatbelt、Windows 上的受限令牌 + 作业对象，以及 Linux/macOS/FreeBSD 共享的 uid 降级。不依赖任何其他工作区 crate。 |
-| `rustnet-monitor`（二进制 `rustnet`） | 二进制 | 面向用户的应用：CLI、TUI 和应用事件循环。以 `ConnectionTracker` 作为唯一数据来源（dogfooding）。 |
+| `rustnet-monitor`（二进制 `rustnet`） | 二进制 | 面向用户的应用：CLI、共享的引导启动流程、TUI 与无头前端，以及应用事件循环。以 `ConnectionTracker` 作为唯一数据来源（dogfooding）。 |
 
 包名为 `rustnet-monitor`，因为 `rustnet` 这个 crate 名称在 crates.io 上已被占用；安装后的二进制文件名为 `rustnet`。
+
+二进制文件在同一套引导启动流程之上提供两个前端。`src/bootstrap.rs` 负责与前端无关的启动步骤（日志、权限检查、配置、输出文件、沙箱策略）以及两阶段的特权启动（打开捕获并加载 eBPF，等待就绪，在主线程上应用沙箱并降低 uid，然后生成工作线程）；`main.rs` 只负责选择前端。`src/tui.rs` 在其之上驱动终端 UI，而 `src/headless/`（`--headless`）则改为将连接事件以 JSON 行的形式流式输出到 stdout。`--headless`、`--json-log` 和 PCAP sidecar 共用的 JSONL 线格式结构体位于 `src/headless/events.rs`，行输出 sink（文件和带队列的 stdout）位于 `src/headless/sink.rs`。
 
 ### 依赖关系图
 
@@ -46,7 +48,7 @@ flowchart TD
     HOST --> CORE
 ```
 
-依赖关系是无环的：`rustnet-core` 没有任何工作区内依赖，`rustnet-capture` 和 `rustnet-host` 都仅依赖它，而 `rustnet-sandbox` 不依赖任何工作区 crate。让 `rustnet-core` 保持为叶子节点，使其可以独立发布和复用 —— 无界面的前端（例如 Prometheus 导出器）可以仅组合 `rustnet-capture` + `rustnet-core` 而无需 TUI；[`examples/headless.rs`](examples/headless.rs) 展示了包含 `rustnet-host` 与 `rustnet-sandbox` 的完整组合。
+依赖关系是无环的：`rustnet-core` 没有任何工作区内依赖，`rustnet-capture` 和 `rustnet-host` 都仅依赖它，而 `rustnet-sandbox` 不依赖任何工作区 crate。让 `rustnet-core` 保持为叶子节点，使其可以独立发布和复用 —— 外部的无头工具（例如 Prometheus 导出器）可以仅组合 `rustnet-capture` + `rustnet-core` 而无需 TUI；[`examples/headless.rs`](examples/headless.rs) 展示了包含 `rustnet-host` 与 `rustnet-sandbox` 的完整组合。二进制文件自带的 `--headless` 前端位于 `src/headless/`，使用完整的 `rustnet-monitor` 管线。
 
 ### 重导出门面
 

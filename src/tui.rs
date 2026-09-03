@@ -9,7 +9,7 @@ use std::io;
 use std::time::Duration;
 
 use crate::app::App;
-use crate::bootstrap::{Prepared, shutdown_requested};
+use crate::bootstrap::{self, Frontend, shutdown_requested};
 use crate::config;
 use crate::network::types::Connection;
 use crate::ui::{self, clear_all_with_confirmation, copy_to_clipboard, sort_connections};
@@ -18,7 +18,8 @@ use crate::ui::{self, clear_all_with_confirmation, copy_to_clipboard, sort_conne
 /// failures propagate; a failure inside the draw/input loop is reported
 /// after the terminal has been restored so the message lands on a usable
 /// screen, and the process still exits normally.
-pub fn run(matches: &ArgMatches, prepared: Prepared) -> Result<()> {
+pub fn run(matches: &ArgMatches) -> Result<()> {
+    let prepared = bootstrap::prepare(matches, Frontend::Tui)?;
     apply_theme(matches);
 
     let backend = CrosstermBackend::new(io::stdout());

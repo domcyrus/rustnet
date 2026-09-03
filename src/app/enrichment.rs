@@ -424,14 +424,8 @@ impl App {
 #[cfg(test)]
 mod process_enrichment_tests {
     use super::process_enrichment_complete;
-    use crate::app::logging::process_lineage_json;
     use crate::network::types::UNKNOWN_PROCESS_NAME;
-    use crate::network::types::{
-        Connection, MatchQuality, ProcessAncestor, ProcessLineage, Protocol, ProtocolState,
-        TcpState,
-    };
-    use serde_json::json;
-    use std::path::PathBuf;
+    use crate::network::types::{Connection, MatchQuality, Protocol, ProtocolState, TcpState};
 
     fn connection() -> Connection {
         Connection::new(
@@ -474,31 +468,5 @@ mod process_enrichment_tests {
         conn.attribution_quality = Some(MatchQuality::Unspecified);
 
         assert!(!process_enrichment_complete(&conn));
-    }
-
-    #[test]
-    fn lineage_json_preserves_process_identity_fields() {
-        let lineage = ProcessLineage {
-            ancestors: vec![ProcessAncestor {
-                pid: 1,
-                name: "systemd".to_string(),
-                executable: Some(PathBuf::from("/usr/lib/systemd/systemd")),
-                started_at_unix_ms: Some(1_700_000_000_000),
-            }],
-            truncated: true,
-        };
-
-        assert_eq!(
-            process_lineage_json(&lineage),
-            json!({
-                "ancestors": [{
-                    "pid": 1,
-                    "name": "systemd",
-                    "executable": "/usr/lib/systemd/systemd",
-                    "started_at_unix_ms": 1_700_000_000_000_u64,
-                }],
-                "truncated": true,
-            })
-        );
     }
 }

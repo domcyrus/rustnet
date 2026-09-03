@@ -579,6 +579,9 @@ docker run --rm -it --net=host ghcr.io/domcyrus/rustnet:latest -i eth0
 docker run --rm -it --privileged --net=host \
   ghcr.io/domcyrus/rustnet:latest
 
+# 无头 JSONL 流（不需要 TTY，因此无需 -it）
+docker run --rm --net=host ghcr.io/domcyrus/rustnet:latest --headless | jq .
+
 # 查看可用选项
 docker run --rm ghcr.io/domcyrus/rustnet:latest --help
 ```

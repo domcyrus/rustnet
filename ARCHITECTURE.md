@@ -16,7 +16,7 @@ This document describes the technical architecture and implementation details of
 
 ## Crate Structure
 
-RustNet is a Cargo workspace of five crates. The analysis logic, capture backend, process attribution, and sandboxing each live in their own reusable library crate; the binary composes them into the TUI application.
+RustNet is a Cargo workspace of five crates. The analysis logic, capture backend, process attribution, and sandboxing each live in their own reusable library crate; the binary composes them into the application.
 
 | Crate | Type | Responsibility |
 | --- | --- | --- |
@@ -24,9 +24,11 @@ RustNet is a Cargo workspace of five crates. The analysis logic, capture backend
 | [`rustnet-capture`](crates/rustnet-capture) | library | libpcap/Npcap packet-capture backend: device selection, BPF filters, macOS PKTAP, TUN/TAP, and a raw-frame `PacketReader`. |
 | [`rustnet-host`](crates/rustnet-host) | library | Per-connection process attribution plus a host TCP/UDP socket inventory: eBPF/procfs on Linux, PKTAP/lsof on macOS, ETW/IP Helper on Windows, and `sockstat` on FreeBSD. Owns the eBPF build tooling and bundled `vmlinux.h`. |
 | [`rustnet-sandbox`](crates/rustnet-sandbox) | library | Post-initialization sandboxing and root privilege dropping behind one `apply_sandbox` entry point: Landlock + capability drops on Linux, Seatbelt on macOS, restricted token + job object on Windows, and the shared uid drop on Linux/macOS/FreeBSD. Depends on no other workspace crate. |
-| `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, TUI, and the app event loop. Dogfoods `ConnectionTracker` as the single source of truth. |
+| `rustnet-monitor` (binary `rustnet`) | binary | The user-facing application: CLI, the shared bootstrap, the TUI and headless front-ends, and the app event loop. Dogfoods `ConnectionTracker` as the single source of truth. |
 
 The package is named `rustnet-monitor` because the `rustnet` crate name is taken on crates.io; the installed binary is `rustnet`.
+
+The binary has two front-ends over one bootstrap sequence. `src/bootstrap.rs` runs the front-end independent startup (logging, privilege check, config, output files, sandbox policy) and the two-phase privileged launch (open capture and load eBPF, wait for readiness, apply the sandbox and drop uid on the main thread, then spawn the worker threads); `main.rs` only picks the front-end. `src/tui.rs` drives the terminal UI on top of it, and `src/headless/` (`--headless`) streams the connection events as JSON lines to stdout instead. The JSONL wire structs shared by `--headless`, `--json-log`, and the PCAP sidecar live in `src/headless/events.rs`, and the line sinks (file and queued stdout) in `src/headless/sink.rs`.
 
 ### Dependency Graph
 
@@ -46,7 +48,7 @@ flowchart TD
     HOST --> CORE
 ```
 
-The graph is acyclic: `rustnet-core` has no workspace dependencies, `rustnet-capture` and `rustnet-host` depend only on it, and `rustnet-sandbox` depends on no workspace crate at all. Keeping `rustnet-core` a leaf lets it be published and reused independently -- a headless front-end (e.g. a Prometheus exporter) can pair `rustnet-capture` + `rustnet-core` without the TUI; [`examples/headless.rs`](examples/headless.rs) shows the full pairing including `rustnet-host` and `rustnet-sandbox`.
+The graph is acyclic: `rustnet-core` has no workspace dependencies, `rustnet-capture` and `rustnet-host` depend only on it, and `rustnet-sandbox` depends on no workspace crate at all. Keeping `rustnet-core` a leaf lets it be published and reused independently -- an external headless tool (e.g. a Prometheus exporter) can pair `rustnet-capture` + `rustnet-core` without the TUI; [`examples/headless.rs`](examples/headless.rs) shows the full pairing including `rustnet-host` and `rustnet-sandbox`. The binary's own `--headless` front-end lives in `src/headless/` and uses the full `rustnet-monitor` pipeline.
 
 ### Re-export Facade
 
