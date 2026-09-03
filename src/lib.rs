@@ -20,6 +20,7 @@ pub mod cli;
 pub mod config;
 pub(crate) mod export;
 pub(crate) mod filter;
+pub mod headless;
 pub mod network;
 pub mod ui;
 

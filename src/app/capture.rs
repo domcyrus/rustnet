@@ -569,9 +569,8 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let capture_status = Arc::clone(&self.capture_status);
 
-        let handle = thread::Builder::new()
-            .name("pcap_tx".to_string())
-            .spawn(move || {
+        self.runtime
+            .spawn_monitored("pcap_tx", move || {
                     info!("Packet capture worker started on interface: {}", device_name);
                     let mut reader = PacketReader::new(capture);
                     let mut packets_read = 0u64;
@@ -799,7 +798,6 @@ impl App {
                     );
                 })
             .map_err(|error| anyhow::anyhow!("failed to spawn capture worker: {error}"))?;
-        self.runtime.register(handle);
 
         Ok(true)
     }
@@ -850,9 +848,8 @@ impl App {
             ..Default::default()
         };
 
-        let handle = thread::Builder::new()
-            .name(format!("pcap_rx_{}", id))
-            .spawn(move || {
+        self.runtime
+            .spawn_monitored(format!("pcap_rx_{id}"), move || {
                 info!("Packet processor {} started", id);
 
                 // This thread only parses captured bytes; it needs neither raw
@@ -1003,7 +1000,6 @@ impl App {
                 );
             })
             .map_err(|error| anyhow::anyhow!("failed to spawn packet processor {id}: {error}"))?;
-        self.runtime.register(handle);
         Ok(())
     }
 }

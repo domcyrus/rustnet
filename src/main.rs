@@ -1,15 +1,24 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use log::{LevelFilter, error, info, warn};
 use ratatui::prelude::CrosstermBackend;
 use rustnet_monitor::{app, cli, config, network, ui};
 use simplelog::{ConfigBuilder, WriteLogger};
 use std::fs;
-use std::io;
+use std::io::{self, IsTerminal};
 use std::path::Path;
 use std::time::Duration;
 
 fn main() -> Result<()> {
     let matches = cli::build_cli().get_matches();
+    let headless = matches.get_flag("headless");
+
+    // Never start terminal control or privileged capture accidentally from a
+    // pipe, scheduler, or service. Machine consumers must opt in explicitly.
+    if !headless && (!io::stdin().is_terminal() || !io::stdout().is_terminal()) {
+        anyhow::bail!(
+            "interactive mode requires a terminal; use --headless for scripts and services"
+        );
+    }
 
     // Clap handles --help and --version before this point, so both remain
     // available even when Npcap is not installed. The Npcap DLLs are
@@ -87,43 +96,44 @@ fn main() -> Result<()> {
         info!("PTR lookup connections will be shown in UI");
     }
 
-    // Check NO_COLOR environment variable and --no-color flag (https://no-color.org)
-    let no_color =
-        matches.get_flag("no-color") || std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty());
-    if no_color {
-        info!("Colors disabled (NO_COLOR)");
-        ui::set_no_color(true);
-    }
-
-    // Color theme: CLI --theme > config file > muted default. Warnings go to
-    // stderr here, before the terminal enters raw mode.
-    let user_config = config::load();
-    let theme_name = matches
-        .get_one::<String>("theme")
-        .map(String::as_str)
-        .or(user_config.theme.as_deref())
-        .unwrap_or("muted");
-    let preset = ui::ThemePreset::from_name(theme_name).unwrap_or_else(|| {
-        // Only reachable via the config file; clap validates the CLI value.
-        eprintln!("rustnet: unknown theme {theme_name:?} in config, using \"muted\"");
-        ui::ThemePreset::Muted
-    });
-    let mut spec = ui::ThemeSpec::builtin(preset);
-    for (token, value) in &user_config.overrides {
-        if let Err(e) = spec.set_token(token, value) {
-            eprintln!("rustnet: ignoring theme override {token:?}: {e}");
+    if !headless {
+        // Check NO_COLOR environment variable and --no-color flag (https://no-color.org)
+        let no_color =
+            matches.get_flag("no-color") || std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty());
+        if no_color {
+            info!("Colors disabled (NO_COLOR)");
+            ui::set_no_color(true);
         }
+
+        // Color theme: CLI --theme > config file > muted default. Warnings go
+        // to stderr here, before the terminal enters raw mode.
+        let user_config = config::load();
+        let theme_name = matches
+            .get_one::<String>("theme")
+            .map(String::as_str)
+            .or(user_config.theme.as_deref())
+            .unwrap_or("muted");
+        let preset = ui::ThemePreset::from_name(theme_name).unwrap_or_else(|| {
+            // Only reachable via the config file; clap validates the CLI value.
+            eprintln!("rustnet: unknown theme {theme_name:?} in config, using \"muted\"");
+            ui::ThemePreset::Muted
+        });
+        let mut spec = ui::ThemeSpec::builtin(preset);
+        for (token, value) in &user_config.overrides {
+            if let Err(e) = spec.set_token(token, value) {
+                eprintln!("rustnet: ignoring theme override {token:?}: {e}");
+            }
+        }
+        info!("Using {preset:?} color theme");
+        // ANSI Gray (the muted/label text tier) is nearly unreadable on light
+        // backgrounds, so ask the terminal for its background (OSC 11) and
+        // darken those tiers when it reports a light one.
+        if !no_color && ui::detect_light_background() == Some(true) {
+            info!("Light terminal background detected; darkening gray text tiers");
+            spec.adapt_to_light_background();
+        }
+        ui::set_theme(ui::Theme::resolve(&spec, ui::detect_truecolor()));
     }
-    info!("Using {preset:?} color theme");
-    // ANSI Gray (the muted/label text tier) is nearly unreadable on light
-    // backgrounds, so ask the terminal for its background (OSC 11) and
-    // darken those tiers when it reports a light one. Skipped under
-    // NO_COLOR, where no colors are emitted at all.
-    if !no_color && ui::detect_light_background() == Some(true) {
-        info!("Light terminal background detected; darkening gray text tiers");
-        spec.adapt_to_light_background();
-    }
-    ui::set_theme(ui::Theme::resolve(&spec, ui::detect_truecolor()));
 
     if matches.get_flag("no-geoip") {
         config.disable_geoip = true;
@@ -246,6 +256,11 @@ fn main() -> Result<()> {
     match capture_status {
         app::InitStatus::Ready => info!("packet capture initialized, safe to apply sandbox"),
         app::InitStatus::Failed(message) => {
+            if headless {
+                let stop_report = app.stop();
+                ensure_clean_shutdown(stop_report)?;
+                anyhow::bail!("packet capture initialization failed: {message}");
+            }
             warn!("packet capture initialization failed: {}", message)
         }
     }
@@ -349,13 +364,17 @@ fn main() -> Result<()> {
 
     // Before this point the platform default remains in effect, so SIGTERM or
     // SIGHUP can still terminate a slow synchronous capture/process setup.
-    install_signal_handlers();
+    install_signal_handlers()?;
 
     // Now that the sandbox has been applied on the main thread, start the worker
     // threads (DPI packet processors, enrichment, snapshot, cleanup, collectors).
     // On Linux these inherit the Landlock domain and the dropped capabilities, so
     // a compromise in a DPI parser is contained even when running as root.
     app.start_workers(worker_startup_permit)?;
+
+    if headless {
+        return run_headless(&matches, &mut app);
+    }
 
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;
@@ -366,24 +385,50 @@ fn main() -> Result<()> {
     let stop_report = app.stop();
     ui::restore_terminal(&mut terminal)?;
 
-    if stop_report.timed_out_workers > 0
-        || stop_report.panicked_workers > 0
-        || stop_report.output_errors > 0
-    {
-        anyhow::bail!(
-            "runtime shutdown failed: {} worker(s) timed out, {} worker(s) panicked, {} output operation(s) failed",
-            stop_report.timed_out_workers,
-            stop_report.panicked_workers,
-            stop_report.output_errors
-        );
-    }
-
-    if let Err(err) = res {
-        error!("Application error: {}", err);
-        println!("Error: {}", err);
-    }
+    ensure_clean_shutdown(stop_report)?;
+    res.context("terminal UI failed")?;
 
     info!("RustNet Monitor shutting down");
+    Ok(())
+}
+
+fn run_headless(matches: &clap::ArgMatches, app: &mut app::App) -> Result<()> {
+    let format = matches
+        .get_one::<String>("output")
+        .map(|value| value.parse::<rustnet_monitor::headless::HeadlessFormat>())
+        .transpose()
+        .map_err(anyhow::Error::msg)?
+        .unwrap_or_default();
+    let options = rustnet_monitor::headless::HeadlessOptions {
+        format,
+        duration: matches
+            .get_one::<u64>("duration")
+            .map(|seconds| Duration::from_secs(*seconds)),
+        filter_query: matches.get_one::<String>("filter").cloned(),
+    };
+    let outcome =
+        match rustnet_monitor::headless::run(app, io::stdout(), &options, &SHUTDOWN_REQUESTED) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let stop_report = app.stop();
+                if let Err(shutdown_error) = ensure_clean_shutdown(stop_report) {
+                    return Err(anyhow::anyhow!("{error}; {shutdown_error}"));
+                }
+                return Err(error);
+            }
+        };
+    ensure_clean_shutdown(outcome.stop_report)
+}
+
+fn ensure_clean_shutdown(report: app::StopReport) -> Result<()> {
+    if report.timed_out_workers > 0 || report.panicked_workers > 0 || report.output_errors > 0 {
+        anyhow::bail!(
+            "runtime shutdown failed: {} worker(s) timed out, {} worker(s) panicked, {} output operation(s) failed",
+            report.timed_out_workers,
+            report.panicked_workers,
+            report.output_errors
+        );
+    }
     Ok(())
 }
 
@@ -479,26 +524,49 @@ fn shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Route SIGTERM/SIGHUP through the regular shutdown path. Without this,
-/// `kill` (or a session manager closing the terminal) ends the process
-/// before the JSONL/PCAP outputs are flushed and leaves the terminal in
-/// raw mode. Ctrl+C needs no handler: raw mode delivers it as a key event.
+/// Route termination signals through the regular shutdown path so output is
+/// flushed and an interactive terminal can be restored.
 #[cfg(unix)]
-fn install_signal_handlers() {
+fn install_signal_handlers() -> io::Result<()> {
     extern "C" fn on_signal(_sig: libc::c_int) {
         // Only async-signal-safe work here: set the flag, nothing else.
         SHUTDOWN_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
     let handler: extern "C" fn(libc::c_int) = on_signal;
     // SAFETY: installing a handler that only stores to an atomic.
-    unsafe {
-        libc::signal(libc::SIGTERM, handler as libc::sighandler_t);
-        libc::signal(libc::SIGHUP, handler as libc::sighandler_t);
+    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY: installing a handler that only stores to an atomic.
+        if unsafe { libc::signal(signal, handler as libc::sighandler_t) } == libc::SIG_ERR {
+            return Err(io::Error::last_os_error());
+        }
     }
+    Ok(())
 }
 
-#[cfg(not(unix))]
-fn install_signal_handlers() {}
+#[cfg(windows)]
+fn install_signal_handlers() -> io::Result<()> {
+    use windows::Win32::Foundation::TRUE;
+    use windows::Win32::System::Console::{CTRL_BREAK_EVENT, CTRL_C_EVENT, SetConsoleCtrlHandler};
+    use windows::core::BOOL;
+
+    unsafe extern "system" fn on_console_control(control: u32) -> BOOL {
+        if matches!(control, CTRL_C_EVENT | CTRL_BREAK_EVENT) {
+            SHUTDOWN_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+            TRUE
+        } else {
+            BOOL(0)
+        }
+    }
+
+    // SAFETY: the process-lifetime callback only stores to an atomic.
+    unsafe { SetConsoleCtrlHandler(Some(on_console_control), true) }
+        .map_err(|error| io::Error::other(format!("failed to install console handler: {error}")))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn install_signal_handlers() -> io::Result<()> {
+    Ok(())
+}
 
 fn run_ui_loop<B: ratatui::prelude::Backend>(
     terminal: &mut ui::Terminal<B>,

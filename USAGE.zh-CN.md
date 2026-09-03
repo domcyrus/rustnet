@@ -8,6 +8,7 @@
 
 - [运行 RustNet](#running-rustnet)
 - [命令行选项](#command-line-options)
+- [无界面模式](#headless-mode)
 - [键盘控制](#keyboard-controls)
 - [鼠标控制](#mouse-controls)
 - [过滤](#filtering)
@@ -57,7 +58,7 @@ rustnet --no-localhost
 # 显示 localhost 连接（覆盖默认过滤）
 rustnet --show-localhost
 
-# 设置 UI 刷新间隔（毫秒）
+# 设置 UI 或无界面快照的刷新间隔（毫秒）
 rustnet -r 500
 rustnet --refresh-interval 2000
 
@@ -87,7 +88,13 @@ Options:
   -i, --interface <INTERFACE>            要监控的网络接口
       --no-localhost                     过滤掉 localhost 连接（默认：已过滤）
       --show-localhost                   显示 localhost 连接（覆盖默认过滤）
-  -r, --refresh-interval <MILLISECONDS>  UI 刷新间隔，单位为毫秒 [默认：500]
+      --headless                         不启动交互式终端 UI
+      --duration <SECONDS>               在指定秒数后停止无界面监控
+      --output <FORMAT>                  无界面输出格式：jsonl（流式快照）或
+                                         json（最终快照）
+      --filter <QUERY>                   使用共享的连接过滤语法筛选无界面输出
+  -r, --refresh-interval <MILLISECONDS>  UI 和无界面快照的刷新间隔，单位为毫秒
+                                         [默认：500]
       --no-dpi                           禁用深度包检测
       --no-resolve-dns                   禁用反向 DNS 查找（默认启用）
       --show-ptr-lookups                 显示 PTR 查找连接（默认隐藏）
@@ -113,6 +120,34 @@ Options:
 ```
 
 使用可选 `kubernetes` feature 编译的版本（包括官方 Docker 镜像）还会提供 `--kubernetes <MODE>`。详见下文的 [`--kubernetes`](#--kubernetes-mode-optional-feature)。
+
+### 无界面模式<a id="headless-mode"></a>
+
+RustNet 默认启动交互式 TUI。如果 stdin 或 stdout 不是终端，程序会在开始抓包前拒绝启动交互模式。脚本、管道、调度器和服务必须显式使用 `--headless`。
+
+```bash
+# 流式输出快照，直到收到中断
+rustnet --headless
+
+# 运行 60 秒后停止，并输出一份最终快照
+rustnet --headless --duration 60 --output json
+
+# 仅流式输出匹配的连接
+rustnet --headless --filter 'process:curl app:https'
+```
+
+无界面模式的参数如下：
+
+- **`--headless`**：不设置终端，并确保 stdout 仅包含机器可读记录。诊断信息会写入 stderr 或已配置的日志文件。
+- **`--duration <SECONDS>`**：在指定的正整数秒数后停止。如果省略，监控会持续到收到支持的关闭信号。JSONL 在发现输出管道已关闭时也会停止。无界面模式在 Unix 上支持 SIGINT、SIGTERM 和 SIGHUP，在 Windows 上支持 Ctrl+C 和 Ctrl+Break。
+- **`--output jsonl|json`**：选择输出形式。JSONL 是默认格式，以每行一个 JSON 对象的方式写出带版本号的最新值快照。当输出产生背压时，队列中的旧快照会被最新快照替换；使用方可通过不连续的 `runtime.snapshot_generation` 值检测到跳过的快照。由时长或信号触发关闭后，JSONL 还会写出一条最终终止记录，其中包含终止原因和关闭结果。JSON 会等待监控停止，然后仅写出一条带版本号的最终记录。
+- **`--filter <QUERY>`**：使用与 TUI 相同的连接过滤语法，包括 `port:`、`src:`、`dst:`、`sni:`、`process:`、`state:` 和 `proto:` 等字段，以及 `/pattern/` 正则表达式。
+
+#### Schema 约定
+
+当前输出格式版本为 `schema_version = 1`。每条记录都是快照对象，顶层字段为 `schema_version`、`type`、`timestamp`、`runtime`、`sandbox`、`stats`、`filter`、`connection_count` 和 `connections`。最终终止记录会将 `runtime.status` 设为 `stopping`、`stopped` 或 `stopped_with_errors`，并包含 `runtime.termination_reason` 和 `runtime.shutdown`。连接记录涵盖端点、进程归属、流量、各协议计时、GeoIP，以及可选的 Kubernetes 元数据。`rtt` 对象以毫秒为单位提供当前值、初始值、平滑 TCP 值，以及 DNS、LLMNR、NetBIOS、ICMP echo、STUN 和 NTP 计时。可选的增强与计时字段在被发现前保持为 null；关闭期间排空的连接可能在进程、GeoIP 或 Kubernetes 增强完成前就出现在最终记录中。使用方必须根据 `schema_version` 选择解析逻辑，并允许出现新增的未知字段。
+
+如果 JSONL 管道的下游提前关闭，例如使用 `head`，会产生 broken pipe。RustNet 会将其视为成功的停止请求，关闭所有工作线程，并且不会尝试向已经关闭的管道写入最终终止记录。抓包初始化失败或之后发生抓包故障时，程序会以非零状态退出。`--duration`、`--output` 和 `--filter` 必须与 `--headless` 一起使用。
 
 ### 选项详情<a id="option-details"></a>
 
@@ -184,7 +219,7 @@ RustNet 自动检测 TUN/TAP 接口并相应调整数据包解析。接口类型
 
 #### `-r, --refresh-interval <MILLISECONDS>`<a id="-r---refresh-interval-milliseconds"></a>
 
-以毫秒为单位设置 UI 刷新率。较低的值提供更灵敏的更新，但会增加 CPU 使用率。
+以毫秒为单位设置 UI 和无界面快照的刷新率，最小值为 1ms。较低的值会使更新更灵敏、JSONL 记录更频繁，但会增加 CPU 使用率。
 
 **建议：**
 - **默认（500ms）**：流畅的实时图表和灵敏的更新

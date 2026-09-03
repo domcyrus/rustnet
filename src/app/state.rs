@@ -11,6 +11,7 @@ use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
+use std::time::Duration;
 #[cfg(test)]
 use std::time::SystemTime;
 
@@ -35,6 +36,7 @@ use super::enrichment::PreparedProcessEnrichment;
 use super::logging::{JsonLineWriter, log_pcap_connection};
 use super::output::precreate_private_file;
 use super::runtime::{InitStatus, RuntimeSupervisor, StopReport, WorkerStartupPermit};
+use super::sampling::build_connection_snapshot;
 use super::types::{
     AppOutputHandles, AppStats, Config, ConnRateHistory, ConnRateHistorySnapshot, ConnectionCounts,
     ProcessDetectionStatus,
@@ -455,7 +457,7 @@ impl App {
                 }
             })
             .map_err(|error| anyhow::anyhow!("failed to spawn startup flag worker: {error}"))?;
-        self.runtime.register(handle);
+        self.runtime.register_unmonitored(handle);
 
         Ok(())
     }
@@ -471,6 +473,11 @@ impl App {
         self.snapshot_generation.load(Ordering::Acquire)
     }
 
+    /// Polling cadence for consumers of the published connection snapshot.
+    pub(crate) fn snapshot_refresh_interval(&self) -> Duration {
+        Duration::from_millis(self.config.refresh_interval)
+    }
+
     /// Count the unfiltered UI snapshot without cloning connection records.
     pub(crate) fn get_connection_counts(&self) -> ConnectionCounts {
         let hide_ptr_lookups = self.dns_resolver.is_some() && !self.config.show_ptr_lookups;
@@ -483,6 +490,29 @@ impl App {
     }
 
     pub fn get_filtered_connections(&self, filter_query: &str) -> Vec<Connection> {
+        let snapshot = self.connections_snapshot.read().unwrap();
+        self.clone_filtered_connections(&snapshot, filter_query)
+    }
+
+    /// Clone a filtered snapshot together with the generation that published
+    /// it. Writers update both while holding the snapshot lock, so headless
+    /// records cannot pair one generation number with another generation's
+    /// connection data.
+    pub(crate) fn get_filtered_connections_with_generation(
+        &self,
+        filter_query: &str,
+    ) -> (u64, Vec<Connection>) {
+        let snapshot = self.connections_snapshot.read().unwrap();
+        let connections = self.clone_filtered_connections(&snapshot, filter_query);
+        let generation = self.snapshot_generation.load(Ordering::Acquire);
+        (generation, connections)
+    }
+
+    fn clone_filtered_connections(
+        &self,
+        snapshot: &[Connection],
+        filter_query: &str,
+    ) -> Vec<Connection> {
         let hide_ptr_lookups = self.dns_resolver.is_some() && !self.config.show_ptr_lookups;
         let filter = if filter_query.trim().is_empty() {
             None
@@ -492,7 +522,6 @@ impl App {
 
         // Filter by reference under the read guard and clone only the
         // matches, instead of cloning the whole snapshot first.
-        let snapshot = self.connections_snapshot.read().unwrap();
         snapshot
             .iter()
             .filter(|conn| {
@@ -583,7 +612,7 @@ impl App {
     }
 
     /// Get the persistent packet-capture failure shown by the TUI.
-    pub(crate) fn get_capture_error(&self) -> Option<String> {
+    pub fn capture_error(&self) -> Option<String> {
         self.capture_status
             .read()
             .ok()
@@ -591,6 +620,13 @@ impl App {
                 CaptureStatus::Failed(message) => Some(message.clone()),
                 CaptureStatus::Healthy => None,
             })
+    }
+
+    /// Return a core worker that exited before application shutdown.
+    pub(crate) fn runtime_error(&self) -> Option<String> {
+        self.runtime
+            .unexpected_worker_exit()
+            .map(|worker| format!("critical worker {worker} exited unexpectedly"))
     }
 
     /// Get the current process detection status (method and degradation info)
@@ -727,8 +763,9 @@ impl App {
     /// Seed the UI snapshot directly. Tests only.
     #[cfg(test)]
     pub(crate) fn set_connections_snapshot_for_test(&self, snapshot: Vec<Connection>) {
+        let mut published = self.connections_snapshot.write().unwrap();
+        *published = snapshot;
         self.snapshot_generation.fetch_add(1, Ordering::Release);
-        *self.connections_snapshot.write().unwrap() = snapshot;
     }
 
     /// Override the loading flag. Tests only.
@@ -737,7 +774,7 @@ impl App {
         self.is_loading.store(value, Ordering::Relaxed);
     }
 
-    /// Seed the tracker's neighbor cache through a real ARP ingest. Tests only.
+    /// Seed the tracker through the production ingest path. Tests only.
     #[cfg(test)]
     pub(crate) fn ingest_packet_for_test(&self, parsed: &ParsedPacket) {
         self.tracker.ingest_at(parsed, SystemTime::now());
@@ -756,6 +793,16 @@ impl App {
             Some(message) => CaptureStatus::Failed(message.to_string()),
             None => CaptureStatus::Healthy,
         };
+    }
+
+    /// Register a critical worker that panics immediately. Tests only.
+    #[cfg(test)]
+    pub(crate) fn inject_worker_panic_for_test(&mut self) {
+        self.runtime
+            .spawn_monitored("injected-critical-worker", || {
+                panic!("injected worker panic")
+            })
+            .unwrap();
     }
 
     /// Seed an interface's cumulative stats. Tests only.
@@ -825,6 +872,7 @@ impl App {
 
         if let Ok(mut snapshot) = self.connections_snapshot.write() {
             snapshot.clear();
+            self.snapshot_generation.fetch_add(1, Ordering::Release);
         }
 
         if let Ok(mut history) = self.traffic_history.write() {
@@ -901,6 +949,27 @@ impl App {
                 report.output_errors = output_errors();
             },
             |report| {
+                // The periodic snapshot worker exits as soon as shutdown is
+                // requested, while capture processors keep draining their
+                // bounded queue. Rebuild once after every producer has joined
+                // so final headless output includes that drained tail.
+                let final_snapshot = build_connection_snapshot(
+                    &self.tracker,
+                    &self.service_lookup,
+                    self.config.filter_localhost,
+                    self.show_historic.load(Ordering::Relaxed),
+                );
+                let mut published = self
+                    .connections_snapshot
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *published = final_snapshot;
+                self.snapshot_generation.fetch_add(1, Ordering::Release);
+                drop(published);
+                self.stats
+                    .connections_tracked
+                    .store(self.tracker.len() as u64, Ordering::Relaxed);
+
                 // Connections not yet cleaned up still need their sidecar record.
                 // Read the tracker only after all producers and enrichment workers
                 // have joined instead of using a potentially stale, filtered UI
@@ -1056,6 +1125,8 @@ mod activity_reset_tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    use crate::network::types::ProtocolState;
+    use std::net::SocketAddr;
     use std::sync::Condvar;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -1137,18 +1208,20 @@ mod lifecycle_tests {
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let worker_release = Arc::clone(&release);
         let (started_tx, started_rx) = mpsc::sync_channel(1);
-        app.runtime.register(thread::spawn(move || {
-            started_tx.send(()).unwrap();
-            let (lock, wake) = &*worker_release;
-            let mut released = lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            while !*released {
-                released = wake
-                    .wait(released)
+        app.runtime
+            .spawn_monitored("blocked-test-worker", move || {
+                started_tx.send(()).unwrap();
+                let (lock, wake) = &*worker_release;
+                let mut released = lock
+                    .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-            }
-        }));
+                while !*released {
+                    released = wake
+                        .wait(released)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+            })
+            .unwrap();
         started_rx.recv().unwrap();
 
         let output_path =
@@ -1186,5 +1259,41 @@ mod lifecycle_tests {
         let report = app.stop();
 
         assert_eq!(report.output_errors, 1);
+    }
+
+    #[test]
+    fn snapshot_generation_and_payload_are_published_together() {
+        let app = app();
+        let snapshot = Arc::clone(&app.connections_snapshot);
+        let generation_counter = Arc::clone(&app.snapshot_generation);
+        let publish = thread::spawn(move || {
+            for generation in 1..=1_000u16 {
+                let connection = Connection::new(
+                    Protocol::Udp,
+                    SocketAddr::from(([192, 0, 2, 1], 40_000)),
+                    SocketAddr::from(([198, 51, 100, 1], generation)),
+                    ProtocolState::Udp,
+                );
+                let mut published = snapshot.write().unwrap();
+                *published = vec![connection];
+                generation_counter.fetch_add(1, Ordering::Release);
+                drop(published);
+                thread::yield_now();
+            }
+        });
+
+        for _ in 0..2_000 {
+            let (generation, connections) = app.get_filtered_connections_with_generation("");
+            if generation > 0 {
+                assert_eq!(connections.len(), 1);
+                assert_eq!(u64::from(connections[0].remote_addr.port()), generation);
+            }
+            thread::yield_now();
+        }
+        publish.join().unwrap();
+
+        let (generation, connections) = app.get_filtered_connections_with_generation("");
+        assert_eq!(generation, 1_000);
+        assert_eq!(connections[0].remote_addr.port(), 1_000);
     }
 }

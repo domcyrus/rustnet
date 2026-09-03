@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">RustNet</h1>
   <p align="center">
-    <strong>プロセス単位で TCP、UDP、QUIC 接続を監視できる、サンドボックス対応のターミナルネットワークモニター。</strong>
+    <strong>プロセス単位で TCP、UDP、QUIC 接続を監視できる、ターミナルと自動化に対応したサンドボックス対応ネットワークモニター。</strong>
   </p>
 </p>
 
@@ -23,6 +23,7 @@ RustNet は、各接続を所有するプロセス、通信量、状態、アプ
 - TCP、QUIC ハンドシェイク、DNS 応答、ICMP エコーの往復時間（RTT）と、TCP の再送・順序入れ替わりをリアルタイム表示。Overview テーブルではプロトコル別のヘルスバッジにより、TCP の問題、明示的な QUIC Retry/バージョンネゴシエーション、トランザクション型 UDP の再試行/タイムアウトを表示し、重大度順に並べ替え可能
 - Host タブに TCP LISTEN ソケット、UDP BOUND エンドポイント、TCP 状態集計、観測 RTT、所有プロセス、インターフェース統計を表示
 - `port:`、`process:`、`sni:`、`state:` などのフィルター
+- TUI を使わず、バージョン付き JSONL スナップショットをストリーミング出力、または終了時に最終 JSON スナップショットを 1 件出力できるヘッドレスモード。対話表示と同じ接続フィルターを利用可能
 - 注釈付き PCAPNG、PCAP と JSONL sidecar、JSON ログの出力
 - ローカル GeoIP データベースによる国、ASN、都市情報
 - ARP トラフィックから受動的に学習した LAN 機器・ゲートウェイの MAC アドレスとベンダー表示（内蔵 IEEE OUI データベース）
@@ -98,6 +99,16 @@ rustnet --no-dpi                        # 深層パケット解析を無効化
 rustnet --theme tokyo-night             # カラーテーマ（muted［既定］、vivid、catppuccin-mocha、tokyo-night、gruvbox、nord）
 rustnet --pcapng-export capture.pcapng  # 注釈付き PCAPNG を出力
 ```
+
+既定では TUI が起動します。スクリプトやサービスではヘッドレスモードを使用できます。
+
+```bash
+rustnet --headless                                      # JSONL スナップショットをストリーミング出力
+rustnet --headless --duration 30 --output json         # 最終スナップショットを 1 件出力
+rustnet --headless --filter 'process:curl app:https'   # 接続フィルターを適用
+```
+
+ヘッドレスモードの既定は `--output jsonl` で、設定された更新間隔ごとにバージョン付きスナップショットを出力します。`--output json` は監視終了時にバージョン付きの最終スナップショットを 1 件出力します。`--duration` は指定した秒数後にキャプチャを停止し、`--filter` は TUI と同じ構文を受け付けます。ヘッドレスモードでは stdout に機械可読の出力だけを書き込みます。キャプチャの起動に失敗した場合は、ゼロ以外の終了ステータスを返します。
 
 テーマと各色の上書きは `~/.config/rustnet/config.toml` でも設定できます（`--theme` が優先）。詳細は [USAGE.md](USAGE.md#--theme-preset) を参照してください。
 
