@@ -233,10 +233,11 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
                 if result.status == SandboxStatus::FullyEnforced {
                     result.status = SandboxStatus::PartiallyEnforced;
                 }
-            } else if !ll_result.net_applied && config.block_network {
-                if result.status == SandboxStatus::FullyEnforced {
-                    result.status = SandboxStatus::PartiallyEnforced;
-                }
+            } else if !ll_result.net_applied
+                && config.block_network
+                && result.status == SandboxStatus::FullyEnforced
+            {
+                result.status = SandboxStatus::PartiallyEnforced;
             }
         }
         Err(e) => {
