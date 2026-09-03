@@ -39,12 +39,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   were consolidated across the workspace, removing about 2,000 lines with no
   intended change in behaviour. Small visible differences: truncated names in
   the connection table, Activity tab, and filter chip no longer leave a space
-  before the ellipsis, GeoIP lookups also skip multicast and reserved
-  addresses, hostnames stuck in a pending DNS state are retried after 30
-  seconds, a connection superseded by a new SYN is archived with its cached
-  rates zeroed like an expired one, the sandbox report uses one wording for a
-  failed root uid drop on every platform, and the release workflow no longer
-  rebuilds the aarch64 and Android static binaries in a second job
+  before the ellipsis, GeoIP lookups also skip multicast, reserved,
+  benchmarking, documentation, and discard addresses, hostnames stuck in a
+  pending DNS state are retried after 30 seconds, a connection superseded by
+  a new SYN is archived with its cached rates zeroed like an expired one, the
+  sandbox report uses one wording for a failed root uid drop on every
+  platform and, on builds without Landlock, for the success case as well, the
+  standalone aarch64 and Android static build workflows are removed since the
+  release workflow already produces those binaries, and dispatching the
+  release workflow with `skip_downstream` now also skips the crates.io,
+  Docker, COPR, PPA, and OBS publish jobs so a backfill cannot republish
 
 ### Fixed
 - **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now

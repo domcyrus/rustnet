@@ -601,26 +601,6 @@ impl UIState {
         self.move_selection(connections, Motion::Down);
     }
 
-    /// Move selection up by one page
-    pub fn move_selection_page_up(&mut self, connections: &[Connection], page_size: usize) {
-        self.move_selection(connections, Motion::PageUp(page_size));
-    }
-
-    /// Move selection down by one page
-    pub fn move_selection_page_down(&mut self, connections: &[Connection], page_size: usize) {
-        self.move_selection(connections, Motion::PageDown(page_size));
-    }
-
-    /// Move selection to the first connection (vim-style 'g')
-    pub fn move_selection_to_first(&mut self, connections: &[Connection]) {
-        self.move_selection(connections, Motion::First);
-    }
-
-    /// Move selection to the last connection (vim-style 'G')
-    pub fn move_selection_to_last(&mut self, connections: &[Connection]) {
-        self.move_selection(connections, Motion::Last);
-    }
-
     /// Ensure we have a valid selection when connections list changes
     pub fn ensure_valid_selection(&mut self, connections: &[Connection]) -> Option<usize> {
         if connections.is_empty() {
@@ -893,44 +873,6 @@ impl UIState {
         let current_index = self.get_selected_grouped_index(grouped_rows).unwrap_or(0);
         let new_index = step_index(current_index, grouped_rows.len(), motion);
         self.set_selected_grouped_by_index(grouped_rows, new_index);
-    }
-
-    /// Move selection up in grouped view
-    pub fn move_selection_up_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        self.move_selection_grouped(grouped_rows, Motion::Up);
-    }
-
-    /// Move selection down in grouped view
-    pub fn move_selection_down_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        self.move_selection_grouped(grouped_rows, Motion::Down);
-    }
-
-    /// Move selection up by one page in grouped view
-    pub fn move_selection_page_up_grouped(
-        &mut self,
-        grouped_rows: &[GroupedRow],
-        page_size: usize,
-    ) {
-        self.move_selection_grouped(grouped_rows, Motion::PageUp(page_size));
-    }
-
-    /// Move selection down by one page in grouped view
-    pub fn move_selection_page_down_grouped(
-        &mut self,
-        grouped_rows: &[GroupedRow],
-        page_size: usize,
-    ) {
-        self.move_selection_grouped(grouped_rows, Motion::PageDown(page_size));
-    }
-
-    /// Move selection to the first row in grouped view
-    pub fn move_selection_to_first_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        self.move_selection_grouped(grouped_rows, Motion::First);
-    }
-
-    /// Move selection to the last row in grouped view
-    pub fn move_selection_to_last_grouped(&mut self, grouped_rows: &[GroupedRow]) {
-        self.move_selection_grouped(grouped_rows, Motion::Last);
     }
 
     /// Ensure valid selection in grouped view
