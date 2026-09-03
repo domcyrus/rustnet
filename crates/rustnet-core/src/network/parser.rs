@@ -177,21 +177,6 @@ impl Default for ParserConfig {
             config.dpi_packet_limit
         );
 
-        // Demonstrate usage: check if we should perform DPI on hypothetical packet counts
-        if config.enable_dpi {
-            log::trace!("  - Packet 0: DPI = {}", config.should_perform_dpi(0));
-            log::trace!(
-                "  - Packet {}: DPI = {}",
-                config.dpi_packet_limit - 1,
-                config.should_perform_dpi(config.dpi_packet_limit - 1)
-            );
-            log::trace!(
-                "  - Packet {}: DPI = {}",
-                config.dpi_packet_limit,
-                config.should_perform_dpi(config.dpi_packet_limit)
-            );
-        }
-
         config
     }
 }
