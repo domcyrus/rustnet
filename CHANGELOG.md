@@ -48,23 +48,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   standalone aarch64 and Android static build workflows are removed since the
   release workflow already produces those binaries, and dispatching the
   release workflow with `skip_downstream` now also skips the crates.io,
-  Docker, COPR, PPA, and OBS publish jobs so a backfill cannot republish.
-  In `rustnet-core`, `Connection::key()` now renders the protocol in
-  uppercase (`TCP:127.0.0.1:1234-TCP:10.0.0.1:80`), matching
-  `ConnectionKey`'s `Display` and the documented format instead of the
-  `Tcp:` debug spelling. In the `rustnet-monitor` library, which is not a
-  stable API, `UIState` is renamed `UiState` and its unused page, first, last,
-  and grouped selection wrappers are removed
+  Docker, COPR, PPA, and OBS publish jobs so a backfill cannot republish
 - **Release Backfills**: the release workflow can be dispatched from `main`
   with a `tag` input to rebuild assets for an existing release using the
   current workflow, and it no longer overwrites assets that are already on
   the release unless `overwrite_assets` is set, since Chocolatey, Scoop, and
   the AUR binary package pin checksums of the published files
 
-- **Acronym Casing**: the Details header chip reads `RTT` instead of `rtt`,
-  PCAPNG export errors spell the format in uppercase, and the `rustnet-core`
-  variants `LinkLayerType::RawIP`, `LinuxSLL`, and `LinuxSLL2` are renamed to
-  `RawIp`, `LinuxSll`, and `LinuxSll2` to match Rust naming conventions
+- **Acronym Casing**: the Details header chip reads `RTT` instead of `rtt`
+  and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
 - **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now

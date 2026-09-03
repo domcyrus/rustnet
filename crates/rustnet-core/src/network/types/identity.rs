@@ -66,7 +66,7 @@ impl MatchQuality {
 
 static_names! {
     /// Human-readable label, for display to a person.
-    MatchQuality(self) {
+    MatchQuality {
         ExactTuple => "exact tuple",
         WildcardLocalAddress => "wildcard local address",
         ListenerSocket => "listener socket",
