@@ -23,7 +23,10 @@ name: Release
 # failed to upload): run this workflow via workflow_dispatch on the release tag
 # with skip_downstream=true. create-release skips creation when the release
 # already exists and re-uploads every build-* artifact with --clobber, so no
-# separate per-target upload workflow is needed.
+# separate per-target upload workflow is needed. Note that this rebuilds and
+# re-signs every target and clobbers all assets on the release; the
+# skip_downstream flag keeps the publish and package-trigger jobs from
+# running again.
 
 on:
   push:
@@ -32,7 +35,7 @@ on:
   workflow_dispatch:
     inputs:
       skip_downstream:
-        description: "Skip downstream package triggers (BSD, Homebrew, Chocolatey, AUR). Use when re-running on an older tag so a backfill can't downgrade the packages."
+        description: "Skip downstream publishing (crates.io, Docker, COPR, PPA, OBS) and package triggers (BSD, Homebrew, Chocolatey, AUR). Use when re-running on an existing tag so a backfill can't republish or downgrade the packages."
         type: boolean
         default: false
 
@@ -545,29 +548,34 @@ jobs:
   publish-crates:
     name: Publish to crates.io
     needs: publish-release
+    if: github.event_name == 'push' || !inputs.skip_downstream
     uses: ./.github/workflows/publish.yml
     secrets: inherit
 
   publish-docker:
     name: Publish Docker image
     needs: publish-release
+    if: github.event_name == 'push' || !inputs.skip_downstream
     uses: ./.github/workflows/docker.yml
     secrets: inherit
 
   update-copr:
     name: Update COPR spec
     needs: publish-release
+    if: github.event_name == 'push' || !inputs.skip_downstream
     uses: ./.github/workflows/copr-update-spec.yml
     secrets: inherit
 
   release-ppa:
     name: Release to PPA
     needs: publish-release
+    if: github.event_name == 'push' || !inputs.skip_downstream
     uses: ./.github/workflows/ppa-release.yml
     secrets: inherit
 
   release-obs:
     name: Release to OBS
     needs: publish-release
+    if: github.event_name == 'push' || !inputs.skip_downstream
     uses: ./.github/workflows/obs-release.yml
     secrets: inherit
