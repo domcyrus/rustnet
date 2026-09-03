@@ -6,13 +6,33 @@
 /// the `&'static str` and a `Display` impl that writes it.
 ///
 /// Optional attributes before the enum name (typically a doc comment) are
-/// applied to the generated `as_str`.
+/// applied to the generated `as_str`. Writing `Enum(self)` instead of `Enum`
+/// makes `as_str` take its receiver by value, for `Copy` enums whose public
+/// signature is already by value.
 macro_rules! static_names {
-    ($Enum:ident { $($Variant:ident => $name:literal),+ $(,)? }) => {
+    (@display $Enum:ident) => {
+        impl ::std::fmt::Display for $Enum {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+    };
+    ($Enum:ident $(($recv:tt))? { $($Variant:ident => $name:literal),+ $(,)? }) => {
         static_names! {
             /// Fixed name of this variant, as `Display` renders it.
-            $Enum { $($Variant => $name),+ }
+            $Enum $(($recv))? { $($Variant => $name),+ }
         }
+    };
+    ($(#[$meta:meta])+ $Enum:ident (self) { $($Variant:ident => $name:literal),+ $(,)? }) => {
+        impl $Enum {
+            $(#[$meta])+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$Variant => $name,)+
+                }
+            }
+        }
+        static_names!(@display $Enum);
     };
     ($(#[$meta:meta])+ $Enum:ident { $($Variant:ident => $name:literal),+ $(,)? }) => {
         impl $Enum {
@@ -23,12 +43,7 @@ macro_rules! static_names {
                 }
             }
         }
-
-        impl ::std::fmt::Display for $Enum {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
-                f.write_str(self.as_str())
-            }
-        }
+        static_names!(@display $Enum);
     };
 }
 

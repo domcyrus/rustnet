@@ -20,13 +20,14 @@ name: Release
 # 4. Export certificate as .p12, encode with: base64 -i certificate.p12 | pbcopy
 #
 # Backfilling assets on an existing release (for example after a static build
-# failed to upload): run this workflow via workflow_dispatch on the release tag
-# with skip_downstream=true. create-release skips creation when the release
-# already exists and re-uploads every build-* artifact with --clobber, so no
-# separate per-target upload workflow is needed. Note that this rebuilds and
-# re-signs every target and clobbers all assets on the release; the
-# skip_downstream flag keeps the publish and package-trigger jobs from
-# running again.
+# failed to upload): dispatch this workflow from main with tag=<release tag>
+# and skip_downstream=true. Dispatching from main runs the current workflow
+# (a run dispatched on an old tag would use that tag's release.yml), while
+# every checkout, build and archive name uses the given tag. create-release
+# skips creation when the release already exists and uploads only the assets
+# that are missing; existing assets are kept unless overwrite_assets=true,
+# because Chocolatey, Scoop and the AUR binary package pin their checksums.
+# skip_downstream keeps the publish and package-trigger jobs from running.
 
 on:
   push:
@@ -34,6 +35,14 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
+      tag:
+        description: "Existing release tag to rebuild assets for (dispatch from main). Leave empty to release the dispatched ref."
+        type: string
+        default: ""
+      overwrite_assets:
+        description: "Replace assets that already exist on the release. Leave off unless the existing files are known to be broken; downstream packages pin their checksums."
+        type: boolean
+        default: false
       skip_downstream:
         description: "Skip downstream publishing (crates.io, Docker, COPR, PPA, OBS) and package triggers (BSD, Homebrew, Chocolatey, AUR). Use when re-running on an existing tag so a backfill can't republish or downgrade the packages."
         type: boolean
@@ -48,6 +57,8 @@ permissions:
 env:
   RUST_BACKTRACE: 1
   RUSTNET_ASSET_DIR: assets
+  # The release being built: the dispatched tag for a backfill, else the pushed tag.
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   # Build all platforms using shared workflow
@@ -56,7 +67,8 @@ jobs:
     with:
       create-archives: true
       strip-symbols: true
-      version: ${{ github.ref_name }}
+      version: ${{ inputs.tag || github.ref_name }}
+      ref: ${{ inputs.tag }}
 
   create-release:
     name: create-release
@@ -65,6 +77,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -74,7 +88,7 @@ jobs:
       - name: Extract changelog for release
         run: |
           # Extract the version-specific section from CHANGELOG.md
-          VERSION="${{ github.ref_name }}"
+          VERSION="$RELEASE_TAG"
 
           # Remove 'v' prefix if present for matching changelog headers
           VERSION_NUMBER="${VERSION#v}"
@@ -105,26 +119,29 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # Create the release if it doesn't exist
-          if ! gh release view ${{ github.ref_name }} 2>/dev/null; then
+          if ! gh release view "$RELEASE_TAG" 2>/dev/null; then
             if [ "$USE_GENERATED_NOTES" = "true" ]; then
               # Fallback to auto-generated notes if changelog extraction failed
-              gh release create ${{ github.ref_name }} \
-                --title "Release ${{ github.ref_name }}" \
+              gh release create "$RELEASE_TAG" \
+                --title "Release $RELEASE_TAG" \
                 --draft \
                 --generate-notes
             else
               # Use extracted changelog content
-              gh release create ${{ github.ref_name }} \
-                --title "Release ${{ github.ref_name }}" \
+              gh release create "$RELEASE_TAG" \
+                --title "Release $RELEASE_TAG" \
                 --draft \
                 --notes-file release_notes.md
             fi
           fi
 
-          # Upload all build artifacts
-          for artifact in artifacts/build-*/rustnet-*; do
-            gh release upload ${{ github.ref_name }} "$artifact" --clobber
-          done
+      - name: Upload build artifacts
+        uses: ./.github/actions/upload-release-assets
+        with:
+          tag: ${{ env.RELEASE_TAG }}
+          files: artifacts/build-*/rustnet-*
+          overwrite: ${{ inputs.overwrite_assets }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   # Publish the release (un-draft) after all assets are uploaded.
   # This ensures downstream jobs (Homebrew, Chocolatey) can download assets.
@@ -141,12 +158,12 @@ jobs:
       - name: Publish release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit ${{ github.ref_name }} --draft=false --repo ${{ github.repository }}
+        run: gh release edit "$RELEASE_TAG" --draft=false --repo ${{ github.repository }}
 
   # Gate job that waits for all publish steps to finish before firing
   # downstream package-manager triggers. Without this gate, triggers that
   # run as soon as publish-release completes race against publish-crates,
-  # publish-docker, update-copr, and release-ppa — and the downstream
+  # publish-docker, update-copr, and release-ppa, and the downstream
   # Homebrew/Chocolatey workflows bail because their "is release.yml still
   # running?" safety check sees the parent run as in-progress.
   all-published:
@@ -173,8 +190,8 @@ jobs:
         run: |
           gh api repos/domcyrus/rustnet-bsd/dispatches \
             -f event_type=freebsd-build \
-            -f "client_payload[tag]=${{ github.ref_name }}" \
-            -f "client_payload[rustnet_ref]=${{ github.sha }}"
+            -f "client_payload[tag]=$RELEASE_TAG" \
+            -f "client_payload[rustnet_ref]=${{ inputs.tag || github.sha }}"
         env:
           GH_TOKEN: ${{ secrets.BSD_DISPATCH_TOKEN }}
 
@@ -188,7 +205,7 @@ jobs:
         run: |
           gh workflow run update-formula.yml \
             --repo domcyrus/homebrew-rustnet \
-            -f version=${{ github.ref_name }}
+            -f "version=$RELEASE_TAG"
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_PAT }}
 
@@ -202,7 +219,7 @@ jobs:
         run: |
           gh workflow run update-package.yml \
             --repo domcyrus/rustnet-chocolatey \
-            -f version=${{ github.ref_name }}
+            -f "version=$RELEASE_TAG"
         env:
           GH_TOKEN: ${{ secrets.CHOCOLATEY_PAT }}
 
@@ -232,6 +249,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Download build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -253,7 +272,7 @@ jobs:
 
       - name: Package Linux installers
         run: |
-          VERSION="${{ github.ref_name }}"
+          VERSION="$RELEASE_TAG"
           mkdir -p installers
 
           # Extract binary and assets from the build archive into the layout
@@ -307,13 +326,12 @@ jobs:
           done
 
       - name: Upload installer packages
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Upload all installer packages
-          for installer in installers/*; do
-            gh release upload ${{ github.ref_name }} "$installer" --clobber
-          done
+        uses: ./.github/actions/upload-release-assets
+        with:
+          tag: ${{ env.RELEASE_TAG }}
+          files: installers/*
+          overwrite: ${{ inputs.overwrite_assets }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   package-macos:
     name: package-macos
@@ -329,6 +347,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Install packaging tools
         run: |
@@ -345,7 +365,7 @@ jobs:
       - name: Package for macOS
         run: |
           # Extract binary
-          tar -xzf "artifacts/rustnet-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          tar -xzf "artifacts/rustnet-${RELEASE_TAG}-${{ matrix.target }}.tar.gz"
 
           # Get version and update plist
           VERSION=$(toml get Cargo.toml package.version --raw)
@@ -355,9 +375,9 @@ jobs:
           mkdir -p "Rustnet.app/Contents/"{MacOS,Resources/assets}
           cp resources/packaging/macos/Info.plist "Rustnet.app/Contents/"
           cp resources/packaging/macos/graphics/rustnet.icns "Rustnet.app/Contents/Resources/"
-          cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/rustnet" "Rustnet.app/Contents/MacOS/"
+          cp "rustnet-${RELEASE_TAG}-${{ matrix.target }}/rustnet" "Rustnet.app/Contents/MacOS/"
           cp resources/packaging/macos/wrapper.sh "Rustnet.app/Contents/MacOS/"
-          cp "rustnet-${{ github.ref_name }}-${{ matrix.target }}/assets/services" "Rustnet.app/Contents/Resources/assets/"
+          cp "rustnet-${RELEASE_TAG}-${{ matrix.target }}/assets/services" "Rustnet.app/Contents/Resources/assets/"
           chmod +x "Rustnet.app/Contents/MacOS/"{rustnet,wrapper.sh}
 
       - name: Code sign and notarize app bundle
@@ -425,10 +445,12 @@ jobs:
             "Rustnet.app"
 
       - name: Upload macOS package
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload ${{ github.ref_name }} "Rustnet_macOS_${{ matrix.arch }}.dmg" --clobber
+        uses: ./.github/actions/upload-release-assets
+        with:
+          tag: ${{ env.RELEASE_TAG }}
+          files: Rustnet_macOS_${{ matrix.arch }}.dmg
+          overwrite: ${{ inputs.overwrite_assets }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   package-windows:
     name: package-windows
@@ -444,6 +466,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Install dependencies
         shell: powershell
@@ -491,19 +515,19 @@ jobs:
         run: |
           # Extract binary and assets
           Write-Host "Extracting artifact..."
-          Expand-Archive -LiteralPath "artifacts\rustnet-${{ github.ref_name }}-${{ matrix.target }}.zip" -DestinationPath . -Force
+          Expand-Archive -LiteralPath "artifacts\rustnet-$env:RELEASE_TAG-${{ matrix.target }}.zip" -DestinationPath . -Force
 
           # Create target directory structure
           New-Item -ItemType Directory -Path "target\${{ matrix.target }}\release" -Force
 
           # Copy binary
-          Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\" -Force
+          Copy-Item -Path "rustnet-$env:RELEASE_TAG-${{ matrix.target }}\rustnet.exe" -Destination "target\${{ matrix.target }}\release\" -Force
           Write-Host "Binary copied to target directory"
 
           # Copy services file if it exists
           New-Item -ItemType Directory -Path "assets" -Force
-          if (Test-Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets\services") {
-            Copy-Item -Path "rustnet-${{ github.ref_name }}-${{ matrix.target }}\assets\services" -Destination "assets\" -Force
+          if (Test-Path "rustnet-$env:RELEASE_TAG-${{ matrix.target }}\assets\services") {
+            Copy-Item -Path "rustnet-$env:RELEASE_TAG-${{ matrix.target }}\assets\services" -Destination "assets\" -Force
             Write-Host "Services file copied successfully"
           } else {
             Write-Host "Warning: No services file found"
@@ -540,10 +564,12 @@ jobs:
           }
 
       - name: Upload Windows package
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload ${{ github.ref_name }} "Rustnet_Windows_${{ matrix.arch }}.msi" --clobber
+        uses: ./.github/actions/upload-release-assets
+        with:
+          tag: ${{ env.RELEASE_TAG }}
+          files: Rustnet_Windows_${{ matrix.arch }}.msi
+          overwrite: ${{ inputs.overwrite_assets }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   publish-crates:
     name: Publish to crates.io

@@ -5,7 +5,7 @@ This document is for maintainers releasing new versions of RustNet.
 ## Changelog Maintenance (ongoing, not at release time)
 
 Notable changes are added to the `## [Unreleased]` section of `CHANGELOG.md` in
-the same PR that makes them — don't wait until release time and reconstruct the
+the same PR that makes them; don't wait until release time and reconstruct the
 list from git history. Cutting a release then just renames that section (see
 step 3 below). `pre-release-check.sh` warns if `[Unreleased]` still has content
 after the rename, and the release workflow's notes extraction ignores it.
@@ -56,7 +56,7 @@ Update the binary version in `Cargo.toml` and `rpm/rustnet.spec`, and turn the
 accumulated `[Unreleased]` changelog section into the release entry:
 
 ```bash
-# Update Cargo.toml [package] version (e.g., version = "1.4.0") — NOT the
+# Update Cargo.toml [package] version (e.g., version = "1.4.0"), NOT the
 #   [workspace.package] version unless you intend to bump the library crates.
 # Update rpm/rustnet.spec Version field (e.g., Version: 1.4.0)
 
@@ -166,6 +166,25 @@ every downstream package manager that already cached the original checksums:
 - **crates.io**: already published and cannot be re-published with the same version
 
 If a fix is needed after tagging, **create a patch release** (e.g., `v1.1.1`) instead.
+
+## Backfilling Assets on an Existing Release
+
+If a release is missing an asset (for example a static build failed to upload),
+rebuild it with the current workflow from `main`:
+
+```bash
+gh workflow run release.yml --ref main -f tag=v1.6.0 -f skip_downstream=true
+```
+
+The `tag` input makes every checkout, build, and archive name use that tag while
+the workflow definition comes from `main`. Do not dispatch the workflow on the
+old tag itself: GitHub runs the `release.yml` stored at the selected ref, so an
+older tag runs its older workflow without the current safety guards.
+
+Only missing assets are uploaded. Assets already on the release are kept, because
+Chocolatey, Scoop, and the AUR binary package pin checksums of the published
+files. Set `overwrite_assets=true` only when the existing files are known to be
+broken and the downstream packages will be updated afterwards.
 
 ## Release Checklist
 

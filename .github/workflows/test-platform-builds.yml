@@ -6,6 +6,11 @@ name: Test Platform Builds
 
 on:
   workflow_dispatch:
+    inputs:
+      create-archives:
+        description: 'Also run the release archive step so the package-archive action is exercised'
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'Cargo.toml'
@@ -25,8 +30,9 @@ jobs:
   build:
     uses: ./.github/workflows/build-platforms.yml
     with:
-      create-archives: false
+      create-archives: ${{ inputs.create-archives || false }}
       strip-symbols: false
+      version: test-${{ github.run_id }}
 
   trigger-freebsd-build:
     name: trigger-freebsd-build

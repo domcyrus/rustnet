@@ -734,6 +734,29 @@ mod tests {
     }
 
     #[test]
+    fn key_uses_the_connection_key_format() {
+        // `key()` is a public string identity: it must match `ConnectionKey`'s
+        // Display (uppercase protocol) and historic rows add a creation stamp.
+        let mut conn = create_test_connection();
+        assert_eq!(conn.key(), "TCP:127.0.0.1:12345-TCP:10.0.0.1:80");
+        assert_eq!(
+            conn.key(),
+            ConnectionKey::from_connection(&conn).to_string()
+        );
+
+        conn.is_historic = true;
+        let nanos = conn
+            .created_at
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        assert_eq!(
+            conn.key(),
+            format!("TCP:127.0.0.1:12345-TCP:10.0.0.1:80:h:{nanos}")
+        );
+    }
+
+    #[test]
     fn test_connection_snapshot_clone_preserves_cached_fields() {
         let mut conn = conn(
             Protocol::Tcp,
