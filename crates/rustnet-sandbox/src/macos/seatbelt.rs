@@ -7,7 +7,8 @@
 //!
 //! # What We Restrict
 //!
-//! - Network: Outbound TCP/UDP connections (RustNet is passive)
+//! - Network: Outbound TCP/UDP connections, optionally allowing DNS traffic
+//!   only to destination port 53 (RustNet is otherwise passive)
 //! - Filesystem writes: Only allowed to configured write paths
 //! - Filesystem writes: All user home directories blocked (/Users, /var/root)
 //! - Filesystem reads: User home directories and system credential stores
@@ -44,8 +45,8 @@ pub(super) struct SeatbeltResult {
     pub message: String,
     /// Whether filesystem write restrictions were applied
     pub fs_restricted: bool,
-    /// Whether outbound network connections were blocked
-    pub net_blocked: bool,
+    /// Whether outbound network connections were restricted
+    pub net_restricted: bool,
 }
 
 // macOS Seatbelt private API, stable since macOS 10.5 and present through macOS 15+.
@@ -127,12 +128,35 @@ const SBPL_NETWORK_DENY: &str = r#"
     (remote unix-socket))
 "#;
 
+/// Narrow DNS exception, appended after the broader network deny.
+///
+/// SBPL chooses the more specific port rule, so TCP and UDP DNS traffic is
+/// allowed while outbound traffic to every other destination port stays denied.
+const SBPL_DNS_ALLOW: &str = r#"
+;; Allow DNS resolution while retaining the broader outbound deny
+(allow network-outbound
+    (remote tcp "*:53")
+    (remote udp "*:53"))
+"#;
+
+fn build_sbpl_network_profile(config: &SandboxConfig, allow_dns_resolution: bool) -> String {
+    if !config.block_network {
+        return String::new();
+    }
+
+    let mut profile = String::from(SBPL_NETWORK_DENY);
+    if allow_dns_resolution {
+        profile.push_str(SBPL_DNS_ALLOW);
+    }
+    profile
+}
+
 /// Build the complete SBPL profile string based on configuration.
 ///
 /// The configured read paths (e.g. GeoIP databases, possibly under /Users)
 /// get `literal` + `subpath` read allows; the configured write paths get
 /// `literal` allows, plus `subpath` when the path is a directory (log dirs).
-fn build_sbpl_profile(config: &SandboxConfig) -> String {
+fn build_sbpl_profile(config: &SandboxConfig, allow_dns_resolution: bool) -> String {
     let mut profile = String::from(SBPL_PROFILE_BASE);
 
     let read_rules: Vec<String> = config
@@ -176,9 +200,7 @@ fn build_sbpl_profile(config: &SandboxConfig) -> String {
     }
 
     profile.push_str(SBPL_PROFILE_EXEC);
-    if config.block_network {
-        profile.push_str(SBPL_NETWORK_DENY);
-    }
+    profile.push_str(&build_sbpl_network_profile(config, allow_dns_resolution));
     profile
 }
 
@@ -186,8 +208,11 @@ fn build_sbpl_profile(config: &SandboxConfig) -> String {
 ///
 /// The caller (`apply` in mod.rs) handles the `Disabled` mode check, so this
 /// function assumes sandboxing is requested.
-pub(super) fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
-    let profile = build_sbpl_profile(config);
+pub(super) fn apply_seatbelt(
+    config: &SandboxConfig,
+    allow_dns_resolution: bool,
+) -> Result<SeatbeltResult> {
+    let profile = build_sbpl_profile(config, allow_dns_resolution);
     let profile_cstr = CString::new(profile).context("Profile contains null byte")?;
 
     // No (param ...) references remain in the generated profile; pass an
@@ -230,7 +255,7 @@ pub(super) fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
     }
 
     log::info!(
-        "Seatbelt sandbox applied (fs_restricted=true, net_blocked={})",
+        "Seatbelt sandbox applied (fs_restricted=true, net_restricted={})",
         config.block_network
     );
 
@@ -238,14 +263,16 @@ pub(super) fn apply_seatbelt(config: &SandboxConfig) -> Result<SeatbeltResult> {
         applied: true,
         message: format!(
             "Seatbelt applied (fs restricted, net {})",
-            if config.block_network {
+            if config.block_network && allow_dns_resolution {
+                "restricted (DNS allowed)"
+            } else if config.block_network {
                 "blocked"
             } else {
                 "allowed"
             }
         ),
         fs_restricted: true,
-        net_blocked: config.block_network,
+        net_restricted: config.block_network,
     })
 }
 
@@ -301,11 +328,14 @@ mod tests {
 
     #[test]
     fn test_profile_includes_configured_paths() {
-        let profile = build_sbpl_profile(&config(
-            &["/usr/share/GeoIP"],
-            &["/private/var/rustnet/events.jsonl"],
-            true,
-        ));
+        let profile = build_sbpl_profile(
+            &config(
+                &["/usr/share/GeoIP"],
+                &["/private/var/rustnet/events.jsonl"],
+                true,
+            ),
+            false,
+        );
         assert!(profile.contains(r#"(subpath "/usr/share/GeoIP")"#));
         assert!(profile.contains(r#"(literal "/usr/share/GeoIP")"#));
         assert!(profile.contains(r#"(literal "/private/var/rustnet/events.jsonl")"#));
@@ -315,7 +345,7 @@ mod tests {
 
     #[test]
     fn test_profile_without_paths_has_no_empty_allow_sections() {
-        let profile = build_sbpl_profile(&config(&[], &[], true));
+        let profile = build_sbpl_profile(&config(&[], &[], true), false);
         assert!(!profile.contains("(allow file-read-data\n)"));
         assert!(!profile.contains("(allow file-write*\n)"));
         // The deny sections must still be present
@@ -328,7 +358,7 @@ mod tests {
         // Both with and without network blocking, the base profile must deny
         // reads of the system credential stores rustnet never needs.
         for block_network in [true, false] {
-            let profile = build_sbpl_profile(&config(&[], &[], block_network));
+            let profile = build_sbpl_profile(&config(&[], &[], block_network), false);
             for store in ["/Library/Keychains", "/private/var/db/dslocal", "/etc/ssh"] {
                 assert!(
                     profile.contains(store),
@@ -340,21 +370,57 @@ mod tests {
 
     #[test]
     fn test_profile_network_deny_toggle() {
-        assert!(build_sbpl_profile(&config(&[], &[], true)).contains("deny network-outbound"));
-        assert!(!build_sbpl_profile(&config(&[], &[], false)).contains("deny network-outbound"));
+        assert_eq!(
+            build_sbpl_network_profile(&config(&[], &[], true), false),
+            SBPL_NETWORK_DENY
+        );
+        assert_eq!(
+            build_sbpl_network_profile(&config(&[], &[], false), false),
+            ""
+        );
+    }
+
+    #[test]
+    fn test_profile_dns_network_policy_is_exact() {
+        let expected = r#"
+;; Block outbound TCP and UDP connections
+;; RustNet only reads from BPF/PKTAP; already-open fds are unaffected
+(deny network-outbound
+    (remote tcp)
+    (remote udp))
+
+;; Allow Unix domain socket IPC (required for threading, Mach port bridge)
+(allow network-outbound
+    (remote unix-socket))
+
+;; Allow DNS resolution while retaining the broader outbound deny
+(allow network-outbound
+    (remote tcp "*:53")
+    (remote udp "*:53"))
+"#;
+        assert_eq!(
+            build_sbpl_network_profile(&config(&[], &[], true), true),
+            expected
+        );
+        assert_eq!(
+            build_sbpl_network_profile(&config(&[], &[], false), true),
+            ""
+        );
     }
 
     #[test]
     fn test_profile_includes_process_exec_deny() {
-        let profile = build_sbpl_profile(&config(&[], &[], false));
+        let profile = build_sbpl_profile(&config(&[], &[], false), false);
         assert!(profile.contains("(deny process-exec)"));
         assert!(profile.contains(r#"(literal "/usr/sbin/lsof")"#));
     }
 
     #[test]
     fn test_profile_is_valid_cstring_and_escaped() {
-        let profile =
-            build_sbpl_profile(&config(&[], &[r#"/private/tmp/path"with\special"#], true));
+        let profile = build_sbpl_profile(
+            &config(&[], &[r#"/private/tmp/path"with\special"#], true),
+            false,
+        );
         CString::new(profile.clone()).expect("profile must not contain null bytes");
         assert!(profile.contains(r#"/private/tmp/path\"with\\special"#));
     }

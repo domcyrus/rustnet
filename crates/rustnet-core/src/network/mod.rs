@@ -11,6 +11,7 @@ pub mod bogon;
 pub mod dns;
 pub(crate) mod dns_attribution;
 pub mod dpi;
+pub mod filter;
 mod gateway;
 pub mod geoip;
 pub mod interface_stats;

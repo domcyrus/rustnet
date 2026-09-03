@@ -43,17 +43,21 @@ jobs:
       uses: ./.github/actions/setup-linux-deps
     - name: Check formatting
       run: cargo fmt --check
+    - name: Validate dependency lockfile
+      run: cargo check --locked --workspace --all-targets --all-features
+    - name: Check without default features
+      run: cargo check --locked --workspace --all-targets --no-default-features
     # --workspace --all-targets so the library crates (rustnet-core/-capture/
     # -host) are linted, built, and tested too. The workspace root is a real
     # package (rustnet-monitor), so a bare `cargo {clippy,build,test}` only
     # selects the binary and silently skips the library crates' lints, tests,
     # and doctests.
     - name: Run clippy
-      run: cargo clippy --workspace --all-targets -- -D warnings
+      run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     - name: Build
-      run: cargo build --workspace --all-targets --verbose
+      run: cargo build --locked --workspace --all-targets --verbose
     - name: Run tests
-      run: cargo test --workspace --verbose
+      run: cargo test --locked --workspace --all-features --verbose
     - name: Install cargo-audit
       run: cargo install cargo-audit --locked
     - name: Run security audit

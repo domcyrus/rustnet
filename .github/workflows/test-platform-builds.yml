@@ -34,6 +34,22 @@ jobs:
       strip-symbols: false
       version: test-${{ github.run_id }}
 
+  build-freebsd:
+    name: build-freebsd-x64
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@83b151f58c6047089f4c80eb5ba2039d158ce093 # v1.5.3
+        with:
+          release: '14.2'
+          usesh: true
+          prepare: pkg install -y curl libpcap rust
+          run: cargo build --locked --verbose --release --no-default-features
+
   trigger-freebsd-build:
     name: trigger-freebsd-build
     if: github.event_name == 'workflow_dispatch'

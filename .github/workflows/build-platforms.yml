@@ -89,7 +89,7 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cargo-command: ${{ matrix.cargo }}
-          default-features: ${{ contains(matrix.target, 'linux') && 'true' || 'false' }}
+          default-features: ${{ (contains(matrix.target, 'linux') || contains(matrix.target, 'apple')) && 'true' || 'false' }}
           strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
 
       - name: Run tests
@@ -342,4 +342,3 @@ jobs:
           name: build-${{ matrix.target }}
           path: ${{ steps.archive.outputs.asset }}
           if-no-files-found: error
-

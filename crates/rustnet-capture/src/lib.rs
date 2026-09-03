@@ -609,8 +609,18 @@ pub struct CaptureStats {
 }
 
 impl CaptureStats {
+    /// Packets dropped because the capture buffer had no room.
+    pub fn capture_drops(&self) -> u32 {
+        self.dropped
+    }
+
+    /// Packets dropped by the network interface or its driver.
+    pub fn interface_drops(&self) -> u32 {
+        self.if_dropped
+    }
+
     /// Get total packets dropped (both kernel and interface level)
-    pub(crate) fn total_dropped(&self) -> u32 {
+    pub fn total_dropped(&self) -> u32 {
         self.dropped.saturating_add(self.if_dropped)
     }
 }
@@ -624,5 +634,18 @@ mod tests {
         let config = CaptureConfig::default();
         assert_eq!(config.snaplen, 1514);
         assert!(config.filter.is_none());
+    }
+
+    #[test]
+    fn capture_stats_expose_distinct_drop_sources() {
+        let stats = CaptureStats {
+            received: 20,
+            dropped: 3,
+            if_dropped: 5,
+        };
+
+        assert_eq!(stats.capture_drops(), 3);
+        assert_eq!(stats.interface_drops(), 5);
+        assert_eq!(stats.total_dropped(), 8);
     }
 }

@@ -16,6 +16,37 @@
 use anyhow::{Context, Result};
 use caps::{CapSet, Capability};
 
+const ACTIVE_SETS: [CapSet; 2] = [CapSet::Effective, CapSet::Permitted];
+
+fn has_cap_in_active_sets(capability: Capability) -> Result<bool> {
+    for set in ACTIVE_SETS {
+        if caps::has_cap(None, set, capability)
+            .with_context(|| format!("Failed to check {capability:?} in {set:?} set"))?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn drop_and_verify(capability: Capability) -> Result<bool> {
+    let mut dropped = false;
+    for set in ACTIVE_SETS {
+        if caps::has_cap(None, set, capability)
+            .with_context(|| format!("Failed to check {capability:?} in {set:?} set"))?
+        {
+            caps::drop(None, set, capability)
+                .with_context(|| format!("Failed to drop {capability:?} from {set:?} set"))?;
+            dropped = true;
+        }
+    }
+
+    if has_cap_in_active_sets(capability)? {
+        anyhow::bail!("{capability:?} remained in an effective or permitted capability set");
+    }
+    Ok(dropped)
+}
+
 /// Drop CAP_NET_RAW from the current process
 ///
 /// This removes CAP_NET_RAW from both the effective and permitted
@@ -28,35 +59,13 @@ use caps::{CapSet, Capability};
 /// - `Ok(false)` if CAP_NET_RAW was not held (nothing to drop)
 /// - `Err` if dropping failed
 pub(crate) fn drop_cap_net_raw() -> Result<bool> {
-    let has_cap = caps::has_cap(None, CapSet::Effective, Capability::CAP_NET_RAW)
-        .context("Failed to check CAP_NET_RAW in effective set")?;
-
-    if !has_cap {
-        log::debug!("CAP_NET_RAW not in effective set, nothing to drop");
-        return Ok(false);
-    }
-
-    caps::drop(None, CapSet::Effective, Capability::CAP_NET_RAW)
-        .context("Failed to drop CAP_NET_RAW from effective set")?;
-
-    log::debug!("Dropped CAP_NET_RAW from effective set");
-
-    // Also drop from permitted set so it cannot be re-acquired.
-    if caps::has_cap(None, CapSet::Permitted, Capability::CAP_NET_RAW).unwrap_or(false) {
-        if let Err(e) = caps::drop(None, CapSet::Permitted, Capability::CAP_NET_RAW) {
-            // Not fatal - we already dropped from effective
-            log::warn!("Could not drop CAP_NET_RAW from permitted set: {}", e);
-        } else {
-            log::debug!("Dropped CAP_NET_RAW from permitted set");
-        }
-    }
-
-    Ok(true)
+    drop_and_verify(Capability::CAP_NET_RAW)
 }
 
-/// Check if CAP_NET_RAW is currently held in the effective set
-pub(crate) fn has_cap_net_raw() -> bool {
-    caps::has_cap(None, CapSet::Effective, Capability::CAP_NET_RAW).unwrap_or(false)
+/// Check if CAP_NET_RAW remains effective or permitted.
+#[cfg(test)]
+pub(crate) fn has_cap_net_raw() -> Result<bool> {
+    has_cap_in_active_sets(Capability::CAP_NET_RAW)
 }
 
 /// Drop CAP_BPF and CAP_PERFMON from the current process
@@ -73,24 +82,10 @@ pub(crate) fn drop_ebpf_caps() -> Result<u32> {
     let mut dropped = 0;
 
     for cap in [Capability::CAP_BPF, Capability::CAP_PERFMON] {
-        let has_effective = caps::has_cap(None, CapSet::Effective, cap).unwrap_or(false);
-
-        if !has_effective {
-            continue;
+        if drop_and_verify(cap)? {
+            log::debug!("Dropped {:?} from effective and permitted sets", cap);
+            dropped += 1;
         }
-
-        caps::drop(None, CapSet::Effective, cap)
-            .with_context(|| format!("Failed to drop {:?} from effective set", cap))?;
-
-        // Also drop from permitted set to prevent re-acquiring
-        if caps::has_cap(None, CapSet::Permitted, cap).unwrap_or(false)
-            && let Err(e) = caps::drop(None, CapSet::Permitted, cap)
-        {
-            log::warn!("Could not drop {:?} from permitted set: {}", cap, e);
-        }
-
-        log::debug!("Dropped {:?}", cap);
-        dropped += 1;
     }
 
     Ok(dropped)
@@ -111,10 +106,8 @@ pub fn drop_thread_cap_net_raw(thread: &str) {
 /// Drop CAP_NET_RAW, CAP_BPF and CAP_PERFMON from a worker thread that needs
 /// none of them.
 ///
-/// Threads that keep calling `bpf(2)` must use [`drop_thread_cap_net_raw`]
-/// instead: with `kernel.unprivileged_bpf_disabled` set, the kernel requires
-/// CAP_BPF for *every* `bpf(2)` command, including map lookups on an
-/// already-open map file descriptor.
+/// Existing capture handles and eBPF map descriptors remain usable after these
+/// capabilities are dropped. Program and map creation must already be complete.
 pub fn drop_unused_thread_caps(thread: &str) {
     drop_thread_cap_net_raw(thread);
     match drop_ebpf_caps() {
@@ -141,7 +134,7 @@ mod tests {
 
     #[test]
     fn test_has_cap_net_raw_does_not_panic() {
-        let _ = has_cap_net_raw();
+        assert!(has_cap_net_raw().is_ok());
     }
 
     #[test]

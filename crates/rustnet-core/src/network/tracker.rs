@@ -143,7 +143,7 @@ impl std::fmt::Display for HistoricKey {
 
 /// Tuning knobs for a [`ConnectionTracker`].
 #[derive(Debug, Clone)]
-pub(crate) struct TrackerConfig {
+pub struct TrackerConfig {
     /// Maximum number of concurrent active connections. New connections beyond
     /// this limit are dropped (existing ones still update) to bound memory
     /// under port scans or connection floods.
@@ -375,7 +375,7 @@ impl ConnectionTracker {
     }
 
     /// Create a tracker with custom [`TrackerConfig`].
-    pub(crate) fn with_config(config: TrackerConfig) -> Self {
+    pub fn with_config(config: TrackerConfig) -> Self {
         Self {
             connections: ConnectionMap::with_hasher(FxBuildHasher),
             historic: HistoricMap::with_hasher(FxBuildHasher),

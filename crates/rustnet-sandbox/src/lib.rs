@@ -5,7 +5,7 @@
 //! - **Linux**: `PR_SET_NO_NEW_PRIVS`, capability drops (CAP_NET_RAW,
 //!   CAP_BPF, CAP_PERFMON), the root uid drop, and Landlock
 //!   filesystem/network/scope restrictions (behind the `landlock` feature).
-//! - **macOS**: the root uid drop, then a Seatbelt profile blocking outbound
+//! - **macOS**: the root uid drop, then a Seatbelt profile restricting outbound
 //!   network, credential reads, and writes outside configured output paths
 //!   (behind the `macos-sandbox` feature).
 //! - **Windows**: dangerous token privileges removed and a job object that
@@ -31,11 +31,10 @@
 //!    threads inherit from their spawner; threads started before step 4 keep
 //!    the unrestricted state.
 //!
-//! Threads that must run before the sandbox (capture, enrichment) should shed
-//! the capabilities they do not need themselves via [`capabilities`]
-//! (Linux, `landlock` feature). A thread that keeps calling `bpf(2)` must
-//! retain CAP_BPF ([`capabilities::drop_thread_cap_net_raw`]); all others can
-//! use [`capabilities::drop_unused_thread_caps`].
+//! Long-lived workers should not start before the sandbox. Capture handles and
+//! eBPF maps opened during initialization remain usable through their existing
+//! descriptors after capability and identity reduction. Workers created after
+//! step 4 inherit the reduced capability set and sandbox restrictions.
 
 use std::path::PathBuf;
 
@@ -143,8 +142,8 @@ pub struct SandboxReport {
     pub message: String,
     /// Whether filesystem restrictions are active (Landlock / Seatbelt)
     pub fs_restricted: bool,
-    /// Whether network restrictions are active (Landlock TCP block /
-    /// Seatbelt outbound block)
+    /// Whether network restrictions are active (Landlock TCP restrictions /
+    /// Seatbelt outbound restrictions)
     pub net_restricted: bool,
     /// Whether the root uid/gid were dropped (Linux/macOS/FreeBSD)
     pub uid_dropped: bool,
@@ -284,10 +283,27 @@ pub(crate) fn drop_root_step(
 /// `Ok(SandboxReport)` with details about what was applied; in
 /// [`SandboxMode::Strict`], returns `Err` if enforcement cannot be achieved.
 pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
+    apply_sandbox_with_policy(config, false)
+}
+
+/// Apply the sandbox with its narrow platform DNS exception enabled.
+///
+/// This separate entry point preserves the stable [`SandboxConfig`] shape and
+/// makes the process-wide network exception explicit at the call site.
+pub fn apply_sandbox_allowing_dns(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
+    apply_sandbox_with_policy(config, true)
+}
+
+fn apply_sandbox_with_policy(
+    config: &SandboxConfig,
+    allow_dns_resolution: bool,
+) -> anyhow::Result<SandboxReport> {
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = allow_dns_resolution;
     #[cfg(target_os = "linux")]
-    return linux::apply(config);
+    return linux::apply(config, allow_dns_resolution);
     #[cfg(target_os = "macos")]
-    return macos::apply(config);
+    return macos::apply(config, allow_dns_resolution);
     #[cfg(target_os = "windows")]
     return windows::apply(config);
     #[cfg(target_os = "freebsd")]
@@ -300,7 +316,7 @@ pub fn apply_sandbox(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     )))]
     {
         log::warn!("Sandboxing not implemented for this platform");
-        let _ = config;
+        let _ = (config, allow_dns_resolution);
         Ok(SandboxReport {
             message: "Sandboxing not implemented for this platform".to_string(),
             ..SandboxReport::default()

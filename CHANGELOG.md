@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Reusable Connection Filters**: the complete filter language now lives in
+  `rustnet-core`, with the existing TUI path retained as a compatibility
+  re-export for future headless frontends
 - **Inline Connection Health**: connection rows now show compact TCP
   retransmit/out-of-order, QUIC Retry/version, and transactional UDP
   retry/timeout badges, with a severity-first Health sort. The Details
@@ -23,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Runtime Lifecycle Foundation**: privileged capture and process attribution
+  are prepared synchronously before sandboxing, while all long-lived workers
+  start through a typed post-sandbox handoff and stop under one owned,
+  bounded supervisor
 - **Staleness Cue**: idle connection rows now show a stripe at their left
   edge and a removal countdown in the bandwidth column from halfway through
   their timeout (previously 75%), both running yellow to red as cleanup
@@ -58,6 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **Loss and Export Accounting**: queue backpressure drops are reported
+  separately from libpcap and interface drops, partial batches drain during
+  shutdown, and classic PCAP output remains bound to its securely pre-opened
+  file descriptor
 - **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now
   show as SYN received instead of an unknown state
 
