@@ -30,7 +30,7 @@ use std::net::SocketAddr;
 use crate::network::dns::DnsResolver;
 use crate::network::types::{AddrKind, ApplicationProtocol, Connection, Protocol};
 use crate::ui::{
-    ClickAction, ClickableRegions, NONE_PLACEHOLDER, SortColumn, UIState, dpi_color,
+    ClickAction, ClickableRegions, NONE_PLACEHOLDER, SortColumn, UiState, dpi_color,
     format::{format_countdown, format_rate_compact, format_rtt_compact, truncate_with_ellipsis},
     state_color, theme,
     widgets::scrollbar::draw_scrollbar,
@@ -256,7 +256,7 @@ fn process_text(conn: &Connection) -> String {
 }
 
 /// Untruncated Service cell text: service name or port number.
-fn service_text<'a>(conn: &'a Connection, ui_state: &UIState) -> Cow<'a, str> {
+fn service_text<'a>(conn: &'a Connection, ui_state: &UiState) -> Cow<'a, str> {
     if ui_state.show_port_numbers {
         Cow::Owned(conn.remote_addr.port().to_string())
     } else {
@@ -306,7 +306,7 @@ fn endpoint_display(
 /// (that name already shows in the App column).
 fn remote_display(
     conn: &Connection,
-    ui_state: &UIState,
+    ui_state: &UiState,
     dns_resolver: Option<&DnsResolver>,
     max_width: usize,
 ) -> (String, bool) {
@@ -350,8 +350,8 @@ fn remote_display(
     )
 }
 
-/// Header label for a column. Short on purpose — no " Address" suffixes.
-fn header_label(id: ColumnId, ui_state: &UIState) -> &'static str {
+/// Header label for a column. Short on purpose, no " Address" suffixes.
+fn header_label(id: ColumnId, ui_state: &UiState) -> &'static str {
     match id {
         // Leading space mirrors the stripe gutter so the label sits over
         // the process names.
@@ -378,7 +378,7 @@ fn header_label(id: ColumnId, ui_state: &UIState) -> &'static str {
 /// underlined, and accent-colored with an ↑/↓ arrow appended; the
 /// Bandwidth header carries the rx/tx arrows ("Rx↓/Tx↑") so the data
 /// rows don't have to repeat them on every line.
-pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UIState) -> Row<'a> {
+pub(in crate::ui) fn build_header<'a>(columns: &[Column], ui_state: &UiState) -> Row<'a> {
     let sorting = ui_state.sort_column != SortColumn::CreatedAt;
     let sort_arrow = if ui_state.sort_ascending {
         "↑"
@@ -521,7 +521,7 @@ fn staleness_style(conn: &Connection, selected: bool) -> (Option<Style>, CellPai
 pub(in crate::ui) fn connection_row<'a>(
     conn: &'a Connection,
     columns: &[Column],
-    ui_state: &UIState,
+    ui_state: &UiState,
     dns_resolver: Option<&DnsResolver>,
     process_override: Option<Line<'a>>,
     selected: bool,
@@ -1119,7 +1119,7 @@ mod tests {
             remote,
             ProtocolState::Tcp(TcpState::Established),
         );
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
 
         let full = conn.remote_addr.to_string();
         let full_len = full.chars().count();
@@ -1195,7 +1195,7 @@ mod tests {
             source: AttributionSource::CapturedDns,
             observed_at: std::time::SystemTime::now(),
         });
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
 
         // No authoritative name: the attributed hostname renders with a
         // `~` prefix and flags the cell, without needing a resolver.
@@ -1226,7 +1226,7 @@ mod tests {
 
         // Hostnames toggled off: plain IP even with an attribution.
         conn.dpi_info = None;
-        let hostnames_off = UIState {
+        let hostnames_off = UiState {
             show_hostnames: false,
             ..Default::default()
         };
@@ -1245,7 +1245,7 @@ mod tests {
             ProtocolState::Udp,
         );
         conn.remote_addr_kind = AddrKind::Multicast;
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
 
         assert_eq!(remote_display(&conn, &ui_state, None, 24).0, "mcast:5353");
     }
@@ -1367,7 +1367,7 @@ mod tests {
                 Span::styled("└─ ", theme::fg(theme::muted())),
                 Span::raw("4242"),
             ]);
-            let row = connection_row(conn, &columns, &UIState::default(), None, Some(line), false);
+            let row = connection_row(conn, &columns, &UiState::default(), None, Some(line), false);
             let area = Rect::new(0, 0, PROCESS_WIDTH, 1);
             let mut buf = Buffer::empty(area);
             Table::new(vec![row], [Constraint::Length(PROCESS_WIDTH)]).render(area, &mut buf);

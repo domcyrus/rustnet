@@ -22,7 +22,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{HostView, UIState, format::truncate_with_ellipsis, theme};
+use crate::ui::{HostView, UiState, format::truncate_with_ellipsis, theme};
 
 /// One keycap hint: the key as typed and the action it triggers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,7 +76,7 @@ const MIN_LABELED: usize = 3;
 /// it, and the footer's room is better spent on actions that appear nowhere
 /// else on screen. Copy drops out entirely when the clipboard is out of
 /// reach, rather than advertising a key that can only fail.
-fn context_hints(ui_state: &UIState, clipboard: bool) -> Vec<Hint> {
+fn context_hints(ui_state: &UiState, clipboard: bool) -> Vec<Hint> {
     if ui_state.show_help {
         return ui_state
             .help_scroll
@@ -313,7 +313,7 @@ fn capture_error_text(cause: &str, width: u16, height: u16) -> String {
 
 pub(in crate::ui) fn draw_status_bar(
     f: &mut Frame,
-    ui_state: &UIState,
+    ui_state: &UiState,
     clipboard: bool,
     capture_error: Option<&str>,
     area: Rect,
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn details_advertises_pane_scrolling_only_once_the_pane_scrolls() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 1,
             ..Default::default()
         };
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn overview_spends_its_room_on_actions_visible_nowhere_else() {
-        let hints = context_hints(&UIState::default(), true);
+        let hints = context_hints(&UiState::default(), true);
         assert_eq!(hints.first().map(|hint| hint.key), Some("\u{2191}\u{2193}"));
         assert!(advertises(&hints, "/"));
         // Tab navigation is advertised by the numbered tab bar itself.
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn clearing_outranks_every_other_overview_action() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn overview_marks_grouping_and_history_as_active_modes() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             grouping_enabled: true,
             show_historic: true,
             ..Default::default()
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn overview_offers_space_to_expand_or_collapse_the_selected_group() {
-        let mut ui_state = UIState {
+        let mut ui_state = UiState {
             grouping_enabled: true,
             selected_group: Some("firefox".to_string()),
             ..Default::default()
@@ -443,10 +443,10 @@ mod tests {
     #[test]
     fn overview_omits_space_without_an_actionable_group() {
         assert!(!advertises(
-            &context_hints(&UIState::default(), true),
+            &context_hints(&UiState::default(), true),
             "space"
         ));
-        let grouped_empty = UIState {
+        let grouped_empty = UiState {
             grouping_enabled: true,
             ..Default::default()
         };
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn the_global_cluster_survives_every_width() {
-        let context = context_hints(&UIState::default(), true);
+        let context = context_hints(&UiState::default(), true);
         for width in [200u16, 120, 80, 60, 40, 24, 12] {
             let line = line_text(&hint_line(&context, &GLOBAL_HINTS, width));
             assert!(line.contains('q'), "quit dropped at {width}: {line:?}");
@@ -468,7 +468,7 @@ mod tests {
 
     #[test]
     fn labels_are_dropped_before_context_actions_are() {
-        let context = context_hints(&UIState::default(), true);
+        let context = context_hints(&UiState::default(), true);
         // Wide enough to spell every action out.
         let wide = line_text(&hint_line(&context, &GLOBAL_HINTS, 120));
         assert!(wide.contains("filter"), "{wide:?}");
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn standard_terminal_keeps_group_actions_and_active_modes() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             grouping_enabled: true,
             selected_group: Some("firefox".to_string()),
             show_historic: true,
@@ -510,7 +510,7 @@ mod tests {
         // tightest realistic case: the chips must survive it, even at the
         // cost of plain actions, or the bar would show grouping-specific
         // actions with no sign that grouping is on.
-        let ui_state = UIState {
+        let ui_state = UiState {
             grouping_enabled: true,
             selected_group: Some("firefox".to_string()),
             show_historic: true,
@@ -529,7 +529,7 @@ mod tests {
     fn labels_survive_a_standard_terminal_by_dropping_trailing_actions() {
         // 80 columns with a filter on is the tightest realistic case: the
         // labels have to survive it, even if the last action does not.
-        let ui_state = UIState {
+        let ui_state = UiState {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
@@ -547,7 +547,7 @@ mod tests {
     #[test]
     fn copy_is_not_offered_when_the_clipboard_is_out_of_reach() {
         for tab in [0, 1] {
-            let ui_state = UIState {
+            let ui_state = UiState {
                 selected_tab: tab,
                 ..Default::default()
             };
@@ -561,14 +561,14 @@ mod tests {
             );
         }
         // Everything else on the tab survives losing copy.
-        let sandboxed = context_hints(&UIState::default(), false);
+        let sandboxed = context_hints(&UiState::default(), false);
         assert!(advertises(&sandboxed, "/"));
         assert!(advertises(&sandboxed, "i"));
     }
 
     #[test]
     fn filter_editing_only_offers_keys_the_editor_handles() {
-        let editing = UIState {
+        let editing = UiState {
             filter_mode: true,
             filter_query: "port:44".to_string(),
             ..Default::default()
@@ -589,7 +589,7 @@ mod tests {
     #[test]
     fn the_global_cluster_sits_flush_right() {
         let line = line_text(&hint_line(
-            &context_hints(&UIState::default(), true),
+            &context_hints(&UiState::default(), true),
             &GLOBAL_HINTS,
             120,
         ));

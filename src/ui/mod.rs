@@ -103,7 +103,7 @@ mod state;
 pub(crate) use state::process_group_label;
 pub use state::{
     ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, HostView,
-    PaneScroll, SortColumn, UIState, compute_grouped_rows, compute_scroll_offset,
+    PaneScroll, SortColumn, UiState, compute_grouped_rows, compute_scroll_offset,
 };
 pub(crate) use widgets::tabs_bar::TAB_COUNT;
 
@@ -285,7 +285,7 @@ pub(crate) fn non_dpi_app_color() -> Color {
 pub fn draw(
     f: &mut Frame,
     app: &App,
-    ui_state: &UIState,
+    ui_state: &UiState,
     connections: &[Connection],
     grouped_rows: Option<&[GroupedRow]>,
     stats: &AppStats,
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn test_port_toggle_default_state() {
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
         assert!(
             !ui_state.show_port_numbers,
             "Port numbers should be hidden by default"
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn test_port_toggle_state_change() {
-        let mut ui_state = UIState::default();
+        let mut ui_state = UiState::default();
         assert!(!ui_state.show_port_numbers);
 
         ui_state.show_port_numbers = !ui_state.show_port_numbers;
@@ -480,7 +480,7 @@ mod tests {
 
     #[test]
     fn test_ui_state_cycle_sort_column() {
-        let mut ui_state = UIState::default();
+        let mut ui_state = UiState::default();
 
         // Default state
         assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
@@ -507,9 +507,9 @@ mod tests {
         assert_eq!(ui_state.sort_column, SortColumn::Application);
         assert!(ui_state.sort_ascending);
 
-        // Cycle to State, Rtt, Health, then BandwidthTotal
+        // Cycle to `State`, `Rtt`, `Health`, then `BandwidthTotal`
         ui_state.cycle_sort_column(); // State
-        ui_state.cycle_sort_column(); // Rtt
+        ui_state.cycle_sort_column(); // `Rtt`
         assert_eq!(ui_state.sort_column, SortColumn::Rtt);
         assert!(!ui_state.sort_ascending); // RTT defaults to descending (slowest first)
         ui_state.cycle_sort_column(); // Health
@@ -522,7 +522,7 @@ mod tests {
 
     #[test]
     fn test_ui_state_toggle_sort_direction() {
-        let mut ui_state = UIState {
+        let mut ui_state = UiState {
             sort_column: SortColumn::BandwidthTotal,
             sort_ascending: false,
             ..Default::default()
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_bandwidth_sort_states() {
-        let mut ui_state = UIState::default();
+        let mut ui_state = UiState::default();
 
         // Start from default
         assert_eq!(ui_state.sort_column, SortColumn::CreatedAt);
@@ -564,7 +564,7 @@ mod tests {
 
         // Cycle through columns to reach BandwidthTotal
         // CreatedAt -> Process -> RemoteAddress -> LocalAddress -> Service ->
-        // Application -> State -> Rtt -> Health -> BandwidthTotal
+        // `Application` -> `State` -> `Rtt` -> `Health` -> `BandwidthTotal`
         for _ in 0..9 {
             ui_state.cycle_sort_column();
         }
@@ -649,8 +649,7 @@ mod tests {
             local_tcp(8082, "beta"),
         ];
 
-        // Create UI state
-        let mut ui_state = UIState::default();
+        let mut ui_state = UiState::default();
 
         // Initial state: select first connection (charlie)
         ui_state.set_selected_by_index(&connections, 0);
@@ -720,7 +719,7 @@ mod snapshot_tests {
 
     /// Status bar rendered for `ui_state` on a 120-column row with capture
     /// active and no capture error.
-    fn status_bar_output(ui_state: &UIState) -> String {
+    fn status_bar_output(ui_state: &UiState) -> String {
         render(120, 1, |f| {
             draw_status_bar(f, ui_state, true, None, f.area())
         })
@@ -728,7 +727,7 @@ mod snapshot_tests {
 
     /// Tabs bar rendered for `ui_state` on an 80-column terminal with an
     /// empty capture cluster.
-    fn tabs_bar_output(ui_state: &UIState) -> String {
+    fn tabs_bar_output(ui_state: &UiState) -> String {
         let mut regions = ClickableRegions::default();
         render(80, 2, |f| {
             draw_tabs(
@@ -754,9 +753,9 @@ mod snapshot_tests {
     #[test]
     fn help_overlay_overview() {
         use crate::ui::tabs::help::draw_help_overlay;
-        let ui_state = UIState {
+        let ui_state = UiState {
             show_help: true,
-            ..UIState::default()
+            ..UiState::default()
         };
         let output = render(100, 40, |f| {
             draw_help_overlay(f, &ui_state, f.area()).expect("draw help overlay");
@@ -767,10 +766,10 @@ mod snapshot_tests {
     #[test]
     fn help_overlay_details() {
         use crate::ui::tabs::help::draw_help_overlay;
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 1,
             show_help: true,
-            ..UIState::default()
+            ..UiState::default()
         };
         let output = render(100, 30, |f| {
             draw_help_overlay(f, &ui_state, f.area()).expect("draw help overlay");
@@ -781,7 +780,7 @@ mod snapshot_tests {
 
     #[test]
     fn tabs_bar_overview_active() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 0,
             ..Default::default()
         };
@@ -790,7 +789,7 @@ mod snapshot_tests {
 
     #[test]
     fn tabs_bar_details_active() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 1,
             ..Default::default()
         };
@@ -801,7 +800,7 @@ mod snapshot_tests {
     /// carries the interface plus its link layer.
     #[test]
     fn tabs_bar_capture_cluster_is_right_aligned() {
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
         let mut regions = ClickableRegions::default();
         let capture = CaptureCluster {
             interface: Some("eth0"),
@@ -823,7 +822,7 @@ mod snapshot_tests {
     /// whole cluster once the tab titles would collide with it.
     #[test]
     fn tabs_bar_capture_cluster_drops_on_narrow_terminals() {
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
         let capture = CaptureCluster {
             interface: Some("eth0"),
             link_type: Some("Ethernet"),
@@ -853,7 +852,7 @@ mod snapshot_tests {
     /// grows with the wider label so the rule keeps tracking it.
     #[test]
     fn tabs_bar_marks_an_active_filter_on_overview() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 0,
             filter_query: "port:443".to_string(),
             ..Default::default()
@@ -884,14 +883,14 @@ mod snapshot_tests {
         // No filter, no dot.
         let mut regions = ClickableRegions::default();
         let plain = render(80, 2, |f| {
-            draw_tabs(f, &UIState::default(), &capture, f.area(), &mut regions)
+            draw_tabs(f, &UiState::default(), &capture, f.area(), &mut regions)
         });
         assert!(!plain.contains('•'), "unfiltered Overview stays plain");
     }
 
     #[test]
     fn filter_input_mode_active_empty() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             filter_mode: true,
             filter_query: String::new(),
             filter_cursor_position: 0,
@@ -903,7 +902,7 @@ mod snapshot_tests {
 
     #[test]
     fn filter_input_mode_active_with_text() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             filter_mode: true,
             filter_query: "port:443".to_string(),
             filter_cursor_position: 8,
@@ -915,13 +914,13 @@ mod snapshot_tests {
 
     #[test]
     fn status_bar_overview_default() {
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
         insta::assert_snapshot!(status_bar_output(&ui_state));
     }
 
     #[test]
     fn status_bar_overview_grouped_collapsed() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             grouping_enabled: true,
             selected_group: Some("firefox".to_string()),
             ..Default::default()
@@ -931,7 +930,7 @@ mod snapshot_tests {
 
     #[test]
     fn status_bar_overview_grouped_expanded_with_history() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             grouping_enabled: true,
             selected_group: Some("firefox".to_string()),
             expanded_groups: HashSet::from(["firefox".to_string()]),
@@ -943,7 +942,7 @@ mod snapshot_tests {
 
     #[test]
     fn status_bar_details_tab() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 1,
             ..Default::default()
         };
@@ -952,7 +951,7 @@ mod snapshot_tests {
 
     #[test]
     fn status_bar_activity_tab() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 2,
             ..Default::default()
         };
@@ -961,7 +960,7 @@ mod snapshot_tests {
 
     #[test]
     fn status_bar_help_overlay() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 1,
             show_help: true,
             ..Default::default()
@@ -971,7 +970,7 @@ mod snapshot_tests {
 
     #[test]
     fn status_bar_filtered() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
@@ -980,7 +979,7 @@ mod snapshot_tests {
 
     #[test]
     fn status_bar_quit_confirmation() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             quit_confirmation: true,
             ..Default::default()
         };
@@ -989,7 +988,7 @@ mod snapshot_tests {
 
     #[test]
     fn status_bar_clear_confirmation() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             clear_confirmation: true,
             ..Default::default()
         };
@@ -998,7 +997,7 @@ mod snapshot_tests {
 
     #[test]
     fn status_bar_capture_error() {
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
         let output = render(120, 1, |f| {
             draw_status_bar(
                 f,
@@ -1015,7 +1014,7 @@ mod snapshot_tests {
     /// wrap: the cause is elided so the recovery hint stays on screen.
     #[test]
     fn status_bar_capture_error_keeps_hint_on_narrow_terminal() {
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
         let output = render(80, 1, |f| {
             draw_status_bar(
                 f,
@@ -1062,7 +1061,7 @@ mod snapshot_tests {
     /// dump plus the click regions the frame registered.
     fn render_app_frame(
         app: &App,
-        ui_state: &UIState,
+        ui_state: &UiState,
         connections: &[Connection],
         grouped: Option<&[GroupedRow]>,
         width: u16,
@@ -1088,7 +1087,7 @@ mod snapshot_tests {
     /// [`render_app_frame`] for the tests that only need the text dump.
     fn render_app(
         app: &App,
-        ui_state: &UIState,
+        ui_state: &UiState,
         connections: &[Connection],
         grouped: Option<&[GroupedRow]>,
         width: u16,
@@ -1101,7 +1100,7 @@ mod snapshot_tests {
     fn full_page_shows_capture_error() {
         let app = test_app();
         app.set_capture_error_for_test(Some("Capture stopped: The interface disappeared."));
-        let ui_state = UIState {
+        let ui_state = UiState {
             show_system_panel: false,
             ..Default::default()
         };
@@ -1122,7 +1121,7 @@ mod snapshot_tests {
         app.set_capture_error_for_test(Some(
             "Capture failed to start: eth0: You don't have permission to capture on that device (socket: Operation not permitted).",
         ));
-        let ui_state = UIState {
+        let ui_state = UiState {
             show_system_panel: false,
             ..Default::default()
         };
@@ -1296,7 +1295,7 @@ mod snapshot_tests {
         let app = test_app();
         let connections = overview_connections();
         app.set_connections_snapshot_for_test(connections.clone());
-        let mut ui_state = UIState {
+        let mut ui_state = UiState {
             grouping_enabled: grouped,
             show_system_panel: false,
             visible_rows: 18,
@@ -1346,7 +1345,7 @@ mod snapshot_tests {
         stale.current_outgoing_rate_bps = 0.0;
         stale.last_activity = SystemTime::now() - Duration::from_secs(450);
         app.set_connections_snapshot_for_test(connections.clone());
-        let ui_state = UIState {
+        let ui_state = UiState {
             show_system_panel: false,
             visible_rows: 18,
             ..Default::default()
@@ -1370,7 +1369,7 @@ mod snapshot_tests {
         let mut connections = overview_connections();
         connections[3].process_name = Some("firefox".to_string());
         app.set_connections_snapshot_for_test(connections.clone());
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
         let output = render_app(&app, &ui_state, &connections, None, 140, 40);
 
         assert!(output.contains("Processes: 3"));
@@ -1382,7 +1381,7 @@ mod snapshot_tests {
         let connections = overview_connections();
         app.set_connections_snapshot_for_test(connections.clone());
         let filtered = vec![connections[0].clone()];
-        let ui_state = UIState {
+        let ui_state = UiState {
             filter_query: "process:firefox".to_string(),
             ..Default::default()
         };
@@ -1397,7 +1396,7 @@ mod snapshot_tests {
     fn overview_system_panel_places_traffic_before_security() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &UIState::default(), &connections, None, 140, 40);
+        let output = render_app(&app, &UiState::default(), &connections, None, 140, 40);
 
         let traffic = output.find("Traffic").expect("Traffic section");
         let security = output.find("Security").expect("Security section");
@@ -1416,7 +1415,7 @@ mod snapshot_tests {
     fn overview_system_panel_compacts_security_on_short_terminals() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &UIState::default(), &connections, None, 140, 32);
+        let output = render_app(&app, &UiState::default(), &connections, None, 140, 32);
 
         assert!(output.contains("Traffic"));
         assert!(output.contains("Security (compact)"));
@@ -1432,7 +1431,7 @@ mod snapshot_tests {
     fn overview_system_panel_expands_security_when_space_returns() {
         let app = test_app();
         let connections = overview_connections();
-        let output = render_app(&app, &UIState::default(), &connections, None, 140, 35);
+        let output = render_app(&app, &UiState::default(), &connections, None, 140, 35);
 
         assert!(!output.contains("Security (compact)"));
         assert!(output.contains("No restrictions active"));
@@ -1513,7 +1512,7 @@ mod snapshot_tests {
         selected: usize,
         height: u16,
     ) -> (String, ClickableRegions) {
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 1, // Details
             selected_connection_key: Some(connections[selected].key()),
             ..Default::default()
@@ -2332,7 +2331,7 @@ mod snapshot_tests {
             collected_at: Some(SystemTime::UNIX_EPOCH),
         });
 
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 4,
             ..Default::default()
         };
@@ -2370,7 +2369,7 @@ mod snapshot_tests {
             },
         );
 
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 4, // Host
             host_view: HostView::Interfaces,
             ..Default::default()
@@ -2412,7 +2411,7 @@ mod snapshot_tests {
     }
 
     fn render_activity(app: &App, direction: ActivityDirection) -> String {
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 2,
             activity_direction: direction,
             ..Default::default()
@@ -2439,7 +2438,7 @@ mod snapshot_tests {
         app.set_connections_snapshot_for_test(sample_connections());
         app.set_traffic_history_for_test(TrafficHistory::new(60));
 
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 3, // Graph
             ..Default::default()
         };
@@ -2458,7 +2457,7 @@ mod snapshot_tests {
         app.set_connections_snapshot_for_test(sample_connections());
         app.set_traffic_history_for_test(TrafficHistory::new(60));
 
-        let ui_state = UIState {
+        let ui_state = UiState {
             selected_tab: 3, // Graph
             ..Default::default()
         };
@@ -2472,7 +2471,7 @@ mod snapshot_tests {
     fn loading_screen_via_app() {
         let app = App::new(test_config()).expect("App::new");
         // Leave is_loading=true so draw() takes the loading branch.
-        let ui_state = UIState::default();
+        let ui_state = UiState::default();
         let output = render_app(&app, &ui_state, &[], None, 80, 20);
 
         insta::assert_snapshot!(output);

@@ -12,7 +12,7 @@ use ratatui::{
 
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, HandlerContext, HostView, TAB_COUNT,
-    UIState, fade_scroll_edges, panel_block, theme, try_handle_pane_scroll, try_handle_pane_wheel,
+    UiState, fade_scroll_edges, panel_block, theme, try_handle_pane_scroll, try_handle_pane_wheel,
     widgets::scrollbar::draw_scrollbar, widgets::tabs_bar::TAB_TITLES,
 };
 
@@ -32,7 +32,7 @@ enum HelpContext {
 }
 
 impl HelpContext {
-    fn from_state(ui_state: &UIState) -> Self {
+    fn from_state(ui_state: &UiState) -> Self {
         match ui_state.selected_tab {
             0 => Self::Overview,
             1 => Self::Details,
@@ -71,7 +71,7 @@ impl HelpContext {
     }
 }
 
-/// Help overlay. Its state lives in `UIState` so opening it does not replace
+/// Help overlay. Its state lives in `UiState` so opening it does not replace
 /// the active tab or lose the user's position in that tab.
 pub(in crate::ui) struct HelpOverlay;
 
@@ -420,7 +420,7 @@ fn overlay_area(area: Rect, width: u16, content_rows: usize) -> Rect {
 
 pub(in crate::ui) fn draw_help_overlay(
     f: &mut Frame,
-    ui_state: &UIState,
+    ui_state: &UiState,
     area: Rect,
 ) -> Result<()> {
     if area.width == 0 || area.height == 0 {
@@ -490,7 +490,7 @@ mod tests {
     use super::*;
     use crate::ui::test_support::{empty_ctx, render, test_app};
 
-    fn plain_text(ui_state: &UIState) -> String {
+    fn plain_text(ui_state: &UiState) -> String {
         help_lines(HelpContext::from_state(ui_state))
             .iter()
             .flat_map(|line| line.spans.iter())
@@ -501,16 +501,16 @@ mod tests {
 
     #[test]
     fn overview_help_contains_filtering() {
-        let text = plain_text(&UIState::default());
+        let text = plain_text(&UiState::default());
         assert!(text.contains("Filter Examples"));
         assert!(text.contains("/port:22"));
     }
 
     #[test]
     fn details_help_excludes_overview_actions() {
-        let state = UIState {
+        let state = UiState {
             selected_tab: 1,
-            ..UIState::default()
+            ..UiState::default()
         };
         let text = plain_text(&state);
         assert!(text.contains("Details Actions"));
@@ -523,18 +523,18 @@ mod tests {
 
     #[test]
     fn host_subviews_have_distinct_help() {
-        let sockets = UIState {
+        let sockets = UiState {
             selected_tab: 4,
-            ..UIState::default()
+            ..UiState::default()
         };
         let text = plain_text(&sockets);
         assert!(text.contains("Socket Actions"));
         assert!(!text.contains("Interface Actions"));
 
-        let interfaces = UIState {
+        let interfaces = UiState {
             selected_tab: 4,
             host_view: HostView::Interfaces,
-            ..UIState::default()
+            ..UiState::default()
         };
         let text = plain_text(&interfaces);
         assert!(text.contains("Interface Actions"));
@@ -552,9 +552,9 @@ mod tests {
 
     #[test]
     fn overlay_renders_on_a_minimal_terminal() {
-        let ui_state = UIState {
+        let ui_state = UiState {
             show_help: true,
-            ..UIState::default()
+            ..UiState::default()
         };
         render(8, 3, |frame| {
             draw_help_overlay(frame, &ui_state, frame.area()).expect("draw help overlay")
@@ -564,11 +564,11 @@ mod tests {
     #[test]
     fn closing_help_preserves_the_underlying_view() {
         let app = test_app();
-        let mut ui_state = UIState {
+        let mut ui_state = UiState {
             selected_tab: 1,
             show_help: true,
             filter_query: "port:443".to_string(),
-            ..UIState::default()
+            ..UiState::default()
         };
         let click_regions = ClickableRegions::default();
         let mut ctx = empty_ctx(&app, &mut ui_state, &click_regions);
@@ -585,9 +585,9 @@ mod tests {
     #[test]
     fn overlay_consumes_view_actions_but_keeps_quit_global() {
         let app = test_app();
-        let mut ui_state = UIState {
+        let mut ui_state = UiState {
             show_help: true,
-            ..UIState::default()
+            ..UiState::default()
         };
         let click_regions = ClickableRegions::default();
         let mut ctx = empty_ctx(&app, &mut ui_state, &click_regions);
@@ -626,10 +626,10 @@ mod tests {
         use crossterm::event::MouseButton;
 
         let app = test_app();
-        let mut ui_state = UIState {
+        let mut ui_state = UiState {
             show_help: true,
             quit_confirmation: true,
-            ..UIState::default()
+            ..UiState::default()
         };
         let click_regions = ClickableRegions::default();
         let mut ctx = empty_ctx(&app, &mut ui_state, &click_regions);
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn narrow_overlay_can_scroll_to_the_last_line() {
-        fn render_overlay(ui_state: &UIState) -> String {
+        fn render_overlay(ui_state: &UiState) -> String {
             render(46, 20, |frame| {
                 draw_help_overlay(frame, ui_state, frame.area()).expect("draw help overlay")
             })
@@ -664,9 +664,9 @@ mod tests {
         // At this width several help rows wrap onto two rendered rows, so
         // the scroll range must be computed from wrapped rows or the tail
         // of the Global section becomes unreachable.
-        let mut ui_state = UIState {
+        let mut ui_state = UiState {
             show_help: true,
-            ..UIState::default()
+            ..UiState::default()
         };
         let first = render_overlay(&ui_state);
         assert!(!first.contains("Quit immediately"));

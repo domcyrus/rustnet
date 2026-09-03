@@ -11,14 +11,14 @@ use ratatui::{
 
 use crate::app::App;
 use crate::ui::{
-    UIState, alert_style, format::format_bytes, section_header, section_title, theme,
+    UiState, alert_style, format::format_bytes, section_header, section_title, theme,
     widgets::scrollbar::render_scrolled_table,
 };
 
 pub(in crate::ui) fn draw_interface_stats(
     f: &mut Frame,
     app: &App,
-    ui_state: &UIState,
+    ui_state: &UiState,
     area: Rect,
 ) -> Result<()> {
     let mut stats = app.get_interface_stats();

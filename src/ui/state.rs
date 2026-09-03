@@ -1,5 +1,5 @@
-//! UIState, ClickableRegions, ClickAction, SortColumn, GroupedRow, and
-//! the selection/scroll helpers — everything tracking what the user is
+//! UiState, ClickableRegions, ClickAction, SortColumn, GroupedRow, and
+//! the selection/scroll helpers: everything tracking what the user is
 //! looking at and acting on. No rendering happens here; tabs and widgets
 //! read these to know what to draw.
 
@@ -153,8 +153,8 @@ impl ActivitySort {
 /// Scroll state for a pane that only learns its content and viewport
 /// size at render time (Details info panes, Help overlay, Host tables).
 /// Event handlers mutate `offset`; the draw path reports the
-/// real maximum through [`Self::clamp_for_render`] — a `Cell`, because
-/// drawing only holds `&UIState` — so the next scroll input clamps
+/// real maximum through [`Self::clamp_for_render`] (a `Cell`, because
+/// drawing only holds `&UiState`), so the next scroll input clamps
 /// against what is actually on screen.
 #[derive(Debug, Default)]
 pub struct PaneScroll {
@@ -380,7 +380,7 @@ impl ClickableRegions {
 }
 
 /// UI state for managing the interface
-pub struct UIState {
+pub struct UiState {
     pub selected_tab: usize,
     pub selected_connection_key: Option<String>,
     /// Cached positions for the selected key. Each lookup validates the hint
@@ -441,7 +441,7 @@ pub struct UIState {
     pub activity_sort_ascending: bool,
 }
 
-impl Default for UIState {
+impl Default for UiState {
     fn default() -> Self {
         Self {
             selected_tab: 0,
@@ -504,7 +504,7 @@ pub fn compute_scroll_offset(
     offset.min(max_offset)
 }
 
-impl UIState {
+impl UiState {
     /// Whether the query changes the displayed connection set.
     pub fn has_active_filter(&self) -> bool {
         !self.filter_query.trim().is_empty()
@@ -538,7 +538,6 @@ impl UIState {
         self.selected_connection_key = key;
     }
 
-    /// Get the current selected connection index, if any
     pub fn get_selected_index(&self, connections: &[Connection]) -> Option<usize> {
         if let Some(ref selected_key) = self.selected_connection_key {
             if let Some(index) = self.selected_connection_index_hint.get()
@@ -561,7 +560,6 @@ impl UIState {
         }
     }
 
-    /// Set the selected connection to the one at the given index
     pub fn set_selected_by_index(&mut self, connections: &[Connection], index: usize) {
         if let Some(conn) = connections.get(index) {
             self.set_connection_key(Some(conn.key()));
@@ -587,12 +585,10 @@ impl UIState {
         );
     }
 
-    /// Move selection up by one position
     pub fn move_selection_up(&mut self, connections: &[Connection]) {
         self.move_selection(connections, Motion::Up);
     }
 
-    /// Move selection down by one position
     pub fn move_selection_down(&mut self, connections: &[Connection]) {
         self.move_selection(connections, Motion::Down);
     }
@@ -612,7 +608,6 @@ impl UIState {
             connections.len()
         );
 
-        // If no selection or selection is no longer valid, select first connection
         if self.selected_connection_key.is_none() || current_index.is_none() {
             log::debug!("ensure_valid_selection: selecting first connection (index 0)");
             self.set_selected_by_index(connections, 0);
@@ -622,13 +617,11 @@ impl UIState {
         }
     }
 
-    /// Enter filter mode
     pub fn enter_filter_mode(&mut self) {
         self.filter_mode = true;
         self.filter_cursor_position = self.filter_query.len();
     }
 
-    /// Exit filter mode
     pub fn exit_filter_mode(&mut self) {
         if !self.has_active_filter() {
             self.filter_query.clear();
@@ -637,19 +630,16 @@ impl UIState {
         self.filter_cursor_position = 0;
     }
 
-    /// Clear filter and exit filter mode
     pub fn clear_filter(&mut self) {
         self.filter_query.clear();
         self.exit_filter_mode();
     }
 
-    /// Add character to filter query at cursor position
     pub fn filter_add_char(&mut self, c: char) {
         self.filter_query.insert(self.filter_cursor_position, c);
         self.filter_cursor_position += 1;
     }
 
-    /// Remove character before cursor position in filter query
     pub fn filter_backspace(&mut self) {
         if self.filter_cursor_position > 0 {
             self.filter_cursor_position -= 1;
@@ -657,14 +647,12 @@ impl UIState {
         }
     }
 
-    /// Move cursor left in filter query
     pub fn filter_cursor_left(&mut self) {
         if self.filter_cursor_position > 0 {
             self.filter_cursor_position -= 1;
         }
     }
 
-    /// Move cursor right in filter query
     pub fn filter_cursor_right(&mut self) {
         if self.filter_cursor_position < self.filter_query.len() {
             self.filter_cursor_position += 1;
@@ -708,14 +696,11 @@ impl UIState {
         }
     }
 
-    /// Cycle to the next sort column.
     pub fn cycle_sort_column(&mut self) {
         self.sort_column = self.sort_column.next(self.has_geoip);
-        // Reset to the default direction for the new column
         self.sort_ascending = self.sort_column.default_direction();
     }
 
-    /// Toggle the sort direction for the current column
     pub fn toggle_sort_direction(&mut self) {
         self.sort_ascending = !self.sort_ascending;
     }
@@ -738,10 +723,8 @@ impl UIState {
         self.grouped_scroll_offset = 0;
     }
 
-    /// Toggle grouping mode
     pub fn toggle_grouping(&mut self) {
         self.grouping_enabled = !self.grouping_enabled;
-        // When toggling grouping on, clear group selection to start fresh
         if self.grouping_enabled {
             self.selected_group = None;
             self.grouped_scroll_offset = 0;
@@ -759,7 +742,6 @@ impl UIState {
             .map(|group| self.expanded_groups.contains(group))
     }
 
-    /// Toggle expansion of the currently selected group
     pub fn toggle_group_expansion(&mut self) {
         match self.selected_group_expansion() {
             Some(true) => self.collapse_selected_group(),
@@ -768,14 +750,12 @@ impl UIState {
         }
     }
 
-    /// Expand the currently selected group
     pub fn expand_selected_group(&mut self) {
         if let Some(ref group_name) = self.selected_group {
             self.expanded_groups.insert(group_name.clone());
         }
     }
 
-    /// Collapse the currently selected group
     pub fn collapse_selected_group(&mut self) {
         if let Some(group_name) = self.selected_group.clone()
             && self.expanded_groups.remove(&group_name)
@@ -784,7 +764,6 @@ impl UIState {
         }
     }
 
-    /// Get the current selected index in the grouped rows
     pub fn get_selected_grouped_index(&self, grouped_rows: &[GroupedRow]) -> Option<usize> {
         if grouped_rows.is_empty() {
             self.selected_grouped_index_hint.set(None);
@@ -891,13 +870,11 @@ impl UIState {
         Some(index)
     }
 
-    /// Check if the current selection is on a group header
     pub fn is_group_selected(&self) -> bool {
         self.selected_group.is_some() && self.selected_connection_key.is_none()
     }
 }
 
-/// Compute grouped rows from a list of connections
 /// Group label shown for connections without a resolved process name.
 pub(super) const UNKNOWN_PROCESS_GROUP: &str = "<unknown>";
 
@@ -1029,11 +1006,11 @@ mod tests {
 
     #[test]
     fn whitespace_only_filter_is_inactive_and_cleared_on_exit() {
-        let mut ui = UIState {
+        let mut ui = UiState {
             filter_mode: true,
             filter_query: "   ".to_string(),
             filter_cursor_position: 3,
-            ..UIState::default()
+            ..UiState::default()
         };
 
         assert!(!ui.has_active_filter());
@@ -1046,26 +1023,26 @@ mod tests {
 
     #[test]
     fn is_filtering_covers_both_typing_and_a_persisted_query() {
-        assert!(!UIState::default().is_filtering());
+        assert!(!UiState::default().is_filtering());
 
         // Filter mode with an empty query still counts: the user is typing.
-        let typing = UIState {
+        let typing = UiState {
             filter_mode: true,
-            ..UIState::default()
+            ..UiState::default()
         };
         assert!(typing.is_filtering());
 
         // A persisted query counts after filter mode is left.
-        let persisted = UIState {
+        let persisted = UiState {
             filter_query: "port:443".to_string(),
-            ..UIState::default()
+            ..UiState::default()
         };
         assert!(persisted.is_filtering());
 
         // Whitespace alone narrows nothing.
-        let blank = UIState {
+        let blank = UiState {
             filter_query: "   ".to_string(),
-            ..UIState::default()
+            ..UiState::default()
         };
         assert!(!blank.is_filtering());
     }
@@ -1075,9 +1052,9 @@ mod tests {
         // Tab selection and overlay visibility are independent so help can
         // describe the view that remains underneath it.
         for idx in 0..TAB_COUNT {
-            let mut ui = UIState {
+            let mut ui = UiState {
                 show_help: true,
-                ..UIState::default()
+                ..UiState::default()
             };
             ui.jump_to_tab(idx);
             assert_eq!(
@@ -1093,10 +1070,10 @@ mod tests {
         // Lock the invariant that the public API does not silently corrupt
         // `selected_tab` to a value outside `0..TAB_COUNT`; `tabs_bar.rs`
         // indexes into `TAB_TITLES` by that value when drawing.
-        let mut ui = UIState {
+        let mut ui = UiState {
             selected_tab: 2,
             show_help: false,
-            ..UIState::default()
+            ..UiState::default()
         };
         ui.jump_to_tab(TAB_COUNT);
         assert_eq!(ui.selected_tab, 2);
@@ -1108,7 +1085,7 @@ mod tests {
 
     #[test]
     fn next_tab_cycles_and_wraps() {
-        let mut ui = UIState::default();
+        let mut ui = UiState::default();
         assert_eq!(ui.selected_tab, 0);
         for expected in 1..TAB_COUNT {
             ui.next_tab();
@@ -1121,7 +1098,7 @@ mod tests {
 
     #[test]
     fn prev_tab_wraps_from_first_to_last() {
-        let mut ui = UIState::default();
+        let mut ui = UiState::default();
         ui.prev_tab();
         assert_eq!(ui.selected_tab, TAB_COUNT - 1);
         ui.prev_tab();
@@ -1165,7 +1142,7 @@ mod tests {
 
     #[test]
     fn details_scroll_resets_when_selection_changes() {
-        let mut ui = UIState::default();
+        let mut ui = UiState::default();
         ui.details_scroll.clamp_for_render(20);
         ui.details_scroll.scroll_down(7);
 
@@ -1184,7 +1161,7 @@ mod tests {
     #[test]
     fn selection_hint_recovers_after_reordering() {
         let mut connections = vec![local_tcp(1000, "first"), local_tcp(1001, "second")];
-        let mut ui = UIState::default();
+        let mut ui = UiState::default();
         ui.set_selected_by_index(&connections, 1);
         assert_eq!(ui.selected_connection_index_hint.get(), Some(1));
 
@@ -1199,7 +1176,7 @@ mod tests {
         let connections = vec![local_tcp(1000, "alpha"), local_tcp(1001, "beta")];
         let expanded = HashSet::from(["alpha".to_string(), "beta".to_string()]);
         let rows = compute_grouped_rows(&connections, &expanded);
-        let mut ui = UIState::default();
+        let mut ui = UiState::default();
         ui.set_selected_grouped_by_index(&rows, 3);
         assert_eq!(ui.selected_grouped_index_hint.get(), Some(3));
 
@@ -1211,10 +1188,10 @@ mod tests {
 
     #[test]
     fn vanished_group_is_repaired_to_the_row_actually_highlighted() {
-        let mut ui = UIState {
+        let mut ui = UiState {
             grouping_enabled: true,
             selected_group: Some("firefox".to_string()),
-            ..UIState::default()
+            ..UiState::default()
         };
         ui.expanded_groups.insert("firefox".to_string());
 
@@ -1268,10 +1245,10 @@ mod tests {
     #[test]
     fn collapsing_group_from_connection_selects_group_header() {
         let connections = vec![local_tcp(1000, "alpha"), local_tcp(1001, "alpha")];
-        let mut ui = UIState {
+        let mut ui = UiState {
             grouping_enabled: true,
             expanded_groups: HashSet::from(["alpha".to_string()]),
-            ..UIState::default()
+            ..UiState::default()
         };
         let rows = compute_grouped_rows(&connections, &ui.expanded_groups);
         ui.set_selected_grouped_by_index(&rows, 1);

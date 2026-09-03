@@ -13,7 +13,7 @@ use ratatui::{
 
 use crate::app::{App, Config};
 use crate::network::types::{Connection, Protocol, ProtocolState, TcpState};
-use crate::ui::{ClickableRegions, HandlerContext, UIState};
+use crate::ui::{ClickableRegions, HandlerContext, UiState};
 
 /// Render a closure into a `width × height` test buffer and return the
 /// buffer for cell-level inspection.
@@ -94,7 +94,7 @@ pub(crate) fn test_app() -> App {
 /// A handler context over an empty, ungrouped connection list.
 pub(crate) fn empty_ctx<'a>(
     app: &'a App,
-    ui_state: &'a mut UIState,
+    ui_state: &'a mut UiState,
     click_regions: &'a ClickableRegions,
 ) -> HandlerContext<'a> {
     HandlerContext {

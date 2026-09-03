@@ -16,7 +16,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{ClickAction, ClickableRegions, UIState, theme};
+use crate::ui::{ClickAction, ClickableRegions, UiState, theme};
 
 pub(crate) const TAB_TITLES: [&str; 5] = ["Overview", "Details", "Activity", "Graph", "Host"];
 /// Total number of tabs (kept in sync with `TAB_TITLES`).
@@ -89,7 +89,7 @@ fn cluster_width(spans: &[Span<'static>]) -> usize {
 
 pub(in crate::ui) fn draw_tabs(
     f: &mut Frame,
-    ui_state: &UIState,
+    ui_state: &UiState,
     capture: &CaptureCluster<'_>,
     area: Rect,
     click_regions: &mut ClickableRegions,

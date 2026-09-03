@@ -6,7 +6,7 @@
 //!   synchronous; components return `Vec<Effect>` from event
 //!   handlers instead of pushing through a channel.
 //! - No `register_action_handler` / `register_config_handler` /
-//!   `init` — shared state (`App`, `UIState`) is passed through
+//!   `init`: shared state (`App`, `UiState`) is passed through
 //!   context structs on each call.
 
 use anyhow::Result;
@@ -15,7 +15,7 @@ use ratatui::{Frame, layout::Rect};
 
 use crate::app::{App, AppStats};
 use crate::network::types::Connection;
-use crate::ui::{ClickableRegions, GroupedRow, UIState, state::Motion};
+use crate::ui::{ClickableRegions, GroupedRow, UiState, state::Motion};
 
 /// Read-only bundle passed to every component's `draw`. Lifetime
 /// matches the borrow scope inside the main loop's `terminal.draw`
@@ -23,7 +23,7 @@ use crate::ui::{ClickableRegions, GroupedRow, UIState, state::Motion};
 pub struct DrawContext<'a> {
     pub app: &'a App,
     pub connections: &'a [Connection],
-    pub ui_state: &'a UIState,
+    pub ui_state: &'a UiState,
     pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
     pub stats: &'a AppStats,
 }
@@ -35,7 +35,7 @@ pub struct DrawContext<'a> {
 /// hit-test table (e.g. scroll-area bounds).
 pub struct HandlerContext<'a> {
     pub app: &'a App,
-    pub ui_state: &'a mut UIState,
+    pub ui_state: &'a mut UiState,
     pub connections: &'a [Connection],
     pub grouped_rows: Option<&'a [GroupedRow<'a>]>,
     pub click_regions: &'a ClickableRegions,
@@ -97,7 +97,7 @@ pub enum Effect {
 
 /// Implemented by every tab. `draw` must be cheap (called every
 /// render tick). `handle_key` translates raw keystrokes into
-/// `Effect`s; UIState mutations happen in-place through the
+/// `Effect`s; UiState mutations happen in-place through the
 /// handler context.
 ///
 /// `handle_key` returns:

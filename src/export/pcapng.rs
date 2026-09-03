@@ -123,7 +123,7 @@ fn write_enhanced_packet<W: Write>(
 
 fn write_block<W: Write>(writer: &mut W, block_type: u32, body: &[u8]) -> io::Result<()> {
     let total_len = u32::try_from(12 + body.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pcapng block too large"))?;
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "PCAPNG block too large"))?;
     write_u32(writer, block_type)?;
     write_u32(writer, total_len)?;
     writer.write_all(body)?;
@@ -136,7 +136,7 @@ fn write_option_string<W: Write>(writer: &mut W, code: u16, value: &str) -> io::
 
 fn write_option_bytes<W: Write>(writer: &mut W, code: u16, value: &[u8]) -> io::Result<()> {
     let len = u16::try_from(value.len())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pcapng option too large"))?;
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "PCAPNG option too large"))?;
     write_u16(writer, code)?;
     write_u16(writer, len)?;
     writer.write_all(value)?;

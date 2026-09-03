@@ -20,7 +20,7 @@ use crate::network::dns::DnsResolver;
 use crate::network::types::Connection;
 use crate::ui::{
     ClickableRegions, Component, ComponentContext, Effect, GroupedRow, HandlerContext,
-    NONE_PLACEHOLDER, SelectionMove, SortColumn, UIState, alert_style, clear_all_with_confirmation,
+    NONE_PLACEHOLDER, SelectionMove, SortColumn, UiState, alert_style, clear_all_with_confirmation,
     connection_table::{
         CellPaint, Column, ColumnId, RowWindow, bandwidth_cell, build_header, column_constraints,
         connection_row, render_row_table, select_columns, visible_window,
@@ -436,7 +436,7 @@ fn draw_connection_grid<'a, T>(
     f: &mut Frame,
     area: Rect,
     grid: ConnectionGrid<'a, T>,
-    ui_state: &UIState,
+    ui_state: &UiState,
     show_location: bool,
     click_regions: &mut ClickableRegions,
     row: impl Fn(&'a T, &[Column], bool) -> Row<'a>,
@@ -485,7 +485,7 @@ fn draw_connection_grid<'a, T>(
 
 fn draw_connections_list(
     f: &mut Frame,
-    ui_state: &UIState,
+    ui_state: &UiState,
     connections: &[Connection],
     area: Rect,
     dns_resolver: Option<&DnsResolver>,
@@ -522,7 +522,7 @@ const FILTER_CHIP_MAX: usize = 20;
 /// Shared section title for the flat and grouped connection tables. The
 /// visual grammar stays consistent while aggregate mode names its view.
 fn connections_title<'a>(
-    ui_state: &UIState,
+    ui_state: &UiState,
     grouped: bool,
     filtered_count: Option<usize>,
 ) -> Line<'a> {
@@ -575,7 +575,7 @@ fn connections_title<'a>(
 /// difference, so toggling grouping doesn't read as a screen change.
 fn draw_grouped_connections_list(
     f: &mut Frame,
-    ui_state: &UIState,
+    ui_state: &UiState,
     grouped_rows: &[GroupedRow],
     area: Rect,
     dns_resolver: Option<&DnsResolver>,
@@ -648,7 +648,7 @@ fn group_header_row<'a>(
     process_name: &str,
     stats: &ProcessGroupStats,
     expanded: bool,
-    ui_state: &UIState,
+    ui_state: &UiState,
 ) -> Row<'a> {
     let indicator = if expanded { "▾" } else { "▸" };
     // Plain BOLD (no accent): group headers are structural anchors, and
@@ -1445,7 +1445,7 @@ mod tests {
         mini_wave_ceiling, mini_wave_window, security_details_fit, smooth_mini_wave,
     };
     use crate::ui::{
-        ClickableRegions, Component, Effect, HandlerContext, UIState, compute_grouped_rows,
+        ClickableRegions, Component, Effect, HandlerContext, UiState, compute_grouped_rows,
         test_support::{empty_ctx, line_text, local_tcp, test_app},
         theme,
     };
@@ -1532,13 +1532,13 @@ mod tests {
 
     #[test]
     fn connection_titles_only_show_counts_for_active_filters() {
-        let unfiltered = UIState::default();
+        let unfiltered = UiState::default();
         assert_eq!(
             line_text(&connections_title(&unfiltered, false, None)),
             " Live Connections"
         );
 
-        let filtered = UIState {
+        let filtered = UiState {
             filter_query: "port:443".to_string(),
             ..Default::default()
         };
@@ -1553,7 +1553,7 @@ mod tests {
             " Process Aggregate · 3 processes [port:443]"
         );
 
-        let long = UIState {
+        let long = UiState {
             filter_query: "process:some-very-long-daemon-name".to_string(),
             ..Default::default()
         };
@@ -1562,7 +1562,7 @@ mod tests {
             " Live Connections · 1 shown [process:some-very-l…]"
         );
 
-        let whitespace = UIState {
+        let whitespace = UiState {
             filter_query: "   ".to_string(),
             ..Default::default()
         };
@@ -1584,7 +1584,7 @@ mod tests {
     #[test]
     fn filter_mode_backspace_on_empty_query_stays_in_filter_mode() {
         let app = test_app();
-        let mut ui_state = UIState::default();
+        let mut ui_state = UiState::default();
         ui_state.enter_filter_mode();
         let click_regions = ClickableRegions::default();
         let mut ctx = empty_ctx(&app, &mut ui_state, &click_regions);
@@ -1607,10 +1607,10 @@ mod tests {
     fn space_collapses_parent_group_from_connection_row() {
         let app = test_app();
         let connections = vec![local_tcp(1000, "alpha"), local_tcp(1001, "alpha")];
-        let mut ui_state = UIState {
+        let mut ui_state = UiState {
             grouping_enabled: true,
             expanded_groups: HashSet::from(["alpha".to_string()]),
-            ..UIState::default()
+            ..UiState::default()
         };
         let grouped_rows = compute_grouped_rows(&connections, &ui_state.expanded_groups);
         ui_state.set_selected_grouped_by_index(&grouped_rows, 1);

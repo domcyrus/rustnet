@@ -112,15 +112,15 @@ mod tests {
 
     #[test]
     fn chip_paints_the_selection_band_when_tinted() {
-        let spans = chip_spans("rtt 34 ms", true);
-        assert_eq!(spans_text(&spans), " rtt 34 ms ");
+        let spans = chip_spans("RTT 34 ms", true);
+        assert_eq!(spans_text(&spans), " RTT 34 ms ");
         assert_eq!(spans[0].style, theme::selection_row());
     }
 
     #[test]
     fn chip_brackets_without_a_selection_tint() {
-        let spans = chip_spans("rtt 34 ms", false);
-        assert_eq!(spans_text(&spans), "[rtt 34 ms]");
+        let spans = chip_spans("RTT 34 ms", false);
+        assert_eq!(spans_text(&spans), "[RTT 34 ms]");
         assert_eq!(spans[0].style.bg, None);
     }
 

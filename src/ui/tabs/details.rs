@@ -1798,7 +1798,7 @@ pub(in crate::ui) fn draw_connection_details(
         )));
     }
     if let Some(rtt) = conn.current_rtt() {
-        badges.push(chip(&format!("rtt {}", format_rtt_compact(rtt))));
+        badges.push(chip(&format!("RTT {}", format_rtt_compact(rtt))));
     }
 
     // One header band across the whole info area; the panes below it
@@ -2151,7 +2151,7 @@ mod header_band_tests {
         vec![
             pill("ESTABLISHED", Color::Rgb(0x4c, 0xaf, 0x50)),
             chip("1.20 KB/s in · 340 B/s out"),
-            chip("rtt 34ms"),
+            chip("RTT 34ms"),
         ]
     }
 

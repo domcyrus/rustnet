@@ -1,4 +1,4 @@
-//! Cross-platform clipboard helper that updates `UIState` with
+//! Cross-platform clipboard helper that updates `UiState` with
 //! user-visible feedback. Tries `arboard` first; on Linux/FreeBSD
 //! falls back to `wl-copy` for Wayland environments where arboard
 //! can't reach the clipboard daemon. Sandbox-aware on Linux:
@@ -10,12 +10,8 @@ use arboard::Clipboard;
 use log::{error, info};
 
 use crate::app::App;
-use crate::ui::UIState;
+use crate::ui::UiState;
 
-/// Copy `text` to the system clipboard. On success, sets a
-/// "Copied: …" banner in the status bar; on failure, sets an error
-/// banner instead. `display_msg` is what's shown to the user
-/// (typically "label: value"), while `text` is the literal payload.
 /// Whether the system clipboard can be reached at all. Landlock's
 /// filesystem and IPC-scope restrictions both sever the path to the display
 /// server's clipboard, so under the default Linux sandbox no copy can
@@ -33,8 +29,12 @@ pub fn clipboard_available(app: &App) -> bool {
     }
 }
 
-pub fn copy_to_clipboard(text: &str, display_msg: &str, ui_state: &mut UIState, app: &App) {
-    // Used conditionally on Linux/FreeBSD for sandbox-aware error messages
+/// Copy `text` to the system clipboard. On success, sets a
+/// "Copied: …" banner in the status bar; on failure, sets an error
+/// banner instead. `display_msg` is what's shown to the user
+/// (typically "label: value"), while `text` is the literal payload.
+pub fn copy_to_clipboard(text: &str, display_msg: &str, ui_state: &mut UiState, app: &App) {
+    // Only the Linux/FreeBSD error path reads `app`.
     let _ = app;
     let result = Clipboard::new().and_then(|mut cb| cb.set_text(text));
 

@@ -15,7 +15,7 @@ use crate::app::App;
 use crate::network::process_activity::{ProcessActivity, ProcessActivitySnapshot, ProcessIdentity};
 use crate::ui::{
     ActivityDirection, ActivitySort, ClickableRegions, Component, ComponentContext, Effect,
-    HandlerContext, UIState, draw_placeholder,
+    HandlerContext, UiState, draw_placeholder,
     format::{format_bytes, format_rate, format_rate_compact, truncate_with_ellipsis},
     section_header, section_title, theme,
     widgets::glow_bar,
@@ -92,7 +92,7 @@ fn interface_basis(app: &App) -> InterfaceBasis {
 pub(in crate::ui) fn draw_activity(
     f: &mut Frame,
     app: &App,
-    ui_state: &UIState,
+    ui_state: &UiState,
     area: Rect,
 ) -> Result<()> {
     let snapshot = app.get_process_activity_snapshot();
@@ -416,7 +416,7 @@ fn draw_process_table(
     f: &mut Frame,
     snapshot: &ProcessActivitySnapshot,
     basis: &InterfaceBasis,
-    ui_state: &UIState,
+    ui_state: &UiState,
     area: Rect,
 ) {
     let sort_direction = if ui_state.activity_sort_ascending {

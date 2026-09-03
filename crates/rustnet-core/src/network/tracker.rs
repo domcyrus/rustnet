@@ -85,7 +85,7 @@ fn is_quic_handshake_packet(packet_type: QuicPacketType) -> bool {
 }
 
 /// Whether a UDP packet's DPI classification is one the RTT tracker times.
-/// Gates the rtt lock in `measure_timings` so untimed UDP traffic (QUIC 1-RTT
+/// Gates the RTT lock in `measure_timings` so untimed UDP traffic (QUIC 1-RTT
 /// bulk data, SSDP, mDNS, ...) never touches the mutex on the packet path.
 fn udp_application_is_timed(application: &ApplicationProtocol) -> bool {
     match application {
@@ -523,7 +523,7 @@ impl ConnectionTracker {
                     measured_rtt = tracker.record_quic_handshake(base_key, parsed.is_outgoing, now);
                 }
                 // Time DNS query→response pairs by transaction ID. Port-53
-                // gating already happened in DPI dispatch, so any Dns result
+                // gating already happened in DPI dispatch, so any DNS result
                 // here is unicast DNS (mDNS/LLMNR map to their own variants).
                 ApplicationProtocol::Dns(dns) => {
                     dns_response_time = tracker.record_dns_packet(
@@ -1140,7 +1140,7 @@ mod tests {
         f.extend_from_slice(&[0x02, 0, 0, 0, 0, 2]);
         f.extend_from_slice(&[0x08, 0x00]);
         // IPv4 header (20 bytes)
-        let ip_total_len = (20 + 8u16).to_be_bytes(); // ip header + udp header
+        let ip_total_len = (20 + 8u16).to_be_bytes(); // IP header + UDP header
         f.extend_from_slice(&[0x45, 0x00]);
         f.extend_from_slice(&ip_total_len);
         f.extend_from_slice(&[0, 0, 0, 0]); // id, flags/frag
@@ -2015,7 +2015,7 @@ mod tests {
         let conn = tracker
             .connections()
             .get(&response.key)
-            .expect("stun connection should exist")
+            .expect("STUN connection should exist")
             .clone();
         assert_eq!(conn.stun_rtt, Some(Duration::from_millis(31)));
     }
@@ -2065,7 +2065,7 @@ mod tests {
         let conn = tracker
             .connections()
             .get(&response.key)
-            .expect("ntp connection should exist")
+            .expect("NTP connection should exist")
             .clone();
         assert_eq!(conn.ntp_rtt, Some(Duration::from_millis(21)));
     }

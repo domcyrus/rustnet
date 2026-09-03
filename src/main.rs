@@ -647,7 +647,7 @@ where
     let mut last_tick = std::time::Instant::now();
     let mut last_draw = std::time::Instant::now();
     let mut needs_redraw = true; // first frame
-    let mut ui_state = ui::UIState::default();
+    let mut ui_state = ui::UiState::default();
     let (has_country_db, _, _) = app.get_geoip_status();
     ui_state.has_geoip = has_country_db;
     let mut click_regions = ui::ClickableRegions::default();

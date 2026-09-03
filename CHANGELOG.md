@@ -50,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release workflow with `skip_downstream` now also skips the crates.io,
   Docker, COPR, PPA, and OBS publish jobs so a backfill cannot republish
 
+- **Acronym Casing**: the Details header chip reads `RTT` instead of `rtt`,
+  PCAPNG export errors spell the format in uppercase, and the `rustnet-core`
+  variants `LinkLayerType::RawIP`, `LinuxSLL`, and `LinuxSLL2` are renamed to
+  `RawIp`, `LinuxSll`, and `LinuxSll2` to match Rust naming conventions
+
 ### Fixed
 - **macOS Host Tab SYN_RCVD**: sockets that `lsof` reports as `SYN_RCVD` now
   show as SYN received instead of an unknown state

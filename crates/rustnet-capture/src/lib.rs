@@ -10,7 +10,7 @@
 //! `rustnet` application so that alternative front-ends (e.g. a headless
 //! Prometheus exporter) can pair capture with `rustnet-core` without pulling
 //! in the TUI, and so that platforms wanting a bespoke capture path (e.g. a
-//! root-free macOS pktap helper) can swap this crate out entirely.
+//! root-free macOS PKTAP helper) can swap this crate out entirely.
 //!
 //! Capture yields raw bytes plus the libpcap data-link type (DLT); parsing
 //! those bytes is `rustnet-core`'s job.

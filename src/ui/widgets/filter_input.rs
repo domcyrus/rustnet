@@ -13,12 +13,12 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::{UIState, theme};
+use crate::ui::{UiState, theme};
 
 /// Height of the filter line in rows.
 pub(crate) const FILTER_INPUT_HEIGHT: u16 = 1;
 
-pub(in crate::ui) fn draw_filter_input(f: &mut Frame, ui_state: &UIState, area: Rect) {
+pub(in crate::ui) fn draw_filter_input(f: &mut Frame, ui_state: &UiState, area: Rect) {
     let mut query = ui_state.filter_query.clone();
     if ui_state.filter_cursor_position <= query.len() {
         query.insert(ui_state.filter_cursor_position, '|');

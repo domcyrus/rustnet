@@ -35,9 +35,9 @@ pub(crate) mod dlt {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkLayerType {
     Ethernet,
-    RawIP,
-    LinuxSLL,
-    LinuxSLL2,
+    RawIp,
+    LinuxSll,
+    LinuxSll2,
     Pktap,
     Tun,
     Tap,
@@ -50,10 +50,10 @@ impl LinkLayerType {
         match dlt {
             dlt::EN10MB => LinkLayerType::Ethernet,
             dlt::RAW | dlt::NULL | dlt::LINKTYPE_RAW | dlt::LINKTYPE_IPV4 | dlt::LINKTYPE_IPV6 => {
-                LinkLayerType::RawIP
+                LinkLayerType::RawIp
             }
-            dlt::LINUX_SLL => LinkLayerType::LinuxSLL,
-            dlt::LINUX_SLL2 => LinkLayerType::LinuxSLL2,
+            dlt::LINUX_SLL => LinkLayerType::LinuxSll,
+            dlt::LINUX_SLL2 => LinkLayerType::LinuxSll2,
             dlt::PKTAP | dlt::PKTAP_STANDARD => LinkLayerType::Pktap,
             _ => LinkLayerType::Unknown,
         }
@@ -100,15 +100,15 @@ mod tests {
             LinkLayerType::from_dlt(dlt::EN10MB),
             LinkLayerType::Ethernet
         );
-        assert_eq!(LinkLayerType::from_dlt(dlt::RAW), LinkLayerType::RawIP);
-        assert_eq!(LinkLayerType::from_dlt(dlt::NULL), LinkLayerType::RawIP);
+        assert_eq!(LinkLayerType::from_dlt(dlt::RAW), LinkLayerType::RawIp);
+        assert_eq!(LinkLayerType::from_dlt(dlt::NULL), LinkLayerType::RawIp);
         assert_eq!(
             LinkLayerType::from_dlt(dlt::LINUX_SLL),
-            LinkLayerType::LinuxSLL
+            LinkLayerType::LinuxSll
         );
         assert_eq!(
             LinkLayerType::from_dlt(dlt::LINUX_SLL2),
-            LinkLayerType::LinuxSLL2
+            LinkLayerType::LinuxSll2
         );
         assert_eq!(LinkLayerType::from_dlt(dlt::PKTAP), LinkLayerType::Pktap);
         assert_eq!(
@@ -117,15 +117,15 @@ mod tests {
         );
         assert_eq!(
             LinkLayerType::from_dlt(dlt::LINKTYPE_RAW),
-            LinkLayerType::RawIP
+            LinkLayerType::RawIp
         );
         assert_eq!(
             LinkLayerType::from_dlt(dlt::LINKTYPE_IPV4),
-            LinkLayerType::RawIP
+            LinkLayerType::RawIp
         );
         assert_eq!(
             LinkLayerType::from_dlt(dlt::LINKTYPE_IPV6),
-            LinkLayerType::RawIP
+            LinkLayerType::RawIp
         );
         assert_eq!(LinkLayerType::from_dlt(999), LinkLayerType::Unknown);
     }
@@ -135,8 +135,8 @@ mod tests {
         assert!(LinkLayerType::Tun.is_tunnel());
         assert!(LinkLayerType::Tap.is_tunnel());
         assert!(!LinkLayerType::Ethernet.is_tunnel());
-        assert!(!LinkLayerType::RawIP.is_tunnel());
-        assert!(!LinkLayerType::LinuxSLL.is_tunnel());
+        assert!(!LinkLayerType::RawIp.is_tunnel());
+        assert!(!LinkLayerType::LinuxSll.is_tunnel());
         assert!(!LinkLayerType::Pktap.is_tunnel());
     }
 
@@ -165,7 +165,7 @@ mod tests {
         );
         assert_eq!(
             LinkLayerType::from_dlt_and_name(dlt::RAW, "wlan0"),
-            LinkLayerType::RawIP
+            LinkLayerType::RawIp
         );
     }
 }
