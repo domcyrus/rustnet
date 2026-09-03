@@ -90,10 +90,13 @@ install -Dpm 0755 target/release/rustnet -t %{buildroot}%{_bindir}/
 install -Dpm 0644 crates/rustnet-core/assets/services -t %{buildroot}%{_datadir}/%{name}/
 install -Dpm 0644 resources/packaging/linux/graphics/rustnet.png -t %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/
 install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_datadir}/applications/
+install -Dpm 0644 resources/packaging/linux/systemd/rustnet-headless.service -t %{buildroot}%{_prefix}/lib/systemd/system/
+install -Dpm 0644 resources/packaging/linux/systemd/rustnet-headless.env %{buildroot}%{_sysconfdir}/default/rustnet-headless
+install -Dpm 0644 resources/packaging/linux/logrotate/rustnet-headless -t %{buildroot}%{_sysconfdir}/logrotate.d/
 
 %files
 %license LICENSE
-%doc README.md
+%doc README.md SERVICE.md
 %{_bindir}/rustnet
 %dir %{_datadir}/%{name}
 %{_datadir}/%{name}/services
@@ -102,6 +105,9 @@ install -Dpm 0644 resources/packaging/linux/rustnet.desktop -t %{buildroot}%{_da
 %dir %{_datadir}/icons/hicolor/256x256/apps
 %{_datadir}/icons/hicolor/256x256/apps/rustnet.png
 %{_datadir}/applications/rustnet.desktop
+%{_prefix}/lib/systemd/system/rustnet-headless.service
+%config(noreplace) %{_sysconfdir}/default/rustnet-headless
+%config(noreplace) %{_sysconfdir}/logrotate.d/rustnet-headless
 
 %post
 # Set narrow capabilities for packet capture and eBPF support without requiring root/sudo.
@@ -112,6 +118,19 @@ if command -v setcap >/dev/null 2>&1; then
     # CAP_BPF, CAP_PERFMON: eBPF support for enhanced process tracking
     setcap 'cap_net_raw,cap_bpf,cap_perfmon+eip' %{_bindir}/rustnet 2>/dev/null || \
         setcap 'cap_net_raw+eip' %{_bindir}/rustnet || :
+fi
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || :
+fi
+
+%preun
+if [ "$1" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+    systemctl disable --now rustnet-headless.service >/dev/null 2>&1 || :
+fi
+
+%postun
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || :
 fi
 
 %posttrans
@@ -164,6 +183,9 @@ GEOIP (OPTIONAL):
 USAGE:
   rustnet              # Start network monitoring
   rustnet --help       # Show all options
+
+HEADLESS SERVICE (OPTIONAL, NOT ENABLED OR STARTED):
+  See %{_docdir}/%{name}/SERVICE.md
 
 ================================================================================
 EOF

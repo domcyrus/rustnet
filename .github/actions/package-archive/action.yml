@@ -1,11 +1,12 @@
 name: 'Package Release Archive'
 description: >-
-  Stage a built rustnet binary with the services asset, README and LICENSE in
-  the release-archive layout and pack it as tar.gz or zip.
+  Stage a built rustnet binary with runtime assets, service examples,
+  documentation and LICENSE, then pack it as tar.gz or zip.
 
 # The staging layout is a cross-job contract: package-installers, package-macos
 # and package-windows in release.yml (and the Homebrew formula) unpack
-# rustnet-<version>-<target>/{rustnet[.exe],assets/services,README.md,LICENSE},
+# rustnet-<version>-<target>/{rustnet[.exe],assets/services,
+# resources/packaging/<platform>,README.md,SERVICE*.md,LICENSE},
 # so every release build must produce it through this action.
 
 inputs:
@@ -44,6 +45,28 @@ runs:
           mkdir -p "$staging/assets"
           cp "crates/rustnet-core/assets/services" "$staging/assets/"
         fi
+
+        cp SERVICE.md SERVICE.zh-CN.md SERVICE.ja.md "$staging/"
+        case "${{ inputs.target }}" in
+          *-unknown-linux-*)
+            mkdir -p "$staging/resources/packaging/linux"
+            cp -R resources/packaging/linux/systemd "$staging/resources/packaging/linux/"
+            cp -R resources/packaging/linux/logrotate "$staging/resources/packaging/linux/"
+            cp compose.headless.yml "$staging/"
+            ;;
+          *-apple-darwin)
+            mkdir -p "$staging/resources/packaging/macos"
+            cp -R resources/packaging/macos/launchd "$staging/resources/packaging/macos/"
+            ;;
+          *-freebsd*)
+            mkdir -p "$staging/resources/packaging/freebsd"
+            cp -R resources/packaging/freebsd/rc.d "$staging/resources/packaging/freebsd/"
+            ;;
+          *-windows-*)
+            # The MSI installs the native SCM definition. Raw archives include
+            # the service guide but do not mutate the host.
+            ;;
+        esac
 
         cp README.md "$staging/"
         cp LICENSE "$staging/" 2>/dev/null || true

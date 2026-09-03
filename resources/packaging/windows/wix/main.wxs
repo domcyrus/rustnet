@@ -58,6 +58,22 @@
                             KeyPath='yes'/>
                         <Environment Id='PATH' Name='PATH' Value='[APPLICATIONROOTDIRECTORY]'
                             Permanent='no' Part='last' Action='set' System='yes' />
+                        <ServiceInstall Id='RustnetServiceInstall'
+                            Name='Rustnet'
+                            DisplayName='Rustnet Network Monitor'
+                            Description='Collects per-process network connection telemetry.'
+                            Type='ownProcess'
+                            Start='demand'
+                            ErrorControl='normal'
+                            Account='LocalSystem'
+                            Arguments='--windows-service --headless --output jsonl --output-file &quot;[CommonAppDataFolder]Rustnet\rustnet.jsonl&quot; --refresh-interval 5000'>
+                            <ServiceDependency Id='npcap' />
+                        </ServiceInstall>
+                        <ServiceControl Id='RustnetServiceControl'
+                            Name='Rustnet'
+                            Stop='both'
+                            Remove='uninstall'
+                            Wait='yes' />
                     </Component>
                     <Component Id='AppIcon' Guid='*' Win64='$(var.Win64)'>
                         <File Id='RustnetIco'
@@ -71,6 +87,22 @@
                             DiskId='1'
                             Source='assets\services'
                             KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <Directory Id='CommonAppDataFolder'>
+                <Directory Id='RustnetDataDirectory' Name='Rustnet'>
+                    <Component Id='RustnetDataDirectoryComponent' Guid='*' Win64='$(var.Win64)'>
+                        <CreateFolder>
+                            <PermissionEx Sddl='D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)' />
+                        </CreateFolder>
+                        <RegistryValue Root='HKLM'
+                            Key='Software\domcyrus\Rustnet'
+                            Name='DataDirectory'
+                            Type='string'
+                            Value='[RustnetDataDirectory]'
+                            KeyPath='yes' />
                     </Component>
                 </Directory>
             </Directory>
@@ -103,6 +135,7 @@
             <ComponentRef Id='AppIcon' />
             <ComponentRef Id='AssetsDir' />
             <ComponentRef Id='ApplicationShortcut' />
+            <ComponentRef Id='RustnetDataDirectoryComponent' />
         </Feature>
 
         <!-- Note: VC++ Redistributable bundling via WiX Binary + CustomAction doesn't work -->

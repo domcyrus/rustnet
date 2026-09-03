@@ -112,6 +112,7 @@ windows = { workspace = true, features = [
     "Win32_System_Console",
     "Win32_System_JobObjects",
     "Win32_System_LibraryLoader",
+    "Win32_System_Services",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
@@ -188,6 +189,7 @@ Features:
 depends = "libpcap0.8, libelf1"
 section = "net"
 priority = "optional"
+maintainer-scripts = "debian"
 assets = [
     [
         "target/release/rustnet",
@@ -214,16 +216,42 @@ assets = [
         "usr/share/applications/",
         "644",
     ],
+    [
+        "resources/packaging/linux/systemd/rustnet-headless.service",
+        "usr/lib/systemd/system/rustnet-headless.service",
+        "644",
+    ],
+    [
+        "resources/packaging/linux/systemd/rustnet-headless.env",
+        "etc/default/rustnet-headless",
+        "644",
+    ],
+    [
+        "resources/packaging/linux/logrotate/rustnet-headless",
+        "etc/logrotate.d/rustnet-headless",
+        "644",
+    ],
+    [
+        "SERVICE.md",
+        "usr/share/doc/rustnet-monitor/",
+        "644",
+    ],
 ]
-conf-files = []
 
 [package.metadata.generate-rpm]
+post_install_script = "resources/packaging/linux/rpm/post_install.sh"
+pre_uninstall_script = "resources/packaging/linux/rpm/pre_uninstall.sh"
+post_uninstall_script = "resources/packaging/linux/rpm/post_uninstall.sh"
 assets = [
     { source = "target/release/rustnet", dest = "/usr/bin/rustnet", mode = "755" },
     { source = "README.md", dest = "/usr/share/doc/rustnet-monitor/README.md", mode = "644" },
     { source = "crates/rustnet-core/assets/services", dest = "/usr/share/rustnet-monitor/services", mode = "644" },
     { source = "resources/packaging/linux/graphics/rustnet.png", dest = "/usr/share/icons/hicolor/256x256/apps/rustnet.png", mode = "644" },
     { source = "resources/packaging/linux/rustnet.desktop", dest = "/usr/share/applications/rustnet.desktop", mode = "644" },
+    { source = "resources/packaging/linux/systemd/rustnet-headless.service", dest = "/usr/lib/systemd/system/rustnet-headless.service", mode = "644" },
+    { source = "resources/packaging/linux/systemd/rustnet-headless.env", dest = "/etc/default/rustnet-headless", mode = "644", config = "noreplace" },
+    { source = "resources/packaging/linux/logrotate/rustnet-headless", dest = "/etc/logrotate.d/rustnet-headless", mode = "644", config = "noreplace" },
+    { source = "SERVICE.md", dest = "/usr/share/doc/rustnet-monitor/SERVICE.md", mode = "644", doc = true },
 ]
 [package.metadata.generate-rpm.requires]
 libpcap = "*"

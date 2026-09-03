@@ -1,0 +1,38 @@
+#!/bin/sh
+
+# shellcheck disable=SC1091,SC2034
+
+# PROVIDE: rustnet_headless
+# REQUIRE: NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="rustnet_headless"
+rcvar="rustnet_headless_enable"
+
+load_rc_config "$name"
+
+: "${rustnet_headless_enable:=NO}"
+: "${rustnet_headless_program:=/usr/local/bin/rustnet}"
+: "${rustnet_headless_extra_args:=}"
+
+pidfile="/var/run/${name}.pid"
+state_dir="/var/db/rustnet"
+output_file="${state_dir}/headless.jsonl"
+error_file="${state_dir}/headless.err.log"
+
+command="/usr/sbin/daemon"
+procname="$rustnet_headless_program"
+command_args="-p ${pidfile} -t ${name} -m 2 -o ${error_file} ${rustnet_headless_program} --headless --refresh-interval 5000 --output jsonl --output-file ${output_file} ${rustnet_headless_extra_args}"
+start_precmd="rustnet_headless_precmd"
+
+rustnet_headless_precmd()
+{
+    install -d -o root -g wheel -m 0700 "$state_dir"
+    touch "$output_file" "$error_file"
+    chown root:wheel "$output_file" "$error_file"
+    chmod 0600 "$output_file" "$error_file"
+}
+
+run_rc_command "$1"

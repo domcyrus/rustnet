@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.domcyrus.rustnet-headless</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/Rustnet.app/Contents/MacOS/rustnet</string>
+        <string>--headless</string>
+        <string>--refresh-interval</string>
+        <string>5000</string>
+        <string>--output</string>
+        <string>jsonl</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>ProcessType</key>
+    <string>Adaptive</string>
+
+    <key>Umask</key>
+    <integer>63</integer>
+    <key>StandardOutPath</key>
+    <string>/var/db/rustnet/headless.jsonl</string>
+    <key>StandardErrorPath</key>
+    <string>/var/db/rustnet/headless.err.log</string>
+</dict>
+</plist>

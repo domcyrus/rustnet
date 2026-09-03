@@ -78,6 +78,14 @@ pub fn build_cli() -> Command {
                 .required(false),
         )
         .arg(
+            Arg::new("output-file")
+                .long("output-file")
+                .value_name("FILE")
+                .help("Write headless output to FILE instead of stdout")
+                .requires("headless")
+                .required(false),
+        )
+        .arg(
             Arg::new("filter")
                 .long("filter")
                 .value_name("QUERY")
@@ -200,6 +208,16 @@ pub fn build_cli() -> Command {
                 .action(clap::ArgAction::SetTrue),
         );
 
+    #[cfg(target_os = "windows")]
+    let cmd = cmd.arg(
+        Arg::new("windows-service")
+            .long("windows-service")
+            .help("Run under the Windows Service Control Manager")
+            .action(clap::ArgAction::SetTrue)
+            .requires("headless")
+            .hide(true),
+    );
+
     #[cfg(feature = "kubernetes")]
     let cmd = cmd.arg(
         Arg::new("kubernetes")
@@ -318,6 +336,7 @@ mod tests {
         assert!(!matches.get_flag("headless"));
         assert_eq!(matches.get_one::<u64>("duration"), None);
         assert_eq!(matches.get_one::<String>("output"), None);
+        assert_eq!(matches.get_one::<String>("output-file"), None);
         assert_eq!(matches.get_one::<String>("filter"), None);
     }
 
@@ -331,6 +350,8 @@ mod tests {
                 "30",
                 "--output",
                 "jsonl",
+                "--output-file",
+                "/var/log/rustnet/snapshots.jsonl",
                 "--filter",
                 "proto:tcp process:curl",
             ])
@@ -341,6 +362,10 @@ mod tests {
         assert_eq!(
             matches.get_one::<String>("output").map(String::as_str),
             Some("jsonl")
+        );
+        assert_eq!(
+            matches.get_one::<String>("output-file").map(String::as_str),
+            Some("/var/log/rustnet/snapshots.jsonl")
         );
         assert_eq!(
             matches.get_one::<String>("filter").map(String::as_str),
@@ -367,6 +392,7 @@ mod tests {
         for args in [
             ["rustnet", "--duration", "30"],
             ["rustnet", "--output", "json"],
+            ["rustnet", "--output-file", "snapshots.jsonl"],
             ["rustnet", "--filter", "port:443"],
         ] {
             let error = build_cli()

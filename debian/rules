@@ -41,6 +41,11 @@ override_dh_auto_install:
 
 	# Install documentation
 	install -Dm644 README.md debian/rustnet/usr/share/doc/rustnet/README.md
+	install -Dm644 SERVICE.md debian/rustnet/usr/share/doc/rustnet/SERVICE.md
+
+	# Install the optional service configuration without enabling the unit.
+	install -Dm644 resources/packaging/linux/systemd/rustnet-headless.env \
+		debian/rustnet/etc/default/rustnet-headless
 
 	# Install shell completions if generated
 	if [ -d "$(RUSTNET_ASSET_DIR)" ]; then \
@@ -70,3 +75,7 @@ override_dh_auto_test:
 
 override_dh_installchangelogs:
 	dh_installchangelogs CHANGELOG.md
+
+# Ship the service definition but keep monitoring strictly opt-in.
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start

@@ -19,6 +19,10 @@ on:
       - 'Cross.toml'
       - 'src/**'
       - 'crates/**'
+      - 'Dockerfile'
+      - 'compose.headless.yml'
+      - 'resources/packaging/**'
+      - 'scripts/check-service-packaging.sh'
       - '.github/workflows/test-platform-builds.yml'
       - '.github/workflows/build-platforms.yml'
       - '.github/actions/**'
@@ -30,7 +34,7 @@ jobs:
   build:
     uses: ./.github/workflows/build-platforms.yml
     with:
-      create-archives: ${{ inputs.create-archives || false }}
+      create-archives: ${{ github.event_name == 'pull_request' || inputs.create-archives || false }}
       strip-symbols: false
       version: test-${{ github.run_id }}
 
@@ -48,7 +52,10 @@ jobs:
           release: '14.2'
           usesh: true
           prepare: pkg install -y curl libpcap rust
-          run: cargo build --locked --verbose --release --no-default-features
+          run: |
+            sh -n resources/packaging/freebsd/rc.d/rustnet_headless
+            sh -n resources/packaging/freebsd/rc.d/install-rustnet-headless.sh
+            cargo build --locked --verbose --release --no-default-features
 
   trigger-freebsd-build:
     name: trigger-freebsd-build

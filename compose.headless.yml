@@ -1,0 +1,27 @@
+services:
+  rustnet:
+    build:
+      context: .
+    image: ghcr.io/domcyrus/rustnet:${RUSTNET_IMAGE_TAG:-local}
+    command:
+      - --headless
+      - --interface
+      - any
+      - --refresh-interval
+      - "5000"
+      - --output
+      - jsonl
+    network_mode: host
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW
+    read_only: true
+    restart: unless-stopped
+    stop_grace_period: 10s
+    init: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "7"

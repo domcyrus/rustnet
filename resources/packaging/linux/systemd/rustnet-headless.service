@@ -1,0 +1,35 @@
+[Unit]
+Description=RustNet headless network monitor
+Documentation=https://github.com/domcyrus/rustnet
+After=network.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=-/etc/default/rustnet-headless
+ExecStart=/usr/bin/rustnet --headless --interface any --refresh-interval 5000 --output jsonl $RUSTNET_EXTRA_ARGS
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+
+# Keep captured network metadata private while allowing systemd to manage the
+# output path before RustNet drops privileges.
+UMask=0077
+StateDirectory=rustnet
+StateDirectoryMode=0700
+StandardOutput=append:/var/lib/rustnet/headless.jsonl
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/rustnet
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

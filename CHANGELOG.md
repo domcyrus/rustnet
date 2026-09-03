@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Opt-in Headless Services**: inactive service definitions for systemd,
+  launchd, Windows SCM, FreeBSD rc.d, and Docker Compose use explicit headless
+  commands and a 5000 ms refresh interval. `--output-file` securely writes
+  JSONL by appending or one final JSON snapshot by replacement
 - **Headless Mode**: `--headless` runs without the TUI, with optional
   `--duration` and shared `--filter` syntax. Versioned snapshots stream as
   JSONL by default, while `--output json` emits one final snapshot. Stdout is

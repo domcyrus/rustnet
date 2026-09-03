@@ -201,9 +201,10 @@ The TUI remains the default. For scripts and services, use headless mode:
 rustnet --headless                                      # Stream JSONL snapshots
 rustnet --headless --duration 30 --output json         # Emit one final snapshot
 rustnet --headless --filter 'process:curl app:https'   # Apply a connection filter
+rustnet --headless --output-file snapshots.jsonl       # Append JSONL to a private file
 ```
 
-`--output jsonl` is the headless default and streams versioned snapshots at the configured refresh interval. `--output json` emits one final versioned snapshot when monitoring stops. `--duration` stops capture after the requested number of seconds, and `--filter` accepts the same syntax as the TUI. In headless mode, stdout contains machine-readable output only. Capture startup failures exit with a nonzero status.
+`--output jsonl` is the headless default and streams versioned snapshots at the configured refresh interval. `--output json` emits one final versioned snapshot when monitoring stops. `--duration` stops capture after the requested number of seconds, and `--filter` accepts the same syntax as the TUI. `--output-file` writes directly to a private file instead of stdout, appending JSONL or replacing JSON. In headless mode, stdout contains machine-readable output only. Capture startup failures exit with a nonzero status. See [SERVICE.md](SERVICE.md) for opt-in systemd, launchd, Windows, FreeBSD, and Docker Compose operation.
 
 The theme and per-color overrides can also be set in `~/.config/rustnet/config.toml`; `--theme` takes precedence. See [USAGE.md](USAGE.md#--theme-preset) for the schema.
 
@@ -322,6 +323,7 @@ See [USAGE.md](USAGE.md) for complete timeout details.
 
 - **[INSTALL.md](INSTALL.md)** - Detailed installation instructions for all platforms, permission setup, and troubleshooting
 - **[USAGE.md](USAGE.md)** - Complete usage guide including command-line options, filtering, sorting, and logging
+- **[SERVICE.md](SERVICE.md)** - Opt-in headless service setup, operation, security, and output retention
 - **[SECURITY.md](SECURITY.md)** - Security features including Landlock sandboxing and privilege management
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture, platform implementations, and performance details
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - Contribution workflow, quality requirements, and project guidelines

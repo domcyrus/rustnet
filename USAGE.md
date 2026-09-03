@@ -92,6 +92,7 @@ Options:
       --duration <SECONDS>               Stop headless monitoring after this many seconds
       --output <FORMAT>                  Headless output format: jsonl (stream snapshots) or
                                          json (final snapshot)
+      --output-file <FILE>               Write headless output to FILE instead of stdout
       --filter <QUERY>                   Filter headless output using the shared connection filter syntax
   -r, --refresh-interval <MILLISECONDS>  UI and headless snapshot refresh interval in milliseconds
                                          [default: 500]
@@ -134,6 +135,9 @@ rustnet --headless --duration 60 --output json
 
 # Stream only matching connections
 rustnet --headless --filter 'process:curl app:https'
+
+# Append JSONL snapshots to a private regular file instead of stdout
+rustnet --headless --output jsonl --output-file snapshots.jsonl
 ```
 
 The headless controls are:
@@ -141,13 +145,14 @@ The headless controls are:
 - **`--headless`**: disables terminal setup and reserves stdout for machine-readable records only. Diagnostics go to stderr or configured log files.
 - **`--duration <SECONDS>`**: stops after a positive whole number of seconds. Without it, monitoring continues until a supported shutdown signal arrives. JSONL also stops when it discovers that its output pipe has closed. Headless shutdown signals are SIGINT, SIGTERM, and SIGHUP on Unix, and Ctrl+C and Ctrl+Break on Windows.
 - **`--output jsonl|json`**: selects the output shape. JSONL is the default and writes versioned latest-value snapshots, one JSON object per line. Under output backpressure, a stale queued snapshot is replaced by the newest one; consumers can detect skipped `runtime.snapshot_generation` values. After a duration or signal shutdown, JSONL also writes a final terminal record containing the termination reason and shutdown result. JSON waits for shutdown and writes exactly one final versioned record.
+- **`--output-file <FILE>`**: writes headless records to a securely opened regular file instead of stdout. JSONL appends so a stream can continue across runs. JSON truncates the file and replaces it with the current run's single final record. The parent directory must already exist and be writable during privileged startup.
 - **`--filter <QUERY>`**: applies the same connection-filter syntax as the TUI, including fields such as `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, and `proto:`, plus `/pattern/` regular expressions.
 
 #### Schema contract
 
 The current wire schema is `schema_version = 1`. Every record is a snapshot object with these top-level fields: `schema_version`, `type`, `timestamp`, `runtime`, `sandbox`, `stats`, `filter`, `connection_count`, and `connections`. A terminal record sets `runtime.status` to `stopping`, `stopped`, or `stopped_with_errors`, and includes `runtime.termination_reason` and `runtime.shutdown`. Connection records cover endpoints, process attribution, traffic, protocol timing, GeoIP, and optional Kubernetes metadata. The `rtt` object includes current, initial, smoothed TCP, DNS, LLMNR, NetBIOS, ICMP echo, STUN, and NTP timings in milliseconds. Optional enrichment and timing fields remain null until discovered; connections drained during shutdown can appear before process, GeoIP, or Kubernetes enrichment completes. Consumers must branch on `schema_version` and tolerate unknown additive fields.
 
-Closing a JSONL pipeline early, for example with `head`, produces a broken pipe. RustNet treats that as a successful request to stop, shuts down its workers, and does not attempt a terminal record on the closed pipe. A packet-capture initialization failure or a later capture failure exits with a nonzero status. `--duration`, `--output`, and `--filter` require `--headless`.
+Closing a JSONL pipeline early, for example with `head`, produces a broken pipe. RustNet treats that as a successful request to stop, shuts down its workers, and does not attempt a terminal record on the closed pipe. A packet-capture initialization failure or a later capture failure exits with a nonzero status. `--duration`, `--output`, `--output-file`, and `--filter` require `--headless`. See [SERVICE.md](SERVICE.md) for long-running service definitions, private output paths, and retention.
 
 ### Option Details
 

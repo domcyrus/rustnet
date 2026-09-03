@@ -1,10 +1,10 @@
 //! Secure Windows output-file opening.
 //!
 //! Windows has no mode-bit equivalent to Unix `0o600`. This module creates a
-//! protected DACL containing one full-control ACE for the current token user,
-//! supplies it to `CreateFileW`, and reapplies it through the opened handle so
-//! pre-existing files owned by the current user are hardened without a
-//! pathname race.
+//! protected DACL containing full control for the current token user and read
+//! access for the built-in Administrators group. It supplies that DACL to
+//! `CreateFileW` and reapplies it through the opened handle so pre-existing
+//! files owned by the current user are hardened without a pathname race.
 
 use std::fs::File;
 use std::io;
@@ -18,22 +18,23 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT, SetSecurityInfo};
 use windows::Win32::Security::{
-    ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, DACL_SECURITY_INFORMATION,
-    EqualSid, GetLengthSid, GetTokenInformation, InitializeAcl, InitializeSecurityDescriptor,
-    OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
-    SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR, SetSecurityDescriptorControl,
-    SetSecurityDescriptorDacl, SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser,
+    ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, CreateWellKnownSid,
+    DACL_SECURITY_INFORMATION, EqualSid, GetLengthSid, GetTokenInformation, InitializeAcl,
+    InitializeSecurityDescriptor, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED, SECURITY_ATTRIBUTES, SECURITY_DESCRIPTOR,
+    SECURITY_MAX_SID_SIZE, SetSecurityDescriptorControl, SetSecurityDescriptorDacl,
+    SetSecurityDescriptorOwner, TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid,
 };
 use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
-    GetFileInformationByHandle, OPEN_ALWAYS, READ_CONTROL, WRITE_DAC,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_WRITE_DATA, GetFileInformationByHandle, OPEN_ALWAYS, READ_CONTROL, WRITE_DAC,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::PCWSTR;
 
-/// Open an output file with access restricted to the current token user.
+/// Open an output file with writes restricted to the current token user.
 ///
 /// Existing files are not truncated until their type, link count, and owner
 /// have been validated and the protected DACL has been applied. Reparse points
@@ -152,8 +153,9 @@ fn validate_owner(file: &File, path: &Path, expected_owner: PSID) -> io::Result<
 
 struct PrivateSecurity {
     // The descriptor and ACL contain pointers into these heap allocations.
-    // Keep both allocations alive until CreateFileW and apply_to complete.
+    // Keep all allocations alive until CreateFileW and apply_to complete.
     sid_storage: Vec<usize>,
+    _administrator_sid_storage: Vec<usize>,
     _acl_storage: Vec<usize>,
     descriptor: SECURITY_DESCRIPTOR,
 }
@@ -196,9 +198,28 @@ impl PrivateSecurity {
             ));
         }
 
+        let administrator_sid_words = (SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<usize>());
+        let mut administrator_sid_storage = vec![0usize; administrator_sid_words];
+        let administrator_sid = PSID(administrator_sid_storage.as_mut_ptr().cast());
+        let mut administrator_sid_size = SECURITY_MAX_SID_SIZE;
+        unsafe {
+            CreateWellKnownSid(
+                WinBuiltinAdministratorsSid,
+                None,
+                Some(administrator_sid),
+                &mut administrator_sid_size,
+            )
+            .map_err(|error| windows_error("CreateWellKnownSid", error))?;
+        }
+
         let sid_length = unsafe { GetLengthSid(sid) as usize };
-        let acl_bytes =
-            size_of::<ACL>() + size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>() + sid_length;
+        let administrator_sid_length = unsafe { GetLengthSid(administrator_sid) as usize };
+        let ace_header_bytes = size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>();
+        let acl_bytes = size_of::<ACL>()
+            + ace_header_bytes
+            + sid_length
+            + ace_header_bytes
+            + administrator_sid_length;
         let acl_words = acl_bytes.div_ceil(size_of::<usize>());
         let mut acl_storage = vec![0usize; acl_words];
         let acl = acl_storage.as_mut_ptr().cast::<ACL>();
@@ -206,6 +227,8 @@ impl PrivateSecurity {
             InitializeAcl(acl, acl_bytes as u32, ACL_REVISION)
                 .map_err(|error| windows_error("InitializeAcl", error))?;
             AddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS.0, sid)
+                .map_err(|error| windows_error("AddAccessAllowedAce", error))?;
+            AddAccessAllowedAce(acl, ACL_REVISION, FILE_GENERIC_READ.0, administrator_sid)
                 .map_err(|error| windows_error("AddAccessAllowedAce", error))?;
         }
 
@@ -225,6 +248,7 @@ impl PrivateSecurity {
 
         Ok(Self {
             sid_storage,
+            _administrator_sid_storage: administrator_sid_storage,
             _acl_storage: acl_storage,
             descriptor,
         })
@@ -342,6 +366,19 @@ mod tests {
         file.sync_all().unwrap();
 
         assert_eq!(fs::read(&path).unwrap(), b"first\nsecond\n");
+    }
+
+    #[test]
+    fn replaces_existing_content_in_truncate_mode() {
+        let scratch = ScratchDir::new("truncate");
+        let path = scratch.join("snapshot.json");
+        fs::write(&path, b"stale content").unwrap();
+
+        let mut file = open_private(&path, false).unwrap();
+        write!(file, "fresh").unwrap();
+        file.sync_all().unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"fresh");
     }
 
     #[test]

@@ -201,9 +201,10 @@ rustnet --pcapng-export capture.pcapng  # 导出带注释的 PCAPNG
 rustnet --headless                                      # 流式输出 JSONL 快照
 rustnet --headless --duration 30 --output json         # 输出一份最终快照
 rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
+rustnet --headless --output-file snapshots.jsonl       # 将 JSONL 追加到私有文件
 ```
 
-无界面模式默认使用 `--output jsonl`，按配置的刷新间隔流式输出带版本号的快照。`--output json` 会在监控停止时输出一份带版本号的最终快照。`--duration` 会在指定秒数后停止抓包，`--filter` 接受与 TUI 相同的语法。无界面模式的 stdout 仅包含机器可读输出。抓包启动失败时，程序会以非零状态退出。
+无界面模式默认使用 `--output jsonl`，按配置的刷新间隔流式输出带版本号的快照。`--output json` 会在监控停止时输出一份带版本号的最终快照。`--duration` 会在指定秒数后停止抓包，`--filter` 接受与 TUI 相同的语法。`--output-file` 会直接写入私有文件而不是 stdout，JSONL 会追加，JSON 会替换。无界面模式的 stdout 仅包含机器可读输出。抓包启动失败时，程序会以非零状态退出。systemd、launchd、Windows、FreeBSD 与 Docker Compose 的显式启用方法见 [SERVICE.zh-CN.md](SERVICE.zh-CN.md)。
 
 主题及各颜色的覆盖也可在 `~/.config/rustnet/config.toml` 中设置；`--theme` 优先。配置格式见 [USAGE.zh-CN.md](USAGE.zh-CN.md#--theme-preset)。
 
@@ -320,6 +321,7 @@ RustNet 在移除连接前会先通过智能超时机制与视觉提示给出预
 
 - **[INSTALL.zh-CN.md](INSTALL.zh-CN.md)** —— 各平台的详细安装说明、权限配置与排障
 - **[USAGE.zh-CN.md](USAGE.zh-CN.md)** —— 完整使用手册，涵盖命令行参数、过滤、排序与日志
+- **[SERVICE.zh-CN.md](SERVICE.zh-CN.md)**：无界面服务的显式启用、运行、安全与输出保留
 - **[SECURITY.zh-CN.md](SECURITY.zh-CN.md)** —— 安全特性，包括 Landlock 沙箱与权限管理
 - **[ARCHITECTURE.zh-CN.md](ARCHITECTURE.zh-CN.md)** —— 技术架构、各平台实现与性能细节
 - **[CONTRIBUTING.zh-CN.md](CONTRIBUTING.zh-CN.md)** —— 贡献指南，包括工作流、质量要求与 AI 辅助贡献规范

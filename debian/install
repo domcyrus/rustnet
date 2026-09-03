@@ -1,3 +1,5 @@
 crates/rustnet-core/assets/services usr/share/rustnet-monitor/
 resources/packaging/linux/rustnet.desktop usr/share/applications/
 resources/packaging/linux/graphics/rustnet.png usr/share/icons/hicolor/256x256/apps/
+resources/packaging/linux/systemd/rustnet-headless.service usr/lib/systemd/system/
+resources/packaging/linux/logrotate/rustnet-headless etc/logrotate.d/

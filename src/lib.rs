@@ -22,6 +22,8 @@ pub(crate) mod export;
 pub(crate) mod filter;
 pub mod headless;
 pub mod network;
+#[cfg(any(target_os = "windows", test))]
+pub mod service;
 pub mod ui;
 
 /// Check if the current process is running with Administrator privileges (Windows only)

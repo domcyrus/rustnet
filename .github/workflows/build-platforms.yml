@@ -92,6 +92,39 @@ jobs:
           default-features: ${{ (contains(matrix.target, 'linux') || contains(matrix.target, 'apple')) && 'true' || 'false' }}
           strip-symbols: ${{ inputs.strip-symbols && 'true' || 'false' }}
 
+      - name: Validate Windows MSI authoring
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: powershell
+        run: |
+          $wixZip = "$env:RUNNER_TEMP\wix-binaries.zip"
+          $wixDir = "$env:RUNNER_TEMP\wix"
+          Invoke-WebRequest `
+            -Uri "https://github.com/wixtoolset/wix3/releases/download/wix3112rtm/wix311-binaries.zip" `
+            -OutFile $wixZip
+          $expected = "2c1888d5d1dba377fc7fa14444cf556963747ff9a0a289a3599cf09da03b9e2e"
+          $actual = (Get-FileHash $wixZip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) {
+            throw "WiX zip checksum mismatch: expected $expected, got $actual"
+          }
+          Expand-Archive -LiteralPath $wixZip -DestinationPath $wixDir -Force
+
+          New-Item -ItemType Directory -Path assets -Force | Out-Null
+          Copy-Item crates\rustnet-core\assets\services assets\services -Force
+          $outputDir = "target\wix-validation"
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+          $binDir = "target\${{ matrix.target }}\release"
+          & "$wixDir\candle.exe" -nologo -arch x64 `
+            "-dCargoTargetBinDir=$binDir" `
+            "-dVersion=1.6.0" `
+            "-dPlatform=x64" `
+            -out "$outputDir\main.wixobj" `
+            resources\packaging\windows\wix\main.wxs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$wixDir\light.exe" -nologo `
+            -out "$outputDir\Rustnet.msi" `
+            "$outputDir\main.wixobj"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run tests
         if: matrix.run-tests
         run: cargo test --verbose

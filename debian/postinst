@@ -5,6 +5,11 @@ set -e
 
 case "$1" in
     configure)
+        # Make the opt-in unit visible without enabling or starting it.
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+
         # Set narrow capabilities for packet capture and eBPF support without requiring root/sudo.
         # If eBPF capabilities are unavailable, fall back to packet capture only;
         # rustnet will degrade to procfs process detection rather than auto-grant CAP_SYS_ADMIN.
@@ -61,6 +66,9 @@ GEOIP (OPTIONAL):
 USAGE:
   rustnet              # Start network monitoring
   rustnet --help       # Show all options
+
+HEADLESS SERVICE (OPTIONAL, NOT ENABLED OR STARTED):
+  See the installed SERVICE.md guide.
 
 For more information, visit: https://github.com/domcyrus/rustnet
 ================================================================================

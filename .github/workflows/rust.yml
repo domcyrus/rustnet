@@ -11,6 +11,9 @@ on:
       - 'build.rs'
       - 'benches/**'
       - 'Dockerfile'
+      - 'compose.headless.yml'
+      - 'resources/packaging/**'
+      - 'scripts/check-service-packaging.sh'
       - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
   pull_request:
@@ -23,6 +26,9 @@ on:
       - 'build.rs'
       - 'benches/**'
       - 'Dockerfile'
+      - 'compose.headless.yml'
+      - 'resources/packaging/**'
+      - 'scripts/check-service-packaging.sh'
       - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
@@ -43,6 +49,8 @@ jobs:
       uses: ./.github/actions/setup-linux-deps
     - name: Check formatting
       run: cargo fmt --check
+    - name: Validate service packaging
+      run: scripts/check-service-packaging.sh
     - name: Validate dependency lockfile
       run: cargo check --locked --workspace --all-targets --all-features
     - name: Check without default features
@@ -81,3 +89,8 @@ jobs:
         tags: rustnet:ci-test
     - name: Verify Docker image
       run: docker run --rm rustnet:ci-test --version
+    - name: Verify headless Docker startup
+      run: |
+        docker run --rm --network host --cap-add NET_RAW \
+          rustnet:ci-test --headless --duration 1 --output json >/tmp/rustnet-headless.json
+        test -s /tmp/rustnet-headless.json

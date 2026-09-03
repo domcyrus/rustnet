@@ -10,7 +10,35 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     let matches = cli::build_cli().get_matches();
+
+    #[cfg(target_os = "windows")]
+    {
+        if matches.get_flag("windows-service") {
+            rustnet_monitor::service::run_dispatcher(move |service_context| {
+                run(matches, Some(service_context))
+            })
+        } else {
+            run(matches, None)
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        run(matches)
+    }
+}
+
+fn run(
+    matches: clap::ArgMatches,
+    #[cfg(target_os = "windows")] service_context: Option<rustnet_monitor::service::ServiceContext>,
+) -> Result<()> {
     let headless = matches.get_flag("headless");
+    let headless_format = matches
+        .get_one::<String>("output")
+        .map(|value| value.parse::<rustnet_monitor::headless::HeadlessFormat>())
+        .transpose()
+        .map_err(anyhow::Error::msg)?
+        .unwrap_or_default();
 
     // Never start terminal control or privileged capture accidentally from a
     // pipe, scheduler, or service. Machine consumers must opt in explicitly.
@@ -177,6 +205,19 @@ fn main() -> Result<()> {
     } else {
         rustnet_sandbox::privdrop::resolve_drop_target()
     };
+
+    // Retain the headless output descriptor across the sandbox and uid drop.
+    // JSONL is an event stream, so reopening it appends. A JSON snapshot
+    // represents one run and replaces any previous content.
+    let mut headless_output_file = None;
+    if let Some(path) = matches.get_one::<String>("output-file") {
+        let file = open_headless_output_file(path, headless_format).map_err(|error| {
+            anyhow::anyhow!("Failed to open headless output file '{}': {}", path, error)
+        })?;
+        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+        chown_to_uid_drop_target(&file, uid_drop_target, "headless output", path);
+        headless_output_file = Some(file);
+    }
 
     let mut output_handles = app::AppOutputHandles::default();
 
@@ -364,6 +405,11 @@ fn main() -> Result<()> {
 
     // Before this point the platform default remains in effect, so SIGTERM or
     // SIGHUP can still terminate a slow synchronous capture/process setup.
+    #[cfg(target_os = "windows")]
+    if service_context.is_none() {
+        install_signal_handlers()?;
+    }
+    #[cfg(not(target_os = "windows"))]
     install_signal_handlers()?;
 
     // Now that the sandbox has been applied on the main thread, start the worker
@@ -372,8 +418,26 @@ fn main() -> Result<()> {
     // a compromise in a DPI parser is contained even when running as root.
     app.start_workers(worker_startup_permit)?;
 
+    #[cfg(target_os = "windows")]
+    if let Some(context) = service_context.as_ref() {
+        context.mark_running()?;
+    }
+
     if headless {
-        return run_headless(&matches, &mut app);
+        #[cfg(target_os = "windows")]
+        let shutdown_requested = service_context
+            .as_ref()
+            .map_or(&SHUTDOWN_REQUESTED, |context| context.shutdown_requested());
+        #[cfg(not(target_os = "windows"))]
+        let shutdown_requested = &SHUTDOWN_REQUESTED;
+
+        return run_headless(
+            &matches,
+            &mut app,
+            headless_format,
+            headless_output_file,
+            shutdown_requested,
+        );
     }
 
     let backend = CrosstermBackend::new(io::stdout());
@@ -392,13 +456,13 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_headless(matches: &clap::ArgMatches, app: &mut app::App) -> Result<()> {
-    let format = matches
-        .get_one::<String>("output")
-        .map(|value| value.parse::<rustnet_monitor::headless::HeadlessFormat>())
-        .transpose()
-        .map_err(anyhow::Error::msg)?
-        .unwrap_or_default();
+fn run_headless(
+    matches: &clap::ArgMatches,
+    app: &mut app::App,
+    format: rustnet_monitor::headless::HeadlessFormat,
+    output_file: Option<fs::File>,
+    shutdown_requested: &std::sync::atomic::AtomicBool,
+) -> Result<()> {
     let options = rustnet_monitor::headless::HeadlessOptions {
         format,
         duration: matches
@@ -406,17 +470,20 @@ fn run_headless(matches: &clap::ArgMatches, app: &mut app::App) -> Result<()> {
             .map(|seconds| Duration::from_secs(*seconds)),
         filter_query: matches.get_one::<String>("filter").cloned(),
     };
-    let outcome =
-        match rustnet_monitor::headless::run(app, io::stdout(), &options, &SHUTDOWN_REQUESTED) {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                let stop_report = app.stop();
-                if let Err(shutdown_error) = ensure_clean_shutdown(stop_report) {
-                    return Err(anyhow::anyhow!("{error}; {shutdown_error}"));
-                }
-                return Err(error);
+    let writer: Box<dyn io::Write + Send> = match output_file {
+        Some(file) => Box::new(file),
+        None => Box::new(io::stdout()),
+    };
+    let outcome = match rustnet_monitor::headless::run(app, writer, &options, shutdown_requested) {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            let stop_report = app.stop();
+            if let Err(shutdown_error) = ensure_clean_shutdown(stop_report) {
+                return Err(anyhow::anyhow!("{error}; {shutdown_error}"));
             }
-        };
+            return Err(error);
+        }
+    };
     ensure_clean_shutdown(outcome.stop_report)
 }
 
@@ -489,6 +556,16 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn open_headless_output_file(
+    path: impl AsRef<Path>,
+    format: rustnet_monitor::headless::HeadlessFormat,
+) -> io::Result<fs::File> {
+    match format {
+        rustnet_monitor::headless::HeadlessFormat::JsonLines => app::open_private_append_file(path),
+        rustnet_monitor::headless::HeadlessFormat::Json => app::precreate_private_file(path),
+    }
 }
 
 /// Hand an output file over to the uid-drop target.
@@ -1102,4 +1179,43 @@ fn initialize_windows_npcap() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::open_headless_output_file;
+    use rustnet_monitor::headless::HeadlessFormat;
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn headless_file_mode_matches_output_format() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "rustnet-headless-output-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+
+        let jsonl_path = dir.join("snapshots.jsonl");
+        std::fs::write(&jsonl_path, b"old\n").unwrap();
+        let mut jsonl = open_headless_output_file(&jsonl_path, HeadlessFormat::JsonLines).unwrap();
+        writeln!(jsonl, "new").unwrap();
+        jsonl.sync_all().unwrap();
+        assert_eq!(std::fs::read(&jsonl_path).unwrap(), b"old\nnew\n");
+
+        let json_path = dir.join("snapshot.json");
+        std::fs::write(&json_path, b"stale").unwrap();
+        let mut json = open_headless_output_file(&json_path, HeadlessFormat::Json).unwrap();
+        write!(json, "fresh").unwrap();
+        json.sync_all().unwrap();
+        assert_eq!(std::fs::read(&json_path).unwrap(), b"fresh");
+
+        drop(jsonl);
+        drop(json);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

@@ -106,9 +106,10 @@ rustnet --pcapng-export capture.pcapng  # 注釈付き PCAPNG を出力
 rustnet --headless                                      # JSONL スナップショットをストリーミング出力
 rustnet --headless --duration 30 --output json         # 最終スナップショットを 1 件出力
 rustnet --headless --filter 'process:curl app:https'   # 接続フィルターを適用
+rustnet --headless --output-file snapshots.jsonl       # 非公開ファイルへ JSONL を追記
 ```
 
-ヘッドレスモードの既定は `--output jsonl` で、設定された更新間隔ごとにバージョン付きスナップショットを出力します。`--output json` は監視終了時にバージョン付きの最終スナップショットを 1 件出力します。`--duration` は指定した秒数後にキャプチャを停止し、`--filter` は TUI と同じ構文を受け付けます。ヘッドレスモードでは stdout に機械可読の出力だけを書き込みます。キャプチャの起動に失敗した場合は、ゼロ以外の終了ステータスを返します。
+ヘッドレスモードの既定は `--output jsonl` で、設定された更新間隔ごとにバージョン付きスナップショットを出力します。`--output json` は監視終了時にバージョン付きの最終スナップショットを 1 件出力します。`--duration` は指定した秒数後にキャプチャを停止し、`--filter` は TUI と同じ構文を受け付けます。`--output-file` は stdout の代わりに非公開ファイルへ直接書き込み、JSONL は追記、JSON は置換します。ヘッドレスモードでは stdout に機械可読の出力だけを書き込みます。キャプチャの起動に失敗した場合は、ゼロ以外の終了ステータスを返します。systemd、launchd、Windows、FreeBSD、Docker Compose での明示的な有効化方法は [SERVICE.ja.md](SERVICE.ja.md) を参照してください。
 
 テーマと各色の上書きは `~/.config/rustnet/config.toml` でも設定できます（`--theme` が優先）。詳細は [USAGE.md](USAGE.md#--theme-preset) を参照してください。
 
@@ -152,6 +153,7 @@ RustNet は非プロミスキャスな読み取り専用キャプチャを行い
 
 - [INSTALL.md](INSTALL.md): 詳細なインストール、権限設定、トラブルシューティング
 - [USAGE.md](USAGE.md): 詳細な使用方法
+- [SERVICE.ja.md](SERVICE.ja.md): ヘッドレスサービスの有効化、運用、セキュリティ、出力保持
 - [ARCHITECTURE.md](ARCHITECTURE.md): 設計とプラットフォーム別実装
 - [CONTRIBUTING.md](CONTRIBUTING.md): コントリビューションガイド
 

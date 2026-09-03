@@ -108,4 +108,5 @@ LABEL org.opencontainers.image.licenses="Apache License, Version 2.0"
 # /proc-based process detection.
 # CAP_NET_ADMIN is NOT required (read-only, non-promiscuous capture).
 USER rustnet
+STOPSIGNAL SIGTERM
 ENTRYPOINT ["rustnet"]

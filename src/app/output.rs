@@ -65,7 +65,7 @@ fn open_private(path: impl AsRef<Path>, append: bool) -> io::Result<fs::File> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::open_private_append_file;
+    use super::{open_private_append_file, precreate_private_file};
     use crate::app::scratch_dir::ScratchDir;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
@@ -105,6 +105,20 @@ mod tests {
     }
 
     #[test]
+    fn rejects_hard_link_before_truncating_snapshot_output() {
+        let dir = scratch("hard_link_truncate");
+        let target = dir.join("target.json");
+        let link = dir.join("snapshot.json");
+        std::fs::write(&target, b"keep me").unwrap();
+        std::fs::hard_link(&target, &link).unwrap();
+
+        let error = precreate_private_file(&link).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(std::fs::read(target).unwrap(), b"keep me");
+    }
+
+    #[test]
     fn rejects_fifo_without_blocking() {
         use std::ffi::CString;
         use std::os::unix::ffi::OsStrExt;
@@ -124,6 +138,19 @@ mod tests {
         writeln!(open_private_append_file(&path).unwrap(), "line1").unwrap();
         writeln!(open_private_append_file(&path).unwrap(), "line2").unwrap();
         assert_eq!(std::fs::read_to_string(path).unwrap(), "line1\nline2\n");
+    }
+
+    #[test]
+    fn snapshot_output_truncates_existing_content() {
+        let dir = scratch("truncate");
+        let path = dir.join("snapshot.json");
+        std::fs::write(&path, b"stale content").unwrap();
+
+        let mut file = precreate_private_file(&path).unwrap();
+        write!(file, "fresh").unwrap();
+        file.sync_all().unwrap();
+
+        assert_eq!(std::fs::read(path).unwrap(), b"fresh");
     }
 
     #[test]
