@@ -9,11 +9,11 @@ use rustnet_host::SocketSnapshot;
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::thread;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
+use std::thread::{self, JoinHandle};
 #[cfg(test)]
 use std::time::SystemTime;
+use std::time::{Duration, Instant};
 
 use crate::filter::ConnectionFilter;
 #[cfg(test)]
@@ -37,7 +37,7 @@ use super::types::{
     AppOutputHandles, AppStats, Config, ConnRateHistory, ConnRateHistorySnapshot, ConnectionCounts,
     ProcessDetectionStatus,
 };
-use super::{STARTUP_SPLASH_DURATION, TRAFFIC_HISTORY_CAPACITY};
+use super::{STARTUP_SPLASH_DURATION, TRAFFIC_HISTORY_CAPACITY, WORKER_JOIN_TIMEOUT};
 use rustnet_sandbox::SandboxReport;
 
 fn is_ptr_lookup(connection: &Connection) -> bool {
@@ -157,6 +157,11 @@ pub struct App {
 
     /// Sandbox status (Linux Landlock / macOS Seatbelt / Windows restricted token)
     pub(super) sandbox_info: Arc<RwLock<SandboxReport>>,
+
+    /// Every background thread spawned by `start` and `start_workers`, joined
+    /// by [`App::stop`] so the export writers have flushed before the process
+    /// exits.
+    workers: Mutex<Vec<JoinHandle<()>>>,
 }
 
 /// Build the GeoIP resolver from explicit database paths when any are
@@ -265,6 +270,7 @@ impl App {
         };
 
         let geoip_resolver = build_geoip_resolver(&config);
+        let is_loading = config.show_startup_splash;
 
         Ok(Self {
             config,
@@ -276,7 +282,7 @@ impl App {
             service_lookup: Arc::new(service_lookup),
             oui_lookup,
             stats: Arc::new(AppStats::default()),
-            is_loading: Arc::new(AtomicBool::new(true)),
+            is_loading: Arc::new(AtomicBool::new(is_loading)),
             current_interface: Arc::new(RwLock::new(None)),
             linktype: Arc::new(RwLock::new(None)),
             capture_status: Arc::new(RwLock::new(CaptureStatus::default())),
@@ -299,7 +305,16 @@ impl App {
             pcap_sidecar_file,
             pcapng_export_file: output_handles.pcapng_export.take(),
             sandbox_info: Arc::new(RwLock::new(SandboxReport::default())),
+            workers: Mutex::new(Vec::new()),
         })
+    }
+
+    /// Keep a spawned thread's handle so [`App::stop`] can join it.
+    pub(super) fn retain_worker(&self, handle: JoinHandle<()>) {
+        self.workers
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(handle);
     }
 
     /// Start the privileged-init background threads only: packet capture (which
@@ -366,14 +381,16 @@ impl App {
 
         // Required capture and attribution initialization is already complete.
         // Keep the splash briefly so it reads as an intentional transition.
-        let is_loading = Arc::clone(&self.is_loading);
-        thread::Builder::new()
-            .name("startup_flag".to_string())
-            .spawn(move || {
-                thread::sleep(STARTUP_SPLASH_DURATION);
-                is_loading.store(false, Ordering::Relaxed);
-            })
-            .expect("Failed to spawn startup_flag thread");
+        if self.config.show_startup_splash {
+            let is_loading = Arc::clone(&self.is_loading);
+            thread::Builder::new()
+                .name("startup_flag".to_string())
+                .spawn(move || {
+                    thread::sleep(STARTUP_SPLASH_DURATION);
+                    is_loading.store(false, Ordering::Relaxed);
+                })
+                .expect("Failed to spawn startup_flag thread");
+        }
 
         Ok(())
     }
@@ -735,10 +752,14 @@ impl App {
         info!("All connections cleared successfully");
     }
 
-    /// Stop all threads gracefully
+    /// Signal every worker thread to stop and join them, waiting at most
+    /// [`WORKER_JOIN_TIMEOUT`] overall. Idempotent: a second call returns
+    /// immediately.
     pub fn stop(&self) {
+        if self.should_stop.swap(true, Ordering::Relaxed) {
+            return;
+        }
         info!("Stopping application");
-        self.should_stop.store(true, Ordering::Relaxed);
 
         // Connections not yet cleaned up still need their sidecar record.
         if let Some(writer) = &self.pcap_sidecar_file
@@ -756,13 +777,45 @@ impl App {
                 count, with_pids
             );
         }
+
+        self.join_workers();
     }
+
+    fn join_workers(&self) {
+        let mut workers = self.workers.lock().unwrap_or_else(PoisonError::into_inner);
+        let deadline = Instant::now() + WORKER_JOIN_TIMEOUT;
+        loop {
+            for handle in workers.extract_if(.., |handle| handle.is_finished()) {
+                let name = thread_label(&handle);
+                if handle.join().is_err() {
+                    warn!("Worker thread {name} panicked");
+                }
+            }
+            if workers.is_empty() || Instant::now() >= deadline {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        if !workers.is_empty() {
+            let names: Vec<String> = workers.iter().map(thread_label).collect();
+            warn!(
+                "Worker threads still running after {:?}, exiting without them: {}",
+                WORKER_JOIN_TIMEOUT,
+                names.join(", ")
+            );
+            // Dropping the handles detaches the threads; process exit reaps them.
+            workers.clear();
+        }
+    }
+}
+
+fn thread_label(handle: &JoinHandle<()>) -> String {
+    handle.thread().name().unwrap_or("<unnamed>").to_string()
 }
 
 impl Drop for App {
     fn drop(&mut self) {
         self.stop();
-        thread::sleep(Duration::from_millis(100));
     }
 }
 

@@ -206,7 +206,7 @@ impl App {
         // opened or open failed), so the main thread can drop privileges.
         let (capture_ready_tx, capture_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
 
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("pcap_tx".to_string())
             .spawn(move || {
             match setup_packet_capture(capture_config) {
@@ -485,6 +485,7 @@ impl App {
             }
         })
         .expect("Failed to spawn pcap_tx thread");
+        self.retain_worker(handle);
 
         Ok(capture_ready_rx)
     }
@@ -509,7 +510,7 @@ impl App {
             ..Default::default()
         };
 
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name(format!("pcap_rx_{}", id))
             .spawn(move || {
                 info!("Packet processor {} started", id);
@@ -655,6 +656,7 @@ impl App {
                 );
             })
             .unwrap_or_else(|_| panic!("Failed to spawn pcap_rx_{} thread", id));
+        self.retain_worker(handle);
     }
 }
 
@@ -795,10 +797,6 @@ mod capture_failure_message_tests {
 }
 
 #[cfg(test)]
-#[path = "../test_support/scratch_dir.rs"]
-mod scratch_dir;
-
-#[cfg(test)]
 mod connection_lifecycle_tests {
     use super::*;
     use crate::network::types::{Protocol, ProtocolState, TcpState};
@@ -806,7 +804,7 @@ mod connection_lifecycle_tests {
     use std::net::SocketAddr;
     use std::path::Path;
 
-    use super::scratch_dir::ScratchDir;
+    use crate::test_support::scratch_dir::ScratchDir;
 
     fn tcp_packet(flags: TcpFlags) -> ParsedPacket {
         let mut packet = ParsedPacket::new(

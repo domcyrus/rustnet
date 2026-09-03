@@ -145,7 +145,7 @@ impl Component for DetailsTab {
         ctx: &mut HandlerContext<'_>,
     ) -> Option<Vec<Effect>> {
         // Scroll wheel scrolls the info panes. Click events are still
-        // dispatched by main.rs through ClickableRegions (the 'click a
+        // dispatched by tui.rs through ClickableRegions (the 'click a
         // field to copy' CopyField regions registered during draw).
         try_handle_pane_wheel(mouse, &mut ctx.ui_state.details_scroll)
     }

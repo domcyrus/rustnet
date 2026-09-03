@@ -77,6 +77,7 @@ pub(crate) fn test_config() -> Config {
         geoip_asn_path: None,
         geoip_city_path: None,
         disable_geoip: true,
+        show_startup_splash: true,
         #[cfg(feature = "kubernetes")]
         kubernetes_mode: crate::network::kubernetes::KubernetesMode::default(),
     }

@@ -95,7 +95,7 @@ impl Component for HelpOverlay {
             }
             // Every key GLOBAL_KEYS advertises must stay live while the
             // overlay is open: quit, clear, and tab navigation fall through
-            // to the global fallback in main.rs. Tab switches leave the
+            // to the global fallback in tui.rs. Tab switches leave the
             // overlay up and it re-renders for the newly active view.
             (KeyCode::Char('q'), _)
             | (KeyCode::Char('c'), KeyModifiers::CONTROL)
@@ -121,7 +121,7 @@ impl Component for HelpOverlay {
             // A click anywhere dismisses the overlay (the mouse equivalent
             // of Esc); claiming the event also keeps the click from
             // activating controls in the obscured view. Mirror the
-            // click preamble in main.rs that this claim short-circuits:
+            // click preamble in tui.rs that this claim short-circuits:
             // a click cancels pending confirmations everywhere else too.
             ctx.ui_state.show_help = false;
             ctx.ui_state.help_scroll.reset();
@@ -138,7 +138,7 @@ impl Component for HelpOverlay {
 type HelpRow = (&'static str, &'static str);
 
 // Only list keys here that the overlay's `handle_key` lets fall through
-// to the global fallback in main.rs, so everything this section
+// to the global fallback in tui.rs, so everything this section
 // advertises works while the overlay is open.
 const GLOBAL_KEYS: &[HelpRow] = &[
     ("Tab, ]", "Next tab"),
@@ -602,7 +602,7 @@ mod tests {
         );
         assert!(!ctx.ui_state.filter_mode);
         // Every key the overlay's Global section advertises must fall
-        // through (None) so main.rs's global fallback can act on it.
+        // through (None) so tui.rs's global fallback can act on it.
         for key in [
             KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),

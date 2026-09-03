@@ -8,7 +8,7 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Instant, SystemTime};
 
-use crate::network::types::{Connection, GraphScale, Protocol};
+use crate::network::types::{Connection, GraphScale, Protocol, UNKNOWN_PROCESS_NAME};
 
 /// Process detection status information for UI display
 #[derive(Debug, Clone, Default)]
@@ -80,6 +80,10 @@ pub struct Config {
     pub geoip_city_path: Option<String>,
     /// Disable GeoIP lookups entirely
     pub disable_geoip: bool,
+    /// Hold the loading screen for the startup splash. Only the TUI shows
+    /// one; a headless front-end leaves this off so `is_loading` never
+    /// reports true.
+    pub show_startup_splash: bool,
     /// Kubernetes pod/container attribution mode
     #[cfg(feature = "kubernetes")]
     pub kubernetes_mode: crate::network::kubernetes::KubernetesMode,
@@ -102,6 +106,7 @@ impl Default for Config {
             geoip_asn_path: None,
             geoip_city_path: None,
             disable_geoip: false,
+            show_startup_splash: true,
             #[cfg(feature = "kubernetes")]
             kubernetes_mode: crate::network::kubernetes::KubernetesMode::default(),
         }
@@ -113,6 +118,21 @@ pub struct AppOutputHandles {
     pub json_log: Option<File>,
     pub pcap_sidecar: Option<File>,
     pub pcapng_export: Option<File>,
+}
+
+/// Group label shown for connections without a resolved process name.
+pub const UNKNOWN_PROCESS_GROUP: &str = "<unknown>";
+
+/// The process-group label for a connection. Attribution can fail two ways:
+/// no owner found at all (`process_name` is `None`), or an owner PID whose
+/// name lookup failed and stored the [`UNKNOWN_PROCESS_NAME`] placeholder
+/// (protected processes, the pre-resolution ETW window). Both fold into one
+/// bucket so the UI never shows two different unknown groups side by side.
+pub fn process_group_label(conn: &Connection) -> &str {
+    match conn.process_name.as_deref() {
+        None | Some(UNKNOWN_PROCESS_NAME) => UNKNOWN_PROCESS_GROUP,
+        Some(name) => name,
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -154,7 +174,7 @@ impl ConnectionCounts {
                 Protocol::Udp => counts.udp += 1,
                 _ => {}
             }
-            processes.insert(crate::ui::process_group_label(connection));
+            processes.insert(process_group_label(connection));
         }
 
         counts.processes = processes.len();

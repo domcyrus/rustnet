@@ -62,7 +62,7 @@ impl App {
         let capture_status = Arc::clone(&self.capture_status);
         let current_interface = Arc::clone(&self.current_interface);
 
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("pcapng-export".to_string())
             .spawn(move || {
                 info!("PCAPNG export thread starting: {}", export_path);
@@ -169,6 +169,7 @@ impl App {
                 info!("PCAPNG export completed: {}", export_path);
             })
             .expect("Failed to spawn pcapng-export thread");
+        self.retain_worker(handle);
 
         Ok(Some(tx))
     }

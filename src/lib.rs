@@ -10,18 +10,27 @@
 //! [`app`] holds orchestration, the packet pipeline, and shared state;
 //! [`network`] holds capture, parsers, DPI, DNS, GeoIP, interface stats, and
 //! platform process lookup; [`ui`] holds the ratatui rendering and keyboard
-//! handling.
+//! handling. [`bootstrap`] runs the front-end independent startup sequence
+//! (logging, privileges, output files, sandboxing) and [`tui`] drives the
+//! terminal front-end on top of it.
 //!
 //! The library surface is unstable and intended for internal use; the
 //! supported product is the `rustnet` binary.
 
 pub mod app;
+pub mod bootstrap;
 pub mod cli;
 pub mod config;
 pub(crate) mod export;
 pub(crate) mod filter;
 pub mod network;
+pub mod tui;
 pub mod ui;
+
+#[cfg(test)]
+mod test_support {
+    pub(crate) mod scratch_dir;
+}
 
 /// Check if the current process is running with Administrator privileges (Windows only)
 #[cfg(target_os = "windows")]

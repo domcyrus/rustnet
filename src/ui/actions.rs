@@ -1,7 +1,7 @@
 //! Shared input actions that mutate `UiState` and trigger side
 //! effects on `App`. These live here (not on `UiState` directly)
 //! because they touch both. Used by `OverviewTab::handle_key` for
-//! the Overview-active case and by main.rs's fallback match for
+//! the Overview-active case and by tui.rs's fallback match for
 //! the cross-tab case, keeping a single source of truth so both
 //! callers stay in lockstep when the action's semantics evolve.
 

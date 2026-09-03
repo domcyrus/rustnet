@@ -14,7 +14,7 @@ mod types;
 
 pub use state::App;
 pub(crate) use types::ConnectionCounts;
-pub use types::{AppOutputHandles, AppStats, Config};
+pub use types::{AppOutputHandles, AppStats, Config, UNKNOWN_PROCESS_GROUP, process_group_label};
 
 use std::time::Duration;
 
@@ -26,6 +26,10 @@ const MAX_PCAPNG_RETRY_RECORDS: usize = 10_000;
 const MAX_PCAPNG_RETRY_BYTES: usize = 64 * 1024 * 1024;
 const PCAPNG_ATTRIBUTION_WAIT: Duration = Duration::from_secs(2);
 const STARTUP_SPLASH_DURATION: Duration = Duration::from_millis(750);
+/// Upper bound on waiting for worker threads at shutdown. Long enough for
+/// the capture read timeout (150ms) plus the PCAPNG writer's final drain and
+/// flush; a thread that blocks past this is detached rather than hanging exit.
+const WORKER_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
 const LIVE_RATE_INTERVAL: Duration = Duration::from_millis(500);
 /// Shortest measurement window that may be converted into a per-second rate.
 /// The traffic-history thread's first pass measures only the few milliseconds

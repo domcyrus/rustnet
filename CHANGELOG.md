@@ -94,6 +94,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on Linux 5.11 and newer. A one-shot BPF task-file inventory and the
   privileged procfs scan feed a validated fallback shown as the "startup
   snapshot" match quality (#575)
+- **Reliable Export Flush on Exit**: worker threads are now joined with a
+  bounded timeout at shutdown, so PCAP and PCAPNG exports are flushed before
+  the process exits instead of racing a fixed delay. SIGINT is handled like
+  SIGTERM
 
 ### Removed
 - **Ubuntu 25.10 (Questing) PPA**: the series reached end of life and

@@ -121,7 +121,7 @@ pub trait Component {
 
     /// Same Some/None contract as `handle_key`. Click events are
     /// dispatched through the global `ClickableRegions` hit-test
-    /// in main.rs; tabs use this hook for raw-position needs
+    /// in tui.rs; tabs use this hook for raw-position needs
     /// (typically scroll-wheel handling).
     fn handle_mouse(
         &mut self,

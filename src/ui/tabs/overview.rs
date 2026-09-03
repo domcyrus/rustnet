@@ -54,7 +54,7 @@ impl Component for OverviewTab {
     ) -> Option<Vec<Effect>> {
         // Scroll wheel: navigate the connection list, but only when
         // the cursor is over the registered scroll area. Click events
-        // are dispatched by main.rs through ClickableRegions.
+        // are dispatched by tui.rs through ClickableRegions.
         let scroll_area = ctx.click_regions.scroll_area?;
         let in_scroll_area = mouse.column >= scroll_area.x
             && mouse.column < scroll_area.x + scroll_area.width

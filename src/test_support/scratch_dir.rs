@@ -1,19 +1,14 @@
-//! Temporary-directory guard shared by test modules in the library and the
-//! binary. The bin target cannot see a `cfg(test)` module of the library, so
-//! each test module includes this file directly with `#[path]`.
-
-// Included from several test modules, and not every one uses every helper.
-#![allow(dead_code)]
+//! Temporary-directory guard for filesystem tests.
 
 use std::path::{Path, PathBuf};
 
 /// Per-test scratch directory under the system temp dir, removed on drop.
-pub(super) struct ScratchDir(PathBuf);
+pub(crate) struct ScratchDir(PathBuf);
 
 impl ScratchDir {
     /// Create `<temp>/rustnet-<prefix>-test-<pid>-<tag>`, replacing any
     /// leftover tree from a previous run.
-    pub(super) fn new(prefix: &str, tag: &str) -> Self {
+    pub(crate) fn new(prefix: &str, tag: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
             "rustnet-{}-test-{}-{}",
             prefix,
@@ -25,11 +20,11 @@ impl ScratchDir {
         Self(path)
     }
 
-    pub(super) fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 
-    pub(super) fn join(&self, name: &str) -> PathBuf {
+    pub(crate) fn join(&self, name: &str) -> PathBuf {
         self.0.join(name)
     }
 }

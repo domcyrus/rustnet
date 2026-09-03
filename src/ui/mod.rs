@@ -69,7 +69,7 @@ pub fn dispatch_key(
 
 /// Same as `dispatch_key` but for mouse events (currently the
 /// scroll wheel; clicks go through the global `ClickableRegions`
-/// hit-test in main.rs).
+/// hit-test in tui.rs).
 pub fn dispatch_mouse(
     tab: usize,
     mouse: crossterm::event::MouseEvent,
@@ -100,7 +100,6 @@ pub fn set_no_color(enabled: bool) {
 }
 
 mod state;
-pub(crate) use state::process_group_label;
 pub use state::{
     ActivityDirection, ActivitySort, ClickAction, ClickableRegions, GroupedRow, HostView,
     PaneScroll, SortColumn, UiState, compute_grouped_rows, compute_scroll_offset,

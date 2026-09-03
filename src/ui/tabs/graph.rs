@@ -57,7 +57,7 @@ impl<'a> GraphAnalytics<'a> {
         for conn in connections.iter().filter(|conn| !conn.is_historic) {
             analytics.app_distribution.record_connection(conn);
 
-            let name = crate::ui::process_group_label(conn);
+            let name = crate::app::process_group_label(conn);
             let traffic = conn.current_incoming_rate_bps + conn.current_outgoing_rate_bps;
             *analytics.process_traffic.entry(name).or_insert(0.0) += traffic;
 

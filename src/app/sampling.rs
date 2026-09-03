@@ -21,35 +21,21 @@ use super::logging::log_connection_closed;
 use super::state::App;
 use super::{LIVE_RATE_INTERVAL, MIN_RATE_SAMPLE_SECONDS, TRAFFIC_HISTORY_CAPACITY};
 
-/// Spawn a named worker thread that runs `body` every `interval` until
-/// `should_stop` is set.
-///
-/// The started/stopping log lines are passed in verbatim rather than derived
-/// from the thread name: the existing workers' labels are not derivable from
-/// their names ("state_refresh" logs as "Rate refresh"), and the interface
-/// stats worker's two lines already disagree with each other.
-pub(super) fn spawn_loop(
-    thread_name: &'static str,
-    started_msg: &'static str,
-    stopping_msg: &'static str,
-    interval: Duration,
-    should_stop: Arc<AtomicBool>,
-    mut body: impl FnMut() + Send + 'static,
-) -> std::io::Result<()> {
-    thread::Builder::new()
-        .name(thread_name.to_string())
-        .spawn(move || {
-            info!("{started_msg}");
-            loop {
-                if should_stop.load(Ordering::Relaxed) {
-                    info!("{stopping_msg}");
-                    break;
-                }
-                body();
-                thread::sleep(interval);
-            }
-        })
-        .map(|_| ())
+/// How often a sleeping worker re-checks for shutdown. Must stay well under
+/// `WORKER_JOIN_TIMEOUT` so [`App::stop`] returns promptly even for the
+/// cleanup thread's multi-second interval.
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Sleep for `interval`, returning early once shutdown is requested.
+fn sleep_unless_stopped(should_stop: &AtomicBool, interval: Duration) {
+    let deadline = Instant::now() + interval;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() || should_stop.load(Ordering::Relaxed) {
+            return;
+        }
+        thread::sleep(remaining.min(STOP_POLL_INTERVAL));
+    }
 }
 
 /// Clone-and-filter one connection table (active or historic) into snapshot
@@ -72,6 +58,40 @@ fn snapshot_source<K: Eq + std::hash::Hash, S: std::hash::BuildHasher + Clone>(
 }
 
 impl App {
+    /// Spawn a named worker thread that runs `body` every `interval` until
+    /// shutdown is requested, and retain its handle for [`App::stop`].
+    ///
+    /// The started/stopping log lines are passed in verbatim rather than
+    /// derived from the thread name: the existing workers' labels are not
+    /// derivable from their names ("state_refresh" logs as "Rate refresh"),
+    /// and the interface stats worker's two lines already disagree with each
+    /// other.
+    pub(super) fn spawn_loop(
+        &self,
+        thread_name: &'static str,
+        started_msg: &'static str,
+        stopping_msg: &'static str,
+        interval: Duration,
+        mut body: impl FnMut() + Send + 'static,
+    ) {
+        let should_stop = Arc::clone(&self.should_stop);
+        let handle = thread::Builder::new()
+            .name(thread_name.to_string())
+            .spawn(move || {
+                info!("{started_msg}");
+                loop {
+                    if should_stop.load(Ordering::Relaxed) {
+                        info!("{stopping_msg}");
+                        break;
+                    }
+                    body();
+                    sleep_unless_stopped(&should_stop, interval);
+                }
+            })
+            .unwrap_or_else(|e| panic!("Failed to spawn {thread_name} thread: {e}"));
+        self.retain_worker(handle);
+    }
+
     pub(super) fn start_snapshot_provider(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let snapshot = Arc::clone(&self.connections_snapshot);
         let snapshot_generation = Arc::clone(&self.snapshot_generation);
@@ -108,12 +128,11 @@ impl App {
         let mut last_ui_publish: Option<Instant> = None;
         let mut last_activity_sample: Option<Instant> = None;
 
-        spawn_loop(
+        self.spawn_loop(
             "snapshot_ui",
             "Snapshot provider thread started",
             "Snapshot provider thread stopping",
             loop_interval,
-            Arc::clone(&self.should_stop),
             move || {
                 let start = Instant::now();
                 let total_connections = tracker.len();
@@ -183,8 +202,7 @@ impl App {
                     filtered_count
                 );
             },
-        )
-        .expect("Failed to spawn snapshot_ui thread");
+        );
 
         Ok(())
     }
@@ -192,12 +210,11 @@ impl App {
     /// Start rate refresh thread to update rates for idle connections
     pub(super) fn start_rate_refresh_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         // Keep idle-rate decay aligned with the live graph cadence.
-        spawn_loop(
+        self.spawn_loop(
             "state_refresh",
             "Rate refresh thread started",
             "Rate refresh thread stopping",
             LIVE_RATE_INTERVAL,
-            Arc::clone(&self.should_stop),
             move || {
                 // Refresh rates for connections that may still have non-zero rates.
                 // Skip connections idle >30s whose rates are already zero.
@@ -217,8 +234,7 @@ impl App {
                     refreshed
                 );
             },
-        )
-        .expect("Failed to spawn state_refresh thread");
+        );
 
         Ok(())
     }
@@ -237,12 +253,11 @@ impl App {
         let mut warned_collect_failure = false;
 
         // Keep interface rates fresh for the live graphs.
-        spawn_loop(
+        self.spawn_loop(
             "ifstats_poll",
             "Interface stats collection thread started",
             "Interface stats thread stopping",
             LIVE_RATE_INTERVAL,
-            Arc::clone(&self.should_stop),
             move || {
                 match provider.get_all_stats() {
                     Ok(stats_vec) => {
@@ -294,8 +309,7 @@ impl App {
                     }
                 }
             },
-        )
-        .expect("Failed to spawn ifstats_poll thread");
+        );
 
         Ok(())
     }
@@ -316,12 +330,11 @@ impl App {
         let mut previous_sample_at = Instant::now();
 
         // Update twice per second for a more responsive graph.
-        spawn_loop(
+        self.spawn_loop(
             "graph_ui",
             "Traffic history thread started",
             "Traffic history thread stopping",
             LIVE_RATE_INTERVAL,
-            Arc::clone(&self.should_stop),
             move || {
                 let (total_rx, total_tx) =
                     interface_rates
@@ -407,8 +420,7 @@ impl App {
                     );
                 }
             },
-        )
-        .expect("Failed to spawn graph_ui thread");
+        );
 
         Ok(())
     }
@@ -419,12 +431,11 @@ impl App {
         let dns_resolver = self.dns_resolver.clone();
         let stats = Arc::clone(&self.stats);
 
-        spawn_loop(
+        self.spawn_loop(
             "cleanup_thread",
             "Cleanup thread started",
             "Cleanup thread stopping",
             Duration::from_secs(5),
-            Arc::clone(&self.should_stop),
             move || {
                 // Remove inactive connections. The tracker handles the timeout
                 // sweep, historic archiving + eviction, and QUIC-mapping cleanup;
@@ -464,8 +475,7 @@ impl App {
                     );
                 }
             },
-        )
-        .expect("Failed to spawn cleanup_thread");
+        );
 
         Ok(())
     }

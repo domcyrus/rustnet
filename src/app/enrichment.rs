@@ -13,7 +13,6 @@ use crate::network::platform::create_process_lookup;
 use crate::network::tracker::ConnectionTracker;
 use crate::network::types::{Connection, ProcessLineage, UNKNOWN_PROCESS_NAME};
 
-use super::sampling::spawn_loop;
 use super::state::App;
 use super::types::ProcessDetectionStatus;
 
@@ -46,7 +45,7 @@ impl App {
         #[cfg(feature = "kubernetes")]
         let kubernetes_mode = self.config.kubernetes_mode;
 
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("process-enrichment".to_string())
             .spawn(move || {
             #[cfg(target_os = "macos")]
@@ -91,6 +90,7 @@ impl App {
             }
         })
         .expect("Failed to spawn process-enrichment thread");
+        self.retain_worker(handle);
 
         Ok(())
     }
@@ -393,12 +393,11 @@ impl App {
             None => return Ok(()), // No resolver available
         };
 
-        spawn_loop(
+        self.spawn_loop(
             "geoip-enrichment",
             "GeoIP enrichment thread started",
             "GeoIP enrichment thread stopping",
             Duration::from_millis(500),
-            Arc::clone(&self.should_stop),
             move || {
                 let mut enriched = 0;
                 for mut entry in tracker.connections().iter_mut() {
@@ -416,8 +415,7 @@ impl App {
                     debug!("Enriched {} connections with GeoIP info", enriched);
                 }
             },
-        )
-        .expect("Failed to spawn GeoIP enrichment thread");
+        );
 
         Ok(())
     }
