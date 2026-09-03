@@ -17,12 +17,12 @@
 //! Sandboxing is a *post-initialization* step. Callers must apply it only
 //! after every privileged operation is done, in this order:
 //!
-//! 1. Open capture handles (raw sockets, BPF/PKTAP devices, Npcap) — the
+//! 1. Open capture handles (raw sockets, BPF/PKTAP devices, Npcap): the
 //!    descriptors stay valid across the sandbox and uid drop.
 //! 2. Load eBPF programs (needs CAP_BPF/CAP_PERFMON, which the sandbox
 //!    drops).
 //! 3. Pre-create output files (logs, PCAP exports) and, when dropping root,
-//!    chown them to the drop target ([`privdrop::chown_to_target`]) — Landlock
+//!    chown them to the drop target ([`privdrop::chown_to_target`]); Landlock
 //!    needs an existing file to scope a write rule to it, and a path under a
 //!    root-only directory cannot be reopened after the drop.
 //! 4. Call [`apply_sandbox`] on the **main thread**.

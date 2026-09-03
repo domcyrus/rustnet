@@ -74,7 +74,6 @@ impl LinkLayerType {
     /// assert!(matches!(link_type, LinkLayerType::Tap));
     /// ```
     pub fn from_dlt_and_name(dlt: i32, interface_name: &str) -> Self {
-        // Check if this is a TUN/TAP interface by name
         if tun_tap::is_tun_interface(interface_name) {
             return LinkLayerType::Tun;
         }
@@ -82,7 +81,6 @@ impl LinkLayerType {
             return LinkLayerType::Tap;
         }
 
-        // Otherwise, use DLT-based detection
         Self::from_dlt(dlt)
     }
 

@@ -48,7 +48,7 @@ pub(super) struct SeatbeltResult {
     pub net_blocked: bool,
 }
 
-// macOS Seatbelt private API — stable since macOS 10.5, present through macOS 15+
+// macOS Seatbelt private API, stable since macOS 10.5 and present through macOS 15+.
 // Part of libSystem.B.dylib which is linked by default on all macOS targets.
 // flags = 0 means an inline SBPL profile string (not a named built-in profile).
 unsafe extern "C" {
@@ -117,7 +117,7 @@ const SBPL_PROFILE_EXEC: &str = r#"
 /// allowed for Mach IPC. Already-open BPF/PKTAP file descriptors are unaffected.
 const SBPL_NETWORK_DENY: &str = r#"
 ;; Block outbound TCP and UDP connections
-;; RustNet only reads from BPF/PKTAP — already-open fds are unaffected
+;; RustNet only reads from BPF/PKTAP; already-open fds are unaffected
 (deny network-outbound
     (remote tcp)
     (remote udp))
@@ -261,12 +261,11 @@ fn sbpl_path(path: &Path) -> String {
 /// would silently fail to match. We use `std::fs::canonicalize()` when possible,
 /// falling back to simple absolute resolution if the path doesn't exist yet.
 fn resolve_to_absolute(path: &Path) -> String {
-    // Try full canonicalization first (resolves symlinks)
     if let Ok(canonical) = std::fs::canonicalize(path) {
         return canonical.to_string_lossy().into_owned();
     }
 
-    // Path doesn't exist yet — make it absolute without symlink resolution
+    // Path doesn't exist yet: make it absolute without symlink resolution.
     if path.is_absolute() {
         path.to_string_lossy().into_owned()
     } else {

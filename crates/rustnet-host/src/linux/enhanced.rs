@@ -118,7 +118,6 @@ impl EnhancedLinuxProcessLookup {
 
     /// Try eBPF lookup first, fall back to procfs
     fn lookup_process_enhanced(&self, conn: &Connection) -> Option<ProcessAttribution> {
-        // Try eBPF first for TCP/UDP/ICMP connections
         match conn.protocol {
             Protocol::Tcp | Protocol::Udp => {
                 debug!(
@@ -145,7 +144,6 @@ impl EnhancedLinuxProcessLookup {
                 }
             }
             Protocol::Icmp => {
-                // Try eBPF lookup for ICMP using the echo ID
                 if let ProtocolState::Icmp {
                     icmp_id: Some(id), ..
                 } = &conn.protocol_state
@@ -171,7 +169,6 @@ impl EnhancedLinuxProcessLookup {
             _ => {}
         }
 
-        // Fall back to procfs approach
         self.procfs_lookup.get_process_attribution(conn)
     }
 
@@ -306,7 +303,7 @@ impl EnhancedLinuxProcessLookup {
         cache.lookup.insert(key, attribution);
     }
 
-    /// Perform periodic cleanup of stale eBPF map entries
+    /// Periodic cleanup of stale eBPF map entries.
     fn maybe_cleanup_ebpf_map(&self) {
         let now = Instant::now();
         let mut last_cleanup = self
@@ -319,7 +316,6 @@ impl EnhancedLinuxProcessLookup {
             *last_cleanup = now;
             drop(last_cleanup);
 
-            // Perform cleanup
             if let Some(tracker) = self
                 .ebpf_tracker
                 .write()
@@ -338,12 +334,10 @@ impl EnhancedLinuxProcessLookup {
 
 impl ProcessLookup for EnhancedLinuxProcessLookup {
     fn get_process_attribution(&self, conn: &Connection) -> Option<ProcessAttribution> {
-        // Perform periodic cleanup of stale eBPF entries
         self.maybe_cleanup_ebpf_map();
 
         let key = ConnectionKey::from_connection(conn);
 
-        // Try cache first
         {
             let cache = self
                 .unified_cache
@@ -358,9 +352,7 @@ impl ProcessLookup for EnhancedLinuxProcessLookup {
             }
         }
 
-        // Cache miss or stale - do enhanced lookup
         if let Some(result) = self.lookup_process_enhanced(conn) {
-            // Update cache with the result
             let mut cache = self
                 .unified_cache
                 .write()
@@ -373,17 +365,14 @@ impl ProcessLookup for EnhancedLinuxProcessLookup {
     }
 
     fn refresh(&self) -> Result<()> {
-        // Refresh the procfs lookup
         self.procfs_lookup.refresh()?;
 
-        // Update our cache timestamp
         {
             let mut cache = self
                 .unified_cache
                 .write()
                 .expect("unified_cache lock poisoned");
             cache.last_refresh = Instant::now();
-            // Optionally clear cache to force fresh lookups
             cache.lookup.clear();
         }
 

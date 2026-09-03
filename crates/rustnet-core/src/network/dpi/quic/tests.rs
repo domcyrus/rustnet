@@ -132,9 +132,9 @@ fn test_retry_packet_consumes_rest_of_datagram() {
         "Retry has no Length field, must consume the whole datagram"
     );
 
-    // Retry token bytes must not be misparsed as coalesced packets. A
-    // token byte with the short-header bit pattern previously flipped the
-    // connection state to Connected.
+    // Retry token bytes must not be misparsed as coalesced packets: a token
+    // byte with the short-header bit pattern must not flip the connection
+    // state to Connected.
     let mut datagram = retry.clone();
     datagram.extend_from_slice(&[0x42; 32]);
     let info = parse_quic_packet(&datagram).expect("datagram should parse");

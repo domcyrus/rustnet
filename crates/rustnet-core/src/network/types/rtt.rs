@@ -7,10 +7,6 @@ use super::protocol_info::{
     LlmnrInfo, NetBiosInfo, NetBiosService, NtpInfo, NtpMode, StunMessageClass,
 };
 
-// ============================================================================
-// RTT Tracking Types (for latency measurement)
-// ============================================================================
-
 /// Capture time of a pending entry, for staleness pruning.
 trait PendingStamp {
     fn stamp(&self) -> SystemTime;
@@ -174,7 +170,7 @@ enum DnsTransactionKey {
 /// Every pending timestamp here is the packet's **capture** time, supplied by
 /// the caller, never a clock read taken while processing. Capture threads hand
 /// packets to processing in batches of up to 100 (or every 100ms), so a
-/// handshake that completes inside one batch window — which is most of them —
+/// handshake that completes inside one batch window (which is most of them)
 /// is processed as a burst microseconds wide. Timing that burst measures the
 /// batch loop, not the network, and reports round trips as 0.0ms. Using capture
 /// time also makes RTTs correct when a saved pcap is replayed.
@@ -258,7 +254,7 @@ impl RttTracker {
     /// Record a QUIC long-header handshake packet, returning the RTT when it
     /// completes a round trip with the peer.
     ///
-    /// QUIC has no SYN/SYN-ACK flag to key on, so direction stands in for it —
+    /// QUIC has no SYN/SYN-ACK flag to key on, so direction stands in for it,
     /// but only in one order. rustnet observes from an endpoint, not from a
     /// midpoint, so the timer must start on a packet leaving this host and stop
     /// on the peer's answer coming back: that spans the network twice. Timing
@@ -562,10 +558,6 @@ mod tests {
         DnsQueryType, LlmnrInfo, NetBiosOpcode, NetBiosResponseStatus, Protocol,
     };
 
-    // ========================================================================
-    // RTT Tracker Tests
-    // ========================================================================
-
     /// Capture time `millis` into a synthetic trace. RTT is the difference
     /// between two packets' capture timestamps, so tests supply them directly
     /// rather than sleeping and reading a clock.
@@ -719,7 +711,6 @@ mod tests {
         let local = addr("192.168.1.1:12345");
         let remote = addr("93.184.216.34:443");
 
-        // Record multiple RTT measurements
         for port in 12345..12348 {
             let local_with_port = SocketAddr::new(local.ip(), port);
             let key = ConnectionKey::new(Protocol::Tcp, local_with_port, remote);
@@ -727,7 +718,6 @@ mod tests {
             tracker.record_syn_ack(&key, rtt_capture_time(5));
         }
 
-        // Get average RTT
         let avg = tracker.take_average_rtt(60);
         assert!(avg.is_some());
         let avg = avg.unwrap();

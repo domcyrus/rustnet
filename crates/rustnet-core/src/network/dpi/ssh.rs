@@ -17,16 +17,11 @@ pub(super) fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> 
         auth_method: None,
     };
 
-    // Convert payload to string for banner analysis. Drive the line iterator
-    // directly — the loop below is the only consumer, so materializing every
-    // line into a `Vec<&str>` first just wastes a heap slice per parse. The
-    // empty-payload case falls through to the loop and is a no-op.
+    // Empty payloads fall through the loop as a no-op.
     let text = String::from_utf8_lossy(payload);
 
-    // Parse SSH banner(s) and assign based on packet direction
     for line in text.lines() {
         if let Some(banner_info) = parse_ssh_banner(line) {
-            // Use packet direction to distinguish client vs server
             if is_outgoing {
                 // Outgoing packet: client to server, so this banner is from client
                 if info.client_software.is_none() {
@@ -43,14 +38,9 @@ pub(super) fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> 
         }
     }
 
-    // Detect SSH message types for connection state
-    // Look for SSH packet structures throughout the payload. A packet
-    // signature needs 6 bytes, so the last valid start offset is
-    // `len - 6`; the range end must therefore be `len - 5` (exclusive).
-    // Using `saturating_sub(6)` stopped at `len - 7` and never inspected
-    // the final 6-byte window, so a packet whose signature sat at the very
-    // end of the payload (including a payload that is exactly 6 bytes) was
-    // missed. (is_valid_ssh_packet_at_offset re-checks the 6-byte window.)
+    // Detect SSH message types for connection state. A packet signature
+    // needs 6 bytes: the last valid start offset is `len - 6`, so the
+    // exclusive range end is `len - 5`.
     let packet_state = (0..payload.len().saturating_sub(5))
         .filter(|&i| is_valid_ssh_packet_at_offset(payload, i))
         .find_map(|i| ssh_msg_state(payload[i + 5]).map(|(state, label)| (i, state, label)));
@@ -63,10 +53,9 @@ pub(super) fn analyze_ssh(payload: &[u8], is_outgoing: bool) -> Option<SshInfo> 
         info.connection_state = SshConnectionState::Banner;
     }
 
-    // Try to extract algorithm information. `parse_kexinit_algorithms` is a
-    // substring scan, so it works equally on a real KEXINIT message (msg
-    // type 20) and on free-form banner/text content — there's no need to
-    // branch on whether the payload looks like a KEXINIT.
+    // `parse_kexinit_algorithms` is a substring scan, so it works equally on
+    // a real KEXINIT message (msg type 20) and on free-form banner/text
+    // content; no need to branch on whether the payload looks like a KEXINIT.
     if let Some(algorithms) = parse_kexinit_algorithms(payload) {
         info.algorithms = algorithms;
     }
@@ -187,12 +176,10 @@ fn is_valid_ssh_packet_at_offset(payload: &[u8], offset: usize) -> bool {
 
 /// Parse algorithms from KEXINIT message
 fn parse_kexinit_algorithms(payload: &[u8]) -> Option<Vec<String>> {
-    // This is a simplified version - full KEXINIT parsing is quite complex
-    // We'll just try to extract some common algorithm names
+    // Substring scan, not a real KEXINIT parse.
     let text = String::from_utf8_lossy(payload);
     let mut algorithms = Vec::new();
 
-    // Look for common SSH algorithms
     let common_algos = [
         "diffie-hellman-group14-sha256",
         "ecdh-sha2-nistp256",
@@ -431,7 +418,6 @@ mod tests {
 
     #[test]
     fn test_algorithm_detection() {
-        // Create a payload that contains some SSH algorithms in the text
         let payload_with_algos =
             b"SSH-2.0-test\r\nsome data aes128-ctr ssh-ed25519 hmac-sha2-256 more data";
         let info = analyze_ssh(payload_with_algos, false).unwrap();
@@ -497,10 +483,8 @@ mod tests {
         // Banner (14 bytes) followed by a valid KEXINIT packet signature
         // occupying exactly the final 6 bytes of the payload:
         //   packet_len=12 (0x0000000C), padding_len=4 (0x04), msg_type=20 (0x14)
-        // The signature starts at offset len-6, i.e. the last valid start
-        // offset. The previous `saturating_sub(6)` loop bound stopped one
-        // offset short and never inspected this window, leaving the state at
-        // Banner; the scan must now reach it and report KeyExchange.
+        // Signature sits in the final 6 bytes; the scan must reach it and
+        // report KeyExchange.
         let payload = b"SSH-2.0-Test\r\n\x00\x00\x00\x0c\x04\x14";
         assert_eq!(payload.len(), 20);
         let info = analyze_ssh(payload, false).unwrap();

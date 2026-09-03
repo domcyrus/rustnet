@@ -58,7 +58,7 @@ pub struct App {
 
     /// Live connection tracker (active + historic tables, RTT, QUIC coalescing,
     /// and lifecycle cleanup). Shared with background threads. This is the same
-    /// `rustnet_core::network::tracker::ConnectionTracker` headless tools use —
+    /// `rustnet_core::network::tracker::ConnectionTracker` headless tools use,
     /// the single source of truth for connection state.
     pub(super) tracker: Arc<ConnectionTracker>,
 
@@ -68,7 +68,7 @@ pub struct App {
     /// Bumped by the snapshot thread after each snapshot write. Lets the UI
     /// loop skip re-cloning and re-sorting an unchanged snapshot (the
     /// snapshot refreshes every `refresh_interval` ms, the UI ticks every
-    /// 200ms — without this, most ticks redo identical work).
+    /// 200ms; without this, most ticks redo identical work).
     pub(super) snapshot_generation: Arc<AtomicU64>,
 
     /// Whether to include historic connections in the snapshot
@@ -172,7 +172,6 @@ fn build_geoip_resolver(config: &Config) -> Option<Arc<GeoIpResolver>> {
         || config.geoip_asn_path.is_some()
         || config.geoip_city_path.is_some();
     let resolver = if explicit {
-        // Use explicit paths from config
         GeoIpResolver::new(GeoIpConfig {
             country_db_path: config
                 .geoip_country_path
@@ -245,13 +244,11 @@ impl App {
             ))
         });
 
-        // Load service definitions
         let service_lookup = ServiceLookup::from_embedded().unwrap_or_else(|e| {
             warn!("Failed to load embedded services: {}, using defaults", e);
             ServiceLookup::with_defaults()
         });
 
-        // Load OUI vendor database
         let oui_lookup = match OuiLookup::from_embedded() {
             Ok(oui) => Some(Arc::new(oui)),
             Err(e) => {
@@ -260,7 +257,6 @@ impl App {
             }
         };
 
-        // Initialize DNS resolver if enabled
         let dns_resolver = if config.resolve_dns {
             info!("DNS resolution enabled - starting background resolver");
             Some(Arc::new(DnsResolver::with_defaults()))
@@ -307,16 +303,16 @@ impl App {
     }
 
     /// Start the privileged-init background threads only: packet capture (which
-    /// opens the raw socket — needs CAP_NET_RAW) and process enrichment (which
-    /// loads eBPF — needs CAP_BPF/CAP_PERFMON). These must run BEFORE the sandbox
+    /// opens the raw socket, needs CAP_NET_RAW) and process enrichment (which
+    /// loads eBPF, needs CAP_BPF/CAP_PERFMON). These must run BEFORE the sandbox
     /// is applied.
     ///
-    /// The DPI parser/worker threads are intentionally NOT started here — the
+    /// The DPI parser/worker threads are intentionally NOT started here: the
     /// caller must apply the sandbox and then call [`App::start_workers`]. On
     /// Linux the Landlock domain and dropped capabilities are per-thread and are
     /// only inherited by threads spawned *after* `restrict_self`, so spawning the
     /// parser threads in the worker phase is what places the untrusted-input DPI
-    /// code inside the sandbox — even when rustnet runs as root.
+    /// code inside the sandbox, even when rustnet runs as root.
     ///
     /// Returns two receivers that signal when privileged initialization is
     /// complete: the first when process detection (including eBPF loading) is
@@ -329,17 +325,14 @@ impl App {
     ) -> Result<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Receiver<()>)> {
         info!("Starting network monitor application");
 
-        // Shared connection tracker (active + historic tables, RTT, QUIC)
         let tracker = Arc::clone(&self.tracker);
 
-        // Phase 1: privileged init. Start the capture pipeline (opens the raw
-        // socket and stashes the packet receiver for the worker phase).
+        // Privileged init: opens the raw socket, stashes the packet receiver.
         let capture_ready_rx = self.start_packet_capture_pipeline()?;
 
-        // Create channel to signal when process detection (incl. eBPF) is ready
         let (process_ready_tx, process_ready_rx) = std::sync::mpsc::sync_channel(1);
 
-        // Start process enrichment thread (but delay for PKTAP detection on macOS)
+        // Delayed on macOS until PKTAP detection has run.
         self.start_process_enrichment_conditional(tracker.clone(), process_ready_tx)?;
 
         Ok((process_ready_rx, capture_ready_rx))
@@ -357,25 +350,18 @@ impl App {
 
         let pcapng_tx = self.start_pcapng_export_thread(tracker.clone())?;
 
-        // Start the DPI packet processing threads (drain the stashed channel).
         self.start_packet_processors(tracker.clone(), pcapng_tx)?;
 
-        // Start GeoIP enrichment thread
         self.start_geoip_enrichment_thread(tracker.clone())?;
 
-        // Start snapshot provider for UI
         self.start_snapshot_provider(tracker.clone())?;
 
-        // Start cleanup thread
         self.start_cleanup_thread(tracker.clone())?;
 
-        // Start rate refresh thread
         self.start_rate_refresh_thread(tracker)?;
 
-        // Start interface stats collection thread
         self.start_interface_stats_thread()?;
 
-        // Start traffic history thread for graph visualization
         self.start_traffic_history_thread()?;
 
         // Required capture and attribution initialization is already complete.
@@ -392,7 +378,6 @@ impl App {
         Ok(())
     }
 
-    /// Get current connections for UI display
     pub fn get_connections(&self) -> Vec<Connection> {
         self.get_filtered_connections("")
     }
@@ -415,9 +400,7 @@ impl App {
         )
     }
 
-    /// Get filtered connections for UI display
     pub fn get_filtered_connections(&self, filter_query: &str) -> Vec<Connection> {
-        // Filter out DNS PTR queries/responses when reverse DNS is enabled
         let hide_ptr_lookups = self.dns_resolver.is_some() && !self.config.show_ptr_lookups;
         let filter = if filter_query.trim().is_empty() {
             None
@@ -441,7 +424,6 @@ impl App {
             .collect()
     }
 
-    /// Get interface statistics
     pub(crate) fn get_interface_stats(&self) -> Vec<InterfaceStats> {
         self.interface_stats
             .iter()
@@ -473,7 +455,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Get traffic history for graph visualization
     /// RX/TX rate history for one connection (by `Connection::key()`),
     /// as (rx, tx) bytes/sec vectors oldest→newest. None until the
     /// traffic-history thread has sampled the connection at least once.
@@ -497,7 +478,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Get application statistics
     pub fn get_stats(&self) -> AppStats {
         self.stats.snapshot()
     }
@@ -512,12 +492,10 @@ impl App {
         self.config.pcap_export_file.is_some()
     }
 
-    /// Check if application is still loading
     pub fn is_loading(&self) -> bool {
         self.is_loading.load(Ordering::Relaxed)
     }
 
-    /// Get the current network interface name
     pub(crate) fn get_current_interface(&self) -> Option<String> {
         self.current_interface.read().unwrap().clone()
     }
@@ -568,7 +546,6 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// Set sandbox status information
     pub fn set_sandbox_info(&self, info: SandboxReport) {
         if let Ok(mut guard) = self.sandbox_info.write() {
             *guard = info;
@@ -583,7 +560,6 @@ impl App {
         if let Ok(linktype_opt) = self.linktype.read()
             && let Some(dlt) = *linktype_opt
         {
-            // Get interface name to detect TUN/TAP more accurately
             let interface_name = self
                 .current_interface
                 .read()
@@ -599,12 +575,10 @@ impl App {
         (String::from("Unknown"), false)
     }
 
-    /// Get the DNS resolver if enabled
     pub(crate) fn get_dns_resolver(&self) -> Option<Arc<DnsResolver>> {
         self.dns_resolver.clone()
     }
 
-    /// Check if DNS resolution is enabled
     pub(crate) fn is_dns_resolution_enabled(&self) -> bool {
         self.dns_resolver.is_some()
     }
@@ -625,13 +599,11 @@ impl App {
         }
     }
 
-    /// Toggle the show_historic flag
     pub(crate) fn toggle_show_historic(&self) {
         let prev = self.show_historic.load(Ordering::Relaxed);
         self.show_historic.store(!prev, Ordering::Relaxed);
     }
 
-    /// Set the show_historic flag directly
     pub(crate) fn set_show_historic(&self, value: bool) {
         self.show_historic.store(value, Ordering::Relaxed);
     }
@@ -727,27 +699,18 @@ impl App {
         );
     }
 
-    /// Clear all connections and related data, starting fresh
-    /// This clears:
-    /// - All tracked connections
-    /// - Traffic history (graph data)
-    /// - RTT measurements
-    /// - QUIC connection mappings
-    /// - Resets statistics counters
+    /// Drop every tracked connection, the UI snapshot, all traffic history,
+    /// and reset the statistics counters.
     pub(crate) fn clear_all_connections(&self) {
         info!("Clearing all connections and resetting statistics");
 
-        // Clear the tracker (active + historic tables, RTT, and QUIC mappings)
-        // and reset the historic-view toggle.
         self.tracker.clear();
         self.show_historic.store(false, Ordering::Relaxed);
 
-        // Clear the UI snapshot
         if let Ok(mut snapshot) = self.connections_snapshot.write() {
             snapshot.clear();
         }
 
-        // Clear traffic history
         if let Ok(mut history) = self.traffic_history.write() {
             history.clear();
         }
@@ -767,7 +730,6 @@ impl App {
         self.interface_traffic_windows.clear();
         drop(interface_history);
 
-        // Reset statistics counters
         self.stats.reset_counters();
 
         info!("All connections cleared successfully");
@@ -778,8 +740,7 @@ impl App {
         info!("Stopping application");
         self.should_stop.store(true, Ordering::Relaxed);
 
-        // Write remaining active connections to PCAP sidecar JSONL file
-        // (connections that haven't been cleaned up yet)
+        // Connections not yet cleaned up still need their sidecar record.
         if let Some(writer) = &self.pcap_sidecar_file
             && let Ok(connections) = self.connections_snapshot.read()
         {
@@ -801,7 +762,6 @@ impl App {
 impl Drop for App {
     fn drop(&mut self) {
         self.stop();
-        // Give threads time to stop gracefully
         thread::sleep(Duration::from_millis(100));
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! [`ConnectionTracker`] folds parsed packets into a long-lived, lifecycle-
 //! managed table of [`Connection`]s. It owns everything needed to turn a stream
-//! of [`ParsedPacket`]s into the same connection view the `rustnet` TUI shows —
+//! of [`ParsedPacket`]s into the same connection view the `rustnet` TUI shows:
 //! the active table, an archive of recently-closed ("historic") connections,
 //! RTT estimation from TCP, QUIC handshakes, and ICMP echo, plus DNS-shaped
 //! response timing, QUIC connection-ID coalescing, and timeout-based cleanup,
@@ -101,7 +101,7 @@ fn udp_application_is_timed(application: &ApplicationProtocol) -> bool {
 
 /// The active connection table: flow key -> connection.
 ///
-/// Keys are compact `Copy` structs, and the map uses FxHash — with a small
+/// Keys are compact `Copy` structs, and the map uses FxHash; with a small
 /// fixed-size key, hashing is a handful of multiplies instead of SipHash over
 /// a formatted string. (Hash-flooding resistance isn't needed here: the table
 /// is bounded by `max_connections` and keyed by addresses, not attacker-chosen
@@ -180,8 +180,8 @@ impl Default for TrackerConfig {
 /// What happened when a packet was ingested via
 /// [`ingest_at`](ConnectionTracker::ingest_at).
 ///
-/// Returned so callers can layer their own concerns — global statistics,
-/// structured logging, DNS enrichment — on top of the core table update without
+/// Returned so callers can layer their own concerns (global statistics,
+/// structured logging, DNS enrichment) on top of the core table update without
 /// the tracker needing to know about them.
 #[derive(Debug, Clone)]
 pub struct IngestOutcome {
@@ -355,7 +355,7 @@ pub struct ConnectionTracker {
     /// Lets the per-packet `max_connections` check be a single atomic load
     /// instead of a `DashMap::len()` (which read-locks every shard) plus an
     /// extra `contains_key` lookup. May transiently lag `connections.len()`
-    /// by a few entries under concurrent ingest near the limit — acceptable
+    /// by a few entries under concurrent ingest near the limit, acceptable
     /// for a flood-protection bound.
     active_count: AtomicUsize,
     /// IP -> MAC/vendor mappings learned passively from ingested ARP (IPv4)
@@ -673,7 +673,7 @@ impl ConnectionTracker {
         // limit new connections; existing ones always get updated. The fast
         // path is a single atomic load; only when at the cap do we pay a
         // lookup to distinguish update-existing from drop-new. (Never call
-        // `len()` here or while holding an entry guard — it read-locks every
+        // `len()` here or while holding an entry guard; it read-locks every
         // shard.)
         if self.active_count.load(Ordering::Relaxed) >= self.config.max_connections
             && !self.connections.contains_key(&key)
@@ -1009,7 +1009,7 @@ impl ConnectionTracker {
     /// A point-in-time copy of the active connections.
     ///
     /// Note: this is a full clone, including each connection's rate-sample
-    /// buffer — the buffer is shared via `Arc`, so the *next* per-packet
+    /// buffer; the buffer is shared via `Arc`, so the *next* per-packet
     /// update on a live connection pays a copy-on-write deep copy. Callers
     /// that only need the cached `current_*_rate_bps` fields (any read-only
     /// view) should prefer [`Connection::snapshot_clone`] over the entries of
@@ -1082,7 +1082,7 @@ impl ConnectionTracker {
     /// Use this for in-place enrichment (e.g. attaching process, DNS, or GeoIP
     /// information via `iter_mut`) or custom reads. Lifecycle changes should go
     /// through [`ingest_at`](Self::ingest_at) and [`cleanup`](Self::cleanup) so the
-    /// connection-count limit, RTT, and QUIC coalescing stay consistent —
+    /// connection-count limit, RTT, and QUIC coalescing stay consistent;
     /// inserting or removing entries directly desyncs the internal counter
     /// backing the `max_connections` check.
     pub fn connections(&self) -> &ConnectionMap {
@@ -1434,7 +1434,7 @@ mod tests {
     }
 
     /// Ingesting an NDP neighbor advertisement must populate the neighbor
-    /// cache for the advertised target address — but only when the frame
+    /// cache for the advertised target address, but only when the frame
     /// arrived with hop limit 255, which proves it was not routed (RFC 4861).
     #[test]
     fn ndp_ingest_learns_advertised_target_at_hop_limit_255_only() {
@@ -1525,7 +1525,7 @@ mod tests {
     }
 
     /// rustnet watches from an endpoint, so an arriving packet followed by this
-    /// host's own answer spans no network at all — it times the local stack's
+    /// host's own answer spans no network at all; it times the local stack's
     /// turnaround. Only an outbound packet may start the clock.
     ///
     /// A server's first flight is several datagrams, so this ordering shows up
@@ -2505,7 +2505,7 @@ mod tests {
     #[test]
     fn ingest_at_uses_supplied_time_for_cleanup() {
         // A packet ingested "in the past" must be eligible for cleanup at a
-        // `now` only slightly later than its supplied capture time — proving the
+        // `now` only slightly later than its supplied capture time, proving the
         // tracker stamps the connection with the caller's time, not the wall
         // clock. (Wall-clock stamping would make `created_at` ~= real now, so a
         // cleanup at trace-time + a few minutes would NOT expire it.)

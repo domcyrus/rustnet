@@ -265,8 +265,8 @@ pub struct ConnRateHistory {
 impl ConnRateHistory {
     /// Push one sample for the connection generation stamped `created_at`.
     /// Live connection keys are tuple-only, so a replacement generation reuses
-    /// its predecessor's map entry; a new generation resets the rings — and
-    /// the sticky graph scales — instead of inheriting the old connection's
+    /// its predecessor's map entry; a new generation resets the rings (and
+    /// the sticky graph scales) instead of inheriting the old connection's
     /// graph and ceiling.
     pub(super) fn push_for_generation(
         &mut self,

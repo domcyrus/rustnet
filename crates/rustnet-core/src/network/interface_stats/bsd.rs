@@ -33,7 +33,6 @@ fn collect_af_link_stats(
             {
                 let name = CStr::from_ptr(ifa.ifa_name).to_string_lossy().to_string();
 
-                // Get if_data from ifa_data
                 if let Some(if_data) = (ifa.ifa_data as *const libc::if_data).as_ref() {
                     stats.push(extract(if_data, name));
                 }

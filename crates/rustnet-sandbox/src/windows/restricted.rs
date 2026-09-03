@@ -1,8 +1,7 @@
 //! Windows restricted token and job object sandboxing
 //!
-//! After initialization, we:
-//! 1. Create a Job Object that prevents child process creation
-//! 2. Remove dangerous privileges from the process token
+//! After initialization, dangerous privileges are removed from the process
+//! token and a Job Object that prevents child process creation is applied.
 //!
 //! This reduces blast radius if a vulnerability in packet parsing is exploited:
 //! - Cannot spawn child processes (reverse shell, data exfiltration via curl, etc.)
@@ -53,7 +52,7 @@ pub(super) struct RestrictedTokenResult {
     pub privileges_removed_count: u32,
     /// Whether the privilege restriction step completed without errors.
     /// True even when 0 privileges were removed because the token never
-    /// held them — that is the desired end state, not a failure.
+    /// held them: that is the desired end state, not a failure.
     pub succeeded: bool,
     /// Human-readable message
     pub message: String,
@@ -69,8 +68,8 @@ pub(super) struct JobObjectResult {
 
 /// Remove dangerous privileges from the current process token.
 ///
-/// Uses SE_PRIVILEGE_REMOVED which permanently removes privileges —
-/// they cannot be re-enabled, even by the process itself.
+/// Uses SE_PRIVILEGE_REMOVED, which permanently removes privileges: they
+/// cannot be re-enabled, even by the process itself.
 pub(super) fn remove_dangerous_privileges() -> Result<RestrictedTokenResult> {
     unsafe {
         let mut token_handle = HANDLE::default();
@@ -92,7 +91,7 @@ pub(super) fn remove_dangerous_privileges() -> Result<RestrictedTokenResult> {
                     log::debug!("Removed privilege: {}", priv_name);
                 }
                 Ok(false) => {
-                    // Privilege not held — not an error
+                    // Privilege not held; not an error.
                     log::debug!("Privilege not present: {}", priv_name);
                 }
                 Err(e) => {
@@ -143,7 +142,7 @@ unsafe fn remove_single_privilege(token: HANDLE, privilege_name: &str) -> Result
         if LookupPrivilegeValueW(None, windows::core::PCWSTR(wide_name.as_ptr()), &mut luid)
             .is_err()
         {
-            // Privilege name not recognized on this system — skip
+            // Privilege name not recognized on this system; skip.
             return Ok(false);
         }
 
@@ -162,8 +161,8 @@ unsafe fn remove_single_privilege(token: HANDLE, privilege_name: &str) -> Result
             ));
         }
 
-        // Check GetLastError — AdjustTokenPrivileges returns success even if
-        // the privilege wasn't held (ERROR_NOT_ALL_ASSIGNED = 1300)
+        // AdjustTokenPrivileges returns success even if the privilege wasn't
+        // held; GetLastError reports that as ERROR_NOT_ALL_ASSIGNED (1300).
         let last_error = windows::Win32::Foundation::GetLastError();
         if last_error.0 == ERROR_NOT_ALL_ASSIGNED {
             return Ok(false);
@@ -179,7 +178,6 @@ unsafe fn remove_single_privilege(token: HANDLE, privilege_name: &str) -> Result
 /// This blocks reverse shells, data exfiltration via exec, etc.
 pub(super) fn apply_job_object() -> Result<JobObjectResult> {
     unsafe {
-        // Create an unnamed job object
         let job = CreateJobObjectW(None, None).context("Failed to create job object")?;
 
         // Configure: limit to 1 active process (prevents child spawning)
@@ -200,16 +198,14 @@ pub(super) fn apply_job_object() -> Result<JobObjectResult> {
         )
         .context("Failed to set job object limits")?;
 
-        // Assign current process to the job.
         // On Windows 8+ nested jobs are supported, so this succeeds even if the
         // process is already in a job (e.g., launched from Task Scheduler or a
         // container). On Windows 7 (unsupported) it would fail with ACCESS_DENIED.
         AssignProcessToJobObject(job, GetCurrentProcess())
             .context("Failed to assign process to job object")?;
 
-        // Don't close the job handle — it must remain open for the lifetime
-        // of the process, otherwise the restrictions are lifted.
-        // Intentionally leak it.
+        // The job handle is intentionally leaked: it must remain open for the
+        // lifetime of the process, otherwise the restrictions are lifted.
 
         log::debug!("Job object applied: child process creation blocked");
 

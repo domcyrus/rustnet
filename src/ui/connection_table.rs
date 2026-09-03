@@ -6,8 +6,8 @@
 //! Column order puts identifying info (process, addresses) on the left
 //! and status info (state, bandwidth) on the right.
 //!
-//! Widths are a pure function of the available table width — never of
-//! row content — so the layout is stable while scrolling and only
+//! Widths are a pure function of the available table width (never of
+//! row content), so the layout is stable while scrolling and only
 //! changes when the terminal is resized (or the sidebar is toggled).
 //! When the table is too narrow, whole columns are hidden in a fixed
 //! priority order; when there is width to spare, it is distributed to
@@ -36,8 +36,8 @@ use crate::ui::{
     widgets::scrollbar::draw_scrollbar,
 };
 
-// --- Column floors (cells). Flexible columns grow beyond their floor
-// --- when surplus width is distributed; fixed columns never do.
+// Column floors (cells). Flexible columns grow beyond their floor
+// when surplus width is distributed; fixed columns never do.
 /// Process column: a one-cell gutter for the stale stripe plus 21 cells of
 /// name and PID at the floor width (the column grows with the terminal).
 const PROCESS_WIDTH: u16 = 22;
@@ -66,7 +66,7 @@ const REMOTE_MIN_WIDTH: u16 = 21;
 pub(in crate::ui) const SELECTION_BAR: &str = "▌";
 
 /// One of the connection-table columns. Headers use short labels and
-/// single-cell glyphs (↓ ↑ ·) only — multi-width emoji are deliberately
+/// single-cell glyphs (↓ ↑ ·) only; multi-width emoji are deliberately
 /// avoided because double-width glyphs break ratatui column alignment
 /// in many terminals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +126,7 @@ fn table_chrome(column_count: usize) -> u16 {
 }
 
 /// Pick the visible column set for `available_width` (the table area's
-/// width, borders excluded). A pure function of the width — row content
+/// width, borders excluded). A pure function of the width: row content
 /// never affects the layout, so columns stay put while scrolling.
 ///
 /// Too narrow: whole columns are hidden in a fixed degradation order
@@ -137,7 +137,7 @@ fn table_chrome(column_count: usize) -> u16 {
 ///
 /// Width to spare: the surplus is distributed to the flexible columns
 /// proportionally to their weight (Remote 4 · App 3 · Process 2 ·
-/// Local 1), so the grid spans the full width — Bandwidth lands flush
+/// Local 1), so the grid spans the full width: Bandwidth lands flush
 /// against the right edge and the spare space reads as even breathing
 /// room between columns instead of one big gap.
 pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) -> Vec<Column> {
@@ -216,7 +216,7 @@ pub(in crate::ui) fn select_columns(available_width: u16, has_location: bool) ->
 }
 
 /// Map resolved columns to ratatui layout constraints. Every column is
-/// `Length` — the widths already account for the full table width via
+/// `Length`: the widths already account for the full table width via
 /// the weighted distribution in [`select_columns`].
 pub(in crate::ui) fn column_constraints(columns: &[Column]) -> Vec<Constraint> {
     columns
@@ -579,8 +579,7 @@ pub(in crate::ui) fn connection_row<'a>(
             ColumnId::Application => application_cell(conn, col.width, paint),
             ColumnId::State => {
                 // Historic connections show "closed" instead of their last
-                // TCP state — together with the DIM row style this is the
-                // NO_COLOR-safe replacement for the old hollow status dot.
+                // TCP state; DIM + "closed" is the NO_COLOR-safe cue.
                 if conn.is_historic {
                     Cell::from("closed").style(paint.signal().style(theme::tcp_closed()))
                 } else {
@@ -906,7 +905,6 @@ pub(in crate::ui) fn render_row_table(
         visible_rows,
     } = window;
 
-    // Create table state with selection adjusted to windowed slice
     let mut state = ratatui::widgets::TableState::default();
     if let Some(selected_index) = selected {
         state.select(Some(selected_index.saturating_sub(scroll_offset)));
@@ -930,7 +928,6 @@ pub(in crate::ui) fn render_row_table(
     );
     draw_scrollbar(f, rows_area, total_rows, scroll_offset, visible_rows);
 
-    // Register click regions for visible rows
     click_regions.scroll_area = Some(area);
     let visible_start_y = area.y + header_height;
     let max_visible_rows = area.height.saturating_sub(header_height) as usize;

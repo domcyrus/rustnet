@@ -26,7 +26,6 @@ pub(super) fn decrypt_client_initial_packet(
         dcid.len()
     );
 
-    // Try to decrypt as a client Initial packet
     let result = try_decrypt_initial_with_secret(packet, &client_secret, version, layout);
     if result.is_none() {
         debug!("QUIC: Client Initial decryption failed");
@@ -83,7 +82,6 @@ fn try_decrypt_initial_with_secret(
     // Prepare for AEAD decryption
     let aead_key = LessSafeKey::new(UnboundKey::new(&aead::AES_128_GCM, &key).ok()?);
 
-    // Calculate nonce
     let mut nonce_bytes = iv;
     for i in 0..8 {
         nonce_bytes[11 - i] ^= ((packet_number >> (i * 8)) & 0xff) as u8;
@@ -254,12 +252,11 @@ mod tests {
 
     #[test]
     fn test_initial_packet_short_length_does_not_underflow() {
-        // Regression: a crafted Initial packet whose declared payload `Length`
-        // varint is smaller than the packet-number length made
-        // `packet_payload_length - pn_length` underflow. In debug that panicked
-        // outright; in release it wrapped to a huge value that slipped past the
-        // bounds check and panicked on the ciphertext slice (start > end).
-        // It must now bail out via checked_sub and return None.
+        // A crafted Initial packet whose declared payload `Length` varint is
+        // smaller than the packet-number length must not underflow
+        // `packet_payload_length - pn_length` (a debug panic, or a release
+        // wrap that slips past the bounds check); it bails out via
+        // checked_sub and returns None.
         let mut packet = Vec::new();
         packet.push(0xC0); // long header, type = Initial
         packet.extend_from_slice(&1u32.to_be_bytes()); // version 1

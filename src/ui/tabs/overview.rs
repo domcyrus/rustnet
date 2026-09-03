@@ -1,4 +1,4 @@
-//! Overview tab — the main connection list (flat or grouped), the
+//! Overview tab: the main connection list (flat or grouped), the
 //! stats sidebar (interface, process detection, security, mini
 //! traffic), the section separator helper, and the per-interface
 //! sparkline used inside the stats sidebar.
@@ -32,7 +32,7 @@ use crate::ui::{
     widgets::{badge, braille_graph},
 };
 
-/// Overview tab — connection list + stats sidebar. Reads every
+/// Overview tab: connection list + stats sidebar. Reads every
 /// ComponentContext field; holds no per-tab state today.
 pub(in crate::ui) struct OverviewTab;
 
@@ -77,18 +77,16 @@ impl Component for OverviewTab {
     }
 
     fn handle_key(&mut self, key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option<Vec<Effect>> {
-        // --- Filter mode owns its own input mini-loop ---
+        // Filter mode owns its own input mini-loop.
         if ctx.ui_state.filter_mode {
             return handle_filter_mode_key(key, ctx);
         }
 
-        // --- Connection navigation + copy (shared with DetailsTab) ---
         if let nav @ Some(_) = try_handle_connection_nav(key, ctx) {
             return nav;
         }
 
         match (key.code, key.modifiers) {
-            // --- Open Details on Enter (only for a real connection, not a group header) ---
             (KeyCode::Enter, _) => {
                 let on_group_header =
                     ctx.ui_state.grouping_enabled && ctx.ui_state.is_group_selected();
@@ -98,7 +96,6 @@ impl Component for OverviewTab {
                 Some(Vec::new())
             }
 
-            // --- Group expand / collapse ---
             (KeyCode::Char(' '), _)
                 if ctx.ui_state.grouping_enabled
                     && ctx.ui_state.selected_group_expansion().is_some() =>
@@ -119,7 +116,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::Regroup])
             }
 
-            // --- Filter mode entry and exit ---
             (KeyCode::Char('/'), _) => {
                 debug!("Entering filter mode");
                 ctx.ui_state.enter_filter_mode();
@@ -130,9 +126,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // --- Display toggles & sort ---
-
-            // Toggle port number / service name display
             (KeyCode::Char('p'), _) => {
                 ctx.ui_state.show_port_numbers = !ctx.ui_state.show_port_numbers;
                 info!(
@@ -146,7 +139,6 @@ impl Component for OverviewTab {
                 Some(Vec::new())
             }
 
-            // Toggle hostname / IP display — DNS resolver must be enabled
             (KeyCode::Char('d'), _) if ctx.app.is_dns_resolution_enabled() => {
                 ctx.ui_state.show_hostnames = !ctx.ui_state.show_hostnames;
                 info!(
@@ -160,7 +152,6 @@ impl Component for OverviewTab {
                 Some(Vec::new())
             }
 
-            // Toggle historic-connection inclusion
             (KeyCode::Char('t'), _) => {
                 ctx.ui_state.show_historic = !ctx.ui_state.show_historic;
                 ctx.ui_state.scroll_offset = 0;
@@ -177,7 +168,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // Toggle the System stats sidebar
             (KeyCode::Char('i'), _) => {
                 ctx.ui_state.show_system_panel = !ctx.ui_state.show_system_panel;
                 info!(
@@ -191,7 +181,6 @@ impl Component for OverviewTab {
                 Some(Vec::new())
             }
 
-            // Toggle process grouping
             (KeyCode::Char('a'), _) => {
                 ctx.ui_state.toggle_grouping();
                 info!(
@@ -205,7 +194,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::Regroup])
             }
 
-            // Reset view settings
             (KeyCode::Char('r'), _) => {
                 let was_historic = ctx.ui_state.show_historic;
                 ctx.ui_state.reset_view();
@@ -216,7 +204,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // Cycle sort column
             (KeyCode::Char('s'), KeyModifiers::NONE) => {
                 ctx.ui_state.cycle_sort_column();
                 info!(
@@ -231,7 +218,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // Toggle sort direction (Shift+s)
             (KeyCode::Char('S'), _) => {
                 ctx.ui_state.toggle_sort_direction();
                 info!(
@@ -246,10 +232,6 @@ impl Component for OverviewTab {
                 Some(vec![Effect::RefreshData])
             }
 
-            // (Connection navigation + 'c' copy are handled by
-            // try_handle_connection_nav at the top of this function.)
-
-            // Clear all connections (two-press confirmation)
             (KeyCode::Char('x'), _) => {
                 if clear_all_with_confirmation(ctx.ui_state, ctx.app) {
                     Some(vec![Effect::RefreshData])
@@ -308,7 +290,7 @@ fn handle_filter_mode_key(key: KeyEvent, ctx: &mut HandlerContext<'_>) -> Option
             ctx.ui_state.filter_cursor_position = ctx.ui_state.filter_query.len();
             Some(Vec::new())
         }
-        // Navigation works while typing — uses the parent's sorted list.
+        // Navigation works while typing; it uses the parent's sorted list.
         KeyCode::Up => {
             ctx.ui_state.move_selection_up(ctx.connections);
             Some(Vec::new())
@@ -340,7 +322,7 @@ fn is_filter_backspace_char(c: char, modifiers: KeyModifiers) -> bool {
 /// the longest stat lines.
 const SYSTEM_PANEL_WIDTH: u16 = 34;
 /// Below this Overview width the sidebar is dropped even when toggled
-/// on — the connection table needs the room more.
+/// on: the connection table needs the room more.
 const SYSTEM_PANEL_MIN_AREA_WIDTH: u16 = 90;
 /// Minimum rows reserved for the Traffic heading, its two waves, and the
 /// current-rate line. Security details yield this space on short terminals.
@@ -396,13 +378,11 @@ fn draw_overview(
             .split(area)
     };
 
-    // Get DNS resolver from app if enabled
     let dns_resolver = ctx.app.get_dns_resolver();
 
-    // Get GeoIP status - only show Loc column if country DB is loaded
+    // The Loc column only appears when the country DB is loaded.
     let (has_country_db, _has_asn_db, _has_city_db) = ctx.app.get_geoip_status();
 
-    // Use grouped view if grouping is enabled
     if ctx.ui_state.grouping_enabled {
         if let Some(rows) = ctx.grouped_rows {
             draw_grouped_connections_list(
@@ -718,7 +698,6 @@ fn group_header_row<'a>(
     Row::new(cells)
 }
 
-/// Draw stats panel
 /// Render a single-row horizontal rule between sections, styled with the
 /// theme border color so it matches every other rule in the chrome.
 fn render_section_separator(f: &mut Frame, area: Rect) {
@@ -825,7 +804,7 @@ fn draw_stats_panel(
     area: Rect,
 ) -> Result<()> {
     // Borderless: a single quiet vertical rule separates the sidebar
-    // from the connections table, and the section header names it —
+    // from the connections table, and the section header names it:
     // deliberately *not* the same chrome as the table so the two read
     // as different kinds of content.
     let panel = Block::default()
@@ -1058,7 +1037,6 @@ fn draw_stats_panel(
         )));
     }
 
-    // Add remaining stats
     conn_stats_text.extend([
         Line::from(""),
         Line::from(format!("TCP Connections: {}", connection_counts.tcp)),
@@ -1157,7 +1135,6 @@ fn draw_stats_panel(
     f.render_widget(conn_stats, chunks[0]);
     render_section_separator(f, chunks[1]);
 
-    // Network statistics (TCP analytics)
     let total_retransmits = stats
         .total_tcp_retransmits
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -1195,7 +1172,6 @@ fn draw_stats_panel(
     f.render_widget(network_stats, chunks[2]);
     render_section_separator(f, chunks[3]);
 
-    // Interface statistics with traffic graph
     draw_interface_stats_with_graph(f, app, chunks[4])?;
     render_section_separator(f, chunks[5]);
 
@@ -1310,7 +1286,6 @@ fn draw_mini_wave_row(
     );
 }
 
-/// Draw interface stats section with embedded traffic sparklines
 fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Result<()> {
     // Heading + sparklines (3 lines) + interface details (remaining).
     let layout = Layout::default()
@@ -1330,13 +1305,11 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
 
     let sections = &layout[1..];
 
-    // Draw traffic waves (single-row braille graphs, same gradient
-    // style as the Graph tab)
+    // Single-row braille waves, same gradient style as the Graph tab.
     let traffic_history = app.get_traffic_history();
     let frac = traffic_history.scroll_fraction();
     let window = traffic_history.capacity();
 
-    // Split sparkline area into rows
     let sparkline_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -1368,7 +1341,6 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
         theme::tx_wave,
     );
 
-    // Current rates row
     let (current_rx, current_tx) = rx_rates
         .last()
         .zip(tx_rates.last())
@@ -1389,10 +1361,10 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
     let rates_para = Paragraph::new(rates_text);
     f.render_widget(rates_para, sparkline_rows[2]);
 
-    // Interface details section (errors/drops only, rates shown in sparklines above)
+    // Errors/drops only; rates are in the sparklines above.
     let all_interface_stats = app.get_interface_stats();
 
-    // Filter to show only the captured interface (or active interfaces if "any" or "pktap")
+    // Only the captured interface, or every active one for "any" / "pktap".
     let captured_interface = app.get_current_interface();
     let filtered_interface_stats: Vec<_> = if let Some(ref iface) = captured_interface {
         let is_npf_device = iface.starts_with("\\Device\\NPF_");
@@ -1417,7 +1389,7 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
             .collect()
     };
 
-    // Calculate how many interfaces can fit (1 line per interface now)
+    // One line per interface.
     let available_height = sections[1].height as usize;
     let max_interfaces = available_height.saturating_sub(1); // Reserve 1 for "more" message
 
@@ -1437,7 +1409,6 @@ fn draw_interface_stats_with_graph(f: &mut Frame, app: &App, area: Rect) -> Resu
             let error_style = alert_style(total_errors > 0, theme::err());
             let drop_style = alert_style(total_drops > 0, theme::warn());
 
-            // Show interface name with errors/drops on single line
             lines.push(Line::from(vec![
                 Span::raw(format!("{}: ", stat.interface_name)),
                 Span::raw("Err: "),

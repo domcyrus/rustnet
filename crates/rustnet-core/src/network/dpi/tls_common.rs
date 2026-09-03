@@ -87,29 +87,20 @@ impl TlsParseOptions {
     }
 }
 
-/// Validate if a string looks like a valid complete hostname
+/// Validate if a string looks like a valid complete hostname.
 ///
-/// This is the unified hostname validation function used across all SNI extraction methods.
-/// Rules:
-/// - Length between 4 and 253 characters
-/// - Contains at least one '.'
-/// - Only ASCII alphanumeric, '.', and '-' characters
-/// - Doesn't start or end with '.' or '-'
-/// - No consecutive dots '..'
-/// - Has at least one alphabetic character
-/// - Each label is non-empty and at most 63 characters
+/// Shared by every SNI extraction path: 4..=253 ASCII alphanumeric, '.' or
+/// '-' characters, at least one dot and one letter, non-empty labels of at
+/// most 63 characters, no leading/trailing '.' or '-'.
 pub(in crate::network::dpi) fn is_valid_hostname(hostname: &str) -> bool {
-    // Length check
     if hostname.len() < 4 || hostname.len() > 253 {
         return false;
     }
 
-    // Must contain at least one dot
     if !hostname.contains('.') {
         return false;
     }
 
-    // Check for valid hostname characters only
     if !hostname
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
@@ -117,7 +108,6 @@ pub(in crate::network::dpi) fn is_valid_hostname(hostname: &str) -> bool {
         return false;
     }
 
-    // Must not start or end with a dot or hyphen
     if hostname.starts_with('.')
         || hostname.ends_with('.')
         || hostname.starts_with('-')
@@ -126,17 +116,15 @@ pub(in crate::network::dpi) fn is_valid_hostname(hostname: &str) -> bool {
         return false;
     }
 
-    // Must not contain consecutive dots
     if hostname.contains("..") {
         return false;
     }
 
-    // Must have at least one alphabetic character (not just numbers and dots)
+    // Not just numbers and dots
     if !hostname.chars().any(|c| c.is_ascii_alphabetic()) {
         return false;
     }
 
-    // Each label must be non-empty and at most 63 characters
     if !hostname
         .split('.')
         .all(|part| !part.is_empty() && part.len() <= 63)
@@ -147,19 +135,15 @@ pub(in crate::network::dpi) fn is_valid_hostname(hostname: &str) -> bool {
     true
 }
 
-/// Validate if a string looks like a valid partial hostname
+/// Validate if a string looks like a valid partial hostname.
 ///
-/// Partial hostnames have relaxed rules since they may be truncated:
-/// - Minimum length (PARTIAL_SNI_MIN_LENGTH)
-/// - Only ASCII alphanumeric, '.', and '-' characters
-/// - Has at least one alphabetic character
-/// - Doesn't start with '.' or '-'
+/// Relaxed rules because the value may be truncated: no dot or trailing
+/// character requirements, only a minimum length and a valid character set.
 fn is_valid_partial_hostname(hostname: &str) -> bool {
     if hostname.len() < PARTIAL_SNI_MIN_LENGTH {
         return false;
     }
 
-    // Check for valid hostname characters only
     if !hostname
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
@@ -167,12 +151,10 @@ fn is_valid_partial_hostname(hostname: &str) -> bool {
         return false;
     }
 
-    // Must have at least one alphabetic character
     if !hostname.chars().any(|c| c.is_ascii_alphabetic()) {
         return false;
     }
 
-    // Must not start with '.' or '-'
     if hostname.starts_with('.') || hostname.starts_with('-') {
         return false;
     }
@@ -220,7 +202,6 @@ pub(in crate::network::dpi) fn parse_sni_header(data: &[u8]) -> Option<SniHeader
         return None;
     }
 
-    // Validate hostname length is reasonable
     if name_len == 0 || name_len > 253 {
         return None;
     }
@@ -323,7 +304,6 @@ fn parse_client_hello(data: &[u8], info: &mut TlsInfo, opts: TlsParseOptions) {
     let compression_len = data[offset] as usize;
     offset += 1 + compression_len;
 
-    // Extensions - this is what we really want
     parse_extensions_block(data, offset, info, true, opts);
 }
 
@@ -374,8 +354,8 @@ fn parse_extensions_block(
 
 fn parse_server_hello(data: &[u8], info: &mut TlsInfo, opts: TlsParseOptions) {
     // Legacy server version. On TCP this intentionally overwrites the
-    // record-layer version even when unparseable (preserving long-standing
-    // behaviour); the supported_versions extension overrides it again.
+    // record-layer version even when unparseable; the supported_versions
+    // extension overrides it again.
     if opts.use_legacy_version() {
         if data.len() < 2 {
             return;
@@ -458,9 +438,7 @@ fn parse_extensions(data: &[u8], info: &mut TlsInfo, is_client: bool, opts: TlsP
                         info.version = Some(version);
                     }
                 }
-                _ => {
-                    // Skip unknown extensions
-                }
+                _ => {}
             }
         }
 
@@ -495,7 +473,6 @@ pub(in crate::network::dpi) fn parse_sni_extension(
             }
         }
     } else if allow_partial && data.len() > hostname_start {
-        // Extract partial SNI as fallback when allowed
         let available = &data[hostname_start..];
         if let Ok(partial) = std::str::from_utf8(available)
             && is_valid_partial_hostname(partial)
@@ -829,8 +806,8 @@ mod tests {
 
     #[test]
     fn test_large_handshake_accepted() {
-        // A ClientHello padded past the old 16 KB TCP cap (post-quantum key
-        // shares get close to this) must still parse.
+        // A ClientHello larger than 16 KB (post-quantum key shares get close
+        // to this) must still parse.
         let mut ext = build_sni_extension("www.example.com");
         let padding_len = 20_000u16;
         ext.extend_from_slice(&0x0015u16.to_be_bytes()); // padding extension

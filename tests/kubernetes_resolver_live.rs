@@ -18,7 +18,7 @@ fn resolver_picks_up_pod_uid_for_current_process() {
 
     if !cg.contains("kubepods") {
         eprintln!(
-            "Not inside a kubepods cgroup — skipping live assertion. This is expected on non-Kubernetes hosts."
+            "Not inside a kubepods cgroup; skipping live assertion. This is expected on non-Kubernetes hosts."
         );
         return;
     }

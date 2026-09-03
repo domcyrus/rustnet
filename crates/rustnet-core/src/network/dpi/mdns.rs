@@ -82,8 +82,6 @@ mod tests {
     #[test]
     fn test_mdns_announcement_with_qdcount_zero_collects_a_record() {
         // RFC 6762 §6: typical mDNS announcement has qdcount=0 and ancount>=1.
-        // Pre-#333 the answer walk lived inside `qdcount > 0`, so this
-        // packet returned an empty `response_ips`.
         let packet = build_mdns_announcement_a("printer.local", [192, 168, 1, 50]);
         let info = analyze_mdns(&packet).expect("should parse");
         assert!(info.is_response);
@@ -99,7 +97,7 @@ mod tests {
     #[test]
     fn test_mdns_collects_a_record_from_additional_section() {
         // mDNS often carries A / AAAA in the ADDITIONAL section (arcount)
-        // rather than answers — e.g. when responding to a PTR with the
+        // rather than answers, e.g. when responding to a PTR with the
         // SRV target's address records. Build: qdcount=0, ancount=1
         // (PTR), nscount=0, arcount=1 (A).
         let mut packet = build_dns_header(0x0000, 0x8400, 0, 1, 0, 1);

@@ -561,8 +561,8 @@ mod tests {
 
     #[test]
     fn heading_outranks_label_in_default_theme() {
-        // The hierarchy fix: heading (Reset, terminal default fg) must not
-        // collapse into the label tier (Gray).
+        // The heading tier (Reset, terminal default fg) must not collapse
+        // into the label tier (Gray).
         assert_ne!(heading(), label());
         assert_eq!(heading(), Color::Reset);
         assert_eq!(label(), Color::Gray);

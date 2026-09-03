@@ -18,7 +18,6 @@ fn main() -> Result<()> {
 #[cfg(all(target_os = "linux", feature = "ebpf"))]
 fn get_vmlinux_header(arch: &str) -> Result<std::path::PathBuf> {
     use std::path::PathBuf;
-    // Use bundled vmlinux.h from this crate's resources directory.
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let bundled_dir = manifest_dir.join("resources/ebpf/vmlinux").join(arch);
     let bundled_file = bundled_dir.join("vmlinux.h");
@@ -43,7 +42,6 @@ fn compile_ebpf_programs() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
 
-    // Get target architecture for cross-compilation
     let arch = env::var("CARGO_CFG_TARGET_ARCH")
         .expect("CARGO_CFG_TARGET_ARCH must be set in build script");
 
@@ -55,7 +53,6 @@ fn compile_ebpf_programs() {
         _ => ("-D__TARGET_ARCH_x86", "x86"), // fallback
     };
 
-    // Get bundled architecture-specific vmlinux.h
     let vmlinux_include_path =
         get_vmlinux_header(vmlinux_arch).expect("Failed to locate bundled vmlinux.h");
 

@@ -12,7 +12,7 @@
  * route, so the socket already carries the final tuple at function entry and
  * track_tcp_socket picks the key family from the socket itself. Probing this
  * single entry point covers IPv4, IPv6, and dual-stack IPv4-mapped connects
- * without a return probe — a kretprobe would be dropped once the kernel's
+ * without a return probe: a kretprobe would be dropped once the kernel's
  * maxactive limit is reached during a burst of concurrent connects, silently
  * losing those connections.
  */

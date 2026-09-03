@@ -1,4 +1,4 @@
-// network/platform/macos/process.rs - macOS lsof-based process lookup
+//! macOS lsof-based process lookup.
 
 use crate::{
     ConnectionKey, DegradationReason, HostSocket, HostSocketState, HostTcpState, MatchQuality,
@@ -156,7 +156,6 @@ impl MacOSProcessLookup {
     fn parse_lsof() -> Result<SocketScan> {
         info!("Running lsof to get network connections");
 
-        // Run lsof to get network connections
         let output = Command::new(LSOF_PATH)
             .args(["-i", "-n", "-P", "-l", "+c", "0"])
             .output()?;
@@ -222,11 +221,10 @@ impl MacOSProcessLookup {
             debug!("  Process: {} (PID: {})", process_name, pid);
             debug!("  Parts: {:?}", parts);
 
-            // Check TYPE field (usually parts[4]) to determine protocol
+            // TYPE (parts[4]) says IPv4/IPv6; NODE (parts[7]) carries the protocol.
             let protocol_hint = if parts.len() > 4 {
                 match parts[4] {
                     "IPv4" | "IPv6" => {
-                        // Need to look at NODE field for protocol
                         if parts.len() > 7 && (parts[7] == "TCP" || parts[7].contains("TCP")) {
                             debug!("  Detected TCP from NODE field: {}", parts[7]);
                             Some(Protocol::Tcp)
@@ -252,20 +250,16 @@ impl MacOSProcessLookup {
                 None
             };
 
-            // For lsof output, the connection info can be in different places:
-            // If the last field looks like a state (starts with "(" and ends with ")"),
-            // then the connection info is in the second-to-last field.
-            // Otherwise, it's in the last field.
+            // A trailing "(STATE)" field pushes the connection info to the
+            // second-to-last field; otherwise it is the last field.
             let last_field = parts.last().map_or("", |v| v);
             let connection_field = if last_field.starts_with('(') && last_field.ends_with(')') {
-                // Connection address is in the second-to-last field (before the state)
                 if parts.len() >= 2 {
                     parts[parts.len() - 2]
                 } else {
                     last_field
                 }
             } else {
-                // Connection info is in the last field
                 last_field
             };
 
@@ -397,18 +391,16 @@ fn parse_lsof_connection_with_hint(
     name: &str,
     protocol_hint: Option<Protocol>,
 ) -> Option<(Protocol, SocketAddr, SocketAddr)> {
-    // Parse lsof NAME field format:
+    // lsof NAME field formats:
     // "192.168.1.1:443->10.0.0.1:12345" (TCP)
     // "192.168.1.1:53" (UDP)
     // "*:80" (listening)
-
     debug!(
         "    Parsing NAME field: '{}' with hint: {:?}",
         name, protocol_hint
     );
 
     if name.contains("->") {
-        // Established connection with remote address
         let parts: Vec<&str> = name.split("->").collect();
         if parts.len() != 2 {
             debug!("    Failed: arrow connection doesn't have exactly 2 parts");
@@ -422,7 +414,7 @@ fn parse_lsof_connection_with_hint(
         let local = parse_socket_addr_text(parts[0])?;
         let remote = parse_socket_addr_text(parts[1])?;
 
-        // Use hint if available, otherwise assume TCP for established connections
+        // Without a hint, an established connection is assumed to be TCP.
         let protocol = protocol_hint.unwrap_or(Protocol::Tcp);
         debug!(
             "    Success: {:?} {}:{} -> {}:{}",
@@ -434,17 +426,16 @@ fn parse_lsof_connection_with_hint(
         );
         Some((protocol, local, remote))
     } else if name.contains(":") {
-        // UDP or listening socket
         debug!("    Parsing single address: '{}'", name);
         let local = parse_socket_addr_text(name)?;
 
-        // For UDP or listening, we create a dummy remote address
+        // UDP and listening sockets get an unspecified remote address.
         let remote = match local {
             SocketAddr::V4(_) => "0.0.0.0:0".parse().ok()?,
             SocketAddr::V6(_) => "[::]:0".parse().ok()?,
         };
 
-        // Use hint if available, otherwise assume UDP for single address
+        // Without a hint, a single address is assumed to be UDP.
         let protocol = protocol_hint.unwrap_or(Protocol::Udp);
         debug!(
             "    Success: {:?} {}:{} (listening/UDP)",
@@ -470,8 +461,8 @@ fn parse_lsof_native_id(value: &str) -> Option<u64> {
         .and_then(|hex| u64::from_str_radix(hex, 16).ok())
 }
 
-/// Robust normalization of process names to match PKTAP normalization
-/// (shared with rustnet-core so both sides stay identical)
+/// Normalize a process name the same way PKTAP names are normalized
+/// (shared with rustnet-core so both sides stay identical).
 fn normalize_process_name_robust(name: &str) -> String {
     let normalized = rustnet_core::network::link_layer::pktap::normalize_process_name(name);
 
@@ -482,17 +473,15 @@ fn normalize_process_name_robust(name: &str) -> String {
     normalized
 }
 
-/// Decode lsof escape sequences like \x20 back to regular characters
+/// Decode lsof escape sequences like `\x20` back to regular characters.
 fn decode_lsof_string(input: &str) -> String {
     let mut result = String::new();
     let mut chars = input.chars().peekable();
 
     while let Some(ch) = chars.next() {
         if ch == '\\' && chars.peek() == Some(&'x') {
-            // Skip the 'x'
             chars.next();
 
-            // Try to read two hex digits
             let hex_digits: String = chars.by_ref().take(2).collect();
             if hex_digits.len() == 2
                 && let Ok(byte_val) = u8::from_str_radix(&hex_digits, 16)
@@ -502,7 +491,6 @@ fn decode_lsof_string(input: &str) -> String {
                 continue;
             }
 
-            // If decoding failed, push the original characters
             result.push('\\');
             result.push('x');
             result.push_str(&hex_digits);
@@ -650,49 +638,40 @@ client 44 1000 5u IPv4 0x3 0t0 UDP *:0 (Unbound)
 
     #[test]
     fn test_decode_lsof_string() {
-        // Test basic space decoding
         assert_eq!(
             decode_lsof_string("Microsoft\\x20Teams\\x20WebView\\x20Helper"),
             "Microsoft Teams WebView Helper"
         );
 
-        // Test single word with space
         assert_eq!(decode_lsof_string("Brave\\x20Browser"), "Brave Browser");
 
-        // Test process name without escaping
         assert_eq!(decode_lsof_string("firefox"), "firefox");
 
-        // Test process name with single escaped space
         assert_eq!(decode_lsof_string("App\\x20Name"), "App Name");
 
-        // Test empty string
         assert_eq!(decode_lsof_string(""), "");
 
-        // Test string with no escape sequences
         assert_eq!(decode_lsof_string("launchd"), "launchd");
 
-        // Test malformed escape sequence (should be preserved)
+        // Malformed escape sequences are preserved.
         assert_eq!(
             decode_lsof_string("App\\x2G"),
-            "App\\x2G" // Invalid hex, should remain unchanged
+            "App\\x2G" // Invalid hex
         );
 
-        // Test incomplete escape sequence at end
         assert_eq!(
             decode_lsof_string("App\\x2"),
-            "App\\x2" // Incomplete, should remain unchanged
+            "App\\x2" // Incomplete escape at the end
         );
 
-        // Test multiple different escape sequences
         assert_eq!(
             decode_lsof_string("Test\\x20App\\x2D\\x2EExe"),
             "Test App-.Exe" // \x20 = space, \x2D = hyphen, \x2E = period
         );
 
-        // Test backslash without escape sequence
         assert_eq!(
             decode_lsof_string("App\\Normal"),
-            "App\\Normal" // Should preserve non-escape backslashes
+            "App\\Normal" // Non-escape backslashes are preserved
         );
     }
 }

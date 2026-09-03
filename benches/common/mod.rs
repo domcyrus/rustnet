@@ -56,7 +56,6 @@ pub fn make_connection_with_samples(n_samples: usize, prune_every: Option<usize>
         ProtocolState::Tcp(TcpState::Established),
     );
 
-    // Simulate per-packet updates to fill the rate tracker with samples
     for i in 0..n_samples {
         conn.bytes_sent += 100;
         conn.bytes_received += 200;

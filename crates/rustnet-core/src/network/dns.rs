@@ -128,10 +128,8 @@ impl DnsResolver {
             config: config.clone(),
         };
 
-        // Start resolver threads
         resolver.start_resolver_threads(request_rx, &config);
 
-        // Start cache cleanup thread
         resolver.start_cache_cleanup_thread();
 
         resolver
@@ -170,10 +168,8 @@ impl DnsResolver {
                                     continue;
                                 }
 
-                                // Mark as pending
                                 cache.insert(ip, CachedHostname::pending());
 
-                                // Perform DNS lookup
                                 match lookup_addr(&ip) {
                                     Ok(hostname) => {
                                         debug!("Resolved {} -> {}", ip, hostname);
@@ -241,12 +237,10 @@ impl DnsResolver {
 
     /// Request resolution for an IP address (non-blocking)
     pub fn request_resolution(&self, ip: IpAddr) {
-        // Don't resolve localhost or link-local
         if matches!(classify(ip), Scope::Loopback | Scope::LinkLocal) {
             return;
         }
 
-        // Check if already in cache and not expired
         if self
             .cache
             .get(&ip)
@@ -261,10 +255,8 @@ impl DnsResolver {
 
     /// Get hostname for IP if resolved, otherwise return None
     pub fn get_hostname(&self, ip: &IpAddr) -> Option<String> {
-        // Request resolution if not in cache
         self.request_resolution(*ip);
 
-        // Return cached hostname if available
         self.cache.get(ip).and_then(|entry| {
             if entry.state == ResolutionState::Resolved {
                 entry.hostname.clone()

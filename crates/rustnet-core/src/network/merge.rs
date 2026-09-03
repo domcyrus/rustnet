@@ -1,4 +1,4 @@
-// src/network/merge.rs - Connection merging and update utilities
+//! Connection merging and update utilities.
 
 use log::{debug, warn};
 use std::fmt::Debug;
@@ -11,8 +11,6 @@ use crate::network::types::{
     ProtocolState, QuicConnectionState, QuicInfo, SshInfo, TcpState, TlsInfo,
 };
 
-/// Get the priority of a QUIC connection state for proper state progression
-/// Higher priority = more advanced state. States should only progress forward.
 /// Upper bound on DNS response IPs accumulated per connection across packets.
 /// The per-packet parser already caps extraction (see `MAX_RESPONSE_IPS_PER_PACKET`
 /// in dpi/dns.rs); this bounds the cross-packet merge accumulator so a sustained
@@ -313,7 +311,6 @@ pub fn merge_packet_into_connection(
 ) -> TcpMergeEvents {
     let tcp_events = apply_packet(conn, parsed, now);
 
-    // Update rate calculations
     update_connection_rates(conn);
 
     tcp_events
@@ -342,7 +339,6 @@ fn apply_packet(conn: &mut Connection, parsed: &ParsedPacket, now: SystemTime) -
     conn.remote_addr_kind = parsed.remote_addr_kind;
     conn.remote_is_gateway = parsed.remote_is_gateway;
 
-    // Update packet counts and bytes
     if parsed.is_outgoing {
         conn.packets_sent += 1;
         conn.bytes_sent += parsed.packet_len as u64;
@@ -351,7 +347,6 @@ fn apply_packet(conn: &mut Connection, parsed: &ParsedPacket, now: SystemTime) -
         conn.bytes_received += parsed.packet_len as u64;
     }
 
-    // Update protocol state (from packet flags/state)
     if let Some(tcp_header) = parsed.tcp_header {
         let current_tcp_state = match conn.protocol_state {
             ProtocolState::Tcp(state) => state,
@@ -373,7 +368,6 @@ fn apply_packet(conn: &mut Connection, parsed: &ParsedPacket, now: SystemTime) -
 
         conn.protocol_state = ProtocolState::Tcp(new_tcp_state);
 
-        // Update TCP analytics for retransmission and quality metrics
         if let Some(analytics) = conn.tcp_analytics.as_mut() {
             tcp_events = analyze_tcp_segment(analytics, tcp_segment_from(parsed, &tcp_header), now);
         }
@@ -396,13 +390,11 @@ fn apply_packet(conn: &mut Connection, parsed: &ParsedPacket, now: SystemTime) -
         }
     }
 
-    // Update DPI info if available
     if let Some(dpi_result) = &parsed.dpi_result {
         merge_dpi_info(conn, dpi_result);
     }
 
-    // Update PKTAP process metadata if available
-    // Once set, process info should be immutable to prevent conflicts between sources
+    // Once set, process info is immutable to prevent conflicts between sources.
     if let Some(new_process_name) = &parsed.process_name {
         adopt_immutable(
             conn,
@@ -570,27 +562,22 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
         Some(dpi_info) => {
             // Match on both the existing and new application protocols
             match (&mut dpi_info.application, &dpi_result.application) {
-                // HTTP merging
                 (ApplicationProtocol::Http(old_info), ApplicationProtocol::Http(new_info)) => {
                     merge_http_info(old_info, new_info);
                 }
 
-                // HTTPS/TLS merging
                 (ApplicationProtocol::Https(old_info), ApplicationProtocol::Https(new_info)) => {
                     merge_tls_info(&mut old_info.tls_info, &new_info.tls_info);
                 }
 
-                // QUIC merging - this is where the reassembly happens
                 (ApplicationProtocol::Quic(old_info), ApplicationProtocol::Quic(new_info)) => {
                     merge_quic_info(old_info.as_mut(), new_info.as_ref());
                 }
 
-                // DNS merging
                 (ApplicationProtocol::Dns(old_info), ApplicationProtocol::Dns(new_info)) => {
                     merge_dns_info(old_info, new_info);
                 }
 
-                // NetBIOS request/response merging
                 (
                     ApplicationProtocol::NetBios(old_info),
                     ApplicationProtocol::NetBios(new_info),
@@ -598,12 +585,10 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     merge_netbios_info(old_info, new_info);
                 }
 
-                // SSH - merge SSH info
                 (ApplicationProtocol::Ssh(old_info), ApplicationProtocol::Ssh(new_info)) => {
                     merge_ssh_info(old_info, new_info);
                 }
 
-                // BitTorrent - merge peer info
                 (
                     ApplicationProtocol::BitTorrent(old_info),
                     ApplicationProtocol::BitTorrent(new_info),
@@ -612,12 +597,10 @@ fn merge_dpi_info(conn: &mut Connection, dpi_result: &DpiResult) {
                     set_if_absent(&mut old_info.info_hash, &new_info.info_hash);
                 }
 
-                // MQTT - merge client_id and topic from subsequent packets
                 (ApplicationProtocol::Mqtt(old_info), ApplicationProtocol::Mqtt(new_info)) => {
                     merge_mqtt_info(old_info, new_info);
                 }
 
-                // FTP - dialog state evolves across requests/responses
                 (ApplicationProtocol::Ftp(old_info), ApplicationProtocol::Ftp(new_info)) => {
                     merge_ftp_info(old_info, new_info);
                 }
@@ -713,20 +696,17 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
         old_info.connection_state = new_info.connection_state;
     }
 
-    // Update packet type
     old_info.packet_type = new_info.packet_type;
 
-    // Update connection ID if we didn't have it
     if old_info.connection_id.is_empty() && !new_info.connection_id.is_empty() {
         old_info.connection_id = new_info.connection_id.clone();
         old_info.connection_id_hex = new_info.connection_id_hex.clone();
     }
 
-    // Update version string if we didn't have it
     set_if_absent(&mut old_info.version_string, &new_info.version_string);
 
-    // Merge CRYPTO frame reassembler state - this is crucial for proper SNI extraction
-    // The reassembler must persist across multiple packets to handle fragmented TLS handshakes
+    // The CRYPTO reassembler persists across packets so fragmented TLS
+    // handshakes can still yield the SNI.
     if let Some(new_reassembler) = &new_info.crypto_reassembler {
         if old_info.crypto_reassembler.is_none() {
             // First time seeing crypto frames, initialize the connection-level reassembler
@@ -736,8 +716,7 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
                 old_info.connection_id_hex
             );
         } else if let Some(old_reassembler) = &mut old_info.crypto_reassembler {
-            // Merge fragments from new reassembler into connection-level reassembler
-            // This handles out-of-order CRYPTO frames across packets
+            // Handles out-of-order CRYPTO frames across packets.
             for (&offset, data) in new_reassembler.get_fragments() {
                 match old_reassembler.add_fragment(offset, data.clone()) {
                     Ok(_) => {
@@ -806,22 +785,18 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
         }
     }
 
-    // Update TLS info if new packet has better info
     if merge_tls_info(&mut old_info.tls_info, &new_info.tls_info) {
         debug!("QUIC: Merged TLS info");
     }
 
-    // Update has_crypto_frame flag
     if new_info.has_crypto_frame {
         old_info.has_crypto_frame = true;
     }
 
-    // Handle CONNECTION_CLOSE frame detection
     if let Some(new_close) = &new_info.connection_close {
-        // CONNECTION_CLOSE is final - always update
+        // CONNECTION_CLOSE is final, so it always overwrites.
         old_info.connection_close = Some(new_close.clone());
 
-        // Update connection state based on close frame
         old_info.connection_state = match new_close.frame_type {
             0x1c if new_close.error_code == 0 => {
                 // NO_ERROR transport close - enter draining state
@@ -860,7 +835,6 @@ fn merge_quic_info(old_info: &mut QuicInfo, new_info: &QuicInfo) {
         );
     }
 
-    // Update idle timeout if provided
     overwrite_if_present(&mut old_info.idle_timeout, &new_info.idle_timeout);
 }
 
@@ -884,7 +858,6 @@ fn merge_dns_info(old_info: &mut DnsInfo, new_info: &DnsInfo) {
         }
     }
 
-    // Update response flag
     if new_info.is_response {
         old_info.is_response = true;
     }
@@ -985,7 +958,6 @@ fn merge_mqtt_info(old_info: &mut MqttInfo, new_info: &MqttInfo) {
 
 /// Update connection rate calculations using sliding window
 fn update_connection_rates(conn: &mut Connection) {
-    // Use the new rate tracker with sliding window calculation
     conn.update_rates();
 }
 
@@ -1258,28 +1230,21 @@ mod tests {
 
     #[test]
     fn test_new_connection_rate_tracker_initialization() {
-        // Test that the rate tracker is properly initialized for new connections
         let packet = create_test_packet(true, false);
         let mut conn = create_connection_from_packet(&packet, SystemTime::now());
 
-        // The connection should have initial bytes
         assert_eq!(conn.bytes_sent, 100);
         assert_eq!(conn.bytes_received, 0);
 
-        // Now simulate merging another packet
         let packet2 = create_test_packet(true, false);
         let _tcp_events = merge_packet_into_connection(&mut conn, &packet2, SystemTime::now());
 
-        // Bytes should have increased
         assert_eq!(conn.bytes_sent, 200);
         assert_eq!(conn.bytes_received, 0);
 
-        // Update rates - this should not cause a huge spike
         conn.update_rates();
 
-        // The rate should be reasonable (not include the initial 100 bytes as a spike)
-        // Since we just added 100 bytes, the rate should be based on that delta
-        // not on the full 200 bytes
+        // The rate must be based on the 100-byte delta, not the full 200 bytes.
         assert!(conn.current_outgoing_rate_bps >= 0.0);
     }
 
@@ -1514,11 +1479,9 @@ mod tests {
 
     #[test]
     fn the_connections_first_packet_reaches_the_analytics() {
-        // Regression: the packet that created the connection skipped the
-        // analytics entirely. For a connection this host initiates that is
-        // our own SYN, the only carrier of the local window-scale option, so
-        // scaling stayed unknown and every window read as a raw field even
-        // with the whole handshake captured.
+        // The packet that creates the connection must feed the analytics too:
+        // for a connection this host initiates, that is our own SYN, the only
+        // carrier of the local window-scale option.
         let now = t0();
         let mut conn = create_connection_from_packet(&syn_packet(true, false, 7), now);
         merge_packet_into_connection(&mut conn, &syn_packet(false, true, 8), now);
@@ -1533,8 +1496,8 @@ mod tests {
 
     #[test]
     fn window_directions_are_tracked_separately() {
-        // Regression: one shared slot made the displayed window flip between
-        // the two ends' advertisements on every packet.
+        // Each direction keeps its own window slot, so the displayed window
+        // must not flip between the two ends' advertisements.
         let mut a = TcpAnalytics::new();
         syn(&mut a, true, SynWindowScale::Present(7));
         syn(&mut a, false, SynWindowScale::Present(7));
@@ -1593,16 +1556,13 @@ mod tests {
 
     #[test]
     fn detects_retransmit_after_a_sequence_gap() {
-        // Regression: a gap used to freeze the outbound tracker permanently,
-        // so every later retransmission went uncounted.
+        // A capture gap must not freeze the outbound tracker; seq 0 is a legal start.
         let mut a = TcpAnalytics::new();
 
-        // Starting at 0 also covers the old `!= 0` "initialised" sentinel,
-        // which silently dropped the first segment of such a stream.
         send(&mut a, 0, 100); // in order, high-water = 100
         assert!(a.seen_outbound);
 
-        send(&mut a, 5000, 100); // gap (capture drop) — must resync to 5100
+        send(&mut a, 5000, 100); // gap (capture drop), must resync to 5100
         assert_eq!(a.retransmit_count, 0, "a gap is not a retransmission");
         assert_eq!(a.highest_seq_outbound, 5100, "tracker must resync on a gap");
 
@@ -1631,9 +1591,9 @@ mod tests {
 
     #[test]
     fn inbound_data_segments_are_not_duplicate_acks() {
-        // Regression: a download repeats the same ack number on every data
-        // segment while we have nothing to send. Those are not dup ACKs, and
-        // counting them inflated fast retransmits on healthy connections.
+        // A download repeats the same ack number on every data segment while
+        // we have nothing to send. Those are not dup ACKs and must not count
+        // as fast retransmits.
         let mut a = TcpAnalytics::new();
 
         let mut seq = 1000;
@@ -1679,10 +1639,9 @@ mod tests {
 
     #[test]
     fn keepalives_without_outstanding_data_are_not_duplicate_acks() {
-        // Regression: an idle connection the capture joined mid-stream sees
-        // only bare ACKs and keepalives, all repeating the same ack number.
-        // Counting those reported a fast retransmit on a connection that
-        // never retransmitted anything.
+        // An idle connection the capture joined mid-stream sees only bare ACKs
+        // and keepalives, all repeating the same ack number. Those must not
+        // report a fast retransmit.
         let mut a = TcpAnalytics::new();
 
         for _ in 0..13 {

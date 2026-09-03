@@ -42,14 +42,12 @@ pub(in crate::ui) fn draw_interface_stats(
         return Ok(());
     }
 
-    // Create table rows
     let mut rows = Vec::new();
 
     for stat in &stats {
         let error_style = alert_style(stat.rx_errors > 0 || stat.tx_errors > 0, theme::err());
         let drop_style = alert_style(stat.rx_dropped > 0 || stat.tx_dropped > 0, theme::warn());
 
-        // Get rate for this interface
         let rx_rate_str = if let Some(rate) = rates.get(&stat.interface_name) {
             format!("{}/s", format_bytes(rate.rx_bytes_per_sec))
         } else {

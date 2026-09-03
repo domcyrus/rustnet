@@ -22,11 +22,9 @@ pub(super) fn analyze_ssdp(payload: &[u8]) -> Option<SsdpInfo> {
         return None;
     }
 
-    // Convert to string for parsing
     let text = std::str::from_utf8(payload).ok()?;
     let first_line = text.lines().next()?;
 
-    // Detect method from first line
     let method = if first_line.starts_with("M-SEARCH") {
         SsdpMethod::MSearch
     } else if first_line.starts_with("NOTIFY") {
@@ -37,22 +35,18 @@ pub(super) fn analyze_ssdp(payload: &[u8]) -> Option<SsdpInfo> {
         return None;
     };
 
-    // Extract service type from ST or NT header. Compare the 3-byte prefix
-    // with `eq_ignore_ascii_case` so we don't allocate a lowercased copy
-    // of every header line just to check two ASCII names.
+    // Extract service type from the ST or NT header. Field names are
+    // case-insensitive, so compare the prefix with `eq_ignore_ascii_case`.
     let mut service_type = None;
     for line in text.lines().skip(1) {
         let is_st_or_nt = line.get(..3).is_some_and(|prefix| {
             prefix.eq_ignore_ascii_case("st:") || prefix.eq_ignore_ascii_case("nt:")
         });
-        if is_st_or_nt {
-            // Extract value after the colon
-            if let Some(value) = line.get(3..) {
-                let trimmed = value.trim();
-                if !trimmed.is_empty() {
-                    service_type = Some(trimmed.to_string());
-                    break;
-                }
+        if is_st_or_nt && let Some(value) = line.get(3..) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                service_type = Some(trimmed.to_string());
+                break;
             }
         }
     }
@@ -142,8 +136,7 @@ mod tests {
     fn test_ssdp_mixed_case_st_and_nt_headers() {
         // SSDP / UPnP servers in the wild use varied capitalisation for
         // header names (HTTP §3.2 lets the field-name be case-insensitive).
-        // Lock the invariant the `eq_ignore_ascii_case` refactor relies on:
-        // any case mix on the 2-byte field-name still extracts the value.
+        // Any case mix on the field name must still extract the value.
         let st_variants = [
             b"M-SEARCH * HTTP/1.1\r\nST: ssdp:all\r\n\r\n".to_vec(),
             b"M-SEARCH * HTTP/1.1\r\nSt: ssdp:all\r\n\r\n".to_vec(),

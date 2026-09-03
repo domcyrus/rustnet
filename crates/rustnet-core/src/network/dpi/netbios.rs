@@ -24,7 +24,6 @@ pub(super) fn analyze_netbios_ns(payload: &[u8]) -> Option<NetBiosInfo> {
         return None;
     }
 
-    // Parse header flags at bytes 2-3
     let flags = u16::from_be_bytes([payload[2], payload[3]]);
 
     // Extract opcode from flags (bits 11-14)
@@ -39,7 +38,6 @@ pub(super) fn analyze_netbios_ns(payload: &[u8]) -> Option<NetBiosInfo> {
     };
     let is_response = has_response_flag && opcode != NetBiosOpcode::Wack;
 
-    // Try to decode NetBIOS name if present
     let name = if payload.len() > 12 {
         decode_netbios_name(&payload[12..])
     } else {
@@ -64,8 +62,8 @@ pub(super) fn analyze_netbios_dgm(payload: &[u8]) -> Option<NetBiosInfo> {
     // Message type at byte 0
     let msg_type = *payload.first()?;
 
-    // RFC 1002 §4.4: header size — and therefore where the encoded name
-    // starts — depends on the message type.
+    // RFC 1002 §4.4: header size (and therefore where the encoded name
+    // starts) depends on the message type.
     let (opcode, min_size, name_offset, response_status) = match msg_type {
         // §4.4.1 DIRECT_UNIQUE / DIRECT_GROUP / BROADCAST: message
         // delivery, SOURCE_NAME follows the 14-byte header
@@ -316,7 +314,7 @@ mod tests {
 
     #[test]
     fn test_nbdgm_broadcast_is_datagram_not_registration() {
-        // 0x12 is a broadcast datagram (RFC 1002 §4.4.1) — it has nothing
+        // 0x12 is a broadcast datagram (RFC 1002 §4.4.1); it has nothing
         // to do with NBNS name registration.
         let mut packet = vec![0u8; 14];
         packet[0] = 0x12;
@@ -393,7 +391,7 @@ mod tests {
     fn test_decode_netbios_name_strips_service_type_suffix() {
         // Real NetBIOS names embed a service-type byte at the 16th position
         // (workstation=0x00, file_server=0x20, master_browser=0x1D, etc.).
-        // The non-printable suffix must NOT appear in the decoded name —
+        // The non-printable suffix must NOT appear in the decoded name;
         // decoding only keeps `is_ascii_graphic` characters (0x21..=0x7E).
         let mut encoded = Vec::with_capacity(33);
         encoded.push(32);

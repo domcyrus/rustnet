@@ -173,7 +173,7 @@ pub enum ProtocolState {
         /// IP-to-MAC mapping carried by an NDP message's link-layer address
         /// option (ICMPv6 only), extracted by the parser when the enclosing
         /// IPv6 header proved on-link origin (hop limit 255, no Fragment
-        /// Header — RFC 4861, RFC 6980). Feeds the tracker's neighbor cache,
+        /// Header; RFC 4861, RFC 6980). Feeds the tracker's neighbor cache,
         /// the IPv6 analogue of [`ProtocolState::Arp`].
         ndp_neighbor: Option<NdpNeighbor>,
     },
@@ -257,7 +257,7 @@ pub fn igmp_message_name(igmp_type: u8) -> std::borrow::Cow<'static, str> {
 }
 
 /// One IP-to-MAC mapping extracted from an NDP (IPv6 Neighbor Discovery,
-/// RFC 4861) message's link-layer address option — the IPv6 analogue of what
+/// RFC 4861) message's link-layer address option, the IPv6 analogue of what
 /// [`ArpInfo`] carries for IPv4.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NdpNeighbor {
@@ -270,10 +270,6 @@ pub struct NdpNeighbor {
     /// OUI vendor, resolved at parse time when the database is loaded.
     pub vendor: Option<String>,
 }
-
-// ============================================================================
-// Connection Key
-// ============================================================================
 
 /// Compact identity of a flow: protocol plus local/remote socket addresses.
 ///

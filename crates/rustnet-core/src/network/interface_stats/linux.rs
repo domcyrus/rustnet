@@ -1,4 +1,4 @@
-// interface_stats/linux.rs - Linux sysfs-based interface stats
+//! Linux sysfs-based interface stats.
 
 use super::{InterfaceStats, InterfaceStatsProvider};
 use std::fs;
@@ -12,7 +12,6 @@ impl LinuxStatsProvider {
     pub fn get_stats(&self, interface: &str) -> Result<InterfaceStats, io::Error> {
         let base_path = format!("/sys/class/net/{}/statistics", interface);
 
-        // Check if interface exists
         if !std::path::Path::new(&base_path).exists() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -79,8 +78,6 @@ mod tests {
         match result {
             Ok(stats) => {
                 assert_eq!(stats.interface_name, "lo");
-                // Stats are u64, so they're always >= 0 by definition
-                // Just verify the struct is properly populated
             }
             Err(e) => {
                 // Acceptable errors: NotFound or PermissionDenied

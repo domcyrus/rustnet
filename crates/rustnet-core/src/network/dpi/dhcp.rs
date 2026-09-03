@@ -20,7 +20,6 @@ const DHCP_OPT_END: u8 = 255;
 ///
 /// Returns `None` if the packet is too small or doesn't have the DHCP magic cookie.
 pub(super) fn analyze_dhcp(payload: &[u8]) -> Option<DhcpInfo> {
-    // Early size check
     if payload.len() < MIN_DHCP_SIZE {
         return None;
     }
@@ -118,13 +117,10 @@ mod tests {
     fn build_dhcp_packet(msg_type: u8, hostname: Option<&str>, mac: &[u8; 6]) -> Vec<u8> {
         let mut packet = vec![0u8; 240];
 
-        // Set client MAC at offset 28
         packet[28..34].copy_from_slice(mac);
 
-        // Set magic cookie at offset 236
         packet[236..240].copy_from_slice(&DHCP_MAGIC_COOKIE);
 
-        // Add options
         // Option 53: DHCP Message Type
         packet.push(DHCP_OPT_MESSAGE_TYPE);
         packet.push(1); // length

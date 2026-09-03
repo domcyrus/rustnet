@@ -2,10 +2,6 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-// ============================================================================
-// Rate Tracking Types
-// ============================================================================
-
 #[derive(Debug, Clone)]
 pub(super) struct RateSample {
     timestamp: Instant,
@@ -53,7 +49,6 @@ impl RateTracker {
             samples: Arc::new(VecDeque::new()),
             window_duration,
             last_update: Instant::now(),
-            // Increased to allow full time window even at high packet rates
             // 5000 pps × 10 sec = 50,000 samples, but we cap at 20,000 for memory
             max_samples: 20_000,
             last_bytes_sent: 0,
@@ -79,11 +74,9 @@ impl RateTracker {
     /// Full pruning is deferred to `prune()`, but a lightweight cap is enforced
     /// here to prevent unbounded growth between prune intervals.
     fn update_at(&mut self, now: Instant, bytes_sent: u64, bytes_received: u64) {
-        // Calculate deltas since last update
         let delta_sent = bytes_sent.saturating_sub(self.last_bytes_sent);
         let delta_received = bytes_received.saturating_sub(self.last_bytes_received);
 
-        // Add new sample with deltas
         let samples = Arc::make_mut(&mut self.samples);
         samples.push_back(RateSample {
             timestamp: now,
@@ -103,7 +96,6 @@ impl RateTracker {
             );
         }
 
-        // Update last values for next delta calculation
         self.last_bytes_sent = bytes_sent;
         self.last_bytes_received = bytes_received;
         self.last_update = now;
@@ -139,7 +131,6 @@ impl RateTracker {
             );
         }
 
-        // Limit total samples to prevent memory bloat
         while samples.len() > self.max_samples {
             pop_oldest_sample(
                 samples,
@@ -169,7 +160,7 @@ impl RateTracker {
         self.calculate_rate_from_deltas_at(now, self.window_sent_total)
     }
 
-    /// Calculate rate from the running window total — O(1), no walk over the
+    /// Calculate rate from the running window total: O(1), no walk over the
     /// sample buffer. `total_bytes` is the maintained sum of all deltas
     /// currently in `samples` (each represents bytes transferred).
     fn calculate_rate_from_deltas_at(&self, now: Instant, total_bytes: u64) -> f64 {
@@ -177,24 +168,21 @@ impl RateTracker {
             return 0.0;
         }
 
-        // If we only have one sample, we can't calculate a rate yet
         if self.samples.len() == 1 {
             return 0.0;
         }
 
-        // Check if newest sample is too old (connection is idle)
-        // We check against current time to handle idle connections where update() isn't being called
+        // Compare against the current time so idle connections, where update()
+        // is no longer called, still decay to zero.
         let newest = self.samples.back().unwrap();
         let oldest = self.samples.front().unwrap();
         let age_of_newest = now.duration_since(newest.timestamp).as_secs_f64();
 
-        // If the newest sample is older than our window, all samples are stale - return 0
-        // Use a slightly larger threshold to avoid edge cases at window boundary
+        // Slightly larger than the window to avoid edge cases at the boundary.
         if age_of_newest > self.window_duration.as_secs_f64() * 1.1 {
             return 0.0;
         }
 
-        // Calculate the time span of our samples
         let time_span = newest
             .timestamp
             .duration_since(oldest.timestamp)
@@ -206,8 +194,7 @@ impl RateTracker {
             return 0.0;
         }
 
-        // Simple sliding window average: total bytes over time span
-        // No decay - just pure average like iftop's 10-second column
+        // Pure sliding-window average, no decay, like iftop's 10-second column.
         total_bytes as f64 / time_span
     }
 
@@ -217,8 +204,8 @@ impl RateTracker {
     /// the next per-packet `update()` on the live tracker into an
     /// `Arc::make_mut` deep copy of the whole window (up to `max_samples`
     /// entries). Read-only consumers (UI snapshots, historic archives) never
-    /// look at raw samples — they read the cached `current_*_rate_bps`
-    /// fields on [`Connection`](crate::network::types::Connection) — so they
+    /// look at raw samples (they read the cached `current_*_rate_bps`
+    /// fields on [`Connection`](crate::network::types::Connection)), so they
     /// should use this instead and leave
     /// the live tracker as the buffer's unique owner.
     pub fn clone_without_samples(&self) -> Self {
@@ -288,7 +275,6 @@ pub struct TcpAnalytics {
     /// cleared by every ACK that advances; not a lifetime statistic.
     pub dup_ack_run: u32,
 
-    // Statistics counters
     pub duplicate_ack_count: u64,
     pub retransmit_count: u64,
     pub out_of_order_count: u64,
@@ -388,7 +374,7 @@ pub struct ProtocolHealth {
     pub request_observed: bool,
 }
 
-// Rate-smoothing constants — tune these to control how quickly displayed
+// Rate-smoothing constants: tune these to control how quickly displayed
 // rates react to traffic changes.
 /// Multiplier when traffic stops entirely: prev * DECAY_FAST each refresh.
 /// ~3 refreshes (3 s) to reach zero.
@@ -432,7 +418,6 @@ mod tests {
     fn test_rate_tracker_initialization() {
         let tracker = RateTracker::new();
 
-        // Initial rates should be 0
         assert_eq!(tracker.get_incoming_rate_bps(), 0.0);
         assert_eq!(tracker.get_outgoing_rate_bps(), 0.0);
     }
@@ -442,7 +427,6 @@ mod tests {
         let mut tracker = RateTracker::new();
         let start = Instant::now();
 
-        // Initialize with 0 bytes
         tracker.update_at(start, 0, 0);
 
         // Simulate steady traffic: 10,000 bytes/sec for 2 seconds
@@ -563,9 +547,8 @@ mod tests {
         // Add exactly one more sample after 1 second
         tracker.update_at(start + Duration::from_secs(1), 10_000, 5_000);
 
-        // Now we have 2 samples spanning 1 second with 10,000 bytes transferred
-        // This should give us 10,000 bytes/sec
-        // If we were .skip(1), we'd get 0 because we'd skip the only data sample!
+        // Two samples spanning 1 second with 10,000 bytes transferred: the
+        // only data sample must be counted, not skipped.
         let check_time = start + Duration::from_secs(1);
         let outgoing_rate = tracker.get_outgoing_rate_bps_at(check_time);
 
@@ -701,7 +684,6 @@ mod tests {
         let mut tracker = RateTracker::new();
         let start = Instant::now();
 
-        // Add initial sample
         tracker.update_at(start, 0, 0);
 
         // Add second sample - 5000 bytes sent, 2500 received over 1 second
@@ -804,7 +786,6 @@ mod tests {
         let mut tracker = RateTracker::new();
         let start = Instant::now();
 
-        // Initial state
         tracker.update_at(start, 0, 0);
 
         // Burst of traffic at 500ms
@@ -848,12 +829,10 @@ mod tests {
 
     #[test]
     fn test_rate_tracker_cumulative_fix() {
-        // This test verifies the fix for the cumulative byte count issue
         let mut tracker = RateTracker::new();
         let start = Instant::now();
 
-        // Simulate a connection that has been running for a while with cumulative byte counts
-        // Initialize tracker to simulate connection with existing traffic
+        // A connection that has been running for a while with cumulative byte counts.
         tracker.initialize_with_counts(1_000_000, 500_000);
         tracker.update_at(start, 1_000_000, 500_000); // No change yet (establishing baseline)
 
@@ -883,7 +862,6 @@ mod tests {
 
     #[test]
     fn test_rate_tracker_window_sliding() {
-        // Test that rates are calculated correctly as the window slides
         let window_duration = Duration::from_secs(2); // 2-second window
         let mut tracker = RateTracker::with_window_duration(window_duration);
         let start = Instant::now();
@@ -924,7 +902,6 @@ mod tests {
 
     #[test]
     fn test_rate_decay_for_idle_connections() {
-        // Test that rates decay to zero when connections become idle
         let mut tracker = RateTracker::new();
         let start = Instant::now();
 

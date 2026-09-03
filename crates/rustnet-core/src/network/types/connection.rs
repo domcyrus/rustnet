@@ -194,7 +194,7 @@ pub struct Connection {
     // Performance metrics
     pub rate_tracker: RateTracker,
 
-    // Backward compatibility fields - updated by rate_tracker
+    // Cached rates, refreshed by refresh_rates(); read these instead of the sample buffer.
     pub current_incoming_rate_bps: f64,
     pub current_outgoing_rate_bps: f64,
 
@@ -271,7 +271,6 @@ impl Connection {
         state: ProtocolState,
     ) -> Self {
         let now = SystemTime::now();
-        // Initialize TCP analytics for TCP connections
         let tcp_analytics = if protocol == Protocol::Tcp {
             Some(TcpAnalytics::new())
         } else {
@@ -425,11 +424,9 @@ impl Connection {
         match &self.protocol_state {
             ProtocolState::Tcp(tcp_state) => Cow::Borrowed(tcp_state.as_str()),
             ProtocolState::Udp => {
-                // Check if it's a DPI-identified protocol
                 if let Some(dpi_info) = &self.dpi_info {
                     match &dpi_info.application {
                         ApplicationProtocol::Quic(quic) => {
-                            // Enhanced QUIC state display
                             Cow::Borrowed(match quic.connection_state {
                                 QuicConnectionState::Initial => "QUIC_INITIAL",
                                 QuicConnectionState::Handshaking => "QUIC_HANDSHAKE",
@@ -485,8 +482,7 @@ impl Connection {
                         ApplicationProtocol::OpenVpn(_) => Cow::Borrowed("OPENVPN"),
                     }
                 } else {
-                    // Regular UDP without DPI classification
-                    // Check activity level to provide more meaningful states
+                    // Regular UDP without DPI classification: state follows activity level.
                     let idle_time = self.idle_time();
                     Cow::Borrowed(if idle_time > Duration::from_secs(60) {
                         "UDP_STALE"
@@ -589,10 +585,9 @@ impl Connection {
                         ApplicationProtocol::Quic(quic) => self.get_quic_timeout(quic),
                         ApplicationProtocol::Dns(_) => Duration::from_secs(30),
                         // HTTP/3 connections need longer timeouts for connection reuse
-                        ApplicationProtocol::Http(_) => Duration::from_secs(600), // 10 minutes (was 3 min)
-                        ApplicationProtocol::Https(_) => Duration::from_secs(600), // 10 minutes (was 3 min)
+                        ApplicationProtocol::Http(_) => Duration::from_secs(600), // 10 minutes
+                        ApplicationProtocol::Https(_) => Duration::from_secs(600), // 10 minutes
                         ApplicationProtocol::Ssh(_) => Duration::from_secs(1800), // SSH can be very long-lived (30 min)
-                        // New UDP protocols - use reasonable timeouts
                         ApplicationProtocol::Ntp(_) => Duration::from_secs(30),
                         ApplicationProtocol::Mdns(_) => Duration::from_secs(30),
                         ApplicationProtocol::Llmnr(_) => Duration::from_secs(30),
@@ -622,7 +617,6 @@ impl Connection {
     fn get_tcp_timeout(&self, tcp_state: &TcpState) -> Duration {
         match tcp_state {
             TcpState::Established => {
-                // Check if we have DPI info for protocol-specific timeouts
                 if let Some(dpi_info) = &self.dpi_info {
                     match &dpi_info.application {
                         // SSH connections need very long timeouts for interactive sessions
@@ -653,19 +647,16 @@ impl Connection {
 
     /// Get QUIC-specific timeout based on connection state and close frames
     fn get_quic_timeout(&self, quic: &QuicInfo) -> Duration {
-        // First check if we've detected a CONNECTION_CLOSE frame
         if quic.connection_close.is_some() {
             return TERMINAL_ARCHIVE_GRACE;
         }
 
-        // Use state-based timeout if no close frame
         match quic.connection_state {
             QuicConnectionState::Initial => Duration::from_secs(60), // Allow handshake time
             QuicConnectionState::Handshaking => Duration::from_secs(60), // Crypto negotiation
             QuicConnectionState::Connected => {
-                // Use idle timeout from transport params if available, otherwise default
-                // Note: We cannot see CONNECTION_CLOSE frames (they're encrypted in 1-RTT packets)
-                // so we must rely on timeouts to clean up closed connections
+                // CONNECTION_CLOSE frames in 1-RTT packets are encrypted, so
+                // timeouts are the only way to clean up closed connections.
                 if let Some(idle_timeout) = quic.idle_timeout {
                     idle_timeout
                 } else {

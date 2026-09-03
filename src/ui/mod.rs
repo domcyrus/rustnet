@@ -68,7 +68,7 @@ pub fn dispatch_key(
 }
 
 /// Same as `dispatch_key` but for mouse events (currently the
-/// scroll wheel — clicks go through the global `ClickableRegions`
+/// scroll wheel; clicks go through the global `ClickableRegions`
 /// hit-test in main.rs).
 pub fn dispatch_mouse(
     tab: usize,
@@ -134,9 +134,9 @@ pub use theme::{
     Theme, ThemePreset, ThemeSpec, TokenColor, detect_light_background, detect_truecolor, set_theme,
 };
 
-/// Standard panel chrome: rounded border + title. Kept for the few
-/// views that still frame themselves (Help overlay, loading
-/// splash); everything else uses [`section_header`].
+/// Standard panel chrome: rounded border + title. Used by the few
+/// views that frame themselves (Help overlay, loading splash);
+/// everything else uses [`section_header`].
 pub(crate) fn panel_block<'a, T: Into<Line<'a>>>(title: T) -> Block<'a> {
     Block::default()
         .borders(Borders::ALL)
@@ -146,9 +146,9 @@ pub(crate) fn panel_block<'a, T: Into<Line<'a>>>(title: T) -> Block<'a> {
 }
 
 /// Borderless section chrome: renders an accent `▎` tick plus the given
-/// title on the top row of `area` and returns the remaining rows. This
-/// is rustnet's replacement for the old box-around-everything look; the
-/// ▎ glyph itself still marks the section start under NO_COLOR.
+/// title on the top row of `area` and returns the remaining rows.
+/// Sections are borderless by design; the ▎ glyph still marks the
+/// section start under NO_COLOR.
 /// Callers style their own title spans (bold base + muted metadata).
 pub(crate) fn section_header<'a, T: Into<Line<'a>>>(
     f: &mut Frame,
@@ -282,7 +282,6 @@ pub(crate) fn non_dpi_app_color() -> Color {
     }
 }
 
-/// Draw the UI
 pub fn draw(
     f: &mut Frame,
     app: &App,
@@ -417,14 +416,12 @@ mod tests {
         let mut ui_state = UIState::default();
         assert!(!ui_state.show_port_numbers);
 
-        // Toggle to show port numbers
         ui_state.show_port_numbers = !ui_state.show_port_numbers;
         assert!(
             ui_state.show_port_numbers,
             "Port numbers should be visible after toggle"
         );
 
-        // Toggle back to show service names
         ui_state.show_port_numbers = !ui_state.show_port_numbers;
         assert!(
             !ui_state.show_port_numbers,
@@ -710,7 +707,7 @@ mod snapshot_tests {
     //! Snapshot tests covering chrome (tabs, filter, status bar, loading,
     //! help) and full-page renders that need no live `App` plumbing.
     //!
-    //! Rendering is captured as plain-text (cell symbols only) — colors
+    //! Rendering is captured as plain-text (cell symbols only); colors
     //! and modifiers are dropped because they're hard to diff usefully and
     //! the theme is exercised separately. Layout regressions are what
     //! these tests catch.
@@ -1232,7 +1229,7 @@ mod snapshot_tests {
     }
 
     /// Insta filters that scrub volatile values from the rendered output.
-    /// The order matters — more specific patterns first.
+    /// The order matters: more specific patterns first.
     fn time_filters() -> Vec<(&'static str, &'static str)> {
         vec![
             (r"last seen \d+[smhd] ago", "last seen <T> ago"),
@@ -1549,10 +1546,10 @@ mod snapshot_tests {
         assert_app_snapshot!(output);
     }
 
-    /// QUIC rides on UDP, so the Details tab used to label its Transport
-    /// Health card with TCP loss counters that can never be filled in, because packet
-    /// numbers and ACK frames sit behind QUIC's header protection. The card
-    /// must show what is actually observable instead, without changing height.
+    /// QUIC rides on UDP, and its packet numbers and ACK frames sit behind
+    /// header protection, so TCP loss counters can never be filled in. The
+    /// Transport Health card must show what is actually observable instead,
+    /// without changing height.
     #[test]
     fn details_tab_quic_shows_transport_health_without_tcp_counters() {
         use crate::network::types::{
@@ -1852,8 +1849,8 @@ mod snapshot_tests {
         assert!(output.contains("STUN RTT") && output.contains("23.4ms"));
         assert!(output.contains("Paired by 96-bit transaction ID"));
         assert!(!output.contains("No transport metrics for this protocol"));
-        // Method and class moved to the Application card; Transport Health
-        // must not repeat them as a Last Message row.
+        // Transport Health must not repeat method and class as a Last
+        // Message row; they belong to the Application card.
         assert!(output.contains("Binding") && output.contains("Success"));
         assert!(!output.contains("Last Message"));
     }
@@ -1886,8 +1883,7 @@ mod snapshot_tests {
         assert!(output.contains("NTP RTT") && output.contains("6.5ms"));
         assert!(output.contains("Paired by originate timestamp echo"));
         assert!(!output.contains("No transport metrics for this protocol"));
-        // Stratum's only home is the Application card now; the old Transport
-        // Health duplicate is gone.
+        // Stratum belongs to the Application card only.
         assert_eq!(
             output.matches("Stratum").count(),
             1,

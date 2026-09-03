@@ -1,22 +1,22 @@
-// network/kubernetes.rs - Kubernetes pod/container resolution
-//
-// Parses `/proc/<pid>/cgroup` to recover the pod UID and container ID of the
-// process owning a connection. The pure parser (`parse_cgroup`) is
-// cross-platform so it stays unit-testable on non-Linux developer machines;
-// the procfs reader (`lookup_for_pid`) is Linux-only.
-//
-// Recognised cgroup layouts:
-//   - cgroup v1 systemd:
-//     `.../kubepods.slice/kubepods-<qos>.slice/kubepods-<qos>-pod<UID>.slice/<runtime>-<CID>.scope`
-//   - cgroup v2 unified:
-//     `0::/kubepods/<qos>/pod<UID>/<CID>` or `.../pod<UID>/<runtime>-<CID>.scope`
-//   - Runtime prefixes stripped from the container ID: `cri-containerd-`,
-//     `crio-`, `docker-`. Bare 64-hex IDs are also accepted.
-//
-// Pod UID normalisation: Kubernetes pod UIDs are UUIDs (8-4-4-4-12 hex). systemd
-// encodes them with underscores instead of hyphens. The parser yields the
-// hyphenated, lowercase canonical form so callers can compare against
-// `kubectl get pod ... metadata.uid` directly.
+//! Kubernetes pod/container resolution.
+//!
+//! Parses `/proc/<pid>/cgroup` to recover the pod UID and container ID of the
+//! process owning a connection. The pure parser (`parse_cgroup`) is
+//! cross-platform so it stays unit-testable on non-Linux developer machines;
+//! the procfs reader (`lookup_for_pid`) is Linux-only.
+//!
+//! Recognised cgroup layouts:
+//!   - cgroup v1 systemd:
+//!     `.../kubepods.slice/kubepods-<qos>.slice/kubepods-<qos>-pod<UID>.slice/<runtime>-<CID>.scope`
+//!   - cgroup v2 unified:
+//!     `0::/kubepods/<qos>/pod<UID>/<CID>` or `.../pod<UID>/<runtime>-<CID>.scope`
+//!   - Runtime prefixes stripped from the container ID: `cri-containerd-`,
+//!     `crio-`, `docker-`. Bare 64-hex IDs are also accepted.
+//!
+//! Pod UID normalisation: Kubernetes pod UIDs are UUIDs (8-4-4-4-12 hex). systemd
+//! encodes them with underscores instead of hyphens. The parser yields the
+//! hyphenated, lowercase canonical form so callers can compare against
+//! `kubectl get pod ... metadata.uid` directly.
 
 use crate::network::types::{ConnectionKey, Protocol};
 
@@ -290,7 +290,6 @@ fn parse_pod_dir_name(name: &str) -> Option<(String, PodMeta)> {
     ))
 }
 
-// ---------------------------------------------------------------------------
 // Per-PID procfs socket table for cross-namespace attribution.
 //
 // Under `hostNetwork: true`, the standard procfs path reads `/proc/net/tcp`
@@ -303,7 +302,6 @@ fn parse_pod_dir_name(name: &str) -> Option<(String, PodMeta)> {
 // Cost is modest: a node typically runs a few dozen kubepods PIDs, the files
 // are tiny (one line per active socket), and the table is rebuilt only on the
 // enrichment refresh tick.
-// ---------------------------------------------------------------------------
 
 /// Built from a sweep of `/proc/*/net/{tcp,tcp6,udp,udp6}` for kubepods PIDs.
 /// Provides O(1) lookup by socket 4-tuple to (pid, K8sInfo). Keyed by the
@@ -492,7 +490,7 @@ fn extract_path(line: &str) -> &str {
 #[cfg(any(test, target_os = "linux"))]
 fn extract_pod_uid(segment: &str) -> Option<String> {
     // The systemd-encoded slice form ("kubepods-besteffort-pod<UID>.slice")
-    // contains two occurrences of "pod" — the one inside "kubepods" and the
+    // contains two occurrences of "pod": the one inside "kubepods" and the
     // marker before the UID. The UID always follows the last occurrence.
     let after_pod = &segment[segment.rfind("pod")? + 3..];
     let candidate = after_pod
@@ -748,7 +746,7 @@ mod tests {
 
     #[test]
     fn v6_line_with_ipv4_mapped_address_normalises_to_v4() {
-        // ::ffff:10.0.2.15 — an IPv4-mapped v6 socket. s6_addr32 = [0,0,0xFFFF0000,
+        // ::ffff:10.0.2.15 is an IPv4-mapped v6 socket. s6_addr32 = [0,0,0xFFFF0000,
         // 0x0F02000A] printed in host order: 00000000 00000000 0000FFFF 0F02000A
         let line = "  0: 0000000000000000FFFF00000F02000A:0050 \
                     00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 1 1 ...";

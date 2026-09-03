@@ -2,7 +2,7 @@
 //! crossbeam-threaded UI loop.
 //!
 //! Differences from ratatui's official component template:
-//! - No `tokio::sync::mpsc::UnboundedSender<Action>` — the loop is
+//! - No `tokio::sync::mpsc::UnboundedSender<Action>`: the loop is
 //!   synchronous; components return `Vec<Effect>` from event
 //!   handlers instead of pushing through a channel.
 //! - No `register_action_handler` / `register_config_handler` /
@@ -101,9 +101,9 @@ pub enum Effect {
 /// handler context.
 ///
 /// `handle_key` returns:
-/// - `None` — the component did not claim this key; the loop falls
+/// - `None`: the component did not claim this key; the loop falls
 ///   through to its global / fallback handling.
-/// - `Some(vec)` — the component handled the key (vec may be empty
+/// - `Some(vec)`: the component handled the key (vec may be empty
 ///   if no cross-cutting effect was needed). The loop skips its
 ///   fallback match.
 pub trait Component {

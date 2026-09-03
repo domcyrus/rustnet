@@ -49,7 +49,7 @@ fn skip_dns_name(payload: &[u8], start: usize) -> Option<usize> {
             }
             return Some(offset + 2);
         }
-        // Reject reserved length-octet top bits (0x40 / 0x80) — neither
+        // Reject reserved length-octet top bits (0x40 / 0x80), neither
         // standard label nor pointer.
         if label_len & 0xC0 != 0 {
             return None;
@@ -71,7 +71,7 @@ fn parse_question(payload: &[u8], start: usize) -> (Option<String>, Option<DnsQu
     let mut name = String::new();
     let mut name_over_limit = false;
 
-    // Parse domain name (label-by-label, with light pointer handling — we
+    // Parse domain name (label-by-label, with light pointer handling; we
     // only need to terminate the walk, not fully resolve compressed labels).
     while offset < payload.len() {
         let label_len = payload[offset] as usize;
@@ -81,12 +81,12 @@ fn parse_question(payload: &[u8], start: usize) -> (Option<String>, Option<DnsQu
         }
 
         if label_len & 0xC0 == 0xC0 {
-            // Compressed name — skip for simplicity.
+            // Compressed name: skip for simplicity.
             offset += 2;
             break;
         }
 
-        // Reject reserved length-octet top bits (0x40 / 0x80) — neither a
+        // Reject reserved length-octet top bits (0x40 / 0x80), neither a
         // standard label nor a pointer (RFC 1035 §3.3). Stop the walk so the
         // invalid bytes are not pulled into the name, matching skip_dns_name.
         if label_len & 0xC0 != 0 {
@@ -108,7 +108,7 @@ fn parse_question(payload: &[u8], start: usize) -> (Option<String>, Option<DnsQu
 
             // Enforce RFC 1035 maximum name length: stop accumulating, but
             // keep walking the remaining labels so `offset` ends up past the
-            // whole QNAME — otherwise QTYPE/QCLASS would be read from name
+            // whole QNAME; otherwise QTYPE/QCLASS would be read from name
             // bytes and report a fabricated query type.
             if name.len() > MAX_DNS_NAME_LEN {
                 name_over_limit = true;
@@ -176,7 +176,7 @@ fn walk_a_aaaa_records(
                     ips.push(IpAddr::V6(Ipv6Addr::from(octets)));
                 }
                 _ => {
-                    // CNAME, NS, SOA, PTR, SRV, TXT, … — not surfaced.
+                    // CNAME, NS, SOA, PTR, SRV, TXT, etc. are not surfaced.
                 }
             }
         }
@@ -279,11 +279,10 @@ pub(super) fn dns_header_counts(payload: &[u8]) -> Option<DnsHeaderCounts> {
 
 /// Walk `qdcount` question sections starting at offset 12 and return the
 /// `(query_name, query_type, offset_after_all_questions)` triple. The name
-/// and type are taken from the **first** question (matching prior behaviour
-/// and the DNS / mDNS / LLMNR convention of one question per packet);
-/// subsequent questions are skipped only so the answer-walk starts at the
-/// correct offset (#333: multi-question packets used to leave the offset
-/// misaligned, which could surface bogus IPs from the answer walk).
+/// and type are taken from the **first** question (the DNS / mDNS / LLMNR
+/// convention is one question per packet); subsequent questions are skipped
+/// only so the answer-walk starts at the correct offset, since a misaligned
+/// offset can surface bogus IPs from the answer walk.
 pub(super) fn parse_questions_starting_at_header(
     payload: &[u8],
     qdcount: u16,
@@ -357,7 +356,7 @@ pub(super) fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
             }
         }
         // `offset` is now positioned for callers that want to keep walking
-        // (e.g. mDNS's additional-records pass — see `analyze_dns_for_mdns`).
+        // (e.g. mDNS's additional-records pass, see `analyze_dns_for_mdns`).
         let _ = offset;
     }
 
@@ -366,7 +365,7 @@ pub(super) fn analyze_dns(payload: &[u8]) -> Option<DnsInfo> {
 
 /// mDNS-specific variant of [`analyze_dns`]: like the DNS path but also
 /// walks the **additional records** (ARCOUNT) and tolerates packets with
-/// `qdcount == 0` (RFC 6762 §6 — typical mDNS announcements carry only
+/// `qdcount == 0` (RFC 6762 §6: typical mDNS announcements carry only
 /// answers / additionals, no questions). The DNS / LLMNR path keeps the
 /// stricter behaviour because their responses always echo the question.
 pub(super) fn analyze_dns_for_mdns(payload: &[u8]) -> Option<DnsInfo> {
@@ -517,9 +516,8 @@ mod tests {
     fn test_dns_name_length_limit() {
         // Build a DNS packet with many 63-byte labels (exceeding 253 chars)
         let mut payload = vec![0u8; 12]; // DNS header
-        // Set qdcount = 1
-        payload[5] = 1;
-        // Add 10 labels of 63 bytes each (630+ chars total, exceeds 253)
+        payload[5] = 1; // qdcount
+        // 10 labels of 63 bytes each (630+ chars total, exceeds 253)
         for _ in 0..10 {
             payload.push(63); // label length
             payload.extend_from_slice(&[b'a'; 63]);
@@ -533,7 +531,7 @@ mod tests {
             assert!(name.len() <= MAX_DNS_NAME_LEN + 63 + 1);
         }
         // The walk must still consume the whole QNAME so QTYPE is read from
-        // the right offset — not fabricated from mid-name bytes.
+        // the right offset, not fabricated from mid-name bytes.
         assert_eq!(info.query_type, Some(DnsQueryType::A));
     }
 
@@ -733,7 +731,7 @@ mod tests {
 
     #[test]
     fn test_response_mixed_records_collects_a_and_aaaa_skips_cname() {
-        // Three answers: CNAME (skipped — not surfaced via response_ips),
+        // Three answers: CNAME (skipped, not surfaced via response_ips),
         // A, AAAA. Order matters; the parser must walk past CNAME's
         // rdata correctly to reach the IP records.
         let mut payload = make_example_question(true, 3);
@@ -789,12 +787,10 @@ mod tests {
 
     #[test]
     fn test_multi_question_offset_lands_on_first_answer() {
-        // Two questions, one answer (A 1.2.3.4) for question 1.
-        // Pre-#333 only the first question was skipped, so the answer-walk
-        // offset would land inside the second question's bytes — usually
-        // either bailing out via skip_dns_name or, worse, surfacing bogus
-        // IPs. With multi-question skipping the parser must land on the
-        // real answer and return exactly one IP.
+        // Two questions, one answer (A 1.2.3.4) for question 1. Every
+        // question must be skipped so the answer walk lands on the real
+        // answer instead of inside the second question's bytes and returns
+        // exactly one IP.
         // Header: response, qdcount = 2, ancount = 1
         let mut payload = build_dns_header(0, 0x8000, 2, 1, 0, 0);
         push_question(&mut payload, "example.com", 1); // Q1: A
@@ -803,7 +799,7 @@ mod tests {
         push_a(&mut payload, RrName::Ptr(12), 60, [1, 2, 3, 4]);
 
         let info = analyze_dns(&payload).unwrap();
-        // First question wins for query_name / query_type — matches the
+        // First question wins for query_name / query_type, matching the
         // single-question convention. The two-question hardening is purely
         // about answer-walk offset correctness.
         assert_eq!(info.query_name, Some("example.com".to_string()));

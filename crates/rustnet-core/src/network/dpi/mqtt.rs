@@ -17,7 +17,7 @@ pub(super) fn is_mqtt_packet(payload: &[u8]) -> bool {
 
     // Validate flags for packet types with fixed flag requirements (MQTT
     // spec §2.1.2): every type except PUBLISH(3), whose flags carry
-    // DUP/QoS/RETAIN, has reserved flags — 0x02 for PUBREL(6),
+    // DUP/QoS/RETAIN, has reserved flags: 0x02 for PUBREL(6),
     // SUBSCRIBE(8), and UNSUBSCRIBE(10), 0x00 for the rest.
     if packet_type != 3 {
         let expected = match packet_type {
@@ -484,7 +484,7 @@ mod tests {
 
     #[test]
     fn test_invalid_remaining_length() {
-        // All continuation bits set (> 4 bytes) — invalid
+        // All continuation bits set (> 4 bytes): invalid
         let pkt = vec![0x20, 0x80, 0x80, 0x80, 0x80, 0x01];
         assert!(!is_mqtt_packet(&pkt));
     }

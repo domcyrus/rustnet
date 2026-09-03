@@ -1,5 +1,6 @@
-// PKTAP (Packet Tap) support for macOS
-// Provides process identification for network packets
+//! PKTAP (Packet Tap) support for macOS: process identification for
+//! captured packets.
+
 use log::{debug, warn};
 use std::mem;
 
@@ -35,7 +36,6 @@ pub(crate) struct PktapHeader {
 impl PktapHeader {
     /// Parse PKTAP header from raw packet data
     pub(crate) fn from_bytes(data: &[u8]) -> Option<Self> {
-        // Check minimum size
         if data.len() < mem::size_of::<PktapHeader>() {
             debug!("Packet too small for PKTAP header: {} bytes", data.len());
             return None;
@@ -45,7 +45,6 @@ impl PktapHeader {
         // and all macOS platforms (x86_64 and ARM64) are little-endian.
         let length = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
 
-        // Sanity check the length field
         if length < 108 || length as usize > data.len() {
             debug!(
                 "Invalid PKTAP header length: {} (packet size: {})",
@@ -59,26 +58,21 @@ impl PktapHeader {
         // Using read_unaligned because data (&[u8]) may not satisfy PktapHeader's
         // alignment requirement from its u32 fields. PKTAP is macOS-only and the
         // wire format is little-endian, so reading the struct natively on a
-        // little-endian host already yields the correct field values — no
+        // little-endian host already yields the correct field values; no
         // explicit byte-swap is required.
         let header = unsafe { std::ptr::read_unaligned(data.as_ptr() as *const PktapHeader) };
 
         Some(header)
     }
 
-    /// Extract process information from the header using the correct offsets
-    /// Based on our successful test: process name at offset 56, PID at offset 52
+    /// Extract process information from the header.
+    /// Per the pktap.h layout, `pth_epid` sits at offset 52 and `pth_comm` at offset 56.
     pub(crate) fn get_process_info(&self) -> (Option<String>, Option<u32>) {
         // Extract process name from pth_comm (offset 56, length 20)
         let process_name = extract_process_name_from_bytes(&self.pth_comm);
 
-        // Extract PID - use pth_epid which is at the right offset (52)
-        // Based on our test, the PID was consistently at offset 52.
-        // PKTAP is macOS-only and Darwin PIDs are at most five digits (the
-        // kernel wraps PIDs at 100000), so a valid PID is 1..=99999. The old
-        // `< 65535` ceiling was a u16 assumption that dropped legitimate high
-        // PIDs on busy systems, leaving those packets with no process
-        // attribution.
+        // Prefer pth_epid (effective PID) over pth_pid.
+        // Darwin wraps PIDs at 100000, so a valid PID is 1..=99999.
         let pid = if self.pth_epid != 0 && self.pth_epid <= DARWIN_PID_MAX {
             Some(self.pth_epid)
         } else if self.pth_pid != 0 && self.pth_pid <= DARWIN_PID_MAX {
@@ -87,7 +81,6 @@ impl PktapHeader {
             None
         };
 
-        // Also try effective command name if regular one is empty
         let final_process_name = if process_name.is_none() {
             extract_process_name_from_bytes(&self.pth_e_comm)
         } else {
@@ -122,7 +115,6 @@ impl PktapHeader {
 
     /// Check if this PKTAP header looks valid
     pub(crate) fn is_valid(&self) -> bool {
-        // Basic sanity checks
         self.pth_length >= 108 &&
         self.pth_length <= 4096 && // Reasonable upper bound
         self.pth_dlt > 0 &&
@@ -152,7 +144,6 @@ pub fn normalize_process_name(name: &str) -> String {
 /// Extract and normalize process name from raw PKTAP bytes
 /// Handles all types of padding: null bytes, spaces, tabs, and other whitespace
 fn extract_process_name_from_bytes(bytes: &[u8; 20]) -> Option<String> {
-    // First, find the actual string content
     let mut end_pos = bytes.len();
     for (i, &byte) in bytes.iter().enumerate() {
         if byte == 0 {
@@ -161,10 +152,8 @@ fn extract_process_name_from_bytes(bytes: &[u8; 20]) -> Option<String> {
         }
     }
 
-    // Convert bytes to string, handling invalid UTF-8
     let raw_str = std::str::from_utf8(&bytes[..end_pos]).ok()?;
 
-    // Apply aggressive normalization
     let normalized = normalize_process_name(raw_str);
 
     if normalized.is_empty() || !normalized.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
@@ -235,7 +224,6 @@ mod tests {
 
     #[test]
     fn test_pktap_header_size() {
-        // Ensure our struct size matches expectations
         assert!(mem::size_of::<PktapHeader>() >= 108);
     }
 
@@ -275,8 +263,8 @@ mod tests {
 
     #[test]
     fn test_get_process_info_accepts_high_pid() {
-        // PIDs above the old 65535 (u16) ceiling are valid on macOS (Darwin
-        // wraps PIDs at 100000); they must still be attributed, not dropped.
+        // Darwin wraps PIDs at 100000, so PIDs above 65535 are valid and must
+        // still be attributed, not dropped.
         assert_eq!(
             header_with_pids(70_000, 0).get_process_info().1,
             Some(70_000)

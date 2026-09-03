@@ -43,7 +43,7 @@ type ProcessNameCache = HashMap<u32, Option<String>>;
 enum ProcessNameLookup {
     Named(String),
     // The process exists but denies PROCESS_QUERY_LIMITED_INFORMATION
-    // (protected/system processes) — the kernel-provided owner PID is real.
+    // (protected/system processes); the kernel-provided owner PID is real.
     Denied,
     // OpenProcess says the PID is gone. IP Helper rows can outlive their
     // owner (TIME_WAIT, terminated UDP binders), and the PID may already
@@ -119,7 +119,6 @@ macro_rules! refresh_table {
             unsafe {
                 let mut size: u32 = 0;
 
-                // First call to get buffer size
                 let result = $api(None, &mut size, false, $family, $table_class, 0);
 
                 if WIN32_ERROR(result) != ERROR_INSUFFICIENT_BUFFER {
@@ -127,16 +126,14 @@ macro_rules! refresh_table {
                         concat!($api_label, " returned no data or error: {}"),
                         result
                     );
-                    return Ok(()); // No connections or error
+                    return Ok(());
                 }
 
                 if size == 0 || size > 100_000_000 {
-                    // Sanity check: reject unreasonably large sizes (100MB limit)
                     log::warn!(concat!($api_label, " returned invalid size: {}"), size);
                     return Ok(());
                 }
 
-                // Allocate buffer and get actual data
                 let mut table = allocate_table_buffer(size);
                 let result = $api(
                     Some(table.as_mut_ptr() as *mut _),
@@ -149,20 +146,17 @@ macro_rules! refresh_table {
 
                 if result != 0 {
                     log::debug!(concat!($api_label, " second call failed: {}"), result);
-                    return Ok(()); // Error getting table
+                    return Ok(());
                 }
 
-                // Verify we have enough data for the header
                 if table_buffer_len(&table) < std::mem::size_of::<u32>() {
                     log::warn!(concat!($table_label, " table buffer too small for header"));
                     return Ok(());
                 }
 
-                // Parse the table
                 let parsed_table = &*(table.as_ptr() as *const $table_ty);
                 let num_entries = parsed_table.dwNumEntries as usize;
 
-                // Bounds check: ensure we have enough space for all entries
                 let required_size =
                     std::mem::size_of::<u32>() + num_entries * std::mem::size_of::<$row_ty>();
                 if table_buffer_len(&table) < required_size {
@@ -183,7 +177,6 @@ macro_rules! refresh_table {
                     num_entries
                 );
 
-                // Get pointer to the first entry
                 let rows_ptr = &parsed_table.table[0] as *const $row_ty;
 
                 for i in 0..num_entries {
@@ -213,8 +206,7 @@ macro_rules! refresh_table {
 
 impl WindowsProcessLookup {
     pub(super) fn new() -> Result<Self> {
-        // Use a very old timestamp that's guaranteed to be before now
-        // by using checked_sub and falling back to epoch
+        // An old timestamp so the first lookup refreshes; shorter offsets on underflow.
         let now = Instant::now();
         let initial_refresh = now
             .checked_sub(Duration::from_secs(3600))
@@ -360,9 +352,7 @@ impl WindowsProcessLookup {
         process_names: &mut ProcessNameCache,
         sockets: &mut Vec<HostSocket>,
     ) -> Result<()> {
-        // IPv4 TCP connections
         self.refresh_tcp_table_v4(cache, process_names, sockets)?;
-        // IPv6 TCP connections
         self.refresh_tcp_table_v6(cache, process_names, sockets)?;
         Ok(())
     }
@@ -421,9 +411,7 @@ impl WindowsProcessLookup {
         process_names: &mut ProcessNameCache,
         sockets: &mut Vec<HostSocket>,
     ) -> Result<()> {
-        // IPv4 UDP connections
         self.refresh_udp_table_v4(cache, process_names, sockets)?;
-        // IPv6 UDP connections
         self.refresh_udp_table_v6(cache, process_names, sockets)?;
         Ok(())
     }
@@ -497,7 +485,7 @@ impl WindowsProcessLookup {
                     );
                     return Some(process_info.clone());
                 }
-                // Exact match missed — try wildcard fallback before declaring a miss
+                // Exact match missed: try the wildcard fallback before declaring a miss.
                 if let Some(result) =
                     relaxed_lookup(&cache.lookup, &key).map(|(process, _quality)| process.clone())
                 {
@@ -517,7 +505,7 @@ impl WindowsProcessLookup {
 
         if table_is_fresh {
             // The current table has no row for this tuple, so the socket is
-            // already gone — exactly the case the ETW cache exists for.
+            // already gone, exactly the case the ETW cache exists for.
             return self.etw_cache.lookup(&key);
         }
 
@@ -531,7 +519,6 @@ impl WindowsProcessLookup {
             return etw_process;
         }
 
-        // Cache is stale or miss, refresh
         if self.refresh().is_ok() {
             let cache = read_recovering(&self.cache, CACHE_LOCK);
             let result = cache.lookup.get(&key).cloned().or_else(|| {
@@ -765,14 +752,13 @@ pub(super) fn get_process_name_from_pid(pid: u32) -> Option<String> {
 
 fn query_process_name(pid: u32) -> ProcessNameLookup {
     // PID 4 is the kernel's System process, fixed since Windows XP. It owns
-    // real sockets (NetBIOS name service, SMB) but has no image to query —
-    // QueryFullProcessImageNameW has nothing to return — so without this it
+    // real sockets (NetBIOS name service, SMB) but has no image to query
+    // (QueryFullProcessImageNameW has nothing to return), so without this it
     // surfaces as the "Unknown" placeholder in every process list.
     if pid == 4 {
         return ProcessNameLookup::Named("System".to_string());
     }
     unsafe {
-        // Open process with query information access
         let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
             Ok(h) => h,
             Err(error) => {
@@ -788,7 +774,6 @@ fn query_process_name(pid: u32) -> ProcessNameLookup {
 
         let _ = CloseHandle(handle);
 
-        // Only the file name is wanted
         if let Some(filename) = image_path.as_deref().and_then(Path::file_name) {
             return ProcessNameLookup::Named(filename.to_string_lossy().into_owned());
         }

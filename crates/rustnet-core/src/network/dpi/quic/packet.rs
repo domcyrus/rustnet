@@ -127,13 +127,11 @@ fn merge_quic_packet_info(existing: Option<QuicInfo>, new: QuicInfo) -> QuicInfo
             // Merge TLS info - prefer complete SNI over partial
             merge_tls_info(&mut existing.tls_info, &new.tls_info);
 
-            // Update connection ID if we have a better one
             if existing.connection_id.is_empty() && !new.connection_id.is_empty() {
                 existing.connection_id = new.connection_id;
                 existing.connection_id_hex = new.connection_id_hex;
             }
 
-            // Update version if we didn't have it
             if existing.version_string.is_none() && new.version_string.is_some() {
                 existing.version_string = new.version_string;
             }
@@ -220,7 +218,6 @@ pub(super) fn parse_long_header(payload: &[u8]) -> Option<LongHeader> {
         get_long_packet_type(first_byte, version)
     };
 
-    // Parse connection IDs
     let mut offset = 5;
 
     // Destination Connection ID
@@ -332,7 +329,6 @@ pub(super) fn parse_long_header_packet_with_length(payload: &[u8]) -> (Option<Qu
         return (None, 0);
     };
 
-    // Create QuicInfo with version
     let mut quic_info = QuicInfo::new(header.version);
     quic_info.packet_type = header.packet_type;
     quic_info.connection_id = payload[header.dcid.clone()].to_vec();
@@ -394,7 +390,6 @@ fn extract_tls_from_long_header_packet(
     let dcid = &payload[header.dcid.clone()];
     let dcid_len = dcid.len();
 
-    // Set connection state based on packet type
     quic_info.connection_state = match packet_type {
         QuicPacketType::Initial => QuicConnectionState::Initial,
         QuicPacketType::Handshake => QuicConnectionState::Handshaking,
@@ -487,7 +482,7 @@ fn parse_short_header_packet(payload: &[u8]) -> Option<QuicInfo> {
     quic_info.packet_type = QuicPacketType::OneRtt;
     quic_info.connection_state = QuicConnectionState::Connected;
 
-    // For short header, connection ID length is not in the packet — use a
+    // For short header, connection ID length is not in the packet; use a
     // common 8-byte size as a heuristic. Move the slice straight into
     // `connection_id`; the long-header path keeps a local `dcid` because it
     // re-borrows for TLS decryption, but here nothing else reads it.
@@ -692,7 +687,6 @@ fn scan_packet_frames(
                     read_varint(payload, &mut offset)?;
                 }
 
-                // Extract reason phrase if present
                 let reason_length = read_varint(payload, &mut offset)?;
 
                 let reason_len = reason_length as usize;
@@ -714,7 +708,6 @@ fn scan_packet_frames(
                     error_code,
                 });
 
-                // Update connection state based on close frame
                 quic_info.connection_state = if error_code == 0 {
                     // NO_ERROR - graceful close, enter draining
                     crate::network::types::QuicConnectionState::Draining
@@ -859,10 +852,8 @@ pub(in crate::network::dpi) fn is_quic_packet(payload: &[u8]) -> bool {
 
     // Check for QUIC long header (bit 7 set)
     if (first_byte & 0x80) != 0 {
-        // Check version
         let version = u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]);
 
-        // Check for known QUIC versions
         let known_versions = [
             0x00000001, // QUIC v1 (RFC 9000)
             0x6b3343cf, // QUIC v2
@@ -908,11 +899,9 @@ pub(in crate::network::dpi) fn is_quic_packet(payload: &[u8]) -> bool {
 mod tests {
     use super::*;
 
-    /// Regression test for a panic in parse_long_header_packet_with_length:
-    /// a malformed Initial packet whose token_length varint decodes to a
-    /// value far larger than the payload used to push `offset` past
-    /// `payload.len()`, causing the next slice access at line 408 to panic
-    /// with "range start index ... out of range for slice of length ...".
+    /// A malformed Initial packet whose token_length varint decodes to a
+    /// value far larger than the payload must not push `offset` past
+    /// `payload.len()` and panic on the next slice access.
     #[test]
     fn test_long_header_huge_token_length_does_not_panic() {
         // Build a QUIC v1 Initial long-header packet.
@@ -922,7 +911,7 @@ mod tests {
         //   SCID len:   0
         //   token len varint: 8-byte form with a huge value (0xC8 8C ...)
         // That varint decodes (with the top 2 bits masked) to
-        // 0x08c8c8c8c8c8ca67 — the exact value from the observed panic.
+        // 0x08c8c8c8c8c8ca67, the exact value from the observed panic.
         let mut pkt = Vec::new();
         pkt.push(0xC0);
         pkt.extend_from_slice(&0x0000_0001u32.to_be_bytes());
@@ -942,10 +931,9 @@ mod tests {
         );
     }
 
-    /// Regression: a declared token length that exceeds the packet used to
-    /// panic when the decryptor re-parsed the header and sliced
-    /// `&packet[offset..]`. The single header parser now reports the packet
-    /// number offset as unknown, so decryption is never attempted.
+    /// A declared token length that exceeds the packet makes the header
+    /// parser report the packet number offset as unknown, so decryption is
+    /// never attempted and `&packet[offset..]` is never sliced.
     #[test]
     fn test_initial_packet_oversized_token_len_does_not_panic() {
         let mut packet = Vec::new();

@@ -34,10 +34,8 @@ pub(super) fn analyze_https(payload: &[u8]) -> Option<HttpsInfo> {
         });
     }
 
-    // Get record length
     let record_length = u16::from_be_bytes([payload[3], payload[4]]) as usize;
 
-    // Sanity check
     if record_length > 16384 + 2048 {
         return Some(HttpsInfo {
             tls_info: Some(info),

@@ -19,8 +19,8 @@
 //!   the invoking user (SUDO_UID/SUDO_GID) or `nobody`, see
 //!   [`privdrop`](crate::privdrop). Disable with `--no-uid-drop`.
 //! - Privileges: PR_SET_NO_NEW_PRIVS set by rustnet itself (no privilege
-//!   escalation via execve). This is applied unconditionally — even with
-//!   `--no-sandbox` or when Landlock is unavailable — since it is privilege
+//!   escalation via execve). This is applied unconditionally (even with
+//!   `--no-sandbox` or when Landlock is unavailable) since it is privilege
 //!   hygiene rather than sandboxing and rustnet never execs on Linux.
 //!
 //! # Application Order
@@ -70,7 +70,7 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
 
     // Set PR_SET_NO_NEW_PRIVS first, regardless of sandbox mode. This is
     // privilege hygiene (blocks setuid/file-caps escalation via execve), not
-    // sandboxing, and rustnet never execs on Linux — so it applies even with
+    // sandboxing, and rustnet never execs on Linux, so it applies even with
     // --no-sandbox.
     let no_new_privs = match set_no_new_privs() {
         Ok(()) => {
@@ -88,13 +88,11 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         ));
     }
 
-    // Check Landlock availability upfront
     #[cfg(feature = "landlock")]
     let landlock_available = landlock::is_available();
     #[cfg(not(feature = "landlock"))]
     let landlock_available = false;
 
-    // Handle disabled mode
     if config.mode == SandboxMode::Disabled {
         log::info!("Sandbox disabled by configuration");
         let message = if no_new_privs {
@@ -126,19 +124,16 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
 
     #[cfg(feature = "landlock")]
     {
-        // Step 0: Clear ambient capability set
         // Ambient caps survive execve(): clearing prevents child processes
         // from inheriting any capabilities if fork/exec somehow succeeds.
         if let Err(e) = capabilities::clear_ambient_caps() {
             log::debug!("Could not clear ambient capabilities: {}", e);
         }
 
-        // Step 1: Drop CAP_NET_RAW capability
-        // This prevents creating new raw sockets for exfiltration
+        // Dropping CAP_NET_RAW prevents creating new raw sockets for exfiltration.
         match capabilities::drop_cap_net_raw() {
             Ok(dropped) => {
                 if dropped {
-                    // Verify the drop actually worked
                     if capabilities::has_cap_net_raw() {
                         log::error!(
                             "CAP_NET_RAW drop reported success but capability still present!"
@@ -166,8 +161,8 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
             }
         }
 
-        // Step 2: Drop CAP_BPF and CAP_PERFMON
-        // These are only needed for loading eBPF programs (already done)
+        // CAP_BPF and CAP_PERFMON are only needed for loading eBPF programs
+        // (already done).
         match capabilities::drop_ebpf_caps() {
             Ok(count) => {
                 if count > 0 {
@@ -190,7 +185,6 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         }
     }
 
-    // Step 3: Drop the root uid/gid (sudo case)
     // Capabilities alone leave euid 0; on kernels without Landlock (or in
     // builds without the landlock feature) this drop is the main containment.
     // Runs after the capability drops purely for reporting; transitioning all
@@ -211,7 +205,6 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         }
     }
 
-    // Step 4: Apply Landlock restrictions
     #[cfg(feature = "landlock")]
     match landlock::apply_landlock(config) {
         Ok(ll_result) => {
@@ -241,7 +234,6 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
                     result.status = SandboxStatus::PartiallyEnforced;
                 }
             } else if !ll_result.net_applied && config.block_network {
-                // Filesystem applied but network not available
                 if result.status == SandboxStatus::FullyEnforced {
                     result.status = SandboxStatus::PartiallyEnforced;
                 }
@@ -258,7 +250,7 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         }
     }
 
-    // Step 4 (no landlock feature): nothing to enforce beyond the uid drop.
+    // Without the landlock feature there is nothing to enforce beyond the uid drop.
     // Not a strict-mode error: builds without the feature (e.g. musl) are
     // expected to run this way.
     #[cfg(not(feature = "landlock"))]
@@ -268,7 +260,6 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         result.status = SandboxStatus::PartiallyEnforced;
     }
 
-    // Determine final status
     if !result.cap_net_raw_dropped
         && !result.uid_dropped
         && !result.fs_restricted
@@ -277,7 +268,6 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
         result.status = SandboxStatus::NotApplied;
     }
 
-    // Use appropriate log level based on status
     match result.status {
         SandboxStatus::FullyEnforced => {
             log::info!("Sandbox fully enforced: {}", messages.join("; "));

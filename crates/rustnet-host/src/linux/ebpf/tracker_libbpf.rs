@@ -17,8 +17,8 @@ unsafe impl Send for LibbpfSocketTracker {}
 unsafe impl Sync for LibbpfSocketTracker {}
 
 impl LibbpfSocketTracker {
-    /// Create a new eBPF socket tracker
-    /// Returns (Option<Self>, DegradationReason) - the reason explains why eBPF is unavailable
+    /// Create a new eBPF socket tracker. The returned [`DegradationReason`]
+    /// explains why eBPF is unavailable when the tracker is `None`.
     pub(crate) fn new() -> Result<(Option<Self>, DegradationReason)> {
         let (loader_opt, reason) = EbpfLoader::try_load()?;
         match loader_opt {
@@ -201,8 +201,7 @@ impl LibbpfSocketTracker {
         }
     }
 
-    /// Clean up stale entries from the eBPF map
-    /// Returns the number of entries cleaned up
+    /// Remove stale entries from the eBPF map, returning how many were removed.
     pub(crate) fn cleanup_stale_entries(&mut self, stale_threshold_secs: u64) -> u32 {
         let socket_map = self.loader.socket_map();
         let stale_threshold_ns = stale_threshold_secs * 1_000_000_000;
@@ -424,8 +423,8 @@ mod integration_tests {
                 .contains(crate::linux::ebpf::loader::CORE_CAPABILITIES)
         );
 
-        // The v4-only accepted-socket TID assertion mirrors the original
-        // coverage; the v6 run keeps the rest of the scenario in sync.
+        // The accepted-socket TID assertion runs for v4 only; the v6 run
+        // covers the rest of the scenario.
         test_tcp(&mut tracker, Ipv4Addr::LOCALHOST.into(), true);
         test_tcp(&mut tracker, Ipv6Addr::LOCALHOST.into(), false);
         test_udp(&mut tracker, Ipv4Addr::LOCALHOST.into());

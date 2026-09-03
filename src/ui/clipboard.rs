@@ -1,7 +1,7 @@
 //! Cross-platform clipboard helper that updates `UIState` with
 //! user-visible feedback. Tries `arboard` first; on Linux/FreeBSD
 //! falls back to `wl-copy` for Wayland environments where arboard
-//! can't reach the clipboard daemon. Sandbox-aware on Linux —
+//! can't reach the clipboard daemon. Sandbox-aware on Linux:
 //! reports a more useful error when Landlock has blocked the path.
 
 use std::time::Instant;

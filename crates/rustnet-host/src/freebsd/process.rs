@@ -1,4 +1,4 @@
-// network/platform/freebsd/process.rs - FreeBSD sockstat-based process lookup
+//! FreeBSD sockstat-based process lookup.
 
 use crate::{
     ConnectionKey, HostSocket, HostSocketState, HostTcpState, MatchQuality, ProcessAncestor,
@@ -185,18 +185,17 @@ impl FreeBSDProcessLookup {
         Ok(scan)
     }
 
-    /// Parse sockstat output for a given protocol and address family
-    /// Format: user command pid fd proto local_addr foreign_addr
+    /// Parse sockstat output for a given protocol and address family.
     fn parse_sockstat_output(protocol: Protocol, ipv6: bool) -> Result<SocketScan> {
         use std::process::Command;
 
         let is_tcp = protocol == Protocol::Tcp;
 
-        // Run sockstat command
-        // -4: IPv4, -6: IPv6, -c: connected sockets, -l: listening sockets, -n: numeric
+        // -4/-6: address family, -n: numeric UIDs, -s: TCP state column,
+        // -P: protocol filter
         let output = Command::new(SOCKSTAT_PATH)
             .arg(if ipv6 { "-6" } else { "-4" })
-            .arg("-n") // numeric UIDs
+            .arg("-n")
             .args(is_tcp.then_some("-s"))
             .arg("-P")
             .arg(if is_tcp { "tcp" } else { "udp" })
@@ -216,7 +215,6 @@ impl FreeBSDProcessLookup {
         let mut sockets = Vec::new();
 
         for line in stdout.lines().skip(1) {
-            // Skip header
             let parts: Vec<&str> = line.split_whitespace().collect();
 
             // Expected format:
@@ -227,18 +225,15 @@ impl FreeBSDProcessLookup {
                 continue;
             }
 
-            // Extract fields
             let uid = parts[0].parse::<u32>().ok();
             let process_name = parts[1].to_string();
             let pid = parts[2].parse::<u32>().ok();
 
-            // Parse local address (index 5)
             let local_addr = match parse_socket_addr_text(parts[5]) {
                 Some(addr) => addr,
                 None => continue,
             };
 
-            // Parse foreign address (index 6)
             let foreign_addr = match parse_socket_addr_text(parts[6]) {
                 Some(addr) => addr,
                 None => continue,

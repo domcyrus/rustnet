@@ -4,7 +4,7 @@ The reusable network-analysis core of [RustNet](https://github.com/domcyrus/rust
 
 `rustnet-core` is the platform-independent, capture-independent layer that
 turns bytes into meaningful network information. It has **no dependency on
-libpcap, raw sockets, or OS process tables** — it operates on byte slices and
+libpcap, raw sockets, or OS process tables**: it operates on byte slices and
 parsed structures, so it can be embedded in any tool that already has packets
 to analyze.
 
@@ -15,13 +15,13 @@ to analyze.
 - **Deep packet inspection** for HTTP, HTTPS/TLS (SNI extraction), DNS, SSH,
   QUIC, WireGuard, OpenVPN, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, NetBIOS, and
   more.
-- **Connection merging** — fold parsed packets into long-lived connection
+- **Connection merging**: fold parsed packets into long-lived connection
   state with protocol-aware lifecycle tracking and TCP analytics
   (retransmissions, out-of-order, fast-retransmit).
 - **GeoIP** lookups against MaxMind GeoLite2 databases.
 - **Reverse DNS** with background async resolution and caching.
 - **OUI vendor** and **service-name** resolution from baked-in datasets (no
-  runtime files required — the data is embedded at compile time).
+  runtime files required; the data is embedded at compile time).
 
 ## Layout
 

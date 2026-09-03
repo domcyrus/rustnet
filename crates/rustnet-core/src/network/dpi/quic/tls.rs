@@ -14,7 +14,7 @@ fn is_complete_sni(sni: &Option<String>) -> bool {
     }
 }
 
-/// Strategy 1: Try to extract TLS info from contiguous reassembled data
+/// Try to extract TLS info from contiguous reassembled data
 fn try_extract_from_contiguous(
     reassembler: &CryptoFrameReassembler,
     allow_partial: bool,
@@ -40,7 +40,6 @@ fn try_extract_from_contiguous(
 
     let tls_info = parse_partial_tls_handshake(&reassembled, allow_partial)?;
 
-    // Check if we have the essential info (SNI and ALPN)
     if tls_info.sni.is_none() && tls_info.alpn.is_empty() {
         return None;
     }
@@ -53,7 +52,7 @@ fn try_extract_from_contiguous(
     Some(tls_info)
 }
 
-/// Strategy 2: Try to parse individual fragments with proper TLS headers
+/// Try to parse individual fragments with proper TLS headers
 fn try_extract_from_fragments(
     reassembler: &CryptoFrameReassembler,
     allow_partial: bool,
@@ -105,11 +104,10 @@ fn try_extract_from_fragments(
     None
 }
 
-/// Strategy 3: Try greedy SNI extraction from all fragments and contiguous data
+/// Try greedy SNI extraction from all fragments and contiguous data
 fn try_extract_greedy_from_reassembler(reassembler: &CryptoFrameReassembler) -> Option<TlsInfo> {
     debug!("QUIC: Attempting greedy SNI extraction as final fallback");
 
-    // Try greedy extraction on fragments
     for fragment_data in reassembler.get_fragments().values() {
         if let Some(sni) = scan_for_sni_extension(fragment_data, true, SniScanStrictness::Lenient) {
             debug!("QUIC: Greedy extraction succeeded from fragment");
@@ -134,17 +132,12 @@ fn try_extract_greedy_from_reassembler(reassembler: &CryptoFrameReassembler) -> 
 /// - `false`: Only return complete SNI (used during initial packet parsing)
 /// - `true`: Return partial SNI as fallback (used during merge/re-extraction)
 ///
-/// This function orchestrates multiple extraction strategies in order of preference:
-/// 1. Check cache for complete SNI
-/// 2. Parse contiguous data
-/// 3. Parse individual fragments with TLS headers
-/// 4. Reconstruct SNI from fragmented data
-/// 5. Greedy fallback extraction
+/// Tries the cache first, then the extraction strategies below in order of
+/// preference, stopping at the first that yields an SNI.
 pub fn try_extract_tls_from_reassembler(
     reassembler: &mut CryptoFrameReassembler,
     allow_partial: bool,
 ) -> Option<TlsInfo> {
-    // Strategy 0: Check cache for complete SNI
     if let Some(tls_info) = reassembler.get_cached_tls_info() {
         if is_complete_sni(&tls_info.sni) {
             return Some(tls_info.clone());
@@ -152,8 +145,6 @@ pub fn try_extract_tls_from_reassembler(
         debug!("QUIC: Cached SNI is partial, attempting to find complete SNI");
     }
 
-    // Strategy 1: Try to parse contiguous data
-    // Strategy 2: Try parsing individual fragments with TLS headers
     for strategy in [try_extract_from_contiguous, try_extract_from_fragments] {
         if let Some(tls_info) = strategy(reassembler, allow_partial) {
             if is_complete_sni(&tls_info.sni) {
@@ -163,7 +154,7 @@ pub fn try_extract_tls_from_reassembler(
         }
     }
 
-    // Strategy 3: Try fragment reconstruction (requires reasonable data amount)
+    // Fragment reconstruction needs a reasonable amount of data.
     let total_fragment_size: usize = reassembler.get_fragments().values().map(|v| v.len()).sum();
     if total_fragment_size >= 100 {
         debug!(
@@ -189,7 +180,7 @@ pub fn try_extract_tls_from_reassembler(
         );
     }
 
-    // Strategy 4: Greedy fallback extraction
+    // Greedy fallback.
     if let Some(tls_info) = try_extract_greedy_from_reassembler(reassembler) {
         reassembler.set_complete_tls_info(tls_info.clone());
         return Some(tls_info);
@@ -282,7 +273,6 @@ pub(super) fn match_sni_extension_at(
         }
     };
 
-    // Parse SNI header using unified helper
     let header = parse_sni_header(ext_data)?;
     let list_len = header.list_len as usize;
 

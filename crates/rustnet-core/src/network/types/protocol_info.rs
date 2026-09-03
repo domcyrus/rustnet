@@ -357,8 +357,8 @@ pub enum FtpMessageType {
 
 // The protocol-name prefix is already in the surrounding column /
 // panel context, so the variant only needs to disambiguate
-// request-vs-response. Emitting "FTP_REQUEST" / "FTP_RESPONSE" here
-// produced "FTP / Message Type: FTP_REQUEST" in the details panel.
+// request-vs-response ("FTP_REQUEST" would render as
+// "FTP / Message Type: FTP_REQUEST" in the details panel).
 static_names! {
     FtpMessageType {
         Request => "Request",
@@ -377,7 +377,7 @@ pub struct FtpInfo {
     pub server_software: Option<String>,
     /// OS / system type from a `215` SYST reply (RFC 959 §4.2): `UNIX`,
     /// `Windows_NT`, etc. Kept separate from `server_software` so the TUI
-    /// can label them distinctly — they describe different things.
+    /// can label them distinctly; they describe different things.
     pub system_type: Option<String>,
 }
 
@@ -781,7 +781,7 @@ pub enum SnmpPduType {
     InformRequest,
     TrapV2,
     Report,
-    /// SNMPv3 with an encrypted ScopedPDU — the PDU type is not visible.
+    /// SNMPv3 with an encrypted ScopedPDU; the PDU type is not visible.
     Encrypted,
 }
 
@@ -1139,36 +1139,30 @@ impl CryptoFrameReassembler {
 
     /// Add a new CRYPTO frame fragment
     pub fn add_fragment(&mut self, offset: u64, data: Vec<u8>) -> Result<(), &'static str> {
-        // Check if this would exceed our buffer limit
         if self.current_buffer_size + data.len() > self.max_buffer_size {
             return Err("Fragment would exceed maximum buffer size");
         }
 
         self.last_update = Instant::now();
 
-        // Check for overlapping fragments
         let data_end = offset + data.len() as u64;
 
-        // Handle overlaps by keeping the existing data (first write wins)
+        // Overlapping fragments keep the existing data (first write wins).
         for (&frag_offset, frag_data) in &self.fragments {
             let frag_end = frag_offset + frag_data.len() as u64;
 
-            // Check for exact duplicate
             if offset == frag_offset && data_end == frag_end {
                 return Ok(());
             }
 
-            // Check for overlap
             if offset < frag_end && data_end > frag_offset {
                 return Ok(());
             }
         }
 
-        // Add the fragment
         self.current_buffer_size += data.len();
         self.fragments.insert(offset, data);
 
-        // Try to advance contiguous offset
         self.update_contiguous_offset();
 
         Ok(())

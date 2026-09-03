@@ -1,4 +1,4 @@
-//! Effect application — the one place the main loop reaches into
+//! Effect application: the one place the main loop reaches into
 //! `Effect`s produced by `Component::handle_key` / `handle_mouse`
 //! and translates them into the loop's local state mutations
 //! (`needs_data_refresh`, `needs_regroup`) plus side effects

@@ -1,4 +1,4 @@
-// network/platform/linux/process.rs - Linux procfs-based process lookup
+//! Linux procfs-based process lookup.
 
 use crate::procfs::{parse_proc_net_addr, read_comm, read_comm_in};
 use crate::{
@@ -334,7 +334,7 @@ pub(super) struct LinuxProcessLookup {
     // attributable. The live cache always wins; the snapshot only fills
     // holes, so a reused 4-tuple visible to the rescan is never shadowed.
     startup_snapshot: HashMap<ConnectionKey, SnapshotOwner>,
-    // Cache: PID -> process_name (for resolving eBPF thread names to main process names)
+    // PID -> process_name, for resolving eBPF thread names to main process names.
     #[cfg(feature = "ebpf")]
     pid_names: RwLock<HashMap<u32, String>>,
     // Memo: TGID -> lineage, so many connections of one process walk /proc
@@ -354,8 +354,7 @@ impl LinuxProcessLookup {
     }
 
     fn new_with_startup_socket_owners(owners: StartupSocketOwners) -> Result<Self> {
-        // Populate the cache immediately so early connections have process names available.
-        // This ensures the PID→name cache is ready before packet capture starts.
+        // Populate the cache immediately so it is ready before packet capture starts.
         let (process_map, _pid_names, socket_snapshot, shared_inodes) =
             Self::build_process_map(owners)?;
 
@@ -385,8 +384,8 @@ impl LinuxProcessLookup {
 
     /// Get process name by PID. Tries the cached procfs scan first, then
     /// falls back to reading `/proc/<pid>/comm` directly: the cache only
-    /// refreshes every few seconds, so a freshly started process — exactly
-    /// the case for short-lived tools like curl/dig — is often missing
+    /// refreshes every few seconds, so a freshly started process (exactly
+    /// the case for short-lived tools like curl/dig) is often missing
     /// from it while still being perfectly readable from /proc. One tiny
     /// file read; the result is cached so repeated lookups stay cheap.
     /// Returns None if the process has already exited and was never scanned.
@@ -416,10 +415,9 @@ impl LinuxProcessLookup {
     /// a proven 4-tuple hit from a relaxed guess. Ambiguous relaxed matches
     /// (two candidates, two different owners) yield `None`.
     ///
-    /// Simple cache lookup with no refresh on cache miss. The enrichment thread
-    /// handles periodic refresh every 5 seconds.
-    /// IMPORTANT: Do NOT refresh here as it caused high CPU usage when called for every
-    /// connection without process info (flamegraph showed this was the main bottleneck).
+    /// Never refreshes on a miss: the enrichment thread refreshes every few
+    /// seconds, and refreshing here runs once per unattributed connection,
+    /// which is a CPU hotspot.
     fn lookup_match(&self, conn: &Connection) -> Option<(u32, String, MatchQuality)> {
         let key = ConnectionKey::from_connection(conn);
         let cache = self.cache.read().expect("process cache lock poisoned");
@@ -443,12 +441,11 @@ impl LinuxProcessLookup {
         // connections that already existed at launch but whose owner the
         // post-uid-drop rescan can no longer see. Exact 4-tuple hits only:
         // relaxed matching against the snapshot would let a stale listener
-        // entry claim new
-        // inbound connections indefinitely. The hit is only trusted while
-        // (a) the very same socket, by inode, still occupies the tuple in
-        // the periodically refreshed socket inventory (which stays readable
-        // after the uid drop even when owners do not), so a closed-and-
-        // reused tuple is rejected; and (b) the recorded owner is
+        // entry claim new inbound connections indefinitely. The hit is only
+        // trusted while (a) the very same socket, by inode, still occupies
+        // the tuple in the periodically refreshed socket inventory (which
+        // stays readable after the uid drop even when owners do not), so a
+        // closed-and-reused tuple is rejected; and (b) the recorded owner is
         // verifiably still the same process. The refresh cadence bounds the
         // reuse-detection window to one refresh interval.
         let owner = self.startup_snapshot.get(&key)?;
@@ -521,10 +518,8 @@ impl LinuxProcessLookup {
         let mut process_map = HashMap::new();
         let mut sockets = Vec::new();
 
-        // First, build inode -> process mapping and PID -> name mapping
         let (inode_to_process, pid_names, shared_inodes) = Self::build_inode_map(startup_owners)?;
 
-        // Then, parse network files to map connections -> inodes -> processes
         for (path, protocol) in PROC_NET_TABLES {
             Self::parse_and_map(
                 path,
@@ -573,13 +568,11 @@ impl LinuxProcessLookup {
                     continue;
                 };
 
-                // Store PID -> name mapping for all processes
                 #[cfg(feature = "ebpf")]
                 pid_names.insert(pid, process_name.clone());
 
                 let uid = fs::metadata(&path).ok().map(|metadata| metadata.uid());
 
-                // Check file descriptors for socket inodes
                 let fd_dir = path.join("fd");
                 if let Ok(fd_entries) = fs::read_dir(&fd_dir) {
                     for fd_entry in fd_entries.flatten() {
@@ -631,7 +624,7 @@ impl LinuxProcessLookup {
     ) {
         for (i, line) in content.lines().enumerate() {
             if i == 0 {
-                continue; // Skip header
+                continue;
             }
 
             let parts: Vec<&str> = line.split_whitespace().collect();
@@ -639,7 +632,6 @@ impl LinuxProcessLookup {
                 continue;
             }
 
-            // Parse addresses
             let local_addr = match parse_proc_net_addr(parts[1]) {
                 Some(addr) => addr,
                 None => continue,

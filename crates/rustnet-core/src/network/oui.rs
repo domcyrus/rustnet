@@ -190,12 +190,9 @@ mod tests {
     #[test]
     fn test_lookup_known_vendor() {
         let lookup = OuiLookup::from_embedded().unwrap();
-        // Apple has many OUIs - test a well-known one
-        // 00:1B:63 is Apple
-        // If the database changes this test may need updating
-        // Just verify the lookup function works with a real MAC
+        // 00:1B:63 is an Apple OUI; the exact vendor string may change with
+        // the database, so only check that a lookup succeeds.
         let result = lookup.lookup("00:1b:63:00:00:00");
-        // We just verify it returns Some (exact vendor name may vary)
         if let Some(vendor) = result {
             assert!(!vendor.is_empty());
         }

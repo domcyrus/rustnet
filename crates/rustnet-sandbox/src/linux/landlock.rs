@@ -98,10 +98,8 @@ fn abi_version(abi: ABI) -> u8 {
     }
 }
 
-/// Check if Landlock is available by attempting a test restriction
-/// Note: This actually attempts to create a minimal ruleset to check
+/// Check if Landlock is available by attempting to create a minimal ruleset.
 pub(super) fn is_available() -> bool {
-    // Try to create a minimal ruleset - this will fail if Landlock isn't available
     Ruleset::default()
         .handle_access(AccessFs::Execute)
         .and_then(|r| r.create())
@@ -110,7 +108,6 @@ pub(super) fn is_available() -> bool {
 
 /// Apply Landlock restrictions based on configuration
 pub(super) fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
-    // Check if disabled
     if config.mode == SandboxMode::Disabled {
         return Ok(LandlockResult {
             fs_applied: false,
@@ -125,12 +122,10 @@ pub(super) fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
     // best-effort compatibility downgrades automatically on older kernels.
     let abi = ABI_FS;
 
-    // Build filesystem access rights for reading
-    // We need read access to /proc for process identification
     let read_access = AccessFs::from_read(abi);
 
-    // Build filesystem access rights for writing (principle of least privilege)
-    // RustNet only needs to create regular files, write/append to them, and traverse dirs.
+    // Write paths get only what output files need: create regular files,
+    // read/write/truncate them, and list their directories.
     let write_access = AccessFs::WriteFile
         | AccessFs::ReadFile
         | AccessFs::ReadDir
@@ -174,16 +169,14 @@ pub(super) fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
             .context("Failed to handle scope restrictions")?;
     }
 
-    // Create the ruleset
     let mut ruleset_created = ruleset
         .create()
         .context("Failed to create Landlock ruleset")?;
 
-    // Add rule for /proc (read-only)
-    // This is required for process identification via procfs. We grant read
-    // access to all of /proc because Landlock PathBeneath rules apply to
-    // entire subtrees, and we need to enumerate PIDs via read_dir("/proc")
-    // and then access per-PID files (/proc/<pid>/comm, /proc/<pid>/fd/).
+    // Read access to all of /proc is required for process identification via
+    // procfs: Landlock PathBeneath rules apply to entire subtrees, and we need
+    // to enumerate PIDs via read_dir("/proc") and then access per-PID files
+    // (/proc/<pid>/comm, /proc/<pid>/fd/).
     // Landlock's ptrace domain restrictions provide automatic protection
     // against reading sensitive /proc files of processes outside our domain.
     if let Err(e) = add_path_rule(&mut ruleset_created, "/proc", read_access) {
@@ -206,11 +199,11 @@ pub(super) fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
         }
     }
 
-    // Add rules for sysfs (read-only). The interface-stats poller enumerates
+    // sysfs (read-only): the interface-stats poller enumerates
     // interfaces via read_dir("/sys/class/net") and then reads each
     // /sys/class/net/<iface>/statistics/* counter. Those per-interface entries
     // are symlinks into /sys/devices/.../net/<iface>, and Landlock evaluates the
-    // *resolved* path, so both subtrees need an allow-rule — without them the
+    // *resolved* path, so both subtrees need an allow-rule; without them the
     // reads fail with EACCES and the Interfaces panel shows
     // "No interface stats available". sysfs is not process-sensitive the way
     // /proc is, and this is read-only, so granting the two subtrees is fine.
@@ -220,7 +213,6 @@ pub(super) fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
         }
     }
 
-    // Add rules for read-only paths (e.g., GeoIP databases)
     for path in &config.read_paths {
         if path.exists()
             && let Err(e) = add_path_rule(&mut ruleset_created, path, read_access)
@@ -229,7 +221,6 @@ pub(super) fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
         }
     }
 
-    // Add rules for write paths (logs, etc.)
     for path in &config.write_paths {
         if path.exists() {
             if let Err(e) = add_path_rule(&mut ruleset_created, path, write_access) {
@@ -239,7 +230,7 @@ pub(super) fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
             // For paths that don't exist yet, fall back to the parent directory.
             // Landlock requires an open FD (PathFd) to create rules, so non-existent
             // paths can't be directly referenced. This grants write access to the
-            // entire parent directory, which is broader than ideal — callers should
+            // entire parent directory, which is broader than ideal, so callers should
             // pre-create output files before applying the sandbox when possible.
             if let Some(parent) = path.parent()
                 && parent.exists()
@@ -261,20 +252,17 @@ pub(super) fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
     // port (or any abstract socket) blocks all TCP bind/connect and all
     // cross-domain abstract-socket connects / signals by default.
 
-    // Apply the restrictions
     let status = ruleset_created
         .restrict_self()
         .context("Failed to apply Landlock restrictions")?;
 
-    // Determine what was actually applied based on the returned status
     let fs_applied = matches!(
         status.ruleset,
         RulesetStatus::FullyEnforced | RulesetStatus::PartiallyEnforced
     );
 
-    // Check if network restrictions were actually applied. TCP net needs ABI v4
-    // (Linux 6.7+); scoping needs ABI v6 (Linux 6.12+). We read the effective ABI
-    // the kernel negotiated rather than what we requested.
+    // TCP net needs ABI v4 (Linux 6.7+); scoping needs ABI v6 (Linux 6.12+). We
+    // read the effective ABI the kernel negotiated rather than what we requested.
     let net_applied = config.block_network
         && fs_applied
         && matches!(
@@ -328,7 +316,6 @@ pub(super) fn apply_landlock(config: &SandboxConfig) -> Result<LandlockResult> {
     })
 }
 
-/// Add a rule for a path with the specified access rights
 fn add_path_rule(
     ruleset: &mut landlock::RulesetCreated,
     path: impl AsRef<Path>,
@@ -349,7 +336,6 @@ mod tests {
 
     #[test]
     fn test_is_available_does_not_panic() {
-        // Should not panic regardless of kernel support
         let _ = is_available();
     }
 

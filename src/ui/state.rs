@@ -215,8 +215,7 @@ impl PaneScroll {
 }
 
 /// Sort column options for the connections table.
-/// Protocol (TCP/UDP) has no dedicated column anymore — it's merged into
-/// Application, whose comparator tie-breaks on protocol.
+/// Protocol is merged into Application, whose comparator tie-breaks on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SortColumn {
     #[default]
@@ -238,7 +237,7 @@ impl SortColumn {
     /// order: identifying columns first, status columns last). When
     /// `has_location` is true, Location is included after Local Address.
     ///
-    /// Columns hidden at narrow widths stay in the cycle — the active sort
+    /// Columns hidden at narrow widths stay in the cycle: the active sort
     /// is always named in the table's section title, so sorting by an
     /// off-screen column is still discoverable.
     pub fn next(self, has_location: bool) -> Self {
@@ -285,7 +284,6 @@ impl SortColumn {
         }
     }
 
-    /// Get the display name for the sort column
     pub fn display_name(self) -> &'static str {
         match self {
             Self::CreatedAt => "Time",
@@ -496,11 +494,9 @@ pub fn compute_scroll_offset(
     let max_offset = total_rows.saturating_sub(visible_rows);
     let mut offset = current_offset.min(max_offset);
 
-    // Scroll up if selection is above viewport
     if selected_index < offset {
         offset = selected_index;
     }
-    // Scroll down if selection is below viewport
     if selected_index >= offset + visible_rows {
         offset = selected_index - visible_rows + 1;
     }
@@ -1095,7 +1091,7 @@ mod tests {
     #[test]
     fn jump_to_tab_ignores_out_of_range() {
         // Lock the invariant that the public API does not silently corrupt
-        // `selected_tab` to a value outside `0..TAB_COUNT` — `tabs_bar.rs`
+        // `selected_tab` to a value outside `0..TAB_COUNT`; `tabs_bar.rs`
         // indexes into `TAB_TITLES` by that value when drawing.
         let mut ui = UIState {
             selected_tab: 2,

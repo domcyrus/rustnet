@@ -1,59 +1,19 @@
 //! # RustNet Monitor
 //!
 //! A cross-platform real-time network monitoring tool with a terminal user
-//! interface (TUI), deep packet inspection (DPI), per-connection process
-//! attribution, and protocol-aware connection lifecycle tracking. RustNet
-//! sits between simple connection listers (`netstat`, `ss`) and full packet
-//! analyzers (`Wireshark`, `tcpdump`): it shows which process owns each
-//! connection, with live bandwidth and protocol state, and runs over SSH.
+//! interface, deep packet inspection, per-connection process attribution,
+//! and protocol-aware connection lifecycle tracking. It sits between
+//! connection listers (`netstat`, `ss`) and packet analyzers (`Wireshark`,
+//! `tcpdump`): it shows which process owns each connection, with live
+//! bandwidth and protocol state, and runs over SSH.
 //!
-//! ## Capabilities
+//! [`app`] holds orchestration, the packet pipeline, and shared state;
+//! [`network`] holds capture, parsers, DPI, DNS, GeoIP, interface stats, and
+//! platform process lookup; [`ui`] holds the ratatui rendering and keyboard
+//! handling.
 //!
-//! - **Live connection table** for TCP, UDP, ICMP, and ARP, with detailed
-//!   state tracking (TCP `ESTABLISHED`/`SYN_SENT`/`TIME_WAIT`, QUIC
-//!   `INITIAL`/`HANDSHAKE`/`CONNECTED`, DNS, SSH, and activity-based UDP).
-//! - **Deep packet inspection** for HTTP, HTTPS/TLS with SNI extraction,
-//!   DNS, SSH, QUIC, NTP, mDNS, LLMNR, DHCP, SNMP, SSDP, and NetBIOS.
-//! - **TCP analytics**: retransmissions, out-of-order packets, and fast
-//!   retransmit detection, both per-connection and aggregate.
-//! - **Process attribution** via procfs on Linux, native APIs on macOS,
-//!   Windows, and FreeBSD, and an optional eBPF fast path on Linux.
-//! - **GeoIP** lookups against MaxMind GeoLite2 databases.
-//! - **Reverse DNS** with background async resolution and caching.
-//! - **Vim/fzf-style filtering** (`port:`, `src:`, `dst:`, `sni:`,
-//!   `process:`, `state:`, `proto:`, regex via `(?i)…`).
-//! - **Security sandboxing** with Linux Landlock (5.13+) and macOS
-//!   Seatbelt to restrict filesystem and network access at runtime.
-//! - **PCAP export** with process metadata for offline analysis.
-//!
-//! ## Technology stack
-//!
-//! - `ratatui` + `crossterm` for the terminal user interface.
-//! - `pcap` (libpcap / Npcap) for cross-platform packet capture.
-//! - `libbpf-rs` for the optional Linux eBPF process-attribution fast path.
-//! - `dashmap` and `crossbeam` channels for lock-free, multi-threaded
-//!   connection state and packet pipelines.
-//! - `ring` and `aes` for TLS SNI parsing and QUIC Initial decryption.
-//! - `maxminddb` for GeoLite2 country/city lookups.
-//! - `rustnet-sandbox` for the security sandboxing: `landlock` and `caps`
-//!   on Linux, Seatbelt via `sandbox_init` on macOS, a restricted token and
-//!   job object on Windows, plus the shared root uid drop.
-//!
-//! ## Modules
-//!
-//! - [`app`] — application orchestration, packet pipeline, and shared
-//!   state.
-//! - `filter` — vim/fzf-style connection filter parser and matcher.
-//! - [`network`] — packet capture, parsers, DPI, DNS, GeoIP, interface
-//!   stats, and platform-specific process lookup.
-//! - [`ui`] — ratatui rendering, tabs, tables, and keyboard handling.
-//!
-//! ## Binary vs. library
-//!
-//! `rustnet-monitor` is primarily distributed as a binary (`rustnet`).
-//! The library surface exposed here is unstable and intended for internal
-//! use; install via `cargo install rustnet-monitor` or one of the system
-//! package managers listed in the README.
+//! The library surface is unstable and intended for internal use; the
+//! supported product is the `rustnet` binary.
 
 pub mod app;
 pub mod cli;
@@ -75,7 +35,6 @@ pub fn is_admin() -> bool {
     unsafe {
         let mut token_handle = HANDLE::default();
 
-        // Open the process token
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle).is_err() {
             return false;
         }
@@ -83,7 +42,6 @@ pub fn is_admin() -> bool {
         let mut elevation = TOKEN_ELEVATION::default();
         let mut return_length = 0u32;
 
-        // Get the elevation information
         let result = GetTokenInformation(
             token_handle,
             TokenElevation,
@@ -92,7 +50,6 @@ pub fn is_admin() -> bool {
             &mut return_length,
         );
 
-        // Close the token handle
         let _ = windows::Win32::Foundation::CloseHandle(token_handle);
 
         if result.is_err() {

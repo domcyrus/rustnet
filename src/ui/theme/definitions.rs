@@ -445,8 +445,8 @@ fn muted_or_vivid(vivid: bool) -> ThemeSpec {
         },
         rx: rgb(0x10B981, Color::Green),
         tx: rgb(0x3B82F6, Color::Blue),
-        // Keep today's wave directions: blue RX wave, green TX wave, while
-        // the rx/tx table text colors stay Green/Blue respectively.
+        // Wave colors are swapped relative to the rx/tx text colors: blue RX
+        // wave, green TX wave, while table text stays Green/Blue.
         rx_wave: Some(rgb(0x3B82F6, Color::Blue)),
         tx_wave: Some(rgb(0x10B981, Color::Green)),
         selection_bg: None,

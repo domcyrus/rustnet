@@ -11,7 +11,7 @@ use regex_lite::Regex;
 /// How to match a text field (case-insensitive for literals; regex handles its own flags)
 #[derive(Debug, Clone)]
 enum FilterValue {
-    /// Case-insensitive substring match (existing default)
+    /// Case-insensitive substring match (default)
     Literal(String),
     /// Pre-compiled regex (compiled with (?i) prefix for case-insensitive matching)
     Regex(Regex),
@@ -20,9 +20,9 @@ enum FilterValue {
 /// How to match a port number
 #[derive(Debug, Clone)]
 enum PortMatch {
-    /// Exact equality — default when the filter value is all digits
+    /// Exact equality, the default when the filter value is all digits
     Exact(u16),
-    /// Substring match — fallback for non-numeric, non-regex values
+    /// Substring match, the fallback for non-numeric, non-regex values
     Partial(String),
     /// Pre-compiled regex
     Regex(Regex),
@@ -132,7 +132,6 @@ fn any_text_matches<'a>(
 }
 
 impl ConnectionFilter {
-    /// Parse filter query string into filter criteria
     pub fn parse(query: &str) -> Self {
         let mut criteria = Vec::new();
 
@@ -140,7 +139,6 @@ impl ConnectionFilter {
             return Self { criteria };
         }
 
-        // Split by whitespace and process each part
         let parts: Vec<&str> = query.split_whitespace().collect();
 
         for part in parts {
@@ -200,7 +198,6 @@ impl ConnectionFilter {
                     }
                 }
             } else {
-                // General text search
                 criteria.push(FilterCriteria::General(parse_filter_value(
                     &part.to_lowercase(),
                 )));
@@ -210,13 +207,11 @@ impl ConnectionFilter {
         Self { criteria }
     }
 
-    /// Check if a connection matches all filter criteria
     pub fn matches(&self, connection: &Connection) -> bool {
         if self.criteria.is_empty() {
             return true;
         }
 
-        // All criteria must match (AND operation)
         self.criteria.iter().all(|criterion| match criterion {
             FilterCriteria::General(fv) => self.matches_general(connection, fv),
             FilterCriteria::Port(pm) => {
@@ -268,9 +263,8 @@ impl ConnectionFilter {
         })
     }
 
-    /// Check if connection matches general text search across all fields:
-    /// basic connection info, process, service, DPI details, the
-    /// DNS-attributed hostname and ARP vendor names
+    /// General text search across basic connection info, process, service,
+    /// DPI details, the DNS-attributed hostname and ARP vendor names.
     fn matches_general(&self, connection: &Connection, fv: &FilterValue) -> bool {
         let (arp_sender_vendor, arp_target_vendor) = match connection.protocol_state {
             ProtocolState::Arp(ref arp_info) => (
@@ -302,9 +296,8 @@ impl ConnectionFilter {
                 .is_some_and(|dpi_info| self.matches_dpi_general(&dpi_info.application, fv))
     }
 
-    /// Check if SNI or a DNS-attributed hostname matches the filter
-    /// value (DNS query names are not considered; use the DNS-aware
-    /// filters for those)
+    /// SNI or DNS-attributed hostname match (DNS query names are not
+    /// considered; use the DNS-aware filters for those).
     fn matches_sni(&self, connection: &Connection, fv: &FilterValue) -> bool {
         if let Some(ref dpi_info) = connection.dpi_info
             && let Some(hostname) = dpi_info.application.hostname()
@@ -318,7 +311,6 @@ impl ConnectionFilter {
             .is_some_and(|att| match_text(&att.name, fv))
     }
 
-    /// Check if application protocol matches the filter value
     fn matches_application(&self, connection: &Connection, fv: &FilterValue) -> bool {
         if let Some(ref dpi_info) = connection.dpi_info {
             match_text(&dpi_info.application.to_string(), fv)
@@ -327,14 +319,11 @@ impl ConnectionFilter {
         }
     }
 
-    /// Check if DPI info matches general search
     fn matches_dpi_general(&self, application: &ApplicationProtocol, fv: &FilterValue) -> bool {
-        // Check the application type display
         if match_text(&application.to_string(), fv) {
             return true;
         }
 
-        // Check specific protocol details
         match application {
             ApplicationProtocol::Http(info) => any_text_matches(
                 fv,
@@ -346,7 +335,6 @@ impl ConnectionFilter {
             ),
             ApplicationProtocol::Https(_) | ApplicationProtocol::Quic(_) => {
                 application.tls_info().is_some_and(|tls_info| {
-                    // Check SNI and ALPN protocols
                     any_text_matches(
                         fv,
                         std::iter::once(tls_info.sni.as_deref())
@@ -356,8 +344,6 @@ impl ConnectionFilter {
             }
             ApplicationProtocol::Dns(info) => any_text_matches(fv, [info.query_name.as_deref()]),
             ApplicationProtocol::Ssh(info) => {
-                // Check the connection state alongside software names and
-                // algorithms
                 let state_str = format!("{:?}", info.connection_state).to_lowercase();
                 match_text("ssh", fv)
                     || any_text_matches(

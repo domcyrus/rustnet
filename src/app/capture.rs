@@ -132,20 +132,18 @@ fn system_time_to_timeval(timestamp: SystemTime) -> libc::timeval {
 }
 
 impl App {
-    /// Phase 1 of the capture pipeline: create the packet channel and start the
-    /// capture thread (which opens the raw socket). The receiver is stashed in
-    /// `self.packet_rx` for [`App::start_packet_processors`], which runs in the
-    /// worker phase after the sandbox has been applied.
+    /// Privileged half of capture startup: opens the raw socket. The receiver
+    /// is stashed in `self.packet_rx` for [`App::start_packet_processors`],
+    /// which runs after the sandbox has been applied.
     ///
     /// Returns a receiver that fires once the capture thread has finished its
     /// privileged setup (capture device opened, or setup failed).
     pub(super) fn start_packet_capture_pipeline(
         &mut self,
     ) -> Result<std::sync::mpsc::Receiver<()>> {
-        // Create packet channel — sender batches packets, receiver gets Vec<CapturedPacket> per batch
+        // Sender batches; receiver gets one Vec per batch.
         let (packet_tx, packet_rx) = channel::bounded::<Vec<CapturedPacket>>(MAX_PACKET_QUEUE);
 
-        // Start capture thread
         let capture_ready_rx = self.start_capture_thread(packet_tx)?;
 
         // Stash the receiver; the processor threads are spawned post-sandbox.
@@ -165,7 +163,6 @@ impl App {
             anyhow::anyhow!("packet receiver missing; start() must run before start_workers()")
         })?;
 
-        // Start multiple packet processing threads
         let num_processors = thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
@@ -214,7 +211,6 @@ impl App {
             .spawn(move || {
             match setup_packet_capture(capture_config) {
                 Ok((capture, device_name, linktype)) => {
-                    // Store the actual interface name and linktype being used
                     *current_interface.write().unwrap() = Some(device_name.clone());
                     *linktype_storage.write().unwrap() = Some(linktype);
 
@@ -224,7 +220,6 @@ impl App {
                         "capture thread",
                     );
 
-                    // Check if PKTAP is active (linktype 149 or 258)
                     #[cfg(target_os = "macos")]
                     {
                         use crate::network::link_layer::pktap;
@@ -234,7 +229,7 @@ impl App {
                         } else {
                             // PKTAP not active: bridge the capture layer's reason into
                             // the process-attribution degradation reason. This keeps
-                            // rustnet-host decoupled from rustnet-capture — the app
+                            // rustnet-host decoupled from rustnet-capture; the app
                             // (which orchestrates both) does the translation.
                             use crate::network::capture::PktapUnavailable;
                             use crate::network::platform::{
@@ -348,7 +343,6 @@ impl App {
 
                                 packets_read += 1;
 
-                                // Log first packet immediately
                                 if packets_read == 1 {
                                     info!(
                                         "First packet captured! Size: {} bytes",
@@ -364,7 +358,6 @@ impl App {
                                     last_log = Instant::now();
                                 }
 
-                                // Write to PCAP file if enabled
                                 if let Some(ref mut savefile) = pcap_savefile {
                                     let ts = system_time_to_timeval(packet.timestamp);
                                     let header = pcap::PacketHeader {
@@ -381,7 +374,6 @@ impl App {
 
                                 batch.push(packet);
 
-                                // Send batch when full or deadline reached
                                 if (batch.len() >= 100 || Instant::now() >= batch_deadline)
                                     && send_batch(&mut batch, &mut batch_deadline, "sending")
                                         .is_break()
@@ -406,7 +398,6 @@ impl App {
                                     break;
                                 }
 
-                                // Check stats every second
                                 if last_stats_check.elapsed() > Duration::from_secs(1) {
                                     if let Ok(capture_stats) = reader.stats() {
                                         if capture_stats.received > 0 {
@@ -456,7 +447,6 @@ impl App {
                         }
                     }
 
-                    // Flush PCAP savefile before exiting
                     if let Some(ref mut savefile) = pcap_savefile {
                         if let Err(e) = savefile.flush() {
                             error!("Failed to flush PCAP savefile: {}", e);
@@ -477,7 +467,6 @@ impl App {
                     let _ = capture_ready_tx.send(());
                     let error_msg = format!("{}", e);
 
-                    // Check if this is a privilege error
                     if error_msg.contains("Insufficient privileges") {
                         error!("Failed to start packet capture due to insufficient privileges:");
                         // The error message already contains detailed instructions
@@ -500,7 +489,6 @@ impl App {
         Ok(capture_ready_rx)
     }
 
-    /// Start a packet processor thread
     fn start_packet_processor(
         &self,
         id: usize,
@@ -533,7 +521,6 @@ impl App {
                     "processor thread {id}"
                 ));
 
-                // Wait for linktype to be available
                 let mut parser =
                     match wait_for_linktype(&linktype_storage, &capture_status, &should_stop) {
                         LinktypeWait::Ready(linktype) => {
@@ -580,7 +567,7 @@ impl App {
                     // Connections are stamped with each packet's own capture
                     // time, not one clock read shared by the batch. Handshake
                     // RTT is the gap between two packets' timestamps, and a
-                    // batch spans up to 100 packets or 100ms — wide enough to
+                    // batch spans up to 100 packets or 100ms, wide enough to
                     // swallow a whole handshake and report its round trip as
                     // zero. libpcap already hands us the kernel's timestamp, so
                     // this costs no extra clock reads.
@@ -651,7 +638,6 @@ impl App {
                         .packets_processed
                         .fetch_add(batch_len as u64, Ordering::Relaxed);
 
-                    // Log progress
                     if total_processed.is_multiple_of(10000)
                         || last_log.elapsed() > Duration::from_secs(5)
                     {
@@ -689,7 +675,6 @@ fn update_connection(
 ) -> IngestOutcome {
     let outcome = tracker.ingest_at(&parsed, now);
 
-    // Fold TCP anomaly counts into the global statistics.
     if outcome.retransmits > 0 {
         stats
             .total_tcp_retransmits
@@ -738,7 +723,6 @@ fn update_connection(
         );
     }
 
-    // Log a new-connection event if JSON logging is enabled.
     if outcome.created {
         stats
             .total_connections_created

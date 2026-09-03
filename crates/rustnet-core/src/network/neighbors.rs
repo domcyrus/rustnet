@@ -7,7 +7,7 @@
 //! on-link addresses (ARP never crosses a router; NDP messages are only
 //! accepted at hop limit 255, which proves they were not routed). The frames
 //! themselves are trusted, though: under proxy ARP/NDP or spoofing an
-//! off-link address can appear mapped to a local MAC — the entry then names
+//! off-link address can appear mapped to a local MAC; the entry then names
 //! the L2 hop actually answering for that IP on this segment, not the remote
 //! host itself.
 
@@ -30,7 +30,7 @@ const MAX_ENTRIES: usize = 4096;
 /// Entries whose neighbor has not been seen in ARP/NDP traffic for this long
 /// are dropped when the table is full and a new key needs room. Active
 /// neighbors re-announce every few minutes, so only devices that left the
-/// segment — or junk left over from a past flood — age this far. Sweeping
+/// segment (or junk left over from a past flood) age this far. Sweeping
 /// only at the cap keeps the hot path free of expiry bookkeeping, and
 /// staleness-based sweeping cannot be weaponized by a live flood: the
 /// flood's own entries are the freshest ones in the table.
@@ -99,7 +99,7 @@ impl NeighborCache {
         // Unspecified covers ARP probes and DAD solicitations; a multicast or
         // limited-broadcast IP never names a neighbor (possible in a forged
         // NA target or ARP sender field). Subnet-directed broadcasts are not
-        // recognizable here — that would need the interface prefixes.
+        // recognizable here; that would need the interface prefixes.
         let is_v4_broadcast = matches!(ip, IpAddr::V4(v4) if v4.is_broadcast());
         if ip.is_unspecified()
             || ip.is_multicast()
@@ -115,7 +115,7 @@ impl NeighborCache {
         // cannot poison the table for the rest of the process lifetime.
         // These checks run before the shard lock below, so racing processor
         // threads can overshoot the cap by at most a thread count's worth of
-        // entries — harmless. `len()` must not be called while the entry
+        // entries, which is harmless. `len()` must not be called while the entry
         // guard is held: it read-locks every shard.
         if !self.entries.contains_key(&ip) && self.entries.len() >= MAX_ENTRIES {
             self.sweep_stale(now);
@@ -130,7 +130,7 @@ impl NeighborCache {
                 // frames for the same IP can arrive here out of capture
                 // order; never let the older observation overwrite the newer
                 // one. A refresh that changes nothing but the timestamp
-                // skips the string allocations — the common case for every
+                // skips the string allocations, the common case for every
                 // periodic re-announcement of a known neighbor.
                 let entry = entry.get_mut();
                 if entry.last_seen <= now {
@@ -176,7 +176,7 @@ impl NeighborCache {
             .retain(|_, entry| match now.duration_since(entry.last_seen) {
                 Ok(age) => age < STALE_AFTER,
                 // `last_seen` ahead of `now`: a racing thread refreshed the
-                // entry with a newer capture timestamp — certainly fresh.
+                // entry with a newer capture timestamp, certainly fresh.
                 Err(_) => true,
             });
     }

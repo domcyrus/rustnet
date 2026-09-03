@@ -43,8 +43,7 @@ pub(super) fn analyze_stun(payload: &[u8]) -> Option<StunInfo> {
 
     // Extract class bits: C1 is bit 8, C0 is bit 4 (RFC 5389 section 6).
     // Both extractions mask to a single bit, so `class_bits` is bounded
-    // to 0..=3 by construction — the 0b11 arm covers the only remaining
-    // value, which lets us drop the `unreachable!()` catch-all.
+    // to 0..=3 by construction, so the 0b11 arm is exhaustive.
     let c0 = ((msg_type >> 4) & 0x1) as u8;
     let c1 = ((msg_type >> 8) & 0x1) as u8;
     let class_bits = (c1 << 1) | c0;
@@ -276,10 +275,10 @@ mod tests {
 
     #[test]
     fn test_class_bits_exhaustive_for_unknown_method() {
-        // Lock the invariant the refactor relies on: class_bits is bounded
-        // to 0..=3 by construction (each of c0/c1 is masked to one bit).
+        // class_bits is bounded to 0..=3 by construction (each of c0/c1 is
+        // masked to one bit).
         // Pair every class with a non-Binding method to confirm the class
-        // decode is independent of method recognition — otherwise a future
+        // decode is independent of method recognition; otherwise a future
         // change to method handling could mask a class-bit regression.
         for (class, expected) in [
             (0u8, StunMessageClass::Request),

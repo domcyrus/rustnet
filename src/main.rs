@@ -9,7 +9,6 @@ use std::path::Path;
 use std::time::Duration;
 
 fn main() -> Result<()> {
-    // Parse command line arguments
     let matches = cli::build_cli().get_matches();
 
     // Clap handles --help and --version before this point, so both remain
@@ -18,7 +17,6 @@ fn main() -> Result<()> {
     #[cfg(target_os = "windows")]
     initialize_windows_npcap()?;
 
-    // Set up logging only if log-level was provided
     if let Some(log_level_str) = matches.get_one::<String>("log-level") {
         let log_level = log_level_str
             .parse::<LevelFilter>()
@@ -29,7 +27,6 @@ fn main() -> Result<()> {
     // Check privileges BEFORE initializing TUI (so error messages are visible)
     check_privileges_early()?;
 
-    // Build configuration from command line arguments
     let mut config = app::Config::default();
 
     if let Some(interface) = matches.get_one::<String>("interface") {
@@ -128,7 +125,6 @@ fn main() -> Result<()> {
     }
     ui::set_theme(ui::Theme::resolve(&spec, ui::detect_truecolor()));
 
-    // GeoIP configuration
     if matches.get_flag("no-geoip") {
         config.disable_geoip = true;
         info!("GeoIP lookups disabled");
@@ -230,12 +226,10 @@ fn main() -> Result<()> {
         output_handles.pcapng_export = Some(file);
     }
 
-    // Set up terminal
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = ui::setup_terminal(backend)?;
     info!("Terminal UI initialized");
 
-    // Create and start the application
     let mut app = app::App::new_with_output_handles(config.clone(), output_handles)?;
     let (process_ready_rx, capture_ready_rx) = app.start()?;
     info!("Application started");
@@ -380,15 +374,12 @@ fn main() -> Result<()> {
     // a compromise in a DPI parser is contained even when running as root.
     app.start_workers()?;
 
-    // Run the UI loop
     install_signal_handlers();
     let res = run_ui_loop(&mut terminal, &app);
 
-    // Cleanup
     app.stop();
     ui::restore_terminal(&mut terminal)?;
 
-    // Return any error that occurred
     if let Err(err) = res {
         error!("Application error: {}", err);
         println!("Error: {}", err);
@@ -427,7 +418,6 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
         }
     }
 
-    // Create timestamped log file name
     let timestamp = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
     let log_file_path = log_dir.join(format!("rustnet_{}.log", timestamp));
 
@@ -435,18 +425,15 @@ fn setup_logging(level: LevelFilter) -> Result<()> {
     // symlink-refusing, private-mode open as the other output files.
     let log_file = open_private(&log_file_path, false)?;
 
-    // Enable the `target` field on every log line so each entry carries
-    // the originating module (e.g. `network::dpi::dns`). Combined with
-    // the startup-banner lines below, this addresses #310 — users now
-    // see both the program identity (name/version/pid) at the top of
-    // the file and which subsystem emitted each subsequent line.
+    // `target` names the emitting subsystem (e.g. `network::dpi::dns`); the
+    // banner below identifies the binary.
     let config = ConfigBuilder::new()
         .set_target_level(LevelFilter::Error)
         .build();
 
     WriteLogger::init(level, config, log_file)?;
 
-    // Startup banner — one identifying header so a user grepping a
+    // Startup banner: one identifying header so a user grepping a
     // long-lived log file can immediately see which binary, which
     // version, and which pid produced these lines. The `pkg_name` is
     // the cargo package name (`rustnet-monitor`), not `argv[0]`, so it
@@ -607,7 +594,6 @@ mod output_file_tests {
     }
 }
 
-/// Sort connections based on the specified column and direction
 use ui::{clear_all_with_confirmation, copy_to_clipboard, sort_connections};
 
 /// Set from the signal handler; the UI loop exits through its normal
@@ -666,7 +652,7 @@ where
     ui_state.has_geoip = has_country_db;
     let mut click_regions = ui::ClickableRegions::default();
 
-    // Data state persists across loop iterations — only refreshed on timer tick
+    // Data state persists across loop iterations; only refreshed on timer tick
     // or when an event changes the underlying data (filter, sort, historic toggle, etc.)
     let mut connections: Vec<network::types::Connection> = Vec::new();
     let mut grouped_rows: Vec<ui::GroupedRow<'_>> = Vec::new();
@@ -804,7 +790,6 @@ where
             .unwrap_or(Duration::from_secs(0))
             .min(idle_redraw.saturating_sub(last_draw.elapsed()));
 
-        // Clear clipboard message after timeout
         if let Some((_, time)) = &ui_state.clipboard_message
             && time.elapsed().as_secs() >= 3
         {
@@ -823,7 +808,7 @@ where
                 crossterm::event::Event::Mouse(mouse) => {
                     use crossterm::event::{MouseButton, MouseEventKind};
 
-                    // Active tab's Component gets first crack — currently
+                    // Active tab's Component gets first crack; currently
                     // only OverviewTab claims (scroll wheel inside the
                     // scroll area). Click events fall through to the
                     // global ClickableRegions dispatch below.
@@ -940,16 +925,15 @@ where
                 crossterm::event::Event::Key(key) => {
                     use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
-                    // On Windows, crossterm reports both Press and Release events
-                    // On Linux/macOS, only Press events are reported
-                    // Filter to only handle Press events for consistent cross-platform behavior
+                    // Windows crossterm reports Release events too; only
+                    // Press is handled so all platforms behave the same.
                     if key.kind != KeyEventKind::Press {
                         continue 'events;
                     }
                     needs_redraw = true;
 
                     // Give the active tab's Component first crack
-                    // at the key (including filter-mode input — OverviewTab
+                    // at the key (including filter-mode input; OverviewTab
                     // owns that). If it claims (returns Some), the loop
                     // skips its fallback match. The per-key confirmation
                     // reset happens here for both branches so q / x can
@@ -999,11 +983,8 @@ where
                         // and quit/help/interface-toggle live here, plus
                         // cross-tab fallbacks for x (clear) and Esc which
                         // would otherwise stop working on non-Overview
-                        // tabs. Per-arm confirmation clearing is no longer
-                        // needed — the dispatcher above already applied
-                        // the per-key reset rule.
+                        // tabs.
                         match (key.code, key.modifiers) {
-                            // Quit with confirmation
                             (KeyCode::Char('q'), _) => {
                                 if ui_state.quit_confirmation {
                                     info!("User confirmed application exit");
@@ -1014,19 +995,16 @@ where
                                 }
                             }
 
-                            // Ctrl+C always quits immediately
                             (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
                                 info!("User requested immediate exit with Ctrl+C");
                                 break 'main;
                             }
 
-                            // Tab navigation (forward)
                             (KeyCode::Tab, KeyModifiers::NONE)
                             | (KeyCode::Char(']'), KeyModifiers::NONE) => {
                                 ui_state.next_tab();
                             }
 
-                            // Shift+Tab navigation (backward)
                             (KeyCode::BackTab, _)
                             | (KeyCode::Tab, KeyModifiers::SHIFT)
                             | (KeyCode::Char('['), KeyModifiers::NONE) => {
@@ -1089,7 +1067,6 @@ where
 fn check_privileges_early() -> Result<()> {
     match network::privileges::check_packet_capture_privileges() {
         Ok(status) if !status.has_privileges => {
-            // Print error to stderr before TUI starts
             eprintln!(
                 "\n╔═══════════════════════════════════════════════════════════════════════════╗"
             );
@@ -1107,13 +1084,10 @@ fn check_privileges_early() -> Result<()> {
             ));
         }
         Err(e) => {
-            // Privilege check failed - warn but continue
             eprintln!("Warning: Failed to check privileges: {}", e);
             eprintln!("Continuing anyway, but packet capture may fail...\n");
         }
-        _ => {
-            // Privileges OK
-        }
+        _ => {}
     }
 
     Ok(())

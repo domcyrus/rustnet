@@ -24,11 +24,10 @@
 //!
 //! After the drop, the per-platform process-attribution fallbacks can only see
 //! the target user's processes: the procfs `/proc/<pid>/fd` scan on Linux
-//! (the eBPF fast path is unaffected — it reads already-open map fds), the
+//! (the eBPF fast path is unaffected: it reads already-open map fds), the
 //! lsof fallback on macOS (PKTAP attribution unaffected), and sockstat on
 //! FreeBSD. Kubernetes log-directory metadata under `/var/log/pods` may also
-//! become unreadable on Linux. `--no-uid-drop` keeps the old keep-root
-//! behavior.
+//! become unreadable on Linux. `--no-uid-drop` keeps root for the whole run.
 
 use anyhow::{Result, anyhow};
 

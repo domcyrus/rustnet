@@ -30,7 +30,7 @@ pub fn parse(
 
     let igmp_type = transport_data[0];
 
-    // IGMPv3 Membership Reports (0x22) have no single group address —
+    // IGMPv3 Membership Reports (0x22) have no single group address:
     // bytes 4–5 are reserved and bytes 6–7 are the number of group records.
     // Only IGMPv1/v2 messages carry a group address in bytes 4–7.
     let group_addr = if igmp_type != 0x22 && transport_data.len() >= 8 {

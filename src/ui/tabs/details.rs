@@ -1,4 +1,4 @@
-//! Details tab — full record for the selected connection: protocol
+//! Details tab: the full record for the selected connection (protocol
 //! header, TCP analytics, traffic stats, and protocol-specific DPI
 //! info. Also owns the DetailsBuilder / register_detail_clicks
 //! helpers that build the label/value lines and the click-to-copy
@@ -69,7 +69,7 @@ pub(in crate::ui) const DETAIL_LABEL_WIDTH: usize = 22;
 const DETAILS_SPLIT_MIN_WIDTH: u16 = 100;
 
 /// Rows scrolled per Ctrl+D / Ctrl+U press in the info panes. A fixed
-/// step rather than a half page — the pane height isn't known in the
+/// step rather than a half page: the pane height isn't known in the
 /// key handler, and a small constant feels consistent across sizes.
 const DETAILS_SCROLL_STEP: u16 = 5;
 
@@ -94,7 +94,7 @@ const APPLICATION_CARD_ROWS: usize = 11;
 /// dashboard.
 const TRANSPORT_CARD_ROWS: usize = 9;
 
-/// Details tab. Pulls DNS resolver per-render from the app — no
+/// Details tab. Pulls the DNS resolver per render from the app; no
 /// per-tab state today.
 pub(in crate::ui) struct DetailsTab;
 
@@ -127,7 +127,7 @@ impl Component for DetailsTab {
             _ => {}
         }
         // In grouped mode, flip through the grouped view's connection
-        // sequence, skipping group headers — a header has no record to
+        // sequence, skipping group headers, since a header has no record to
         // show on this tab. Falls through to the shared flat-list
         // helper when grouping is off (or the sequence is empty).
         if let Some(effects) = try_handle_grouped_details_nav(key, ctx) {
@@ -319,7 +319,7 @@ fn format_window_sizes(counters: Option<&TcpAnalytics>) -> String {
     ) {
         // Nothing sizeable in either direction: one line saying so reads
         // better than a pair of placeholders. Which of the two it is still
-        // matters — nothing observed at all, or observed but unscalable.
+        // matters: nothing observed at all, or observed but unscalable.
         (None, None) => {
             if counters.last_window_out.is_none() && counters.last_window_in.is_none() {
                 NONE_PLACEHOLDER.to_string()
@@ -655,7 +655,7 @@ fn format_idle_timeout(timeout: std::time::Duration) -> String {
 
 /// Format a QUIC CONNECTION_CLOSE frame. Frame type 0x1d carries an
 /// application-level error code (an HTTP/3 code, say), anything else is a
-/// transport-level one, and the two number spaces are unrelated — so the
+/// transport-level one, and the two number spaces are unrelated, so the
 /// origin has to be shown alongside the code (RFC 9000 §19.19).
 fn format_quic_close(close: &crate::network::types::QuicCloseInfo) -> String {
     let origin = if close.frame_type == 0x1d {
@@ -987,7 +987,6 @@ pub(in crate::ui) fn draw_connection_details(
     };
     let value_width = (pane_width as usize).saturating_sub(DETAIL_LABEL_WIDTH);
 
-    // Connection details - build lines and field entries in parallel for click-to-copy.
     // All sections share a single label_style (muted gray); visual grouping comes
     // from the bold section headings inserted by DetailsBuilder::section.
     let label_style = theme::fg(theme::label());
@@ -1286,9 +1285,8 @@ pub(in crate::ui) fn draw_connection_details(
         details.field_opt("Cgroup", k8s.cgroup_path.clone());
     }
 
-    // Add DPI / application protocol information. Section heading carries
-    // both the label and the protocol so we don't need a redundant
-    // "Application: <proto>" field below.
+    // The section heading carries both the label and the protocol, so no
+    // redundant "Application: <proto>" field is needed below.
     let application_start = details.rows();
     if let Some(dpi) = &conn.dpi_info {
         details.section_styled(
@@ -1804,7 +1802,7 @@ pub(in crate::ui) fn draw_connection_details(
     }
 
     // One header band across the whole info area; the panes below it
-    // are borderless. When grouping is on, say so — the strip above and
+    // are borderless. When grouping is on, say so: the strip above and
     // the j/k navigation follow the grouped view's order, mirroring the
     // "Grouped by Process" suffix in the Overview title.
     let mut suffix: Vec<Span<'static>> = Vec::new();
@@ -1848,7 +1846,7 @@ pub(in crate::ui) fn draw_connection_details(
     // if the connection has no DPI / TCP analytics, so the layout stays
     // consistent across connection types. Below the width threshold the
     // panel collapses back to a single column so narrow terminals stay
-    // readable. The right pane needs no title of its own — its content
+    // readable. The right pane needs no title of its own; its content
     // starts with the bold Application and Transport Health headings.
     let split_horizontally = info_area.width >= DETAILS_SPLIT_MIN_WIDTH;
     // The builder is done; the drain below reshuffles raw lines and fields.
@@ -1947,7 +1945,6 @@ pub(in crate::ui) fn draw_connection_details(
         info_h as usize,
     );
 
-    // Traffic details - also track fields for click-to-copy
     let mut traffic = DetailsBuilder::new(label_style);
 
     let rx_value_style = theme::fg(theme::rx());

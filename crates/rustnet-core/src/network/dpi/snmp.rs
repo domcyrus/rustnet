@@ -37,16 +37,13 @@ pub(super) fn analyze_snmp(payload: &[u8]) -> Option<SnmpInfo> {
         return None;
     }
 
-    // Parse SEQUENCE length
     let (seq_len, mut offset) = parse_ber_length(&payload[1..])?;
     offset += 1; // Account for SEQUENCE tag
 
-    // Check we have enough data
     if offset + seq_len > payload.len() {
         return None;
     }
 
-    // Parse version (INTEGER)
     let (version_bytes, offset) = read_tlv(payload, offset, BER_INTEGER)?;
     let version = parse_version(version_bytes)?;
 
@@ -119,7 +116,7 @@ fn parse_version(data: &[u8]) -> Option<SnmpVersion> {
     }
 }
 
-/// Read the PDU tag expected at exactly `offset`. Structural — never scans:
+/// Read the PDU tag expected at exactly `offset`. Structural, never scans:
 /// a byte in the 0xA0-0xA8 range inside a length or INTEGER value (e.g. a
 /// request-id) must not be mistaken for a PDU tag.
 fn pdu_type_at(payload: &[u8], offset: usize) -> Option<SnmpPduType> {
@@ -140,8 +137,8 @@ fn pdu_type_at(payload: &[u8], offset: usize) -> Option<SnmpPduType> {
 
 /// Walk the SNMPv3 message structure (RFC 3412 §6) to the PDU tag:
 /// msgGlobalData (SEQUENCE) and msgSecurityParameters (OCTET STRING) are
-/// skipped whole, then msgData is either a plaintext ScopedPDU — a SEQUENCE
-/// holding contextEngineID, contextName, and the PDU — or an encrypted
+/// skipped whole, then msgData is either a plaintext ScopedPDU (a SEQUENCE
+/// holding contextEngineID, contextName, and the PDU) or an encrypted
 /// OCTET STRING, in which case the PDU type is not visible.
 fn v3_pdu_type(payload: &[u8], offset: usize) -> Option<SnmpPduType> {
     let offset = skip_tlv(payload, offset, BER_SEQUENCE)?; // msgGlobalData
@@ -194,9 +191,8 @@ mod tests {
 
         // SEQUENCE
         packet.push(BER_SEQUENCE);
-        // We'll update length later
         let len_pos = packet.len();
-        packet.push(0x00); // Placeholder
+        packet.push(0x00); // Placeholder, patched below
 
         // Version: INTEGER
         packet.push(BER_INTEGER);
@@ -227,7 +223,6 @@ mod tests {
         packet.push(BER_SEQUENCE);
         packet.push(0x00);
 
-        // Update length
         packet[len_pos] = (packet.len() - len_pos - 1) as u8;
 
         packet
@@ -304,8 +299,7 @@ mod tests {
         packet.push(0x03);
 
         // msgGlobalData SEQUENCE: msgID, msgMaxSize, msgFlags, msgSecurityModel.
-        // The msgID value 0x12A34456 deliberately contains a 0xA3 byte — the
-        // old scanning detector misread it as a SetRequest PDU tag.
+        // msgID contains a 0xA3 byte, which must not be read as a PDU tag.
         packet.push(BER_SEQUENCE);
         packet.push(0x10);
         packet.push(BER_INTEGER);
@@ -373,7 +367,7 @@ mod tests {
     #[test]
     fn test_pdu_tag_not_scanned_from_value_bytes() {
         // A v1 message whose community is followed by a non-PDU byte must be
-        // rejected — the detector must not scan ahead for a 0xA0-0xA8 byte.
+        // rejected; the detector must not scan ahead for a 0xA0-0xA8 byte.
         let mut packet = build_snmp_v1_get("public");
         // Overwrite the PDU tag with an INTEGER tag: still not SNMP.
         let pdu_pos = packet.iter().position(|&b| b == PDU_GET_REQUEST).unwrap();

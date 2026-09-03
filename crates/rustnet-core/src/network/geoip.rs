@@ -131,7 +131,6 @@ impl GeoIpResolver {
     pub fn with_auto_discovery() -> Self {
         let mut config = GeoIpConfig::default();
 
-        // Common paths to search for databases
         let search_paths = Self::get_search_paths();
 
         for base_path in search_paths {
@@ -219,22 +218,18 @@ impl GeoIpResolver {
 
     /// Lookup GeoIP information for an IP address
     pub fn lookup(&self, ip: IpAddr) -> GeoIpInfo {
-        // Skip private/local addresses
         if is_private_or_local(&ip) {
             return GeoIpInfo::default();
         }
 
-        // Check cache first
         if let Some(cached) = self.cache.get(&ip)
             && cached.cached_at.elapsed() < self.config.cache_ttl
         {
             return cached.info.clone();
         }
 
-        // Perform lookup
         let info = self.do_lookup(ip);
 
-        // Cache the result
         self.cache.insert(
             ip,
             CachedGeoIp {
@@ -243,7 +238,6 @@ impl GeoIpResolver {
             },
         );
 
-        // Evict old entries if cache is too large
         if self.cache.len() > self.config.max_cache_size {
             self.evict_oldest_entries();
         }
@@ -255,7 +249,6 @@ impl GeoIpResolver {
     fn do_lookup(&self, ip: IpAddr) -> GeoIpInfo {
         let mut info = GeoIpInfo::default();
 
-        // Country lookup
         if let Some(ref reader) = self.country_reader
             && let Ok(Some(country)) = reader
                 .lookup(ip)
@@ -266,7 +259,6 @@ impl GeoIpResolver {
             info.country_name = c.names.english.map(|s| s.to_string());
         }
 
-        // ASN lookup
         if let Some(ref reader) = self.asn_reader
             && let Ok(Some(asn)) = reader.lookup(ip).and_then(|r| r.decode::<geoip2::Asn>())
         {
@@ -274,7 +266,7 @@ impl GeoIpResolver {
             info.as_org = asn.autonomous_system_organization.map(|s| s.to_string());
         }
 
-        // City lookup (City DB is a superset of Country — also fills country fields as fallback)
+        // City lookup (City DB is a superset of Country; also fills country fields as fallback)
         if let Some(ref reader) = self.city_reader
             && let Ok(Some(city)) = reader.lookup(ip).and_then(|r| r.decode::<geoip2::City>())
         {

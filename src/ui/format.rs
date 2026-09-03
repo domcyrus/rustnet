@@ -4,7 +4,6 @@
 //! the parent module's `NONE_PLACEHOLDER` ("-") for zero/absent
 //! values so the UI reads consistently.
 
-/// Format rate to human readable form
 pub(super) fn format_rate(bytes_per_second: f64) -> String {
     const KB_PER_SEC: f64 = 1024.0;
     const MB_PER_SEC: f64 = KB_PER_SEC * 1024.0;
@@ -73,7 +72,6 @@ pub(super) fn format_countdown(remaining: std::time::Duration) -> String {
     }
 }
 
-/// Format bytes to human readable form
 pub(super) fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;

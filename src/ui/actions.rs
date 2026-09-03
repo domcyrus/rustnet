@@ -2,7 +2,7 @@
 //! effects on `App`. These live here (not on `UIState` directly)
 //! because they touch both. Used by `OverviewTab::handle_key` for
 //! the Overview-active case and by main.rs's fallback match for
-//! the cross-tab case — keeping a single source of truth so both
+//! the cross-tab case, keeping a single source of truth so both
 //! callers stay in lockstep when the action's semantics evolve.
 
 use std::time::Instant;
@@ -49,7 +49,7 @@ pub fn try_handle_connection_nav(
             ctx.move_selection(SelectionMove::Last);
             Some(Vec::new())
         }
-        // Copy selected connection's remote address — works wherever
+        // Copy selected connection's remote address, works wherever
         // there's a selection (Overview list focus or Details record).
         (KeyCode::Char('c'), KeyModifiers::NONE) => {
             if let Some(idx) = ctx.ui_state.get_selected_index(ctx.connections)
@@ -111,7 +111,7 @@ pub fn try_handle_pane_wheel(mouse: MouseEvent, scroll: &mut PaneScroll) -> Opti
 /// confirmation. First press flips `clear_confirmation` on; the
 /// second press (while it's on) actually clears.
 ///
-/// Returns `true` when the clear happened — caller should treat
+/// Returns `true` when the clear happened; caller should treat
 /// this as a data-refresh signal.
 pub fn clear_all_with_confirmation(ui_state: &mut UIState, app: &App) -> bool {
     if ui_state.clear_confirmation {

@@ -56,17 +56,14 @@ pub fn parse(
 
     match ethertype {
         0x0800 => {
-            // IPv4
             log::trace!("Ethernet: IPv4 packet detected");
             parser.parse_ipv4_packet_inner(data, offset, process_name, process_id)
         }
         0x86dd => {
-            // IPv6
             log::trace!("Ethernet: IPv6 packet detected");
             parser.parse_ipv6_packet_inner(data, offset, process_name, process_id)
         }
         0x0806 => {
-            // ARP
             log::trace!("Ethernet: ARP packet detected");
             parser.parse_arp_packet_with_offset(data, offset, process_name, process_id)
         }

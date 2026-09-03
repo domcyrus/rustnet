@@ -1,10 +1,6 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-// ============================================================================
-// Traffic History Types (for graph visualization)
-// ============================================================================
-
 /// Chart data points as (time_offset, value) pairs
 pub type ChartData = Vec<(f64, f64)>;
 
@@ -292,8 +288,7 @@ impl TrafficHistory {
     /// Last `count` values of `pick`, oldest first (newest last).
     ///
     /// `samples` is filled push_back/pop_front, so `iter()` is already
-    /// oldest→newest. Skip past everything but the last `count` instead of
-    /// the rev→take→collect→rev→collect dance, which allocated twice.
+    /// oldest→newest. Skip past everything but the last `count`.
     fn sparkline(&self, count: usize, pick: fn(&TrafficSample) -> u64) -> Vec<u64> {
         let skip = self.samples.len().saturating_sub(count);
         self.samples.iter().skip(skip).map(pick).collect()
@@ -378,7 +373,6 @@ impl TrafficHistory {
     /// Time offset is negative seconds from now
     pub fn get_health_chart_data(&self) -> (ChartData, ChartData) {
         let now = Instant::now();
-        // Apply smoothing with window of 3
         let window = 3;
         let loss = self.windowed_series(now, window, |s| Some(s.packet_loss_pct as f64));
         let rtt = self.windowed_series(now, window, |s| s.avg_rtt_ms);
@@ -571,10 +565,6 @@ mod tests {
         assert_eq!(history.tx_scale.target, 1_024);
     }
 
-    // ========================================================================
-    // Traffic History Health Data Tests
-    // ========================================================================
-
     #[test]
     fn test_traffic_sample_packet_loss_calculation() {
         let mut history = TrafficHistory::new(60);
@@ -584,14 +574,10 @@ mod tests {
 
         let (loss_data, rtt_data) = history.get_health_chart_data();
 
-        // Should have at least one data point
         assert!(!loss_data.is_empty());
-        // Loss percentage should be 5%
         assert!((loss_data[0].1 - 5.0).abs() < 0.01);
 
-        // Should have RTT data
         assert!(!rtt_data.is_empty());
-        // RTT should be around 25ms
         assert!((rtt_data[0].1 - 25.0).abs() < 0.01);
     }
 
@@ -604,11 +590,9 @@ mod tests {
 
         let (loss_data, rtt_data) = history.get_health_chart_data();
 
-        // Should have data with 0% loss
         assert!(!loss_data.is_empty());
         assert!((loss_data[0].1).abs() < 0.01);
 
-        // No RTT data
         assert!(rtt_data.is_empty());
     }
 
@@ -632,7 +616,6 @@ mod tests {
 
         let (loss_data, rtt_data) = history.get_health_chart_data();
 
-        // Should have smoothed data points
         assert!(loss_data.len() >= 2);
         assert!(rtt_data.len() >= 2);
     }

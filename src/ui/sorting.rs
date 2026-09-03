@@ -1,5 +1,5 @@
 //! Connection-list sort comparators, one per `SortColumn`. Pure
-//! function: no UI state, no I/O — just reorders the slice in
+//! function: no UI state, no I/O, just reorders the slice in
 //! place.
 
 use crate::network::types::Connection;

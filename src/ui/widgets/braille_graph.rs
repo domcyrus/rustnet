@@ -51,7 +51,7 @@ impl WavePanelOptions {
 
 /// Unicode braille bit for a dot at (dx, dy) inside one cell.
 /// dx: 0 = left column, 1 = right column; dy: 0 = top … 3 = bottom.
-/// Dots 7/8 (the bottom row) live in the high bits — this is the
+/// Dots 7/8 (the bottom row) live in the high bits; this is the
 /// standard braille encoding, not a linear layout.
 const fn dot_mask(dx: usize, dy: usize) -> u8 {
     match (dx, dy) {
@@ -287,7 +287,7 @@ pub(in crate::ui) fn wave_panel(
     f.render_widget(Paragraph::new(lines), graph_area);
 }
 
-/// Least-squares slope over the last `n` samples — feeds the ↗/→/↘
+/// Least-squares slope over the last `n` samples; feeds the ↗/→/↘
 /// trend glyph next to the current rate.
 fn slope(samples: &[u64], n: usize) -> f64 {
     let tail = &samples[samples.len().saturating_sub(n)..];

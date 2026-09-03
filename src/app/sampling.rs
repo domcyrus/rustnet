@@ -72,7 +72,6 @@ fn snapshot_source<K: Eq + std::hash::Hash, S: std::hash::BuildHasher + Clone>(
 }
 
 impl App {
-    /// Start snapshot provider thread for UI updates
     pub(super) fn start_snapshot_provider(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let snapshot = Arc::clone(&self.connections_snapshot);
         let snapshot_generation = Arc::clone(&self.snapshot_generation);
@@ -93,7 +92,6 @@ impl App {
         let enrich_and_filter = move |conn: &mut Connection,
                                       service_lookup: &ServiceLookup|
               -> bool {
-            // Enrich with service name
             if conn.service_name.is_none() {
                 if let Some(service) = service_lookup.lookup(conn.remote_addr.port(), conn.protocol)
                 {
@@ -104,7 +102,6 @@ impl App {
                     conn.service_name = Some(service.to_string());
                 }
             }
-            // Apply localhost filter
             passes_localhost_filter(conn)
         };
 
@@ -118,7 +115,6 @@ impl App {
             loop_interval,
             Arc::clone(&self.should_stop),
             move || {
-                // Create snapshot
                 let start = Instant::now();
                 let total_connections = tracker.len();
 
@@ -126,14 +122,13 @@ impl App {
                     enrich_and_filter(conn, &service_lookup)
                 });
 
-                // Append historic connections when toggle is on
                 if show_historic.load(Ordering::Relaxed) {
                     snapshot_data.extend(snapshot_source(tracker.historic(), |conn| {
                         enrich_and_filter(conn, &service_lookup)
                     }));
                 }
 
-                // Sort by creation time (oldest first, newest last for maximum stability)
+                // Oldest first: creation order is the most stable row order.
                 snapshot_data.sort_by_key(|a| a.created_at);
 
                 let filtered_count = snapshot_data.len();
@@ -170,12 +165,11 @@ impl App {
                 let ui_publish_due =
                     last_ui_publish.is_none_or(|published| published.elapsed() >= refresh_interval);
                 if ui_publish_due {
-                    // Publish the connection vector used by the UI.
                     *snapshot.write().unwrap() = snapshot_data;
                     snapshot_generation.fetch_add(1, Ordering::Release);
                     last_ui_publish = Some(Instant::now());
 
-                    // Update stats (only count active connections)
+                    // Counts active connections only.
                     stats
                         .connections_tracked
                         .store(total_connections as u64, Ordering::Relaxed);
@@ -229,7 +223,6 @@ impl App {
         Ok(())
     }
 
-    /// Start interface statistics collection thread
     pub(super) fn start_interface_stats_thread(&self) -> Result<()> {
         let interface_stats = Arc::clone(&self.interface_stats);
         let interface_rates = Arc::clone(&self.interface_rates);
@@ -251,25 +244,21 @@ impl App {
             LIVE_RATE_INTERVAL,
             Arc::clone(&self.should_stop),
             move || {
-                // Collect stats from all interfaces
                 match provider.get_all_stats() {
                     Ok(stats_vec) => {
                         let mut stats_history = interface_traffic_history
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        // Clear old entries
                         interface_stats.clear();
                         interface_rates.clear();
                         interface_traffic_windows.clear();
 
                         for stat in stats_vec {
-                            // Calculate rates if we have previous data
                             if let Some(prev) = previous_stats.get(&stat.interface_name) {
                                 let rates = stat.calculate_rates(prev);
                                 interface_rates.insert(stat.interface_name.clone(), rates);
                             }
 
-                            // Store current stats
                             let name = stat.interface_name.clone();
                             interface_stats.insert(name.clone(), stat.clone());
                             previous_stats.insert(name.clone(), stat.clone());
@@ -311,7 +300,6 @@ impl App {
         Ok(())
     }
 
-    /// Start traffic history thread for graph visualization
     pub(super) fn start_traffic_history_thread(&self) -> Result<()> {
         let traffic_history = Arc::clone(&self.traffic_history);
         let conn_rate_history = Arc::clone(&self.conn_rate_history);
@@ -320,7 +308,6 @@ impl App {
         let stats = Arc::clone(&self.stats);
         let tracker = Arc::clone(&self.tracker);
 
-        // Track previous values for delta calculation
         let mut prev_packets = stats.packets_processed.load(Ordering::Relaxed);
         let mut prev_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
         let mut prev_connections_created = stats.total_connections_created.load(Ordering::Relaxed);
@@ -336,7 +323,6 @@ impl App {
             LIVE_RATE_INTERVAL,
             Arc::clone(&self.should_stop),
             move || {
-                // Aggregate rates from all interfaces
                 let (total_rx, total_tx) =
                     interface_rates
                         .iter()
@@ -373,7 +359,6 @@ impl App {
                     })
                     .unwrap_or(0);
 
-                // Get packet and retransmit counts (calculate deltas)
                 let current_packets = stats.packets_processed.load(Ordering::Relaxed);
                 let current_retransmits = stats.total_tcp_retransmits.load(Ordering::Relaxed);
                 let current_connections_created =
@@ -403,10 +388,9 @@ impl App {
                 prev_connections_archived = current_connections_archived;
                 previous_sample_at = sampled_at;
 
-                // Get average RTT from tracker (last 1 second window)
+                // Last 1 second window.
                 let avg_rtt_ms = tracker.take_average_rtt(1);
 
-                // Add sample to traffic history
                 if let Ok(mut history) = traffic_history.write() {
                     history.add_sample_with_lifecycle(
                         total_rx,
@@ -429,7 +413,6 @@ impl App {
         Ok(())
     }
 
-    /// Start cleanup thread to remove old connections
     pub(super) fn start_cleanup_thread(&self, tracker: Arc<ConnectionTracker>) -> Result<()> {
         let json_log_file = self.json_log_file.clone();
         let pcap_sidecar_file = self.pcap_sidecar_file.clone();
@@ -461,7 +444,6 @@ impl App {
                         dns_resolver.as_deref(),
                     );
 
-                    // Log cleanup reason for debugging
                     let conn_timeout = conn.get_timeout();
                     let cleanup_age = conn.cleanup_age(now);
                     debug!(

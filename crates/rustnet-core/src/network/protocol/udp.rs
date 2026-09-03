@@ -22,7 +22,6 @@ pub fn parse(
     let (local_addr, remote_addr, is_outgoing) =
         orient_endpoints(&params, src_port, dst_port, local_ips);
 
-    // Perform DPI if enabled and there's payload
     let dpi_result = if config.enable_dpi && transport_data.len() > 8 {
         let payload = &transport_data[8..];
         dpi::analyze_udp_packet(payload, local_addr.port(), remote_addr.port(), is_outgoing)

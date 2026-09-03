@@ -98,7 +98,7 @@ impl EbpfLoader {
             } => {
                 // The legacy backend attaches the same probe set and reports
                 // the same capabilities, so falling back to it is not a
-                // degradation of attribution — only of probe overhead. The
+                // degradation of attribution, only of probe overhead. The
                 // active backend is already named by the detection method, so
                 // the fentry error belongs in the log, not in the TUI.
                 warn!(
@@ -125,7 +125,7 @@ impl EbpfLoader {
                     error_chain_text(&kprobe_error)
                 );
                 // Both complete chains are in the log above. The reason shown
-                // in the TUI is classified from the legacy backend's failure —
+                // in the TUI is classified from the legacy backend's failure:
                 // it is the last one attempted and the one whose EPERM/EACCES
                 // and missing-symbol cases have actionable fixes.
                 Ok((None, classify_libbpf_error(&kprobe_error)))

@@ -23,7 +23,6 @@ fn bench_merge(c: &mut Criterion) {
     let mut group = c.benchmark_group("merge_packet");
 
     for n_samples in [0, 100, 1000, 5000, 10000] {
-        // Benchmark the new in-place merge (no clone)
         group.bench_with_input(
             BenchmarkId::new("in_place_merge", n_samples),
             &n_samples,
@@ -33,7 +32,6 @@ fn bench_merge(c: &mut Criterion) {
             },
         );
 
-        // Keep clone benchmark for comparison with baseline
         let conn = make_connection_with_samples(n_samples);
         group.bench_with_input(
             BenchmarkId::new("clone_only", n_samples),
@@ -47,20 +45,17 @@ fn bench_merge(c: &mut Criterion) {
     group.finish();
 }
 
-/// Compare the old String key construction (kept as a baseline) against the
-/// compact `ConnectionKey` the tracker uses now: build + hash, no allocation.
+/// String-key baseline vs the Copy `ConnectionKey` + FxHash the tracker uses.
 fn bench_connection_key_format(c: &mut Criterion) {
     use std::hash::BuildHasher;
 
     let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)), 54321);
     let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), 443);
 
-    // Baseline: what every parsed packet used to allocate.
     c.bench_function("connection_key_format_string", |b| {
         b.iter(|| format!("TCP:{}-TCP:{}", local, remote));
     });
 
-    // Now: construct the Copy key and hash it with the tracker's FxHash.
     let parsed = make_parsed_packet();
     let hasher = rustc_hash::FxBuildHasher;
     c.bench_function("connection_key_struct_fxhash", |b| {

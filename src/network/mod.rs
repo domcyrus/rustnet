@@ -14,8 +14,7 @@ pub mod kubernetes;
 pub mod platform;
 pub mod privileges;
 
-// pcap-based capture moved to the `rustnet-capture` crate; re-export it under
-// the historical path so the app, tests, and platform code are unchanged.
+// Re-exported under the historical path.
 pub use rustnet_capture as capture;
 
 // Re-export the analysis modules used by the binary and its tests.
