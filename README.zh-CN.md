@@ -209,6 +209,8 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 
 JSON 日志、PCAP 导出及其旁路记录、PCAPNG 导出必须使用不同的输出文件。重叠的目标会在已有输出数据被截断前遭到拒绝。
 
+主动启用的 Linux systemd 示例、私有快照输出和不分配终端的 Docker 用法见 [SERVICE.zh-CN.md](SERVICE.zh-CN.md)。软件包仅将单元作为文档示例提供。
+
 主题及各颜色的覆盖也可在 `~/.config/rustnet/config.toml` 中设置；`--theme` 优先。配置格式见 [USAGE.zh-CN.md](USAGE.zh-CN.md#--theme-preset)。
 
 权限配置详情见 [INSTALL.zh-CN.md](INSTALL.zh-CN.md)，完整参数说明见 [USAGE.zh-CN.md](USAGE.zh-CN.md)。

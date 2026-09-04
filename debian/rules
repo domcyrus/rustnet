@@ -33,7 +33,9 @@ override_dh_auto_build:
 	$(CARGO) build --release --frozen
 
 # The services file, desktop entry and icon are installed by dh_install from
-# debian/install; this only installs the binary, README and the generated
+# debian/install. dh_installdocs and dh_installexamples install the service
+# guide and example from debian/docs and debian/examples. No active service
+# is installed. This only installs the binary, README and the generated
 # completions and manpage.
 override_dh_auto_install:
 	# Install binary

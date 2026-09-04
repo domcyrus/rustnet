@@ -114,6 +114,8 @@ rustnet --headless --filter 'process:curl app:https'   # 接続フィルター�
 
 JSON ログ、PCAP 出力とそのサイドカー、PCAPNG 出力には、それぞれ異なるファイルを指定してください。出力先が重複している場合は、既存の出力データを切り詰める前に拒否します。
 
+明示的に有効化する Linux systemd の設定例、プライベートな出力、端末なしの Docker 実行は [SERVICE.ja.md](SERVICE.ja.md) を参照してください。パッケージはユニットをドキュメントとしてのみ配布します。
+
 テーマと各色の上書きは `~/.config/rustnet/config.toml` でも設定できます（`--theme` が優先）。詳細は [USAGE.md](USAGE.md#--theme-preset) を参照してください。
 
 ## 基本操作

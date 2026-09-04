@@ -1,0 +1,105 @@
+name: Linux Service Packaging
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'debian/**'
+      - 'rpm/**'
+      - 'resources/packaging/linux/**'
+      - 'scripts/check-service-packaging.py'
+      - 'scripts/check-linux-service-runtime.py'
+      - 'SERVICE*.md'
+      - 'Dockerfile'
+      - '.github/actions/package-archive/**'
+      - '.github/actions/setup-linux-deps/**'
+      - '.github/workflows/service-packaging.yml'
+      - '.github/workflows/release.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'debian/**'
+      - 'rpm/**'
+      - 'resources/packaging/linux/**'
+      - 'scripts/check-service-packaging.py'
+      - 'scripts/check-linux-service-runtime.py'
+      - 'SERVICE*.md'
+      - 'Dockerfile'
+      - '.github/actions/package-archive/**'
+      - '.github/actions/setup-linux-deps/**'
+      - '.github/workflows/service-packaging.yml'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          extra-packages: rpm cpio debhelper
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Validate service example
+        run: python3 scripts/check-service-packaging.py
+      - name: Build release binary and package tools
+        run: |
+          cargo build --locked --release
+          cargo install --locked cargo-deb cargo-generate-rpm
+      - name: Exercise private systemd output and privilege drop
+        run: sudo python3 scripts/check-linux-service-runtime.py target/release/rustnet
+      - name: Build and inspect release DEB and RPM
+        run: |
+          cargo deb --no-build --no-strip
+          cargo generate-rpm
+          python3 scripts/check-service-packaging.py target/debian/*.deb target/generate-rpm/*.rpm
+      - name: Check native Debian documentation staging
+        run: |
+          dh_installdocs
+          dh_installexamples
+          for guide in SERVICE.md SERVICE.zh-CN.md SERVICE.ja.md; do
+            cmp "$guide" "debian/rustnet/usr/share/doc/rustnet/$guide"
+          done
+          cmp resources/packaging/linux/systemd/rustnet-headless.service \
+            debian/rustnet/usr/share/doc/rustnet/examples/rustnet-headless.service
+      - name: Build and inspect native RPM spec
+        run: |
+          rpm_build=$(mktemp -d)
+          mkdir -p "$rpm_build/SOURCES"
+          version=$(awk '/^Version:/ { print $2 }' rpm/rustnet.spec)
+          git archive --prefix="rustnet-$version/" HEAD | gzip > "$rpm_build/SOURCES/v$version.tar.gz"
+          # Ubuntu provides the build dependencies above under Debian names.
+          # Run the complete spec, with Fedora-only compiler/changelog macros
+          # empty and dependency name checks disabled on this Ubuntu runner.
+          rpmbuild -bb --nodeps \
+            --define "_topdir $rpm_build" \
+            --define 'build_rustflags %{nil}' \
+            --define 'autochangelog %{nil}' \
+            rpm/rustnet.spec
+          python3 scripts/check-service-packaging.py "$rpm_build"/RPMS/*/*.rpm
+      - name: Build Linux release archive
+        id: archive
+        uses: ./.github/actions/package-archive
+        with:
+          binary: target/release/rustnet
+          target: x86_64-unknown-linux-gnu
+          version: packaging-check
+      - name: Inspect Linux release archive
+        env:
+          ARCHIVE: ${{ steps.archive.outputs.asset }}
+        run: python3 scripts/check-service-packaging.py "$ARCHIVE"

@@ -40,3 +40,4 @@ Description: Cross-platform network monitoring terminal UI tool
   * Advanced filtering with vim/fzf-style search
   * Multi-threaded processing for optimal performance
   * eBPF-enhanced process detection (enabled by default with automatic fallback)
+  * Headless JSONL snapshots and an optional systemd documentation example

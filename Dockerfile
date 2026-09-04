@@ -87,7 +87,9 @@ RUN chmod +x /usr/local/bin/rustnet \
     && setcap 'cap_net_raw=ep' /usr/local/bin/rustnet
 
 # Expose no ports by default (rustnet is for monitoring, not serving)
-# Network access is handled via host networking or packet capture capabilities
+# Network access is handled via host networking or packet capture capabilities.
+# Stream headless snapshots without allocating a TTY:
+#   docker run --rm --net=host <image> --headless --refresh-interval 5000
 
 # Add labels for better image metadata
 LABEL org.opencontainers.image.title="RustNet"
@@ -108,4 +110,5 @@ LABEL org.opencontainers.image.licenses="Apache License, Version 2.0"
 # /proc-based process detection.
 # CAP_NET_ADMIN is NOT required (read-only, non-promiscuous capture).
 USER rustnet
+STOPSIGNAL SIGTERM
 ENTRYPOINT ["rustnet"]

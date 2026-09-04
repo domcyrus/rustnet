@@ -209,6 +209,8 @@ Snapshot connection IDs remain stable through archival and distinguish reused en
 
 JSON logs, PCAP exports and their sidecars, and PCAPNG exports must use distinct output files. Overlapping destinations are rejected before existing output data is truncated.
 
+For the opt-in Linux systemd example, private snapshot output, and Docker usage without a terminal, see [SERVICE.md](SERVICE.md). Packages ship the unit as documentation only.
+
 The theme and per-color overrides can also be set in `~/.config/rustnet/config.toml`; `--theme` takes precedence. See [USAGE.md](USAGE.md#--theme-preset) for the schema.
 
 See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.md) for complete options.

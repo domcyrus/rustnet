@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Linux Service Example**: packages and Linux archives include an opt-in
+  systemd example with private snapshot output, filesystem hardening, and
+  English, Chinese, and Japanese service and Docker instructions. Package
+  installation never installs or enables an active service
 - **Headless Mode**: `--headless` runs without the TUI, with optional
   `--duration` and shared `--filter` syntax. Versioned snapshots stream as
   JSONL by default, while `--output json` emits one final snapshot. Stdout is
