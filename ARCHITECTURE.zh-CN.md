@@ -56,7 +56,7 @@ flowchart TD
 
 `src/main.rs` 委托库中的 `bootstrap::run` 执行启动。`src/bootstrap.rs` 负责解析选项、验证输出路径、准备特权资源、应用沙箱、通过运行时许可启动工作线程并选择前端。`src/tui.rs` 负责交互事件循环。无界面模式的调度位于 `src/headless/mod.rs`，版本化快照投影位于 `src/headless/schema.rs`，有界最新值写入器位于 `src/headless/output.rs`。两个前端共用应用状态、过滤器、信号标志和由运行时持有的关闭报告。
 
-任何输出被截断前都会检查目标路径。JSON、PCAP、PCAP 旁路记录和 PCAPNG 的文件描述符在 UID 降级及沙箱切换期间保持打开。关闭时先停止并等待生产者，再重建最终快照；如果工作线程超过期限，无界面模式的终止记录会报告 `stopping`，而不会声称关闭已完成。
+配置的 JSON 日志、PCAP、PCAP 旁路记录和 PCAPNG 输出会先验证路径，再检查已打开文件的身份，之后才截断捕获输出。其文件描述符在 UID 降级及沙箱切换期间保持打开，不授予输出路径写入权限，也不会在之后重新打开路径。关闭时先停止并等待生产者，再重建最终快照；如果工作线程超过期限，无界面模式的终止记录会报告 `stopping`，而不会声称关闭已完成。
 
 ## 多线程架构<a id="multi-threaded-architecture"></a>
 
