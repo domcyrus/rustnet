@@ -252,11 +252,21 @@ fn open_private(path: impl AsRef<Path>, append: bool, truncate: bool) -> io::Res
 
 #[cfg(test)]
 mod staged_tests {
-    use super::prepare_output_handles;
+    use super::{precreate_private_file, prepare_output_handles};
     use crate::app::Config;
     use crate::app::scratch_dir::ScratchDir;
     use std::fs;
     use std::io::Write;
+    use std::path::Path;
+
+    fn write_private(path: &Path, bytes: &[u8]) {
+        // Elevated Windows tokens can give ordinary new files a group owner.
+        // Positive fixtures must meet the private opener's user-owner policy.
+        precreate_private_file(path)
+            .unwrap()
+            .write_all(bytes)
+            .unwrap();
+    }
 
     #[test]
     fn later_open_failure_preserves_every_existing_output() {
@@ -264,9 +274,9 @@ mod staged_tests {
         let log = dir.join("events.jsonl");
         let capture = dir.join("capture.pcap");
         let sidecar = dir.join("capture.pcap.connections.jsonl");
-        fs::write(&log, b"existing log").unwrap();
-        fs::write(&capture, b"existing capture").unwrap();
-        fs::write(&sidecar, b"existing sidecar").unwrap();
+        write_private(&log, b"existing log");
+        write_private(&capture, b"existing capture");
+        write_private(&sidecar, b"existing sidecar");
         let config = Config {
             json_log_file: Some(log.to_str().unwrap().to_owned()),
             pcap_export_file: Some(capture.to_str().unwrap().to_owned()),
@@ -274,7 +284,8 @@ mod staged_tests {
             ..Config::default()
         };
 
-        assert!(prepare_output_handles(&config).is_err());
+        let error = prepare_output_handles(&config).err().unwrap();
+        assert!(error.to_string().contains("PCAPNG"));
         assert_eq!(fs::read(log).unwrap(), b"existing log");
         assert_eq!(fs::read(capture).unwrap(), b"existing capture");
         assert_eq!(fs::read(sidecar).unwrap(), b"existing sidecar");
@@ -284,7 +295,7 @@ mod staged_tests {
     fn descriptor_collision_preserves_existing_contents() {
         let dir = ScratchDir::new("staged-output", "existing_collision");
         let path = dir.join("output");
-        fs::write(&path, b"existing data").unwrap();
+        write_private(&path, b"existing data");
         let config = Config {
             json_log_file: Some(path.to_str().unwrap().to_owned()),
             pcapng_export_file: Some(path.to_str().unwrap().to_owned()),
@@ -301,7 +312,7 @@ mod staged_tests {
         let dir = ScratchDir::new("staged-output", tag);
         let first_path = dir.join(first);
         let second_path = dir.join(second);
-        fs::write(&first_path, b"alias probe").unwrap();
+        write_private(&first_path, b"alias probe");
         let aliases = fs::read(&second_path).is_ok_and(|bytes| bytes == b"alias probe");
         fs::remove_file(&first_path).unwrap();
         if !aliases {
@@ -312,8 +323,8 @@ mod staged_tests {
 
         let capture = dir.join("existing.pcap");
         let sidecar = dir.join("existing.pcap.connections.jsonl");
-        fs::write(&capture, b"preserved capture").unwrap();
-        fs::write(&sidecar, b"preserved sidecar").unwrap();
+        write_private(&capture, b"preserved capture");
+        write_private(&sidecar, b"preserved sidecar");
         let config = Config {
             json_log_file: Some(first_path.to_str().unwrap().to_owned()),
             pcap_export_file: Some(capture.to_str().unwrap().to_owned()),
@@ -345,9 +356,9 @@ mod staged_tests {
         let capture = dir.join("capture.pcap");
         let sidecar = dir.join("capture.pcap.connections.jsonl");
         let pcapng = dir.join("capture.pcapng");
-        fs::write(&log, b"existing log").unwrap();
+        write_private(&log, b"existing log");
         for path in [&capture, &sidecar, &pcapng] {
-            fs::write(path, b"old capture data").unwrap();
+            write_private(path, b"old capture data");
         }
         let config = Config {
             json_log_file: Some(log.to_str().unwrap().to_owned()),

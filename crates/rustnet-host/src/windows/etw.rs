@@ -403,13 +403,19 @@ mod tests {
             local_addr,
             remote_addr,
         };
-        let process = (0..50).find_map(|_| {
-            let process = cache.lookup(&key);
-            if process.is_none() {
-                thread::sleep(Duration::from_millis(20));
+        // The real-time trace flushes its buffers once per second. Allow
+        // several flush intervals plus consumer scheduling, rather than racing
+        // the first flush with a one-second timeout.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let process = loop {
+            if let Some(process) = cache.lookup(&key) {
+                break Some(process);
             }
-            process
-        });
+            if Instant::now() >= deadline {
+                break None;
+            }
+            thread::sleep(Duration::from_millis(20));
+        };
 
         assert_eq!(process.map(|entry| entry.0), Some(std::process::id()));
     }
