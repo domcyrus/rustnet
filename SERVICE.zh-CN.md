@@ -41,6 +41,7 @@ sudo systemctl status rustnet-headless.service
 `StateDirectory`。使用软件包时，将首条命令中的源路径替换为对应的示例路径。
 不要使用管理员的交互式账户运行服务。单元会清除 `SUDO_UID`、`SUDO_GID` 和 `SUDO_USER`，
 以 root 打开抓包和 eBPF 资源，然后由 RustNet 在解析流量之前降权到 `nobody`。
+如果身份切换失败，启动会在解析流量之前中止；请检查 journal 日志了解原因。
 仅授予抓包、eBPF 初始化和身份切换所需的 capabilities，不授予 `CAP_SYS_ADMIN`。
 如果 eBPF 不可用，降权后的 procfs 回退只能看到有限的进程信息；依赖进程归属
 之前，请检查快照中的进程检测方式。

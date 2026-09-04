@@ -45,7 +45,9 @@ systemd can open stdout before preparing `StateDirectory`. For a package
 installation, substitute its example path in the first command.
 Do not run the service as an interactive administrator account. The unit clears
 `SUDO_UID`, `SUDO_GID`, and `SUDO_USER`, opens capture and eBPF resources as root,
-and lets RustNet drop to `nobody` before parsing traffic. It grants only capture,
+and lets RustNet drop to `nobody` before parsing traffic. If this identity change
+fails, startup aborts before traffic parsing; inspect the journal for the cause.
+It grants only capture,
 eBPF setup, and identity-drop capabilities, with no `CAP_SYS_ADMIN`. If eBPF is
 unavailable, procfs fallback after the drop has limited process visibility;
 inspect the snapshot's process detection method before relying on attribution.
