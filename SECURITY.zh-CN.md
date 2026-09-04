@@ -4,6 +4,8 @@
 
 RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本文档描述了已实现的安全措施。
 
+在 Linux、macOS 和 FreeBSD 上，即使使用尽力而为模式，请求的 root UID/GID 降权也必须在数据包处理线程启动前成功。身份切换失败会中止启动，不会以 root 或部分切换的身份继续运行。不受支持的可选沙箱层仍可降级。显式使用 `--no-uid-drop` 或 `--no-sandbox` 时保留原有的禁用行为。
+
 ## 目录
 
 - [Landlock 沙箱（Linux）](#landlock-sandboxing-linux)

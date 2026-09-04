@@ -21,6 +21,11 @@ The `privdrop` module (Linux/macOS/FreeBSD) resolves the drop target from
 `SUDO_UID`/`SUDO_GID` (falling back to `nobody`), chowns pre-created output
 files to it, and performs the verified, irreversible drop.
 
+A requested UID/GID drop is mandatory in both strict and best-effort modes.
+Failures carry `PrivilegeDropError`; callers must abort startup before spawning
+workers instead of treating them as optional sandbox failures. A missing drop
+target or disabled sandbox still skips the identity transition.
+
 Sandboxing is a post-initialization step: open capture handles, load eBPF
 programs, and pre-create output files first, apply the sandbox on the main
 thread, and only then spawn the worker threads that should inherit the
