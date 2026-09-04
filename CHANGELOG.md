@@ -65,6 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **Windows Address Discovery**: collect IPv4, IPv6, and subnet broadcasts
+  through IP Helper without loading the Npcap capture driver
 - **Loss and Export Accounting**: queue backpressure drops are reported
   separately from libpcap and interface drops, partial batches drain during
   shutdown, and classic PCAP output remains bound to its securely pre-opened
