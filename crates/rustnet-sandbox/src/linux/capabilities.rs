@@ -172,6 +172,7 @@ mod tests {
             held
         });
 
+        super::super::set_no_new_privs().unwrap();
         clear_ambient_caps().unwrap();
         for capability in [
             Capability::CAP_NET_RAW,

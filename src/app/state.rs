@@ -660,8 +660,9 @@ impl App {
 
     /// Apply the configured sandbox and authorize post-sandbox worker startup.
     ///
-    /// Strict mode propagates an enforcement failure. Best-effort mode records
-    /// the failed attempt and permits the documented unsandboxed fallback.
+    /// Strict mode propagates any enforcement failure. A failed requested
+    /// identity drop is fatal in every mode; best-effort mode permits fallback
+    /// only for optional sandbox layers.
     /// Disabled mode still passes through the sandbox crate so the lifecycle
     /// cannot be advanced with a caller-forged report.
     pub fn apply_sandbox(&mut self, config: &SandboxConfig) -> Result<WorkerStartupPermit> {
@@ -682,7 +683,10 @@ impl App {
         self.require_lifecycle(AppLifecycle::Prepared, "complete the sandbox attempt")?;
         let info = match sandbox_result {
             Ok(report) => report,
-            Err(error) if mode == SandboxMode::Strict => {
+            Err(error)
+                if mode == SandboxMode::Strict
+                    || error.is::<rustnet_sandbox::PrivilegeDropError>() =>
+            {
                 self.transition_lifecycle(AppLifecycle::Prepared, AppLifecycle::Failed);
                 return Err(error.context("Sandbox enforcement required but failed"));
             }
@@ -1177,6 +1181,48 @@ mod lifecycle_tests {
             app.complete_sandbox_attempt(SandboxMode::Strict, Ok(SandboxReport::default()),)
                 .is_err(),
             "an irreversible partial sandbox must not be retried"
+        );
+    }
+
+    #[test]
+    fn requested_identity_drop_failure_blocks_workers_in_best_effort_mode() {
+        let mut app = app();
+        app.transition_lifecycle(AppLifecycle::Created, AppLifecycle::Prepared);
+        let error = anyhow::anyhow!("injected identity syscall failure")
+            .context(rustnet_sandbox::PrivilegeDropError)
+            .context("platform sandbox setup");
+
+        assert!(
+            app.complete_sandbox_attempt(SandboxMode::BestEffort, Err(error))
+                .is_err()
+        );
+        assert_eq!(*app.lifecycle.lock().unwrap(), AppLifecycle::Failed);
+        assert!(
+            app.start_workers(WorkerStartupPermit::after_sandbox_result())
+                .is_err()
+        );
+        assert!(
+            app.complete_sandbox_attempt(SandboxMode::BestEffort, Ok(SandboxReport::default()))
+                .is_err(),
+            "a partially changed identity must not be retried"
+        );
+    }
+
+    #[test]
+    fn optional_sandbox_failure_still_allows_best_effort_fallback() {
+        let mut app = app();
+        app.transition_lifecycle(AppLifecycle::Created, AppLifecycle::Prepared);
+
+        let _permit = app
+            .complete_sandbox_attempt(
+                SandboxMode::BestEffort,
+                Err(anyhow::anyhow!("optional sandbox layer unavailable")),
+            )
+            .unwrap();
+        assert_eq!(*app.lifecycle.lock().unwrap(), AppLifecycle::Sandboxed);
+        assert_eq!(
+            app.sandbox_info.read().unwrap().status,
+            rustnet_sandbox::SandboxStatus::Error
         );
     }
 

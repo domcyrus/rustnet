@@ -82,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **Required UID Drop**: abort startup before packet-processing workers when a
+  requested root UID/GID drop fails, including in best-effort mode
 - **Windows Connection History**: connections that reuse a tuple with the
   same capture timestamp keep distinct history entries
 - **Idle Capture Shutdown**: nonblocking capture reads and bounded idle
