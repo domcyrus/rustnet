@@ -4,29 +4,60 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::Config;
+use super::{AppOutputHandles, Config};
 
-/// Reject overlapping output destinations before any file is opened or
-/// truncated. Secure descriptor opening still enforces the file-type and
-/// link restrictions when each writer is created.
-pub fn validate_output_paths(config: &Config) -> io::Result<()> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputKind {
+    JsonLog,
+    Pcap,
+    PcapSidecar,
+    PcapNg,
+}
+
+struct OpenedOutput {
+    kind: OutputKind,
+    path: PathBuf,
+    file: fs::File,
+    identity: (u64, u64),
+}
+
+impl OutputKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::JsonLog => "JSON log",
+            Self::Pcap => "PCAP",
+            Self::PcapSidecar => "PCAP sidecar",
+            Self::PcapNg => "PCAPNG",
+        }
+    }
+}
+
+fn output_paths(config: &Config) -> Vec<(OutputKind, PathBuf)> {
     let mut outputs = Vec::new();
     if let Some(path) = &config.json_log_file {
-        outputs.push(("JSON log", PathBuf::from(path)));
+        outputs.push((OutputKind::JsonLog, PathBuf::from(path)));
     }
     if let Some(path) = &config.pcap_export_file {
-        outputs.push(("PCAP", PathBuf::from(path)));
+        outputs.push((OutputKind::Pcap, PathBuf::from(path)));
         outputs.push((
-            "PCAP sidecar",
+            OutputKind::PcapSidecar,
             PathBuf::from(format!("{path}.connections.jsonl")),
         ));
     }
     if let Some(path) = &config.pcapng_export_file {
-        outputs.push(("PCAPNG", PathBuf::from(path)));
+        outputs.push((OutputKind::PcapNg, PathBuf::from(path)));
     }
+    outputs
+}
 
+/// Reject overlapping output destinations before any file is opened or
+/// truncated. This pathname check is an early diagnostic; callers must use
+/// [`prepare_output_handles`] to compare the opened file identities before
+/// truncation, including aliases on case-insensitive filesystems.
+pub fn validate_output_paths(config: &Config) -> io::Result<()> {
     let mut resolved = Vec::new();
-    for (label, path) in outputs {
+    for (kind, path) in output_paths(config) {
+        let label = kind.label();
         let identity = output_identity(&path)?;
         if let Some((other_label, other_path, _)) = resolved
             .iter()
@@ -44,6 +75,86 @@ pub fn validate_output_paths(config: &Config) -> io::Result<()> {
         resolved.push((label, path, identity));
     }
     Ok(())
+}
+
+/// Securely open every output before truncating any of them.
+///
+/// Compare the actual opened files, including aliases created by filesystem
+/// case folding, Unicode normalization, or pathname changes after preflight.
+/// A failed open or overlapping descriptor leaves existing contents intact.
+/// JSON logging appends; capture files and their sidecar start empty.
+pub fn prepare_output_handles(config: &Config) -> io::Result<(AppOutputHandles, Option<fs::File>)> {
+    let mut opened: Vec<OpenedOutput> = Vec::new();
+    for (kind, path) in output_paths(config) {
+        let file = open_private(&path, kind == OutputKind::JsonLog, false).map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "failed to open {} output '{}': {error}",
+                    kind.label(),
+                    path.display()
+                ),
+            )
+        })?;
+        let identity = opened_file_identity(&file)?;
+        if let Some(other) = opened.iter().find(|other| other.identity == identity) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{} output '{}' overlaps {} output '{}'",
+                    kind.label(),
+                    path.display(),
+                    other.kind.label(),
+                    other.path.display(),
+                ),
+            ));
+        }
+        opened.push(OpenedOutput {
+            kind,
+            path,
+            file,
+            identity,
+        });
+    }
+
+    for output in &opened {
+        if output.kind != OutputKind::JsonLog {
+            output.file.set_len(0)?;
+        }
+    }
+
+    let mut handles = AppOutputHandles::default();
+    let mut pcap = None;
+    for output in opened {
+        match output.kind {
+            OutputKind::JsonLog => handles.json_log = Some(output.file),
+            OutputKind::Pcap => pcap = Some(output.file),
+            OutputKind::PcapSidecar => handles.pcap_sidecar = Some(output.file),
+            OutputKind::PcapNg => handles.pcapng_export = Some(output.file),
+        }
+    }
+    Ok((handles, pcap))
+}
+
+#[cfg(unix)]
+fn opened_file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = file.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn opened_file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
+    super::windows_output::file_identity(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn opened_file_identity(_file: &fs::File) -> io::Result<(u64, u64)> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "output-file identity checks are unavailable on this platform",
+    ))
 }
 
 fn output_identity(path: &Path) -> io::Result<PathBuf> {
@@ -83,22 +194,22 @@ fn output_identity(path: &Path) -> io::Result<PathBuf> {
 /// Create or truncate a private regular output file without following the
 /// final path component when the platform exposes that control.
 pub fn precreate_private_file(path: impl AsRef<Path>) -> io::Result<fs::File> {
-    open_private(path, false)
+    open_private(path, false, true)
 }
 
 /// Open a private regular output file for append without following the final
 /// path component when the platform exposes that control.
 pub fn open_private_append_file(path: impl AsRef<Path>) -> io::Result<fs::File> {
-    open_private(path, true)
+    open_private(path, true, false)
 }
 
 #[cfg(target_os = "windows")]
-fn open_private(path: impl AsRef<Path>, append: bool) -> io::Result<fs::File> {
-    super::windows_output::open_private(path, append)
+fn open_private(path: impl AsRef<Path>, append: bool, truncate: bool) -> io::Result<fs::File> {
+    super::windows_output::open_private(path, append, truncate)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn open_private(path: impl AsRef<Path>, append: bool) -> io::Result<fs::File> {
+fn open_private(path: impl AsRef<Path>, append: bool, truncate: bool) -> io::Result<fs::File> {
     let path = path.as_ref();
     let mut options = fs::OpenOptions::new();
     options.create(true).write(true);
@@ -133,10 +244,146 @@ fn open_private(path: impl AsRef<Path>, append: bool) -> io::Result<fs::File> {
         file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
 
-    if !append {
+    if truncate {
         file.set_len(0)?;
     }
     Ok(file)
+}
+
+#[cfg(test)]
+mod staged_tests {
+    use super::prepare_output_handles;
+    use crate::app::Config;
+    use crate::app::scratch_dir::ScratchDir;
+    use std::fs;
+    use std::io::Write;
+
+    #[test]
+    fn later_open_failure_preserves_every_existing_output() {
+        let dir = ScratchDir::new("staged-output", "later_failure");
+        let log = dir.join("events.jsonl");
+        let capture = dir.join("capture.pcap");
+        let sidecar = dir.join("capture.pcap.connections.jsonl");
+        fs::write(&log, b"existing log").unwrap();
+        fs::write(&capture, b"existing capture").unwrap();
+        fs::write(&sidecar, b"existing sidecar").unwrap();
+        let config = Config {
+            json_log_file: Some(log.to_str().unwrap().to_owned()),
+            pcap_export_file: Some(capture.to_str().unwrap().to_owned()),
+            pcapng_export_file: Some(dir.path().to_str().unwrap().to_owned()),
+            ..Config::default()
+        };
+
+        assert!(prepare_output_handles(&config).is_err());
+        assert_eq!(fs::read(log).unwrap(), b"existing log");
+        assert_eq!(fs::read(capture).unwrap(), b"existing capture");
+        assert_eq!(fs::read(sidecar).unwrap(), b"existing sidecar");
+    }
+
+    #[test]
+    fn descriptor_collision_preserves_existing_contents() {
+        let dir = ScratchDir::new("staged-output", "existing_collision");
+        let path = dir.join("output");
+        fs::write(&path, b"existing data").unwrap();
+        let config = Config {
+            json_log_file: Some(path.to_str().unwrap().to_owned()),
+            pcapng_export_file: Some(path.to_str().unwrap().to_owned()),
+            ..Config::default()
+        };
+
+        let error = prepare_output_handles(&config).err().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("overlaps"));
+        assert_eq!(fs::read(path).unwrap(), b"existing data");
+    }
+
+    fn rejects_filesystem_alias(first: &str, second: &str, tag: &str) {
+        let dir = ScratchDir::new("staged-output", tag);
+        let first_path = dir.join(first);
+        let second_path = dir.join(second);
+        fs::write(&first_path, b"alias probe").unwrap();
+        let aliases = fs::read(&second_path).is_ok_and(|bytes| bytes == b"alias probe");
+        fs::remove_file(&first_path).unwrap();
+        if !aliases {
+            // This filesystem treats these names as distinct, so they are
+            // valid separate destinations and do not exercise the alias case.
+            return;
+        }
+
+        let capture = dir.join("existing.pcap");
+        let sidecar = dir.join("existing.pcap.connections.jsonl");
+        fs::write(&capture, b"preserved capture").unwrap();
+        fs::write(&sidecar, b"preserved sidecar").unwrap();
+        let config = Config {
+            json_log_file: Some(first_path.to_str().unwrap().to_owned()),
+            pcap_export_file: Some(capture.to_str().unwrap().to_owned()),
+            pcapng_export_file: Some(second_path.to_str().unwrap().to_owned()),
+            ..Config::default()
+        };
+
+        let error = prepare_output_handles(&config).err().unwrap();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("overlaps"));
+        assert_eq!(fs::read(capture).unwrap(), b"preserved capture");
+        assert_eq!(fs::read(sidecar).unwrap(), b"preserved sidecar");
+    }
+
+    #[test]
+    fn new_case_aliases_do_not_truncate_an_earlier_output() {
+        rejects_filesystem_alias("new-output", "NEW-OUTPUT", "case_alias");
+    }
+
+    #[test]
+    fn new_unicode_aliases_do_not_truncate_an_earlier_output() {
+        rejects_filesystem_alias("caf\u{e9}", "cafe\u{301}", "unicode_alias");
+    }
+
+    #[test]
+    fn distinct_outputs_append_logs_and_truncate_capture_files() {
+        let dir = ScratchDir::new("staged-output", "distinct");
+        let log = dir.join("events.jsonl");
+        let capture = dir.join("capture.pcap");
+        let sidecar = dir.join("capture.pcap.connections.jsonl");
+        let pcapng = dir.join("capture.pcapng");
+        fs::write(&log, b"existing log").unwrap();
+        for path in [&capture, &sidecar, &pcapng] {
+            fs::write(path, b"old capture data").unwrap();
+        }
+        let config = Config {
+            json_log_file: Some(log.to_str().unwrap().to_owned()),
+            pcap_export_file: Some(capture.to_str().unwrap().to_owned()),
+            pcapng_export_file: Some(pcapng.to_str().unwrap().to_owned()),
+            ..Config::default()
+        };
+
+        let (mut handles, mut pcap) = prepare_output_handles(&config).unwrap();
+        for path in [&capture, &sidecar, &pcapng] {
+            assert!(fs::read(path).unwrap().is_empty());
+        }
+        handles
+            .json_log
+            .as_mut()
+            .unwrap()
+            .write_all(b" appended")
+            .unwrap();
+        pcap.as_mut().unwrap().write_all(b"new pcap").unwrap();
+        handles
+            .pcap_sidecar
+            .as_mut()
+            .unwrap()
+            .write_all(b"new sidecar")
+            .unwrap();
+        handles
+            .pcapng_export
+            .as_mut()
+            .unwrap()
+            .write_all(b"new pcapng")
+            .unwrap();
+        assert_eq!(fs::read(log).unwrap(), b"existing log appended");
+        assert_eq!(fs::read(capture).unwrap(), b"new pcap");
+        assert_eq!(fs::read(sidecar).unwrap(), b"new sidecar");
+        assert_eq!(fs::read(pcapng).unwrap(), b"new pcapng");
+    }
 }
 
 #[cfg(all(test, unix))]

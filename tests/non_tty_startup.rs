@@ -1,5 +1,41 @@
 use std::process::{Command, Stdio};
 
+#[path = "../src/test_support/scratch_dir.rs"]
+mod scratch_dir;
+
+#[test]
+fn overlapping_outputs_fail_before_logging_or_capture_without_truncating_files() {
+    for json_name in ["capture.pcap", "capture.pcap.connections.jsonl"] {
+        let directory = scratch_dir::ScratchDir::new("cli-output", json_name);
+        let pcap = directory.path().join("capture.pcap");
+        let json = directory.path().join(json_name);
+        std::fs::write(&pcap, b"existing capture").unwrap();
+        if pcap != json {
+            std::fs::write(&json, b"existing sidecar").unwrap();
+        }
+        let previous_json = std::fs::read(&json).unwrap();
+
+        let output = Command::new(env!("CARGO_BIN_EXE_rustnet"))
+            .args(["--headless", "--duration", "1", "--log-level", "debug"])
+            .arg("--pcap-export")
+            .arg(&pcap)
+            .arg("--json-log")
+            .arg(&json)
+            .current_dir(directory.path())
+            .stdin(Stdio::null())
+            .output()
+            .expect("rustnet should reject overlapping output paths");
+
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("overlaps"), "unexpected stderr: {stderr}");
+        assert_eq!(std::fs::read(&pcap).unwrap(), b"existing capture");
+        assert_eq!(std::fs::read(&json).unwrap(), previous_json);
+        assert!(!directory.path().join("logs").exists());
+    }
+}
+
 #[test]
 fn default_mode_rejects_non_terminal_output_without_control_sequences() {
     let output = Command::new(env!("CARGO_BIN_EXE_rustnet"))

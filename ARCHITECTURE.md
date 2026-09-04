@@ -52,6 +52,12 @@ The graph is acyclic: `rustnet-core` has no workspace dependencies, `rustnet-cap
 
 To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustnet_core::network::*` and `rustnet_capture` (as `capture`), so existing `crate::network::*` paths, integration tests, and benches compile unchanged. The `src/network/platform` module is now just the shim wiring in `rustnet-host`'s process and socket lookup; the per-platform interface-stats providers live in `rustnet-core` behind `interface_stats::create_stats_provider`, and sandboxing plus the root uid drop live in `rustnet-sandbox`, which the binary uses directly.
 
+### Frontend Modules
+
+`src/main.rs` delegates to the library's `bootstrap::run`. `src/bootstrap.rs` parses options, validates output paths, prepares privileged resources, applies the sandbox, starts workers through the runtime permit, and selects the frontend. `src/tui.rs` owns the interactive event loop. Headless orchestration lives in `src/headless/mod.rs`, the versioned snapshot projection in `src/headless/schema.rs`, and the bounded latest-value writer in `src/headless/output.rs`. Both frontends use the same application state, filters, signal flag, and owned shutdown report.
+
+Output destinations are checked before any output is truncated. JSON, PCAP, PCAP sidecar, and PCAPNG descriptors stay open through the UID drop and sandbox transition. Shutdown stops and joins producers before rebuilding the final snapshot; if a worker misses the deadline, the terminal headless record reports `stopping` rather than claiming shutdown completed.
+
 ## Multi-threaded Architecture
 
 RustNet uses a multi-threaded architecture for efficient packet processing:
