@@ -67,6 +67,13 @@ jobs:
         # Only this BPF-filtered loopback regression needs capture privileges.
         # The process watchdog also bounds failures inside the native backend.
         sudo timeout 10s "$test_executable" --ignored --exact idle_capture_returns_after_traffic_stops_without_busy_spinning
+    - name: Test capture capability cleanup before UID drop
+      run: |
+        test_executable=$(cargo test --locked -p rustnet-sandbox --lib --features landlock --no-run --message-format=json |
+          jq -r 'select(.reason == "compiler-artifact" and .target.name == "rustnet_sandbox") | .executable // empty')
+        test -n "$test_executable"
+        # Identity changes are isolated to this exact test process.
+        sudo timeout 10s "$test_executable" --ignored --exact linux::capabilities::tests::capture_capability_drops_preserve_uid_and_gid_changes
     - name: Install cargo-audit
       run: cargo install cargo-audit --locked
     - name: Run security audit
