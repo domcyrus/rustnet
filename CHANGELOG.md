@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Frontend Modules**: startup and the TUI loop now live in library modules;
+  headless orchestration, schema projection, and output handling are separate
+  modules. Overlapping JSON, PCAP, sidecar, and PCAPNG destinations are rejected
+  before existing output data can be truncated
 - **Runtime Lifecycle Foundation**: privileged capture and process attribution
   are prepared synchronously before sandboxing, while all long-lived workers
   start through a typed post-sandbox handoff and stop under one owned,

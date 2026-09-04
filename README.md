@@ -207,6 +207,8 @@ rustnet --headless --filter 'process:curl app:https'   # Apply a connection filt
 
 Snapshot connection IDs remain stable through archival and distinguish reused endpoints. Traffic rates are explicitly named `outgoing_bytes_per_second` and `incoming_bytes_per_second`. A shutdown timeout reports `stopping` with the unfinished worker count and exits with a nonzero status.
 
+JSON logs, PCAP exports and their sidecars, and PCAPNG exports must use distinct output files. Overlapping destinations are rejected before existing output data is truncated.
+
 The theme and per-color overrides can also be set in `~/.config/rustnet/config.toml`; `--theme` takes precedence. See [USAGE.md](USAGE.md#--theme-preset) for the schema.
 
 See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.md) for complete options.

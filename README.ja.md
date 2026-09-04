@@ -112,6 +112,8 @@ rustnet --headless --filter 'process:curl app:https'   # 接続フィルター�
 
 スナップショットの接続 ID は履歴への移行後も変わらず、同じエンドポイントを再利用する別の接続を区別します。転送速度のフィールド名は `outgoing_bytes_per_second` と `incoming_bytes_per_second` で、単位はバイト毎秒です。終了処理がタイムアウトした場合は、状態を `stopping` とし、未完了のワーカー数を報告してゼロ以外のステータスで終了します。
 
+JSON ログ、PCAP 出力とそのサイドカー、PCAPNG 出力には、それぞれ異なるファイルを指定してください。出力先が重複している場合は、既存の出力データを切り詰める前に拒否します。
+
 テーマと各色の上書きは `~/.config/rustnet/config.toml` でも設定できます（`--theme` が優先）。詳細は [USAGE.md](USAGE.md#--theme-preset) を参照してください。
 
 ## 基本操作
