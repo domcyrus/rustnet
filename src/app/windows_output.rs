@@ -349,7 +349,7 @@ mod tests {
         let path = scratch.join("events.log");
         // Elevated tokens can default ordinary new files to Administrators
         // ownership. Seed this positive fixture with the required user owner.
-        open_private(&path, false)
+        open_private(&path, false, true)
             .unwrap()
             .write_all(b"first\n")
             .unwrap();
@@ -371,7 +371,7 @@ mod tests {
         let owned_by_user = validate_owner(&file, &path, security.user_sid()).is_ok();
         drop(file);
 
-        match open_private(&path, false) {
+        match open_private(&path, false, true) {
             Ok(_) => {
                 assert!(owned_by_user);
                 assert!(fs::read(&path).unwrap().is_empty());
