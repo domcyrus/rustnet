@@ -79,11 +79,11 @@ fn target_from_env(sudo_uid: Option<&str>, sudo_gid: Option<&str>) -> DropTarget
 
 /// Change the file's owner to the drop target.
 ///
-/// Used on pre-created export files (0600, root-owned) so they can still be
-/// reopened by name after the uid drop, e.g. libpcap's `pcap_dump_open` and
-/// the per-event sidecar JSONL appends. Operates on the already-open fd
-/// (`fchown`), never on the path, so it cannot be redirected by a
-/// symlink/rename swap after the O_NOFOLLOW create.
+/// Hands ownership of pre-created output files to the runtime identity.
+/// Writers retain their already-open descriptors across the uid drop and do
+/// not reopen these paths. Operates on the descriptor (`fchown`), never on the
+/// path, so a symlink/rename swap after secure opening cannot redirect the
+/// ownership change.
 pub fn chown_to_target(file: &std::fs::File, target: DropTarget) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
     // SAFETY: fchown on a valid owned fd; no pointers involved.
