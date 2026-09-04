@@ -47,7 +47,7 @@ On Linux 5.13+, RustNet uses [Landlock](https://landlock.io/) to restrict its ow
 
 If an attacker exploits a vulnerability in DPI/packet parsing:
 - Cannot read arbitrary files (credentials, configs, etc.)
-- Cannot write to filesystem (except configured log paths)
+- Cannot open new writable paths; existing output descriptors remain writable
 - Cannot make outbound TCP connections (data exfiltration blocked)
 - Cannot bind TCP ports (reverse shell blocked)
 - Cannot create new raw sockets (capability dropped)
@@ -90,14 +90,14 @@ On macOS 10.5+, RustNet uses [Seatbelt](https://theapplewiki.com/wiki/Dev:Seatbe
 | Outbound network | TCP/UDP outbound blocked; Unix sockets (Mach IPC) allowed |
 | Filesystem reads | User home directories blocked (`/Users`, `/var/root`); GeoIP paths explicitly allowed |
 | Filesystem writes | All user home directories blocked (`/Users`, `/var/root`) |
-| Filesystem writes | Only configured log, PCAP, and PCAPNG export paths writable |
+| Output files | Writes use retained descriptors; no output-path write exceptions are granted |
 | Process execution | All binaries blocked except `/usr/sbin/lsof` |
 | Root uid | When started as root (e.g. `sudo rustnet`), the process drops to the invoking user (`SUDO_UID`/`SUDO_GID`) or `nobody` after initialization |
 
 ### How It Works
 
 1. **Initialization phase**: RustNet opens packet capture handles (BPF/PKTAP) and creates log files
-2. **Pre-create**: PCAP sidecar (`.connections.jsonl`) and PCAPNG export files are created before the sandbox so their paths are already valid allow targets, and are handed over to the uid-drop target so they stay writable after the drop
+2. **Prepare outputs**: JSON logging, PCAP, PCAP sidecar (`.connections.jsonl`), and PCAPNG files are securely opened before the sandbox. Their opened file identities are checked for collisions before capture outputs are truncated, and the descriptors remain open across the uid drop
 3. **Root uid drop**: when running as root, the process switches to the invoking sudo user (or `nobody`) via `setgid`/`setuid`. Already-open capture and log/export descriptors keep working
 4. **Sandbox application**: `sandbox_init_with_parameters` is called; already-open file descriptors survive unchanged, only future operations are restricted
 
@@ -107,7 +107,7 @@ RustNet uses an **allow-default** SBPL profile with targeted denies. A deny-defa
 
 ### Output File Support
 
-`--json-log`, `--pcap-export`, and `--pcapng-export` paths are passed to the SBPL profile as runtime parameters (`JSON_LOG_PATH`, `PCAP_PATH`, `PCAP_JSONL_PATH`, `PCAPNG_PATH`). The profile grants an explicit `allow file-write*` rule on each path, which takes precedence over the broader `/Users` deny rule via SBPL specificity. Unused parameters default to `/dev/null`.
+`--json-log`, `--pcap-export`, and `--pcapng-export` write through securely pre-opened file descriptors, including the PCAP sidecar. RustNet does not reopen these paths after sandboxing and passes no output-path write exceptions to the Seatbelt profile. This also avoids granting write access to a different file if a pathname is replaced after preparation.
 
 All three flags work normally within the sandbox.
 

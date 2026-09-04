@@ -56,7 +56,7 @@ To keep the split internal to the binary, `src/network/mod.rs` re-exports `rustn
 
 `src/main.rs` delegates to the library's `bootstrap::run`. `src/bootstrap.rs` parses options, validates output paths, prepares privileged resources, applies the sandbox, starts workers through the runtime permit, and selects the frontend. `src/tui.rs` owns the interactive event loop. Headless orchestration lives in `src/headless/mod.rs`, the versioned snapshot projection in `src/headless/schema.rs`, and the bounded latest-value writer in `src/headless/output.rs`. Both frontends use the same application state, filters, signal flag, and owned shutdown report.
 
-Output destinations are checked before any output is truncated. JSON, PCAP, PCAP sidecar, and PCAPNG descriptors stay open through the UID drop and sandbox transition. Shutdown stops and joins producers before rebuilding the final snapshot; if a worker misses the deadline, the terminal headless record reports `stopping` rather than claiming shutdown completed.
+Configured JSON log, PCAP, PCAP sidecar, and PCAPNG destinations receive early pathname validation and an opened-file identity check before capture outputs are truncated. Their descriptors stay open through the UID drop and sandbox transition, without output-path write grants or later reopening. Shutdown stops and joins producers before rebuilding the final snapshot; if a worker misses the deadline, the terminal headless record reports `stopping` rather than claiming shutdown completed.
 
 ## Multi-threaded Architecture
 
