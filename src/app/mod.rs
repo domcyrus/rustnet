@@ -19,7 +19,9 @@ mod types;
 #[cfg(target_os = "windows")]
 mod windows_output;
 
-pub use output::{open_private_append_file, precreate_private_file, validate_output_paths};
+pub use output::{
+    open_private_append_file, precreate_private_file, prepare_output_handles, validate_output_paths,
+};
 pub use runtime::{InitStatus, StopReport, WorkerStartupPermit};
 pub use state::App;
 pub(crate) use types::ConnectionCounts;

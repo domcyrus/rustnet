@@ -38,7 +38,7 @@ use windows::core::PCWSTR;
 /// Existing files are not truncated until their type, link count, and owner
 /// have been validated and the protected DACL has been applied. Reparse points
 /// and multiply-linked files are rejected.
-pub fn open_private(path: impl AsRef<Path>, append: bool) -> io::Result<File> {
+pub fn open_private(path: impl AsRef<Path>, append: bool, truncate: bool) -> io::Result<File> {
     let path = path.as_ref();
     let path_wide = wide_path(path)?;
     let mut security = PrivateSecurity::for_current_user()?;
@@ -69,11 +69,23 @@ pub fn open_private(path: impl AsRef<Path>, append: bool) -> io::Result<File> {
     validate_owner(&file, path, security.user_sid())?;
     security.apply_to(&file)?;
 
-    if !append {
+    if truncate {
         file.set_len(0)?;
     }
 
     Ok(file)
+}
+
+pub(super) fn file_identity(file: &File) -> io::Result<(u64, u64)> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    unsafe {
+        GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info)
+            .map_err(|error| windows_error("GetFileInformationByHandle", error))?;
+    }
+    Ok((
+        u64::from(info.dwVolumeSerialNumber),
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
 }
 
 fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
@@ -337,7 +349,7 @@ mod tests {
         let path = scratch.join("events.log");
         fs::write(&path, b"first\n").unwrap();
 
-        let mut file = open_private(&path, true).unwrap();
+        let mut file = open_private(&path, true, false).unwrap();
         writeln!(file, "second").unwrap();
         file.sync_all().unwrap();
 
@@ -352,7 +364,7 @@ mod tests {
         fs::write(&target, b"keep me").unwrap();
         fs::hard_link(&target, &link).unwrap();
 
-        let error = open_private(&link, false).unwrap_err();
+        let error = open_private(&link, false, true).unwrap_err();
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(fs::read(&target).unwrap(), b"keep me");
@@ -362,7 +374,7 @@ mod tests {
     fn rejects_a_different_expected_owner() {
         let scratch = ScratchDir::new("owner");
         let path = scratch.join("events.log");
-        let file = open_private(&path, false).unwrap();
+        let file = open_private(&path, false, true).unwrap();
 
         let sid_words = (SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<usize>());
         let mut sid_storage = vec![0usize; sid_words];
