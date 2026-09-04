@@ -2,7 +2,83 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use super::Config;
+
+/// Reject overlapping output destinations before any file is opened or
+/// truncated. Secure descriptor opening still enforces the file-type and
+/// link restrictions when each writer is created.
+pub fn validate_output_paths(config: &Config) -> io::Result<()> {
+    let mut outputs = Vec::new();
+    if let Some(path) = &config.json_log_file {
+        outputs.push(("JSON log", PathBuf::from(path)));
+    }
+    if let Some(path) = &config.pcap_export_file {
+        outputs.push(("PCAP", PathBuf::from(path)));
+        outputs.push((
+            "PCAP sidecar",
+            PathBuf::from(format!("{path}.connections.jsonl")),
+        ));
+    }
+    if let Some(path) = &config.pcapng_export_file {
+        outputs.push(("PCAPNG", PathBuf::from(path)));
+    }
+
+    let mut resolved = Vec::new();
+    for (label, path) in outputs {
+        let identity = output_identity(&path)?;
+        if let Some((other_label, other_path, _)) = resolved
+            .iter()
+            .find(|(_, _, other_identity)| other_identity == &identity)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "{label} output '{}' overlaps {other_label} output '{}'",
+                    path.display(),
+                    Path::new(other_path).display(),
+                ),
+            ));
+        }
+        resolved.push((label, path, identity));
+    }
+    Ok(())
+}
+
+fn output_identity(path: &Path) -> io::Result<PathBuf> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if !metadata.is_file() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("output path is not a regular file: {}", path.display()),
+                ));
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if metadata.nlink() != 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("output file has multiple hard links: {}", path.display()),
+                    ));
+                }
+            }
+            fs::canonicalize(path)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let name = path.file_name().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "output path has no file name")
+            })?;
+            let parent = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty());
+            Ok(fs::canonicalize(parent.unwrap_or_else(|| Path::new(".")))?.join(name))
+        }
+        Err(error) => Err(error),
+    }
+}
 
 /// Create or truncate a private regular output file without following the
 /// final path component when the platform exposes that control.
@@ -65,13 +141,83 @@ fn open_private(path: impl AsRef<Path>, append: bool) -> io::Result<fs::File> {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::open_private_append_file;
+    use super::{open_private_append_file, validate_output_paths};
+    use crate::app::Config;
     use crate::app::scratch_dir::ScratchDir;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
 
     fn scratch(tag: &str) -> ScratchDir {
         ScratchDir::new("output", tag)
+    }
+
+    #[test]
+    fn rejects_collision_with_generated_pcap_sidecar_without_truncating() {
+        let dir = scratch("sidecar_collision");
+        let capture = dir.join("capture.pcap");
+        let sidecar = dir.join("capture.pcap.connections.jsonl");
+        std::fs::write(&capture, b"existing capture").unwrap();
+        std::fs::write(&sidecar, b"existing log").unwrap();
+        let config = Config {
+            json_log_file: Some(sidecar.to_str().unwrap().to_owned()),
+            pcap_export_file: Some(capture.to_str().unwrap().to_owned()),
+            ..Config::default()
+        };
+
+        let error = validate_output_paths(&config).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("PCAP sidecar"));
+        assert_eq!(std::fs::read(capture).unwrap(), b"existing capture");
+        assert_eq!(std::fs::read(sidecar).unwrap(), b"existing log");
+    }
+
+    #[test]
+    fn rejects_new_output_collision_through_parent_alias() {
+        let dir = scratch("parent_alias_collision");
+        let actual = dir.join("actual");
+        let alias = dir.join("alias");
+        std::fs::create_dir(&actual).unwrap();
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+        let config = Config {
+            json_log_file: Some(actual.join("capture").to_str().unwrap().to_owned()),
+            pcapng_export_file: Some(alias.join("capture").to_str().unwrap().to_owned()),
+            ..Config::default()
+        };
+
+        let error = validate_output_paths(&config).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!actual.join("capture").exists());
+    }
+
+    #[test]
+    fn rejects_hard_link_before_opening_any_output() {
+        let dir = scratch("preflight_hard_link");
+        let target = dir.join("target");
+        let alias = dir.join("alias");
+        std::fs::write(&target, b"retain me").unwrap();
+        std::fs::hard_link(&target, &alias).unwrap();
+        let config = Config {
+            json_log_file: Some(target.to_str().unwrap().to_owned()),
+            pcapng_export_file: Some(alias.to_str().unwrap().to_owned()),
+            ..Config::default()
+        };
+
+        assert!(validate_output_paths(&config).is_err());
+        assert_eq!(std::fs::read(target).unwrap(), b"retain me");
+    }
+
+    #[test]
+    fn accepts_distinct_new_output_paths_without_creating_them() {
+        let dir = scratch("distinct_outputs");
+        let config = Config {
+            json_log_file: Some(dir.join("events.jsonl").to_str().unwrap().to_owned()),
+            pcap_export_file: Some(dir.join("capture.pcap").to_str().unwrap().to_owned()),
+            pcapng_export_file: Some(dir.join("capture.pcapng").to_str().unwrap().to_owned()),
+            ..Config::default()
+        };
+
+        validate_output_paths(&config).unwrap();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
     #[test]
