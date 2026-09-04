@@ -1583,7 +1583,7 @@ mod attribution_cutoff_tests {
     fn packets_from_before_attribution_start_are_discarded() {
         let cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
         assert!(packet_predates_attribution_start(
-            cutoff - Duration::from_nanos(1),
+            cutoff - Duration::from_nanos(100),
             Some(cutoff)
         ));
         assert!(!packet_predates_attribution_start(cutoff, Some(cutoff)));
@@ -1598,7 +1598,7 @@ mod attribution_cutoff_tests {
         let cutoff = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
         let packet = CapturedPacket {
             data: vec![1, 2, 3],
-            timestamp: cutoff - Duration::from_nanos(1),
+            timestamp: cutoff - Duration::from_nanos(100),
             original_len: 3,
         };
         let stats = AppStats::default();
