@@ -780,7 +780,7 @@ mod tests {
 
         connection.is_historic = false;
         connection.closed_at = None;
-        connection.created_at += Duration::from_nanos(1);
+        connection.created_at += Duration::from_nanos(100);
         let reused =
             serde_json::to_value(ConnectionSnapshot::from_connection(&connection)).unwrap();
         assert_ne!(live["id"], reused["id"]);

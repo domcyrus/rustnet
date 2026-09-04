@@ -82,6 +82,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and PCAPNG export errors spell the format in uppercase
 
 ### Fixed
+- **Windows Connection History**: connections that reuse a tuple with the
+  same capture timestamp keep distinct history entries
 - **Idle Capture Shutdown**: nonblocking capture reads and bounded idle
   polling let worker shutdown finish even after packet traffic stops
 - **Windows Address Discovery**: collect IPv4, IPv6, and subnet broadcasts
