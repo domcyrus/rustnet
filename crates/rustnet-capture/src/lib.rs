@@ -204,7 +204,11 @@ fn find_best_device() -> Result<Device> {
     }
 }
 
-/// Setup packet capture with the given configuration
+/// Set up a nonblocking capture with the given configuration.
+///
+/// libpcap's packet-buffer timeout does not bound an idle read on every
+/// backend, especially in immediate mode. Nonblocking reads let the caller
+/// observe shutdown even after traffic stops.
 pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, String, i32)> {
     // Try PKTAP first on macOS for process metadata, but only when:
     // - No interface is explicitly specified
@@ -222,7 +226,8 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
                     .timeout(config.timeout_ms)
                     .immediate_mode(true)
                     .want_pktap(true)
-                    .open();
+                    .open()
+                    .and_then(Capture::setnonblock);
 
                 match pktap_cap {
                     Ok(mut cap) => {
@@ -326,14 +331,13 @@ pub fn setup_packet_capture(config: CaptureConfig) -> Result<(Capture<Active>, S
         .timeout(config.timeout_ms)
         .immediate_mode(true); // Parse packets ASAP
 
-    let mut cap = cap.open()?;
+    let mut cap = cap.open()?.setnonblock()?;
 
     if let Some(filter) = &config.filter {
         log::info!("Applying BPF filter: {}", filter);
         cap.filter(filter, true)?;
     }
 
-    // Note: We're not setting non-blocking mode as we're using timeout instead
     let linktype = cap.get_datalink();
 
     Ok((cap, device_name, linktype.0))
@@ -529,7 +533,12 @@ fn find_capture_device(interface_name: &Option<String>) -> Result<Device> {
     }
 }
 
-/// Simple packet reader that handles timeouts gracefully
+const IDLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Packet reader for a capture from [`setup_packet_capture`].
+///
+/// Empty nonblocking reads sleep briefly so callers can poll shutdown without
+/// spinning. Readiness never depends on another packet arriving.
 pub struct PacketReader {
     capture: Capture<Active>,
 }
@@ -547,7 +556,8 @@ impl PacketReader {
         Self { capture }
     }
 
-    /// Read next packet, returning None on timeout.
+    /// Read the next packet, returning `None` after a bounded idle delay when
+    /// no packet is available. Captures supplied directly must be nonblocking.
     pub fn next_packet(&mut self) -> Result<Option<CapturedPacket>> {
         match self.capture.next_packet() {
             Ok(packet) => {
@@ -558,7 +568,10 @@ impl PacketReader {
                     original_len: packet.header.len,
                 }))
             }
-            Err(PcapError::TimeoutExpired) => Ok(None),
+            Err(PcapError::TimeoutExpired) => {
+                std::thread::sleep(IDLE_POLL_INTERVAL);
+                Ok(None)
+            }
             Err(e) => Err(e.into()),
         }
     }
