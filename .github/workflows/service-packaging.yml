@@ -57,12 +57,12 @@ jobs:
           components: rustfmt
       - name: Validate service example
         run: python3 scripts/check-service-packaging.py
-      - name: Build release binary and package tools
-        run: |
-          cargo build --locked --release
-          cargo install --locked cargo-deb cargo-generate-rpm
+      - name: Build release binary
+        run: cargo build --locked --release
       - name: Exercise private systemd output and privilege drop
         run: sudo python3 scripts/check-linux-service-runtime.py target/release/rustnet
+      - name: Install package tools
+        run: cargo install --locked cargo-deb cargo-generate-rpm
       - name: Build and inspect release DEB and RPM
         run: |
           cargo deb --no-build --no-strip
