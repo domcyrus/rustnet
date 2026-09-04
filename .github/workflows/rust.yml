@@ -10,11 +10,11 @@ on:
       - 'Cargo.lock'
       - 'build.rs'
       - 'benches/**'
+      - 'tests/**'
       - 'Dockerfile'
       - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
   pull_request:
-    branches: [ "main" ]
     paths:
       - 'src/**'
       - 'crates/**'
@@ -22,6 +22,7 @@ on:
       - 'Cargo.lock'
       - 'build.rs'
       - 'benches/**'
+      - 'tests/**'
       - 'Dockerfile'
       - '.cargo/audit.toml'
       - '.github/workflows/rust.yml'
