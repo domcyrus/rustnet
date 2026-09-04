@@ -131,6 +131,26 @@ def check_scripts(contents, label):
     )
 
 
+def rpm_members(path):
+    output("rpm", "--checksig", str(path))
+    listing = output("rpm", "-qp", "--qf", "[%{FILENAMES}\t%{FILEMODES}\n]", str(path)).decode()
+    # rpm2cpio can report failure for valid zstd payloads on RPM 4.18.
+    # Use the supported converter, retaining digest and metadata checks.
+    with path.open("rb") as package:
+        archive = tar_members(subprocess.check_output(["rpm2archive", "-n", "-"], stdin=package))
+    members = {}
+    for line in listing.splitlines():
+        name, mode = line.split("\t")
+        require(".." not in PurePosixPath(name).parts, f"unsafe RPM path: {name}")
+        if name.endswith(".service") or PurePosixPath(name).name in DOCS:
+            key = name.lstrip("/")
+            require(key in archive, f"RPM payload missing metadata entry: {name}")
+            archive_mode, contents = archive[key]
+            require(stat.S_IMODE(archive_mode) == stat.S_IMODE(int(mode)), f"RPM mode mismatch: {name}")
+            members[name] = (int(mode), contents)
+    return members
+
+
 def check_artifact(path):
     path = path.resolve()
     if path.suffix == ".deb":
@@ -140,18 +160,7 @@ def check_artifact(path):
             if name in ("preinst", "postinst", "prerm", "postrm"):
                 check_scripts(contents, path.name)
     elif path.suffix == ".rpm":
-        listing = output("rpm", "-qp", "--qf", "[%{FILENAMES}\t%{FILEMODES}\n]", str(path)).decode()
-        cpio = output("rpm2cpio", str(path))
-        members = {}
-        for line in listing.splitlines():
-            name, mode = line.split("\t")
-            require(".." not in PurePosixPath(name).parts, f"unsafe RPM path: {name}")
-            if name.endswith(".service") or PurePosixPath(name).name in DOCS:
-                contents = subprocess.check_output(
-                    ["cpio", "--extract", "--to-stdout", "--quiet", "." + name, name], input=cpio
-                )
-                members[name] = (int(mode), contents)
-        check_contents(members, path.name, package=True)
+        check_contents(rpm_members(path), path.name, package=True)
         check_scripts(output("rpm", "-qp", "--scripts", str(path)), path.name)
     elif path.name.endswith(".tar.gz"):
         check_contents(tar_members(path.read_bytes()), path.name, package=False)
