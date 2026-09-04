@@ -123,7 +123,7 @@ jobs:
 
       - name: Run workspace tests
         if: matrix.run-tests
-        run: cargo test --locked --workspace --all-features --target ${{ matrix.target }} --verbose
+        run: cargo test --locked --workspace --all-features --no-fail-fast --target ${{ matrix.target }} --verbose
 
       # For test builds: upload raw binary
       - name: Upload binary artifact
