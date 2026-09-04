@@ -183,13 +183,9 @@ fn main() -> Result<()> {
         output_handles.json_log = Some(file);
     }
 
-    // Pre-create the PCAP export file and retain both it and its sidecar JSONL
-    // descriptor.
-    // This must be done BEFORE the sandbox is applied so the files exist when
-    // adding rules: Landlock requires an open FD to scope a rule to a file, so
-    // a not-yet-existing path falls back to granting write on the whole parent
-    // directory. Pre-creating keeps the write rule file-scoped. The PCAP
-    // serializer receives this exact descriptor instead of reopening the path.
+    // Securely open the PCAP export file and its sidecar before sandboxing.
+    // Both writers retain these descriptors across the uid drop, so no output
+    // pathname write grants or later file reopening are needed.
     //
     // Done before terminal setup: pre-creation can fail hard (see below), and we
     // want the error to print to a normal terminal rather than into the TUI

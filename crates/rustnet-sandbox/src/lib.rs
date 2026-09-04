@@ -6,7 +6,7 @@
 //!   CAP_BPF, CAP_PERFMON), the root uid drop, and Landlock
 //!   filesystem/network/scope restrictions (behind the `landlock` feature).
 //! - **macOS**: the root uid drop, then a Seatbelt profile restricting outbound
-//!   network, credential reads, and writes outside configured output paths
+//!   network, credential reads, and writes under user home directories
 //!   (behind the `macos-sandbox` feature).
 //! - **Windows**: dangerous token privileges removed and a job object that
 //!   blocks child process creation.
@@ -21,10 +21,10 @@
 //!    descriptors stay valid across the sandbox and uid drop.
 //! 2. Load eBPF programs (needs CAP_BPF/CAP_PERFMON, which the sandbox
 //!    drops).
-//! 3. Pre-create output files (logs, PCAP exports) and, when dropping root,
-//!    chown them to the drop target ([`privdrop::chown_to_target`]); Landlock
-//!    needs an existing file to scope a write rule to it, and a path under a
-//!    root-only directory cannot be reopened after the drop.
+//! 3. Securely open output files (logs, PCAP exports) and, when dropping root,
+//!    hand ownership to the drop target ([`privdrop::chown_to_target`]). Retain
+//!    these descriptors for writing after the drop instead of reopening paths
+//!    or granting pathname write exceptions.
 //! 4. Call [`apply_sandbox`] on the **main thread**.
 //! 5. Only then spawn worker threads that should inherit the restrictions:
 //!    Landlock domains and capability sets are per-thread state that new

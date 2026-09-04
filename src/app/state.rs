@@ -181,8 +181,8 @@ pub struct App {
     /// this descriptor directly without reopening its configured pathname.
     pub(super) pcap_export_file: Option<File>,
 
-    /// Pre-created PCAPNG output file. Held until worker startup so the writer
-    /// thread can use the exact file handle allowed by the sandbox.
+    /// Securely pre-opened PCAPNG output file. Held until post-sandbox worker
+    /// startup so the writer uses the retained descriptor without path access.
     pub(super) pcapng_export_file: Option<File>,
 
     /// Sandbox status (Linux Landlock / macOS Seatbelt / Windows restricted token)

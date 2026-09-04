@@ -9,8 +9,8 @@
 //!
 //! - Network: Outbound TCP/UDP connections, optionally allowing DNS traffic
 //!   only to destination port 53 (RustNet is otherwise passive)
-//! - Filesystem writes: Only allowed to configured write paths
-//! - Filesystem writes: All user home directories blocked (/Users, /var/root)
+//! - Filesystem writes: User home directories blocked (/Users, /var/root),
+//!   except explicit write paths supplied by a library caller
 //! - Filesystem reads: User home directories and system credential stores
 //!   (keychains, dslocal account database, SSH host keys) blocked, except
 //!   configured read paths (e.g. GeoIP databases under a user home)
