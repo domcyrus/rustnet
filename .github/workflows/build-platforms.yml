@@ -103,11 +103,22 @@ jobs:
           # policy, so unit tests do not require a live Npcap installation.
           $sdk = Get-ChildItem -Path 'target\${{ matrix.target }}\release\build\rustnet-monitor-*\out\npcap_sdk' -Directory |
             Select-Object -First 1
-          if (-not $sdk -or -not (Test-Path (Join-Path $sdk.FullName 'wpcap.lib'))) {
+          if (-not $sdk -or
+              -not (Test-Path (Join-Path $sdk.FullName 'wpcap.lib')) -or
+              -not (Test-Path (Join-Path $sdk.FullName 'Packet.lib'))) {
             throw 'The verified Npcap SDK libraries were not found'
           }
           "LIBPCAP_LIBDIR=$($sdk.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          'RUSTFLAGS=-C link-arg=/DELAYLOAD:Packet.dll -C link-arg=/DELAYLOAD:wpcap.dll -C link-arg=/DEFAULTLIB:delayimp.lib' |
+          # pnet also links Packet.lib in crates without a pcap dependency,
+          # so LIBPCAP_LIBDIR alone does not reach every test executable.
+          # Encoded flags preserve an SDK path containing spaces as one value.
+          $rustflags = @(
+            '-L', "native=$($sdk.FullName)",
+            '-C', 'link-arg=/DELAYLOAD:Packet.dll',
+            '-C', 'link-arg=/DELAYLOAD:wpcap.dll',
+            '-C', 'link-arg=/DEFAULTLIB:delayimp.lib'
+          )
+          "CARGO_ENCODED_RUSTFLAGS=$($rustflags -join [char]0x1f)" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Run workspace tests
