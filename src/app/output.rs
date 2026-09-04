@@ -143,11 +143,24 @@ mod tests {
         let dir = scratch("symlink");
         let target = dir.join("real_target.log");
         let link = dir.join("evil.log");
-        std::fs::write(&target, b"").unwrap();
+        std::fs::write(&target, b"retain existing output").unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        let err =
-            open_private_append_file(&link).expect_err("O_NOFOLLOW must refuse a symlinked path");
-        assert_eq!(err.raw_os_error(), Some(libc::ELOOP));
-        assert!(std::fs::read(&target).unwrap().is_empty());
+        // FreeBSD distinguishes a final symlink (EMLINK) from a loop in an
+        // intermediate path component (ELOOP), unlike Linux and macOS.
+        let expected_errno = if cfg!(target_os = "freebsd") {
+            libc::EMLINK
+        } else {
+            libc::ELOOP
+        };
+        for append in [true, false] {
+            let result = if append {
+                open_private_append_file(&link)
+            } else {
+                super::precreate_private_file(&link)
+            };
+            let err = result.expect_err("O_NOFOLLOW must refuse a symlinked path");
+            assert_eq!(err.raw_os_error(), Some(expected_errno));
+            assert_eq!(std::fs::read(&target).unwrap(), b"retain existing output");
+        }
     }
 }
