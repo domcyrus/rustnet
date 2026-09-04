@@ -52,6 +52,9 @@ systemd は `StateDirectory` の準備より先に stdout を開く場合があ�
 capability だけを許可し、`CAP_SYS_ADMIN` は与えません。eBPF が使えない
 場合、権限を落とした後の procfs では一部のプロセスしか見えません。プロセス
 帰属に依存する前に、スナップショットの検出方式を確認してください。
+`AmbientCapabilities=CAP_SETUID` は、systemd 255 を含む systemd の seccomp
+設定処理でユーザー切り替えに必要な権限を保持します。RustNet は切り替え前に
+ambient capability を消去します。capability bounding set は拡張しません。
 
 RustNet のサンドボックスは有効なままです。プライベートな状態ディレクトリと
 一時領域以外は読み取り専用にし、ホームディレクトリは非表示にします。独自の

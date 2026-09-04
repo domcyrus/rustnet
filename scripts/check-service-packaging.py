@@ -46,6 +46,7 @@ def check_sources():
         "StandardOutput": "append:/var/lib/rustnet/headless.jsonl",
         "StandardError": "journal",
         "CapabilityBoundingSet": "CAP_NET_RAW CAP_BPF CAP_PERFMON CAP_SETUID CAP_SETGID",
+        "AmbientCapabilities": "CAP_SETUID",
         "NoNewPrivileges": "yes",
         "PrivateTmp": "yes",
         "ProtectHome": "yes",

@@ -30,6 +30,9 @@ StandardError=journal
 # Capture and eBPF setup need NET_RAW, BPF and PERFMON. SETUID and SETGID
 # are used only for the startup privilege drop. No SYS_ADMIN is granted.
 CapabilityBoundingSet=CAP_NET_RAW CAP_BPF CAP_PERFMON CAP_SETUID CAP_SETGID
+# Preserve the UID-drop capability through systemd's seccomp setup, including
+# systemd 255. RustNet clears ambient capabilities before dropping to nobody.
+AmbientCapabilities=CAP_SETUID
 LimitMEMLOCK=infinity
 NoNewPrivileges=yes
 PrivateTmp=yes

@@ -51,6 +51,9 @@ It grants only capture,
 eBPF setup, and identity-drop capabilities, with no `CAP_SYS_ADMIN`. If eBPF is
 unavailable, procfs fallback after the drop has limited process visibility;
 inspect the snapshot's process detection method before relying on attribution.
+`AmbientCapabilities=CAP_SETUID` preserves the intended UID-drop permission
+through systemd's seccomp setup, including systemd 255. RustNet clears ambient
+capabilities before changing identity; this does not widen the bounding set.
 
 The unit keeps RustNet's sandbox enabled and makes the filesystem read-only
 except for its private state directory and temporary storage. Home directories

@@ -30,6 +30,7 @@ def require(condition, message):
 
 def record_thread_status(pid, observed_threads):
     fields = {"Uid", "Gid", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Seccomp", "Seccomp_filters"}
+    current = {}
     for path in Path(f"/proc/{pid}/task").glob("*/status"):
         try:
             status = path.read_text()
@@ -43,6 +44,20 @@ def record_thread_status(pid, observed_threads):
         history = observed_threads.setdefault(path.parent.name, [])
         if values not in history and len(history) < 8:
             history.append(values)
+        current[path.parent.name] = values
+    return current
+
+
+def require_unprivileged_threads(pid, observed_threads, nobody):
+    current = record_thread_status(pid, observed_threads)
+    require(bool(current), "service exited before its dropped privileges could be verified")
+    for tid, values in current.items():
+        require(values.get("Uid") == [str(nobody)] * 4, f"thread {tid} retained a privileged UID")
+        for capability_set in ("CapAmb", "CapEff", "CapPrm"):
+            require(
+                values.get(capability_set) == ["0000000000000000"],
+                f"thread {tid} retained {capability_set} after the UID drop",
+            )
 
 
 def print_kernel_diagnostics(started_at, observed_ids):
@@ -131,6 +146,7 @@ def main():
                     if active in ("inactive", "failed"):
                         break
                     if saw_nobody and stdout_path.exists():
+                        require_unprivileged_threads(pid, observed_threads, nobody)
                         complete_lines = stdout_path.read_text().splitlines(keepends=True)
                         if any(
                             json.loads(line)["stats"]["packets_processed"] > 0

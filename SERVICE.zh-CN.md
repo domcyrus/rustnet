@@ -45,6 +45,9 @@ sudo systemctl status rustnet-headless.service
 仅授予抓包、eBPF 初始化和身份切换所需的 capabilities，不授予 `CAP_SYS_ADMIN`。
 如果 eBPF 不可用，降权后的 procfs 回退只能看到有限的进程信息；依赖进程归属
 之前，请检查快照中的进程检测方式。
+`AmbientCapabilities=CAP_SETUID` 确保 systemd 在设置 seccomp 时保留降权所需的权限，
+包括 systemd 255。RustNet 在切换身份之前会清除 ambient capabilities；
+此设置不会扩大 capability bounding set。
 
 单元保持 RustNet 沙箱开启，除私有状态目录和临时存储外，将文件系统设为只读，
 并隐藏用户主目录。如需自定义配置或 GeoIP 数据库，请放在合适的系统目录中并
