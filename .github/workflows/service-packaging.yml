@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ./.github/actions/setup-linux-deps
         with:
-          extra-packages: rpm debhelper
+          extra-packages: rpm debhelper fakeroot
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -74,8 +74,8 @@ jobs:
           python3 scripts/check-service-packaging.py target/debian/*.deb target/generate-rpm/*.rpm
       - name: Check native Debian documentation staging
         run: |
-          dh_installdocs
-          dh_installexamples
+          fakeroot dh_installdocs
+          fakeroot dh_installexamples
           for guide in SERVICE.md SERVICE.zh-CN.md SERVICE.ja.md; do
             cmp "$guide" "debian/rustnet/usr/share/doc/rustnet/$guide"
           done
