@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import socket
 import stat
@@ -25,6 +26,37 @@ def systemctl(*args, check=True):
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def record_thread_status(pid, observed_threads):
+    fields = {"Uid", "Gid", "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs", "Seccomp", "Seccomp_filters"}
+    for path in Path(f"/proc/{pid}/task").glob("*/status"):
+        try:
+            status = path.read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        values = {}
+        for line in status.splitlines():
+            key, _, value = line.partition(":")
+            if key in fields:
+                values[key] = value.split()
+        history = observed_threads.setdefault(path.parent.name, [])
+        if values not in history and len(history) < 8:
+            history.append(values)
+
+
+def print_kernel_diagnostics(started_at, observed_ids):
+    ids = sorted(value for value in observed_ids if value.isdecimal() and value != "0")
+    if not ids:
+        return
+    result = subprocess.run(
+        ["journalctl", "--no-pager", "--kernel", "--since", f"@{started_at}", "--output=cat"],
+        check=False, capture_output=True, text=True,
+    )
+    pattern = re.compile(r"\b(?:pid|tgid|tid)=(?:" + "|".join(ids) + r")\b")
+    matching = [line for line in result.stdout.splitlines() if pattern.search(line)]
+    print("Kernel audit messages matching the test process or threads:", flush=True)
+    print("\n".join(matching[-30:]) or "(none available)", flush=True)
 
 
 def main():
@@ -65,6 +97,8 @@ def main():
             unit = unit.replace("Type=simple", "Type=simple\nEnvironment=SUDO_UID=12345 SUDO_GID=12345 SUDO_USER=untrusted")
             observed_pids = set()
             observed_uids = set()
+            observed_threads = {}
+            started_at = int(time.time())
             try:
                 # Follow the documented first-install prerequisite. stdout may
                 # be opened before systemd prepares StateDirectory.
@@ -80,6 +114,7 @@ def main():
                     receiver.recv(128)
                     pid = systemctl("show", "--property=MainPID", "--value", unit_name)
                     observed_pids.add(pid)
+                    record_thread_status(pid, observed_threads)
                     try:
                         status = Path(f"/proc/{pid}/status").read_text()
                     except FileNotFoundError:
@@ -126,6 +161,8 @@ def main():
             except Exception:
                 print(f"Observed service PIDs: {sorted(observed_pids)}", flush=True)
                 print(f"Observed real/effective/saved/filesystem UIDs: {sorted(observed_uids)}", flush=True)
+                print("Observed thread credentials and syscall restrictions:", flush=True)
+                print(json.dumps(observed_threads, sort_keys=True), flush=True)
                 if stdout_path.exists():
                     complete = [line for line in stdout_path.read_text().splitlines(keepends=True) if line.endswith("\n")]
                     if complete:
@@ -136,6 +173,7 @@ def main():
                             "packets_processed": last.get("stats", {}).get("packets_processed"),
                         }), flush=True)
                 subprocess.run(["journalctl", "--no-pager", "-u", unit_name, "-n", "50"], check=False)
+                print_kernel_diagnostics(started_at, observed_pids | set(observed_threads))
                 raise
             finally:
                 systemctl("stop", unit_name, check=False)
