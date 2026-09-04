@@ -205,6 +205,8 @@ rustnet --headless --filter 'process:curl app:https'   # Apply a connection filt
 
 `--output jsonl` is the headless default and streams versioned snapshots at the configured refresh interval. `--output json` emits one final versioned snapshot when monitoring stops. `--duration` stops capture after the requested number of seconds, and `--filter` accepts the same syntax as the TUI. In headless mode, stdout contains machine-readable output only. Capture startup failures exit with a nonzero status.
 
+Snapshot connection IDs remain stable through archival and distinguish reused endpoints. Traffic rates are explicitly named `outgoing_bytes_per_second` and `incoming_bytes_per_second`. A shutdown timeout reports `stopping` with the unfinished worker count and exits with a nonzero status.
+
 The theme and per-color overrides can also be set in `~/.config/rustnet/config.toml`; `--theme` takes precedence. See [USAGE.md](USAGE.md#--theme-preset) for the schema.
 
 See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.md) for complete options.

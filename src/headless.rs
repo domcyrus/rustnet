@@ -15,7 +15,7 @@ use crossbeam::channel::{Receiver, RecvTimeoutError, Sender, TryRecvError, TrySe
 use serde::Serialize;
 
 use crate::app::{App, AppStats, StopReport};
-use crate::network::types::{AttributionSource, Connection};
+use crate::network::types::{AttributionSource, Connection, ConnectionKey};
 
 /// Current headless output schema.
 pub const SCHEMA_VERSION: u8 = 1;
@@ -214,11 +214,7 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
         .as_ref()
         .map(|failure| failure.kind.termination_reason())
         .or_else(|| successful_exit.map(TerminationReason::from_exit));
-    let phase = if failure.is_some() {
-        RuntimePhase::StoppedWithErrors
-    } else {
-        RuntimePhase::from_stop_report(stop_report)
-    };
+    let phase = RuntimePhase::after_stop(stop_report, failure.is_some());
     let (_, snapshot) = SnapshotEnvelope::new(
         app,
         options.filter_query.as_deref(),
@@ -632,10 +628,10 @@ enum RuntimePhase {
 }
 
 impl RuntimePhase {
-    const fn from_stop_report(report: StopReport) -> Self {
+    const fn after_stop(report: StopReport, failed: bool) -> Self {
         if report.timed_out_workers > 0 {
             Self::Stopping
-        } else if report.panicked_workers > 0 || report.output_errors > 0 {
+        } else if failed || report.panicked_workers > 0 || report.output_errors > 0 {
             Self::StoppedWithErrors
         } else {
             Self::Stopped
@@ -911,7 +907,7 @@ impl ConnectionSnapshot {
         let kubernetes = None;
 
         Self {
-            id: connection.key(),
+            id: connection_id(connection),
             protocol: connection.protocol.as_str(),
             state: connection.state().into_owned(),
             local: EndpointSnapshot {
@@ -941,8 +937,8 @@ impl ConnectionSnapshot {
                 bytes_received: connection.bytes_received,
                 packets_sent: connection.packets_sent,
                 packets_received: connection.packets_received,
-                outgoing_rate_bps: finite(connection.current_outgoing_rate_bps),
-                incoming_rate_bps: finite(connection.current_incoming_rate_bps),
+                outgoing_bytes_per_second: finite(connection.current_outgoing_rate_bps),
+                incoming_bytes_per_second: finite(connection.current_incoming_rate_bps),
             },
             rtt: RttSnapshot {
                 current_ms: duration_ms(connection.current_rtt()),
@@ -1009,8 +1005,8 @@ struct TrafficSnapshot {
     bytes_received: u64,
     packets_sent: u64,
     packets_received: u64,
-    outgoing_rate_bps: Option<f64>,
-    incoming_rate_bps: Option<f64>,
+    outgoing_bytes_per_second: Option<f64>,
+    incoming_bytes_per_second: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -1048,6 +1044,18 @@ struct KubernetesSnapshot {
 
 fn timestamp(time: SystemTime) -> String {
     DateTime::<Utc>::from(time).to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+fn connection_id(connection: &Connection) -> String {
+    // Tracker keys distinguish active and archived entries, but a consumer
+    // needs one identity throughout a flow's lifetime, including tuple reuse.
+    let created = DateTime::<Utc>::from(connection.created_at);
+    format!(
+        "{}:{}.{:09}",
+        ConnectionKey::from_connection(connection),
+        created.timestamp(),
+        created.timestamp_subsec_nanos(),
+    )
 }
 
 fn finite(value: f64) -> Option<f64> {
@@ -1289,8 +1297,8 @@ mod tests {
             [
                 "bytes_received",
                 "bytes_sent",
-                "incoming_rate_bps",
-                "outgoing_rate_bps",
+                "incoming_bytes_per_second",
+                "outgoing_bytes_per_second",
                 "packets_received",
                 "packets_sent",
             ]
@@ -1318,8 +1326,8 @@ mod tests {
         assert_eq!(connection["rtt"]["icmp_echo_ms"], 15.0);
         assert_eq!(connection["rtt"]["stun_ms"], 16.0);
         assert_eq!(connection["rtt"]["ntp_ms"], 17.0);
-        assert!(connection["traffic"]["outgoing_rate_bps"].is_null());
-        assert!(connection["traffic"]["incoming_rate_bps"].is_null());
+        assert!(connection["traffic"]["outgoing_bytes_per_second"].is_null());
+        assert!(connection["traffic"]["incoming_bytes_per_second"].is_null());
         assert_eq!(
             value["connection_count"],
             value["connections"].as_array().unwrap().len()
@@ -1391,6 +1399,79 @@ mod tests {
                 "pod_uid",
             ]
         );
+    }
+
+    #[test]
+    fn connection_identity_survives_archival_and_distinguishes_tuple_reuse() {
+        let mut connection = Connection::new(
+            Protocol::Tcp,
+            "127.0.0.1:45000".parse().unwrap(),
+            "93.184.216.34:443".parse().unwrap(),
+            ProtocolState::Tcp(TcpState::Established),
+        );
+        connection.created_at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let live = serde_json::to_value(ConnectionSnapshot::from_connection(&connection)).unwrap();
+        connection.is_historic = true;
+        connection.closed_at = Some(connection.created_at + Duration::from_secs(1));
+        let archived =
+            serde_json::to_value(ConnectionSnapshot::from_connection(&connection)).unwrap();
+        assert_eq!(live["id"], archived["id"]);
+
+        connection.is_historic = false;
+        connection.closed_at = None;
+        connection.created_at += Duration::from_nanos(1);
+        let reused =
+            serde_json::to_value(ConnectionSnapshot::from_connection(&connection)).unwrap();
+        assert_ne!(live["id"], reused["id"]);
+        assert_eq!(live["local"], reused["local"]);
+        assert_eq!(live["remote"], reused["remote"]);
+    }
+
+    #[test]
+    fn traffic_rates_serialize_explicit_byte_units() {
+        let mut connection = Connection::new(
+            Protocol::Udp,
+            "127.0.0.1:45000".parse().unwrap(),
+            "1.1.1.1:53".parse().unwrap(),
+            ProtocolState::Udp,
+        );
+        connection.current_outgoing_rate_bps = 125.0;
+        connection.current_incoming_rate_bps = 250.0;
+        let value = serde_json::to_value(ConnectionSnapshot::from_connection(&connection)).unwrap();
+        assert_eq!(value["traffic"]["outgoing_bytes_per_second"], 125.0);
+        assert_eq!(value["traffic"]["incoming_bytes_per_second"], 250.0);
+        assert!(value["traffic"].get("outgoing_rate_bps").is_none());
+        assert!(value["traffic"].get("incoming_rate_bps").is_none());
+    }
+
+    #[test]
+    fn terminal_status_keeps_timed_out_workers_in_stopping_phase() {
+        let app = app_with_connections();
+        for report in [
+            StopReport {
+                timed_out_workers: 1,
+                ..StopReport::default()
+            },
+            StopReport {
+                timed_out_workers: 1,
+                panicked_workers: 1,
+                output_errors: 1,
+                ..StopReport::default()
+            },
+        ] {
+            let failure = shutdown_failure(report).unwrap();
+            let (_, snapshot) = SnapshotEnvelope::new(
+                &app,
+                None,
+                RuntimePhase::after_stop(report, true),
+                Some(failure.kind.termination_reason()),
+                Some(report),
+            );
+            let value = serde_json::to_value(snapshot).unwrap();
+            assert_eq!(value["runtime"]["status"], "stopping");
+            assert_eq!(value["runtime"]["termination_reason"], "runtime_failed");
+            assert_eq!(value["runtime"]["shutdown"]["timed_out_workers"], 1);
+        }
     }
 
     #[test]

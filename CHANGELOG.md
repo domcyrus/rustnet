@@ -13,7 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSONL by default, while `--output json` emits one final snapshot. Stdout is
   reserved for machine-readable output. A bounded asynchronous writer prevents
   blocked consumers from delaying shutdown, while runtime capture and critical
-  worker failures emit terminal error state and return a nonzero status
+  worker failures emit terminal error state and return a nonzero status.
+  Connection IDs remain stable through archival and distinguish reused
+  endpoints, traffic rates have explicit bytes-per-second field names, and
+  timed-out workers retain a `stopping` terminal status
 - **Reusable Connection Filters**: the complete filter language now lives in
   `rustnet-core`, with the existing TUI path retained as a compatibility
   re-export for future headless frontends

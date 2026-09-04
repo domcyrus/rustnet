@@ -110,6 +110,8 @@ rustnet --headless --filter 'process:curl app:https'   # 接続フィルター�
 
 ヘッドレスモードの既定は `--output jsonl` で、設定された更新間隔ごとにバージョン付きスナップショットを出力します。`--output json` は監視終了時にバージョン付きの最終スナップショットを 1 件出力します。`--duration` は指定した秒数後にキャプチャを停止し、`--filter` は TUI と同じ構文を受け付けます。ヘッドレスモードでは stdout に機械可読の出力だけを書き込みます。キャプチャの起動に失敗した場合は、ゼロ以外の終了ステータスを返します。
 
+スナップショットの接続 ID は履歴への移行後も変わらず、同じエンドポイントを再利用する別の接続を区別します。転送速度のフィールド名は `outgoing_bytes_per_second` と `incoming_bytes_per_second` で、単位はバイト毎秒です。終了処理がタイムアウトした場合は、状態を `stopping` とし、未完了のワーカー数を報告してゼロ以外のステータスで終了します。
+
 テーマと各色の上書きは `~/.config/rustnet/config.toml` でも設定できます（`--theme` が優先）。詳細は [USAGE.md](USAGE.md#--theme-preset) を参照してください。
 
 ## 基本操作
