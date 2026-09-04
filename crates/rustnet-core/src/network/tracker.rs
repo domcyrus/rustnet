@@ -750,10 +750,12 @@ impl ConnectionTracker {
                 // Historic keys include `created_at`, so two generations of
                 // the same tuple must not share a creation timestamp. This is
                 // possible when several captured packets use one batch time.
+                // Windows SystemTime stores 100 ns ticks, so a smaller step
+                // would be rounded away instead of producing a distinct key.
                 if replacement_now <= conn.created_at {
                     replacement_now = conn
                         .created_at
-                        .checked_add(Duration::from_nanos(1))
+                        .checked_add(Duration::from_nanos(100))
                         .unwrap_or(replacement_now);
                 }
                 self.archive_snapshot(key, &conn, now);
@@ -2281,9 +2283,8 @@ mod tests {
         assert_eq!(tracker.historic_len(), 1);
 
         let active = tracker.connections().iter().next().unwrap();
-        assert_eq!(
-            active.created_at,
-            started + Duration::from_nanos(1),
+        assert!(
+            active.created_at > started,
             "a same-batch replacement needs a distinct historic identity"
         );
         assert!(matches!(
