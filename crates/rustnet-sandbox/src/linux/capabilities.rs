@@ -148,4 +148,54 @@ mod tests {
         let result = drop_ebpf_caps();
         assert!(result.is_ok());
     }
+
+    #[test]
+    #[ignore = "requires root with capture and identity-change capabilities in a dedicated process"]
+    fn capture_capability_drops_preserve_uid_and_gid_changes() {
+        // SAFETY: geteuid has no arguments or failure mode.
+        assert_eq!(unsafe { libc::geteuid() }, 0);
+        let required = [
+            Capability::CAP_SETUID,
+            Capability::CAP_SETGID,
+            Capability::CAP_NET_RAW,
+            Capability::CAP_BPF,
+            Capability::CAP_PERFMON,
+        ];
+        let mut expected = ACTIVE_SETS.map(|set| {
+            let held = caps::read(None, set).unwrap();
+            for capability in required {
+                assert!(
+                    held.contains(&capability),
+                    "{capability:?} missing from {set:?}"
+                );
+            }
+            held
+        });
+
+        clear_ambient_caps().unwrap();
+        for capability in [
+            Capability::CAP_NET_RAW,
+            Capability::CAP_BPF,
+            Capability::CAP_PERFMON,
+        ] {
+            assert!(drop_and_verify(capability).unwrap());
+            for (set, held) in ACTIVE_SETS.into_iter().zip(&mut expected) {
+                held.remove(&capability);
+                assert_eq!(caps::read(None, set).unwrap(), *held);
+                assert!(held.contains(&Capability::CAP_SETUID));
+                assert!(held.contains(&Capability::CAP_SETGID));
+            }
+        }
+
+        // This changes every test-process thread's identity. Run only this
+        // ignored test in its own process, never alongside other tests.
+        crate::privdrop::drop_to(crate::privdrop::DropTarget {
+            uid: 65534,
+            gid: 65534,
+        })
+        .unwrap();
+        // SAFETY: these identity queries have no arguments or failure mode.
+        assert_eq!(unsafe { libc::geteuid() }, 65534);
+        assert_eq!(unsafe { libc::getegid() }, 65534);
+    }
 }

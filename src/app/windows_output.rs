@@ -309,7 +309,7 @@ fn windows_error(operation: &str, error: windows::core::Error) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{open_private, validate_owner};
+    use super::{PrivateSecurity, open_private, validate_owner};
     use std::fs;
     use std::io::{self, Write};
     use std::mem::size_of;
@@ -347,13 +347,41 @@ mod tests {
     fn appends_without_truncating_existing_content() {
         let scratch = ScratchDir::new("append");
         let path = scratch.join("events.log");
-        fs::write(&path, b"first\n").unwrap();
+        // Elevated tokens can default ordinary new files to Administrators
+        // ownership. Seed this positive fixture with the required user owner.
+        open_private(&path, false)
+            .unwrap()
+            .write_all(b"first\n")
+            .unwrap();
 
         let mut file = open_private(&path, true, false).unwrap();
         writeln!(file, "second").unwrap();
         file.sync_all().unwrap();
 
         assert_eq!(fs::read(&path).unwrap(), b"first\nsecond\n");
+    }
+
+    #[test]
+    fn default_token_owner_cannot_bypass_user_ownership_check() {
+        let scratch = ScratchDir::new("default-owner");
+        let path = scratch.join("events.log");
+        fs::write(&path, b"preserve on rejection").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let security = PrivateSecurity::for_current_user().unwrap();
+        let owned_by_user = validate_owner(&file, &path, security.user_sid()).is_ok();
+        drop(file);
+
+        match open_private(&path, false) {
+            Ok(_) => {
+                assert!(owned_by_user);
+                assert!(fs::read(&path).unwrap().is_empty());
+            }
+            Err(error) => {
+                assert!(!owned_by_user);
+                assert!(error.to_string().contains("not owned by the current user"));
+                assert_eq!(fs::read(&path).unwrap(), b"preserve on rejection");
+            }
+        }
     }
 
     #[test]
