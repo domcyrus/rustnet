@@ -51,8 +51,9 @@ fn output_paths(config: &Config) -> Vec<(OutputKind, PathBuf)> {
 }
 
 /// Reject overlapping output destinations before any file is opened or
-/// truncated. Secure descriptor opening still enforces the file-type and
-/// link restrictions when each writer is created.
+/// truncated. This pathname check is an early diagnostic; callers must use
+/// [`prepare_output_handles`] to compare the opened file identities before
+/// truncation, including aliases on case-insensitive filesystems.
 pub fn validate_output_paths(config: &Config) -> io::Result<()> {
     let mut resolved = Vec::new();
     for (kind, path) in output_paths(config) {

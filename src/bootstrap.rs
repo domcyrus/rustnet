@@ -189,62 +189,46 @@ pub fn run() -> Result<()> {
         rustnet_sandbox::privdrop::resolve_drop_target()
     };
 
-    let mut output_handles = app::AppOutputHandles::default();
-
-    // Open JSONL outputs before sandboxing and uid drop. The descriptors stay
-    // open for the whole run: ownership changes alone are not sufficient for a
-    // path under a directory such as /root, which the drop target cannot
-    // traverse when trying to reopen the file.
-    if let Some(ref json_log_path) = config.json_log_file {
-        let file = app::open_private_append_file(json_log_path).map_err(|e| {
-            anyhow::anyhow!("Failed to open JSON log file '{}': {}", json_log_path, e)
-        })?;
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-        chown_to_uid_drop_target(&file, uid_drop_target, "JSON log", json_log_path);
-        output_handles.json_log = Some(file);
-    }
-
-    // Pre-create the PCAP export file and retain both it and its sidecar JSONL
-    // descriptor.
-    // This must be done BEFORE the sandbox is applied so the files exist when
-    // adding rules: Landlock requires an open FD to scope a rule to a file, so
-    // a not-yet-existing path falls back to granting write on the whole parent
-    // directory. Pre-creating keeps the write rule file-scoped. The PCAP
-    // serializer receives this exact descriptor instead of reopening the path.
-    //
-    // Done before terminal setup: pre-creation can fail hard (see below), and we
-    // want the error to print to a normal terminal rather than into the TUI
-    // alt-screen (which would also leave the terminal in raw mode).
-    let mut pcap_export_file = None;
-    if let Some(ref pcap_path) = config.pcap_export_file {
-        let jsonl_path = format!("{}.connections.jsonl", pcap_path);
-        for (label, path) in [("PCAP", pcap_path.as_str()), ("sidecar JSONL", &jsonl_path)] {
-            // Fail hard rather than continue: if we can't safely create the file
-            // (e.g. the path is a symlink, rejected by O_NOFOLLOW), aborting now
-            // is the only way the protection is meaningful.
-            let file = app::precreate_private_file(path).map_err(|e| {
-                anyhow::anyhow!("Failed to pre-create {} file '{}': {}", label, path, e)
-            })?;
-            #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-            chown_to_uid_drop_target(&file, uid_drop_target, label, path);
-            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd")))]
-            let _ = &file;
-
-            if label == "PCAP" {
-                pcap_export_file = Some(file);
-            } else {
-                output_handles.pcap_sidecar = Some(file);
+    // Open every destination without truncating it, compare the descriptors'
+    // identities, then truncate capture outputs only after the group passes.
+    // Retaining these descriptors also avoids reopening paths after the UID
+    // drop or granting pathname write access through the sandbox.
+    let (output_handles, pcap_export_file) =
+        app::prepare_output_handles(&config).context("failed to prepare runtime outputs")?;
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+    {
+        for (label, path, file) in [
+            (
+                "JSON log",
+                config.json_log_file.as_deref(),
+                output_handles.json_log.as_ref(),
+            ),
+            (
+                "PCAP",
+                config.pcap_export_file.as_deref(),
+                pcap_export_file.as_ref(),
+            ),
+            (
+                "PCAPNG",
+                config.pcapng_export_file.as_deref(),
+                output_handles.pcapng_export.as_ref(),
+            ),
+        ] {
+            if let (Some(path), Some(file)) = (path, file) {
+                chown_to_uid_drop_target(file, uid_drop_target, label, path);
             }
         }
-    }
-
-    if let Some(ref pcapng_path) = config.pcapng_export_file {
-        let file = app::precreate_private_file(pcapng_path).map_err(|e| {
-            anyhow::anyhow!("Failed to pre-create PCAPNG file '{}': {}", pcapng_path, e)
-        })?;
-        #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
-        chown_to_uid_drop_target(&file, uid_drop_target, "PCAPNG", pcapng_path);
-        output_handles.pcapng_export = Some(file);
+        if let (Some(path), Some(file)) = (
+            &config.pcap_export_file,
+            output_handles.pcap_sidecar.as_ref(),
+        ) {
+            chown_to_uid_drop_target(
+                file,
+                uid_drop_target,
+                "sidecar JSONL",
+                &format!("{path}.connections.jsonl"),
+            );
+        }
     }
 
     let mut app =
