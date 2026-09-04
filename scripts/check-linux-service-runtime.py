@@ -63,6 +63,8 @@ def main():
             unit = unit.replace("Restart=on-failure", "Restart=no")
             # UnsetEnvironment must override even explicitly inherited identity.
             unit = unit.replace("Type=simple", "Type=simple\nEnvironment=SUDO_UID=12345 SUDO_GID=12345 SUDO_USER=untrusted")
+            observed_pids = set()
+            observed_uids = set()
             try:
                 # Follow the documented first-install prerequisite. stdout may
                 # be opened before systemd prepares StateDirectory.
@@ -77,13 +79,16 @@ def main():
                     sender.sendto(b"rustnet-service-check", ("127.0.0.1", port))
                     receiver.recv(128)
                     pid = systemctl("show", "--property=MainPID", "--value", unit_name)
+                    observed_pids.add(pid)
                     try:
                         status = Path(f"/proc/{pid}/status").read_text()
                     except FileNotFoundError:
                         status = ""
                     for line in status.splitlines():
                         if line.startswith("Uid:"):
-                            real_uid = int(line.split()[1])
+                            uids = tuple(int(value) for value in line.split()[1:])
+                            observed_uids.add(uids)
+                            real_uid = uids[0]
                             if real_uid:
                                 require(real_uid == nobody, f"service selected unexpected UID {real_uid}")
                                 saw_nobody = True
@@ -119,6 +124,17 @@ def main():
                 require(final["stats"]["packets_processed"] > 0, "synthetic packets were not captured")
                 print("systemd service smoke check passed")
             except Exception:
+                print(f"Observed service PIDs: {sorted(observed_pids)}", flush=True)
+                print(f"Observed real/effective/saved/filesystem UIDs: {sorted(observed_uids)}", flush=True)
+                if stdout_path.exists():
+                    complete = [line for line in stdout_path.read_text().splitlines(keepends=True) if line.endswith("\n")]
+                    if complete:
+                        last = json.loads(complete[-1])
+                        print(json.dumps({
+                            "runtime": last.get("runtime"),
+                            "sandbox": last.get("sandbox"),
+                            "packets_processed": last.get("stats", {}).get("packets_processed"),
+                        }), flush=True)
                 subprocess.run(["journalctl", "--no-pager", "-u", unit_name, "-n", "50"], check=False)
                 raise
             finally:
