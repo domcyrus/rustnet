@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">RustNet</h1>
   <p align="center">
-    <strong>Per-process network monitoring for your terminal: live TCP, UDP, and QUIC connections with deep packet inspection, sandboxed by default.</strong>
+    <strong>Per-process network monitoring for terminals and automation: live TCP, UDP, and QUIC connections with deep packet inspection, sandboxed by default.</strong>
   </p>
   <p align="center">
     <a href="https://ratatui.rs/"><img src="https://ratatui.rs/built-with-ratatui/badge.svg" alt="Built With Ratatui"></a>
@@ -35,6 +35,7 @@
 - **Network analytics**: Real-time round-trip times for TCP, QUIC handshakes, DNS responses, and ICMP echo, plus TCP retransmission, out-of-order, and fast-retransmit detection. Protocol-aware health badges surface TCP issues, explicit QUIC Retry/version events, and retries/timeouts for transaction-based UDP, with severity-first sorting in the Overview table.
 - **Smart connection lifecycle**: Protocol-aware timeouts; idle rows get a yellow-to-red stripe and removal countdown and soften toward gray. Toggle `t` to keep historic (closed) connections visible for forensics.
 - **Vim/fzf-style filtering**: `port:`, `src:`, `dst:`, `sni:`, `process:`, `state:`, `proto:`, plus regex via `/(?i)pattern/`.
+- **Headless automation**: Run without the TUI and stream versioned JSONL snapshots, or emit one final JSON snapshot, with the same connection filters used by the interactive view.
 - **GeoIP enrichment**: Country lookups via local MaxMind GeoLite2. No network calls.
 - **LAN device identification**: MAC address and vendor (from the embedded IEEE OUI database) for on-link peers and the gateway, learned passively from ARP traffic and shown in the details pane.
 - **Kubernetes attribution** (optional `kubernetes` feature): connections mapped to their pod, namespace, and container, shown in the details pane, JSON/PCAPNG exports, and the `pod:`, `ns:`, `container:` filters. Enabled in the official Docker image; on a cluster, use the [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) plugin to run it as an ephemeral debug pod. See [USAGE.md](USAGE.md#--kubernetes-mode-optional-feature).
@@ -197,6 +198,22 @@ rustnet -r 500               # Set refresh interval (ms)
 rustnet --theme tokyo-night  # Theme: muted (default), vivid, catppuccin-mocha, tokyo-night, gruvbox, nord
 rustnet --pcapng-export capture.pcapng  # Annotated PCAPNG for Wireshark
 ```
+
+The TUI remains the default. For scripts and services, use headless mode:
+
+```bash
+rustnet --headless                                      # Stream JSONL snapshots
+rustnet --headless --duration 30 --output json         # Emit one final snapshot
+rustnet --headless --filter 'process:curl app:https'   # Apply a connection filter
+```
+
+`--output jsonl` is the headless default and streams versioned snapshots at the configured refresh interval. `--output json` emits one final versioned snapshot when monitoring stops. `--duration` stops capture after the requested number of seconds, and `--filter` accepts the same syntax as the TUI. In headless mode, stdout contains machine-readable output only. Capture startup failures exit with a nonzero status.
+
+Snapshot connection IDs remain stable through archival and distinguish reused endpoints. Traffic rates are explicitly named `outgoing_bytes_per_second` and `incoming_bytes_per_second`. A shutdown timeout reports `stopping` with the unfinished worker count and exits with a nonzero status.
+
+Snapshot JSONL is sampled state, not complete traffic history. Short-lived or reused connections can be missing even when packet-drop counters are zero. Use a separate `--pcap-export capture.pcap` for packet-level analysis, check capture drops, and validate against an independent capture when completeness matters. Full snapshots can be expensive at high connection counts; choose the refresh interval and retention budget for your workload. See [traffic history and capture files](USAGE.md#traffic-history-and-capture-files).
+
+Redirected stdout, JSON logs, PCAP exports and their sidecars, and PCAPNG exports must use distinct output files. RustNet rejects overlapping destinations before truncating configured outputs, but shell `>` redirection can already have truncated a file before startup.
 
 The theme and per-color overrides can also be set in `~/.config/rustnet/config.toml`; `--theme` takes precedence. See [USAGE.md](USAGE.md#--theme-preset) for the schema.
 

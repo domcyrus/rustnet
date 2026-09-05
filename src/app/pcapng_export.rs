@@ -9,7 +9,6 @@ use std::collections::VecDeque;
 use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::export::pcapng::{self, PcapngWriter};
@@ -62,9 +61,8 @@ impl App {
         let capture_status = Arc::clone(&self.capture_status);
         let current_interface = Arc::clone(&self.current_interface);
 
-        let handle = thread::Builder::new()
-            .name("pcapng-export".to_string())
-            .spawn(move || {
+        self.runtime
+            .spawn_monitored("pcapng-export", move || {
                 info!("PCAPNG export thread starting: {}", export_path);
                 let linktype =
                     match wait_for_linktype(&linktype_storage, &capture_status, &should_stop) {
@@ -165,7 +163,6 @@ impl App {
                 info!("PCAPNG export completed: {}", export_path);
             })
             .map_err(|error| anyhow::anyhow!("failed to spawn PCAPNG export worker: {error}"))?;
-        self.runtime.register(handle);
 
         Ok(Some(tx))
     }
