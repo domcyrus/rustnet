@@ -27,9 +27,11 @@ fn write_recovering<'a, T>(lock: &'a RwLock<T>, what: &str) -> RwLockWriteGuard<
     })
 }
 
-/// Create a Windows process lookup implementation.
+/// Create a Windows process lookup implementation and its initial IP Helper
+/// snapshot. ETW collection remains deferred until
+/// [`ProcessLookup::start_runtime`] is called.
 /// The `_use_pktap` parameter is ignored on Windows (macOS only).
 pub fn create_process_lookup(_use_pktap: bool) -> Result<Box<dyn ProcessLookup>> {
-    log::info!("Using Windows process lookup (ETW + IP Helper API)");
+    log::info!("Preparing Windows process lookup (ETW + IP Helper API)");
     Ok(Box::new(WindowsProcessLookup::new()?))
 }

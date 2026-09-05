@@ -19,7 +19,10 @@ graceful fallbacks:
 ```rust
 use rustnet_host::create_process_lookup;
 
-let lookup = create_process_lookup(/* use_pktap = */ false)?;
+let mut lookup = create_process_lookup(/* use_pktap = */ false)?;
+// Call this after applying the runtime sandbox. On Windows it activates the
+// owned ETW session; other backends currently perform no background startup.
+lookup.start_runtime()?;
 if let Some(attribution) = lookup.get_process_attribution(&conn) {
     println!(
         "{} ({}) ppid={:?} uid={:?} exe={:?} lineage={:?} ({} match)",
@@ -75,6 +78,10 @@ creation times. Connection match quality remains `MatchQuality::Unspecified`.
 When a platform can't use its optimal method, `ProcessLookup::get_degradation_reason`
 reports why (e.g. missing `CAP_BPF`, no root for PKTAP) via `DegradationReason`,
 which front-ends can surface to the user.
+
+Long-lived frontends should call `refresh_interruptible` with their shutdown
+flag. The macOS and FreeBSD fallbacks use it to terminate and reap an in-flight
+`lsof` or `sockstat` child promptly during shutdown.
 
 All Linux BPF objects use CO-RE for safe kernel field access and therefore
 require usable target BTF. A compatible target-BTF kernel tries fentry/fexit

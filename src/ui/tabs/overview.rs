@@ -819,7 +819,7 @@ fn draw_stats_panel(
     // its content. Otherwise long feature lists get clipped on narrow columns.
     #[cfg(target_os = "linux")]
     let mut security_text: Vec<Line> = {
-        let sandbox_info = app.get_sandbox_info();
+        let sandbox_info = app.sandbox_report();
 
         let mut features: Vec<&'static str> = Vec::new();
         if sandbox_info.cap_net_raw_dropped {
@@ -835,7 +835,7 @@ fn draw_stats_panel(
             features.push("FS restricted");
         }
         if sandbox_info.net_restricted {
-            features.push("Net blocked");
+            features.push("Net restricted");
         }
         if sandbox_info.scope_restricted {
             features.push("IPC scoped");
@@ -868,7 +868,7 @@ fn draw_stats_panel(
 
     #[cfg(all(target_os = "macos", feature = "macos-sandbox"))]
     let mut security_text: Vec<Line> = {
-        let sandbox_info = app.get_sandbox_info();
+        let sandbox_info = app.sandbox_report();
 
         let mut features: Vec<&'static str> = Vec::new();
         if sandbox_info.seatbelt_applied {
@@ -881,7 +881,7 @@ fn draw_stats_panel(
             features.push("FS restricted");
         }
         if sandbox_info.net_restricted {
-            features.push("Net blocked");
+            features.push("Net restricted");
         }
 
         sandbox_lines(
@@ -913,7 +913,7 @@ fn draw_stats_panel(
 
     #[cfg(target_os = "windows")]
     let mut security_text: Vec<Line> = {
-        let sandbox_info = app.get_sandbox_info();
+        let sandbox_info = app.sandbox_report();
 
         let mut features: Vec<String> = Vec::new();
         if sandbox_info.privileges_removed {
@@ -945,15 +945,22 @@ fn draw_stats_panel(
         )
     };
 
-    // The Statistics block is normally 14 lines. Degraded process detection
-    // adds two compact, indented lines for the unavailable feature and impact.
+    // Size the Statistics block from every optional row so Historic and export
+    // counters cannot be clipped when their combinations change.
     let pcap_export_enabled = app.is_pcap_export_enabled();
     let pcapng_export_enabled = app.is_pcapng_export_enabled();
-    let stats_height: u16 = if app.get_process_detection_status().is_degraded {
-        16
-    } else {
-        14
-    } + if pcap_export_enabled { 4 } else { 0 }
+    let pre_attribution_packets = stats
+        .pre_attribution_packets
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let stats_height: u16 = 14
+        + u16::from(connection_counts.historic > 0)
+        + u16::from(pre_attribution_packets > 0)
+        + if app.get_process_detection_status().is_degraded {
+            2
+        } else {
+            0
+        }
+        + if pcap_export_enabled { 4 } else { 0 }
         + if pcapng_export_enabled { 7 } else { 0 };
 
     // Keep Security after the live Traffic section. If both do not fit, retain
@@ -1068,29 +1075,46 @@ fn draw_stats_panel(
                 .load(std::sync::atomic::Ordering::Relaxed);
             if dropped > 0 {
                 Line::from(vec![
-                    Span::raw("Packets Dropped: "),
+                    Span::raw("Queue Drops: "),
                     Span::styled(format!("{}", dropped), theme::fg(theme::warn())),
                     Span::styled(" (backpressure)", theme::fg(theme::muted())),
                 ])
             } else {
-                Line::from(format!("Packets Dropped: {}", dropped))
+                Line::from(format!("Queue Drops: {}", dropped))
             }
         },
+        {
+            let dropped = stats
+                .capture_packets_dropped
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .saturating_add(
+                    stats
+                        .interface_packets_dropped
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                );
+            counter_line("Capture Drops", dropped, theme::warn())
+        },
     ]);
+    if pre_attribution_packets > 0 {
+        conn_stats_text.push(counter_line(
+            "Pre-ETW Skips",
+            pre_attribution_packets,
+            theme::warn(),
+        ));
+    }
 
     if pcap_export_enabled {
         let written = stats
             .pcap_records_written
             .load(std::sync::atomic::Ordering::Relaxed);
-        let capture_drops = stats
-            .packets_dropped
+        let errors = stats
+            .pcap_export_errors
             .load(std::sync::atomic::Ordering::Relaxed);
-
         conn_stats_text.extend([
             Line::from(""),
             Line::from(Span::styled("PCAP Export", theme::fg(theme::heading()))),
             Line::from(format!("  Written: {written}")),
-            counter_line("Capture Drops", capture_drops, theme::warn()),
+            counter_line("Errors", errors, theme::err()),
         ]);
     }
 

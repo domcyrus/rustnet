@@ -11,7 +11,8 @@
 //! - Identity: when started as root (e.g. `sudo rustnet`), euid/egid drop to
 //!   the invoking user (SUDO_UID/SUDO_GID) or `nobody`, see
 //!   [`privdrop`](crate::privdrop). Disable with `--no-uid-drop`.
-//! - Network: Outbound TCP/UDP connections blocked (RustNet is passive)
+//! - Network: Outbound TCP/UDP connections blocked, optionally allowing DNS
+//!   traffic only to destination port 53
 //! - Filesystem writes: Credential directories blocked (~/.ssh, ~/.aws, etc.)
 //! - Filesystem writes: Only configured log and PCAP export paths writable
 //!
@@ -30,7 +31,10 @@ mod seatbelt;
 use crate::{SandboxConfig, SandboxMode, SandboxReport, drop_root_step};
 
 /// Apply the sandbox: uid drop first, then Seatbelt (feature-gated).
-pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
+pub(crate) fn apply(
+    config: &SandboxConfig,
+    allow_dns_resolution: bool,
+) -> anyhow::Result<SandboxReport> {
     if config.mode == SandboxMode::Disabled {
         log::info!("Sandbox disabled by configuration");
         return Ok(SandboxReport {
@@ -52,7 +56,7 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
     {
         use crate::SandboxStatus;
 
-        match seatbelt::apply_seatbelt(config) {
+        match seatbelt::apply_seatbelt(config, allow_dns_resolution) {
             Ok(result) => {
                 // The uid drop counts towards enforcement: Seatbelt without
                 // a requested drop (or vice versa) is partial.
@@ -74,7 +78,7 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
                     message: outcome.message_after(&result.message),
                     seatbelt_applied: result.applied,
                     fs_restricted: result.fs_restricted,
-                    net_restricted: result.net_blocked,
+                    net_restricted: result.net_restricted,
                     uid_dropped: outcome.dropped,
                 })
             }
@@ -93,6 +97,10 @@ pub(crate) fn apply(config: &SandboxConfig) -> anyhow::Result<SandboxReport> {
 
     #[cfg(not(feature = "macos-sandbox"))]
     {
+        let _ = allow_dns_resolution;
+        if config.mode == SandboxMode::Strict {
+            anyhow::bail!("Strict mode requires a build with Seatbelt support");
+        }
         log::warn!("Seatbelt feature not compiled in");
         Ok(SandboxReport::uid_drop_only(
             "Seatbelt feature not compiled in",

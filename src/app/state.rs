@@ -11,7 +11,6 @@ use std::fs::File;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::Duration;
 #[cfg(test)]
 use std::time::SystemTime;
 
@@ -31,14 +30,28 @@ use crate::network::{
     types::{ApplicationProtocol, Connection, DnsQueryType, Protocol, TrafficHistory},
 };
 
-use super::capture::CaptureStatus;
+use super::capture::{CaptureStatus, PreparedCapture};
+use super::enrichment::PreparedProcessEnrichment;
 use super::logging::{JsonLineWriter, log_pcap_connection};
+use super::output::precreate_private_file;
+use super::runtime::{InitStatus, RuntimeSupervisor, StopReport, WorkerStartupPermit};
 use super::types::{
     AppOutputHandles, AppStats, Config, ConnRateHistory, ConnRateHistorySnapshot, ConnectionCounts,
     ProcessDetectionStatus,
 };
 use super::{STARTUP_SPLASH_DURATION, TRAFFIC_HISTORY_CAPACITY};
-use rustnet_sandbox::SandboxReport;
+use rustnet_sandbox::{SandboxConfig, SandboxMode, SandboxReport};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppLifecycle {
+    Created,
+    Prepared,
+    Sandboxed,
+    WorkersStarted,
+    Failed,
+    Stopping,
+    Stopped,
+}
 
 fn is_ptr_lookup(connection: &Connection) -> bool {
     matches!(
@@ -53,8 +66,14 @@ pub struct App {
     /// Configuration
     pub(super) config: Config,
 
+    /// Enforces the one-shot privileged, sandbox, and worker startup phases.
+    lifecycle: Mutex<AppLifecycle>,
+
     /// Control flag for graceful shutdown
     pub(super) should_stop: Arc<AtomicBool>,
+
+    /// Owns every application worker and coordinates idempotent shutdown.
+    pub(super) runtime: RuntimeSupervisor,
 
     /// Live connection tracker (active + historic tables, RTT, QUIC coalescing,
     /// and lifecycle cleanup). Shared with background threads. This is the same
@@ -139,11 +158,18 @@ pub struct App {
     /// GeoIP resolver for location/ASN lookups
     pub(super) geoip_resolver: Option<Arc<GeoIpResolver>>,
 
-    /// Receiver half of the packet channel, stashed between the privileged
-    /// startup phase (`start`: capture/eBPF threads that need capabilities) and
-    /// the worker phase (`start_workers`: the DPI parser threads, spawned after
-    /// the sandbox is applied so they inherit it). Taken by `start_workers`.
+    /// Receiver half of the packet channel, stashed between synchronous
+    /// privileged setup in `start` and the post-sandbox worker phase in
+    /// `start_workers`. Taken by `start_workers`.
     pub(super) packet_rx: Option<Receiver<Vec<CapturedPacket>>>,
+
+    /// Capture handle and packet sender opened synchronously during privileged
+    /// startup. Moved into the capture worker only after sandboxing.
+    pub(super) prepared_capture: Option<PreparedCapture>,
+
+    /// Process-attribution backend initialized synchronously during privileged
+    /// startup. Moved into its worker only after sandboxing.
+    pub(super) prepared_process_enrichment: Option<PreparedProcessEnrichment>,
 
     /// JSONL outputs opened before sandboxing and uid drop. Worker threads
     /// share these handles so they never need to traverse the configured path
@@ -151,8 +177,12 @@ pub struct App {
     pub(super) json_log_file: Option<Arc<JsonLineWriter>>,
     pub(super) pcap_sidecar_file: Option<Arc<JsonLineWriter>>,
 
-    /// Pre-created PCAPNG output file. Held until worker startup so the writer
-    /// thread can use the exact file handle allowed by the sandbox.
+    /// Securely pre-opened classic PCAP destination. Capture preparation wraps
+    /// this descriptor directly without reopening its configured pathname.
+    pub(super) pcap_export_file: Option<File>,
+
+    /// Securely pre-opened PCAPNG output file. Held until post-sandbox worker
+    /// startup so the writer uses the retained descriptor without path access.
     pub(super) pcapng_export_file: Option<File>,
 
     /// Sandbox status (Linux Landlock / macOS Seatbelt / Windows restricted token)
@@ -213,7 +243,23 @@ impl App {
 
     pub fn new_with_output_handles(
         config: Config,
+        output_handles: AppOutputHandles,
+    ) -> Result<Self> {
+        let pcap_export_file = config
+            .pcap_export_file
+            .as_deref()
+            .map(precreate_private_file)
+            .transpose()
+            .map_err(|error| anyhow::anyhow!("failed to open PCAP output: {error}"))?;
+        Self::new_with_preopened_pcap(config, output_handles, pcap_export_file)
+    }
+
+    /// Construct an application using a classic-PCAP descriptor opened during
+    /// the caller's privileged, pre-sandbox phase.
+    pub fn new_with_preopened_pcap(
+        config: Config,
         mut output_handles: AppOutputHandles,
+        pcap_export_file: Option<File>,
     ) -> Result<Self> {
         if config.json_log_file.is_some() != output_handles.json_log.is_some() {
             anyhow::bail!("JSON logging requires exactly one matching pre-opened output handle");
@@ -222,6 +268,9 @@ impl App {
             anyhow::bail!(
                 "PCAP export requires exactly one matching pre-opened sidecar output handle"
             );
+        }
+        if config.pcap_export_file.is_some() != pcap_export_file.is_some() {
+            anyhow::bail!("PCAP export requires exactly one matching pre-opened output handle");
         }
         if config.pcapng_export_file.is_some() != output_handles.pcapng_export.is_some() {
             anyhow::bail!("PCAPNG export requires exactly one matching pre-opened output handle");
@@ -258,17 +307,22 @@ impl App {
         };
 
         let dns_resolver = if config.resolve_dns {
-            info!("DNS resolution enabled - starting background resolver");
-            Some(Arc::new(DnsResolver::with_defaults()))
+            info!("DNS resolution enabled");
+            Some(Arc::new(DnsResolver::with_defaults_deferred()))
         } else {
             None
         };
 
         let geoip_resolver = build_geoip_resolver(&config);
 
+        let runtime = RuntimeSupervisor::new();
+        let should_stop = runtime.stop_token();
+
         Ok(Self {
             config,
-            should_stop: Arc::new(AtomicBool::new(false)),
+            lifecycle: Mutex::new(AppLifecycle::Created),
+            should_stop,
+            runtime,
             tracker: Arc::new(ConnectionTracker::new()),
             connections_snapshot: Arc::new(RwLock::new(Vec::new())),
             snapshot_generation: Arc::new(AtomicU64::new(0)),
@@ -295,17 +349,19 @@ impl App {
             dns_resolver,
             geoip_resolver,
             packet_rx: None,
+            prepared_capture: None,
+            prepared_process_enrichment: None,
             json_log_file,
             pcap_sidecar_file,
+            pcap_export_file,
             pcapng_export_file: output_handles.pcapng_export.take(),
             sandbox_info: Arc::new(RwLock::new(SandboxReport::default())),
         })
     }
 
-    /// Start the privileged-init background threads only: packet capture (which
-    /// opens the raw socket, needs CAP_NET_RAW) and process enrichment (which
-    /// loads eBPF, needs CAP_BPF/CAP_PERFMON). These must run BEFORE the sandbox
-    /// is applied.
+    /// Perform privileged initialization: synchronously open the packet-capture
+    /// handle and initialize process attribution, including eBPF loading. Both
+    /// operations complete synchronously before the sandbox is applied.
     ///
     /// The DPI parser/worker threads are intentionally NOT started here: the
     /// caller must apply the sandbox and then call [`App::start_workers`]. On
@@ -314,43 +370,66 @@ impl App {
     /// parser threads in the worker phase is what places the untrusted-input DPI
     /// code inside the sandbox, even when rustnet runs as root.
     ///
-    /// Returns two receivers that signal when privileged initialization is
-    /// complete: the first when process detection (including eBPF loading) is
-    /// ready, the second when the capture thread has opened the capture
-    /// device (or failed to). The caller should wait on both before applying
-    /// the sandbox or dropping root: the capture open runs on a background
-    /// thread and still needs the privileges.
-    pub fn start(
-        &mut self,
-    ) -> Result<(std::sync::mpsc::Receiver<()>, std::sync::mpsc::Receiver<()>)> {
+    /// Returns the already-known typed process and capture statuses. Failures
+    /// are not application errors here, allowing the TUI to retain its
+    /// process-only or capture-only fallback while other frontends can enforce
+    /// a stricter policy.
+    pub fn start(&mut self) -> Result<(InitStatus, InitStatus)> {
+        self.require_lifecycle(AppLifecycle::Created, "prepare the runtime")?;
         info!("Starting network monitor application");
 
-        let tracker = Arc::clone(&self.tracker);
+        // Privileged init is synchronous, so no capture worker can survive
+        // outside the sandbox while the caller waits for readiness.
+        let capture_status = self.prepare_packet_capture_pipeline();
 
-        // Privileged init: opens the raw socket, stashes the packet receiver.
-        let capture_ready_rx = self.start_packet_capture_pipeline()?;
+        let process_status = match self.prepare_process_enrichment() {
+            Ok(prepared) => {
+                self.prepared_process_enrichment = Some(prepared);
+                InitStatus::Ready
+            }
+            Err(error) => {
+                warn!("Process attribution initialization failed: {error}");
+                InitStatus::Failed(error.to_string())
+            }
+        };
 
-        let (process_ready_tx, process_ready_rx) = std::sync::mpsc::sync_channel(1);
-
-        // Delayed on macOS until PKTAP detection has run.
-        self.start_process_enrichment_conditional(tracker.clone(), process_ready_tx)?;
-
-        Ok((process_ready_rx, capture_ready_rx))
+        self.transition_lifecycle(AppLifecycle::Created, AppLifecycle::Prepared);
+        Ok((process_status, capture_status))
     }
 
-    /// Start the worker threads: the DPI packet processors plus enrichment,
+    /// Start the worker threads: DNS, the DPI packet processors, enrichment,
     /// snapshot, cleanup, and the rate/stats/history collectors.
     ///
     /// Call this AFTER the sandbox has been applied on the main thread (see
     /// [`App::start`]); these threads then inherit the sandbox. Spawning the
     /// packet processors here rather than in `start` is what places the
     /// untrusted-input DPI parsers inside the Landlock domain on Linux.
-    pub fn start_workers(&mut self) -> Result<()> {
+    pub fn start_workers(&mut self, _sandbox_permit: WorkerStartupPermit) -> Result<()> {
+        self.require_lifecycle(AppLifecycle::Sandboxed, "start workers")?;
+        // Mark the phase before spawning anything. A partial spawn failure is
+        // terminal and Drop will stop the workers already registered; retrying
+        // would duplicate collectors and consume one-shot output handles.
+        self.transition_lifecycle(AppLifecycle::Sandboxed, AppLifecycle::WorkersStarted);
         let tracker = Arc::clone(&self.tracker);
+
+        if let Some(resolver) = &self.dns_resolver {
+            resolver.start()?;
+        }
 
         let pcapng_tx = self.start_pcapng_export_thread(tracker.clone())?;
 
-        self.start_packet_processors(tracker.clone(), pcapng_tx)?;
+        // Activate event-driven attribution before any buffered capture packet
+        // can be consumed. On Windows the returned cutoff rejects packets that
+        // predate ETW startup and therefore cannot be attributed reliably.
+        let capture_not_before = if let Some(prepared) = self.prepared_process_enrichment.take() {
+            self.start_process_enrichment_thread(tracker.clone(), prepared)?
+        } else {
+            None
+        };
+
+        if self.start_capture_thread(capture_not_before, pcapng_tx.clone())? {
+            self.start_packet_processors(tracker.clone(), pcapng_tx)?;
+        }
 
         self.start_geoip_enrichment_thread(tracker.clone())?;
 
@@ -367,13 +446,16 @@ impl App {
         // Required capture and attribution initialization is already complete.
         // Keep the splash briefly so it reads as an intentional transition.
         let is_loading = Arc::clone(&self.is_loading);
-        thread::Builder::new()
+        let shutdown = self.runtime.shutdown_signal();
+        let handle = thread::Builder::new()
             .name("startup_flag".to_string())
             .spawn(move || {
-                thread::sleep(STARTUP_SPLASH_DURATION);
-                is_loading.store(false, Ordering::Relaxed);
+                if !shutdown.wait_timeout(STARTUP_SPLASH_DURATION) {
+                    is_loading.store(false, Ordering::Relaxed);
+                }
             })
-            .expect("Failed to spawn startup_flag thread");
+            .map_err(|error| anyhow::anyhow!("failed to spawn startup flag worker: {error}"))?;
+        self.runtime.register(handle);
 
         Ok(())
     }
@@ -532,24 +614,62 @@ impl App {
         self.service_lookup.lookup(port, protocol)
     }
 
-    /// Get sandbox status information. Rendered by the Linux, Windows, and
-    /// macOS (with `macos-sandbox`) UIs.
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "windows",
-        all(target_os = "macos", feature = "macos-sandbox")
-    ))]
-    pub(crate) fn get_sandbox_info(&self) -> SandboxReport {
+    /// Get the recorded cross-platform sandbox outcome.
+    pub fn sandbox_report(&self) -> SandboxReport {
         self.sandbox_info
             .read()
             .map(|s| s.clone())
             .unwrap_or_default()
     }
 
-    pub fn set_sandbox_info(&self, info: SandboxReport) {
-        if let Ok(mut guard) = self.sandbox_info.write() {
-            *guard = info;
-        }
+    /// Apply the configured sandbox and authorize post-sandbox worker startup.
+    ///
+    /// Strict mode propagates any enforcement failure. A failed requested
+    /// identity drop is fatal in every mode; best-effort mode permits fallback
+    /// only for optional sandbox layers.
+    /// Disabled mode still passes through the sandbox crate so the lifecycle
+    /// cannot be advanced with a caller-forged report.
+    pub fn apply_sandbox(&mut self, config: &SandboxConfig) -> Result<WorkerStartupPermit> {
+        self.require_lifecycle(AppLifecycle::Prepared, "apply the sandbox")?;
+        let sandbox_result = if self.config.resolve_dns {
+            rustnet_sandbox::apply_sandbox_allowing_dns(config)
+        } else {
+            rustnet_sandbox::apply_sandbox(config)
+        };
+        self.complete_sandbox_attempt(config.mode, sandbox_result)
+    }
+
+    fn complete_sandbox_attempt(
+        &mut self,
+        mode: SandboxMode,
+        sandbox_result: Result<SandboxReport>,
+    ) -> Result<WorkerStartupPermit> {
+        self.require_lifecycle(AppLifecycle::Prepared, "complete the sandbox attempt")?;
+        let info = match sandbox_result {
+            Ok(report) => report,
+            Err(error)
+                if mode == SandboxMode::Strict
+                    || error.is::<rustnet_sandbox::PrivilegeDropError>() =>
+            {
+                self.transition_lifecycle(AppLifecycle::Prepared, AppLifecycle::Failed);
+                return Err(error.context("Sandbox enforcement required but failed"));
+            }
+            Err(error) => {
+                warn!("Sandbox application error (non-strict mode): {error}");
+                SandboxReport::from_error(&error)
+            }
+        };
+        self.record_sandbox_outcome(info)
+    }
+
+    fn record_sandbox_outcome(&mut self, info: SandboxReport) -> Result<WorkerStartupPermit> {
+        self.require_lifecycle(AppLifecycle::Prepared, "record the sandbox result")?;
+        *self
+            .sandbox_info
+            .write()
+            .map_err(|_| anyhow::anyhow!("sandbox status lock is poisoned"))? = info;
+        self.transition_lifecycle(AppLifecycle::Prepared, AppLifecycle::Sandboxed);
+        Ok(WorkerStartupPermit::after_sandbox_result())
     }
 
     /// Get link layer information for the current interface
@@ -736,33 +856,146 @@ impl App {
     }
 
     /// Stop all threads gracefully
-    pub fn stop(&self) {
+    pub fn stop(&mut self) -> StopReport {
         info!("Stopping application");
-        self.should_stop.store(true, Ordering::Relaxed);
-
-        // Connections not yet cleaned up still need their sidecar record.
-        if let Some(writer) = &self.pcap_sidecar_file
-            && let Ok(connections) = self.connections_snapshot.read()
         {
-            let count = connections.len();
-            let with_pids = connections.iter().filter(|c| c.pid.is_some()).count();
-
-            for conn in connections.iter() {
-                log_pcap_connection(writer, conn);
+            let mut lifecycle = self
+                .lifecycle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *lifecycle != AppLifecycle::Stopped {
+                *lifecycle = AppLifecycle::Stopping;
             }
+        }
 
-            info!(
-                "Wrote {} remaining connections ({} with PIDs) to JSONL",
-                count, with_pids
+        // A caller may abort after privileged preparation but before worker
+        // startup. Release every staged descriptor/backend immediately rather
+        // than keeping capture, ETW, or output resources alive until Drop.
+        self.packet_rx.take();
+        if let Some(prepared_capture) = &mut self.prepared_capture
+            && let Err(error) = prepared_capture.flush_pcap()
+        {
+            warn!("Failed to flush staged PCAP output: {error}");
+            self.stats.record_pcap_export_error();
+        }
+        self.prepared_capture.take();
+        self.prepared_process_enrichment.take();
+        self.pcap_export_file.take();
+        self.pcapng_export_file.take();
+
+        let output_errors = || {
+            self.json_log_file
+                .as_ref()
+                .map_or(0, |writer| writer.failed_writes())
+                .saturating_add(
+                    self.pcap_sidecar_file
+                        .as_ref()
+                        .map_or(0, |writer| writer.failed_writes()),
+                )
+                .saturating_add(self.stats.output_errors_total())
+        };
+        let report = self.runtime.stop_and_join(
+            |report| {
+                if let Some(resolver) = &self.dns_resolver {
+                    let dns = resolver.stop();
+                    report.joined_workers += dns.joined + dns.panicked;
+                    report.panicked_workers += dns.panicked;
+                    report.timed_out_workers += dns.timed_out;
+                }
+                report.output_errors = output_errors();
+            },
+            |report| {
+                // Connections not yet cleaned up still need their sidecar record.
+                // Read the tracker only after all producers and enrichment workers
+                // have joined instead of using a potentially stale, filtered UI
+                // snapshot.
+                if let Some(writer) = &self.pcap_sidecar_file {
+                    let connections: Vec<Connection> = self
+                        .tracker
+                        .connections()
+                        .iter()
+                        .map(|entry| entry.value().snapshot_clone())
+                        .collect();
+                    let count = connections.len();
+                    let with_pids = connections.iter().filter(|c| c.pid.is_some()).count();
+
+                    let written = connections
+                        .iter()
+                        .filter(|conn| log_pcap_connection(writer, conn))
+                        .count();
+
+                    if written == count {
+                        info!(
+                            "Wrote {} remaining connections ({} with PIDs) to JSONL",
+                            count, with_pids
+                        );
+                    } else {
+                        warn!(
+                            "Wrote {} of {} remaining connections to JSONL",
+                            written, count
+                        );
+                    }
+                }
+
+                report.output_errors = output_errors();
+            },
+        );
+
+        if report.panicked_workers > 0 {
+            warn!(
+                "{} of {} application workers panicked during shutdown",
+                report.panicked_workers, report.joined_workers
             );
         }
+        if report.timed_out_workers > 0 {
+            warn!(
+                "{} workers did not stop before the shutdown deadline",
+                report.timed_out_workers
+            );
+        }
+        if report.output_errors > 0 {
+            warn!("{} output operations failed", report.output_errors);
+        }
+        let pending_workers = self.runtime.has_pending_workers();
+        *self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = if pending_workers {
+            AppLifecycle::Stopping
+        } else {
+            AppLifecycle::Stopped
+        };
+        if !pending_workers {
+            self.json_log_file.take();
+            self.pcap_sidecar_file.take();
+        }
+        report
+    }
+
+    fn require_lifecycle(&self, expected: AppLifecycle, action: &str) -> Result<()> {
+        let actual = *self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if actual != expected {
+            anyhow::bail!("cannot {action}: runtime is in {actual:?} state, expected {expected:?}");
+        }
+        Ok(())
+    }
+
+    fn transition_lifecycle(&self, expected: AppLifecycle, next: AppLifecycle) {
+        let mut lifecycle = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        debug_assert_eq!(*lifecycle, expected);
+        *lifecycle = next;
     }
 }
 
 impl Drop for App {
     fn drop(&mut self) {
-        self.stop();
-        thread::sleep(Duration::from_millis(100));
+        let _ = self.stop();
     }
 }
 
@@ -771,6 +1004,7 @@ mod activity_reset_tests {
     use super::*;
     use crate::network::types::{Protocol, ProtocolState, TcpState};
     use std::net::SocketAddr;
+    use std::time::Duration;
 
     fn interface_sample(timestamp: SystemTime, rx_bytes: u64, tx_bytes: u64) -> InterfaceStats {
         InterfaceStats {
@@ -820,5 +1054,183 @@ mod activity_reset_tests {
         assert_eq!(app.get_process_activity_snapshot().window_tx_bytes, 0);
         assert!(app.get_interface_traffic_windows().is_empty());
         assert!(app.interface_traffic_history.lock().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use std::sync::Condvar;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    fn app() -> App {
+        App::new(Config {
+            resolve_dns: false,
+            disable_geoip: true,
+            ..Config::default()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn sandbox_result_requires_prepared_runtime_and_is_one_shot() {
+        let mut app = app();
+        assert!(
+            app.record_sandbox_outcome(SandboxReport::default())
+                .is_err(),
+            "sandboxing before privileged preparation must be rejected"
+        );
+
+        app.transition_lifecycle(AppLifecycle::Created, AppLifecycle::Prepared);
+        let _permit = app
+            .record_sandbox_outcome(SandboxReport::default())
+            .expect("prepared runtime accepts one sandbox result");
+        assert!(
+            app.record_sandbox_outcome(SandboxReport::default())
+                .is_err(),
+            "a second permit must not be minted"
+        );
+    }
+
+    #[test]
+    fn strict_sandbox_failure_is_terminal() {
+        let mut app = app();
+        app.transition_lifecycle(AppLifecycle::Created, AppLifecycle::Prepared);
+
+        assert!(
+            app.complete_sandbox_attempt(
+                SandboxMode::Strict,
+                Err(anyhow::anyhow!("injected enforcement failure")),
+            )
+            .is_err()
+        );
+        assert_eq!(*app.lifecycle.lock().unwrap(), AppLifecycle::Failed);
+        assert!(
+            app.complete_sandbox_attempt(SandboxMode::Strict, Ok(SandboxReport::default()),)
+                .is_err(),
+            "an irreversible partial sandbox must not be retried"
+        );
+    }
+
+    #[test]
+    fn requested_identity_drop_failure_blocks_workers_in_best_effort_mode() {
+        let mut app = app();
+        app.transition_lifecycle(AppLifecycle::Created, AppLifecycle::Prepared);
+        let error = anyhow::anyhow!("injected identity syscall failure")
+            .context(rustnet_sandbox::PrivilegeDropError)
+            .context("platform sandbox setup");
+
+        assert!(
+            app.complete_sandbox_attempt(SandboxMode::BestEffort, Err(error))
+                .is_err()
+        );
+        assert_eq!(*app.lifecycle.lock().unwrap(), AppLifecycle::Failed);
+        assert!(
+            app.start_workers(WorkerStartupPermit::after_sandbox_result())
+                .is_err()
+        );
+        assert!(
+            app.complete_sandbox_attempt(SandboxMode::BestEffort, Ok(SandboxReport::default()))
+                .is_err(),
+            "a partially changed identity must not be retried"
+        );
+    }
+
+    #[test]
+    fn optional_sandbox_failure_still_allows_best_effort_fallback() {
+        let mut app = app();
+        app.transition_lifecycle(AppLifecycle::Created, AppLifecycle::Prepared);
+
+        let _permit = app
+            .complete_sandbox_attempt(
+                SandboxMode::BestEffort,
+                Err(anyhow::anyhow!("optional sandbox layer unavailable")),
+            )
+            .unwrap();
+        assert_eq!(*app.lifecycle.lock().unwrap(), AppLifecycle::Sandboxed);
+        assert_eq!(
+            app.sandbox_info.read().unwrap().status,
+            rustnet_sandbox::SandboxStatus::Error
+        );
+    }
+
+    #[test]
+    fn worker_start_requires_sandbox_phase() {
+        let mut app = app();
+        let permit = WorkerStartupPermit::after_sandbox_result();
+
+        assert!(app.start_workers(permit).is_err());
+        assert_eq!(
+            *app.lifecycle.lock().unwrap(),
+            AppLifecycle::Created,
+            "rejection must happen before any lifecycle side effect"
+        );
+    }
+
+    #[test]
+    fn stopped_runtime_cannot_be_prepared() {
+        let mut app = app();
+        let _ = app.stop();
+
+        assert!(app.start().is_err());
+    }
+
+    #[test]
+    fn timed_out_stop_retains_output_handles_until_retry_finishes() {
+        let mut app = app();
+        app.runtime = RuntimeSupervisor::with_shutdown_deadline(Duration::from_millis(40));
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker_release = Arc::clone(&release);
+        let (started_tx, started_rx) = mpsc::sync_channel(1);
+        app.runtime.register(thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let (lock, wake) = &*worker_release;
+            let mut released = lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            while !*released {
+                released = wake
+                    .wait(released)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }));
+        started_rx.recv().unwrap();
+
+        let output_path =
+            std::env::temp_dir().join(format!("rustnet-stop-retry-test-{}", std::process::id()));
+        let output = File::create(&output_path).unwrap();
+        app.json_log_file = Some(Arc::new(JsonLineWriter::new(
+            output,
+            output_path.to_string_lossy().into_owned(),
+        )));
+
+        let first = app.stop();
+        assert_eq!(first.timed_out_workers, 1);
+        assert!(app.json_log_file.is_some());
+        assert_eq!(*app.lifecycle.lock().unwrap(), AppLifecycle::Stopping);
+
+        let (lock, wake) = &*release;
+        *lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        wake.notify_all();
+
+        let retry = app.stop();
+        assert_eq!(retry.timed_out_workers, 0);
+        assert!(app.json_log_file.is_none());
+        assert_eq!(*app.lifecycle.lock().unwrap(), AppLifecycle::Stopped);
+        let _ = std::fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn unavailable_configured_pcap_is_a_shutdown_output_error() {
+        let mut app = app();
+        app.config.pcap_export_file = Some("unavailable.pcap".to_string());
+
+        app.record_unavailable_pcap_export();
+        let report = app.stop();
+
+        assert_eq!(report.output_errors, 1);
     }
 }

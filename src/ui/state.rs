@@ -8,7 +8,12 @@ use std::collections::HashSet;
 
 use ratatui::layout::Rect;
 
-use crate::network::types::{Connection, Protocol, UNKNOWN_PROCESS_NAME};
+#[cfg(test)]
+use crate::network::process_activity::UNKNOWN_PROCESS_GROUP;
+use crate::network::process_activity::process_group_label;
+#[cfg(test)]
+use crate::network::types::UNKNOWN_PROCESS_NAME;
+use crate::network::types::{Connection, Protocol};
 
 /// Traffic direction emphasized by the process activity view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -872,21 +877,6 @@ impl UiState {
 
     pub fn is_group_selected(&self) -> bool {
         self.selected_group.is_some() && self.selected_connection_key.is_none()
-    }
-}
-
-/// Group label shown for connections without a resolved process name.
-pub(super) const UNKNOWN_PROCESS_GROUP: &str = "<unknown>";
-
-/// The process-group label for a connection. Attribution can fail two ways:
-/// no owner found at all (`process_name` is `None`), or an owner PID whose
-/// name lookup failed and stored the [`UNKNOWN_PROCESS_NAME`] placeholder
-/// (protected processes, the pre-resolution ETW window). Both fold into one
-/// bucket so the UI never shows two different unknown groups side by side.
-pub fn process_group_label(conn: &Connection) -> &str {
-    match conn.process_name.as_deref() {
-        None | Some(UNKNOWN_PROCESS_NAME) => UNKNOWN_PROCESS_GROUP,
-        Some(name) => name,
     }
 }
 
