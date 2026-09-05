@@ -41,6 +41,10 @@
 - **Kubernetes attribution** (optional `kubernetes` feature): connections mapped to their pod, namespace, and container, shown in the details pane, JSON/PCAPNG exports, and the `pod:`, `ns:`, `container:` filters. Enabled in the official Docker image; on a cluster, use the [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) plugin to run it as an ephemeral debug pod. See [USAGE.md](USAGE.md#--kubernetes-mode-optional-feature).
 - **Cross-platform**: Linux, macOS, Windows, FreeBSD.
 
+Packet parsing runs in parallel, while connection and annotated-export updates
+keep capture order. The processing queue holds at most 10,000 packets, separate
+from other application memory; bursts or sustained overload can still drop packets.
+
 ## Why RustNet?
 
 RustNet fills the gap between simple connection tools (`netstat`, `ss`) and packet analyzers (`Wireshark`, `tcpdump`):

@@ -41,6 +41,9 @@
 - **Kubernetes 归属识别**（可选 `kubernetes` feature）：将连接映射到所属 pod、namespace 和 container，并在详情面板、JSON/PCAPNG 导出以及 `pod:`、`ns:`、`container:` 过滤器中显示。官方 Docker 镜像已启用该功能；在集群上可使用 [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) 插件以临时调试 pod 运行。详见 [USAGE.zh-CN.md](USAGE.zh-CN.md#--kubernetes-mode-optional-feature)。
 - **跨平台**：Linux、macOS、Windows、FreeBSD。
 
+数据包并行解析，连接更新和带注释的导出更新仍按捕获顺序执行。
+处理队列最多容纳 10,000 个数据包；这不包含应用的其他内存使用量，突发流量或持续过载时仍可能丢包。
+
 ## 为什么选 RustNet？
 
 RustNet 填补了简单连接工具(`netstat`、`ss`)与数据包分析器(`Wireshark`、`tcpdump`)之间的空白：
