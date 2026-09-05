@@ -11,6 +11,19 @@ RustNet 软件包仅将 systemd 单元作为文档示例提供。安装或升级
 参见[无界面 schema](https://github.com/domcyrus/rustnet/blob/main/USAGE.zh-CN.md#headless-mode)。独立的 `--json-log`
 参数记录连接事件，不保存 stdout 快照。
 
+即使没有丢包且快照代数连续，短连接和复用端点的连接也可能从未出现在任何快照中。
+全局数据包总数不能证明每个连接的历史完整。如需逐包记录，可在 `ExecStart` 中加入
+`--pcap-export /var/lib/rustnet/capture.pcap`，并确保它与 stdout 及所有其他输出
+（包括自动生成的 PCAP 旁路文件）使用不同路径。抓包文件会在每次启动时截断，
+因此请在服务停止期间保存旧文件后再重启。PCAP 仍受抓包过滤器、捕获长度和抓包
+丢包影响；验证覆盖率时应检查丢包计数，并使用独立抓包作为参考。还需确认
+`stats.pcap_export_errors` 为零、关闭成功，并将 `stats.pcap_records_written`
+与保存的文件核对。即使丢包计数为零，写入或刷新失败也可能使文件不完整。
+
+五秒间隔只是示例，不是容量保证。连接较多时，完整快照会消耗大量 CPU 和存储。
+启用无人值守采集前，请测量实际流量和输出增长；降低输出频率不会消除后台采集
+开销，也不会让快照历史变得完整。
+
 ## 安装和启用
 
 根据安装来源找到示例：

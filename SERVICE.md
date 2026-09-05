@@ -14,6 +14,24 @@ connection-event history. Under output backpressure, intermediate snapshots
 can be skipped. See the [headless schema](https://github.com/domcyrus/rustnet/blob/main/USAGE.md#headless-mode). The separate
 `--json-log` option records connection events; it does not save stdout snapshots.
 
+Short-lived connections and reused endpoints can be absent from every snapshot
+even with zero packet drops and no skipped snapshot generations. Global packet
+totals do not prove complete per-connection history. If you need packet-level
+records, add `--pcap-export /var/lib/rustnet/capture.pcap` to `ExecStart`, keeping
+it distinct from stdout and every other output, including the generated PCAP
+sidecar. Capture files are truncated on each start, so preserve them while the
+service is stopped before restarting. PCAP is subject to capture filters,
+captured packet length, and capture loss; check drop counters and use an
+independent reference capture when validating coverage. Require zero
+`stats.pcap_export_errors`, verify clean shutdown, and compare
+`stats.pcap_records_written` against the saved file. Write or flush failures can
+leave the file incomplete even when packet-drop counters are zero.
+
+The five-second interval is an example, not a capacity guarantee. Full snapshots
+can consume substantial CPU and storage at high connection counts. Measure your
+traffic and output growth before enabling unattended collection; slower output
+does not eliminate background collection work or make snapshot history complete.
+
 ## Install and enable
 
 Locate the example shipped by your installation:
