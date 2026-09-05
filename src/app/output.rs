@@ -50,15 +50,28 @@ fn output_paths(config: &Config) -> Vec<(OutputKind, PathBuf)> {
     outputs
 }
 
-/// Reject overlapping output destinations before any file is opened or
-/// truncated. This pathname check is an early diagnostic; callers must use
+/// Reject overlapping output destinations without creating, writing, or
+/// truncating files, including artifacts that alias regular-file stdout.
+/// This preflight is an early diagnostic; callers must use
 /// [`prepare_output_handles`] to compare the opened file identities before
-/// truncation, including aliases on case-insensitive filesystems.
+/// truncation, including stdout and aliases on case-insensitive filesystems.
 pub fn validate_output_paths(config: &Config) -> io::Result<()> {
+    validate_output_paths_with_stdout(config, stdout_file_identity()?)
+}
+
+fn validate_output_paths_with_stdout(
+    config: &Config,
+    stdout: Option<(u64, u64)>,
+) -> io::Result<()> {
     let mut resolved = Vec::new();
     for (kind, path) in output_paths(config) {
         let label = kind.label();
         let identity = output_identity(&path)?;
+        if let Some(stdout) = stdout
+            && existing_file_identity(&path)? == Some(stdout)
+        {
+            return Err(stdout_collision(kind, &path));
+        }
         if let Some((other_label, other_path, _)) = resolved
             .iter()
             .find(|(_, _, other_identity)| other_identity == &identity)
@@ -84,6 +97,13 @@ pub fn validate_output_paths(config: &Config) -> io::Result<()> {
 /// A failed open or overlapping descriptor leaves existing contents intact.
 /// JSON logging appends; capture files and their sidecar start empty.
 pub fn prepare_output_handles(config: &Config) -> io::Result<(AppOutputHandles, Option<fs::File>)> {
+    prepare_output_handles_with_stdout(config, stdout_file_identity)
+}
+
+fn prepare_output_handles_with_stdout(
+    config: &Config,
+    stdout_identity: impl FnOnce() -> io::Result<Option<(u64, u64)>>,
+) -> io::Result<(AppOutputHandles, Option<fs::File>)> {
     let mut opened: Vec<OpenedOutput> = Vec::new();
     for (kind, path) in output_paths(config) {
         let file = open_private(&path, kind == OutputKind::JsonLog, false).map_err(|error| {
@@ -117,6 +137,14 @@ pub fn prepare_output_handles(config: &Config) -> io::Result<(AppOutputHandles, 
         });
     }
 
+    // Recheck the current stdout against retained artifact handles, not their
+    // paths. No artifact has been truncated or written at this point.
+    if let Some(stdout) = stdout_identity()?
+        && let Some(output) = opened.iter().find(|output| output.identity == stdout)
+    {
+        return Err(stdout_collision(output.kind, &output.path));
+    }
+
     for output in &opened {
         if output.kind != OutputKind::JsonLog {
             output.file.set_len(0)?;
@@ -134,6 +162,67 @@ pub fn prepare_output_handles(config: &Config) -> io::Result<(AppOutputHandles, 
         }
     }
     Ok((handles, pcap))
+}
+
+fn stdout_collision(kind: OutputKind, path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "{} output '{}' overlaps stdout; use separate files for snapshots and artifacts",
+            kind.label(),
+            path.display(),
+        ),
+    )
+}
+
+#[cfg(unix)]
+fn stdout_file_identity() -> io::Result<Option<(u64, u64)>> {
+    use std::os::fd::AsFd;
+
+    // Duplicate the borrowed standard descriptor so dropping File cannot close
+    // stdout. Metadata works for a write-only inherited output descriptor.
+    let stdout = io::stdout();
+    let descriptor = match stdout.as_fd().try_clone_to_owned() {
+        Ok(descriptor) => descriptor,
+        Err(error) if error.raw_os_error() == Some(libc::EBADF) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let file = fs::File::from(descriptor);
+    if !file.metadata()?.is_file() {
+        return Ok(None);
+    }
+    opened_file_identity(&file).map(Some)
+}
+
+#[cfg(windows)]
+fn stdout_file_identity() -> io::Result<Option<(u64, u64)>> {
+    super::windows_output::stdout_file_identity()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn stdout_file_identity() -> io::Result<Option<(u64, u64)>> {
+    Ok(None)
+}
+
+#[cfg(unix)]
+fn existing_file_identity(path: &Path) -> io::Result<Option<(u64, u64)>> {
+    use std::os::unix::fs::MetadataExt;
+
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some((metadata.dev(), metadata.ino()))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn existing_file_identity(path: &Path) -> io::Result<Option<(u64, u64)>> {
+    super::windows_output::existing_file_identity(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn existing_file_identity(_path: &Path) -> io::Result<Option<(u64, u64)>> {
+    Ok(None)
 }
 
 #[cfg(unix)]
@@ -252,7 +341,10 @@ fn open_private(path: impl AsRef<Path>, append: bool, truncate: bool) -> io::Res
 
 #[cfg(test)]
 mod staged_tests {
-    use super::{precreate_private_file, prepare_output_handles};
+    use super::{
+        opened_file_identity, precreate_private_file, prepare_output_handles,
+        prepare_output_handles_with_stdout, validate_output_paths_with_stdout,
+    };
     use crate::app::Config;
     use crate::app::scratch_dir::ScratchDir;
     use std::fs;
@@ -266,6 +358,70 @@ mod staged_tests {
             .unwrap()
             .write_all(bytes)
             .unwrap();
+    }
+
+    #[test]
+    fn opened_stdout_collisions_preserve_every_artifact() {
+        for collided in 0..4 {
+            let dir = ScratchDir::new("staged-output", &format!("stdout_{collided}"));
+            let paths = [
+                dir.join("events.jsonl"),
+                dir.join("capture.pcap"),
+                dir.join("capture.pcap.connections.jsonl"),
+                dir.join("capture.pcapng"),
+            ];
+            for path in &paths {
+                write_private(path, b"preserved artifact");
+            }
+            let config = Config {
+                json_log_file: Some(paths[0].to_str().unwrap().to_owned()),
+                pcap_export_file: Some(paths[1].to_str().unwrap().to_owned()),
+                pcapng_export_file: Some(paths[3].to_str().unwrap().to_owned()),
+                ..Config::default()
+            };
+            // Simulate a changed stdout destination after an accepted preflight.
+            validate_output_paths_with_stdout(&config, None).unwrap();
+            let mut stdout = fs::OpenOptions::new()
+                .append(true)
+                .open(&paths[collided])
+                .unwrap();
+            let identity = opened_file_identity(&stdout).unwrap();
+            let error = prepare_output_handles_with_stdout(&config, || Ok(Some(identity)))
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains("overlaps stdout"));
+            for path in &paths {
+                assert_eq!(fs::read(path).unwrap(), b"preserved artifact");
+            }
+            // Identity inspection must not consume the caller's descriptor.
+            stdout.write_all(b" still open").unwrap();
+            assert_eq!(
+                fs::read(&paths[collided]).unwrap(),
+                b"preserved artifact still open"
+            );
+        }
+    }
+
+    #[test]
+    fn distinct_stdout_remains_writable_after_output_preparation() {
+        let dir = ScratchDir::new("staged-output", "distinct_stdout");
+        let snapshots = dir.join("snapshots.jsonl");
+        let capture = dir.join("capture.pcap");
+        let mut stdout = precreate_private_file(&snapshots).unwrap();
+        stdout.write_all(b"snapshots").unwrap();
+        let identity = opened_file_identity(&stdout).unwrap();
+        let config = Config {
+            pcap_export_file: Some(capture.to_str().unwrap().to_owned()),
+            ..Config::default()
+        };
+        validate_output_paths_with_stdout(&config, Some(identity)).unwrap();
+        let (_, mut pcap) =
+            prepare_output_handles_with_stdout(&config, || Ok(Some(identity))).unwrap();
+        pcap.as_mut().unwrap().write_all(b"capture").unwrap();
+        stdout.write_all(b" still open").unwrap();
+        assert_eq!(fs::read(snapshots).unwrap(), b"snapshots still open");
+        assert_eq!(fs::read(capture).unwrap(), b"capture");
     }
 
     #[test]

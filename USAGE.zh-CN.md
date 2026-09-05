@@ -151,6 +151,24 @@ rustnet --headless --filter 'process:curl app:https'
 
 如果 JSONL 管道的下游提前关闭，例如使用 `head`，会产生 broken pipe。RustNet 会将其视为成功的停止请求，关闭所有工作线程，并且不会尝试向已经关闭的管道写入最终终止记录。抓包初始化失败或之后发生抓包故障时，程序会以非零状态退出。`--duration`、`--output` 和 `--filter` 必须与 `--headless` 一起使用。
 
+#### 流量历史与抓包文件
+
+快照 JSONL 不是逐包日志，也不是完整的连接事件历史。短连接，尤其是在两次快照之间复用相同端点的新一代连接，可能不会出现在整个输出流中。即使没有丢包且 `runtime.snapshot_generation` 连续，也可能发生这种情况。因此，全局 `stats.packets_processed` 可以准确，而可见连接的计数之和仍然较小。不要跨快照累加累计计数，也不要将最终快照视为完整的会话历史。
+
+需要逐包分析时，请在快照之外保存独立的 PCAP：
+
+```bash
+umask 077
+rustnet --headless --interface eth0 --duration 60 --refresh-interval 5000 \
+  --pcap-export capture.pcap > snapshots.jsonl
+```
+
+导出成功时，PCAP 保存抓包后端收到的数据包，受抓包过滤器和捕获长度限制，无法恢复抓包前丢失的数据包。请检查 `stats.packets_dropped`（处理队列）、`stats.capture_packets_dropped`（抓包后端）和 `stats.interface_packets_dropped`（接口，若可用）。还需确认 `stats.pcap_export_errors` 为零、检查关闭结果，并将 `stats.pcap_records_written` 与实际保存的文件核对：即使没有丢包，写入或刷新失败也可能导致抓包文件不完整。这些计数对应不同阶段，不能无条件证明数据完整。验证覆盖率时，应使用相同接口和抓包过滤器进行独立抓包，检查参考抓包自身的丢包计数，并比较数据包标识和长度，而不只是总数。`--filter` 过滤快照中的连接行，`--bpf-filter` 则限制捕获的流量。`--json-log` 是独立的连接事件流，不是逐包捕获。
+
+stdout、JSON 日志、PCAP、自动生成的 `.connections.jsonl` 旁路文件和 PCAPNG 必须使用不同文件。RustNet 会在截断或写入配置的输出文件前拒绝指向同一普通文件的 stdout。然而，shell 的 `>` 重定向可能在 RustNet 启动前截断文件，因此务必为快照选择独立路径。
+
+每条输出记录都包含一份完整的选定快照。连接越多、元数据越丰富、刷新间隔越短，CPU、内存和磁盘开销通常越大。五秒间隔可降低输出频率，但不能保留快照之间错过的连接，也不会消除后台采集开销。无人值守运行前，请测量实际流量下的资源和存储需求。
+
 ### 选项详情<a id="option-details"></a>
 
 #### `-i, --interface <INTERFACE>`<a id="-i---interface-interface"></a>

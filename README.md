@@ -207,7 +207,9 @@ rustnet --headless --filter 'process:curl app:https'   # Apply a connection filt
 
 Snapshot connection IDs remain stable through archival and distinguish reused endpoints. Traffic rates are explicitly named `outgoing_bytes_per_second` and `incoming_bytes_per_second`. A shutdown timeout reports `stopping` with the unfinished worker count and exits with a nonzero status.
 
-JSON logs, PCAP exports and their sidecars, and PCAPNG exports must use distinct output files. Overlapping destinations are rejected before existing output data is truncated.
+Snapshot JSONL is sampled state, not complete traffic history. Short-lived or reused connections can be missing even when packet-drop counters are zero. Use a separate `--pcap-export capture.pcap` for packet-level analysis, check capture drops, and validate against an independent capture when completeness matters. Full snapshots can be expensive at high connection counts; choose the refresh interval and retention budget for your workload. See [traffic history and capture files](USAGE.md#traffic-history-and-capture-files).
+
+Redirected stdout, JSON logs, PCAP exports and their sidecars, and PCAPNG exports must use distinct output files. RustNet rejects overlapping destinations before truncating configured outputs, but shell `>` redirection can already have truncated a file before startup.
 
 The theme and per-color overrides can also be set in `~/.config/rustnet/config.toml`; `--theme` takes precedence. See [USAGE.md](USAGE.md#--theme-preset) for the schema.
 

@@ -33,7 +33,8 @@ pub fn run() -> Result<()> {
         ..app::Config::default()
     };
     // Validate before logging, Npcap loading, privilege checks, or output
-    // creation so a bad combination cannot truncate an existing destination.
+    // creation so a bad combination cannot truncate an existing destination,
+    // including a regular file inherited as stdout for headless snapshots.
     app::validate_output_paths(&config).context("invalid output paths")?;
 
     // Clap handles --help and --version before this point, so both remain
@@ -190,7 +191,8 @@ pub fn run() -> Result<()> {
     };
 
     // Open every destination without truncating it, compare the descriptors'
-    // identities, then truncate capture outputs only after the group passes.
+    // identities and stdout, then truncate capture outputs only after the
+    // entire group passes the authoritative opened-handle check.
     // Retaining these descriptors also avoids reopening paths after the UID
     // drop or granting pathname write access through the sandbox.
     let (output_handles, pcap_export_file) =

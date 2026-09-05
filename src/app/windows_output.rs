@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io;
 use std::mem::size_of;
 use std::os::windows::ffi::OsStrExt;
+use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::Path;
 
@@ -27,8 +28,8 @@ use windows::Win32::Security::{
 use windows::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, CreateFileW, FILE_ALL_ACCESS, FILE_ATTRIBUTE_DIRECTORY,
     FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
-    FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA,
-    GetFileInformationByHandle, OPEN_ALWAYS, READ_CONTROL, WRITE_DAC,
+    FILE_GENERIC_WRITE, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK,
+    FILE_WRITE_DATA, GetFileInformationByHandle, GetFileType, OPEN_ALWAYS, READ_CONTROL, WRITE_DAC,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::PCWSTR;
@@ -77,15 +78,47 @@ pub fn open_private(path: impl AsRef<Path>, append: bool, truncate: bool) -> io:
 }
 
 pub(super) fn file_identity(file: &File) -> io::Result<(u64, u64)> {
+    handle_identity(HANDLE(file.as_raw_handle()))
+}
+
+fn handle_identity(handle: HANDLE) -> io::Result<(u64, u64)> {
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     unsafe {
-        GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info)
+        GetFileInformationByHandle(handle, &mut info)
             .map_err(|error| windows_error("GetFileInformationByHandle", error))?;
     }
     Ok((
         u64::from(info.dwVolumeSerialNumber),
         (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
     ))
+}
+
+pub(super) fn stdout_file_identity() -> io::Result<Option<(u64, u64)>> {
+    // This is a borrowed handle. Never wrap it in an owned File or close it:
+    // the frontend still needs the original standard output. Null/invalid
+    // handles (including a process without a console) cannot alias an artifact;
+    // later stdout I/O remains responsible for unavailable-output diagnostics.
+    let handle = HANDLE(io::stdout().as_raw_handle());
+    if handle.is_invalid() || unsafe { GetFileType(handle) } != FILE_TYPE_DISK {
+        return Ok(None);
+    }
+    handle_identity(handle).map(Some)
+}
+
+pub(super) fn existing_file_identity(path: &Path) -> io::Result<Option<(u64, u64)>> {
+    // Metadata-only access also works for an existing write-only destination.
+    // Do not create, truncate, or change its DACL during early validation.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .access_mode(0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
+        .open(path);
+    match file {
+        Ok(file) => file_identity(&file).map(Some),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
