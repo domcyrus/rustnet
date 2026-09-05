@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Headless Mode**: `--headless` runs without the TUI, with optional
+  `--duration` and shared `--filter` syntax. Versioned snapshots stream as
+  JSONL by default, while `--output json` emits one final snapshot. Stdout is
+  reserved for machine-readable output. A bounded asynchronous writer prevents
+  blocked consumers from delaying shutdown, while runtime capture and critical
+  worker failures emit terminal error state and return a nonzero status.
+  Connection IDs remain stable through archival and distinguish reused
+  endpoints, traffic rates have explicit bytes-per-second field names, and
+  timed-out workers retain a `stopping` terminal status
 - **Reusable Connection Filters**: the complete filter language now lives in
   `rustnet-core`, with the existing TUI path retained as a compatibility
   re-export for future headless frontends
@@ -26,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Frontend Modules**: startup and the TUI loop now live in library modules;
+  headless orchestration, schema projection, and output handling are separate
+  modules. Overlapping JSON, PCAP, sidecar, and PCAPNG destinations are rejected
+  before existing output data can be truncated
 - **Runtime Lifecycle Foundation**: privileged capture and process attribution
   are prepared synchronously before sandboxing, while all long-lived workers
   start through a typed post-sandbox handoff and stop under one owned,

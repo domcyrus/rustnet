@@ -7,7 +7,6 @@ use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::network::{
@@ -18,7 +17,7 @@ use crate::network::{
 };
 
 use super::logging::log_connection_closed;
-use super::runtime::ShutdownSignal;
+use super::runtime::RuntimeSupervisor;
 use super::state::App;
 use super::{LIVE_RATE_INTERVAL, MIN_RATE_SAMPLE_SECONDS, TRAFFIC_HISTORY_CAPACITY};
 
@@ -30,29 +29,28 @@ use super::{LIVE_RATE_INTERVAL, MIN_RATE_SAMPLE_SECONDS, TRAFFIC_HISTORY_CAPACIT
 /// their names ("state_refresh" logs as "Rate refresh"), and the interface
 /// stats worker's two lines already disagree with each other.
 pub(super) fn spawn_loop(
+    runtime: &mut RuntimeSupervisor,
     thread_name: &'static str,
     started_msg: &'static str,
     stopping_msg: &'static str,
     interval: Duration,
-    shutdown: ShutdownSignal,
     mut body: impl FnMut() + Send + 'static,
-) -> std::io::Result<thread::JoinHandle<()>> {
-    thread::Builder::new()
-        .name(thread_name.to_string())
-        .spawn(move || {
-            info!("{started_msg}");
-            loop {
-                if shutdown.is_requested() {
-                    info!("{stopping_msg}");
-                    break;
-                }
-                body();
-                if shutdown.wait_timeout(interval) {
-                    info!("{stopping_msg}");
-                    break;
-                }
+) -> std::io::Result<()> {
+    let shutdown = runtime.shutdown_signal();
+    runtime.spawn_monitored(thread_name, move || {
+        info!("{started_msg}");
+        loop {
+            if shutdown.is_requested() {
+                info!("{stopping_msg}");
+                break;
             }
-        })
+            body();
+            if shutdown.wait_timeout(interval) {
+                info!("{stopping_msg}");
+                break;
+            }
+        }
+    })
 }
 
 /// Clone-and-filter one connection table (active or historic) into snapshot
@@ -74,6 +72,44 @@ fn snapshot_source<K: Eq + std::hash::Hash, S: std::hash::BuildHasher + Clone>(
         .collect()
 }
 
+fn passes_localhost_filter(connection: &Connection, filter_localhost: bool) -> bool {
+    !(filter_localhost
+        && connection.local_addr.ip().is_loopback()
+        && connection.remote_addr.ip().is_loopback())
+}
+
+/// Build the same deterministic, service-enriched connection view used by
+/// interactive and headless frontends. Calling this after workers have joined
+/// captures the fully drained tracker state for final machine output.
+pub(super) fn build_connection_snapshot(
+    tracker: &ConnectionTracker,
+    service_lookup: &ServiceLookup,
+    filter_localhost: bool,
+    include_historic: bool,
+) -> Vec<Connection> {
+    let enrich_and_filter = |connection: &mut Connection| {
+        if connection.service_name.is_none() {
+            if let Some(service) =
+                service_lookup.lookup(connection.remote_addr.port(), connection.protocol)
+            {
+                connection.service_name = Some(service.to_string());
+            } else if let Some(service) =
+                service_lookup.lookup(connection.local_addr.port(), connection.protocol)
+            {
+                connection.service_name = Some(service.to_string());
+            }
+        }
+        passes_localhost_filter(connection, filter_localhost)
+    };
+
+    let mut snapshot = snapshot_source(tracker.connections(), enrich_and_filter);
+    if include_historic {
+        snapshot.extend(snapshot_source(tracker.historic(), enrich_and_filter));
+    }
+    snapshot.sort_by_key(|connection| connection.created_at);
+    snapshot
+}
+
 impl App {
     pub(super) fn start_snapshot_provider(
         &mut self,
@@ -89,53 +125,25 @@ impl App {
         let refresh_interval = Duration::from_millis(self.config.refresh_interval);
         let loop_interval = refresh_interval.min(Duration::from_secs(1));
 
-        let passes_localhost_filter = move |conn: &Connection| -> bool {
-            !(filter_localhost
-                && conn.local_addr.ip().is_loopback()
-                && conn.remote_addr.ip().is_loopback())
-        };
-
-        let enrich_and_filter = move |conn: &mut Connection,
-                                      service_lookup: &ServiceLookup|
-              -> bool {
-            if conn.service_name.is_none() {
-                if let Some(service) = service_lookup.lookup(conn.remote_addr.port(), conn.protocol)
-                {
-                    conn.service_name = Some(service.to_string());
-                } else if let Some(service) =
-                    service_lookup.lookup(conn.local_addr.port(), conn.protocol)
-                {
-                    conn.service_name = Some(service.to_string());
-                }
-            }
-            passes_localhost_filter(conn)
-        };
-
         let mut last_ui_publish: Option<Instant> = None;
         let mut last_activity_sample: Option<Instant> = None;
 
-        let handle = spawn_loop(
+        spawn_loop(
+            &mut self.runtime,
             "snapshot_ui",
             "Snapshot provider thread started",
             "Snapshot provider thread stopping",
             loop_interval,
-            self.runtime.shutdown_signal(),
             move || {
                 let start = Instant::now();
                 let total_connections = tracker.len();
 
-                let mut snapshot_data = snapshot_source(tracker.connections(), |conn| {
-                    enrich_and_filter(conn, &service_lookup)
-                });
-
-                if show_historic.load(Ordering::Relaxed) {
-                    snapshot_data.extend(snapshot_source(tracker.historic(), |conn| {
-                        enrich_and_filter(conn, &service_lookup)
-                    }));
-                }
-
-                // Oldest first: creation order is the most stable row order.
-                snapshot_data.sort_by_key(|a| a.created_at);
+                let snapshot_data = build_connection_snapshot(
+                    &tracker,
+                    &service_lookup,
+                    filter_localhost,
+                    show_historic.load(Ordering::Relaxed),
+                );
 
                 let filtered_count = snapshot_data.len();
 
@@ -149,7 +157,7 @@ impl App {
                                 |observe| {
                                     for entry in active.iter() {
                                         let conn = entry.value();
-                                        if passes_localhost_filter(conn) {
+                                        if passes_localhost_filter(conn, filter_localhost) {
                                             observe(conn);
                                         }
                                     }
@@ -157,7 +165,7 @@ impl App {
                                 |observe| {
                                     for entry in historic.iter() {
                                         let conn = entry.value();
-                                        if passes_localhost_filter(conn) {
+                                        if passes_localhost_filter(conn, filter_localhost) {
                                             observe(conn);
                                         }
                                     }
@@ -171,8 +179,10 @@ impl App {
                 let ui_publish_due =
                     last_ui_publish.is_none_or(|published| published.elapsed() >= refresh_interval);
                 if ui_publish_due {
-                    *snapshot.write().unwrap() = snapshot_data;
+                    let mut published = snapshot.write().unwrap();
+                    *published = snapshot_data;
                     snapshot_generation.fetch_add(1, Ordering::Release);
+                    drop(published);
                     last_ui_publish = Some(Instant::now());
 
                     // Counts active connections only.
@@ -191,7 +201,6 @@ impl App {
             },
         )
         .map_err(|error| anyhow::anyhow!("failed to spawn snapshot_ui worker: {error}"))?;
-        self.runtime.register(handle);
 
         Ok(())
     }
@@ -202,12 +211,12 @@ impl App {
         tracker: Arc<ConnectionTracker>,
     ) -> Result<()> {
         // Keep idle-rate decay aligned with the live graph cadence.
-        let handle = spawn_loop(
+        spawn_loop(
+            &mut self.runtime,
             "state_refresh",
             "Rate refresh thread started",
             "Rate refresh thread stopping",
             LIVE_RATE_INTERVAL,
-            self.runtime.shutdown_signal(),
             move || {
                 // Refresh rates for connections that may still have non-zero rates.
                 // Skip connections idle >30s whose rates are already zero.
@@ -229,7 +238,6 @@ impl App {
             },
         )
         .map_err(|error| anyhow::anyhow!("failed to spawn state_refresh worker: {error}"))?;
-        self.runtime.register(handle);
 
         Ok(())
     }
@@ -248,12 +256,12 @@ impl App {
         let mut warned_collect_failure = false;
 
         // Keep interface rates fresh for the live graphs.
-        let handle = spawn_loop(
+        spawn_loop(
+            &mut self.runtime,
             "ifstats_poll",
             "Interface stats collection thread started",
             "Interface stats thread stopping",
             LIVE_RATE_INTERVAL,
-            self.runtime.shutdown_signal(),
             move || {
                 match provider.get_all_stats() {
                     Ok(stats_vec) => {
@@ -307,7 +315,6 @@ impl App {
             },
         )
         .map_err(|error| anyhow::anyhow!("failed to spawn ifstats_poll worker: {error}"))?;
-        self.runtime.register(handle);
 
         Ok(())
     }
@@ -328,12 +335,12 @@ impl App {
         let mut previous_sample_at = Instant::now();
 
         // Update twice per second for a more responsive graph.
-        let handle = spawn_loop(
+        spawn_loop(
+            &mut self.runtime,
             "graph_ui",
             "Traffic history thread started",
             "Traffic history thread stopping",
             LIVE_RATE_INTERVAL,
-            self.runtime.shutdown_signal(),
             move || {
                 let (total_rx, total_tx) =
                     interface_rates
@@ -421,7 +428,6 @@ impl App {
             },
         )
         .map_err(|error| anyhow::anyhow!("failed to spawn graph_ui worker: {error}"))?;
-        self.runtime.register(handle);
 
         Ok(())
     }
@@ -432,12 +438,12 @@ impl App {
         let dns_resolver = self.dns_resolver.clone();
         let stats = Arc::clone(&self.stats);
 
-        let handle = spawn_loop(
+        spawn_loop(
+            &mut self.runtime,
             "cleanup_thread",
             "Cleanup thread started",
             "Cleanup thread stopping",
             Duration::from_secs(5),
-            self.runtime.shutdown_signal(),
             move || {
                 // Remove inactive connections. The tracker handles the timeout
                 // sweep, historic archiving + eviction, and QUIC-mapping cleanup;
@@ -479,7 +485,6 @@ impl App {
             },
         )
         .map_err(|error| anyhow::anyhow!("failed to spawn cleanup worker: {error}"))?;
-        self.runtime.register(handle);
 
         Ok(())
     }

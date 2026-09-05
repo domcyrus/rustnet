@@ -52,6 +52,12 @@ flowchart TD
 
 为了将拆分对二进制内部保持透明，`src/network/mod.rs` 重导出 `rustnet_core::network::*` 和 `rustnet_capture`（作为 `capture`），因此现有的 `crate::network::*` 路径、集成测试和基准测试无需改动即可编译。`src/network/platform` 模块如今只是接入 `rustnet-host` 进程与套接字查找的一层薄壳；各平台的接口统计提供者位于 `rustnet-core`（入口 `interface_stats::create_stats_provider`），沙箱与 root uid 降级位于 `rustnet-sandbox`，二进制直接使用这些 crate。
 
+### 前端模块
+
+`src/main.rs` 委托库中的 `bootstrap::run` 执行启动。`src/bootstrap.rs` 负责解析选项、验证输出路径、准备特权资源、应用沙箱、通过运行时许可启动工作线程并选择前端。`src/tui.rs` 负责交互事件循环。无界面模式的调度位于 `src/headless/mod.rs`，版本化快照投影位于 `src/headless/schema.rs`，有界最新值写入器位于 `src/headless/output.rs`。两个前端共用应用状态、过滤器、信号标志和由运行时持有的关闭报告。
+
+配置的 JSON 日志、PCAP、PCAP 旁路记录和 PCAPNG 输出会先验证路径，再检查已打开文件的身份，之后才截断捕获输出。其文件描述符在 UID 降级及沙箱切换期间保持打开，不授予输出路径写入权限，也不会在之后重新打开路径。关闭时先停止并等待生产者，再重建最终快照；如果工作线程超过期限，无界面模式的终止记录会报告 `stopping`，而不会声称关闭已完成。
+
 ## 多线程架构<a id="multi-threaded-architecture"></a>
 
 RustNet 采用多线程架构以实现高效的数据包处理：

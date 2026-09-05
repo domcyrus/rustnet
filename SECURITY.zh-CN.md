@@ -49,7 +49,7 @@ RustNet 处理不受信任的网络数据，因此纵深防御至关重要。本
 
 如果攻击者利用 DPI/包解析中的漏洞：
 - 无法读取任意文件（凭据、配置等）
-- 无法写入文件系统（除配置的日志路径外）
+- 无法打开新的可写路径；已打开的输出文件描述符仍可写入
 - 无法建立出站 TCP 连接（阻止数据外泄）
 - 无法绑定 TCP 端口（阻止反向 shell）
 - 无法创建新的 raw socket（Linux capabilities 已剥离）
@@ -90,14 +90,14 @@ root uid 降权的权衡：降权后，procfs 回退路径的进程归属只能�
 | 出站网络 | TCP/UDP 出站被阻止；Unix socket（Mach IPC）允许 |
 | 文件系统读取 | 禁止读取用户主目录（`/Users`、`/var/root`）；GeoIP 路径显式允许 |
 | 文件系统写入 | 禁止写入所有用户主目录（`/Users`、`/var/root`） |
-| 文件系统写入 | 仅配置的日志、JSON log、PCAP 和 PCAPNG 导出路径可写 |
+| 输出文件 | 通过保留的文件描述符写入，不授予输出路径写入例外 |
 | 进程执行 | 除 `/usr/sbin/lsof` 外，禁止执行所有二进制文件 |
 | root uid | 以 root 启动时（如 `sudo rustnet`），初始化完成后降权到调用用户（`SUDO_UID`/`SUDO_GID`）或 `nobody` |
 
 ### 工作原理
 
 1. **初始化阶段**：RustNet 打开包捕获句柄（BPF/PKTAP）并创建日志文件
-2. **预创建**：PCAP sidecar 文件（`.connections.jsonl`）和 PCAPNG 输出文件在沙箱应用前创建，因此其路径已经是有效的允许目标；同时移交给降权目标用户，确保降权后仍可写入
+2. **准备输出**：JSON 日志、PCAP、PCAP sidecar（`.connections.jsonl`）和 PCAPNG 文件在应用沙箱前安全打开。截断捕获输出前会检查已打开文件的身份是否冲突，文件描述符在 uid 降权期间保持打开
 3. **root uid 降权**：以 root 运行时，通过 `setgid`/`setuid` 切换到调用 sudo 的用户（或 `nobody`）。已打开的捕获和日志/导出文件描述符继续有效
 4. **沙箱应用**：调用 `sandbox_init_with_parameters`；已打开的文件描述符保持不变，仅限制未来的操作
 
@@ -107,7 +107,7 @@ RustNet 使用 **默认允许** 的 SBPL 配置文件配合针对性拒绝。拒
 
 ### 输出文件支持
 
-`--json-log`、`--pcap-export` 和 `--pcapng-export` 路径通过运行时参数（`JSON_LOG_PATH`、`PCAP_PATH`、`PCAP_JSONL_PATH`、`PCAPNG_PATH`）传递给 SBPL 配置文件。配置文件为每个路径授予显式的 `allow file-write*` 规则，该规则通过 SBPL 的特异性优先于更宽泛的 `/Users` 拒绝规则。未使用的参数默认为 `/dev/null`。
+`--json-log`、`--pcap-export` 和 `--pcapng-export`（包括 PCAP sidecar）通过安全预先打开的文件描述符写入。RustNet 不会在应用沙箱后重新打开这些路径，也不会向 Seatbelt 配置文件传递输出路径写入例外。即使准备完成后路径被替换，也不会因此获得对其他文件的写入权限。
 
 三个标志在沙箱内均可正常工作。
 
