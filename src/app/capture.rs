@@ -1662,8 +1662,10 @@ mod packet_worker_tests {
         frame[23] = 6;
         frame[24..26].fill(0);
         let mut checksum = frame[14..34]
-            .chunks_exact(2)
-            .map(|word| u32::from(u16::from_be_bytes([word[0], word[1]])))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|word| u32::from(u16::from_be_bytes(*word)))
             .sum::<u32>();
         while checksum > u16::MAX as u32 {
             checksum = (checksum & 0xffff) + (checksum >> 16);
