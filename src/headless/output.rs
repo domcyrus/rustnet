@@ -23,43 +23,47 @@ enum WriterStatus {
     Failed(String),
 }
 
-pub(super) struct OutputRecord {
-    pub(super) bytes: Vec<u8>,
-    pub(super) terminal: bool,
+struct OutputRecord<T> {
+    value: T,
+    terminal: bool,
 }
 
-pub(super) struct AsyncOutput {
-    records_tx: Sender<OutputRecord>,
-    pending_rx: Receiver<OutputRecord>,
+pub(super) struct AsyncOutput<T> {
+    records_tx: Sender<OutputRecord<T>>,
+    pending_rx: Receiver<OutputRecord<T>>,
     status_rx: Receiver<WriterStatus>,
     observed_status: Option<WriterStatus>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
-impl AsyncOutput {
+impl<T: Serialize + Send + 'static> AsyncOutput<T> {
     pub(super) fn spawn<W: Write + Send + 'static>(mut writer: W) -> io::Result<Self> {
-        let (records_tx, records_rx) = bounded::<OutputRecord>(1);
+        let (records_tx, records_rx) = bounded::<OutputRecord<T>>(1);
         let pending_rx = records_rx.clone();
         let (status_tx, status_rx) = bounded(1);
         let worker = thread::Builder::new()
             .name("headless_output".to_string())
             .spawn(move || {
                 let status = loop {
-                    let record = match records_rx.recv() {
+                    let OutputRecord { value, terminal } = match records_rx.recv() {
                         Ok(record) => record,
                         Err(_) => break WriterStatus::Finished,
                     };
-                    if let Err(error) = writer
-                        .write_all(&record.bytes)
-                        .and_then(|()| writer.flush())
-                    {
+                    let bytes = match serialize_record(&value) {
+                        Ok(bytes) => bytes,
+                        Err(error) => break WriterStatus::Failed(format!("{error:#}")),
+                    };
+                    // Release the projected value before a potentially blocked
+                    // write, retaining only this record's serialized bytes.
+                    drop(value);
+                    if let Err(error) = writer.write_all(&bytes).and_then(|()| writer.flush()) {
                         break if error.kind() == io::ErrorKind::BrokenPipe {
                             WriterStatus::BrokenPipe
                         } else {
                             WriterStatus::Failed(error.to_string())
                         };
                     }
-                    if record.terminal {
+                    if terminal {
                         break WriterStatus::Finished;
                     }
                 };
@@ -76,10 +80,17 @@ impl AsyncOutput {
         })
     }
 
-    /// Replace a queued live record with the newest record. The worker may
-    /// also be writing one record, so memory remains bounded to two serialized
-    /// snapshots plus the producer's current snapshot.
-    pub(super) fn offer_latest(&mut self, mut record: OutputRecord) {
+    /// Replace the queued live value before serializing it. The worker handles
+    /// one value at a time, with at most one pending value and the producer's
+    /// current value. A blocked writer does not retain already replaced values.
+    pub(super) fn offer_latest(&mut self, value: T) {
+        self.replace_pending(OutputRecord {
+            value,
+            terminal: false,
+        });
+    }
+
+    fn replace_pending(&mut self, mut record: OutputRecord<T>) {
         loop {
             match self.records_tx.try_send(record) {
                 Ok(()) => return,
@@ -115,7 +126,13 @@ impl AsyncOutput {
         }
     }
 
-    pub(super) fn finish(mut self, deadline: Duration) -> Result<WriterCompletion> {
+    /// Replace any pending live value with the terminal value and seal further
+    /// offers. The deadline covers terminal serialization, writing, and flushing.
+    pub(super) fn finish(mut self, terminal: T, deadline: Duration) -> Result<WriterCompletion> {
+        self.replace_pending(OutputRecord {
+            value: terminal,
+            terminal: true,
+        });
         let status = if let Some(status) = self.observed_status.take() {
             status
         } else {
