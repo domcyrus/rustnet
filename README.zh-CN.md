@@ -41,6 +41,9 @@
 - **Kubernetes 归属识别**（可选 `kubernetes` feature）：将连接映射到所属 pod、namespace 和 container，并在详情面板、JSON/PCAPNG 导出以及 `pod:`、`ns:`、`container:` 过滤器中显示。官方 Docker 镜像已启用该功能；在集群上可使用 [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) 插件以临时调试 pod 运行。详见 [USAGE.zh-CN.md](USAGE.zh-CN.md#--kubernetes-mode-optional-feature)。
 - **跨平台**：Linux、macOS、Windows、FreeBSD。
 
+数据包并行解析，连接更新和带注释的导出更新仍按捕获顺序执行。
+处理队列最多容纳 10,000 个数据包；这不包含应用的其他内存使用量，突发流量或持续过载时仍可能丢包。
+
 ## 为什么选 RustNet？
 
 RustNet 填补了简单连接工具(`netstat`、`ss`)与数据包分析器(`Wireshark`、`tcpdump`)之间的空白：
@@ -207,7 +210,9 @@ rustnet --headless --filter 'process:curl app:https'   # 应用连接过滤器
 
 快照中的连接 ID 在转为历史记录后保持不变，并区分复用同一端点的不同连接。流量速率字段明确命名为 `outgoing_bytes_per_second` 和 `incoming_bytes_per_second`，单位为字节每秒。关闭超时会报告 `stopping` 及未完成的工作线程数量，并以非零状态退出。
 
-JSON 日志、PCAP 导出及其旁路记录、PCAPNG 导出必须使用不同的输出文件。重叠的目标会在已有输出数据被截断前遭到拒绝。
+快照 JSONL 是采样状态，并非完整流量历史。即使丢包计数为零，短连接或复用端点的连接仍可能缺失。逐包分析应使用独立的 `--pcap-export capture.pcap`，检查抓包丢包情况；要求完整性时，还应与独立抓包对照。连接数量较多时，完整快照的开销可能很高，请按实际负载选择刷新间隔和保留预算。参见[流量历史与抓包文件](USAGE.zh-CN.md#流量历史与抓包文件)。
+
+重定向的 stdout、JSON 日志、PCAP 导出及其旁路记录、PCAPNG 导出必须使用不同的输出文件。RustNet 会在截断配置的输出前拒绝重叠目标，但 shell 的 `>` 重定向可能在程序启动前就已截断文件。
 
 主动启用的 Linux systemd 示例、私有快照输出和不分配终端的 Docker 用法见 [SERVICE.zh-CN.md](SERVICE.zh-CN.md)。软件包仅将单元作为文档示例提供。
 

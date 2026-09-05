@@ -151,6 +151,24 @@ Connection `id` values are opaque identifiers that remain stable when a connecti
 
 Closing a JSONL pipeline early, for example with `head`, produces a broken pipe. RustNet treats that as a successful request to stop, shuts down its workers, and does not attempt a terminal record on the closed pipe. A packet-capture initialization failure or a later capture failure exits with a nonzero status. `--duration`, `--output`, and `--filter` require `--headless`.
 
+#### Traffic history and capture files
+
+Snapshot JSONL is not a packet log or a complete connection-event history. Short-lived connections, especially generations that reuse the same endpoints between snapshots, can be absent from the entire stream. This can happen with zero packet drops and no gaps in `runtime.snapshot_generation`. Global `stats.packets_processed` can therefore be correct while the sum of the visible connection counters is smaller. Do not sum cumulative counters across snapshots or treat a terminal snapshot as a complete session history.
+
+For packet-level analysis, save a separate PCAP alongside the snapshots:
+
+```bash
+umask 077
+rustnet --headless --interface eth0 --duration 60 --refresh-interval 5000 \
+  --pcap-export capture.pcap > snapshots.jsonl
+```
+
+When export succeeds, PCAP preserves the packets received by the capture backend, subject to capture filters and captured packet length; it cannot recover packets dropped before capture. Inspect `stats.packets_dropped` (processing queue), `stats.capture_packets_dropped` (capture backend), and `stats.interface_packets_dropped` (interface, when available). Also require zero `stats.pcap_export_errors`, check the shutdown result, and compare `stats.pcap_records_written` with the actual saved file: write or flush failures can leave an incomplete capture even with zero packet drops. These counters measure different stages and are not an unconditional proof of completeness. When validating coverage, compare against an independent capture using the same interface and capture filter, check its own drop counters, and compare packet identities and lengths rather than only totals. `--filter` filters snapshot rows, whereas `--bpf-filter` limits captured traffic. `--json-log` is a separate connection-event stream, not a packet capture.
+
+Stdout, JSON logs, PCAP, its generated `.connections.jsonl` sidecar, and PCAPNG must use distinct files. RustNet rejects regular-file stdout aliases before it truncates or writes configured outputs. However, shell redirection with `>` can truncate a file before RustNet starts, so always choose a separate snapshot path.
+
+Every emitted record contains a full selected snapshot. More connections, richer metadata, and shorter refresh intervals increase CPU, memory, and disk usage. A five-second interval reduces output frequency but does not preserve connections missed between snapshots or remove background collection costs. Measure your own traffic and storage budget before unattended use.
+
 ### Option Details
 
 #### `-i, --interface <INTERFACE>`

@@ -41,6 +41,10 @@
 - **Kubernetes attribution** (optional `kubernetes` feature): connections mapped to their pod, namespace, and container, shown in the details pane, JSON/PCAPNG exports, and the `pod:`, `ns:`, `container:` filters. Enabled in the official Docker image; on a cluster, use the [kubectl-rustnet](https://github.com/domcyrus/kubectl-rustnet) plugin to run it as an ephemeral debug pod. See [USAGE.md](USAGE.md#--kubernetes-mode-optional-feature).
 - **Cross-platform**: Linux, macOS, Windows, FreeBSD.
 
+Packet parsing runs in parallel, while connection and annotated-export updates
+keep capture order. The processing queue holds at most 10,000 packets, separate
+from other application memory; bursts or sustained overload can still drop packets.
+
 ## Why RustNet?
 
 RustNet fills the gap between simple connection tools (`netstat`, `ss`) and packet analyzers (`Wireshark`, `tcpdump`):
@@ -207,7 +211,9 @@ rustnet --headless --filter 'process:curl app:https'   # Apply a connection filt
 
 Snapshot connection IDs remain stable through archival and distinguish reused endpoints. Traffic rates are explicitly named `outgoing_bytes_per_second` and `incoming_bytes_per_second`. A shutdown timeout reports `stopping` with the unfinished worker count and exits with a nonzero status.
 
-JSON logs, PCAP exports and their sidecars, and PCAPNG exports must use distinct output files. Overlapping destinations are rejected before existing output data is truncated.
+Snapshot JSONL is sampled state, not complete traffic history. Short-lived or reused connections can be missing even when packet-drop counters are zero. Use a separate `--pcap-export capture.pcap` for packet-level analysis, check capture drops, and validate against an independent capture when completeness matters. Full snapshots can be expensive at high connection counts; choose the refresh interval and retention budget for your workload. See [traffic history and capture files](USAGE.md#traffic-history-and-capture-files).
+
+Redirected stdout, JSON logs, PCAP exports and their sidecars, and PCAPNG exports must use distinct output files. RustNet rejects overlapping destinations before truncating configured outputs, but shell `>` redirection can already have truncated a file before startup.
 
 For the opt-in Linux systemd example, private snapshot output, and Docker usage without a terminal, see [SERVICE.md](SERVICE.md). Packages ship the unit as documentation only.
 

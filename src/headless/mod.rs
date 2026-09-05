@@ -16,7 +16,7 @@ use crate::app::{App, StopReport};
 mod output;
 mod schema;
 
-use output::{AsyncOutput, OutputRecord, WriterCompletion, serialize_record};
+use output::{AsyncOutput, WriterCompletion};
 use schema::{RuntimePhase, SnapshotEnvelope};
 
 #[cfg(test)]
@@ -228,13 +228,7 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
         Some(stop_report),
     );
 
-    let terminal_result = serialize_record(&snapshot).and_then(|record| {
-        output.offer_latest(OutputRecord {
-            bytes: record,
-            terminal: true,
-        });
-        output.finish(writer_deadline)
-    });
+    let terminal_result = output.finish(snapshot, writer_deadline);
 
     if let Some(failure) = failure {
         if let Err(output_error) = terminal_result {
@@ -258,7 +252,7 @@ fn run_with_writer_deadline<W: Write + Send + 'static>(
 
 fn stream_json_lines(
     app: &App,
-    output: &mut AsyncOutput,
+    output: &mut AsyncOutput<SnapshotEnvelope>,
     options: &HeadlessOptions,
     shutdown_requested: &AtomicBool,
     started: Instant,
@@ -282,11 +276,7 @@ fn stream_json_lines(
             let (generation, snapshot) =
                 SnapshotEnvelope::new(app, options.filter_query.as_deref(), phase, None, None);
             if last_generation != Some(generation) {
-                let record = serialize_record(&snapshot).map_err(RunFailure::output)?;
-                output.offer_latest(OutputRecord {
-                    bytes: record,
-                    terminal: false,
-                });
+                output.offer_latest(snapshot);
                 last_generation = Some(generation);
             }
         }
@@ -305,7 +295,7 @@ fn stream_json_lines(
 
 fn wait_for_exit(
     app: &App,
-    output: &mut AsyncOutput,
+    output: &mut AsyncOutput<SnapshotEnvelope>,
     duration: Option<Duration>,
     shutdown_requested: &AtomicBool,
     started: Instant,

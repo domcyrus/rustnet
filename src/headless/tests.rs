@@ -1,3 +1,4 @@
+use super::output::serialize_record;
 use super::*;
 use crate::app::Config;
 use crate::network::parser::ParsedPacket;
@@ -380,31 +381,66 @@ fn stalled_writer() -> (
     )
 }
 
+struct SerializationProbe {
+    value: u64,
+    serialized: Arc<Mutex<Vec<u64>>>,
+    dropped: mpsc::Sender<u64>,
+}
+
+impl Serialize for SerializationProbe {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.serialized.lock().unwrap().push(self.value);
+        serializer.serialize_u64(self.value)
+    }
+}
+
+impl Drop for SerializationProbe {
+    fn drop(&mut self) {
+        let _ = self.dropped.send(self.value);
+    }
+}
+
 #[test]
-fn latest_snapshot_replaces_a_queued_snapshot() {
+fn superseded_snapshots_are_dropped_without_serialization_and_terminal_is_written() {
     let (writer, output, entered, release, finished) = stalled_writer();
+    let serialized = Arc::new(Mutex::new(Vec::new()));
+    let (dropped_tx, dropped_rx) = mpsc::channel();
+    let snapshot = |value| SerializationProbe {
+        value,
+        serialized: Arc::clone(&serialized),
+        dropped: dropped_tx.clone(),
+    };
     let mut sink = AsyncOutput::spawn(writer).unwrap();
-    sink.offer_latest(OutputRecord {
-        bytes: b"first\n".to_vec(),
-        terminal: false,
-    });
+    sink.offer_latest(snapshot(1));
     entered.recv_timeout(Duration::from_secs(1)).unwrap();
-    sink.offer_latest(OutputRecord {
-        bytes: b"stale\n".to_vec(),
-        terminal: false,
-    });
-    sink.offer_latest(OutputRecord {
-        bytes: b"terminal\n".to_vec(),
-        terminal: true,
-    });
+
+    // The in-flight DTO has already been released while its bytes are blocked.
+    assert_eq!(dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
+    for value in 2..=18 {
+        sink.offer_latest(snapshot(value));
+    }
+    assert_eq!(*serialized.lock().unwrap(), [1]);
+
+    let terminal = snapshot(19);
+    let completion = thread::spawn(move || sink.finish(terminal, Duration::from_secs(1)));
+    // Dropping 18 proves the terminal value replaced the final pending live
+    // value before the writer is released. No scheduler timing is assumed.
+    for value in 2..=18 {
+        assert_eq!(
+            dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap(),
+            value
+        );
+    }
 
     release.send(()).unwrap();
     assert_eq!(
-        sink.finish(Duration::from_secs(1)).unwrap(),
+        completion.join().unwrap().unwrap(),
         WriterCompletion::Written
     );
     finished.recv_timeout(Duration::from_secs(1)).unwrap();
-    assert_eq!(output.bytes(), b"first\nterminal\n");
+    assert_eq!(*serialized.lock().unwrap(), [1, 19]);
+    assert_eq!(dropped_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 19);
+    assert_eq!(output.bytes(), b"1\n19\n");
 }
 
 #[test]
@@ -511,6 +547,127 @@ fn serialization_failure_is_an_error() {
             .to_string()
             .contains("failed to serialize headless output")
     );
+}
+
+#[test]
+fn live_serialization_failure_is_reported_by_poll_and_finish() {
+    let output = SharedWriter::default();
+    let mut sink = AsyncOutput::spawn(output.clone()).unwrap();
+    sink.offer_latest(FailingSerialize);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    let error = loop {
+        match sink.poll() {
+            Err(error) => break error,
+            Ok(None) => {
+                assert!(Instant::now() < deadline);
+                thread::yield_now();
+            }
+            Ok(Some(exit)) => panic!("unexpected successful writer exit: {exit:?}"),
+        }
+    };
+    assert!(error.to_string().contains("injected serialization failure"));
+    let error = sink
+        .finish(FailingSerialize, Duration::from_secs(1))
+        .unwrap_err();
+    assert!(error.to_string().contains("injected serialization failure"));
+    assert!(output.bytes().is_empty());
+}
+
+struct PartiallyFailingSerialize;
+
+impl Serialize for PartiallyFailingSerialize {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut sequence = serializer.serialize_seq(Some(2))?;
+        sequence.serialize_element(&1)?;
+        Err(serde::ser::Error::custom(
+            "injected terminal serialization failure",
+        ))
+    }
+}
+
+#[test]
+fn terminal_serialization_failure_does_not_write_a_partial_record() {
+    let output = SharedWriter::default();
+    let sink = AsyncOutput::spawn(output.clone()).unwrap();
+    let error = sink
+        .finish(PartiallyFailingSerialize, Duration::from_secs(1))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("injected terminal serialization failure")
+    );
+    assert!(output.bytes().is_empty());
+}
+
+struct SlowSerialize {
+    value: u64,
+    gate: Option<(mpsc::Sender<()>, Mutex<mpsc::Receiver<()>>)>,
+}
+
+impl Serialize for SlowSerialize {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        if let Some((entered, release)) = &self.gate {
+            entered.send(()).unwrap();
+            release.lock().unwrap().recv().unwrap();
+        }
+        serializer.serialize_u64(self.value)
+    }
+}
+
+#[test]
+fn serialization_cannot_extend_the_output_shutdown_deadline() {
+    let (writer, output, entered, release, finished) = stalled_writer();
+    let (serializing_tx, serializing_rx) = mpsc::channel();
+    let (continue_tx, continue_rx) = mpsc::channel();
+    let mut sink = AsyncOutput::spawn(writer).unwrap();
+    sink.offer_latest(SlowSerialize {
+        value: 1,
+        gate: Some((serializing_tx, Mutex::new(continue_rx))),
+    });
+    serializing_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    let started = Instant::now();
+    let error = sink
+        .finish(
+            SlowSerialize {
+                value: 2,
+                gate: None,
+            },
+            Duration::from_millis(30),
+        )
+        .unwrap_err();
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(error.to_string().contains("did not finish within 30ms"));
+    continue_tx.send(()).unwrap();
+    entered.recv_timeout(Duration::from_secs(1)).unwrap();
+    release.send(()).unwrap();
+    finished.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(output.bytes(), b"1\n2\n");
+}
+
+struct PanickingSerialize;
+
+impl Serialize for PanickingSerialize {
+    fn serialize<S: Serializer>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        // Exercise unwinding without panic-hook backtrace latency.
+        std::panic::resume_unwind(Box::new("injected serializer panic"));
+    }
+}
+
+#[test]
+fn terminal_serializer_panic_is_joined_and_reported() {
+    let output = SharedWriter::default();
+    let sink = AsyncOutput::spawn(output.clone()).unwrap();
+    let error = sink
+        .finish(PanickingSerialize, Duration::from_secs(1))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("headless output writer panicked")
+    );
+    assert!(output.bytes().is_empty());
 }
 
 #[test]
