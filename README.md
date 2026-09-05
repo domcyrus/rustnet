@@ -215,6 +215,8 @@ Snapshot JSONL is sampled state, not complete traffic history. Short-lived or re
 
 Redirected stdout, JSON logs, PCAP exports and their sidecars, and PCAPNG exports must use distinct output files. RustNet rejects overlapping destinations before truncating configured outputs, but shell `>` redirection can already have truncated a file before startup.
 
+For the opt-in Linux systemd example, private snapshot output, and Docker usage without a terminal, see [SERVICE.md](SERVICE.md). Packages ship the unit as documentation only.
+
 The theme and per-color overrides can also be set in `~/.config/rustnet/config.toml`; `--theme` takes precedence. See [USAGE.md](USAGE.md#--theme-preset) for the schema.
 
 See [INSTALL.md](INSTALL.md) for detailed permission setup and [USAGE.md](USAGE.md) for complete options.
