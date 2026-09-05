@@ -26,6 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
+- **Packet Processing**: reuse per-worker parsed-packet buffers, release packet
+  storage outside the ordered commit, and skip notifications when no commit
+  waiter exists. Capture ordering and the 10,000-packet queue bound are unchanged
 - **Runtime Lifecycle Foundation**: privileged capture and process attribution
   are prepared synchronously before sandboxing, while all long-lived workers
   start through a typed post-sandbox handoff and stop under one owned,

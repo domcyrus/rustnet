@@ -171,8 +171,14 @@ impl<T> OrderedBatchReceiver<T> {
 /// unwinds, preventing one failed commit from permanently blocking shutdown.
 #[derive(Default)]
 struct OrderedBatchCommitter {
-    next_sequence: Mutex<u64>,
+    state: Mutex<OrderedCommitState>,
     turn_changed: Condvar,
+}
+
+#[derive(Default)]
+struct OrderedCommitState {
+    next_sequence: u64,
+    waiters: usize,
 }
 
 impl OrderedBatchCommitter {
@@ -185,22 +191,21 @@ impl OrderedBatchCommitter {
     }
 
     fn commit<R>(&self, sequence: u64, commit: impl FnOnce() -> R) -> R {
-        let mut next = self
-            .next_sequence
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        while *next != sequence {
-            next = self
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        while state.next_sequence != sequence {
+            state.waiters += 1;
+            state = self
                 .turn_changed
-                .wait(next)
+                .wait(state)
                 .unwrap_or_else(|error| error.into_inner());
+            state.waiters -= 1;
         }
 
         let guard = OrderedCommitGuard {
             committer: self,
             sequence,
         };
-        drop(next);
+        drop(state);
         let result = commit();
         drop(guard);
         result
@@ -239,14 +244,18 @@ struct OrderedCommitGuard<'a> {
 
 impl Drop for OrderedCommitGuard<'_> {
     fn drop(&mut self) {
-        let mut next = self
+        let mut state = self
             .committer
-            .next_sequence
+            .state
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        debug_assert_eq!(*next, self.sequence);
-        *next = next.wrapping_add(1);
-        self.committer.turn_changed.notify_all();
+        debug_assert_eq!(state.next_sequence, self.sequence);
+        state.next_sequence = state.next_sequence.wrapping_add(1);
+        // A single worker, or a batch completed before later parsing, needs
+        // no condition-variable broadcast.
+        if state.waiters != 0 {
+            self.committer.turn_changed.notify_all();
+        }
     }
 }
 
@@ -879,6 +888,9 @@ impl App {
                     };
                 let mut total_processed = 0u64;
                 let mut last_log = Instant::now();
+                // Keep one scratch allocation per worker instead of allocating
+                // and freeing a parsed-packet buffer for every capture batch.
+                let mut parsed_batch = Vec::with_capacity(PACKET_BATCH_SIZE);
                 const LOCAL_ADDRESS_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
                 loop {
@@ -913,7 +925,6 @@ impl App {
                     parser.refresh_local_ips_if_due(LOCAL_ADDRESS_REFRESH_INTERVAL);
                     let batch_len = batch.len();
                     let pcapng_enabled = pcapng_tx.is_some();
-                    let mut parsed_batch = Vec::with_capacity(batch_len);
                     for packet in batch {
                         let parse_result =
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -937,9 +948,9 @@ impl App {
                     // must observe the capture stream in exact batch order.
                     let parsed_count = commit_ticket.commit(|| {
                         let mut parsed_count = 0;
-                        for (packet, parsed) in parsed_batch {
+                        for (packet, parsed) in &mut parsed_batch {
                             let packet_timestamp = packet.timestamp;
-                            let key = parsed.and_then(|parsed| {
+                            let key = parsed.as_ref().and_then(|parsed| {
                                 let outcome = update_connection(
                                     &tracker,
                                     parsed,
@@ -964,7 +975,7 @@ impl App {
                                     pcapng_tx.as_ref(),
                                     &stats,
                                     PcapngRecord {
-                                        data: packet.data,
+                                        data: std::mem::take(&mut packet.data),
                                         timestamp: packet_timestamp,
                                         original_len: packet.original_len,
                                         key,
@@ -980,6 +991,10 @@ impl App {
                         }
                         parsed_count
                     });
+                    // Ingestion only borrows parsed data. Drop frame and DPI
+                    // storage after releasing the ordered commit, retaining
+                    // the scratch vector's capacity for the next batch.
+                    parsed_batch.clear();
 
                     total_processed += batch_len as u64;
                     stats
@@ -1016,14 +1031,14 @@ impl App {
 /// the tracker's [`IngestOutcome`].
 fn update_connection(
     tracker: &ConnectionTracker,
-    parsed: ParsedPacket,
+    parsed: &ParsedPacket,
     now: SystemTime,
     stats: &AppStats,
     json_log_file: &Option<Arc<JsonLineWriter>>,
     pcap_sidecar_file: &Option<Arc<JsonLineWriter>>,
     dns_resolver: Option<&DnsResolver>,
 ) -> IngestOutcome {
-    let outcome = tracker.ingest_at(&parsed, now);
+    let outcome = tracker.ingest_at(parsed, now);
 
     if outcome.retransmits > 0 {
         stats
@@ -1102,7 +1117,7 @@ mod capture_failure_message_tests {
     use std::ops::ControlFlow;
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn collapses_multi_line_errors_and_terminates_the_sentence() {
@@ -1285,6 +1300,82 @@ mod capture_failure_message_tests {
         assert!(committed);
     }
 
+    fn wait_for_commit_waiters(committer: &OrderedBatchCommitter, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let waiters = committer
+                .state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .waiters;
+            if waiters == expected {
+                return;
+            }
+            assert!(Instant::now() < deadline, "commit waiter did not arrive");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn abandoned_ticket_wakes_an_already_waiting_commit() {
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        let abandoned = committer.ticket(0);
+        let next = committer.ticket(1);
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            next.commit(|| finished_tx.send(()).unwrap());
+        });
+
+        wait_for_commit_waiters(&committer, 1);
+        drop(abandoned);
+
+        finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        let state = committer.state.lock().unwrap();
+        assert_eq!(state.next_sequence, 2);
+        assert_eq!(state.waiters, 0);
+    }
+
+    #[test]
+    fn panicking_commit_wakes_waiters_and_preserves_later_order() {
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let mut workers = Vec::new();
+        for sequence in (1..=3).rev() {
+            let ticket = committer.ticket(sequence);
+            let committed = Arc::clone(&committed);
+            let finished_tx = finished_tx.clone();
+            workers.push(std::thread::spawn(move || {
+                ticket.commit(|| committed.lock().unwrap().push(sequence));
+                finished_tx.send(()).unwrap();
+            }));
+        }
+        wait_for_commit_waiters(&committer, 3);
+
+        let failed = std::panic::catch_unwind(|| {
+            committer.ticket(0).commit(|| {
+                // Exercise unwinding without panic-hook backtrace latency.
+                std::panic::resume_unwind(Box::new("commit failed"));
+            });
+        });
+        assert!(failed.is_err());
+        for _ in 0..3 {
+            finished_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        assert_eq!(*committed.lock().unwrap(), vec![1, 2, 3]);
+        let state = committer
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(state.next_sequence, 4);
+        assert_eq!(state.waiters, 0);
+    }
+
     #[test]
     fn capture_drop_deltas_survive_ui_counter_resets() {
         let stats = AppStats::default();
@@ -1361,6 +1452,109 @@ mod prepared_pcap_tests {
 }
 
 #[cfg(test)]
+mod packet_worker_tests {
+    use super::*;
+    use crate::app::{AppOutputHandles, Config};
+
+    fn udp_frame(marker: u8) -> Vec<u8> {
+        // Ethernet/IPv4 UDP from loopback to 198.51.100.10, with a valid
+        // IPv4 checksum and the optional IPv4 UDP checksum left disabled.
+        let mut frame = vec![
+            2, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 1, 0x08, 0x00, 0x45, 0, 0, 30, 0, 0, 0, 0, 64, 17,
+            0xd1, 0x90, 127, 0, 0, 1, 198, 51, 100, 10, 0x27, 0x10, 0x27, 0x0f, 0, 10, 0, 0,
+        ];
+        frame.extend_from_slice(&[marker, !marker]);
+        frame
+    }
+
+    #[test]
+    fn reused_worker_buffers_preserve_pcapng_bytes_order_and_attribution() {
+        let config = Config {
+            enable_dpi: false,
+            resolve_dns: false,
+            disable_geoip: true,
+            filter_localhost: false,
+            ..Config::default()
+        };
+        let mut app = App::new_with_output_handles(config, AppOutputHandles::default()).unwrap();
+        *app.linktype.write().unwrap() = Some(1);
+        let (packet_tx, packet_rx) = channel::bounded(10);
+        let mut expected = Vec::new();
+        let started = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        // More batches than workers require scratch-buffer reuse. Empty and
+        // short batches must not retain packets from a preceding batch.
+        for batch_len in [3, 0, 1, 4, 2, 0, 3, 1, 4, 2] {
+            let mut batch = Vec::new();
+            for _ in 0..batch_len {
+                let marker = expected.len() as u8;
+                let invalid = marker % 5 == 4;
+                let packet = CapturedPacket {
+                    data: if invalid {
+                        vec![marker]
+                    } else {
+                        udp_frame(marker)
+                    },
+                    timestamp: started + Duration::from_millis(u64::from(marker)),
+                    original_len: 64 + u32::from(marker),
+                };
+                expected.push((packet.clone(), invalid));
+                batch.push(packet);
+            }
+            packet_tx.send(batch).unwrap();
+        }
+        drop(packet_tx);
+
+        let packet_rx = Arc::new(OrderedBatchReceiver::new(packet_rx));
+        let committer = Arc::new(OrderedBatchCommitter::default());
+        let (pcapng_tx, pcapng_rx) = channel::bounded(expected.len());
+        for worker in 0..2 {
+            app.start_packet_processor(
+                worker,
+                Arc::clone(&packet_rx),
+                Arc::clone(&committer),
+                Arc::clone(&app.tracker),
+                Some(pcapng_tx.clone()),
+            )
+            .unwrap();
+        }
+        drop(pcapng_tx);
+
+        let mut first_key = None;
+        for (packet, invalid) in &expected {
+            let record = pcapng_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(record.data, packet.data);
+            assert_eq!(record.timestamp, packet.timestamp);
+            assert_eq!(record.original_len, packet.original_len);
+            if *invalid {
+                assert!(record.key.is_none());
+                assert!(record.conn_created_at.is_none());
+            } else {
+                let key = record.key.expect("valid packet must be attributed");
+                assert_eq!(*first_key.get_or_insert(key), key);
+                assert_eq!(record.conn_created_at, Some(started));
+            }
+        }
+        assert!(matches!(
+            pcapng_rx.recv_timeout(Duration::from_secs(5)),
+            Err(channel::RecvTimeoutError::Disconnected)
+        ));
+        let report = app.runtime.stop_and_join(|_| {}, |_| {});
+        assert_eq!(report.timed_out_workers, 0);
+        assert_eq!(report.panicked_workers, 0);
+        assert_eq!(
+            app.stats.packets_processed.load(Ordering::Relaxed),
+            expected.len() as u64
+        );
+        assert_eq!(app.stats.pcapng_records_dropped.load(Ordering::Relaxed), 0);
+        let connection = app.tracker.connections().get(&first_key.unwrap()).unwrap();
+        assert_eq!(
+            connection.packets_sent + connection.packets_received,
+            expected.iter().filter(|(_, invalid)| !invalid).count() as u64
+        );
+    }
+}
+
+#[cfg(test)]
 mod connection_lifecycle_tests {
     use super::*;
     use crate::network::types::{Protocol, ProtocolState, TcpState};
@@ -1422,7 +1616,7 @@ mod connection_lifecycle_tests {
 
         update_connection(
             &tracker,
-            tcp_packet(flags(true, false)),
+            &tcp_packet(flags(true, false)),
             started,
             &stats,
             &no_log,
@@ -1431,7 +1625,7 @@ mod connection_lifecycle_tests {
         );
         update_connection(
             &tracker,
-            tcp_packet(flags(false, true)),
+            &tcp_packet(flags(false, true)),
             started + Duration::from_secs(1),
             &stats,
             &no_log,
@@ -1440,7 +1634,7 @@ mod connection_lifecycle_tests {
         );
         update_connection(
             &tracker,
-            tcp_packet(flags(true, false)),
+            &tcp_packet(flags(true, false)),
             started + Duration::from_secs(2),
             &stats,
             &no_log,
@@ -1472,7 +1666,7 @@ mod connection_lifecycle_tests {
             earlier_ticket.commit(|| {
                 update_connection(
                     &earlier_tracker,
-                    parsed,
+                    &parsed,
                     started,
                     &earlier_stats,
                     &None,
@@ -1490,7 +1684,7 @@ mod connection_lifecycle_tests {
             later_ticket.commit(|| {
                 update_connection(
                     &later_tracker,
-                    parsed,
+                    &parsed,
                     started + Duration::from_secs(1),
                     &later_stats,
                     &None,
@@ -1525,7 +1719,7 @@ mod connection_lifecycle_tests {
 
         update_connection(
             &tracker,
-            tcp_packet(flags(true, false)),
+            &tcp_packet(flags(true, false)),
             started,
             &stats,
             &events,
@@ -1534,7 +1728,7 @@ mod connection_lifecycle_tests {
         );
         update_connection(
             &tracker,
-            tcp_packet(flags(false, true)),
+            &tcp_packet(flags(false, true)),
             started + Duration::from_secs(1),
             &stats,
             &events,
@@ -1543,7 +1737,7 @@ mod connection_lifecycle_tests {
         );
         update_connection(
             &tracker,
-            tcp_packet(flags(true, false)),
+            &tcp_packet(flags(true, false)),
             started + Duration::from_secs(2),
             &stats,
             &events,
