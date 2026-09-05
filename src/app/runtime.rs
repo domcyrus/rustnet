@@ -416,7 +416,10 @@ mod tests {
     fn join_report_counts_worker_panics() {
         let mut runtime = RuntimeSupervisor::new();
         runtime
-            .spawn_monitored("panicking-worker", || panic!("worker failed"))
+            .spawn_monitored("panicking-worker", || {
+                // Exercise unwinding without panic-hook backtrace latency.
+                std::panic::resume_unwind(Box::new("worker failed"));
+            })
             .unwrap();
 
         let report = runtime.stop_and_join(|_| {}, |_| {});
@@ -516,7 +519,10 @@ mod tests {
         let worker_release = Arc::clone(&release);
 
         runtime
-            .spawn_monitored("panicking-worker", || panic!("worker failed"))
+            .spawn_monitored("panicking-worker", || {
+                // Exercise unwinding without panic-hook backtrace latency.
+                std::panic::resume_unwind(Box::new("worker failed"));
+            })
             .unwrap();
         assert_eq!(
             wait_for_unexpected_exit(&runtime).as_deref(),
@@ -616,7 +622,10 @@ mod tests {
     fn panic_before_shutdown_is_latched() {
         let mut runtime = RuntimeSupervisor::new();
         runtime
-            .spawn_monitored("panic-worker", || panic!("worker failed"))
+            .spawn_monitored("panic-worker", || {
+                // Exercise unwinding without panic-hook backtrace latency.
+                std::panic::resume_unwind(Box::new("worker failed"));
+            })
             .unwrap();
 
         assert_eq!(
