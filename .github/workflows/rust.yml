@@ -59,14 +59,15 @@ jobs:
       run: cargo build --locked --workspace --all-targets --verbose
     - name: Run tests
       run: cargo test --locked --workspace --all-features --verbose
-    - name: Test capture shutdown after loopback traffic stops
+    - name: Test capture shutdown and readiness with loopback traffic
       run: |
         test_executable=$(cargo test --locked -p rustnet-capture --test live_capture --no-run --message-format=json |
           jq -r 'select(.reason == "compiler-artifact" and .target.name == "live_capture") | .executable // empty')
         test -n "$test_executable"
-        # Only this BPF-filtered loopback regression needs capture privileges.
+        # Only these BPF-filtered loopback regressions need capture privileges.
         # The process watchdog also bounds failures inside the native backend.
         sudo timeout 10s "$test_executable" --ignored --exact idle_capture_returns_after_traffic_stops_without_busy_spinning
+        sudo timeout 10s "$test_executable" --ignored --exact packet_arriving_after_an_idle_read_is_not_consumed_by_the_readiness_wait
     - name: Test capture capability cleanup before UID drop
       run: |
         test_executable=$(cargo test --locked -p rustnet-sandbox --lib --features landlock --no-run --message-format=json |
