@@ -26,9 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the selected process group
 
 ### Changed
-- **Packet Processing**: reuse per-worker parsed-packet buffers, release packet
-  storage outside the ordered commit, and skip notifications when no commit
-  waiter exists. Capture ordering and the 10,000-packet queue bound are unchanged
+- **Packet Processing**: consolidate tracker lookups, reuse parsed-packet buffers,
+  and group up to 16 already queued batches per ordered update without waiting
+  to fill the group. A sole processor parses and updates each packet immediately,
+  without staging DPI allocations. Parallel workers keep packet cleanup outside
+  the ordered commit and skip notifications without waiters.
+  The queue remains bounded at 10,000 packets,
+  plus up to 1,600 in-flight packets per worker (6,400 across at most four workers).
+  A full queue uses a 5 ms send timeout. Linux capture uses readiness notifications
+  where supported to wake for new traffic while keeping idle waits bounded.
+  Overload can still cause queue or capture-backend loss
 - **Runtime Lifecycle Foundation**: privileged capture and process attribution
   are prepared synchronously before sandboxing, while all long-lived workers
   start through a typed post-sandbox handoff and stop under one owned,

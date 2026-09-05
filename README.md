@@ -41,8 +41,15 @@
 - **Cross-platform**: Linux, macOS, Windows, FreeBSD.
 
 Packet parsing runs in parallel, while connection and annotated-export updates
-keep capture order. The processing queue holds at most 10,000 packets, separate
-from other application memory; bursts or sustained overload can still drop packets.
+keep capture order. Parallel workers group up to 16 already queued batches for
+one ordered update, without waiting to fill the group. A sole processor parses
+and updates each packet immediately, without staging DPI allocations. The queue
+holds at most 10,000 packets, plus up to 1,600 in-flight packets per worker
+(6,400 across at most four workers), separate from other app memory.
+A full queue uses a 5 ms send timeout
+before dropping that batch. On Linux, supported capture backends wake the reader
+when new traffic arrives, while idle waits remain bounded. Bursts or sustained
+overload can still drop packets in the queue or capture backend.
 
 ## Why RustNet?
 

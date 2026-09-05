@@ -464,13 +464,34 @@ impl ConnectionTracker {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let key = self.resolve_connection_key(parsed);
 
-        if !self.connections.contains_key(&key) && self.is_recent_late_packet(key, parsed, now) {
+        // Existing flows need one shard lookup and lock, not separate
+        // presence, generation and update lookups. Keep the lifecycle guard
+        // until the update finishes so cleanup cannot archive this generation.
+        if let Some(mut conn) = self.connections.get_mut(&key) {
+            if Self::packet_starts_new_generation(&conn, parsed) {
+                // The split takes the lifecycle write lock and rechecks the
+                // generation. Never retain a shard guard while upgrading.
+                drop(conn);
+                drop(lifecycle);
+                return self.ingest_new_generation(parsed, now, key, timings);
+            }
+
+            let deltas = merge_packet_into_connection(&mut conn, parsed, now);
+            apply_timings(&mut conn, &timings);
+            apply_observed_protocol_health(&mut conn, parsed);
+            drop(conn);
+            return self.finish_ingest(key, timings, false, deltas);
+        }
+
+        if self.is_recent_late_packet(key, parsed, now) {
             return IngestOutcome {
                 ignored_late: true,
                 ..timings.outcome(key)
             };
         }
 
+        // Another ingestion caller can insert after the initial miss. Keep
+        // the slow path's generation check before its entry-based update.
         let starts_new_generation = self
             .connections
             .get(&key)
@@ -710,6 +731,18 @@ impl ConnectionTracker {
             self.active_count.fetch_add(1, Ordering::Relaxed);
         }
 
+        self.finish_ingest(key, timings, created, deltas)
+    }
+
+    /// Finish an update after releasing the connection's shard guard. RTT
+    /// aggregation must not acquire its mutex while a shard is still locked.
+    fn finish_ingest(
+        &self,
+        key: ConnectionKey,
+        timings: PacketTimings,
+        created: bool,
+        deltas: TcpMergeEvents,
+    ) -> IngestOutcome {
         // Feed completed data round trips into the aggregate view, so the
         // average RTT reflects established connections rather than only the
         // handshakes of freshly opened ones.
@@ -2140,6 +2173,102 @@ mod tests {
         tracker.ingest(&parse(&udp_frame(40000, 53)));
         tracker.ingest(&parse(&udp_frame(40001, 53)));
         assert_eq!(tracker.len(), 2);
+    }
+
+    #[test]
+    fn concurrent_existing_flow_updates_preserve_counters_at_connection_limit() {
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            max_connections: 1,
+            ..TrackerConfig::default()
+        });
+        let packet = parse(&udp_frame(40000, 9999));
+        let first = tracker.ingest_at(&packet, capture_time(0));
+        let barrier = std::sync::Barrier::new(4);
+
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    barrier.wait();
+                    for _ in 0..1_000 {
+                        let outcome = tracker.ingest_at(&packet, capture_time(1));
+                        assert!(!outcome.created);
+                        assert!(!outcome.dropped);
+                        assert!(!outcome.ignored_late);
+                        assert!(outcome.archived.is_none());
+                        assert_eq!(outcome.key, first.key);
+                    }
+                });
+            }
+        });
+
+        let conn = tracker.connections.get(&first.key).unwrap();
+        assert_eq!(conn.packets_sent + conn.packets_received, 4_001);
+        assert_eq!(
+            conn.bytes_sent + conn.bytes_received,
+            4_001 * packet.packet_len as u64
+        );
+        drop(conn);
+        assert_eq!(tracker.active_count.load(Ordering::Relaxed), 1);
+        assert!(tracker.ingest(&parse(&udp_frame(40001, 9999))).dropped);
+    }
+
+    #[test]
+    fn existing_terminal_generation_can_be_replaced_at_connection_limit() {
+        let tracker = ConnectionTracker::with_config(TrackerConfig {
+            max_connections: 1,
+            ..TrackerConfig::default()
+        });
+        let first = tracker.ingest_at(
+            &tcp_packet(false, false, false, true, true),
+            capture_time(0),
+        );
+        let replacement = tracker.ingest_at(
+            &tcp_packet(true, false, false, false, true),
+            capture_time(1),
+        );
+        assert_eq!(replacement.key, first.key);
+        assert!(replacement.created);
+        assert!(!replacement.dropped);
+        assert!(replacement.archived.is_some());
+        assert_eq!(tracker.active_count.load(Ordering::Relaxed), 1);
+        assert_eq!(tracker.len(), 1);
+        assert_eq!(tracker.historic_len(), 1);
+
+        let update = tracker.ingest_at(
+            &tcp_packet(false, true, false, false, true),
+            capture_time(2),
+        );
+        assert!(!update.created);
+        assert!(!update.dropped);
+        assert!(!update.ignored_late);
+        assert!(update.archived.is_none());
+        let conn = tracker.connections.get(&first.key).unwrap();
+        assert_eq!(conn.packets_sent + conn.packets_received, 2);
+    }
+
+    #[test]
+    fn existing_flow_updates_publish_tcp_deltas_and_data_rtt() {
+        let tracker = ConnectionTracker::new();
+        tracker.ingest_at(
+            &tcp_packet(false, true, false, false, true),
+            capture_time(0),
+        );
+        let mut data = tcp_packet(false, true, false, false, true);
+        data.tcp_header.as_mut().unwrap().payload_len = 100;
+        let sent = tracker.ingest_at(&data, capture_time(10));
+        assert!(!sent.created);
+        assert_eq!(sent.retransmits, 0);
+
+        let mut ack = tcp_packet(false, true, false, false, false);
+        ack.tcp_header.as_mut().unwrap().ack = 1_100;
+        tracker.ingest_at(&ack, capture_time(35));
+        assert_eq!(tracker.take_average_rtt(60), Some(25.0));
+
+        let retransmit = tracker.ingest_at(&data, capture_time(40));
+        assert!(!retransmit.created);
+        assert_eq!(retransmit.retransmits, 1);
+        let conn = tracker.connections.get(&sent.key).unwrap();
+        assert_eq!(conn.packets_sent + conn.packets_received, 4);
     }
 
     #[test]
