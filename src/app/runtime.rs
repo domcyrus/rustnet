@@ -346,7 +346,10 @@ mod tests {
     #[test]
     fn join_report_counts_worker_panics() {
         let mut runtime = RuntimeSupervisor::new();
-        runtime.register(thread::spawn(|| panic!("worker failed")));
+        runtime.register(thread::spawn(|| {
+            // Exercise unwinding without panic-hook backtrace latency.
+            std::panic::resume_unwind(Box::new("worker failed"));
+        }));
 
         let report = runtime.stop_and_join(|_| {}, |_| {});
         assert_eq!(report.joined_workers, 1);
@@ -442,7 +445,9 @@ mod tests {
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         let worker_release = Arc::clone(&release);
 
-        let panicking_worker = thread::spawn(|| panic!("worker failed"));
+        let panicking_worker = thread::spawn(|| {
+            std::panic::resume_unwind(Box::new("worker failed"));
+        });
         let panic_deadline = Instant::now() + Duration::from_secs(5);
         while !panicking_worker.is_finished() {
             assert!(
