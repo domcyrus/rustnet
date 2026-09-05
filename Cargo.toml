@@ -184,6 +184,7 @@ Features:
 - Advanced filtering with vim/fzf-style search
 - Multi-threaded processing for optimal performance
 - eBPF-enhanced process detection on Linux (with automatic fallback)
+- Headless JSONL snapshots and an optional systemd documentation example
 """
 depends = "libpcap0.8, libelf1"
 section = "net"
@@ -197,6 +198,14 @@ assets = [
     [
         "README.md",
         "usr/share/doc/rustnet-monitor/",
+        "644",
+    ],
+    ["SERVICE.md", "usr/share/doc/rustnet-monitor/", "644"],
+    ["SERVICE.zh-CN.md", "usr/share/doc/rustnet-monitor/", "644"],
+    ["SERVICE.ja.md", "usr/share/doc/rustnet-monitor/", "644"],
+    [
+        "resources/packaging/linux/systemd/rustnet-headless.service",
+        "usr/share/doc/rustnet-monitor/examples/",
         "644",
     ],
     [
@@ -221,6 +230,10 @@ conf-files = []
 assets = [
     { source = "target/release/rustnet", dest = "/usr/bin/rustnet", mode = "755" },
     { source = "README.md", dest = "/usr/share/doc/rustnet-monitor/README.md", mode = "644" },
+    { source = "SERVICE.md", dest = "/usr/share/doc/rustnet-monitor/SERVICE.md", mode = "644" },
+    { source = "SERVICE.zh-CN.md", dest = "/usr/share/doc/rustnet-monitor/SERVICE.zh-CN.md", mode = "644" },
+    { source = "SERVICE.ja.md", dest = "/usr/share/doc/rustnet-monitor/SERVICE.ja.md", mode = "644" },
+    { source = "resources/packaging/linux/systemd/rustnet-headless.service", dest = "/usr/share/doc/rustnet-monitor/examples/rustnet-headless.service", mode = "644" },
     { source = "crates/rustnet-core/assets/services", dest = "/usr/share/rustnet-monitor/services", mode = "644" },
     { source = "resources/packaging/linux/graphics/rustnet.png", dest = "/usr/share/icons/hicolor/256x256/apps/rustnet.png", mode = "644" },
     { source = "resources/packaging/linux/rustnet.desktop", dest = "/usr/share/applications/rustnet.desktop", mode = "644" },
